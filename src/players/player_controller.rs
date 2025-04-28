@@ -8,13 +8,13 @@ pub trait PlayerStateListener: Send + Sync {
     fn on_state_changed(&self, state: PlayerState);
     
     /// Called when the current song changes
-    fn on_song_changed(&self, song: Option<&Song>);
+    fn on_song_changed(&self, song: Option<Song>);
     
     /// Called when the loop mode changes
     fn on_loop_mode_changed(&self, mode: LoopMode);
     
     /// Called when a player capability is added or removed
-    fn on_capabilities_changed(&self, capabilities: &[PlayerCapability]);
+    fn on_capabilities_changed(&self, capabilities: Vec<PlayerCapability>);
     
     /// Convert to Any for dynamic casting
     fn as_any(&self) -> &dyn Any;

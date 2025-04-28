@@ -9,6 +9,12 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Once;
+use std::collections::HashMap;
+
+// Static instance for singleton pattern
+static mut INSTANCE: Option<*mut MPDPlayer> = None;
+static INIT: Once = Once::new();
 
 /// MPD player controller implementation
 pub struct MPDPlayer {
@@ -23,6 +29,9 @@ pub struct MPDPlayer {
 
     /// MPD client connection
     connection: Mutex<Option<Client<TcpStream>>>,
+    
+    /// Current song information
+    current_song: Mutex<Option<Song>>,
 }
 
 impl MPDPlayer {
@@ -38,6 +47,7 @@ impl MPDPlayer {
             hostname: host.to_string(),
             port,
             connection: Mutex::new(connection),
+            current_song: Mutex::new(None),
         }
     }
     
@@ -51,6 +61,7 @@ impl MPDPlayer {
             hostname: hostname.to_string(),
             port,
             connection: Mutex::new(connection),
+            current_song: Mutex::new(None),
         }
     }
     
@@ -287,23 +298,53 @@ impl MPDPlayer {
     
     /// Handle player events and log song information
     fn handle_player_event(client: &mut Client<TcpStream>) {
+        // Get player instance to store the song update
+        let player = MPDPlayer::get_instance();
+        
         // Use the provided client connection instead of creating a new one
         match client.currentsong() {
             Ok(song_opt) => {
-                if let Some(song) = song_opt {
+                if let Some(mpd_song) = song_opt {
+                    // Convert MPD song to our Song format
+                    let song = Song {
+                        title: mpd_song.title,
+                        artist: mpd_song.artist,
+                        album: None,
+                        album_artist: None,
+                        track_number: mpd_song.place.as_ref().map(|p| p.pos as i32),
+                        total_tracks: None,
+                        duration: mpd_song.duration.map(|d| d.as_secs_f32() as f64),
+                        genre: None,
+                        year: None,
+                        cover_art_url: None,
+                        stream_url: Some(mpd_song.file),
+                        source: Some("mpd".to_string()),
+                        metadata: HashMap::new(),
+                    };
+                    
                     info!("Now playing: {} - {}", 
-                        song.title.unwrap_or_else(|| "Unknown".to_string()),
-                        song.artist.unwrap_or_else(|| "Unknown".to_string()));
+                        song.title.as_deref().unwrap_or("Unknown"),
+                        song.artist.as_deref().unwrap_or("Unknown"));
                     
                     // Log additional song details if available
-                    if let Some(duration) = song.duration {
+                    if let Some(duration) = mpd_song.duration {
                         debug!("Duration: {:.1} seconds", duration.as_secs_f32());
                     }
-                    if let Some(place) = song.place {
+                    if let Some(place) = mpd_song.place {
                         debug!("Position: {} in queue", place.pos);
+                    }
+                    
+                    // Update stored song and notify listeners
+                    if let Some(player) = player {
+                        player.update_current_song(Some(song));
                     }
                 } else {
                     info!("No song currently playing");
+                    
+                    // Clear stored song and notify listeners
+                    if let Some(player) = player {
+                        player.update_current_song(None);
+                    }
                 }
             },
             Err(e) => warn!("Failed to get current song information: {}", e),
@@ -314,6 +355,8 @@ impl MPDPlayer {
             Ok(status) => {
                 info!("Player status: {:?}, volume: {}%", 
                     status.state, status.volume);
+                
+                // Could update player state here as well
             },
             Err(e) => warn!("Failed to get player status: {}", e),
         }
@@ -327,6 +370,53 @@ impl MPDPlayer {
                 break;
             }
             thread::sleep(Duration::from_millis(100));
+        }
+    }
+    
+    /// Initialize the singleton instance
+    pub fn init_instance(&mut self) {
+        INIT.call_once(|| {
+            // Safety: We ensure this is only called once from a single thread
+            // during initialization
+            unsafe {
+                INSTANCE = Some(self as *mut MPDPlayer);
+            }
+        });
+        debug!("MPDPlayer singleton instance initialized");
+    }
+
+    /// Get access to the player instance for updating from events
+    fn get_instance() -> Option<&'static MPDPlayer> {
+        unsafe {
+            if let Some(instance) = INSTANCE {
+                // Safety: We ensure that the instance will not be deallocated
+                // while the program is running
+                Some(&*instance)
+            } else {
+                None
+            }
+        }
+    }
+    
+    /// Update the current song and notify listeners
+    fn update_current_song(&self, song: Option<Song>) {
+        // Store the new song
+        let mut current_song = self.current_song.lock().unwrap();
+        let song_changed = match (&*current_song, &song) {
+            (Some(old), Some(new)) => old.stream_url != new.stream_url || old.title != new.title,
+            (None, Some(_)) => true,
+            (Some(_), None) => true,
+            (None, None) => false,
+        };
+        
+        if song_changed {
+            debug!("Updating current song");
+            // Update the stored song
+            *current_song = song.clone();
+            
+            // Notify listeners of the song change
+            drop(current_song); // Release the lock before notifying
+            self.base.notify_song_changed(song.as_ref());
         }
     }
 }
@@ -344,9 +434,9 @@ impl PlayerController for MPDPlayer {
     }
     
     fn get_song(&self) -> Option<Song> {
-        debug!("Getting current song (not implemented yet)");
-        // Not implemented yet
-        None
+        debug!("Getting current song from stored value");
+        // Return a clone of the stored song
+        self.current_song.lock().unwrap().clone()
     }
     
     fn get_loop_mode(&self) -> LoopMode {

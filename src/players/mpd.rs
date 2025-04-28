@@ -32,9 +32,8 @@ pub struct MPDPlayer {
 impl Clone for MPDPlayer {
     fn clone(&self) -> Self {
         MPDPlayer {
-            // BasePlayerController doesn't need to be cloned with shared state
-            // Create a new instance instead
-            base: BasePlayerController::new(),
+            // Share the BasePlayerController instance to maintain listener registrations
+            base: self.base.clone(),
             hostname: self.hostname.clone(),
             port: self.port,
             current_song: Arc::clone(&self.current_song),

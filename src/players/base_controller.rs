@@ -7,9 +7,13 @@ use log::{debug, trace, warn};
 /// 
 /// This struct provides common functionality for managing state listeners that
 /// can be used by concrete player implementations.
+#[derive(Clone)]
 pub struct BasePlayerController {
     /// List of state listeners registered with this controller
-    listeners: RwLock<Vec<Weak<dyn PlayerStateListener>>>,
+    listeners: Arc<RwLock<Vec<Weak<dyn PlayerStateListener>>>>,
+    
+    /// Current capabilities of the player
+    capabilities: Arc<RwLock<Vec<PlayerCapability>>>,
 }
 
 impl BasePlayerController {
@@ -17,8 +21,96 @@ impl BasePlayerController {
     pub fn new() -> Self {
         debug!("Creating new BasePlayerController");
         Self {
-            listeners: RwLock::new(Vec::new()),
+            listeners: Arc::new(RwLock::new(Vec::new())),
+            capabilities: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+    
+    /// Get the current capabilities
+    pub fn get_capabilities(&self) -> Vec<PlayerCapability> {
+        if let Ok(caps) = self.capabilities.read() {
+            caps.clone()
+        } else {
+            warn!("Failed to acquire read lock for capabilities");
+            Vec::new()
+        }
+    }
+    
+    /// Set multiple capabilities at once
+    /// 
+    /// Replaces all current capabilities with the provided ones
+    /// When auto_notify is true, listeners will be notified of changes automatically
+    /// Returns true if the capabilities were changed
+    pub fn set_capabilities(&self, capabilities: Vec<PlayerCapability>, auto_notify: bool) -> bool {
+        debug!("Setting all capabilities to a list of {} capabilities", capabilities.len());
+        
+        let mut changed = false;
+        
+        // Update stored capabilities
+        if let Ok(mut caps) = self.capabilities.write() {
+            // Check if there's any difference between current and new capabilities
+            if caps.len() != capabilities.len() || 
+               !capabilities.iter().all(|cap| caps.contains(cap)) ||
+               !caps.iter().all(|cap| capabilities.contains(cap)) {
+                
+                // Replace with new capabilities
+                *caps = capabilities.clone();
+                debug!("Updated capabilities to {} items", caps.len());
+                changed = true;
+            } else {
+                debug!("Capabilities unchanged, not updating");
+            }
+        } else {
+            warn!("Failed to acquire write lock when setting capabilities");
+            return false;
+        }
+        
+        // If capabilities changed and auto_notify is true, notify listeners
+        if changed && auto_notify {
+            self.notify_capabilities_changed(&capabilities);
+        }
+        
+        changed
+    }
+    
+    /// Set a capability as enabled or disabled
+    /// 
+    /// If enabled is true, adds the capability if not already present
+    /// If enabled is false, removes the capability if present
+    /// When auto_notify is true, listeners will be notified of changes automatically
+    /// Returns true if the capabilities were changed
+    pub fn set_capability(&self, capability: PlayerCapability, enabled: bool, auto_notify: bool) -> bool {
+        debug!("Setting capability {:?} to {}", capability, enabled);
+        
+        let mut changed = false;
+        
+        // Update stored capabilities
+        if let Ok(mut caps) = self.capabilities.write() {
+            let had_capability = caps.contains(&capability);
+            
+            if enabled && !had_capability {
+                // Add capability
+                caps.push(capability.clone());
+                debug!("Added capability {:?}, now have {} capabilities", capability, caps.len());
+                changed = true;
+            } else if !enabled && had_capability {
+                // Remove capability
+                caps.retain(|c| *c != capability);
+                debug!("Removed capability {:?}, now have {} capabilities", capability, caps.len());
+                changed = true;
+            }
+        } else {
+            warn!("Failed to acquire write lock when setting capability");
+            return false;
+        }
+        
+        // If capabilities changed and auto_notify is true, notify listeners
+        if changed && auto_notify {
+            let current_caps = self.get_capabilities();
+            self.notify_capabilities_changed(&current_caps);
+        }
+        
+        changed
     }
 
     /// Notify all registered listeners that the player state has changed
@@ -80,6 +172,14 @@ impl BasePlayerController {
     pub fn notify_capabilities_changed(&self, capabilities: &[PlayerCapability]) {
         debug!("Notifying listeners of capabilities change");
         self.prune_dead_listeners();
+        
+        // Store the capabilities internally
+        if let Ok(mut caps) = self.capabilities.write() {
+            *caps = capabilities.to_vec();
+            debug!("Updated to {} capabilities", caps.len());
+        } else {
+            warn!("Failed to acquire write lock when updating capabilities");
+        }
         
         // Create a copied vector for each listener
         let capabilities_vec = capabilities.to_vec();

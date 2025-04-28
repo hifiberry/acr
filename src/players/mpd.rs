@@ -453,9 +453,161 @@ impl PlayerController for MPDPlayer {
     
     fn send_command(&self, command: PlayerCommand) -> bool {
         info!("Sending command to MPD: {}", command);
-        // Not implemented yet
-        warn!("MPD command implementation not yet available");
-        false
+        
+        let mut success = false;
+        
+        // Try to get a connection
+        if let Ok(mut conn_guard) = self.connection.lock() {
+            if let Some(ref mut client) = *conn_guard {
+                // Process the command based on its type
+                match command {
+                    PlayerCommand::Play => {
+                        // Start playback
+                        success = client.play().is_ok();
+                        if success {
+                            debug!("MPD playback started");
+                        }
+                    },
+                    
+                    PlayerCommand::Pause => {
+                        // Pause playback
+                        success = client.pause(true).is_ok();
+                        if success {
+                            debug!("MPD playback paused");
+                        }
+                    },
+                    
+                    PlayerCommand::PlayPause => {
+                        // Toggle between play and pause
+                        match client.status() {
+                            Ok(status) => {
+                                match status.state {
+                                    mpd::State::Play => {
+                                        success = client.pause(true).is_ok();
+                                        if success {
+                                            debug!("MPD playback paused (toggle)");
+                                        }
+                                    },
+                                    _ => {
+                                        success = client.play().is_ok();
+                                        if success {
+                                            debug!("MPD playback started (toggle)");
+                                        }
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                warn!("Failed to get MPD status for play/pause toggle: {}", e);
+                            }
+                        }
+                    },
+                    
+                    PlayerCommand::Next => {
+                        // Skip to next track
+                        success = client.next().is_ok();
+                        if success {
+                            debug!("Skipped to next track in MPD");
+                        }
+                    },
+                    
+                    PlayerCommand::Previous => {
+                        // Go back to previous track
+                        success = client.prev().is_ok();
+                        if success {
+                            debug!("Went back to previous track in MPD");
+                        }
+                    },
+                    
+                    PlayerCommand::SetLoopMode(mode) => {
+                        // Map our loop mode to MPD repeat/single settings
+                        match mode {
+                            LoopMode::None => {
+                                // Turn off both repeat and single
+                                let repeat_ok = client.repeat(false).is_ok();
+                                let single_ok = client.single(false).is_ok();
+                                success = repeat_ok && single_ok;
+                                if success {
+                                    debug!("MPD loop mode set to None");
+                                }
+                            },
+                            LoopMode::Track => {
+                                // Single track repeat (single=true)
+                                let repeat_ok = client.repeat(true).is_ok();
+                                let single_ok = client.single(true).is_ok();
+                                success = repeat_ok && single_ok;
+                                if success {
+                                    debug!("MPD loop mode set to Track (single repeat)");
+                                }
+                            },
+                            LoopMode::Playlist => {
+                                // Whole playlist repeat (repeat=true, single=false)
+                                let repeat_ok = client.repeat(true).is_ok();
+                                let single_ok = client.single(false).is_ok();
+                                success = repeat_ok && single_ok;
+                                if success {
+                                    debug!("MPD loop mode set to Playlist (whole playlist repeat)");
+                                }
+                            },
+                        }
+                    },
+                    
+                    PlayerCommand::Seek(position) => {
+                        // Seek to a position in seconds
+                        match client.currentsong() {
+                            Ok(song_opt) => {
+                                if let Some(song) = song_opt {
+                                    if let Some(place) = song.place {
+                                        // Use the song's position in the queue
+                                        // Position needs to be f64 to satisfy ToSeconds trait
+                                        let position_seconds: f64 = position; 
+                                        success = client.seek(place.pos, position_seconds).is_ok();
+                                        if success {
+                                            debug!("Sought to position {}s in current track", position);
+                                        }
+                                    } else {
+                                        warn!("Current song has no position, cannot seek");
+                                    }
+                                } else {
+                                    warn!("No current song to seek in");
+                                }
+                            },
+                            Err(e) => {
+                                warn!("Failed to get current song for seeking: {}", e);
+                            }
+                        }
+                    },
+                    
+                    PlayerCommand::SetRandom(enabled) => {
+                        // Set shuffle/random mode
+                        success = client.random(enabled).is_ok();
+                        if success {
+                            debug!("MPD random mode set to: {}", enabled);
+                        }
+                    },
+                }
+                
+                // If the command was successful, we may want to update our stored state
+                if success {
+                    // We'll update our state asynchronously via the MPD idle events
+                    // but we could trigger an immediate update here if needed
+                }
+            } else {
+                // No active connection
+                warn!("Cannot send command to MPD: no active connection");
+                // Try to reconnect
+                if let Ok(new_client) = Client::connect(&format!("{}:{}", self.hostname, self.port)) {
+                    debug!("Reconnected to MPD");
+                    *conn_guard = Some(new_client);
+                    // Retry the command with the new connection
+                    drop(conn_guard); // Release the lock before recursion
+                    return self.send_command(command);
+                }
+            }
+        } else {
+            error!("Failed to acquire connection lock when sending command to MPD");
+        }
+        
+        success
     }
     
     fn register_state_listener(&mut self, listener: Weak<dyn crate::players::player_controller::PlayerStateListener>) -> bool {

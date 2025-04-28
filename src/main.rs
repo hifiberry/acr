@@ -4,7 +4,7 @@ use std::sync::{Arc, Weak};
 use std::any::Any;
 use std::thread;
 use std::time::Duration;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use log::{debug, info, warn, error};
 use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,6 +117,57 @@ fn main() {
     
     // Start the event listener thread in the MPD player
     mpd_player.start_event_listener(running.clone());
+    
+    // Create a shared reference to the MPD player for the keyboard handler
+    let player_ref = Arc::new(mpd_player);
+    let player_clone = player_ref.clone();
+    
+    // Start a thread to monitor keypresses
+    let keyboard_running = running.clone();
+    thread::spawn(move || {
+        println!("Keyboard controls active:");
+        println!("  Space: Play/Pause");
+        println!("  n: Next track");
+        println!("  p: Previous track");
+        println!("  Ctrl+C: Exit");
+        
+        // Set up terminal for raw input mode if possible
+        let mut stdin = io::stdin();
+        
+        // Buffer for reading single bytes
+        let mut buffer = [0; 1];
+        
+        while keyboard_running.load(Ordering::SeqCst) {
+            // Try to read a single keystroke
+            if stdin.read_exact(&mut buffer).is_ok() {
+                match buffer[0] {
+                    // Space key (32 is ASCII for space)
+                    32 => {
+                        info!("Space key pressed: toggling play/pause");
+                        player_clone.send_command(PlayerCommand::PlayPause);
+                    },
+                    // 'n' key
+                    110 | 78 => {  // ASCII for 'n' or 'N'
+                        info!("'n' key pressed: next track");
+                        player_clone.send_command(PlayerCommand::Next);
+                    },
+                    // 'p' key
+                    112 | 80 => {  // ASCII for 'p' or 'P'
+                        info!("'p' key pressed: previous track");
+                        player_clone.send_command(PlayerCommand::Previous);
+                    },
+                    _ => {
+                        // Ignore other keys
+                    }
+                }
+            } else {
+                // If read failed, sleep a bit to avoid tight looping
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        
+        info!("Keyboard handler thread exiting");
+    });
     
     // Keep the main thread alive until Ctrl+C is received
     while running.load(Ordering::SeqCst) {

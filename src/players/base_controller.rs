@@ -198,7 +198,7 @@ impl BasePlayerController {
     }
 
     /// Register a state listener to be notified of state changes
-    pub fn register_listener(&self, listener: Weak<dyn PlayerStateListener>) -> bool {
+    pub fn register_state_listener(&self, listener: Weak<dyn PlayerStateListener>) -> bool {
         debug!("Attempting to register a new listener");
         if let Ok(mut listeners) = self.listeners.write() {
             // Check for duplicates before adding
@@ -220,7 +220,7 @@ impl BasePlayerController {
     }
 
     /// Unregister a previously registered state listener
-    pub fn unregister_listener(&self, listener: &Arc<dyn PlayerStateListener>) -> bool {
+    pub fn unregister_state_listener(&self, listener: &Arc<dyn PlayerStateListener>) -> bool {
         debug!("Attempting to unregister a listener");
         if let Ok(mut listeners) = self.listeners.write() {
             let original_len = listeners.len();

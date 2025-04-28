@@ -1,6 +1,8 @@
 use crate::players::base_controller::BasePlayerController;
 use crate::players::player_controller::PlayerController;
+use crate::players::player_controller::PlayerStateListener;
 use crate::data::{PlayerCapability, Song, LoopMode, PlayerState, PlayerCommand};
+use delegate::delegate;
 use std::sync::{Arc, Weak, Mutex};
 use log::{debug, info, warn, error};
 use mpd::{Client, error::Error as MpdError, idle::Subsystem};
@@ -48,24 +50,50 @@ impl MPDPlayer {
         let host = "localhost";
         let port = 6600;
         
-        Self {
+        let player = Self {
             base: BasePlayerController::new(),
             hostname: host.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
-        }
+        };
+        
+        // Set default capabilities
+        player.set_default_capabilities();
+        
+        player
     }
     
     /// Create a new MPD player controller with custom settings
     pub fn with_connection(hostname: &str, port: u16) -> Self {
         debug!("Creating new MPDPlayer with connection {}:{}", hostname, port);
         
-        Self {
+        let player = Self {
             base: BasePlayerController::new(),
             hostname: hostname.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
-        }
+        };
+        
+        // Set default capabilities
+        player.set_default_capabilities();
+        
+        player
+    }
+    
+    /// Set the default capabilities for this player
+    fn set_default_capabilities(&self) {
+        debug!("Setting default MPDPlayer capabilities");
+        self.base.set_capabilities(vec![
+            PlayerCapability::Play,
+            PlayerCapability::Pause,
+            PlayerCapability::PlayPause,
+            PlayerCapability::Stop,
+            PlayerCapability::Next,
+            PlayerCapability::Previous,
+            PlayerCapability::Seek,
+            PlayerCapability::Loop,
+            PlayerCapability::Shuffle,
+        ], false); // Don't notify on initialization
     }
     
     /// Helper method to establish MPD connection
@@ -408,15 +436,12 @@ lazy_static! {
 }
 
 impl PlayerController for MPDPlayer {
-    fn get_capabilities(&self) -> Vec<PlayerCapability> {
-        debug!("Getting MPDPlayer capabilities");
-        // Return basic capabilities for now
-        vec![
-            PlayerCapability::Play,
-            PlayerCapability::Pause,
-            PlayerCapability::PlayPause,
-            PlayerCapability::Stop,
-        ]
+    delegate! {
+        to self.base {
+            fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
+            fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
+            fn get_capabilities(&self) -> Vec<PlayerCapability>;
+        }
     }
     
     fn get_song(&self) -> Option<Song> {
@@ -580,16 +605,6 @@ impl PlayerController for MPDPlayer {
         }
         
         success
-    }
-    
-    fn register_state_listener(&mut self, listener: Weak<dyn crate::players::player_controller::PlayerStateListener>) -> bool {
-        debug!("Registering new state listener with MPDPlayer");
-        self.base.register_listener(listener)
-    }
-    
-    fn unregister_state_listener(&mut self, listener: &Arc<dyn crate::players::player_controller::PlayerStateListener>) -> bool {
-        debug!("Unregistering state listener from MPDPlayer");
-        self.base.unregister_listener(listener)
     }
     
     fn as_any(&self) -> &dyn Any {

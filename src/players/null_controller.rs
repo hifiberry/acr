@@ -1,6 +1,7 @@
 use crate::players::base_controller::BasePlayerController;
 use crate::players::player_controller::{PlayerController, PlayerStateListener};
 use crate::data::{PlayerCapability, Song, LoopMode, PlayerState, PlayerCommand};
+use delegate::delegate;
 use std::sync::{Arc, Weak};
 use log::{debug, info};
 use std::any::Any;
@@ -18,17 +19,20 @@ impl NullPlayerController {
     /// Create a new null player controller
     pub fn new() -> Self {
         debug!("Creating new NullPlayerController");
-        Self {
+        let player = Self {
             base: BasePlayerController::new(),
-        }
+        };
+        
+        // Set default capabilities
+        player.set_default_capabilities();
+        
+        player
     }
-}
-
-impl PlayerController for NullPlayerController {
-    fn get_capabilities(&self) -> Vec<PlayerCapability> {
-        debug!("NullPlayerController: get_capabilities called");
-        // Return all capabilities to indicate that we "support" everything
-        vec![
+    
+    /// Set the default capabilities for this player
+    fn set_default_capabilities(&self) {
+        debug!("Setting default NullPlayerController capabilities");
+        self.base.set_capabilities(vec![
             PlayerCapability::Play,
             PlayerCapability::Pause,
             PlayerCapability::PlayPause,
@@ -38,7 +42,17 @@ impl PlayerController for NullPlayerController {
             PlayerCapability::Seek,
             PlayerCapability::Loop,
             PlayerCapability::Shuffle,
-        ]
+        ], false); // Don't notify on initialization
+    }
+}
+
+impl PlayerController for NullPlayerController {
+    delegate! {
+        to self.base {
+            fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
+            fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
+            fn get_capabilities(&self) -> Vec<PlayerCapability>;
+        }
     }
     
     fn get_song(&self) -> Option<Song> {
@@ -59,16 +73,6 @@ impl PlayerController for NullPlayerController {
     fn send_command(&self, command: PlayerCommand) -> bool {
         info!("NullPlayerController: Command received (no action taken): {}", command);
         true // Always return success
-    }
-    
-    fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool {
-        debug!("NullPlayerController: Registering state listener");
-        self.base.register_listener(listener)
-    }
-    
-    fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool {
-        debug!("NullPlayerController: Unregistering state listener");
-        self.base.unregister_listener(listener)
     }
     
     fn as_any(&self) -> &dyn Any {

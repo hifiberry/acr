@@ -432,7 +432,7 @@ impl MPDPlayer {
                             let file_path = song.stream_url.as_deref().unwrap_or("");
                             let is_stream = file_path.starts_with("http://") ||
                                            file_path.starts_with("https://") ||
-                                           file_path.contains("://");
+                                           file_path.contains("://") ;
                             
                             // Seekable if it has duration and is not a stream
                             let seekable = duration > 0.0 && !is_stream;
@@ -445,7 +445,7 @@ impl MPDPlayer {
                         }
                     },
                     None => {
-                        debug!("No current song or error getting song info, marking as not seekable");
+                        debug!("No current song, marking as not seekable");
                         false
                     }
                 };

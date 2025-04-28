@@ -5,6 +5,8 @@ use std::any::Any;
 use std::thread;
 use std::time::Duration;
 use std::io::{self, Write};
+use log::{debug, info, warn, error};
+use env_logger::Env;
 
 /// Event Logger that implements the PlayerStateListener trait
 struct EventLogger {
@@ -21,26 +23,26 @@ impl EventLogger {
 
 impl PlayerStateListener for EventLogger {
     fn on_state_changed(&self, state: PlayerState) {
-        println!("[{}] State changed: {}", self.name, state);
+        info!("[{}] State changed: {}", self.name, state);
     }
     
     fn on_song_changed(&self, song: Option<&Song>) {
         match song {
-            Some(s) => println!("[{}] Song changed: {} by {}", self.name, 
+            Some(s) => info!("[{}] Song changed: {} by {}", self.name, 
                 s.title.as_deref().unwrap_or("Unknown"), 
                 s.artist.as_deref().unwrap_or("Unknown")),
-            None => println!("[{}] Song cleared", self.name),
+            None => info!("[{}] Song cleared", self.name),
         }
     }
     
     fn on_loop_mode_changed(&self, mode: LoopMode) {
-        println!("[{}] Loop mode changed: {}", self.name, mode);
+        info!("[{}] Loop mode changed: {}", self.name, mode);
     }
     
     fn on_capabilities_changed(&self, capabilities: &[PlayerCapability]) {
-        println!("[{}] Capabilities changed:", self.name);
+        info!("[{}] Capabilities changed:", self.name);
         for cap in capabilities {
-            println!("  - {}", cap);
+            debug!("[{}]   - {}", self.name, cap);
         }
     }
     
@@ -50,6 +52,12 @@ impl PlayerStateListener for EventLogger {
 }
 
 fn main() {
+    // Initialize the logger with default configuration
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp_secs()
+        .init();
+
+    info!("AudioControl3 (ACR) MPD Controller Demo starting");
     println!("AudioControl3 (ACR) MPD Controller Demo\n");
     
     // Create an MPD player controller
@@ -69,25 +77,27 @@ fn main() {
     }
     
     // Get initial state information and log it
-    println!("\nInitial player state:");
-    println!("State: {}", mpd_player.get_player_state());
+    info!("\nInitial player state:");
+    info!("State: {}", mpd_player.get_player_state());
     
     let capabilities = mpd_player.get_capabilities();
-    println!("Capabilities:");
+    info!("Capabilities:");
     for cap in &capabilities {
-        println!("  - {}", cap);
+        debug!("  - {}", cap);
     }
     
-    println!("Loop mode: {}", mpd_player.get_loop_mode());
+    info!("Loop mode: {}", mpd_player.get_loop_mode());
     
     match mpd_player.get_song() {
-        Some(song) => println!("Current song: {} by {}", 
+        Some(song) => info!("Current song: {} by {}", 
             song.title.unwrap_or_else(|| "Unknown".to_string()), 
             song.artist.unwrap_or_else(|| "Unknown".to_string())),
-        None => println!("No song currently playing"),
+        None => info!("No song currently playing"),
     }
     
     // Enter a simulation loop - in a real application this would be event-driven
+    info!("\nEntering event simulation loop. Press Ctrl+C to exit.");
+    info!("Simulating player events every few seconds...");
     println!("\nEntering event simulation loop. Press Ctrl+C to exit.");
     println!("Simulating player events every few seconds...");
     
@@ -111,6 +121,7 @@ fn main() {
     loop {
         // Simulate sending a command
         let command = &commands[command_index];
+        debug!("Sending command: {}", command);
         print!("Sending command: {} ... ", command);
         io::stdout().flush().unwrap();
         
@@ -125,18 +136,22 @@ fn main() {
         // Simulate a state change based on the command
         match command {
             PlayerCommand::Play => {
+                info!("Simulating state change to Playing");
                 println!("Simulating state change to Playing");
                 mpd_player.notify_state_changed(PlayerState::Playing);
             },
             PlayerCommand::Pause => {
+                info!("Simulating state change to Paused");
                 println!("Simulating state change to Paused");
                 mpd_player.notify_state_changed(PlayerState::Paused);
             },
             PlayerCommand::SetLoopMode(mode) => {
+                info!("Simulating loop mode change to {}", mode);
                 println!("Simulating loop mode change to {}", mode);
                 mpd_player.notify_loop_mode_changed(*mode);
             },
             _ => {
+                debug!("Command sent (no state change simulated)");
                 println!("Command sent (no state change simulated)");
             }
         }
@@ -145,6 +160,7 @@ fn main() {
         command_index = (command_index + 1) % commands.len();
         
         // Wait between simulated events
+        debug!("Waiting for {} seconds before next command", 3);
         thread::sleep(Duration::from_secs(3));
     }
 }

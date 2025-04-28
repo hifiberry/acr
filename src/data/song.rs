@@ -44,12 +44,5 @@ pub struct Song {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-impl Song {
-    /// Convert song metadata to JSON string
-    ///
-    /// Returns:
-    ///     JSON string representation of the song metadata
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
-    }
-}
+// The to_json method is now provided by the Serializable trait
+// which is automatically implemented for all types that implement Serialize

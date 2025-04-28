@@ -39,14 +39,6 @@ pub struct Player {
 }
 
 impl Player {
-    /// Convert player metadata to JSON string
-    ///
-    /// Returns:
-    ///     JSON string representation of the player metadata
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
-    }
-    
     /// Create a new Player with the given name and default values for other fields
     pub fn new(name: String) -> Self {
         Self {
@@ -80,3 +72,5 @@ impl Player {
         }
     }
 }
+// The to_json method is now provided by the Serializable trait
+// which is automatically implemented for all types that implement Serialize

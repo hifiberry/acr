@@ -3,7 +3,7 @@ use crate::players::player_controller::{PlayerController, PlayerStateListener};
 use crate::data::{PlayerCapability, Song, LoopMode, PlayerState, PlayerCommand};
 use delegate::delegate;
 use std::sync::{Arc, Weak};
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::any::Any;
 
 /// A null player controller that does nothing
@@ -42,6 +42,7 @@ impl NullPlayerController {
             PlayerCapability::Seek,
             PlayerCapability::Loop,
             PlayerCapability::Shuffle,
+            // Killable capability not supported in NullPlayerController
         ], false); // Don't notify on initialization
     }
 }
@@ -79,8 +80,17 @@ impl PlayerController for NullPlayerController {
     }
     
     fn send_command(&self, command: PlayerCommand) -> bool {
-        info!("NullPlayerController: Command received (no action taken): {}", command);
-        true // Always return success
+        match command {
+            PlayerCommand::Kill => {
+                info!("NullPlayerController: Kill command received but not supported");
+                warn!("NullPlayerController: Kill operation not supported, Killable capability not advertised");
+                false // Return failure since this operation is not supported
+            },
+            _ => {
+                info!("NullPlayerController: Command received (no action taken): {}", command);
+                true // Return success for all other commands
+            }
+        }
     }
     
     fn as_any(&self) -> &dyn Any {

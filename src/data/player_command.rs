@@ -31,6 +31,10 @@ pub enum PlayerCommand {
 
     #[serde(rename = "set_random")]
     SetRandom(bool),
+
+    /// Kill (forcefully terminate) the player
+    #[serde(rename = "kill")]
+    Kill,
 }
 
 impl Default for PlayerCommand {
@@ -50,6 +54,7 @@ impl std::fmt::Display for PlayerCommand {
             PlayerCommand::SetLoopMode(mode) => write!(f, "set_loop:{}", mode),
             PlayerCommand::Seek(position) => write!(f, "seek:{}", position),
             PlayerCommand::SetRandom(enabled) => write!(f, "set_random:{}", if *enabled { "on" } else { "off" }),
+            PlayerCommand::Kill => write!(f, "kill"),
         }
     }
 }

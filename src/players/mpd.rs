@@ -99,6 +99,7 @@ impl MPDPlayer {
             PlayerCapability::Seek,
             PlayerCapability::Loop,
             PlayerCapability::Shuffle,
+            PlayerCapability::Killable,
         ], false); // Don't notify on initialization
     }
     
@@ -743,6 +744,20 @@ impl PlayerController for MPDPlayer {
                     success = client.random(enabled).is_ok();
                     if success {
                         debug!("MPD random mode set to: {}", enabled);
+                    }
+                },
+                
+                PlayerCommand::Kill => {
+                    // Kill the MPD process via the kill command
+                    // Note: this requires the MPD server to have proper permissions configured
+                    success = client.kill().is_ok();
+                    if success {
+                        debug!("MPD kill command sent successfully");
+                        
+                        // Stop the player controller since MPD process is now killed
+                        self.stop();
+                    } else {
+                        warn!("Failed to kill MPD process, might not have permission");
                     }
                 },
             }

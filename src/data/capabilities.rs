@@ -48,6 +48,8 @@ pub enum PlayerCapability {
     Favorites,
     /// Can update internal database
     DatabaseUpdate,
+    /// Can be killed (terminated forcefully)
+    Killable,
 }
 
 impl PlayerCapability {
@@ -75,6 +77,7 @@ impl PlayerCapability {
             Self::Browse => "browse",
             Self::Favorites => "favorites",
             Self::DatabaseUpdate => "db_update",
+            Self::Killable => "killable",
         }
     }
 
@@ -102,6 +105,7 @@ impl PlayerCapability {
             Self::Browse,
             Self::Favorites,
             Self::DatabaseUpdate,
+            Self::Killable,
         ]
     }
 }

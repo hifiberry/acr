@@ -1,53 +1,30 @@
-# rust-debian-package
+# AudioControl/Rust (ACR)
 
-This project is a Rust application packaged for Debian. It includes both the source code for the application and the necessary files to create a Debian package.
+AudioControl/Rust (ACR) is the next-generation audio control software for HiFiBerry devices, designed as the successor to [audiocontrol2](https://github.com/hifiberry/audiocontrol2). This Rust implementation offers improved performance, reliability, and a more modular architecture compared to its Python predecessor.
 
-## Project Structure
+## Why a Rewrite?
 
-```
-rust-debian-package
-├── src
-│   ├── main.rs       # Entry point of the Rust application
-│   └── lib.rs        # Library code for reusable functions and modules
-├── debian
-│   ├── changelog     # Changelog for the Debian package
-│   ├── control       # Package metadata
-│   ├── copyright     # Copyright and licensing information
-│   ├── rules         # Makefile for building and installing the package
-│   └── compat        # Debhelper compatibility level
-├── Cargo.toml        # Rust project configuration
-├── Cargo.lock        # Dependency versions for reproducible builds
-├── build.rs          # Custom build script
-└── README.md         # Project documentation
-```
+As the original audiocontrol2 project grew in scope and complexity, it became increasingly difficult to maintain:
 
-## Building the Project
+- The Python codebase suffered from runtime type errors and fragility in production
+- Dynamic typing led to hard-to-diagnose issues that would often only appear at runtime
+- The lack of strict interfaces made it challenging to ensure consistent behavior across different player implementations
+- Concurrency issues and race conditions became more common as more features were added
+- The plugin architecture, while flexible, became unwieldy as the number of plugins increased
+- I wanted to learn Rust ;-)
 
-To build the Rust application, run the following command in the project root:
+This Rust implementation addresses these issues through strong static typing, a trait-based architecture, and better concurrency management, providing a more robust foundation for future development.
 
-```
-cargo build --release
-```
+## Features
 
-## Creating the Debian Package
+- Multi-player management with seamless switching between audio sources
+- Unified interface for controlling different player backends (MPD, etc.)
+- Event-based notification system for player state changes
+- Clean separation between audio player control and user interfaces
 
-To create the Debian package, navigate to the `debian` directory and run:
+## Architecture
 
-```
-dpkg-buildpackage -us -uc
-```
-
-This will generate a `.deb` file in the parent directory.
-
-## Installation
-
-Once the Debian package is created, you can install it using:
-
-```
-sudo dpkg -i ../<package-name>.deb
-```
-
-Replace `<package-name>` with the actual name of the generated package.
+AudioControl/Rust uses a player controller abstraction to handle different audio player backends uniformly. The AudioController acts as a manager for multiple PlayerController instances and provides a unified interface for client applications.
 
 ## License
 

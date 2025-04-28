@@ -2,7 +2,7 @@
 use serde::{Serialize, Deserialize};
 use strum_macros::EnumString;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, EnumString)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString)]
 #[serde(rename_all = "lowercase")]
 pub enum PlayerState {
     /// Player is actively playing media

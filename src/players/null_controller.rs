@@ -70,6 +70,14 @@ impl PlayerController for NullPlayerController {
         PlayerState::Stopped // Always return stopped state
     }
     
+    fn get_player_name(&self) -> String {
+        "null".to_string()
+    }
+    
+    fn get_player_id(&self) -> String {
+        "null".to_string()
+    }
+    
     fn send_command(&self, command: PlayerCommand) -> bool {
         info!("NullPlayerController: Command received (no action taken): {}", command);
         true // Always return success

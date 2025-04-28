@@ -3,7 +3,7 @@ mod player_controller;
 mod base_controller;
 mod mpd;
 mod null_controller;
-mod player_factory;
+pub mod player_factory;
 
 // Re-export the PlayerController trait and related components
 pub use player_controller::{PlayerController, PlayerStateListener};

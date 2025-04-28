@@ -1,6 +1,5 @@
 use crate::data::{PlayerCapability, Song, LoopMode, PlayerState, PlayerCommand};
 use std::sync::{Arc, Weak};
-use std::sync::atomic::AtomicBool;
 use std::any::Any;
 
 /// Trait for objects that listen to PlayerController state changes
@@ -45,6 +44,16 @@ pub trait PlayerController: Send + Sync {
     /// 
     /// Returns the current state of the player (playing, paused, stopped, etc.)
     fn get_player_state(&self) -> PlayerState;
+    
+    /// Get the name of this player controller
+    /// 
+    /// Returns a string identifier for this type of player (e.g., "mpd", "null")
+    fn get_player_name(&self) -> String;
+    
+    /// Get a unique identifier for this player instance
+    /// 
+    /// Returns a string that uniquely identifies this player instance
+    fn get_player_id(&self) -> String;
     
     /// Send a command to the player
     /// 

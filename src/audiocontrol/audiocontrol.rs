@@ -1,6 +1,10 @@
 use crate::players::PlayerController;
-use crate::data::PlayerCommand;
-use std::sync::{Arc, RwLock};
+use crate::data::{PlayerCommand, PlayerCapability, Song, LoopMode, PlayerState};
+use crate::players::{create_player_from_json, PlayerCreationError};
+use std::sync::{Arc, RwLock, Weak};
+use std::any::Any;
+use log::{debug, warn, error};
+use serde_json::Value;
 
 /// A simple AudioController that manages multiple PlayerController instances
 pub struct AudioController {
@@ -9,6 +13,112 @@ pub struct AudioController {
     
     /// Index of the active player controller in the list
     active_index: Option<usize>,
+}
+
+// Implement PlayerController for AudioController
+impl PlayerController for AudioController {
+    fn get_capabilities(&self) -> Vec<PlayerCapability> {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.get_capabilities();
+            }
+        }
+        Vec::new() // Return empty capabilities if no active controller
+    }
+    
+    fn get_song(&self) -> Option<Song> {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.get_song();
+            }
+        }
+        None // Return None if no active controller
+    }
+    
+    fn get_loop_mode(&self) -> LoopMode {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.get_loop_mode();
+            }
+        }
+        LoopMode::None // Default loop mode if no active controller
+    }
+    
+    fn get_player_state(&self) -> PlayerState {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.get_player_state();
+            }
+        }
+        PlayerState::Stopped // Default state if no active controller
+    }
+    
+    fn get_player_name(&self) -> String {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.get_player_name();
+            }
+        }
+        "audiocontroller".to_string() // Default name if no active controller
+    }
+    
+    fn get_player_id(&self) -> String {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.get_player_id();
+            }
+        }
+        "none".to_string() // Default ID if no active controller
+    }
+    
+    fn send_command(&self, command: PlayerCommand) -> bool {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.send_command(command);
+            }
+        }
+        false // Return false if no active controller
+    }
+    
+    fn register_state_listener(&mut self, listener: Weak<dyn crate::players::PlayerStateListener>) -> bool {
+        if let Some(idx) = self.active_index {
+            if let Ok(mut controller) = self.controllers[idx].write() {
+                return controller.register_state_listener(listener);
+            }
+        }
+        false // Return false if no active controller
+    }
+    
+    fn unregister_state_listener(&mut self, listener: &Arc<dyn crate::players::PlayerStateListener>) -> bool {
+        if let Some(idx) = self.active_index {
+            if let Ok(mut controller) = self.controllers[idx].write() {
+                return controller.unregister_state_listener(listener);
+            }
+        }
+        false // Return false if no active controller
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    
+    fn start(&self) -> bool {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.start();
+            }
+        }
+        false // Return false if no active controller
+    }
+    
+    fn stop(&self) -> bool {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.stop();
+            }
+        }
+        false // Return false if no active controller
+    }
 }
 
 impl AudioController {
@@ -116,6 +226,40 @@ impl AudioController {
         }
         
         success_count
+    }
+
+    /// Create a new AudioController from a JSON array of player configurations
+    /// 
+    /// Each element in the array should be a valid configuration for create_player_from_json
+    /// Returns a Result with the new AudioController or an error if any player creation failed
+    pub fn from_json(config: &Value) -> Result<Self, PlayerCreationError> {
+        if !config.is_array() {
+            return Err(PlayerCreationError::ParseError("Expected a JSON array".to_string()));
+        }
+
+        let mut controller = AudioController::new();
+        
+        let config_array = config.as_array().unwrap();
+        debug!("Creating AudioController from JSON array with {} elements", config_array.len());
+        
+        for (idx, player_config) in config_array.iter().enumerate() {
+            match create_player_from_json(player_config) {
+                Ok(player) => {
+                    debug!("Successfully created player {} from JSON configuration", idx);
+                    controller.add_controller(player);
+                },
+                Err(e) => {
+                    error!("Failed to create player {}: {}", idx, e);
+                    return Err(e);
+                }
+            }
+        }
+        
+        if controller.controllers.is_empty() {
+            warn!("No valid player controllers found in configuration");
+        }
+        
+        Ok(controller)
     }
 }
 

@@ -1,6 +1,7 @@
 use acr::data::{PlayerState, Song, LoopMode, PlayerCapability, PlayerCommand};
-use acr::players::{PlayerStateListener, MPDPlayer, NullPlayerController};
+use acr::players::{PlayerStateListener, PlayerController, MPDPlayer, NullPlayerController};
 use acr::players::create_player_from_json;
+use acr::AudioController;
 use std::sync::{Arc, Weak};
 use std::any::Any;
 use std::thread;
@@ -59,31 +60,34 @@ impl PlayerStateListener for EventLogger {
 
 fn main() {
     // Initialize the logger with default configuration
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+    env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
         .format_timestamp_secs()
         .init();
 
     info!("AudioControl3 (ACR) Player Controller Demo starting");
     println!("AudioControl3 (ACR) Player Controller Demo\n");
     
-    let player_config = json!({
-        "mpd": {
-            "host": "localhost",
-            "port": 6600
+    // Create a JSON array with player configurations
+    let controllers_config = json!([
+        {
+            "mpd": {
+                "host": "localhost",
+                "port": 6600
+            }
         }
-    });
+    ]);
     
-    // Example of creating a player controller from JSON
-    let player_result = create_player_from_json(&player_config);
-    let mut player = match player_result {
-        Ok(player) => {
-            info!("Successfully created player from JSON configuration");
-            player
+    // Create an AudioController from the JSON configuration
+    let audio_controller_result = AudioController::from_json(&controllers_config);
+    let mut player = match audio_controller_result {
+        Ok(controller) => {
+            info!("Successfully created AudioController from JSON configuration");
+            Box::new(controller) as Box<dyn PlayerController + Send + Sync>
         },
         Err(e) => {
-            warn!("Failed to create player from JSON: {}", e);
+            warn!("Failed to create AudioController from JSON: {}", e);
             info!("Falling back to NullPlayerController");
-            Box::new(NullPlayerController::new())
+            Box::new(NullPlayerController::new()) as Box<dyn PlayerController + Send + Sync>
         }
     };
     

@@ -599,6 +599,14 @@ impl PlayerController for MPDPlayer {
         PlayerState::Stopped
     }
     
+    fn get_player_name(&self) -> String {
+        "mpd".to_string()
+    }
+    
+    fn get_player_id(&self) -> String {
+        format!("{}:{}", self.hostname, self.port)
+    }
+    
     fn send_command(&self, command: PlayerCommand) -> bool {
         info!("Sending command to MPD: {}", command);
         

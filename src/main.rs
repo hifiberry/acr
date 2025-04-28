@@ -28,28 +28,30 @@ impl EventLogger {
 }
 
 impl PlayerStateListener for EventLogger {
-    fn on_state_changed(&self, state: PlayerState) {
-        info!("[{}] State changed: {}", self.name, state);
+    fn on_state_changed(&self, player_name: String, player_id: String, state: PlayerState) {
+        info!("[{}] Player {}:{} - State changed: {}", self.name, player_name, player_id, state);
     }
     
-    fn on_song_changed(&self, song: Option<Song>) {
-        info!("[{}] Song changed:", song.as_ref().map_or("None".to_string(), |s| s.title.clone().unwrap_or("Unknown".to_string())));
+    fn on_song_changed(&self, player_name: String, player_id: String, song: Option<Song>) {
         match song {
-            Some(s) => info!("[{}] Song changed: {} by {}", self.name, 
+            Some(s) => info!("[{}] Player {}:{} - Song changed: {} by {}", 
+                self.name,
+                player_name,
+                player_id,
                 s.title.as_deref().unwrap_or("Unknown"), 
                 s.artist.as_deref().unwrap_or("Unknown")),
-            None => info!("[{}] Song cleared", self.name),
+            None => info!("[{}] Player {}:{} - Song cleared", self.name, player_name, player_id),
         }
     }
     
-    fn on_loop_mode_changed(&self, mode: LoopMode) {
-        info!("[{}] Loop mode changed: {}", self.name, mode);
+    fn on_loop_mode_changed(&self, player_name: String, player_id: String, mode: LoopMode) {
+        info!("[{}] Player {}:{} - Loop mode changed: {}", self.name, player_name, player_id, mode);
     }
     
-    fn on_capabilities_changed(&self, capabilities: Vec<PlayerCapability>) {
-        info!("[{}] Capabilities changed:", self.name);
+    fn on_capabilities_changed(&self, player_name: String, player_id: String, capabilities: Vec<PlayerCapability>) {
+        info!("[{}] Player {}:{} - Capabilities changed:", self.name, player_name, player_id);
         for cap in capabilities {
-            debug!("[{}]   - {}", self.name, cap);
+            debug!("[{}] Player {}:{} - Capability: {}", self.name, player_name, player_id, cap);
         }
     }
     

@@ -20,7 +20,7 @@ impl NullPlayerController {
     pub fn new() -> Self {
         debug!("Creating new NullPlayerController");
         let player = Self {
-            base: BasePlayerController::new(),
+            base: BasePlayerController::with_player_info("null", "null"),
         };
         
         // Set default capabilities

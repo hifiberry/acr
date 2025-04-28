@@ -14,6 +14,12 @@ pub struct BasePlayerController {
     
     /// Current capabilities of the player
     capabilities: Arc<RwLock<Vec<PlayerCapability>>>,
+    
+    /// Player name identifier (e.g., "mpd", "null")
+    player_name: Arc<RwLock<String>>,
+    
+    /// Player unique ID (e.g., "hostname:port" for MPD)
+    player_id: Arc<RwLock<String>>,
 }
 
 impl BasePlayerController {
@@ -23,6 +29,59 @@ impl BasePlayerController {
         Self {
             listeners: Arc::new(RwLock::new(Vec::new())),
             capabilities: Arc::new(RwLock::new(Vec::new())),
+            player_name: Arc::new(RwLock::new("unknown".to_string())),
+            player_id: Arc::new(RwLock::new("unknown".to_string())),
+        }
+    }
+    
+    /// Initialize the controller with player name and ID
+    pub fn with_player_info(name: &str, id: &str) -> Self {
+        debug!("Creating BasePlayerController with name='{}', id='{}'", name, id);
+        Self {
+            listeners: Arc::new(RwLock::new(Vec::new())),
+            capabilities: Arc::new(RwLock::new(Vec::new())),
+            player_name: Arc::new(RwLock::new(name.to_string())),
+            player_id: Arc::new(RwLock::new(id.to_string())),
+        }
+    }
+    
+    /// Set the player name
+    pub fn set_player_name(&self, name: &str) {
+        if let Ok(mut player_name) = self.player_name.write() {
+            *player_name = name.to_string();
+            debug!("Player name set to '{}'", name);
+        } else {
+            warn!("Failed to acquire write lock when setting player name");
+        }
+    }
+    
+    /// Set the player ID
+    pub fn set_player_id(&self, id: &str) {
+        if let Ok(mut player_id) = self.player_id.write() {
+            *player_id = id.to_string();
+            debug!("Player ID set to '{}'", id);
+        } else {
+            warn!("Failed to acquire write lock when setting player ID");
+        }
+    }
+    
+    /// Get the player name
+    pub fn get_player_name(&self) -> String {
+        if let Ok(player_name) = self.player_name.read() {
+            player_name.clone()
+        } else {
+            warn!("Failed to acquire read lock for player name");
+            "unknown".to_string()
+        }
+    }
+    
+    /// Get the player ID
+    pub fn get_player_id(&self) -> String {
+        if let Ok(player_id) = self.player_id.read() {
+            player_id.clone()
+        } else {
+            warn!("Failed to acquire read lock for player ID");
+            "unknown".to_string()
         }
     }
     
@@ -115,14 +174,18 @@ impl BasePlayerController {
 
     /// Notify all registered listeners that the player state has changed
     pub fn notify_state_changed(&self, state: PlayerState) {
+        let player_name = self.get_player_name();
+        let player_id = self.get_player_id();
+        
         debug!("Notifying listeners of state change: {}", state);
         self.prune_dead_listeners();
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of state change", listeners.len());
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of state change");
-                    listener.on_state_changed(state);
+                    listener.on_state_changed(player_name.clone(), player_id.clone(), state);
                 }
             }
         } else {
@@ -132,6 +195,9 @@ impl BasePlayerController {
 
     /// Notify all listeners that the song has changed
     pub fn notify_song_changed(&self, song: Option<&Song>) {
+        let player_name = self.get_player_name();
+        let player_id = self.get_player_id();
+        
         debug!("Notifying listeners of song change");
         self.prune_dead_listeners();
         
@@ -143,7 +209,7 @@ impl BasePlayerController {
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of song change");
-                    listener.on_song_changed(song_copy.clone());
+                    listener.on_song_changed(player_name.clone(), player_id.clone(), song_copy.clone());
                 }
             }
         } else {
@@ -153,14 +219,18 @@ impl BasePlayerController {
 
     /// Notify all registered listeners that the loop mode has changed
     pub fn notify_loop_mode_changed(&self, mode: LoopMode) {
+        let player_name = self.get_player_name();
+        let player_id = self.get_player_id();
+        
         debug!("Notifying listeners of loop mode change: {}", mode);
         self.prune_dead_listeners();
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of loop mode change", listeners.len());
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of loop mode change");
-                    listener.on_loop_mode_changed(mode);
+                    listener.on_loop_mode_changed(player_name.clone(), player_id.clone(), mode);
                 }
             }
         } else {
@@ -170,6 +240,9 @@ impl BasePlayerController {
 
     /// Notify all listeners that the capabilities have changed
     pub fn notify_capabilities_changed(&self, capabilities: &[PlayerCapability]) {
+        let player_name = self.get_player_name();
+        let player_id = self.get_player_id();
+        
         debug!("Notifying listeners of capabilities change");
         self.prune_dead_listeners();
         
@@ -189,7 +262,7 @@ impl BasePlayerController {
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of capabilities change");
-                    listener.on_capabilities_changed(capabilities_vec.clone());
+                    listener.on_capabilities_changed(player_name.clone(), player_id.clone(), capabilities_vec.clone());
                 }
             }
         } else {

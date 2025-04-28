@@ -50,8 +50,11 @@ impl MPDPlayer {
         let host = "localhost";
         let port = 6600;
         
+        // Create a base controller with player name and ID
+        let base = BasePlayerController::with_player_info("mpd", &format!("{}:{}", host, port));
+        
         let player = Self {
-            base: BasePlayerController::new(),
+            base,
             hostname: host.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
@@ -67,8 +70,11 @@ impl MPDPlayer {
     pub fn with_connection(hostname: &str, port: u16) -> Self {
         debug!("Creating new MPDPlayer with connection {}:{}", hostname, port);
         
+        // Create a base controller with player name and ID
+        let base = BasePlayerController::with_player_info("mpd", &format!("{}:{}", hostname, port));
+        
         let player = Self {
-            base: BasePlayerController::new(),
+            base,
             hostname: hostname.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
@@ -359,7 +365,7 @@ impl MPDPlayer {
             
             // Notify listeners of the song change
             drop(current_song); // Release the lock before notifying
-            self.base.notify_song_changed(song.as_ref());
+            self.notify_song_changed(song.as_ref());
         }
     }
 
@@ -460,7 +466,7 @@ impl MPDPlayer {
                 // If any capabilities changed, send a single notification with all current capabilities
                 if capabilities_changed {
                     let current_caps = player.base.get_capabilities();
-                    player.base.notify_capabilities_changed(&current_caps);
+                    player.notify_capabilities_changed(&current_caps);
                     debug!("Player capabilities updated: Next={}, Previous={}, Seek={}", has_next, has_previous, is_seekable);
                 }
             },
@@ -491,7 +497,7 @@ impl MPDPlayer {
                 
                 if capabilities_changed {
                     let current_caps = player.base.get_capabilities();
-                    player.base.notify_capabilities_changed(&current_caps);
+                    player.notify_capabilities_changed(&current_caps);
                     debug!("Player capabilities updated: disabled Next/Previous/Seek due to error");
                 }
             }

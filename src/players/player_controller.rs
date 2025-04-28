@@ -5,16 +5,40 @@ use std::any::Any;
 /// Trait for objects that listen to PlayerController state changes
 pub trait PlayerStateListener: Send + Sync {
     /// Called when the player state changes
-    fn on_state_changed(&self, state: PlayerState);
+    /// 
+    /// # Arguments
+    /// 
+    /// * `player_name` - String identifier for the player type
+    /// * `player_id` - Unique identifier for the player instance
+    /// * `state` - The new state of the player
+    fn on_state_changed(&self, player_name: String, player_id: String, state: PlayerState);
     
     /// Called when the current song changes
-    fn on_song_changed(&self, song: Option<Song>);
+    /// 
+    /// # Arguments
+    /// 
+    /// * `player_name` - String identifier for the player type
+    /// * `player_id` - Unique identifier for the player instance
+    /// * `song` - The new song, or None if playback stopped
+    fn on_song_changed(&self, player_name: String, player_id: String, song: Option<Song>);
     
     /// Called when the loop mode changes
-    fn on_loop_mode_changed(&self, mode: LoopMode);
+    /// 
+    /// # Arguments
+    /// 
+    /// * `player_name` - String identifier for the player type
+    /// * `player_id` - Unique identifier for the player instance
+    /// * `mode` - The new loop mode
+    fn on_loop_mode_changed(&self, player_name: String, player_id: String, mode: LoopMode);
     
     /// Called when a player capability is added or removed
-    fn on_capabilities_changed(&self, capabilities: Vec<PlayerCapability>);
+    /// 
+    /// # Arguments
+    /// 
+    /// * `player_name` - String identifier for the player type
+    /// * `player_id` - Unique identifier for the player instance
+    /// * `capabilities` - The full list of current capabilities
+    fn on_capabilities_changed(&self, player_name: String, player_id: String, capabilities: Vec<PlayerCapability>);
     
     /// Convert to Any for dynamic casting
     fn as_any(&self) -> &dyn Any;

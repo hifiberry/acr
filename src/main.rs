@@ -7,6 +7,9 @@ use std::time::Duration;
 use std::io::{self, Write};
 use log::{debug, info, warn, error};
 use env_logger::Env;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc as StdArc;
+use ctrlc;
 
 /// Event Logger that implements the PlayerStateListener trait
 struct EventLogger {
@@ -61,7 +64,7 @@ fn main() {
     println!("AudioControl3 (ACR) MPD Controller Demo\n");
     
     // Create an MPD player controller
-    let mut mpd_player = MPDPlayer::with_connection("localhost", 8000);
+    let mut mpd_player = MPDPlayer::with_connection("localhost", 6600);
     println!("Created MPD controller with connection: {}:{}", 
         mpd_player.hostname(), mpd_player.port());
     
@@ -95,72 +98,27 @@ fn main() {
         None => info!("No song currently playing"),
     }
     
-    // Enter a simulation loop - in a real application this would be event-driven
-    info!("\nEntering event simulation loop. Press Ctrl+C to exit.");
-    info!("Simulating player events every few seconds...");
-    println!("\nEntering event simulation loop. Press Ctrl+C to exit.");
-    println!("Simulating player events every few seconds...");
+    // Set up a shared flag for graceful shutdown
+    let running = StdArc::new(AtomicBool::new(true));
+    let r = running.clone();
     
-    // Create a list of simulated commands to rotate through
-    let commands = [
-        PlayerCommand::Play,
-        PlayerCommand::Pause,
-        PlayerCommand::Next,
-        PlayerCommand::Previous,
-        PlayerCommand::SetLoopMode(LoopMode::Track),
-        PlayerCommand::SetLoopMode(LoopMode::Playlist),
-        PlayerCommand::SetLoopMode(LoopMode::None),
-        PlayerCommand::SetRandom(true),
-        PlayerCommand::SetRandom(false),
-    ];
+    // Set up Ctrl+C handler
+    ctrlc::set_handler(move || {
+        println!("\nReceived Ctrl+C, shutting down...");
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl+C handler");
     
-    let mut command_index = 0;
+    // Enter the event loop - listen for MPD events until Ctrl+C
+    info!("\nEntering MPD event listening loop. Press Ctrl+C to exit.");
+    println!("\nListening for MPD events. Press Ctrl+C to exit.");
     
-    // In a real application, we'd be listening for MPD events
-    // Here we're just simulating them in a loop
-    loop {
-        // Simulate sending a command
-        let command = &commands[command_index];
-        debug!("Sending command: {}", command);
-        print!("Sending command: {} ... ", command);
-        io::stdout().flush().unwrap();
-        
-        // Send the command to the player
-        mpd_player.send_command(commands[command_index].clone());
-        println!("done");
-        
-        // In a real implementation, the send_command would trigger state changes
-        // and those would fire notifications. Here we'll simulate those by directly
-        // triggering notifications for demonstration purposes.
-        
-        // Simulate a state change based on the command
-        match command {
-            PlayerCommand::Play => {
-                info!("Simulating state change to Playing");
-                println!("Simulating state change to Playing");
-                mpd_player.notify_state_changed(PlayerState::Playing);
-            },
-            PlayerCommand::Pause => {
-                info!("Simulating state change to Paused");
-                println!("Simulating state change to Paused");
-                mpd_player.notify_state_changed(PlayerState::Paused);
-            },
-            PlayerCommand::SetLoopMode(mode) => {
-                info!("Simulating loop mode change to {}", mode);
-                println!("Simulating loop mode change to {}", mode);
-                mpd_player.notify_loop_mode_changed(*mode);
-            },
-            _ => {
-                debug!("Command sent (no state change simulated)");
-                println!("Command sent (no state change simulated)");
-            }
-        }
-        
-        // Rotate to the next command for the next iteration
-        command_index = (command_index + 1) % commands.len();
-        
-        // Wait between simulated events
-        debug!("Waiting for {} seconds before next command", 3);
-        thread::sleep(Duration::from_secs(3));
+    // Start the event listener thread in the MPD player
+    mpd_player.start_event_listener(running.clone());
+    
+    // Keep the main thread alive until Ctrl+C is received
+    while running.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_millis(100));
     }
+    
+    info!("Exiting application");
 }

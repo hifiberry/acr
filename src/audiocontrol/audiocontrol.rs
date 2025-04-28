@@ -18,6 +18,10 @@ pub struct AudioController {
     
     /// List of state listeners registered with this controller
     listeners: Arc<RwLock<Vec<Weak<dyn PlayerStateListener>>>>,
+    
+    /// Self-reference for registering with players
+    /// This is wrapped in Option because it's initialized after construction
+    self_ref: Arc<RwLock<Option<Weak<AudioController>>>>,
 }
 
 // Implement PlayerController for AudioController
@@ -182,6 +186,18 @@ impl AudioController {
             controllers: Vec::new(),
             active_index: None,
             listeners: Arc::new(RwLock::new(Vec::new())),
+            self_ref: Arc::new(RwLock::new(None)),
+        }
+    }
+    
+    /// Initialize the controller with a strong reference to itself
+    pub fn initialize(controller: &Arc<AudioController>) {
+        let weak_ref = Arc::downgrade(controller);
+        if let Ok(mut self_ref) = controller.self_ref.write() {
+            *self_ref = Some(weak_ref);
+            debug!("AudioController self-reference initialized");
+        } else {
+            warn!("Failed to initialize AudioController self-reference");
         }
     }
     
@@ -189,13 +205,40 @@ impl AudioController {
     /// 
     /// If this is the first controller added, it becomes the active controller.
     pub fn add_controller(&mut self, controller: Box<dyn PlayerController + Send + Sync>) -> usize {
-        // Keep a reference to self to register as a listener
-        let self_ref = Arc::new(self.clone());
-        let self_weak = Arc::downgrade(&self_ref) as Weak<dyn PlayerStateListener>;
+        // Check if we have a self reference for listener registration
+        let self_weak = if let Ok(self_ref) = self.self_ref.read() {
+            if let Some(weak_ref) = self_ref.as_ref() {
+                weak_ref.clone() as Weak<dyn PlayerStateListener>
+            } else {
+                warn!("AudioController self-reference not initialized, cannot register as listener");
+                // Continue without registering as listener
+                let mut controller = controller;
+                let controller = Arc::new(RwLock::new(controller));
+                self.controllers.push(controller);
+                
+                if self.controllers.len() == 1 {
+                    self.active_index = Some(0);
+                }
+                
+                return self.controllers.len() - 1;
+            }
+        } else {
+            warn!("Failed to acquire read lock for self-reference, cannot register as listener");
+            // Continue without registering as listener
+            let mut controller = controller;
+            let controller = Arc::new(RwLock::new(controller));
+            self.controllers.push(controller);
+            
+            if self.controllers.len() == 1 {
+                self.active_index = Some(0);
+            }
+            
+            return self.controllers.len() - 1;
+        };
         
         // Register self as listener
         let mut controller = controller;
-        if controller.register_state_listener(self_weak.clone()) {
+        if controller.register_state_listener(self_weak) {
             debug!("AudioController registered as listener to player");
         } else {
             warn!("Failed to register AudioController as listener to player");
@@ -337,22 +380,29 @@ impl AudioController {
     /// 
     /// Each element in the array should be a valid configuration for create_player_from_json
     /// Returns a Result with the new AudioController or an error if any player creation failed
-    pub fn from_json(config: &Value) -> Result<Self, PlayerCreationError> {
+    pub fn from_json(config: &Value) -> Result<Arc<AudioController>, PlayerCreationError> {
         if !config.is_array() {
             return Err(PlayerCreationError::ParseError("Expected a JSON array".to_string()));
         }
 
-        let mut controller = AudioController::new();
+        // Create controller without players first
+        let controller = Arc::new(AudioController::new());
+        
+        // Initialize the self-reference
+        AudioController::initialize(&controller);
         
         let config_array = config.as_array().unwrap();
         debug!("Creating AudioController from JSON array with {} elements", config_array.len());
+        
+        // Get a mutable reference to add players
+        let controller_ref = unsafe { &mut *(Arc::as_ptr(&controller) as *mut AudioController) };
         
         for (idx, player_config) in config_array.iter().enumerate() {
             match create_player_from_json(player_config) {
                 Ok(player) => {
                     debug!("Successfully created player {} from JSON configuration", idx);
                     // Use add_controller to ensure the AudioController registers itself as a listener
-                    controller.add_controller(player);
+                    controller_ref.add_controller(player);
                 },
                 Err(e) => {
                     error!("Failed to create player {}: {}", idx, e);
@@ -361,7 +411,7 @@ impl AudioController {
             }
         }
         
-        if controller.controllers.is_empty() {
+        if controller_ref.controllers.is_empty() {
             warn!("No valid player controllers found in configuration");
         }
         

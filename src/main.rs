@@ -80,10 +80,12 @@ fn main() {
     
     // Create an AudioController from the JSON configuration
     let audio_controller_result = AudioController::from_json(&controllers_config);
-    let mut player = match audio_controller_result {
+    
+    // This will now contain an Arc<AudioController> with initialized self-reference
+    let controller = match audio_controller_result {
         Ok(controller) => {
             info!("Successfully created AudioController from JSON configuration");
-            Box::new(controller) as Box<dyn PlayerController + Send + Sync>
+            controller
         },
         Err(e) => {
             error!("Failed to create AudioController from JSON: {}", e);
@@ -91,6 +93,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    
+    // Wrap the AudioController in a Box that implements PlayerController
+    let mut player: Box<dyn PlayerController + Send + Sync> = Box::new(controller.as_ref().clone());
     
     // Let's determine what type of player we're using
     let player_type = if player.get_capabilities().contains(&PlayerCapability::Seek) {

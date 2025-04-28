@@ -103,23 +103,6 @@ impl MPDPlayer {
         ], false); // Don't notify on initialization
     }
     
-    /// Helper method to establish MPD connection
-    fn establish_connection(hostname: &str, port: u16) -> Option<Client<TcpStream>> {
-        debug!("Attempting to connect to MPD at {}:{}", hostname, port);
-        let addr = format!("{}:{}", hostname, port);
-        
-        match Client::connect(&addr) {
-            Ok(client) => {
-                info!("Successfully connected to MPD at {}:{}", hostname, port);
-                Some(client)
-            },
-            Err(e) => {
-                warn!("Failed to connect to MPD at {}:{}: {}", hostname, port, e);
-                None
-            }
-        }
-    }
-    
     /// Attempt to reconnect to the MPD server
     pub fn reconnect(&self) -> Result<(), MpdError> {
         let addr = format!("{}:{}", self.hostname, self.port);

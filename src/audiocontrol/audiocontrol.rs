@@ -1,18 +1,23 @@
 use crate::players::PlayerController;
+use crate::players::PlayerStateListener;
 use crate::data::{PlayerCommand, PlayerCapability, Song, LoopMode, PlayerState};
 use crate::players::{create_player_from_json, PlayerCreationError};
 use std::sync::{Arc, RwLock, Weak};
 use std::any::Any;
-use log::{debug, warn, error};
+use log::{debug, warn, error, info};
 use serde_json::Value;
 
 /// A simple AudioController that manages multiple PlayerController instances
+#[derive(Clone)]
 pub struct AudioController {
     /// List of player controllers
     controllers: Vec<Arc<RwLock<Box<dyn PlayerController + Send + Sync>>>>,
     
     /// Index of the active player controller in the list
     active_index: Option<usize>,
+    
+    /// List of state listeners registered with this controller
+    listeners: Arc<RwLock<Vec<Weak<dyn PlayerStateListener>>>>,
 }
 
 // Implement PlayerController for AudioController
@@ -81,21 +86,22 @@ impl PlayerController for AudioController {
     }
     
     fn register_state_listener(&mut self, listener: Weak<dyn crate::players::PlayerStateListener>) -> bool {
-        if let Some(idx) = self.active_index {
-            if let Ok(mut controller) = self.controllers[idx].write() {
-                return controller.register_state_listener(listener);
-            }
+        if let Ok(mut listeners) = self.listeners.write() {
+            listeners.push(listener);
+            true
+        } else {
+            false
         }
-        false // Return false if no active controller
     }
     
     fn unregister_state_listener(&mut self, listener: &Arc<dyn crate::players::PlayerStateListener>) -> bool {
-        if let Some(idx) = self.active_index {
-            if let Ok(mut controller) = self.controllers[idx].write() {
-                return controller.unregister_state_listener(listener);
-            }
+        if let Ok(mut listeners) = self.listeners.write() {
+            let original_len = listeners.len();
+            listeners.retain(|weak_ref| weak_ref.upgrade().map_or(false, |l| !Arc::ptr_eq(&l, listener)));
+            original_len != listeners.len()
+        } else {
+            false
         }
-        false // Return false if no active controller
     }
     
     fn as_any(&self) -> &dyn Any {
@@ -121,12 +127,61 @@ impl PlayerController for AudioController {
     }
 }
 
+// Implement PlayerStateListener for AudioController
+impl PlayerStateListener for AudioController {
+    fn on_state_changed(&self, player_name: String, player_id: String, state: PlayerState) {
+        // Check if the event is from the active player
+        if self.is_active_player(&player_name, &player_id) {
+            debug!("AudioController forwarding state change from active player {}: {}", player_id, state);
+            self.forward_state_changed(player_name, player_id, state);
+        } else {
+            debug!("AudioController ignoring state change from inactive player {}", player_id);
+        }
+    }
+    
+    fn on_song_changed(&self, player_name: String, player_id: String, song: Option<Song>) {
+        // Check if the event is from the active player
+        if self.is_active_player(&player_name, &player_id) {
+            let song_title = song.as_ref().map_or("None".to_string(), |s| s.title.as_deref().unwrap_or("Unknown").to_string());
+            debug!("AudioController forwarding song change from active player {}: {}", player_id, song_title);
+            self.forward_song_changed(player_name, player_id, song);
+        } else {
+            debug!("AudioController ignoring song change from inactive player {}", player_id);
+        }
+    }
+    
+    fn on_loop_mode_changed(&self, player_name: String, player_id: String, mode: LoopMode) {
+        // Check if the event is from the active player
+        if self.is_active_player(&player_name, &player_id) {
+            debug!("AudioController forwarding loop mode change from active player {}: {}", player_id, mode);
+            self.forward_loop_mode_changed(player_name, player_id, mode);
+        } else {
+            debug!("AudioController ignoring loop mode change from inactive player {}", player_id);
+        }
+    }
+    
+    fn on_capabilities_changed(&self, player_name: String, player_id: String, capabilities: Vec<PlayerCapability>) {
+        // Check if the event is from the active player
+        if self.is_active_player(&player_name, &player_id) {
+            debug!("AudioController forwarding capabilities change from active player {}", player_id);
+            self.forward_capabilities_changed(player_name, player_id, capabilities);
+        } else {
+            debug!("AudioController ignoring capabilities change from inactive player {}", player_id);
+        }
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 impl AudioController {
     /// Create a new AudioController with no controllers
     pub fn new() -> Self {
         Self {
             controllers: Vec::new(),
             active_index: None,
+            listeners: Arc::new(RwLock::new(Vec::new())),
         }
     }
     
@@ -134,6 +189,19 @@ impl AudioController {
     /// 
     /// If this is the first controller added, it becomes the active controller.
     pub fn add_controller(&mut self, controller: Box<dyn PlayerController + Send + Sync>) -> usize {
+        // Keep a reference to self to register as a listener
+        let self_ref = Arc::new(self.clone());
+        let self_weak = Arc::downgrade(&self_ref) as Weak<dyn PlayerStateListener>;
+        
+        // Register self as listener
+        let mut controller = controller;
+        if controller.register_state_listener(self_weak.clone()) {
+            debug!("AudioController registered as listener to player");
+        } else {
+            warn!("Failed to register AudioController as listener to player");
+        }
+        
+        // Wrap in Arc+RwLock and store
         let controller = Arc::new(RwLock::new(controller));
         self.controllers.push(controller);
         
@@ -179,12 +247,49 @@ impl AudioController {
     /// Set the active controller by index
     /// 
     /// Returns true if the active controller was changed, false if the index was invalid.
+    /// When the active controller changes, immediately notifies listeners about the 
+    /// new active controller's state, song, and capabilities.
     pub fn set_active_controller(&mut self, index: usize) -> bool {
         if index >= self.controllers.len() {
             return false;
         }
         
+        // Check if this is actually a change
+        if Some(index) == self.active_index {
+            debug!("Active controller already set to index {}", index);
+            return true;
+        }
+        
+        // Set the new active index
+        debug!("Changing active controller to index {}", index);
         self.active_index = Some(index);
+        
+        // Get current state of the new active player and notify listeners
+        if let Ok(controller) = self.controllers[index].read() {
+            let player_name = controller.get_player_name();
+            let player_id = controller.get_player_id();
+            
+            // Notify about current state
+            let state = controller.get_player_state();
+            debug!("Notifying about state of new active controller: {}", state);
+            self.forward_state_changed(player_name.clone(), player_id.clone(), state);
+            
+            // Notify about current song
+            let song = controller.get_song();
+            debug!("Notifying about song of new active controller");
+            self.forward_song_changed(player_name.clone(), player_id.clone(), song);
+            
+            // Notify about current loop mode
+            let loop_mode = controller.get_loop_mode();
+            debug!("Notifying about loop mode of new active controller: {}", loop_mode);
+            self.forward_loop_mode_changed(player_name.clone(), player_id.clone(), loop_mode);
+            
+            // Notify about current capabilities
+            let capabilities = controller.get_capabilities();
+            debug!("Notifying about {} capabilities of new active controller", capabilities.len());
+            self.forward_capabilities_changed(player_name, player_id, capabilities);
+        }
+        
         true
     }
     
@@ -246,6 +351,7 @@ impl AudioController {
             match create_player_from_json(player_config) {
                 Ok(player) => {
                     debug!("Successfully created player {} from JSON configuration", idx);
+                    // Use add_controller to ensure the AudioController registers itself as a listener
                     controller.add_controller(player);
                 },
                 Err(e) => {
@@ -260,6 +366,99 @@ impl AudioController {
         }
         
         Ok(controller)
+    }
+
+    /// Check if the given player name and ID match the active player
+    fn is_active_player(&self, player_name: &str, player_id: &str) -> bool {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.get_player_name() == player_name && 
+                       controller.get_player_id() == player_id;
+            }
+        }
+        false
+    }
+    
+    /// Forward state changed event to all registered listeners
+    fn forward_state_changed(&self, player_name: String, player_id: String, state: PlayerState) {
+        // Prune dead listeners
+        self.prune_dead_listeners();
+        
+        // Forward the event to all active listeners
+        if let Ok(listeners) = self.listeners.read() {
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    listener.on_state_changed(player_name.clone(), player_id.clone(), state);
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when forwarding state change");
+        }
+    }
+    
+    /// Forward song changed event to all registered listeners
+    fn forward_song_changed(&self, player_name: String, player_id: String, song: Option<Song>) {
+        // Prune dead listeners
+        self.prune_dead_listeners();
+        
+        // Forward the event to all active listeners
+        if let Ok(listeners) = self.listeners.read() {
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    listener.on_song_changed(player_name.clone(), player_id.clone(), song.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when forwarding song change");
+        }
+    }
+    
+    /// Forward loop mode changed event to all registered listeners
+    fn forward_loop_mode_changed(&self, player_name: String, player_id: String, mode: LoopMode) {
+        // Prune dead listeners
+        self.prune_dead_listeners();
+        
+        // Forward the event to all active listeners
+        if let Ok(listeners) = self.listeners.read() {
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    listener.on_loop_mode_changed(player_name.clone(), player_id.clone(), mode);
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when forwarding loop mode change");
+        }
+    }
+    
+    /// Forward capabilities changed event to all registered listeners
+    fn forward_capabilities_changed(&self, player_name: String, player_id: String, capabilities: Vec<PlayerCapability>) {
+        // Prune dead listeners
+        self.prune_dead_listeners();
+        
+        // Forward the event to all active listeners
+        if let Ok(listeners) = self.listeners.read() {
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    listener.on_capabilities_changed(player_name.clone(), player_id.clone(), capabilities.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when forwarding capabilities change");
+        }
+    }
+    
+    /// Remove any dead (dropped) listeners
+    fn prune_dead_listeners(&self) {
+        if let Ok(mut listeners) = self.listeners.write() {
+            let original_len = listeners.len();
+            listeners.retain(|weak_ref| weak_ref.upgrade().is_some());
+            let removed = original_len - listeners.len();
+            if removed > 0 {
+                debug!("Pruned {} dead listeners, remaining: {}", removed, listeners.len());
+            }
+        } else {
+            warn!("Failed to acquire write lock when pruning dead listeners");
+        }
     }
 }
 

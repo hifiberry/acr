@@ -1,13 +1,12 @@
 use acr::data::{PlayerState, Song, LoopMode, PlayerCapability, PlayerCommand};
-use acr::players::{PlayerStateListener, PlayerController, MPDPlayer, NullPlayerController};
-use acr::players::create_player_from_json;
+use acr::players::{PlayerStateListener, PlayerController};
 use acr::AudioController;
 use std::sync::{Arc, Weak};
 use std::any::Any;
 use std::thread;
 use std::time::Duration;
 use std::io::{self, Read};
-use log::{debug, info, warn};
+use log::{debug, info, warn, error};
 use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
@@ -87,9 +86,9 @@ fn main() {
             Box::new(controller) as Box<dyn PlayerController + Send + Sync>
         },
         Err(e) => {
-            warn!("Failed to create AudioController from JSON: {}", e);
-            info!("Falling back to NullPlayerController");
-            Box::new(NullPlayerController::new()) as Box<dyn PlayerController + Send + Sync>
+            error!("Failed to create AudioController from JSON: {}", e);
+            error!("Cannot continue without a valid AudioController. Terminating.");
+            std::process::exit(1);
         }
     };
     

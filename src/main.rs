@@ -29,7 +29,7 @@ impl PlayerStateListener for EventLogger {
         info!("[{}] State changed: {}", self.name, state);
     }
     
-    fn on_song_changed(&self, song: Option<&Song>) {
+    fn on_song_changed(&self, song: Option<Song>) {
         match song {
             Some(s) => info!("[{}] Song changed: {} by {}", self.name, 
                 s.title.as_deref().unwrap_or("Unknown"), 
@@ -42,7 +42,7 @@ impl PlayerStateListener for EventLogger {
         info!("[{}] Loop mode changed: {}", self.name, mode);
     }
     
-    fn on_capabilities_changed(&self, capabilities: &[PlayerCapability]) {
+    fn on_capabilities_changed(&self, capabilities: Vec<PlayerCapability>) {
         info!("[{}] Capabilities changed:", self.name);
         for cap in capabilities {
             debug!("[{}]   - {}", self.name, cap);
@@ -67,6 +67,9 @@ fn main() {
     let mut mpd_player = MPDPlayer::with_connection("localhost", 6600);
     println!("Created MPD controller with connection: {}:{}", 
         mpd_player.hostname(), mpd_player.port());
+    
+    // Initialize the singleton instance for event handling
+    mpd_player.init_instance();
     
     // Create an event logger and subscribe to player events
     let event_logger = Arc::new(EventLogger::new("MPDLogger"));

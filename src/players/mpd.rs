@@ -9,17 +9,9 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Once;
 use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
-
-// Static instance for singleton pattern
-static mut INSTANCE: Option<*mut MPDPlayer> = None;
-static INIT: Once = Once::new();
-lazy_static! {
-    static ref PLAYER_STATE: Mutex<HashMap<usize, Arc<AtomicBool>>> = Mutex::new(HashMap::new());
-}
 
 /// MPD player controller implementation
 pub struct MPDPlayer {
@@ -33,10 +25,26 @@ pub struct MPDPlayer {
     port: u16,
 
     /// MPD client connection
-    connection: Mutex<Option<Client<TcpStream>>>,
+    connection: Arc<Mutex<Option<Client<TcpStream>>>>,
     
     /// Current song information
-    current_song: Mutex<Option<Song>>,
+    current_song: Arc<Mutex<Option<Song>>>,
+}
+
+// Manually implement Clone for MPDPlayer
+impl Clone for MPDPlayer {
+    fn clone(&self) -> Self {
+        MPDPlayer {
+            // BasePlayerController doesn't need to be cloned with shared state
+            // Create a new instance instead
+            base: BasePlayerController::new(),
+            hostname: self.hostname.clone(),
+            port: self.port,
+            // Use Arc to share the mutex between clones
+            connection: Arc::clone(&self.connection),
+            current_song: Arc::clone(&self.current_song),
+        }
+    }
 }
 
 impl MPDPlayer {
@@ -51,8 +59,8 @@ impl MPDPlayer {
             base: BasePlayerController::new(),
             hostname: host.to_string(),
             port,
-            connection: Mutex::new(connection),
-            current_song: Mutex::new(None),
+            connection: Arc::new(Mutex::new(connection)),
+            current_song: Arc::new(Mutex::new(None)),
         }
     }
     
@@ -65,8 +73,8 @@ impl MPDPlayer {
             base: BasePlayerController::new(),
             hostname: hostname.to_string(),
             port,
-            connection: Mutex::new(connection),
-            current_song: Mutex::new(None),
+            connection: Arc::new(Mutex::new(connection)),
+            current_song: Arc::new(Mutex::new(None)),
         }
     }
     
@@ -176,7 +184,7 @@ impl MPDPlayer {
 
     /// Starts a background thread that listens for MPD events
     /// The thread will run until the running flag is set to false
-    fn start_event_listener(&self, running: Arc<AtomicBool>) {
+    fn start_event_listener(&self, running: Arc<AtomicBool>, self_arc: Arc<Self>) {
         let hostname = self.hostname.clone();
         let port = self.port;
         
@@ -185,13 +193,13 @@ impl MPDPlayer {
         // Spawn a new thread for event listening
         thread::spawn(move || {
             info!("MPD event listener thread started");
-            Self::run_event_loop(&hostname, port, running);
+            Self::run_event_loop(&hostname, port, running, self_arc);
             info!("MPD event listener thread shutting down");
         });
     }
 
     /// Main event loop for listening to MPD events
-    fn run_event_loop(hostname: &str, port: u16, running: Arc<AtomicBool>) {
+    fn run_event_loop(hostname: &str, port: u16, running: Arc<AtomicBool>, player_arc: Arc<Self>) {
         while running.load(Ordering::SeqCst) {
             // Try to establish a connection for idle mode
             let idle_addr = format!("{}:{}", hostname, port);
@@ -208,7 +216,7 @@ impl MPDPlayer {
             };
             
             // Process events until connection fails or shutdown requested
-            Self::process_events(idle_client, hostname, port, &running);
+            Self::process_events(idle_client, &running, &player_arc);
             
             // If we get here, either there was a connection error or the connection was lost
             if running.load(Ordering::SeqCst) {
@@ -218,7 +226,8 @@ impl MPDPlayer {
     }
     
     /// Process MPD events until connection fails or shutdown requested
-    fn process_events(mut idle_client: Client<TcpStream>, hostname: &str, port: u16, running: &Arc<AtomicBool>) {
+    fn process_events(mut idle_client: Client<TcpStream>, 
+                     running: &Arc<AtomicBool>, player: &Arc<Self>) {
         while running.load(Ordering::SeqCst) {
             let subsystems = match idle_client.idle(&[
                 Subsystem::Player,
@@ -255,31 +264,29 @@ impl MPDPlayer {
             
             info!("Received MPD events: {}", events_str.join(", "));
             
-            // We need to establish a new command connection since the idle connection
-            // is blocked waiting for events. MPD protocol doesn't allow commands during idle state.
-            match Client::connect(&format!("{}:{}", hostname, port)) {
-                Ok(mut cmd_client) => {
-                    // Process each subsystem event with our command connection
+            // Use the centralized connection function from the provided player Arc
+            if let Some(mut conn_guard) = player.get_or_reconnect_client() {
+                if let Some(ref mut cmd_client) = *conn_guard {
+                    // Process each subsystem event with our existing connection
                     for subsystem in events {
-                        Self::handle_subsystem_event(subsystem, &mut cmd_client);
+                        Self::handle_subsystem_event(subsystem, cmd_client, player.clone());
                     }
-                },
-                Err(e) => {
-                    warn!("Failed to connect for command processing: {}", e);
-                    // Don't break the event loop if we can't get a command connection,
-                    // just skip processing this batch of events
+                } else {
+                    warn!("No active connection available after reconnection attempt");
                 }
+            } else {
+                warn!("Failed to acquire connection lock for event processing");
             }
         }
     }
     
     /// Handle a specific MPD subsystem event
-    fn handle_subsystem_event(subsystem: Subsystem, client: &mut Client<TcpStream>) {
+    fn handle_subsystem_event(subsystem: Subsystem, client: &mut Client<TcpStream>, player: Arc<Self>) {
         match subsystem {
             Subsystem::Player => {
                 debug!("Player state changed");
                 // Pass the existing client connection to reuse it
-                Self::handle_player_event(client);
+                Self::handle_player_event(client, player);
             },
             Subsystem::Playlist => {
                 debug!("Playlist changed");
@@ -302,10 +309,7 @@ impl MPDPlayer {
     }
     
     /// Handle player events and log song information
-    fn handle_player_event(client: &mut Client<TcpStream>) {
-        // Get player instance to store the song update
-        let player = MPDPlayer::get_instance();
-        
+    fn handle_player_event(client: &mut Client<TcpStream>, player: Arc<Self>) {
         // Use the provided client connection instead of creating a new one
         match client.currentsong() {
             Ok(song_opt) => {
@@ -340,16 +344,12 @@ impl MPDPlayer {
                     }
                     
                     // Update stored song and notify listeners
-                    if let Some(player) = player {
-                        player.update_current_song(Some(song));
-                    }
+                    player.update_current_song(Some(song));
                 } else {
                     info!("No song currently playing");
                     
                     // Clear stored song and notify listeners
-                    if let Some(player) = player {
-                        player.update_current_song(None);
-                    }
+                    player.update_current_song(None);
                 }
             },
             Err(e) => warn!("Failed to get current song information: {}", e),
@@ -378,31 +378,6 @@ impl MPDPlayer {
         }
     }
     
-    /// Initialize the singleton instance
-    pub fn init_instance(&mut self) {
-        INIT.call_once(|| {
-            // Safety: We ensure this is only called once from a single thread
-            // during initialization
-            unsafe {
-                INSTANCE = Some(self as *mut MPDPlayer);
-            }
-        });
-        debug!("MPDPlayer singleton instance initialized");
-    }
-
-    /// Get access to the player instance for updating from events
-    fn get_instance() -> Option<&'static MPDPlayer> {
-        unsafe {
-            if let Some(instance) = INSTANCE {
-                // Safety: We ensure that the instance will not be deallocated
-                // while the program is running
-                Some(&*instance)
-            } else {
-                None
-            }
-        }
-    }
-    
     /// Update the current song and notify listeners
     fn update_current_song(&self, song: Option<Song>) {
         // Store the new song
@@ -424,6 +399,46 @@ impl MPDPlayer {
             self.base.notify_song_changed(song.as_ref());
         }
     }
+
+    /// Helper function to get an existing client connection or establish a new one if needed
+    /// Returns Some(client) if a connection is available or could be established, None otherwise
+    fn get_or_reconnect_client(&self) -> Option<std::sync::MutexGuard<Option<Client<TcpStream>>>> {
+        if let Ok(mut conn_guard) = self.connection.lock() {
+            // Check if we already have a connection
+            if conn_guard.is_none() {
+                debug!("No active connection found, attempting to reconnect");
+                
+                // Try to establish a new connection
+                let addr = format!("{}:{}", self.hostname, self.port);
+                match Client::connect(&addr) {
+                    Ok(client) => {
+                        debug!("Successfully reconnected to MPD at {}", addr);
+                        *conn_guard = Some(client);
+                    },
+                    Err(e) => {
+                        warn!("Failed to reconnect to MPD at {}: {}", addr, e);
+                    }
+                }
+            }
+            
+            // Return the guard whether or not we have a connection
+            Some(conn_guard)
+        } else {
+            error!("Failed to acquire connection lock");
+            None
+        }
+    }
+}
+
+/// Structure to store player state for each instance
+struct PlayerInstanceData {
+    running_flag: Arc<AtomicBool>
+}
+
+/// A map to store running state for each player instance
+type PlayerStateMap = HashMap<usize, PlayerInstanceData>;
+lazy_static! {
+    static ref PLAYER_STATE: Mutex<PlayerStateMap> = Mutex::new(HashMap::new());
 }
 
 impl PlayerController for MPDPlayer {
@@ -461,8 +476,8 @@ impl PlayerController for MPDPlayer {
         
         let mut success = false;
         
-        // Try to get a connection
-        if let Ok(mut conn_guard) = self.connection.lock() {
+        // Use the centralized function to get a connection or reconnect if needed
+        if let Some(mut conn_guard) = self.get_or_reconnect_client() {
             if let Some(ref mut client) = *conn_guard {
                 // Process the command based on its type
                 match command {
@@ -597,16 +612,7 @@ impl PlayerController for MPDPlayer {
                     // but we could trigger an immediate update here if needed
                 }
             } else {
-                // No active connection
-                warn!("Cannot send command to MPD: no active connection");
-                // Try to reconnect
-                if let Ok(new_client) = Client::connect(&format!("{}:{}", self.hostname, self.port)) {
-                    debug!("Reconnected to MPD");
-                    *conn_guard = Some(new_client);
-                    // Retry the command with the new connection
-                    drop(conn_guard); // Release the lock before recursion
-                    return self.send_command(command);
-                }
+                warn!("Cannot send command to MPD: no active connection after reconnection attempt");
             }
         } else {
             error!("Failed to acquire connection lock when sending command to MPD");
@@ -632,21 +638,26 @@ impl PlayerController for MPDPlayer {
     fn start(&self) -> bool {
         info!("Starting MPD player controller");
         
+        // Create a new Arc<Self> for thread-safe sharing of player instance
+        let player_arc = Arc::new(self.clone());
+        
         // Create a new running flag
         let running = Arc::new(AtomicBool::new(true));
         
         // Store the running flag in the MPD player instance
         if let Ok(mut state) = PLAYER_STATE.lock() {
-            if let Some(old_running) = state.get(&(self as *const _ as usize)) {
+            let instance_id = self as *const _ as usize;
+            
+            if let Some(data) = state.get(&instance_id) {
                 // Stop any existing thread
-                old_running.store(false, Ordering::SeqCst);
+                data.running_flag.store(false, Ordering::SeqCst);
             }
             
             // Start a new listener thread
-            self.start_event_listener(running.clone());
+            self.start_event_listener(running.clone(), player_arc.clone());
             
             // Store the running flag
-            state.insert(self as *const _ as usize, running);
+            state.insert(instance_id, PlayerInstanceData { running_flag: running });
             true
         } else {
             error!("Failed to acquire lock for player state");
@@ -659,8 +670,10 @@ impl PlayerController for MPDPlayer {
         
         // Signal the event listener thread to stop
         if let Ok(mut state) = PLAYER_STATE.lock() {
-            if let Some(running) = state.remove(&(self as *const _ as usize)) {
-                running.store(false, Ordering::SeqCst);
+            let instance_id = self as *const _ as usize;
+            
+            if let Some(data) = state.remove(&instance_id) {
+                data.running_flag.store(false, Ordering::SeqCst);
                 debug!("Signaled event listener thread to stop");
                 return true;
             }

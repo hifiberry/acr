@@ -384,7 +384,7 @@ impl MPDPlayer {
     /// Update player capabilities based on the current MPD status
     /// 
     /// Checks the playlist status to determine if Next/Previous capabilities should be enabled
-    fn update_capabilities_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>) {
+    fn update_capabilities_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>, song: Option<Song>) {
         debug!("Updating player capabilities based on MPD status");
         
         // Try to get current status to determine playlist position
@@ -421,12 +421,47 @@ impl MPDPlayer {
                     has_previous, 
                     false // Don't notify yet
                 );
+
+                // Check if the current song is seekable
+                let is_seekable = match song {
+                    Some(song) => {
+                        // Check if the song has a duration
+                        if let Some(duration) = song.duration {
+                            // Check if the file is not a streaming URL
+                            // Common streaming URLs start with http://, https://, or contain specific keywords
+                            let file_path = song.stream_url.as_deref().unwrap_or("");
+                            let is_stream = file_path.starts_with("http://") ||
+                                           file_path.starts_with("https://") ||
+                                           file_path.contains("://");
+                            
+                            // Seekable if it has duration and is not a stream
+                            let seekable = duration > 0.0 && !is_stream;
+                            debug!("Song seekability check: duration={:?}s, is_stream={}, seekable={}", 
+                                  duration, is_stream, seekable);
+                            seekable
+                        } else {
+                            debug!("Song has no duration, not seekable");
+                            false
+                        }
+                    },
+                    None => {
+                        debug!("No current song or error getting song info, marking as not seekable");
+                        false
+                    }
+                };
+                
+                // Update Seek capability based on our assessment
+                capabilities_changed |= player.base.set_capability(
+                    PlayerCapability::Seek,
+                    is_seekable,
+                    false // Don't notify yet
+                );
                 
                 // If any capabilities changed, send a single notification with all current capabilities
                 if capabilities_changed {
                     let current_caps = player.base.get_capabilities();
                     player.base.notify_capabilities_changed(&current_caps);
-                    debug!("Player capabilities updated: Next={}, Previous={}", has_next, has_previous);
+                    debug!("Player capabilities updated: Next={}, Previous={}, Seek={}", has_next, has_previous, is_seekable);
                 }
             },
             Err(e) => {
@@ -446,11 +481,18 @@ impl MPDPlayer {
                     false, 
                     false // Don't notify yet
                 );
+
+                // Also disable seek capability when there's an error
+                capabilities_changed |= player.base.set_capability(
+                    PlayerCapability::Seek,
+                    false,
+                    false // Don't notify yet
+                );
                 
                 if capabilities_changed {
                     let current_caps = player.base.get_capabilities();
                     player.base.notify_capabilities_changed(&current_caps);
-                    debug!("Player capabilities updated: disabled Next/Previous due to error");
+                    debug!("Player capabilities updated: disabled Next/Previous/Seek due to error");
                 }
             }
         }
@@ -477,6 +519,9 @@ impl MPDPlayer {
     
     /// Update the player's current song from MPD
     fn update_song_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>) {
+        // Variable to store the obtained song for later use in updating capabilities
+        let mut obtained_song: Option<Song> = None;
+        
         // Use the provided client connection
         match client.currentsong() {
             Ok(song_opt) => {
@@ -496,6 +541,9 @@ impl MPDPlayer {
                         debug!("Position: {} in queue", track);
                     }
                     
+                    // Store the song for capability update
+                    obtained_song = Some(song.clone());
+                    
                     // Update stored song and notify listeners
                     player.update_current_song(Some(song));
                 } else {
@@ -508,8 +556,8 @@ impl MPDPlayer {
             Err(e) => warn!("Failed to get current song information: {}", e),
         }
         
-        // Also update player capabilities based on the current playlist state
-        Self::update_capabilities_from_mpd(client, player);
+        // Update player capabilities based on the current playlist state and the song we just got
+        Self::update_capabilities_from_mpd(client, player, obtained_song);
     }
 }
 

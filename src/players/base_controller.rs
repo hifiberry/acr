@@ -38,16 +38,20 @@ impl BasePlayerController {
         }
     }
 
-    /// Notify all registered listeners that the current song has changed
+    /// Notify all listeners that the song has changed
     pub fn notify_song_changed(&self, song: Option<&Song>) {
-        debug!("Notifying listeners of song change: {:?}", song.map(|s| s.title.as_deref().unwrap_or("Unknown")));
+        debug!("Notifying listeners of song change");
         self.prune_dead_listeners();
+        
+        // Create a cloned version of the song to pass to listeners
+        let song_copy = song.cloned();
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of song change", listeners.len());
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of song change");
-                    listener.on_song_changed(song);
+                    listener.on_song_changed(song_copy.clone());
                 }
             }
         } else {
@@ -72,16 +76,20 @@ impl BasePlayerController {
         }
     }
 
-    /// Notify all registered listeners that the capabilities have changed
+    /// Notify all listeners that the capabilities have changed
     pub fn notify_capabilities_changed(&self, capabilities: &[PlayerCapability]) {
         debug!("Notifying listeners of capabilities change");
         self.prune_dead_listeners();
+        
+        // Create a copied vector for each listener
+        let capabilities_vec = capabilities.to_vec();
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of capabilities change", listeners.len());
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of capabilities change");
-                    listener.on_capabilities_changed(capabilities);
+                    listener.on_capabilities_changed(capabilities_vec.clone());
                 }
             }
         } else {

@@ -315,50 +315,8 @@ impl MPDPlayer {
     
     /// Handle player events and log song information
     fn handle_player_event(client: &mut Client<TcpStream>, player: Arc<Self>) {
-        // Use the provided client connection instead of creating a new one
-        match client.currentsong() {
-            Ok(song_opt) => {
-                if let Some(mpd_song) = song_opt {
-                    // Convert MPD song to our Song format
-                    let song = Song {
-                        title: mpd_song.title,
-                        artist: mpd_song.artist,
-                        album: None,
-                        album_artist: None,
-                        track_number: mpd_song.place.as_ref().map(|p| p.pos as i32),
-                        total_tracks: None,
-                        duration: mpd_song.duration.map(|d| d.as_secs_f32() as f64),
-                        genre: None,
-                        year: None,
-                        cover_art_url: None,
-                        stream_url: Some(mpd_song.file),
-                        source: Some("mpd".to_string()),
-                        metadata: HashMap::new(),
-                    };
-                    
-                    info!("Now playing: {} - {}", 
-                        song.title.as_deref().unwrap_or("Unknown"),
-                        song.artist.as_deref().unwrap_or("Unknown"));
-                    
-                    // Log additional song details if available
-                    if let Some(duration) = mpd_song.duration {
-                        debug!("Duration: {:.1} seconds", duration.as_secs_f32());
-                    }
-                    if let Some(place) = mpd_song.place {
-                        debug!("Position: {} in queue", place.pos);
-                    }
-                    
-                    // Update stored song and notify listeners
-                    player.update_current_song(Some(song));
-                } else {
-                    info!("No song currently playing");
-                    
-                    // Clear stored song and notify listeners
-                    player.update_current_song(None);
-                }
-            },
-            Err(e) => warn!("Failed to get current song information: {}", e),
-        }
+        // Update the song information and capabilities
+        Self::update_song_from_mpd(client, player.clone());
         
         // Also log the player state
         match client.status() {
@@ -421,6 +379,137 @@ impl MPDPlayer {
                 None
             }
         }
+    }
+    
+    /// Update player capabilities based on the current MPD status
+    /// 
+    /// Checks the playlist status to determine if Next/Previous capabilities should be enabled
+    fn update_capabilities_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>) {
+        debug!("Updating player capabilities based on MPD status");
+        
+        // Try to get current status to determine playlist position
+        match client.status() {
+            Ok(status) => {
+                // Total songs in playlist
+                let queue_len = status.queue_len;
+                
+                // Current song position (0-indexed)
+                let current_pos = status.song.map(|s| s.pos).unwrap_or(0);
+                
+                // Check if we have a next song
+                let has_next = current_pos + 1 < queue_len;
+                
+                // Check if we have a previous song
+                let has_previous = current_pos > 0;
+                
+                debug!("Playlist status: position {}/{}, has_next={}, has_previous={}", 
+                       current_pos, queue_len, has_next, has_previous);
+                
+                // Update capabilities without sending notifications yet
+                let mut capabilities_changed = false;
+                
+                // Update Next capability if needed
+                capabilities_changed |= player.base.set_capability(
+                    PlayerCapability::Next, 
+                    has_next, 
+                    false // Don't notify yet
+                );
+                
+                // Update Previous capability if needed
+                capabilities_changed |= player.base.set_capability(
+                    PlayerCapability::Previous, 
+                    has_previous, 
+                    false // Don't notify yet
+                );
+                
+                // If any capabilities changed, send a single notification with all current capabilities
+                if capabilities_changed {
+                    let current_caps = player.base.get_capabilities();
+                    player.base.notify_capabilities_changed(&current_caps);
+                    debug!("Player capabilities updated: Next={}, Previous={}", has_next, has_previous);
+                }
+            },
+            Err(e) => {
+                warn!("Failed to get MPD status for capability update: {}", e);
+                
+                // If we can't get status, disable navigation capabilities
+                let mut capabilities_changed = false;
+                
+                capabilities_changed |= player.base.set_capability(
+                    PlayerCapability::Next, 
+                    false, 
+                    false // Don't notify yet
+                );
+                
+                capabilities_changed |= player.base.set_capability(
+                    PlayerCapability::Previous, 
+                    false, 
+                    false // Don't notify yet
+                );
+                
+                if capabilities_changed {
+                    let current_caps = player.base.get_capabilities();
+                    player.base.notify_capabilities_changed(&current_caps);
+                    debug!("Player capabilities updated: disabled Next/Previous due to error");
+                }
+            }
+        }
+    }
+    
+    /// Convert an MPD song to our Song format
+    fn convert_mpd_song(mpd_song: mpd::Song) -> Song {
+        Song {
+            title: mpd_song.title,
+            artist: mpd_song.artist,
+            album: None,
+            album_artist: None,
+            track_number: mpd_song.place.as_ref().map(|p| p.pos as i32),
+            total_tracks: None,
+            duration: mpd_song.duration.map(|d| d.as_secs_f32() as f64),
+            genre: None,
+            year: None,
+            cover_art_url: None,
+            stream_url: Some(mpd_song.file),
+            source: Some("mpd".to_string()),
+            metadata: HashMap::new(),
+        }
+    }
+    
+    /// Update the player's current song from MPD
+    fn update_song_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>) {
+        // Use the provided client connection
+        match client.currentsong() {
+            Ok(song_opt) => {
+                if let Some(mpd_song) = song_opt {
+                    // Convert MPD song to our Song format
+                    let song = Self::convert_mpd_song(mpd_song);
+                    
+                    info!("Now playing: {} - {}", 
+                        song.title.as_deref().unwrap_or("Unknown"),
+                        song.artist.as_deref().unwrap_or("Unknown"));
+                    
+                    // Log additional song details if available
+                    if let Some(duration) = song.duration {
+                        debug!("Duration: {:.1} seconds", duration);
+                    }
+                    if let Some(track) = song.track_number {
+                        debug!("Position: {} in queue", track);
+                    }
+                    
+                    // Update stored song and notify listeners
+                    player.update_current_song(Some(song));
+                } else {
+                    info!("No song currently playing");
+                    
+                    // Clear stored song and notify listeners
+                    player.update_current_song(None);
+                }
+            },
+            Err(e) => warn!("Failed to get current song information: {}", e),
+        }
+        
+        // Also update player capabilities based on the current playlist state
+        Self::update_capabilities_from_mpd(client, player);
     }
 }
 
@@ -619,6 +708,15 @@ impl PlayerController for MPDPlayer {
         
         // Create a new running flag
         let running = Arc::new(AtomicBool::new(true));
+        
+        // Try to get the current song from MPD first
+        if let Some(mut client) = self.get_fresh_client() {
+            // Initialize song state and capabilities
+            info!("Fetching initial song state from MPD");
+            Self::update_song_from_mpd(&mut client, player_arc.clone());
+        } else {
+            warn!("Could not connect to MPD to fetch initial song state");
+        }
         
         // Store the running flag in the MPD player instance
         if let Ok(mut state) = PLAYER_STATE.lock() {

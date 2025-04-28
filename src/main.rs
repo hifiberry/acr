@@ -32,6 +32,7 @@ impl PlayerStateListener for EventLogger {
     }
     
     fn on_song_changed(&self, song: Option<Song>) {
+        info!("[{}] Song changed:", song.as_ref().map_or("None".to_string(), |s| s.title.clone().unwrap_or("Unknown".to_string())));
         match song {
             Some(s) => info!("[{}] Song changed: {} by {}", self.name, 
                 s.title.as_deref().unwrap_or("Unknown"), 
@@ -65,10 +66,6 @@ fn main() {
     info!("AudioControl3 (ACR) Player Controller Demo starting");
     println!("AudioControl3 (ACR) Player Controller Demo\n");
     
-    // You can either create a player directly:
-    // let mut player = MPDPlayer::with_connection("localhost", 6600);
-    
-    // Or create one from JSON configuration:
     let player_config = json!({
         "mpd": {
             "host": "localhost",
@@ -89,13 +86,6 @@ fn main() {
             Box::new(NullPlayerController::new())
         }
     };
-    
-    // Can also create from a JSON string
-    // let json_str = r#"{"mpd": {"host": "localhost", "port": 6600}}"#;
-    // let player = create_player_from_json_str(json_str).unwrap_or_else(|e| {
-    //     warn!("Failed to create player from JSON string: {}", e);
-    //     Box::new(NullPlayerController::new())
-    // });
     
     // Let's determine what type of player we're using
     let player_type = if player.get_capabilities().contains(&PlayerCapability::Seek) {

@@ -1,0 +1,9 @@
+Package: rust-debian-package
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: any
+Depends: rustc, cargo
+Maintainer: Your Name <youremail@example.com>
+Description: A simple Rust application packaged for Debian
+ This is a simple Rust application that demonstrates how to create a Debian package from a Rust project.

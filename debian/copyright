@@ -1,0 +1,9 @@
+Files: /rust-debian-package/rust-debian-package/debian/copyright
+
+Format: 
+Copyright (C) [year] [name]
+License: [license]
+
+Content:
+Copyright (C) 2023 Your Name
+License: MIT

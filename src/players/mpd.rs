@@ -1,8 +1,10 @@
 use crate::players::base_controller::BasePlayerController;
 use crate::players::player_controller::PlayerController;
 use crate::data::{PlayerCapability, Song, LoopMode, PlayerState, PlayerCommand};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Weak, Mutex};
 use log::{debug, info, warn, error};
+use mpd::{Client, error::Error as MpdError};
+use std::net::TcpStream;
 
 /// MPD player controller implementation
 pub struct MPDPlayer {
@@ -14,27 +16,94 @@ pub struct MPDPlayer {
     
     /// MPD server port
     port: u16,
+
+    /// MPD client connection
+    connection: Mutex<Option<Client<TcpStream>>>,
 }
 
 impl MPDPlayer {
     /// Create a new MPD player controller with default settings
     pub fn new() -> Self {
         debug!("Creating new MPDPlayer with default settings");
+        let host = "localhost";
+        let port = 8000;
+        let connection = Self::establish_connection(host, port);
+        
         Self {
             base: BasePlayerController::new(),
-            hostname: "localhost".to_string(),
-            port: 8000,
+            hostname: host.to_string(),
+            port,
+            connection: Mutex::new(connection),
         }
     }
     
     /// Create a new MPD player controller with custom settings
     pub fn with_connection(hostname: &str, port: u16) -> Self {
         debug!("Creating new MPDPlayer with connection {}:{}", hostname, port);
+        let connection = Self::establish_connection(hostname, port);
+        
         Self {
             base: BasePlayerController::new(),
             hostname: hostname.to_string(),
             port,
+            connection: Mutex::new(connection),
         }
+    }
+    
+    /// Helper method to establish MPD connection
+    fn establish_connection(hostname: &str, port: u16) -> Option<Client<TcpStream>> {
+        debug!("Attempting to connect to MPD at {}:{}", hostname, port);
+        let addr = format!("{}:{}", hostname, port);
+        
+        match Client::connect(&addr) {
+            Ok(client) => {
+                info!("Successfully connected to MPD at {}:{}", hostname, port);
+                Some(client)
+            },
+            Err(e) => {
+                warn!("Failed to connect to MPD at {}:{}: {}", hostname, port, e);
+                None
+            }
+        }
+    }
+    
+    /// Attempt to reconnect to the MPD server
+    pub fn reconnect(&self) -> Result<(), MpdError> {
+        let addr = format!("{}:{}", self.hostname, self.port);
+        debug!("Attempting to reconnect to MPD at {}", addr);
+        
+        match Client::connect(&addr) {
+            Ok(client) => {
+                let mut conn = self.connection.lock().unwrap();
+                *conn = Some(client);
+                info!("Successfully reconnected to MPD at {}", addr);
+                Ok(())
+            },
+            Err(e) => {
+                warn!("Failed to reconnect to MPD at {}: {}", addr, e);
+                Err(e)
+            }
+        }
+    }
+    
+    /// Check if connected to MPD server
+    pub fn is_connected(&self) -> bool {
+        if let Ok(mut conn) = self.connection.lock() {
+            if let Some(ref mut client) = *conn {
+                // Try a simple ping to verify the connection
+                match client.ping() {
+                    Ok(_) => {
+                        debug!("MPD connection is active");
+                        return true;
+                    },
+                    Err(e) => {
+                        debug!("MPD connection lost: {}", e);
+                        return false;
+                    }
+                }
+            }
+        }
+        false
     }
     
     /// Get the current MPD server hostname
@@ -47,11 +116,17 @@ impl MPDPlayer {
         self.port
     }
     
-    /// Update the connection settings
+    /// Update the connection settings and reconnect
     pub fn set_connection(&mut self, hostname: &str, port: u16) {
         debug!("Updating MPD connection to {}:{}", hostname, port);
         self.hostname = hostname.to_string();
         self.port = port;
+        
+        // Try to establish a new connection with updated settings
+        let connection = Self::establish_connection(hostname, port);
+        if let Ok(mut conn) = self.connection.lock() {
+            *conn = connection;
+        }
     }
     
     /// Helper method for simulating state changes (for demo purposes)

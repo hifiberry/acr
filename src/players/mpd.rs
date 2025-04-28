@@ -11,10 +11,15 @@ use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use std::collections::HashMap;
+use std::any::Any;
+use lazy_static::lazy_static;
 
 // Static instance for singleton pattern
 static mut INSTANCE: Option<*mut MPDPlayer> = None;
 static INIT: Once = Once::new();
+lazy_static! {
+    static ref PLAYER_STATE: Mutex<HashMap<usize, Arc<AtomicBool>>> = Mutex::new(HashMap::new());
+}
 
 /// MPD player controller implementation
 pub struct MPDPlayer {
@@ -171,7 +176,7 @@ impl MPDPlayer {
 
     /// Starts a background thread that listens for MPD events
     /// The thread will run until the running flag is set to false
-    pub fn start_event_listener(&self, running: Arc<AtomicBool>) {
+    fn start_event_listener(&self, running: Arc<AtomicBool>) {
         let hostname = self.hostname.clone();
         let port = self.port;
         
@@ -618,5 +623,50 @@ impl PlayerController for MPDPlayer {
     fn unregister_state_listener(&mut self, listener: &Arc<dyn crate::players::player_controller::PlayerStateListener>) -> bool {
         debug!("Unregistering state listener from MPDPlayer");
         self.base.unregister_listener(listener)
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn start(&self) -> bool {
+        info!("Starting MPD player controller");
+        
+        // Create a new running flag
+        let running = Arc::new(AtomicBool::new(true));
+        
+        // Store the running flag in the MPD player instance
+        if let Ok(mut state) = PLAYER_STATE.lock() {
+            if let Some(old_running) = state.get(&(self as *const _ as usize)) {
+                // Stop any existing thread
+                old_running.store(false, Ordering::SeqCst);
+            }
+            
+            // Start a new listener thread
+            self.start_event_listener(running.clone());
+            
+            // Store the running flag
+            state.insert(self as *const _ as usize, running);
+            true
+        } else {
+            error!("Failed to acquire lock for player state");
+            false
+        }
+    }
+    
+    fn stop(&self) -> bool {
+        info!("Stopping MPD player controller");
+        
+        // Signal the event listener thread to stop
+        if let Ok(mut state) = PLAYER_STATE.lock() {
+            if let Some(running) = state.remove(&(self as *const _ as usize)) {
+                running.store(false, Ordering::SeqCst);
+                debug!("Signaled event listener thread to stop");
+                return true;
+            }
+        }
+        
+        debug!("No active event listener thread found");
+        false
     }
 }

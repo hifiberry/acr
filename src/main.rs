@@ -1,15 +1,17 @@
 use acr::data::{PlayerState, Song, LoopMode, PlayerCapability, PlayerCommand};
-use acr::players::{PlayerController, PlayerStateListener, MPDPlayer};
+use acr::players::{PlayerStateListener, MPDPlayer, NullPlayerController};
+use acr::players::create_player_from_json;
 use std::sync::{Arc, Weak};
 use std::any::Any;
 use std::thread;
 use std::time::Duration;
-use std::io::{self, Read, Write};
-use log::{debug, info, warn, error};
+use std::io::{self, Read};
+use log::{debug, info, warn};
 use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
 use ctrlc;
+use serde_json::json;
 
 /// Event Logger that implements the PlayerStateListener trait
 struct EventLogger {
@@ -60,23 +62,63 @@ fn main() {
         .format_timestamp_secs()
         .init();
 
-    info!("AudioControl3 (ACR) MPD Controller Demo starting");
-    println!("AudioControl3 (ACR) MPD Controller Demo\n");
+    info!("AudioControl3 (ACR) Player Controller Demo starting");
+    println!("AudioControl3 (ACR) Player Controller Demo\n");
     
-    // Create an MPD player controller
-    let mut mpd_player = MPDPlayer::with_connection("localhost", 6600);
-    println!("Created MPD controller with connection: {}:{}", 
-        mpd_player.hostname(), mpd_player.port());
+    // You can either create a player directly:
+    // let mut player = MPDPlayer::with_connection("localhost", 6600);
     
-    // Initialize the singleton instance for event handling
-    mpd_player.init_instance();
+    // Or create one from JSON configuration:
+    let player_config = json!({
+        "mpd": {
+            "host": "localhost",
+            "port": 6600
+        }
+    });
+    
+    // Example of creating a player controller from JSON
+    let player_result = create_player_from_json(&player_config);
+    let mut player = match player_result {
+        Ok(player) => {
+            info!("Successfully created player from JSON configuration");
+            player
+        },
+        Err(e) => {
+            warn!("Failed to create player from JSON: {}", e);
+            info!("Falling back to NullPlayerController");
+            Box::new(NullPlayerController::new())
+        }
+    };
+    
+    // Can also create from a JSON string
+    // let json_str = r#"{"mpd": {"host": "localhost", "port": 6600}}"#;
+    // let player = create_player_from_json_str(json_str).unwrap_or_else(|e| {
+    //     warn!("Failed to create player from JSON string: {}", e);
+    //     Box::new(NullPlayerController::new())
+    // });
+    
+    // Let's determine what type of player we're using
+    let player_type = if player.get_capabilities().contains(&PlayerCapability::Seek) {
+        "Full-featured player"
+    } else {
+        "Basic player"
+    };
+    println!("Using {} with {} capabilities", player_type, player.get_capabilities().len());
+    
+    // Start the player directly through the trait interface
+    // No need to downcast to specific implementation
+    if player.start() {
+        info!("Player initialized and started successfully");
+    } else {
+        warn!("Failed to start player");
+    }
     
     // Create an event logger and subscribe to player events
-    let event_logger = Arc::new(EventLogger::new("MPDLogger"));
+    let event_logger = Arc::new(EventLogger::new("PlayerLogger"));
     let weak_logger = Arc::downgrade(&event_logger) as Weak<dyn PlayerStateListener>;
     
     // Register the logger with the player
-    if mpd_player.register_state_listener(weak_logger) {
+    if player.register_state_listener(weak_logger) {
         println!("Successfully registered event listener");
     } else {
         println!("Failed to register event listener");
@@ -84,17 +126,17 @@ fn main() {
     
     // Get initial state information and log it
     info!("\nInitial player state:");
-    info!("State: {}", mpd_player.get_player_state());
+    info!("State: {}", player.get_player_state());
     
-    let capabilities = mpd_player.get_capabilities();
+    let capabilities = player.get_capabilities();
     info!("Capabilities:");
     for cap in &capabilities {
         debug!("  - {}", cap);
     }
     
-    info!("Loop mode: {}", mpd_player.get_loop_mode());
+    info!("Loop mode: {}", player.get_loop_mode());
     
-    match mpd_player.get_song() {
+    match player.get_song() {
         Some(song) => info!("Current song: {} by {}", 
             song.title.unwrap_or_else(|| "Unknown".to_string()), 
             song.artist.unwrap_or_else(|| "Unknown".to_string())),
@@ -111,15 +153,12 @@ fn main() {
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl+C handler");
     
-    // Enter the event loop - listen for MPD events until Ctrl+C
-    info!("\nEntering MPD event listening loop. Press Ctrl+C to exit.");
-    println!("\nListening for MPD events. Press Ctrl+C to exit.");
+    // Enter the event loop - listen for player events until Ctrl+C
+    info!("\nEntering player event listening loop. Press Ctrl+C to exit.");
+    println!("\nListening for player events. Press Ctrl+C to exit.");
     
-    // Start the event listener thread in the MPD player
-    mpd_player.start_event_listener(running.clone());
-    
-    // Create a shared reference to the MPD player for the keyboard handler
-    let player_ref = Arc::new(mpd_player);
+    // Create a shared reference to the player for the keyboard handler
+    let player_ref = Arc::new(player);
     let player_clone = player_ref.clone();
     
     // Start a thread to monitor keypresses

@@ -1,6 +1,6 @@
 use crate::players::PlayerController;
 use crate::players::PlayerStateListener;
-use crate::data::{PlayerCommand, PlayerCapability, Song, LoopMode, PlayerState, PlayerEvent, PlayerSource};
+use crate::data::{PlayerCommand, PlayerCapability, Song, LoopMode, PlaybackState, PlayerEvent, PlayerSource};
 use crate::players::{create_player_from_json, PlayerCreationError};
 use crate::plugins::EventFilter;
 use crate::plugins::ActionPlugin;
@@ -61,13 +61,13 @@ impl PlayerController for AudioController {
         LoopMode::None // Default loop mode if no active controller
     }
     
-    fn get_player_state(&self) -> PlayerState {
+    fn get_player_state(&self) -> PlaybackState {
         if let Some(idx) = self.active_index {
             if let Ok(controller) = self.controllers[idx].read() {
                 return controller.get_player_state();
             }
         }
-        PlayerState::Stopped // Default state if no active controller
+        PlaybackState::Stopped // Default state if no active controller
     }
     
     fn get_player_name(&self) -> String {
@@ -535,7 +535,7 @@ impl AudioController {
     }
     
     /// Forward state changed event to all registered listeners
-    fn forward_state_changed(&self, player_name: String, player_id: String, state: PlayerState) {
+    fn forward_state_changed(&self, player_name: String, player_id: String, state: PlaybackState) {
         // Prune dead listeners
         self.prune_dead_listeners();
         

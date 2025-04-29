@@ -4,7 +4,7 @@ use strum_macros::EnumString;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString)]
 #[serde(rename_all = "lowercase")]
-pub enum PlayerState {
+pub enum PlaybackState {
     /// Player is actively playing media
     #[serde(rename = "playing")]
     Playing,
@@ -14,29 +14,25 @@ pub enum PlayerState {
     /// Playback is stopped
     #[serde(rename = "stopped")]
     Stopped,
-    /// Player process has been killed or crashed
-    #[serde(rename = "killed")]
-    Killed,
     /// Player state cannot be determined
     #[serde(rename = "unknown")]
     Unknown,
 }
 
-impl Default for PlayerState {
+impl Default for PlaybackState {
     fn default() -> Self {
-        PlayerState::Unknown
+        PlaybackState::Unknown
     }
 }
 
-impl std::fmt::Display for PlayerState {
+impl std::fmt::Display for PlaybackState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Return the value as a string for backwards compatibility
         match self {
-            PlayerState::Playing => write!(f, "playing"),
-            PlayerState::Paused => write!(f, "paused"),
-            PlayerState::Stopped => write!(f, "stopped"),
-            PlayerState::Killed => write!(f, "killed"),
-            PlayerState::Unknown => write!(f, "unknown"),
+            PlaybackState::Playing => write!(f, "playing"),
+            PlaybackState::Paused => write!(f, "paused"),
+            PlaybackState::Stopped => write!(f, "stopped"),
+            PlaybackState::Unknown => write!(f, "unknown"),
         }
     }
 }

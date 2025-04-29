@@ -1,6 +1,6 @@
 use std::sync::{Arc, Weak};
 use std::any::Any;
-use crate::data::{PlayerEvent, PlayerState};
+use crate::data::{PlayerEvent, PlaybackState};
 use crate::plugins::plugin::Plugin;
 use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
 use crate::audiocontrol::AudioController;
@@ -92,7 +92,7 @@ impl ActionPlugin for ActiveMonitor {
         // log events for debugging
         if let PlayerEvent::StateChanged { source, state } = event {
             // If a player state changes to Playing, make it the active player
-            if *state == PlayerState::Playing {
+            if *state == PlaybackState::Playing {
                 debug!("ActiveMonitor: Detected player {}:{} state changed to Playing", 
                        source.player_name(), source.player_id());
                 self.set_active_player(source.player_name(), source.player_id());

@@ -1,4 +1,4 @@
-use crate::data::{PlayerState, Song, LoopMode, PlayerCapability};
+use crate::data::{PlaybackState, Song, LoopMode, PlayerCapability};
 use serde::{Serialize, Deserialize};
 
 /// Identifies the source of a player event
@@ -34,7 +34,7 @@ pub enum PlayerEvent {
     /// Player state has changed (playing, paused, stopped, etc.)
     StateChanged {
         source: PlayerSource,
-        state: PlayerState,
+        state: PlaybackState,
     },
     
     /// Current song has changed

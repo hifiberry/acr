@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::helpers::stream_helper::{open_stream, AccessMode};
 use crate::data::song::Song;
 use crate::data::player::Player;
-use crate::data::player_state::PlayerState;
+use crate::data::player_state::PlaybackState;
 use crate::data::capabilities::PlayerCapability;
 use crate::data::stream_details::StreamDetails;
 use crate::data::loop_mode::LoopMode;
@@ -90,10 +90,10 @@ impl MetadataPipeReader {
                 // Set player state from the JSON data
                 if let Some(state_str) = json.get("state").and_then(|v| v.as_str()) {
                     player.state = match state_str {
-                        "playing" => PlayerState::Playing,
-                        "paused" => PlayerState::Paused,
-                        "stopped" => PlayerState::Stopped,
-                        _ => PlayerState::Unknown,
+                        "playing" => PlaybackState::Playing,
+                        "paused" => PlaybackState::Paused,
+                        "stopped" => PlaybackState::Stopped,
+                        _ => PlaybackState::Unknown,
                     };
                 }
                 

@@ -2,8 +2,8 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 
-// Update the import path for PlayerState since it's now in the same module
-use super::player_state::PlayerState;
+// Update the import path for PlaybackState since it's now in the same module
+use super::player_state::PlaybackState;
 use super::capabilities::PlayerCapability;
 use super::loop_mode::LoopMode;
 
@@ -18,7 +18,7 @@ pub struct Player {
     pub type_: Option<String>, // Type of player (e.g., "mpd", "spotify", "bluetooth")
     
     #[serde(default)]
-    pub state: PlayerState, // Current state (e.g., "playing", "paused", "stopped")
+    pub state: PlaybackState, // Current state (e.g., "playing", "paused", "stopped")
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<i32>, // Current volume level (0-100)
@@ -52,7 +52,7 @@ impl Player {
             name,
             player_id: None,
             type_: None,
-            state: PlayerState::default(),
+            state: PlaybackState::default(),
             volume: None,
             muted: None,
             capabilities: None,

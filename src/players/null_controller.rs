@@ -1,6 +1,6 @@
 use crate::players::base_controller::BasePlayerController;
 use crate::players::player_controller::{PlayerController, PlayerStateListener};
-use crate::data::{PlayerCapability, Song, LoopMode, PlayerState, PlayerCommand};
+use crate::data::{PlayerCapability, Song, LoopMode, PlaybackState, PlayerCommand};
 use delegate::delegate;
 use std::sync::{Arc, Weak};
 use log::{debug, info, warn};
@@ -66,9 +66,9 @@ impl PlayerController for NullPlayerController {
         LoopMode::None // Default loop mode
     }
     
-    fn get_player_state(&self) -> PlayerState {
+    fn get_player_state(&self) -> PlaybackState {
         debug!("NullPlayerController: get_player_state called");
-        PlayerState::Stopped // Always return stopped state
+        PlaybackState::Stopped // Always return stopped state
     }
     
     fn get_player_name(&self) -> String {

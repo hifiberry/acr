@@ -1,7 +1,7 @@
 use crate::players::base_controller::BasePlayerController;
 use crate::players::player_controller::PlayerController;
 use crate::players::player_controller::PlayerStateListener;
-use crate::data::{PlayerCapability, Song, LoopMode, PlayerState, PlayerCommand};
+use crate::data::{PlayerCapability, Song, LoopMode, PlaybackState, PlayerCommand};
 use delegate::delegate;
 use std::sync::{Arc, Weak, Mutex};
 use log::{debug, info, warn, error};
@@ -28,6 +28,9 @@ pub struct MPDPlayerController {
     
     /// Current song information
     current_song: Arc<Mutex<Option<Song>>>,
+
+    // current player state
+    current_state: Arc<Mutex<PlaybackState>>,
 }
 
 // Manually implement Clone for MPDPlayerController
@@ -39,6 +42,7 @@ impl Clone for MPDPlayerController {
             hostname: self.hostname.clone(),
             port: self.port,
             current_song: Arc::clone(&self.current_song),
+            current_state: Arc::clone(&self.current_state),
         }
     }
 }
@@ -58,6 +62,7 @@ impl MPDPlayerController {
             hostname: host.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
+            current_state: Arc::new(Mutex::new(PlaybackState::Stopped)),
         };
         
         // Set default capabilities
@@ -78,6 +83,7 @@ impl MPDPlayerController {
             hostname: hostname.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
+            current_state: Arc::new(Mutex::new(PlaybackState::Stopped)),
         };
         
         // Set default capabilities
@@ -289,11 +295,11 @@ impl MPDPlayerController {
                 info!("Player status: {:?}, volume: {}%", 
                     status.state, status.volume);
                 
-                // Convert MPD state to our PlayerState
+                // Convert MPD state to our PlaybackState
                 let player_state = match status.state {
-                    mpd::State::Play => PlayerState::Playing,
-                    mpd::State::Pause => PlayerState::Paused,
-                    mpd::State::Stop => PlayerState::Stopped,
+                    mpd::State::Play => PlaybackState::Playing,
+                    mpd::State::Pause => PlaybackState::Paused,
+                    mpd::State::Stop => PlaybackState::Stopped,
                 };
                 
                 // Notify listeners about the state change
@@ -303,7 +309,7 @@ impl MPDPlayerController {
             Err(e) => {
                 warn!("Failed to get player status: {}", e);
                 // In case of error, assume stopped state
-                player.base.notify_state_changed(PlayerState::Stopped);
+                player.base.notify_state_changed(PlaybackState::Stopped);
             }
         }
     }
@@ -571,10 +577,10 @@ impl PlayerController for MPDPlayerController {
         LoopMode::None
     }
     
-    fn get_player_state(&self) -> PlayerState {
+    fn get_player_state(&self) -> PlaybackState {
         debug!("Getting current player state (not implemented yet)");
         // Not implemented yet
-        PlayerState::Stopped
+        PlaybackState::Stopped
     }
     
     fn get_player_name(&self) -> String {

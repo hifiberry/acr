@@ -1,4 +1,4 @@
-use crate::data::{PlayerCapability, Song, LoopMode, PlayerState, PlayerCommand, PlayerEvent, PlayerSource};
+use crate::data::{PlayerCapability, Song, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource};
 use std::sync::{Arc, Weak, RwLock};
 use std::any::Any;
 use log::{debug, trace, warn};
@@ -39,7 +39,7 @@ pub trait PlayerController: Send + Sync {
     /// Get the current player state
     /// 
     /// Returns the current state of the player (playing, paused, stopped, etc.)
-    fn get_player_state(&self) -> PlayerState;
+    fn get_player_state(&self) -> PlaybackState;
     
     /// Get the name of this player controller
     /// 
@@ -272,7 +272,7 @@ impl BasePlayerController {
     }
 
     /// Notify all registered listeners that the player state has changed
-    pub fn notify_state_changed(&self, state: PlayerState) {
+    pub fn notify_state_changed(&self, state: PlaybackState) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
         

@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use log::{info, error, warn};
 use serde_json::{Value, Map};
 
 use crate::plugins::plugin::Plugin;
 use crate::plugins::event_filters::event_filter::{EventFilter};
-use crate::plugins::event_filters::event_logger::EventLogger;
+use crate::plugins::event_filters::event_logger::{EventLogger, LogLevel};
 
 /// Factory for creating and registering plugins
 pub struct PluginFactory {
@@ -29,15 +30,39 @@ impl PluginFactory {
     fn register_builtin_plugins(&mut self) {
         // Register EventLogger that logs all events by default
         self.register("event-logger", |config| {
-            let only_active = if let Some(config) = config {
-                config.get("only_active")
+            if let Some(config) = config {
+                let only_active = config.get("only_active")
                     .and_then(Value::as_bool)
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                
+                // Get log level from config
+                let log_level = config.get("log_level")
+                    .and_then(Value::as_str)
+                    .map(LogLevel::from)
+                    .unwrap_or_default();
+                
+                // Get event types to log if specified
+                let event_types = config.get("event_types")
+                    .and_then(|v| {
+                        if v.is_array() {
+                            let mut types = HashSet::new();
+                            if let Some(arr) = v.as_array() {
+                                for item in arr {
+                                    if let Some(s) = item.as_str() {
+                                        types.insert(s.to_string());
+                                    }
+                                }
+                            }
+                            Some(types)
+                        } else {
+                            None
+                        }
+                    });
+                
+                Some(Box::new(EventLogger::with_config(only_active, log_level, event_types)) as Box<dyn Plugin>)
             } else {
-                false
-            };
-            
-            Some(Box::new(EventLogger::new(only_active)) as Box<dyn Plugin>)
+                Some(Box::new(EventLogger::new(false)) as Box<dyn Plugin>)
+            }
         });
     }
     
@@ -145,17 +170,40 @@ impl PluginFactory {
         // Try to downcast the plugin to EventFilter
         if plugin.as_any().downcast_ref::<EventLogger>().is_some() {
             // For EventLogger, we need to create a new instance with the right configuration
-            let only_active = if let Some(config) = config {
-                config.get("only_active")
+            if let Some(config) = config {
+                let only_active = config.get("only_active")
                     .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            } else if name == "event-logger" {
-                false
+                    .unwrap_or(false);
+                
+                // Get log level from config
+                let log_level = config.get("log_level")
+                    .and_then(Value::as_str)
+                    .map(LogLevel::from)
+                    .unwrap_or_default();
+                
+                // Get event types to log if specified
+                let event_types = config.get("event_types")
+                    .and_then(|v| {
+                        if v.is_array() {
+                            let mut types = HashSet::new();
+                            if let Some(arr) = v.as_array() {
+                                for item in arr {
+                                    if let Some(s) = item.as_str() {
+                                        types.insert(s.to_string());
+                                    }
+                                }
+                            }
+                            Some(types)
+                        } else {
+                            None
+                        }
+                    });
+                
+                Some(Box::new(EventLogger::with_config(only_active, log_level, event_types)) as Box<dyn EventFilter + Send + Sync>)
             } else {
-                true
-            };
-            
-            Some(Box::new(EventLogger::new(only_active)) as Box<dyn EventFilter + Send + Sync>)
+                // Use default values
+                Some(Box::new(EventLogger::new(false)) as Box<dyn EventFilter + Send + Sync>)
+            }
         } else {
             error!("Plugin '{}' is not a compatible EventFilter", name);
             None
@@ -199,6 +247,8 @@ impl PluginFactory {
             serde_json::json!({
                 "event-logger": {
                     "only_active": false,
+                    "log_level": "warning",
+                    "event_types": ["state", "song", "loop", "capabilities"],
                     "enabled": true
                 }
             }),

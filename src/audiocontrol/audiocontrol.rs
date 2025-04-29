@@ -495,6 +495,14 @@ impl AudioController {
             let factory = crate::plugins::plugin_factory::PluginFactory::new();
             
             for (idx, filter_config) in filters_config.iter().enumerate() {
+                // Check if this filter is enabled
+                if let Some(enabled) = filter_config.get("enabled").and_then(Value::as_bool) {
+                    if !enabled {
+                        debug!("Skipping disabled event filter at index {}", idx);
+                        continue;
+                    }
+                }
+                
                 // Convert the filter config to a string for the factory
                 if let Ok(json_str) = serde_json::to_string(filter_config) {
                     match factory.create_event_filter_from_json(&json_str) {
@@ -700,7 +708,7 @@ impl AudioController {
         }
     }
 
-    /// Returns a default JSON configuration for AudioController with all available players
+    /// Returns a default JSON configuration for AudioController with all available players and event filters
     ///
     /// This function uses the default player configuration and adds event filters,
     /// providing a complete configuration for initializing a new project.
@@ -710,22 +718,22 @@ impl AudioController {
     /// A JSON string containing the complete AudioController configuration
     pub fn sample_json_config() -> String {
         use crate::players::sample_json_config;
+        use crate::plugins::plugin_factory::PluginFactory;
         
         // Get the default players configuration as a JSON Value
         let players_str = sample_json_config();
         let players_value: serde_json::Value = serde_json::from_str(&players_str)
             .unwrap_or_else(|_| serde_json::json!([]));
             
+        // Get the default event filters configuration as a JSON Value
+        let filters_str = PluginFactory::sample_json_config();
+        let filters_value: serde_json::Value = serde_json::from_str(&filters_str)
+            .unwrap_or_else(|_| serde_json::json!([]));
+            
         // Create the complete AudioController configuration
         let config = serde_json::json!({
             "players": players_value,
-            "event_filters": [
-                {
-                    "event-logger": {
-                        "only_active": false
-                    }
-                }
-            ]
+            "event_filters": filters_value
         });
         
         serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string())

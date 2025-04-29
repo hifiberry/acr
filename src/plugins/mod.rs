@@ -2,7 +2,6 @@ pub mod plugin;
 pub mod plugin_factory;
 pub mod plugin_manager;
 pub mod event_filters;
-pub mod plugin_factory_example;
 
 // Re-export commonly used items
 pub use plugin::Plugin;

@@ -1,9 +1,15 @@
-Package: rust-debian-package
-Version: 0.1.0
+Source: acr
 Section: utils
 Priority: optional
+Maintainer: HiFiBerry <info@hifiberry.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.5.1
+Homepage: https://github.com/hifiberry/acr
+
+Package: acr
 Architecture: any
-Depends: rustc, cargo
-Maintainer: Your Name <youremail@example.com>
-Description: A simple Rust application packaged for Debian
- This is a simple Rust application that demonstrates how to create a Debian package from a Rust project.
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: AudioControl/Rust (ACR) application
+ A Rust application for audio control functionality.
+ This package provides tools for managing audio playback
+ and control across different audio systems.

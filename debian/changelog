@@ -1,7 +1,5 @@
 # rust-debian-package/rust-debian-package/debian/changelog
-
-rust-debian-package (0.1.0) unstable; urgency=medium
-
+acr (0.1.0) unstable; urgency=medium
   * Initial release of the Rust Debian package.
   * Added main application entry point in src/main.rs.
   * Defined library functions in src/lib.rs.

@@ -11,7 +11,7 @@ strum_macros = "0.25"
 mpd = "0.1"
 tokio = { version = "1", features = ["full"] }
 log = "0.4"
-env_logger = "0.11"
+env_logger = "0.10"
 once_cell = "1.19"
 ctrlc = "3.4"
 lazy_static = "1.4.0"

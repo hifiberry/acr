@@ -7,9 +7,9 @@ override_dh_auto_build:
 	cargo build --release
 
 override_dh_auto_install:
-	dh_auto_install -- DESTDIR=$(CURDIR)/debian/tmp
-	cp target/release/your_executable_name debian/tmp/usr/bin/your_executable_name
+	mkdir -p debian/acr/usr/bin
+	install -m 755 target/release/acr debian/acr/usr/bin/
 
-override_dh_clean:
-	dh_clean
-	rm -rf target
+override_dh_auto_clean:
+	dh_auto_clean
+	cargo clean

@@ -16,7 +16,7 @@ use std::any::Any;
 use lazy_static::lazy_static;
 
 /// MPD player controller implementation
-pub struct MPDPlayer {
+pub struct MPDPlayerController {
     /// Base controller for managing state listeners
     base: BasePlayerController,
     
@@ -30,10 +30,10 @@ pub struct MPDPlayer {
     current_song: Arc<Mutex<Option<Song>>>,
 }
 
-// Manually implement Clone for MPDPlayer
-impl Clone for MPDPlayer {
+// Manually implement Clone for MPDPlayerController
+impl Clone for MPDPlayerController {
     fn clone(&self) -> Self {
-        MPDPlayer {
+        MPDPlayerController {
             // Share the BasePlayerController instance to maintain listener registrations
             base: self.base.clone(),
             hostname: self.hostname.clone(),
@@ -43,10 +43,10 @@ impl Clone for MPDPlayer {
     }
 }
 
-impl MPDPlayer {
+impl MPDPlayerController {
     /// Create a new MPD player controller with default settings
     pub fn new() -> Self {
-        debug!("Creating new MPDPlayer with default settings");
+        debug!("Creating new MPDPlayerController with default settings");
         let host = "localhost";
         let port = 6600;
         
@@ -68,7 +68,7 @@ impl MPDPlayer {
     
     /// Create a new MPD player controller with custom settings
     pub fn with_connection(hostname: &str, port: u16) -> Self {
-        debug!("Creating new MPDPlayer with connection {}:{}", hostname, port);
+        debug!("Creating new MPDPlayerController with connection {}:{}", hostname, port);
         
         // Create a base controller with player name and ID
         let base = BasePlayerController::with_player_info("mpd", &format!("{}:{}", hostname, port));
@@ -88,7 +88,7 @@ impl MPDPlayer {
     
     /// Set the default capabilities for this player
     fn set_default_capabilities(&self) {
-        debug!("Setting default MPDPlayer capabilities");
+        debug!("Setting default MPDPlayerController capabilities");
         self.base.set_capabilities(vec![
             PlayerCapability::Play,
             PlayerCapability::Pause,
@@ -158,26 +158,26 @@ impl MPDPlayer {
     
     /// Helper method for simulating state changes (for demo purposes)
     pub fn notify_state_changed(&self, state: PlayerState) {
-        debug!("MPDPlayer forwarding state change notification: {}", state);
+        debug!("MPDPlayerController forwarding state change notification: {}", state);
         self.base.notify_state_changed(state);
     }
     
     /// Helper method for simulating song changes (for demo purposes)
     pub fn notify_song_changed(&self, song: Option<&Song>) {
         let song_title = song.map_or("None".to_string(), |s| s.title.as_deref().unwrap_or("Unknown").to_string());
-        debug!("MPDPlayer forwarding song change notification: {}", song_title);
+        debug!("MPDPlayerController forwarding song change notification: {}", song_title);
         self.base.notify_song_changed(song);
     }
     
     /// Helper method for simulating loop mode changes (for demo purposes)
     pub fn notify_loop_mode_changed(&self, mode: LoopMode) {
-        debug!("MPDPlayer forwarding loop mode change notification: {}", mode);
+        debug!("MPDPlayerController forwarding loop mode change notification: {}", mode);
         self.base.notify_loop_mode_changed(mode);
     }
     
     /// Helper method for simulating capability changes (for demo purposes)
     pub fn notify_capabilities_changed(&self, capabilities: &[PlayerCapability]) {
-        debug!("MPDPlayer forwarding capabilities change notification with {} capabilities", capabilities.len());
+        debug!("MPDPlayerController forwarding capabilities change notification with {} capabilities", capabilities.len());
         self.base.notify_capabilities_changed(capabilities);
     }
 
@@ -562,7 +562,7 @@ lazy_static! {
     static ref PLAYER_STATE: Mutex<PlayerStateMap> = Mutex::new(HashMap::new());
 }
 
-impl PlayerController for MPDPlayer {
+impl PlayerController for MPDPlayerController {
     delegate! {
         to self.base {
             fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;

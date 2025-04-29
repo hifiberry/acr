@@ -11,7 +11,6 @@ use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
 use ctrlc;
-use serde_json::json;
 
 /// Event Logger that implements the PlayerStateListener trait
 struct EventLogger {
@@ -74,15 +73,21 @@ fn main() {
     info!("AudioControl3 (ACR) Player Controller Demo starting");
     println!("AudioControl3 (ACR) Player Controller Demo\n");
     
-    // Create a JSON array with player configurations
-    let controllers_config = json!([
-        {
-            "mpd": {
-                "host": "localhost",
-                "port": 6600
-            }
+    // Use the sample JSON configuration from AudioController
+    let sample_config = AudioController::sample_json_config();
+    info!("Using sample configuration: {}", sample_config);
+    
+    // Parse the sample configuration string into a JSON Value
+    let controllers_config: serde_json::Value = match serde_json::from_str(&sample_config) {
+        Ok(config) => {
+            info!("Successfully parsed sample JSON configuration");
+            config
+        },
+        Err(e) => {
+            error!("Failed to parse sample JSON configuration: {}", e);
+            panic!("Cannot continue with invalid sample configuration");
         }
-    ]);
+    };
     
     // Create an AudioController from the JSON configuration
     let audio_controller_result = AudioController::from_json(&controllers_config);
@@ -95,8 +100,7 @@ fn main() {
         },
         Err(e) => {
             error!("Failed to create AudioController from JSON: {}", e);
-            error!("Cannot continue without a valid AudioController. Terminating.");
-            std::process::exit(1);
+            panic!("Cannot continue without a valid AudioController");
         }
     };
     

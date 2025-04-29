@@ -417,6 +417,9 @@ impl AudioController {
     /// - "players": Array of player configurations
     /// - "event_filters": Array of event filter configurations
     /// 
+    /// Player configurations can include an "enable" flag which, if set to false,
+    /// will cause that player to be skipped without error.
+    /// 
     /// Returns a Result with the new AudioController or an error if any player creation failed
     pub fn from_json(config: &Value) -> Result<Arc<AudioController>, PlayerCreationError> {
         // Create controller without players first
@@ -440,6 +443,15 @@ impl AudioController {
                         controller_ref.add_controller(player);
                     },
                     Err(e) => {
+                        // Check if this is due to the player being disabled
+                        if let PlayerCreationError::ParseError(msg) = &e {
+                            if msg.contains("disabled in configuration") {
+                                debug!("Skipping disabled player {}: {}", idx, msg);
+                                continue; // Skip this player and move on to the next one
+                            }
+                        }
+                        
+                        // For any other error, return it
                         error!("Failed to create player {}: {}", idx, e);
                         return Err(e);
                     }
@@ -460,6 +472,15 @@ impl AudioController {
                         controller_ref.add_controller(player);
                     },
                     Err(e) => {
+                        // Check if this is due to the player being disabled
+                        if let PlayerCreationError::ParseError(msg) = &e {
+                            if msg.contains("disabled in configuration") {
+                                debug!("Skipping disabled player {}: {}", idx, msg);
+                                continue; // Skip this player and move on to the next one
+                            }
+                        }
+                        
+                        // For any other error, return it
                         error!("Failed to create player {}: {}", idx, e);
                         return Err(e);
                     }
@@ -677,6 +698,37 @@ impl AudioController {
             error!("Failed to acquire write lock for event_filters");
             0
         }
+    }
+
+    /// Returns a default JSON configuration for AudioController with all available players
+    ///
+    /// This function uses the default player configuration and adds event filters,
+    /// providing a complete configuration for initializing a new project.
+    ///
+    /// # Returns
+    ///
+    /// A JSON string containing the complete AudioController configuration
+    pub fn sample_json_config() -> String {
+        use crate::players::sample_json_config;
+        
+        // Get the default players configuration as a JSON Value
+        let players_str = sample_json_config();
+        let players_value: serde_json::Value = serde_json::from_str(&players_str)
+            .unwrap_or_else(|_| serde_json::json!([]));
+            
+        // Create the complete AudioController configuration
+        let config = serde_json::json!({
+            "players": players_value,
+            "event_filters": [
+                {
+                    "event-logger": {
+                        "only_active": false
+                    }
+                }
+            ]
+        });
+        
+        serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string())
     }
 }
 

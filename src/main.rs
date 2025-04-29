@@ -26,17 +26,14 @@ fn main() {
     // - "\\.\pipe\raat-metadata" for local Windows pipe
     // - "/var/run/raat/metadata_pipe" for Unix FIFO
     // - "tcp://headphones.local:12100" for TCP connection
-    let metadata_source = "tcp://headphone.local:12100";
-    
-    info!("Starting MetadataPipeReader with source: {}", metadata_source);
-    let reader = MetadataPipeReader::new(metadata_source);
-    
+    // let metadata_source = "tcp://headphone.local:12100";
+    // info!("Starting MetadataPipeReader with source: {}", metadata_source);
+    //let reader = MetadataPipeReader::new(metadata_source);
     // Run in the foreground and wait until it finishes
-    if let Err(e) = reader.read_and_log_pipe() {
-        error!("Error reading from metadata source: {}", e);
-    }
-    
-    info!("MetadataPipeReader finished, continuing with application");
+    //if let Err(e) = reader.read_and_log_pipe() {
+    //    error!("Error reading from metadata source: {}", e);
+    //}
+    //info!("MetadataPipeReader finished, continuing with application");
     
     // Use the sample JSON configuration from AudioController
     let sample_config = AudioController::sample_json_config();

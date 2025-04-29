@@ -6,6 +6,8 @@ use serde_json::{Value, Map};
 use crate::plugins::plugin::Plugin;
 use crate::plugins::event_filters::event_filter::{EventFilter};
 use crate::plugins::event_filters::event_logger::{EventLogger, LogLevel};
+use crate::plugins::action_plugin::ActionPlugin;
+use crate::plugins::action_plugins::ActiveMonitor;
 
 /// Factory for creating and registering plugins
 pub struct PluginFactory {
@@ -63,6 +65,11 @@ impl PluginFactory {
             } else {
                 Some(Box::new(EventLogger::new(false)) as Box<dyn Plugin>)
             }
+        });
+        
+        // Register ActiveMonitor that automatically sets active player on play events
+        self.register("active-monitor", |_config| {
+            Some(Box::new(ActiveMonitor::new()) as Box<dyn Plugin>)
         });
     }
     
@@ -233,6 +240,70 @@ impl PluginFactory {
         }
     }
     
+    /// Create a new instance of an ActionPlugin by name
+    pub fn create_action_plugin(&self, name: &str) -> Option<Box<dyn ActionPlugin + Send + Sync>> {
+        self.create_action_plugin_with_config(name, None)
+    }
+    
+    /// Create a new instance of an ActionPlugin by name with configuration
+    pub fn create_action_plugin_with_config(&self, name: &str, config: Option<&Value>) -> Option<Box<dyn ActionPlugin + Send + Sync>> {
+        let plugin = self.create_with_config(name, config)?;
+        
+        // Try to downcast the plugin to the specific ActionPlugin type
+        if plugin.as_any().downcast_ref::<ActiveMonitor>().is_some() {
+            // For ActiveMonitor, create a new instance
+            Some(Box::new(ActiveMonitor::new()) as Box<dyn ActionPlugin + Send + Sync>)
+        } else {
+            error!("Plugin '{}' is not a compatible ActionPlugin", name);
+            None
+        }
+    }
+    
+    /// Create an action plugin from a JSON configuration string
+    pub fn create_action_plugin_from_json(&self, json_config: &str) -> Option<Box<dyn ActionPlugin + Send + Sync>> {
+        match serde_json::from_str::<Map<String, Value>>(json_config) {
+            Ok(config_map) => {
+                // We expect only one key (the plugin type)
+                if config_map.len() != 1 {
+                    error!("Invalid JSON config: expected a single action plugin configuration");
+                    return None;
+                }
+                
+                // Get the first (and only) entry
+                let (plugin_type, params) = config_map.iter().next().unwrap();
+                
+                info!("Creating action plugin of type '{}' from JSON", plugin_type);
+                self.create_action_plugin_with_config(plugin_type, Some(params))
+            }
+            Err(err) => {
+                error!("Failed to parse action plugin JSON configuration: {}", err);
+                None
+            }
+        }
+    }
+    
+    /// Returns a default JSON configuration for all available action plugins
+    ///
+    /// This function provides a complete configuration for all action plugins
+    /// in the system with default settings. Each filter includes an "enabled" attribute
+    /// that can be used to selectively enable/disable plugins.
+    ///
+    /// # Returns
+    ///
+    /// A JSON string containing the complete action plugin configuration array
+    pub fn sample_action_plugins_config() -> String {
+        let plugins = vec![
+            serde_json::json!({
+                "active-monitor": {
+                    "enabled": true
+                }
+            }),
+            // Add other built-in action plugins here with their default configuration
+        ];
+        
+        serde_json::to_string_pretty(&plugins).unwrap_or_else(|_| "[]".to_string())
+    }
+    
     /// Returns a default JSON configuration for all available event filters
     ///
     /// This function provides a complete configuration for all event filters 
@@ -247,7 +318,7 @@ impl PluginFactory {
             serde_json::json!({
                 "event-logger": {
                     "only_active": false,
-                    "log_level": "warning",
+                    "log_level": "info",
                     "event_types": ["state", "song", "loop", "capabilities"],
                     "enabled": true
                 }

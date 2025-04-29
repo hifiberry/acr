@@ -156,31 +156,6 @@ impl MPDPlayerController {
         self.port = port;
     }
     
-    /// Helper method for simulating state changes (for demo purposes)
-    pub fn notify_state_changed(&self, state: PlayerState) {
-        debug!("MPDPlayerController forwarding state change notification: {}", state);
-        self.base.notify_state_changed(state);
-    }
-    
-    /// Helper method for simulating song changes (for demo purposes)
-    pub fn notify_song_changed(&self, song: Option<&Song>) {
-        let song_title = song.map_or("None".to_string(), |s| s.title.as_deref().unwrap_or("Unknown").to_string());
-        debug!("MPDPlayerController forwarding song change notification: {}", song_title);
-        self.base.notify_song_changed(song);
-    }
-    
-    /// Helper method for simulating loop mode changes (for demo purposes)
-    pub fn notify_loop_mode_changed(&self, mode: LoopMode) {
-        debug!("MPDPlayerController forwarding loop mode change notification: {}", mode);
-        self.base.notify_loop_mode_changed(mode);
-    }
-    
-    /// Helper method for simulating capability changes (for demo purposes)
-    pub fn notify_capabilities_changed(&self, capabilities: &[PlayerCapability]) {
-        debug!("MPDPlayerController forwarding capabilities change notification with {} capabilities", capabilities.len());
-        self.base.notify_capabilities_changed(capabilities);
-    }
-
     /// Starts a background thread that listens for MPD events
     /// The thread will run until the running flag is set to false
     fn start_event_listener(&self, running: Arc<AtomicBool>, self_arc: Arc<Self>) {
@@ -308,15 +283,28 @@ impl MPDPlayerController {
         // Update the song information and capabilities
         Self::update_song_from_mpd(client, player.clone());
         
-        // Also log the player state
+        // Get and update the player state
         match client.status() {
             Ok(status) => {
                 info!("Player status: {:?}, volume: {}%", 
                     status.state, status.volume);
                 
-                // Could update player state here as well
+                // Convert MPD state to our PlayerState
+                let player_state = match status.state {
+                    mpd::State::Play => PlayerState::Playing,
+                    mpd::State::Pause => PlayerState::Paused,
+                    mpd::State::Stop => PlayerState::Stopped,
+                };
+                
+                // Notify listeners about the state change
+                debug!("MPDPlayerController forwarding state change notification: {}", player_state);
+                player.base.notify_state_changed(player_state);
             },
-            Err(e) => warn!("Failed to get player status: {}", e),
+            Err(e) => {
+                warn!("Failed to get player status: {}", e);
+                // In case of error, assume stopped state
+                player.base.notify_state_changed(PlayerState::Stopped);
+            }
         }
     }
     
@@ -349,7 +337,7 @@ impl MPDPlayerController {
             
             // Notify listeners of the song change
             drop(current_song); // Release the lock before notifying
-            self.notify_song_changed(song.as_ref());
+            self.base.notify_song_changed(song.as_ref());
         }
     }
 
@@ -450,7 +438,7 @@ impl MPDPlayerController {
                 // If any capabilities changed, send a single notification with all current capabilities
                 if capabilities_changed {
                     let current_caps = player.base.get_capabilities();
-                    player.notify_capabilities_changed(&current_caps);
+                    player.base.notify_capabilities_changed(&current_caps);
                     debug!("Player capabilities updated: Next={}, Previous={}, Seek={}", has_next, has_previous, is_seekable);
                 }
             },
@@ -481,7 +469,7 @@ impl MPDPlayerController {
                 
                 if capabilities_changed {
                     let current_caps = player.base.get_capabilities();
-                    player.notify_capabilities_changed(&current_caps);
+                    player.base.notify_capabilities_changed(&current_caps);
                     debug!("Player capabilities updated: disabled Next/Previous/Seek due to error");
                 }
             }

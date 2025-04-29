@@ -16,3 +16,9 @@ once_cell = "1.19"
 ctrlc = "3.4"
 lazy_static = "1.4.0"
 delegate = "0.10.0"
+named_pipe = "0.4"
+futures = "0.3"
+
+[[bin]]
+name = "pipebridge"
+path = "tools/pipebridge.rs"

@@ -1,11 +1,50 @@
 /// Class representing metadata for a media player
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
+use strum_macros::EnumString;
 
-// Update the import path for PlaybackState since it's now in the same module
-use super::player_state::PlaybackState;
-use super::capabilities::PlayerCapability;
+use super::capabilities::{PlayerCapability, PlayerCapabilitiesSet};
 use super::loop_mode::LoopMode;
+
+/// Player state enumeration defining possible states a player can be in
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaybackState {
+    /// Player is actively playing media
+    #[serde(rename = "playing")]
+    Playing,
+    /// Playback is paused
+    #[serde(rename = "paused")]
+    Paused,
+    /// Playback is stopped
+    #[serde(rename = "stopped")]
+    Stopped,
+    /// Player process has been killed or crashed
+    #[serde(rename = "killed")]
+    Killed,
+    /// Player state cannot be determined
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+impl Default for PlaybackState {
+    fn default() -> Self {
+        PlaybackState::Unknown
+    }
+}
+
+impl std::fmt::Display for PlaybackState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Return the value as a string for backwards compatibility
+        match self {
+            PlaybackState::Playing => write!(f, "playing"),
+            PlaybackState::Paused => write!(f, "paused"),
+            PlaybackState::Stopped => write!(f, "stopped"),
+            PlaybackState::Killed => write!(f, "killed"),
+            PlaybackState::Unknown => write!(f, "unknown"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
@@ -26,8 +65,8 @@ pub struct Player {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>, // Whether the player is muted
     
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<Vec<PlayerCapability>>, // Player capabilities
+    #[serde(default, skip_serializing_if = "PlayerCapabilitiesSet::is_empty")]
+    pub capabilities: PlayerCapabilitiesSet, // Player capabilities using bitflags
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>, // Whether this player is the currently active one
@@ -55,7 +94,7 @@ impl Player {
             state: PlaybackState::default(),
             volume: None,
             muted: None,
-            capabilities: None,
+            capabilities: PlayerCapabilitiesSet::new(),
             active: None,
             position: None,
             loop_mode: LoopMode::default(),
@@ -66,20 +105,43 @@ impl Player {
 
     /// Add a capability to the player
     pub fn add_capability(&mut self, capability: PlayerCapability) {
-        let caps = self.capabilities.get_or_insert_with(Vec::new);
-        if !caps.contains(&capability) {
-            caps.push(capability);
-        }
+        self.capabilities.add(capability);
+    }
+
+    /// Remove a capability from the player
+    pub fn remove_capability(&mut self, capability: PlayerCapability) {
+        self.capabilities.remove(capability);
     }
 
     /// Check if the player has a specific capability
     pub fn has_capability(&self, capability: PlayerCapability) -> bool {
-        if let Some(caps) = &self.capabilities {
-            caps.contains(&capability)
-        } else {
-            false
-        }
+        self.capabilities.has(capability)
+    }
+    
+    /// Set multiple capabilities at once
+    pub fn set_capabilities(&mut self, capabilities: &[PlayerCapability]) {
+        self.capabilities = PlayerCapabilitiesSet::from_capabilities(capabilities);
+    }
+    
+    /// Get all capabilities as a vector
+    pub fn get_capabilities_vec(&self) -> Vec<PlayerCapability> {
+        self.capabilities.to_vec()
+    }
+    
+    /// Check if the player has any of the specified capabilities
+    pub fn has_any_capability(&self, capabilities: &[PlayerCapability]) -> bool {
+        let set = PlayerCapabilitiesSet::from_capabilities(capabilities);
+        self.capabilities.has_any(set)
+    }
+    
+    /// Check if the player has all of the specified capabilities
+    pub fn has_all_capabilities(&self, capabilities: &[PlayerCapability]) -> bool {
+        let set = PlayerCapabilitiesSet::from_capabilities(capabilities);
+        self.capabilities.has_all(set)
+    }
+    
+    /// Clear all capabilities
+    pub fn clear_capabilities(&mut self) {
+        self.capabilities.clear();
     }
 }
-// The to_json method is now provided by the Serializable trait
-// which is automatically implemented for all types that implement Serialize

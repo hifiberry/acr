@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use strum_macros::EnumString;
 
-use super::capabilities::{PlayerCapability, PlayerCapabilitiesSet};
+use super::capabilities::{PlayerCapability, PlayerCapabilitySet};
 use super::loop_mode::LoopMode;
 
 /// Player state enumeration defining possible states a player can be in
@@ -65,8 +65,8 @@ pub struct Player {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>, // Whether the player is muted
     
-    #[serde(default, skip_serializing_if = "PlayerCapabilitiesSet::is_empty")]
-    pub capabilities: PlayerCapabilitiesSet, // Player capabilities using bitflags
+    #[serde(default, skip_serializing_if = "PlayerCapabilitySet::is_empty")]
+    pub capabilities: PlayerCapabilitySet, // Player capabilities using bitflags
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>, // Whether this player is the currently active one
@@ -94,7 +94,7 @@ impl Player {
             state: PlaybackState::default(),
             volume: None,
             muted: None,
-            capabilities: PlayerCapabilitiesSet::new(),
+            capabilities: PlayerCapabilitySet::empty(),
             active: None,
             position: None,
             loop_mode: LoopMode::default(),
@@ -105,43 +105,31 @@ impl Player {
 
     /// Add a capability to the player
     pub fn add_capability(&mut self, capability: PlayerCapability) {
-        self.capabilities.add(capability);
-    }
-
-    /// Remove a capability from the player
-    pub fn remove_capability(&mut self, capability: PlayerCapability) {
-        self.capabilities.remove(capability);
+        self.capabilities.add_capability(capability);
     }
 
     /// Check if the player has a specific capability
     pub fn has_capability(&self, capability: PlayerCapability) -> bool {
-        self.capabilities.has(capability)
+        self.capabilities.has_capability(capability)
     }
     
-    /// Set multiple capabilities at once
-    pub fn set_capabilities(&mut self, capabilities: &[PlayerCapability]) {
-        self.capabilities = PlayerCapabilitiesSet::from_capabilities(capabilities);
+    /// Remove a capability from the player
+    pub fn remove_capability(&mut self, capability: PlayerCapability) {
+        self.capabilities.remove_capability(capability);
     }
     
-    /// Get all capabilities as a vector
+    /// Get all capabilities as a vector (for compatibility with existing code)
     pub fn get_capabilities_vec(&self) -> Vec<PlayerCapability> {
         self.capabilities.to_vec()
     }
     
-    /// Check if the player has any of the specified capabilities
-    pub fn has_any_capability(&self, capabilities: &[PlayerCapability]) -> bool {
-        let set = PlayerCapabilitiesSet::from_capabilities(capabilities);
-        self.capabilities.has_any(set)
+    /// Set multiple capabilities at once from a slice
+    pub fn set_capabilities(&mut self, capabilities: &[PlayerCapability]) {
+        self.capabilities = PlayerCapabilitySet::from_slice(capabilities);
     }
     
-    /// Check if the player has all of the specified capabilities
-    pub fn has_all_capabilities(&self, capabilities: &[PlayerCapability]) -> bool {
-        let set = PlayerCapabilitiesSet::from_capabilities(capabilities);
-        self.capabilities.has_all(set)
-    }
-    
-    /// Clear all capabilities
-    pub fn clear_capabilities(&mut self) {
-        self.capabilities.clear();
+    /// Check if the player has any capability
+    pub fn has_any_capability(&self) -> bool {
+        !self.capabilities.is_empty()
     }
 }

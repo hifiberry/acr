@@ -1,6 +1,6 @@
 use crate::players::base_controller::BasePlayerController;
 use crate::players::player_controller::{PlayerController, PlayerStateListener};
-use crate::data::{PlayerCapability, Song, LoopMode, PlaybackState, PlayerCommand};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand};
 use delegate::delegate;
 use std::sync::{Arc, Weak};
 use log::{debug, info, warn};
@@ -32,7 +32,7 @@ impl NullPlayerController {
     /// Set the default capabilities for this player
     fn set_default_capabilities(&self) {
         debug!("Setting default NullPlayerController capabilities");
-        self.base.set_capabilities(vec![
+        let capabilities = vec![
             PlayerCapability::Play,
             PlayerCapability::Pause,
             PlayerCapability::PlayPause,
@@ -43,7 +43,9 @@ impl NullPlayerController {
             PlayerCapability::Loop,
             PlayerCapability::Shuffle,
             // Killable capability not supported in NullPlayerController
-        ], false); // Don't notify on initialization
+        ];
+        
+        self.base.set_capabilities(capabilities, false); // Don't notify on initialization
     }
 }
 
@@ -52,7 +54,7 @@ impl PlayerController for NullPlayerController {
         to self.base {
             fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
             fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
-            fn get_capabilities(&self) -> Vec<PlayerCapability>;
+            fn get_capabilities(&self) -> PlayerCapabilitySet;
         }
     }
     

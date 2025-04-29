@@ -1,4 +1,4 @@
-use crate::data::{PlayerCapability, Song, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource};
 use std::sync::{Arc, Weak, RwLock};
 use std::any::Any;
 use log::{debug, trace, warn};
@@ -23,8 +23,8 @@ pub trait PlayerStateListener: Send + Sync {
 pub trait PlayerController: Send + Sync {
     /// Get the capabilities of the player
     /// 
-    /// Returns a vector of capabilities supported by this player
-    fn get_capabilities(&self) -> Vec<PlayerCapability>;
+    /// Returns a PlayerCapabilitySet with the capabilities supported by this player
+    fn get_capabilities(&self) -> PlayerCapabilitySet;
     
     /// Get the current song being played
     /// 
@@ -112,7 +112,7 @@ pub struct BasePlayerController {
     listeners: Arc<RwLock<Vec<Weak<dyn PlayerStateListener>>>>,
     
     /// Current capabilities of the player
-    capabilities: Arc<RwLock<Vec<PlayerCapability>>>,
+    capabilities: Arc<RwLock<PlayerCapabilitySet>>,
     
     /// Player name identifier (e.g., "mpd", "null")
     player_name: Arc<RwLock<String>>,
@@ -127,7 +127,7 @@ impl BasePlayerController {
         debug!("Creating new BasePlayerController");
         Self {
             listeners: Arc::new(RwLock::new(Vec::new())),
-            capabilities: Arc::new(RwLock::new(Vec::new())),
+            capabilities: Arc::new(RwLock::new(PlayerCapabilitySet::empty())),
             player_name: Arc::new(RwLock::new("unknown".to_string())),
             player_id: Arc::new(RwLock::new("unknown".to_string())),
         }
@@ -138,7 +138,7 @@ impl BasePlayerController {
         debug!("Creating BasePlayerController with name='{}', id='{}'", name, id);
         Self {
             listeners: Arc::new(RwLock::new(Vec::new())),
-            capabilities: Arc::new(RwLock::new(Vec::new())),
+            capabilities: Arc::new(RwLock::new(PlayerCapabilitySet::empty())),
             player_name: Arc::new(RwLock::new(name.to_string())),
             player_id: Arc::new(RwLock::new(id.to_string())),
         }
@@ -185,35 +185,32 @@ impl BasePlayerController {
     }
     
     /// Get the current capabilities
-    pub fn get_capabilities(&self) -> Vec<PlayerCapability> {
+    pub fn get_capabilities(&self) -> PlayerCapabilitySet {
         if let Ok(caps) = self.capabilities.read() {
-            caps.clone()
+            *caps
         } else {
             warn!("Failed to acquire read lock for capabilities");
-            Vec::new()
+            PlayerCapabilitySet::empty()
         }
     }
     
-    /// Set multiple capabilities at once
+    /// Set multiple capabilities at once using a PlayerCapabilitySet
     /// 
     /// Replaces all current capabilities with the provided ones
     /// When auto_notify is true, listeners will be notified of changes automatically
     /// Returns true if the capabilities were changed
-    pub fn set_capabilities(&self, capabilities: Vec<PlayerCapability>, auto_notify: bool) -> bool {
-        debug!("Setting all capabilities to a list of {} capabilities", capabilities.len());
+    pub fn set_capabilities_set(&self, capabilities: PlayerCapabilitySet, auto_notify: bool) -> bool {
+        debug!("Setting all capabilities to a new capability set");
         
         let mut changed = false;
         
         // Update stored capabilities
         if let Ok(mut caps) = self.capabilities.write() {
-            // Check if there's any difference between current and new capabilities
-            if caps.len() != capabilities.len() || 
-               !capabilities.iter().all(|cap| caps.contains(cap)) ||
-               !caps.iter().all(|cap| capabilities.contains(cap)) {
-                
+            // Check if there's any difference
+            if *caps != capabilities {
                 // Replace with new capabilities
-                *caps = capabilities.clone();
-                debug!("Updated capabilities to {} items", caps.len());
+                *caps = capabilities;
+                debug!("Updated capabilities");
                 changed = true;
             } else {
                 debug!("Capabilities unchanged, not updating");
@@ -231,6 +228,18 @@ impl BasePlayerController {
         changed
     }
     
+    /// Set multiple capabilities at once using a Vec of PlayerCapability
+    /// 
+    /// Replaces all current capabilities with the provided ones
+    /// When auto_notify is true, listeners will be notified of changes automatically
+    /// Returns true if the capabilities were changed
+    pub fn set_capabilities(&self, capabilities: Vec<PlayerCapability>, auto_notify: bool) -> bool {
+        debug!("Setting all capabilities to a list of {} capabilities", capabilities.len());
+        
+        let new_set = PlayerCapabilitySet::from_slice(&capabilities);
+        self.set_capabilities_set(new_set, auto_notify)
+    }
+
     /// Set a capability as enabled or disabled
     /// 
     /// If enabled is true, adds the capability if not already present
@@ -244,17 +253,17 @@ impl BasePlayerController {
         
         // Update stored capabilities
         if let Ok(mut caps) = self.capabilities.write() {
-            let had_capability = caps.contains(&capability);
+            let had_capability = caps.has_capability(capability);
             
             if enabled && !had_capability {
                 // Add capability
-                caps.push(capability.clone());
-                debug!("Added capability {:?}, now have {} capabilities", capability, caps.len());
+                caps.add_capability(capability);
+                debug!("Added capability {:?}", capability);
                 changed = true;
             } else if !enabled && had_capability {
                 // Remove capability
-                caps.retain(|c| *c != capability);
-                debug!("Removed capability {:?}, now have {} capabilities", capability, caps.len());
+                caps.remove_capability(capability);
+                debug!("Removed capability {:?}", capability);
                 changed = true;
             }
         } else {
@@ -359,7 +368,7 @@ impl BasePlayerController {
     }
 
     /// Notify all listeners that the capabilities have changed
-    pub fn notify_capabilities_changed(&self, capabilities: &[PlayerCapability]) {
+    pub fn notify_capabilities_changed(&self, capabilities: &PlayerCapabilitySet) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
         
@@ -368,20 +377,17 @@ impl BasePlayerController {
         
         // Store the capabilities internally
         if let Ok(mut caps) = self.capabilities.write() {
-            *caps = capabilities.to_vec();
-            debug!("Updated to {} capabilities", caps.len());
+            *caps = *capabilities;
+            debug!("Updated capabilities");
         } else {
             warn!("Failed to acquire write lock when updating capabilities");
         }
-        
-        // Create a copied vector for each listener
-        let capabilities_vec = capabilities.to_vec();
         
         let source = PlayerSource::new(player_name, player_id);
         
         let event = PlayerEvent::CapabilitiesChanged {
             source,
-            capabilities: capabilities_vec,
+            capabilities: *capabilities,
         };
         
         if let Ok(listeners) = self.listeners.read() {

@@ -1,6 +1,6 @@
 use crate::players::PlayerController;
 use crate::players::PlayerStateListener;
-use crate::data::{PlayerCommand, PlayerCapability, Song, LoopMode, PlaybackState, PlayerEvent, PlayerSource};
+use crate::data::{PlayerCommand, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerEvent, PlayerSource};
 use crate::players::{create_player_from_json, PlayerCreationError};
 use crate::plugins::EventFilter;
 use crate::plugins::ActionPlugin;
@@ -34,13 +34,13 @@ pub struct AudioController {
 
 // Implement PlayerController for AudioController
 impl PlayerController for AudioController {
-    fn get_capabilities(&self) -> Vec<PlayerCapability> {
+    fn get_capabilities(&self) -> PlayerCapabilitySet {
         if let Some(idx) = self.active_index {
             if let Ok(controller) = self.controllers[idx].read() {
                 return controller.get_capabilities();
             }
         }
-        Vec::new() // Return empty capabilities if no active controller
+        PlayerCapabilitySet::empty() // Return empty capabilities if no active controller
     }
     
     fn get_song(&self) -> Option<Song> {
@@ -331,7 +331,7 @@ impl AudioController {
             
             // Notify about current capabilities
             let capabilities = controller.get_capabilities();
-            debug!("Notifying about {} capabilities of new active controller", capabilities.len());
+            debug!("Notifying about capabilities of new active controller");
             self.forward_capabilities_changed(player_name, player_id, capabilities);
         }
         
@@ -607,7 +607,7 @@ impl AudioController {
     }
     
     /// Forward capabilities changed event to all registered listeners
-    fn forward_capabilities_changed(&self, player_name: String, player_id: String, capabilities: Vec<PlayerCapability>) {
+    fn forward_capabilities_changed(&self, player_name: String, player_id: String, capabilities: PlayerCapabilitySet) {
         // Prune dead listeners
         self.prune_dead_listeners();
         

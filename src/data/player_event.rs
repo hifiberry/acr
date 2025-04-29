@@ -1,4 +1,4 @@
-use crate::data::{PlaybackState, Song, LoopMode, PlayerCapability};
+use crate::data::{PlaybackState, Song, LoopMode, PlayerCapabilitySet};
 use serde::{Serialize, Deserialize};
 
 /// Identifies the source of a player event
@@ -52,7 +52,7 @@ pub enum PlayerEvent {
     /// Player capabilities have changed
     CapabilitiesChanged {
         source: PlayerSource,
-        capabilities: Vec<PlayerCapability>,
+        capabilities: PlayerCapabilitySet,
     },
 }
 

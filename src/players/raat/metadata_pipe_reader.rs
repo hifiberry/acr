@@ -9,8 +9,8 @@ use serde_json::Value;
 use crate::helpers::stream_helper::{open_stream, AccessMode};
 use crate::data::song::Song;
 use crate::data::player::Player;
-use crate::data::player::PlaybackState;  // Updated import path
-use crate::data::capabilities::PlayerCapability;
+use crate::data::player::PlaybackState;  
+use crate::data::capabilities::{PlayerCapability, PlayerCapabilitySet};
 use crate::data::stream_details::StreamDetails;
 use crate::data::loop_mode::LoopMode;
 
@@ -47,8 +47,8 @@ impl MetadataPipeReader {
         self.read_stream_with_retry(reader)
     }
 
-    /// Parse a JSON line of metadata and return a tuple of (Song, Player, Vec<PlayerCapability>, StreamDetails) if successful
-    pub fn parse_line(line: &str) -> Option<(Song, Player, Vec<PlayerCapability>, StreamDetails)> {
+    /// Parse a JSON line of metadata and return a tuple of (Song, Player, PlayerCapabilitySet, StreamDetails) if successful
+    pub fn parse_line(line: &str) -> Option<(Song, Player, PlayerCapabilitySet, StreamDetails)> {
         // Parse the JSON string
         match serde_json::from_str::<Value>(line) {
             Ok(json) => {
@@ -57,8 +57,8 @@ impl MetadataPipeReader {
                 player.type_ = Some("raat".to_string());
                 player.player_id = Some("raat".to_string());
                 
-                // Initialize empty capabilities list
-                let mut capabilities = Vec::new();
+                // Initialize empty capabilities set
+                let mut capabilities = PlayerCapabilitySet::empty();
                 
                 // Parse stream details if available
                 let mut stream_details = StreamDetails::new();
@@ -109,7 +109,7 @@ impl MetadataPipeReader {
                 if let Some(is_play_allowed) = json.get("is_play_allowed").and_then(|v| v.as_bool()) {
                     player_metadata.insert("is_play_allowed".to_string(), Value::Bool(is_play_allowed));
                     if is_play_allowed {
-                        capabilities.push(PlayerCapability::Play);
+                        capabilities.add_capability(PlayerCapability::Play);
                     }
                 }
                 
@@ -117,7 +117,7 @@ impl MetadataPipeReader {
                 if let Some(is_pause_allowed) = json.get("is_pause_allowed").and_then(|v| v.as_bool()) {
                     player_metadata.insert("is_pause_allowed".to_string(), Value::Bool(is_pause_allowed));
                     if is_pause_allowed {
-                        capabilities.push(PlayerCapability::Pause);
+                        capabilities.add_capability(PlayerCapability::Pause);
                     }
                 }
                 
@@ -125,7 +125,7 @@ impl MetadataPipeReader {
                 if let Some(is_seek_allowed) = json.get("is_seek_allowed").and_then(|v| v.as_bool()) {
                     player_metadata.insert("is_seek_allowed".to_string(), Value::Bool(is_seek_allowed));
                     if is_seek_allowed {
-                        capabilities.push(PlayerCapability::Seek);
+                        capabilities.add_capability(PlayerCapability::Seek);
                     }
                 }
                 
@@ -133,7 +133,7 @@ impl MetadataPipeReader {
                 if let Some(is_next_allowed) = json.get("is_next_allowed").and_then(|v| v.as_bool()) {
                     player_metadata.insert("is_next_allowed".to_string(), Value::Bool(is_next_allowed));
                     if is_next_allowed {
-                        capabilities.push(PlayerCapability::Next);
+                        capabilities.add_capability(PlayerCapability::Next);
                     }
                 }
                 
@@ -141,17 +141,17 @@ impl MetadataPipeReader {
                 if let Some(is_previous_allowed) = json.get("is_previous_allowed").and_then(|v| v.as_bool()) {
                     player_metadata.insert("is_previous_allowed".to_string(), Value::Bool(is_previous_allowed));
                     if is_previous_allowed {
-                        capabilities.push(PlayerCapability::Previous);
+                        capabilities.add_capability(PlayerCapability::Previous);
                     }
                 }
                 
                 // Add shuffle and loop functionality to capabilities if available in metadata
                 if json.get("shuffle").is_some() {
-                    capabilities.push(PlayerCapability::Shuffle);
+                    capabilities.add_capability(PlayerCapability::Shuffle);
                 }
                 
                 if json.get("loop").is_some() {
-                    capabilities.push(PlayerCapability::Loop);
+                    capabilities.add_capability(PlayerCapability::Loop);
                 }
                 
                 // Store shuffle state if available
@@ -184,7 +184,7 @@ impl MetadataPipeReader {
                 player.metadata = player_metadata;
                 
                 // Set capabilities in the player
-                player.capabilities = Some(capabilities.clone());
+                player.capabilities = capabilities;
 
                 // Check if "now_playing" field exists in the JSON
                 if let Some(now_playing) = json.get("now_playing").and_then(|np| np.as_object()) {

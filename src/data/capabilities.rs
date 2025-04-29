@@ -1,9 +1,11 @@
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use strum_macros::{Display, EnumString, AsRefStr};
 use enumflags2::{bitflags, BitFlags};
+use std::fmt;
 
 /// Enum representing the capabilities of a player
 #[bitflags]
+#[repr(u32)]  // Explicitly specify representation type for BitFlags
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString, AsRefStr)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -145,22 +147,22 @@ impl PlayerCapabilitySet {
     }
 
     /// Add a capability to the set
-    pub fn addCapability(&mut self, capability: PlayerCapability) {
+    pub fn add_capability(&mut self, capability: PlayerCapability) {
         self.flags |= BitFlags::from_flag(capability);
     }
 
     /// Remove a capability from the set
-    pub fn removeCapability(&mut self, capability: PlayerCapability) {
+    pub fn remove_capability(&mut self, capability: PlayerCapability) {
         self.flags &= !BitFlags::from_flag(capability);
     }
 
     /// Check if a specific capability is in the set
-    pub fn hasCapability(&self, capability: PlayerCapability) -> bool {
+    pub fn has_capability(&self, capability: PlayerCapability) -> bool {
         self.flags.contains(capability)
     }
     
     /// Check if the set is empty (contains no capabilities)
-    pub fn isEmpty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.flags.is_empty()
     }
 
@@ -168,7 +170,7 @@ impl PlayerCapabilitySet {
     pub fn from_slice(capabilities: &[PlayerCapability]) -> Self {
         let mut set = Self::empty();
         for capability in capabilities {
-            set.addCapability(*capability);
+            set.add_capability(*capability);
         }
         set
     }
@@ -194,7 +196,7 @@ impl Default for PlayerCapabilitySet {
 impl From<PlayerCapability> for PlayerCapabilitySet {
     fn from(capability: PlayerCapability) -> Self {
         let mut set = Self::empty();
-        set.addCapability(capability);
+        set.add_capability(capability);
         set
     }
 }
@@ -216,8 +218,55 @@ impl FromIterator<PlayerCapability> for PlayerCapabilitySet {
     fn from_iter<T: IntoIterator<Item = PlayerCapability>>(iter: T) -> Self {
         let mut set = Self::empty();
         for capability in iter {
-            set.addCapability(capability);
+            set.add_capability(capability);
         }
         set
+    }
+}
+
+/// Support for serializing PlayerCapabilitySet
+impl Serialize for PlayerCapabilitySet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Serialize as a vec of capabilities for human-readable formats
+        self.to_vec().serialize(serializer)
+    }
+}
+
+/// Support for deserializing PlayerCapabilitySet from various formats
+impl<'de> Deserialize<'de> for PlayerCapabilitySet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Deserialize from a vec of capabilities
+        let capabilities = Vec::<PlayerCapability>::deserialize(deserializer)?;
+        Ok(Self::from_slice(&capabilities))
+    }
+}
+
+impl fmt::Display for PlayerCapabilitySet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let caps = self.to_vec();
+        write!(f, "[")?;
+        for (i, cap) in caps.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", cap)?;
+        }
+        write!(f, "]")
+    }
+}
+
+// Implement IntoIterator for &PlayerCapabilitySet to allow iteration over capabilities
+impl<'a> IntoIterator for &'a PlayerCapabilitySet {
+    type Item = PlayerCapability;
+    type IntoIter = std::vec::IntoIter<PlayerCapability>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.to_vec().into_iter()
     }
 }

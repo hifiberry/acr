@@ -1,7 +1,7 @@
 use crate::players::base_controller::BasePlayerController;
 use crate::players::player_controller::PlayerController;
 use crate::players::player_controller::PlayerStateListener;
-use crate::data::{PlayerCapability, Song, LoopMode, PlaybackState, PlayerCommand};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand};
 use delegate::delegate;
 use std::sync::{Arc, Weak, Mutex};
 use log::{debug, info, warn, error};
@@ -441,7 +441,7 @@ impl MPDPlayerController {
                     false // Don't notify yet
                 );
                 
-                // If any capabilities changed, send a single notification with all current capabilities
+                // Update capabilities with a single notification
                 if capabilities_changed {
                     let current_caps = player.base.get_capabilities();
                     player.base.notify_capabilities_changed(&current_caps);
@@ -561,7 +561,7 @@ impl PlayerController for MPDPlayerController {
         to self.base {
             fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
             fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
-            fn get_capabilities(&self) -> Vec<PlayerCapability>;
+            fn get_capabilities(&self) -> PlayerCapabilitySet;
         }
     }
     

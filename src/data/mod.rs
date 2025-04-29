@@ -7,6 +7,7 @@ mod loop_mode;
 mod capabilities;
 mod player_command;
 mod serializable;
+mod player_event;
 
 // Re-export all items for easier imports
 pub use player_state::PlayerState;
@@ -16,3 +17,5 @@ pub use loop_mode::LoopMode;
 pub use capabilities::*;
 pub use player_command::PlayerCommand;
 pub use serializable::{Serializable, Deserializable, SerializationError};
+pub use player_event::PlayerEvent;
+pub use player_event::PlayerSource;

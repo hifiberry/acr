@@ -1,4 +1,4 @@
-use crate::data::{PlayerState, Song, LoopMode, PlayerCapability};
+use crate::data::{PlayerState, Song, LoopMode, PlayerCapability, PlayerEvent, PlayerSource};
 use crate::players::player_controller::PlayerStateListener;
 use std::sync::{Arc, Weak, RwLock};
 use log::{debug, trace, warn};
@@ -180,12 +180,19 @@ impl BasePlayerController {
         debug!("Notifying listeners of state change: {}", state);
         self.prune_dead_listeners();
         
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::StateChanged {
+            source,
+            state,
+        };
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of state change", listeners.len());
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of state change");
-                    listener.on_state_changed(player_name.clone(), player_id.clone(), state);
+                    listener.on_event(event.clone());
                 }
             }
         } else {
@@ -204,12 +211,19 @@ impl BasePlayerController {
         // Create a cloned version of the song to pass to listeners
         let song_copy = song.cloned();
         
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::SongChanged {
+            source,
+            song: song_copy,
+        };
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of song change", listeners.len());
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of song change");
-                    listener.on_song_changed(player_name.clone(), player_id.clone(), song_copy.clone());
+                    listener.on_event(event.clone());
                 }
             }
         } else {
@@ -225,12 +239,19 @@ impl BasePlayerController {
         debug!("Notifying listeners of loop mode change: {}", mode);
         self.prune_dead_listeners();
         
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::LoopModeChanged {
+            source,
+            mode,
+        };
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of loop mode change", listeners.len());
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of loop mode change");
-                    listener.on_loop_mode_changed(player_name.clone(), player_id.clone(), mode);
+                    listener.on_event(event.clone());
                 }
             }
         } else {
@@ -257,12 +278,19 @@ impl BasePlayerController {
         // Create a copied vector for each listener
         let capabilities_vec = capabilities.to_vec();
         
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::CapabilitiesChanged {
+            source,
+            capabilities: capabilities_vec,
+        };
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of capabilities change", listeners.len());
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
                     trace!("Notifying listener of capabilities change");
-                    listener.on_capabilities_changed(player_name.clone(), player_id.clone(), capabilities_vec.clone());
+                    listener.on_event(event.clone());
                 }
             }
         } else {

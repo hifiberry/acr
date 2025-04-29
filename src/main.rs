@@ -1,4 +1,4 @@
-use acr::data::{PlayerState, Song, LoopMode, PlayerCapability, PlayerCommand};
+use acr::data::{PlayerState, Song, LoopMode, PlayerCapability, PlayerCommand, PlayerEvent};
 use acr::players::{PlayerStateListener, PlayerController};
 use acr::AudioController;
 use std::sync::{Arc, Weak};
@@ -27,30 +27,36 @@ impl EventLogger {
 }
 
 impl PlayerStateListener for EventLogger {
-    fn on_state_changed(&self, player_name: String, player_id: String, state: PlayerState) {
-        info!("[{}] Player {}:{} - State changed: {}", self.name, player_name, player_id, state);
-    }
-    
-    fn on_song_changed(&self, player_name: String, player_id: String, song: Option<Song>) {
-        match song {
-            Some(s) => info!("[{}] Player {}:{} - Song changed: {} by {}", 
-                self.name,
-                player_name,
-                player_id,
-                s.title.as_deref().unwrap_or("Unknown"), 
-                s.artist.as_deref().unwrap_or("Unknown")),
-            None => info!("[{}] Player {}:{} - Song cleared", self.name, player_name, player_id),
-        }
-    }
-    
-    fn on_loop_mode_changed(&self, player_name: String, player_id: String, mode: LoopMode) {
-        info!("[{}] Player {}:{} - Loop mode changed: {}", self.name, player_name, player_id, mode);
-    }
-    
-    fn on_capabilities_changed(&self, player_name: String, player_id: String, capabilities: Vec<PlayerCapability>) {
-        info!("[{}] Player {}:{} - Capabilities changed:", self.name, player_name, player_id);
-        for cap in capabilities {
-            debug!("[{}] Player {}:{} - Capability: {}", self.name, player_name, player_id, cap);
+    fn on_event(&self, event: acr::data::PlayerEvent) {
+        match event {
+            acr::data::PlayerEvent::StateChanged { source, state } => {
+                info!("[{}] Player {}:{} - State changed: {}", 
+                      self.name, source.player_name, source.player_id, state);
+            },
+            acr::data::PlayerEvent::SongChanged { source, song } => {
+                match song {
+                    Some(s) => info!("[{}] Player {}:{} - Song changed: {} by {}", 
+                        self.name,
+                        source.player_name,
+                        source.player_id,
+                        s.title.as_deref().unwrap_or("Unknown"), 
+                        s.artist.as_deref().unwrap_or("Unknown")),
+                    None => info!("[{}] Player {}:{} - Song cleared", 
+                                  self.name, source.player_name, source.player_id),
+                }
+            },
+            acr::data::PlayerEvent::LoopModeChanged { source, mode } => {
+                info!("[{}] Player {}:{} - Loop mode changed: {}", 
+                      self.name, source.player_name, source.player_id, mode);
+            },
+            acr::data::PlayerEvent::CapabilitiesChanged { source, capabilities } => {
+                info!("[{}] Player {}:{} - Capabilities changed:", 
+                      self.name, source.player_name, source.player_id);
+                for cap in capabilities {
+                    debug!("[{}] Player {}:{} - Capability: {}", 
+                           self.name, source.player_name, source.player_id, cap);
+                }
+            },
         }
     }
     

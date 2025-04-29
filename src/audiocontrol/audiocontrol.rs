@@ -1,11 +1,11 @@
 use crate::players::PlayerController;
 use crate::players::PlayerStateListener;
-use crate::data::{PlayerCommand, PlayerCapability, Song, LoopMode, PlayerState};
+use crate::data::{PlayerCommand, PlayerCapability, Song, LoopMode, PlayerState, PlayerEvent, PlayerSource};
 use crate::players::{create_player_from_json, PlayerCreationError};
+use serde_json::Value;
 use std::sync::{Arc, RwLock, Weak};
 use std::any::Any;
-use log::{debug, warn, error, info};
-use serde_json::Value;
+use log::{debug, warn, error};
 
 /// A simple AudioController that manages multiple PlayerController instances
 #[derive(Clone)]
@@ -133,44 +133,45 @@ impl PlayerController for AudioController {
 
 // Implement PlayerStateListener for AudioController
 impl PlayerStateListener for AudioController {
-    fn on_state_changed(&self, player_name: String, player_id: String, state: PlayerState) {
-        // Check if the event is from the active player
-        if self.is_active_player(&player_name, &player_id) {
-            debug!("AudioController forwarding state change from active player {}: {}", player_id, state);
-            self.forward_state_changed(player_name, player_id, state);
-        } else {
-            debug!("AudioController ignoring state change from inactive player {}", player_id);
-        }
-    }
-    
-    fn on_song_changed(&self, player_name: String, player_id: String, song: Option<Song>) {
-        // Check if the event is from the active player
-        if self.is_active_player(&player_name, &player_id) {
-            let song_title = song.as_ref().map_or("None".to_string(), |s| s.title.as_deref().unwrap_or("Unknown").to_string());
-            debug!("AudioController forwarding song change from active player {}: {}", player_id, song_title);
-            self.forward_song_changed(player_name, player_id, song);
-        } else {
-            debug!("AudioController ignoring song change from inactive player {}", player_id);
-        }
-    }
-    
-    fn on_loop_mode_changed(&self, player_name: String, player_id: String, mode: LoopMode) {
-        // Check if the event is from the active player
-        if self.is_active_player(&player_name, &player_id) {
-            debug!("AudioController forwarding loop mode change from active player {}: {}", player_id, mode);
-            self.forward_loop_mode_changed(player_name, player_id, mode);
-        } else {
-            debug!("AudioController ignoring loop mode change from inactive player {}", player_id);
-        }
-    }
-    
-    fn on_capabilities_changed(&self, player_name: String, player_id: String, capabilities: Vec<PlayerCapability>) {
-        // Check if the event is from the active player
-        if self.is_active_player(&player_name, &player_id) {
-            debug!("AudioController forwarding capabilities change from active player {}", player_id);
-            self.forward_capabilities_changed(player_name, player_id, capabilities);
-        } else {
-            debug!("AudioController ignoring capabilities change from inactive player {}", player_id);
+    fn on_event(&self, event: PlayerEvent) {
+        match event {
+            PlayerEvent::StateChanged { source, state } => {
+                // Check if the event is from the active player
+                if self.is_active_player(&source.player_name, &source.player_id) {
+                    debug!("AudioController forwarding state change from active player {}: {}", source.player_id, state);
+                    self.forward_state_changed(source.player_name, source.player_id, state);
+                } else {
+                    debug!("AudioController ignoring state change from inactive player {}", source.player_id);
+                }
+            },
+            PlayerEvent::SongChanged { source, song } => {
+                // Check if the event is from the active player
+                if self.is_active_player(&source.player_name, &source.player_id) {
+                    let song_title = song.as_ref().map_or("None".to_string(), |s| s.title.as_deref().unwrap_or("Unknown").to_string());
+                    debug!("AudioController forwarding song change from active player {}: {}", source.player_id, song_title);
+                    self.forward_song_changed(source.player_name, source.player_id, song);
+                } else {
+                    debug!("AudioController ignoring song change from inactive player {}", source.player_id);
+                }
+            },
+            PlayerEvent::LoopModeChanged { source, mode } => {
+                // Check if the event is from the active player
+                if self.is_active_player(&source.player_name, &source.player_id) {
+                    debug!("AudioController forwarding loop mode change from active player {}: {}", source.player_id, mode);
+                    self.forward_loop_mode_changed(source.player_name, source.player_id, mode);
+                } else {
+                    debug!("AudioController ignoring loop mode change from inactive player {}", source.player_id);
+                }
+            },
+            PlayerEvent::CapabilitiesChanged { source, capabilities } => {
+                // Check if the event is from the active player
+                if self.is_active_player(&source.player_name, &source.player_id) {
+                    debug!("AudioController forwarding capabilities change from active player {}", source.player_id);
+                    self.forward_capabilities_changed(source.player_name, source.player_id, capabilities);
+                } else {
+                    debug!("AudioController ignoring capabilities change from inactive player {}", source.player_id);
+                }
+            },
         }
     }
     
@@ -212,7 +213,7 @@ impl AudioController {
             } else {
                 warn!("AudioController self-reference not initialized, cannot register as listener");
                 // Continue without registering as listener
-                let mut controller = controller;
+                let controller = controller;
                 let controller = Arc::new(RwLock::new(controller));
                 self.controllers.push(controller);
                 
@@ -225,7 +226,7 @@ impl AudioController {
         } else {
             warn!("Failed to acquire read lock for self-reference, cannot register as listener");
             // Continue without registering as listener
-            let mut controller = controller;
+            let controller = controller;
             let controller = Arc::new(RwLock::new(controller));
             self.controllers.push(controller);
             
@@ -434,11 +435,18 @@ impl AudioController {
         // Prune dead listeners
         self.prune_dead_listeners();
         
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::StateChanged {
+            source,
+            state,
+        };
+        
         // Forward the event to all active listeners
         if let Ok(listeners) = self.listeners.read() {
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_state_changed(player_name.clone(), player_id.clone(), state);
+                    listener.on_event(event.clone());
                 }
             }
         } else {
@@ -451,11 +459,18 @@ impl AudioController {
         // Prune dead listeners
         self.prune_dead_listeners();
         
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::SongChanged {
+            source,
+            song,
+        };
+        
         // Forward the event to all active listeners
         if let Ok(listeners) = self.listeners.read() {
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_song_changed(player_name.clone(), player_id.clone(), song.clone());
+                    listener.on_event(event.clone());
                 }
             }
         } else {
@@ -468,11 +483,18 @@ impl AudioController {
         // Prune dead listeners
         self.prune_dead_listeners();
         
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::LoopModeChanged {
+            source,
+            mode,
+        };
+        
         // Forward the event to all active listeners
         if let Ok(listeners) = self.listeners.read() {
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_loop_mode_changed(player_name.clone(), player_id.clone(), mode);
+                    listener.on_event(event.clone());
                 }
             }
         } else {
@@ -485,11 +507,18 @@ impl AudioController {
         // Prune dead listeners
         self.prune_dead_listeners();
         
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::CapabilitiesChanged {
+            source,
+            capabilities,
+        };
+        
         // Forward the event to all active listeners
         if let Ok(listeners) = self.listeners.read() {
             for listener_weak in listeners.iter() {
                 if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_capabilities_changed(player_name.clone(), player_id.clone(), capabilities.clone());
+                    listener.on_event(event.clone());
                 }
             }
         } else {

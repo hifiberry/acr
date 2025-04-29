@@ -48,8 +48,8 @@ impl EventLogger {
                         "Player {} (ID: {}) changed song to '{}' by '{}'{}",
                         source.player_name(),
                         source.player_id(),
-                        song.title(),
-                        song.artist().unwrap_or("Unknown"),
+                        song.title.as_deref().unwrap_or("Unknown"),
+                        song.artist.as_deref().unwrap_or("Unknown"),
                         if is_active_player { " [ACTIVE]" } else { "" }
                     );
                 } else {

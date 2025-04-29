@@ -4,7 +4,6 @@
 /// to create plugins from JSON configuration.
 
 use crate::plugins::plugin_factory::PluginFactory;
-use crate::plugins::event_filters::event_filter::EventFilter;
 
 /// Example of how to use the plugin factory with JSON
 pub fn plugin_factory_json_example() {

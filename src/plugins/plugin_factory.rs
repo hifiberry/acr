@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use log::{info, error, warn};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json, Map};
+use serde_json::{Value, Map};
 
 use crate::plugins::plugin::Plugin;
 use crate::plugins::event_filters::event_filter::{EventFilter};
@@ -135,16 +134,16 @@ impl PluginFactory {
     }
     
     /// Create a new instance of an EventFilter plugin by name
-    pub fn create_event_filter(&self, name: &str) -> Option<Box<dyn EventFilter>> {
+    pub fn create_event_filter(&self, name: &str) -> Option<Box<dyn EventFilter + Send + Sync>> {
         self.create_event_filter_with_config(name, None)
     }
     
     /// Create a new instance of an EventFilter plugin by name with configuration
-    pub fn create_event_filter_with_config(&self, name: &str, config: Option<&Value>) -> Option<Box<dyn EventFilter>> {
+    pub fn create_event_filter_with_config(&self, name: &str, config: Option<&Value>) -> Option<Box<dyn EventFilter + Send + Sync>> {
         let plugin = self.create_with_config(name, config)?;
         
         // Try to downcast the plugin to EventFilter
-        if let Some(event_filter) = plugin.as_any().downcast_ref::<EventLogger>() {
+        if plugin.as_any().downcast_ref::<EventLogger>().is_some() {
             // For EventLogger, we need to create a new instance with the right configuration
             let only_active = if let Some(config) = config {
                 config.get("only_active")
@@ -156,7 +155,7 @@ impl PluginFactory {
                 true
             };
             
-            Some(Box::new(EventLogger::new(only_active)))
+            Some(Box::new(EventLogger::new(only_active)) as Box<dyn EventFilter + Send + Sync>)
         } else {
             error!("Plugin '{}' is not a compatible EventFilter", name);
             None
@@ -164,7 +163,7 @@ impl PluginFactory {
     }
     
     /// Create an event filter from a JSON configuration string
-    pub fn create_event_filter_from_json(&self, json_config: &str) -> Option<Box<dyn EventFilter>> {
+    pub fn create_event_filter_from_json(&self, json_config: &str) -> Option<Box<dyn EventFilter + Send + Sync>> {
         match serde_json::from_str::<Map<String, Value>>(json_config) {
             Ok(config_map) => {
                 // We expect only one key (the plugin type)

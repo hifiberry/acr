@@ -2,6 +2,7 @@ use crate::players::PlayerController;
 use crate::players::PlayerStateListener;
 use crate::data::{PlayerCommand, PlayerCapability, Song, LoopMode, PlayerState, PlayerEvent, PlayerSource};
 use crate::players::{create_player_from_json, PlayerCreationError};
+use crate::plugins::EventFilter;
 use serde_json::Value;
 use std::sync::{Arc, RwLock, Weak};
 use std::any::Any;
@@ -18,6 +19,9 @@ pub struct AudioController {
     
     /// List of state listeners registered with this controller
     listeners: Arc<RwLock<Vec<Weak<dyn PlayerStateListener>>>>,
+    
+    /// List of event filters for incoming events
+    event_filters: Arc<RwLock<Vec<Box<dyn EventFilter + Send + Sync>>>>,
     
     /// Self-reference for registering with players
     /// This is wrapped in Option because it's initialized after construction
@@ -134,44 +138,73 @@ impl PlayerController for AudioController {
 // Implement PlayerStateListener for AudioController
 impl PlayerStateListener for AudioController {
     fn on_event(&self, event: PlayerEvent) {
-        match event {
-            PlayerEvent::StateChanged { source, state } => {
-                // Check if the event is from the active player
-                if self.is_active_player(&source.player_name, &source.player_id) {
-                    debug!("AudioController forwarding state change from active player {}: {}", source.player_id, state);
-                    self.forward_state_changed(source.player_name, source.player_id, state);
-                } else {
-                    debug!("AudioController ignoring state change from inactive player {}", source.player_id);
+        // Determine if this event is from the active player
+        let is_active = match &event {
+            PlayerEvent::StateChanged { source, .. } => 
+                self.is_active_player(&source.player_name, &source.player_id),
+            PlayerEvent::SongChanged { source, .. } => 
+                self.is_active_player(&source.player_name, &source.player_id),
+            PlayerEvent::LoopModeChanged { source, .. } => 
+                self.is_active_player(&source.player_name, &source.player_id),
+            PlayerEvent::CapabilitiesChanged { source, .. } => 
+                self.is_active_player(&source.player_name, &source.player_id),
+        };
+
+        // Pass the event through all filters
+        let mut filtered_event = Some(event);
+        if let Ok(filters) = self.event_filters.read() {
+            for filter in filters.iter() {
+                if let Some(current_event) = filtered_event {
+                    filtered_event = filter.filter_event(current_event, is_active);
+                    if filtered_event.is_none() {
+                        debug!("Event was filtered out by {}", filter.name());
+                        break;  // Event was filtered out, stop processing
+                    }
                 }
-            },
-            PlayerEvent::SongChanged { source, song } => {
-                // Check if the event is from the active player
-                if self.is_active_player(&source.player_name, &source.player_id) {
-                    let song_title = song.as_ref().map_or("None".to_string(), |s| s.title.as_deref().unwrap_or("Unknown").to_string());
-                    debug!("AudioController forwarding song change from active player {}: {}", source.player_id, song_title);
-                    self.forward_song_changed(source.player_name, source.player_id, song);
-                } else {
-                    debug!("AudioController ignoring song change from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::LoopModeChanged { source, mode } => {
-                // Check if the event is from the active player
-                if self.is_active_player(&source.player_name, &source.player_id) {
-                    debug!("AudioController forwarding loop mode change from active player {}: {}", source.player_id, mode);
-                    self.forward_loop_mode_changed(source.player_name, source.player_id, mode);
-                } else {
-                    debug!("AudioController ignoring loop mode change from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::CapabilitiesChanged { source, capabilities } => {
-                // Check if the event is from the active player
-                if self.is_active_player(&source.player_name, &source.player_id) {
-                    debug!("AudioController forwarding capabilities change from active player {}", source.player_id);
-                    self.forward_capabilities_changed(source.player_name, source.player_id, capabilities);
-                } else {
-                    debug!("AudioController ignoring capabilities change from inactive player {}", source.player_id);
-                }
-            },
+            }
+        }
+
+        // Process the filtered event
+        if let Some(filtered_event) = filtered_event {
+            match filtered_event {
+                PlayerEvent::StateChanged { source, state } => {
+                    // Check if the event is from the active player
+                    if is_active {
+                        debug!("AudioController forwarding state change from active player {}: {}", source.player_id, state);
+                        self.forward_state_changed(source.player_name, source.player_id, state);
+                    } else {
+                        debug!("AudioController ignoring state change from inactive player {}", source.player_id);
+                    }
+                },
+                PlayerEvent::SongChanged { source, song } => {
+                    // Check if the event is from the active player
+                    if is_active {
+                        let song_title = song.as_ref().map_or("None".to_string(), |s| s.title.as_deref().unwrap_or("Unknown").to_string());
+                        debug!("AudioController forwarding song change from active player {}: {}", source.player_id, song_title);
+                        self.forward_song_changed(source.player_name, source.player_id, song);
+                    } else {
+                        debug!("AudioController ignoring song change from inactive player {}", source.player_id);
+                    }
+                },
+                PlayerEvent::LoopModeChanged { source, mode } => {
+                    // Check if the event is from the active player
+                    if is_active {
+                        debug!("AudioController forwarding loop mode change from active player {}: {}", source.player_id, mode);
+                        self.forward_loop_mode_changed(source.player_name, source.player_id, mode);
+                    } else {
+                        debug!("AudioController ignoring loop mode change from inactive player {}", source.player_id);
+                    }
+                },
+                PlayerEvent::CapabilitiesChanged { source, capabilities } => {
+                    // Check if the event is from the active player
+                    if is_active {
+                        debug!("AudioController forwarding capabilities change from active player {}", source.player_id);
+                        self.forward_capabilities_changed(source.player_name, source.player_id, capabilities);
+                    } else {
+                        debug!("AudioController ignoring capabilities change from inactive player {}", source.player_id);
+                    }
+                },
+            }
         }
     }
     
@@ -187,6 +220,7 @@ impl AudioController {
             controllers: Vec::new(),
             active_index: None,
             listeners: Arc::new(RwLock::new(Vec::new())),
+            event_filters: Arc::new(RwLock::new(Vec::new())),
             self_ref: Arc::new(RwLock::new(None)),
         }
     }
@@ -379,41 +413,82 @@ impl AudioController {
 
     /// Create a new AudioController from a JSON array of player configurations
     /// 
-    /// Each element in the array should be a valid configuration for create_player_from_json
+    /// The JSON configuration can include:
+    /// - "players": Array of player configurations
+    /// - "event_filters": Array of event filter configurations
+    /// 
     /// Returns a Result with the new AudioController or an error if any player creation failed
     pub fn from_json(config: &Value) -> Result<Arc<AudioController>, PlayerCreationError> {
-        if !config.is_array() {
-            return Err(PlayerCreationError::ParseError("Expected a JSON array".to_string()));
-        }
-
         // Create controller without players first
         let controller = Arc::new(AudioController::new());
         
         // Initialize the self-reference
         AudioController::initialize(&controller);
         
-        let config_array = config.as_array().unwrap();
-        debug!("Creating AudioController from JSON array with {} elements", config_array.len());
-        
-        // Get a mutable reference to add players
+        // Get a mutable reference to add players and filters
         let controller_ref = unsafe { &mut *(Arc::as_ptr(&controller) as *mut AudioController) };
         
-        for (idx, player_config) in config_array.iter().enumerate() {
-            match create_player_from_json(player_config) {
-                Ok(player) => {
-                    debug!("Successfully created player {} from JSON configuration", idx);
-                    // Use add_controller to ensure the AudioController registers itself as a listener
-                    controller_ref.add_controller(player);
-                },
-                Err(e) => {
-                    error!("Failed to create player {}: {}", idx, e);
-                    return Err(e);
+        // Process player configurations if present
+        if let Some(players_config) = config.get("players").and_then(|v| v.as_array()) {
+            debug!("Creating AudioController players from JSON array with {} elements", players_config.len());
+            
+            for (idx, player_config) in players_config.iter().enumerate() {
+                match create_player_from_json(player_config) {
+                    Ok(player) => {
+                        debug!("Successfully created player {} from JSON configuration", idx);
+                        // Use add_controller to ensure the AudioController registers itself as a listener
+                        controller_ref.add_controller(player);
+                    },
+                    Err(e) => {
+                        error!("Failed to create player {}: {}", idx, e);
+                        return Err(e);
+                    }
+                }
+            }
+            
+            if controller_ref.controllers.is_empty() {
+                warn!("No valid player controllers found in configuration");
+            }
+        } else if let Some(players_config) = config.as_array() {
+            // For backward compatibility, check if the top-level config is an array of players
+            debug!("Using legacy format - Creating AudioController from JSON array with {} elements", players_config.len());
+            
+            for (idx, player_config) in players_config.iter().enumerate() {
+                match create_player_from_json(player_config) {
+                    Ok(player) => {
+                        debug!("Successfully created player {} from JSON configuration", idx);
+                        controller_ref.add_controller(player);
+                    },
+                    Err(e) => {
+                        error!("Failed to create player {}: {}", idx, e);
+                        return Err(e);
+                    }
                 }
             }
         }
         
-        if controller_ref.controllers.is_empty() {
-            warn!("No valid player controllers found in configuration");
+        // Process event filter configurations if present
+        if let Some(filters_config) = config.get("event_filters").and_then(|v| v.as_array()) {
+            debug!("Creating event filters from JSON array with {} elements", filters_config.len());
+            
+            let factory = crate::plugins::plugin_factory::PluginFactory::new();
+            
+            for (idx, filter_config) in filters_config.iter().enumerate() {
+                // Convert the filter config to a string for the factory
+                if let Ok(json_str) = serde_json::to_string(filter_config) {
+                    match factory.create_event_filter_from_json(&json_str) {
+                        Some(filter) => {
+                            debug!("Successfully created event filter {} from JSON configuration", idx);
+                            controller_ref.add_event_filter(filter);
+                        },
+                        None => {
+                            warn!("Failed to create event filter {} from JSON, skipping", idx);
+                        }
+                    }
+                } else {
+                    warn!("Failed to serialize filter configuration to JSON string, skipping filter {}", idx);
+                }
+            }
         }
         
         Ok(controller)
@@ -537,6 +612,70 @@ impl AudioController {
             }
         } else {
             warn!("Failed to acquire write lock when pruning dead listeners");
+        }
+    }
+
+    /// Add an event filter to the controller
+    /// Returns the index of the added filter
+    pub fn add_event_filter(&mut self, filter: Box<dyn EventFilter + Send + Sync>) -> usize {
+        if let Ok(mut filters) = self.event_filters.write() {
+            filters.push(filter);
+            debug!("Added event filter at index {}", filters.len() - 1);
+            return filters.len() - 1;
+        } else {
+            error!("Failed to acquire write lock for event_filters");
+            0
+        }
+    }
+
+    /// Remove an event filter by index
+    /// Returns true if the filter was successfully removed
+    pub fn remove_event_filter(&mut self, index: usize) -> bool {
+        if let Ok(mut filters) = self.event_filters.write() {
+            if index < filters.len() {
+                filters.remove(index);
+                debug!("Removed event filter at index {}", index);
+                return true;
+            }
+            false
+        } else {
+            error!("Failed to acquire write lock for event_filters");
+            false
+        }
+    }
+
+    /// Get the number of event filters
+    pub fn event_filter_count(&self) -> usize {
+        if let Ok(filters) = self.event_filters.read() {
+            filters.len()
+        } else {
+            0
+        }
+    }
+
+    /// Clear all event filters
+    pub fn clear_event_filters(&mut self) -> usize {
+        if let Ok(mut filters) = self.event_filters.write() {
+            let count = filters.len();
+            filters.clear();
+            debug!("Cleared {} event filters", count);
+            count
+        } else {
+            error!("Failed to acquire write lock for event_filters");
+            0
+        }
+    }
+
+    /// Add multiple event filters from a vector
+    pub fn add_event_filters(&mut self, mut filters: Vec<Box<dyn EventFilter + Send + Sync>>) -> usize {
+        if let Ok(mut existing_filters) = self.event_filters.write() {
+            let count = filters.len();
+            existing_filters.append(&mut filters);
+            debug!("Added {} event filters", count);
+            count
+        } else {
+            error!("Failed to acquire write lock for event_filters");
+            0
         }
     }
 }

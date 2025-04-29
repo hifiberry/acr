@@ -7,6 +7,9 @@ pub mod players;
 /// Audio controller for managing multiple players
 pub mod audiocontrol;
 
+/// Plugin system for event filtering and extensions
+pub mod plugins;
+
 // Re-export items from data module for backward compatibility
 pub use data::{PlayerState, Song, Player};
 

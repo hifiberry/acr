@@ -392,7 +392,7 @@ impl MPDPlayerController {
                     
                     // Update volume if available (MPD returns -1 for no volume control)
                     if status.volume >= 0 {
-                        current_state.volume = Some(status.volume);
+                        current_state.volume = Some(status.volume as i32);
                         debug!("Updated volume: {}%", status.volume);
                     }
                     
@@ -428,7 +428,9 @@ impl MPDPlayerController {
                         let mut metadata = HashMap::new();
                         
                         if let Some(duration) = sng.duration {
-                            metadata.insert("duration".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(duration).unwrap_or_default()));
+                            if let Some(num) = serde_json::Number::from_f64(duration) {
+                                metadata.insert("duration".to_string(), serde_json::Value::Number(num));
+                            }
                         }
                         
                         if let Some(track) = sng.track_number {
@@ -437,9 +439,13 @@ impl MPDPlayerController {
                         
                         // Queue status info
                         metadata.insert("queue_length".to_string(), serde_json::Value::Number(serde_json::Number::from(status.queue_len)));
+                        
                         if let Some(song_id) = status.song.map(|s| s.id) {
-                            metadata.insert("song_id".to_string(), serde_json::Value::Number(serde_json::Number::from(song_id)));
+                            // Convert the mpd::Id to a number that can be stored in metadata
+                            let id_value = song_id.0; // Access the inner numeric value directly
+                            metadata.insert("song_id".to_string(), serde_json::Value::Number(serde_json::Number::from(id_value)));
                         }
+                        
                         if let Some(song_pos) = status.song.map(|s| s.pos) {
                             metadata.insert("queue_position".to_string(), serde_json::Value::Number(serde_json::Number::from(song_pos)));
                         }

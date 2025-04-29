@@ -1,55 +1,57 @@
 use serde::{Serialize, Deserialize};
 use strum_macros::{Display, EnumString, AsRefStr};
+use enumflags2::{bitflags, BitFlags};
 
 /// Enum representing the capabilities of a player
+#[bitflags]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString, AsRefStr)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum PlayerCapability {
     /// Can play media
-    Play,
+    Play = 0x0001,
     /// Can pause playback
-    Pause,
+    Pause = 0x0002,
     /// Can toggle between play and pause
-    PlayPause,
+    PlayPause = 0x0004,
     /// Can stop playback
-    Stop,
+    Stop = 0x0008,
     /// Can skip to next track
-    Next,
+    Next = 0x0010,
     /// Can skip to previous track
-    Previous,
+    Previous = 0x0020,
     /// Can seek within a track
-    Seek,
+    Seek = 0x0040,
     /// Can report playback position
-    Position,
+    Position = 0x0080,
     /// Can report track duration/length
-    Length,
+    Length = 0x0100,
     /// Can control volume
-    Volume,
+    Volume = 0x0200,
     /// Can mute/unmute
-    Mute,
+    Mute = 0x0400,
     /// Can toggle shuffle mode
-    Shuffle,
+    Shuffle = 0x0800,
     /// Can set loop mode
-    Loop,
+    Loop = 0x1000,
     /// Can manage playlists
-    Playlists,
+    Playlists = 0x2000,
     /// Can manage queue
-    Queue,
+    Queue = 0x4000,
     /// Can provide metadata
-    Metadata,
+    Metadata = 0x8000,
     /// Can provide album art
-    AlbumArt,
+    AlbumArt = 0x10000,
     /// Can search for tracks
-    Search,
+    Search = 0x20000,
     /// Can browse media library
-    Browse,
+    Browse = 0x40000,
     /// Can manage favorites
-    Favorites,
+    Favorites = 0x80000,
     /// Can update internal database
-    DatabaseUpdate,
+    DatabaseUpdate = 0x100000,
     /// Can be killed (terminated forcefully)
-    Killable,
+    Killable = 0x200000,
 }
 
 impl PlayerCapability {
@@ -81,37 +83,141 @@ impl PlayerCapability {
         }
     }
 
-    /// Get a list of all capabilities
-    pub fn all() -> Vec<PlayerCapability> {
-        vec![
-            Self::Play,
-            Self::Pause,
-            Self::PlayPause,
-            Self::Stop,
-            Self::Next,
-            Self::Previous,
-            Self::Seek,
-            Self::Position,
-            Self::Length,
-            Self::Volume,
-            Self::Mute,
-            Self::Shuffle,
-            Self::Loop,
-            Self::Playlists,
-            Self::Queue,
-            Self::Metadata,
-            Self::AlbumArt,
-            Self::Search,
-            Self::Browse,
-            Self::Favorites,
-            Self::DatabaseUpdate,
-            Self::Killable,
-        ]
+    /// Create a BitFlags with all capabilities
+    pub fn all_flags() -> BitFlags<PlayerCapability> {
+        BitFlags::from_flag(Self::Play) |
+        BitFlags::from_flag(Self::Pause) |
+        BitFlags::from_flag(Self::PlayPause) |
+        BitFlags::from_flag(Self::Stop) |
+        BitFlags::from_flag(Self::Next) |
+        BitFlags::from_flag(Self::Previous) |
+        BitFlags::from_flag(Self::Seek) |
+        BitFlags::from_flag(Self::Position) |
+        BitFlags::from_flag(Self::Length) |
+        BitFlags::from_flag(Self::Volume) |
+        BitFlags::from_flag(Self::Mute) |
+        BitFlags::from_flag(Self::Shuffle) |
+        BitFlags::from_flag(Self::Loop) |
+        BitFlags::from_flag(Self::Playlists) |
+        BitFlags::from_flag(Self::Queue) |
+        BitFlags::from_flag(Self::Metadata) |
+        BitFlags::from_flag(Self::AlbumArt) |
+        BitFlags::from_flag(Self::Search) |
+        BitFlags::from_flag(Self::Browse) |
+        BitFlags::from_flag(Self::Favorites) |
+        BitFlags::from_flag(Self::DatabaseUpdate) |
+        BitFlags::from_flag(Self::Killable)
+    }
+
+    /// Convert a Vec of capabilities to BitFlags
+    pub fn vec_to_flags(capabilities: &[PlayerCapability]) -> BitFlags<PlayerCapability> {
+        let mut flags = BitFlags::empty();
+        for cap in capabilities {
+            flags |= BitFlags::from_flag(*cap);
+        }
+        flags
+    }
+
+    /// Convert BitFlags to a Vec of capabilities
+    pub fn flags_to_vec(flags: BitFlags<PlayerCapability>) -> Vec<PlayerCapability> {
+        flags.iter().collect()
     }
 }
 
 impl From<PlayerCapability> for String {
     fn from(cap: PlayerCapability) -> Self {
         cap.as_str().to_string()
+    }
+}
+
+/// A set of player capabilities, implemented efficiently using bitflags
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerCapabilitySet {
+    flags: BitFlags<PlayerCapability>,
+}
+
+impl PlayerCapabilitySet {
+    /// Create a new empty capabilities set
+    pub fn empty() -> Self {
+        Self {
+            flags: BitFlags::empty(),
+        }
+    }
+
+    /// Add a capability to the set
+    pub fn addCapability(&mut self, capability: PlayerCapability) {
+        self.flags |= BitFlags::from_flag(capability);
+    }
+
+    /// Remove a capability from the set
+    pub fn removeCapability(&mut self, capability: PlayerCapability) {
+        self.flags &= !BitFlags::from_flag(capability);
+    }
+
+    /// Check if a specific capability is in the set
+    pub fn hasCapability(&self, capability: PlayerCapability) -> bool {
+        self.flags.contains(capability)
+    }
+    
+    /// Check if the set is empty (contains no capabilities)
+    pub fn isEmpty(&self) -> bool {
+        self.flags.is_empty()
+    }
+
+    /// Create a set from a slice of capabilities
+    pub fn from_slice(capabilities: &[PlayerCapability]) -> Self {
+        let mut set = Self::empty();
+        for capability in capabilities {
+            set.addCapability(*capability);
+        }
+        set
+    }
+
+    /// Convert to a Vec of individual capabilities
+    pub fn to_vec(&self) -> Vec<PlayerCapability> {
+        self.flags.iter().collect()
+    }
+
+    /// Get the underlying BitFlags representation
+    pub fn as_bitflags(&self) -> BitFlags<PlayerCapability> {
+        self.flags
+    }
+}
+
+impl Default for PlayerCapabilitySet {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+// Implement From conversions to make it easier to work with
+impl From<PlayerCapability> for PlayerCapabilitySet {
+    fn from(capability: PlayerCapability) -> Self {
+        let mut set = Self::empty();
+        set.addCapability(capability);
+        set
+    }
+}
+
+impl From<Vec<PlayerCapability>> for PlayerCapabilitySet {
+    fn from(capabilities: Vec<PlayerCapability>) -> Self {
+        Self::from_slice(&capabilities)
+    }
+}
+
+impl From<PlayerCapabilitySet> for Vec<PlayerCapability> {
+    fn from(set: PlayerCapabilitySet) -> Self {
+        set.to_vec()
+    }
+}
+
+// Support for collecting capabilities into a set
+impl FromIterator<PlayerCapability> for PlayerCapabilitySet {
+    fn from_iter<T: IntoIterator<Item = PlayerCapability>>(iter: T) -> Self {
+        let mut set = Self::empty();
+        for capability in iter {
+            set.addCapability(capability);
+        }
+        set
     }
 }

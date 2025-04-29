@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::helpers::stream_helper::{open_stream, AccessMode};
 use crate::data::song::Song;
 use crate::data::player::Player;
-use crate::data::player_state::PlaybackState;
+use crate::data::player::PlaybackState;  // Updated import path
 use crate::data::capabilities::PlayerCapability;
 use crate::data::stream_details::StreamDetails;
 use crate::data::loop_mode::LoopMode;

@@ -365,15 +365,92 @@ impl MPDPlayerController {
         }
     }
     
-    /// Update player capabilities based on the current MPD status
+    /// Update player state and capabilities based on the current MPD status
     /// 
-    /// Checks the playlist status to determine if Next/Previous capabilities should be enabled
+    /// Updates the PlayerState object with current information from MPD including:
+    /// - Playback state (playing/paused/stopped)
+    /// - Volume
+    /// - Loop mode
+    /// - Shuffle status
+    /// - Current position
+    /// - Available capabilities (Next/Previous/Seek)
     fn update_state_and_capabilities_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>, song: Option<Song>) {
-        debug!("Updating player capabilities based on MPD status");
+        debug!("Updating player state and capabilities based on MPD status");
         
-        // Try to get current status to determine playlist position
+        // Try to get current status to determine playlist position and other state info
         match client.status() {
             Ok(status) => {
+                // Get a lock on the current_state to update it
+                if let Ok(mut current_state) = player.current_state.lock() {
+                    // Update playback state
+                    current_state.state = match status.state {
+                        mpd::State::Play => PlaybackState::Playing,
+                        mpd::State::Pause => PlaybackState::Paused,
+                        mpd::State::Stop => PlaybackState::Stopped,
+                    };
+                    debug!("Updated player state: {:?}", current_state.state);
+                    
+                    // Update volume if available (MPD returns -1 for no volume control)
+                    if status.volume >= 0 {
+                        current_state.volume = Some(status.volume);
+                        debug!("Updated volume: {}%", status.volume);
+                    }
+                    
+                    // Update loop mode based on MPD repeat and single flags
+                    current_state.loop_mode = if status.repeat {
+                        if status.single {
+                            LoopMode::Track
+                        } else {
+                            LoopMode::Playlist
+                        }
+                    } else {
+                        LoopMode::None
+                    };
+                    debug!("Updated loop mode: {:?}", current_state.loop_mode);
+                    
+                    // Update shuffle status
+                    current_state.shuffle = Some(status.random);
+                    debug!("Updated shuffle: {}", status.random);
+                    
+                    // Update player name and type for consistency
+                    current_state.name = player.get_player_name();
+                    current_state.type_ = Some("mpd".to_string());
+                    current_state.player_id = Some(player.get_player_id());
+                    
+                    // Update playback position if available
+                    if let Some(elapsed) = status.elapsed {
+                        current_state.position = Some(elapsed.as_secs_f64());
+                        debug!("Updated position: {:.1}s", elapsed.as_secs_f64());
+                    }
+                    
+                    // Store current song information in metadata if available
+                    if let Some(sng) = &song {
+                        let mut metadata = HashMap::new();
+                        
+                        if let Some(duration) = sng.duration {
+                            metadata.insert("duration".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(duration).unwrap_or_default()));
+                        }
+                        
+                        if let Some(track) = sng.track_number {
+                            metadata.insert("track".to_string(), serde_json::Value::Number(serde_json::Number::from(track)));
+                        }
+                        
+                        // Queue status info
+                        metadata.insert("queue_length".to_string(), serde_json::Value::Number(serde_json::Number::from(status.queue_len)));
+                        if let Some(song_id) = status.song.map(|s| s.id) {
+                            metadata.insert("song_id".to_string(), serde_json::Value::Number(serde_json::Number::from(song_id)));
+                        }
+                        if let Some(song_pos) = status.song.map(|s| s.pos) {
+                            metadata.insert("queue_position".to_string(), serde_json::Value::Number(serde_json::Number::from(song_pos)));
+                        }
+                        
+                        // Update metadata in state
+                        current_state.metadata = metadata;
+                    }
+                } else {
+                    warn!("Failed to acquire lock on player state for updating");
+                }
+                
                 // Total songs in playlist
                 let queue_len = status.queue_len;
                 
@@ -449,7 +526,7 @@ impl MPDPlayerController {
                 }
             },
             Err(e) => {
-                warn!("Failed to get MPD status for capability update: {}", e);
+                warn!("Failed to get MPD status for player state and capability update: {}", e);
                 
                 // If we can't get status, disable navigation capabilities
                 let mut capabilities_changed = false;
@@ -477,6 +554,11 @@ impl MPDPlayerController {
                     let current_caps = player.base.get_capabilities();
                     player.base.notify_capabilities_changed(&current_caps);
                     debug!("Player capabilities updated: disabled Next/Previous/Seek due to error");
+                }
+                
+                // Update state to reflect error condition
+                if let Ok(mut current_state) = player.current_state.lock() {
+                    current_state.state = PlaybackState::Stopped;
                 }
             }
         }

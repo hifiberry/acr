@@ -1,7 +1,7 @@
 use crate::players::base_controller::BasePlayerController;
 use crate::players::player_controller::PlayerController;
 use crate::players::player_controller::PlayerStateListener;
-use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState};
 use delegate::delegate;
 use std::sync::{Arc, Weak, Mutex};
 use log::{debug, info, warn, error};
@@ -30,7 +30,7 @@ pub struct MPDPlayerController {
     current_song: Arc<Mutex<Option<Song>>>,
 
     // current player state
-    current_state: Arc<Mutex<PlaybackState>>,
+    current_state: Arc<Mutex<PlayerState>>,
 }
 
 // Manually implement Clone for MPDPlayerController
@@ -62,7 +62,7 @@ impl MPDPlayerController {
             hostname: host.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
-            current_state: Arc::new(Mutex::new(PlaybackState::Stopped)),
+            current_state: Arc::new(Mutex::new(PlayerState::new("mpd".to_string()))),
         };
         
         // Set default capabilities
@@ -83,7 +83,7 @@ impl MPDPlayerController {
             hostname: hostname.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
-            current_state: Arc::new(Mutex::new(PlaybackState::Stopped)),
+            current_state: Arc::new(Mutex::new(PlayerState::new(format!("mpd-{}", hostname)))),
         };
         
         // Set default capabilities
@@ -368,7 +368,7 @@ impl MPDPlayerController {
     /// Update player capabilities based on the current MPD status
     /// 
     /// Checks the playlist status to determine if Next/Previous capabilities should be enabled
-    fn update_capabilities_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>, song: Option<Song>) {
+    fn update_state_and_capabilities_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>, song: Option<Song>) {
         debug!("Updating player capabilities based on MPD status");
         
         // Try to get current status to determine playlist position
@@ -541,7 +541,7 @@ impl MPDPlayerController {
         }
         
         // Update player capabilities based on the current playlist state and the song we just got
-        Self::update_capabilities_from_mpd(client, player, obtained_song);
+        Self::update_state_and_capabilities_from_mpd(client, player, obtained_song);
     }
 }
 

@@ -8,7 +8,7 @@ use serde_json::Value;
 // Import the stream helper and data structs
 use crate::helpers::stream_helper::{open_stream, AccessMode};
 use crate::data::song::Song;
-use crate::data::player::Player;
+use crate::data::player::PlayerState;
 use crate::data::player::PlaybackState;  
 use crate::data::capabilities::{PlayerCapability, PlayerCapabilitySet};
 use crate::data::stream_details::StreamDetails;
@@ -47,13 +47,13 @@ impl MetadataPipeReader {
         self.read_stream_with_retry(reader)
     }
 
-    /// Parse a JSON line of metadata and return a tuple of (Song, Player, PlayerCapabilitySet, StreamDetails) if successful
-    pub fn parse_line(line: &str) -> Option<(Song, Player, PlayerCapabilitySet, StreamDetails)> {
+    /// Parse a JSON line of metadata and return a tuple of (Song, PlayerState, PlayerCapabilitySet, StreamDetails) if successful
+    pub fn parse_line(line: &str) -> Option<(Song, PlayerState, PlayerCapabilitySet, StreamDetails)> {
         // Parse the JSON string
         match serde_json::from_str::<Value>(line) {
             Ok(json) => {
                 // Initialize a player with RAAT type
-                let mut player = Player::new("RAAT".to_string());
+                let mut player = PlayerState::new("RAAT".to_string());
                 player.type_ = Some("raat".to_string());
                 player.player_id = Some("raat".to_string());
                 

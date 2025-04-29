@@ -47,7 +47,7 @@ impl std::fmt::Display for PlaybackState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Player {
+pub struct PlayerState {
     pub name: String, // Name of the player (required)
     
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,8 +84,8 @@ pub struct Player {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-impl Player {
-    /// Create a new Player with the given name and default values for other fields
+impl PlayerState {
+    /// Create a new PlayerState with the given name and default values for other fields
     pub fn new(name: String) -> Self {
         Self {
             name,

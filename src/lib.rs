@@ -14,7 +14,7 @@ pub mod plugins;
 pub mod helpers;
 
 // Re-export items from data module for backward compatibility
-pub use data::{PlaybackState, Song, Player};
+pub use data::{PlaybackState, Song, PlayerState};
 
 // Re-export AudioController for easier access
 pub use audiocontrol::AudioController;

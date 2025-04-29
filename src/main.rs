@@ -1,5 +1,5 @@
 use acr::data::PlayerCommand;
-use acr::players::{PlayerController, MetadataPipeReader};
+use acr::players::PlayerController;
 use acr::AudioController;
 use std::sync::Arc;
 use std::thread;

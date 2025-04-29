@@ -46,3 +46,12 @@ pub struct Song {
 
 // The to_json method is now provided by the Serializable trait
 // which is automatically implemented for all types that implement Serialize
+
+impl PartialEq for Song {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare only title, artist and album for equality
+        self.title == other.title &&
+        self.artist == other.artist &&
+        self.album == other.album
+    }
+}

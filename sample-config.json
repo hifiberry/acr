@@ -1,0 +1,38 @@
+{
+    "action_plugins": [
+        {
+            "active-monitor": {
+                "enabled": true
+            }
+        }
+    ],
+    "event_filters": [
+        {
+            "event-logger": {
+                "enabled": false,
+                "event_types": [
+                    "state",
+                    "song",
+                    "loop",
+                    "capabilities"
+                ],
+                "log_level": "debug",
+                "only_active": false
+            }
+        }
+    ],
+    "players": [
+        {
+            "mpd": {
+                "enable": true,
+                "host": "localhost",
+                "port": 6600
+            }
+        },
+        {
+            "null": {
+                "enable": false
+            }
+        }
+    ]
+}

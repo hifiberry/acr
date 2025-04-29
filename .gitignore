@@ -10,3 +10,5 @@ target/
 *.pdb
 
 .vscode/launch.json
+Cargo.lock
+Cargo.lock

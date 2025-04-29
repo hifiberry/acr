@@ -19,7 +19,3 @@ delegate = "0.10.0"
 named_pipe = "0.4"
 futures = "0.3"
 url = "2.4"
-
-[[bin]]
-name = "pipebridge"
-path = "tools/pipebridge.rs"

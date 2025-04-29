@@ -1,5 +1,5 @@
 use acr::data::PlayerCommand;
-use acr::players::PlayerController;
+use acr::players::{PlayerController, MetadataPipeReader};
 use acr::AudioController;
 use std::sync::Arc;
 use std::thread;
@@ -17,8 +17,26 @@ fn main() {
         .format_timestamp_secs()
         .init();
 
-    info!("AudioControl3 (ACR) Player Controller Demo starting");
     println!("AudioControl3 (ACR) Player Controller Demo\n");
+    info!("AudioControl3 (ACR) Player Controller Demo starting");
+
+    // Initialize and run MetadataPipeReader in the foreground
+    // You can connect to either a local named pipe or a TCP server
+    // Examples:
+    // - "\\.\pipe\raat-metadata" for local Windows pipe
+    // - "/var/run/raat/metadata_pipe" for Unix FIFO
+    // - "tcp://headphones.local:12100" for TCP connection
+    let metadata_source = "tcp://headphone.local:12100";
+    
+    info!("Starting MetadataPipeReader with source: {}", metadata_source);
+    let reader = MetadataPipeReader::new(metadata_source);
+    
+    // Run in the foreground and wait until it finishes
+    if let Err(e) = reader.read_and_log_pipe() {
+        error!("Error reading from metadata source: {}", e);
+    }
+    
+    info!("MetadataPipeReader finished, continuing with application");
     
     // Use the sample JSON configuration from AudioController
     let sample_config = AudioController::sample_json_config();

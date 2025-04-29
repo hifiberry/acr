@@ -10,6 +10,9 @@ pub mod audiocontrol;
 /// Plugin system for event filtering and extensions
 pub mod plugins;
 
+/// Helper utilities for I/O and other common tasks
+pub mod helpers;
+
 // Re-export items from data module for backward compatibility
 pub use data::{PlayerState, Song, Player};
 

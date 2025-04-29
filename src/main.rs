@@ -1,8 +1,7 @@
 use acr::data::{PlayerCapability, PlayerCommand};
-use acr::players::{PlayerStateListener, PlayerController};
+use acr::players::PlayerController;
 use acr::AudioController;
-use std::sync::{Arc, Weak};
-use std::any::Any;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use std::io::{self, Read};
@@ -11,58 +10,6 @@ use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
 use ctrlc;
-
-/// Event Logger that implements the PlayerStateListener trait
-struct EventLogger {
-    name: String,
-}
-
-impl EventLogger {
-    fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-        }
-    }
-}
-
-impl PlayerStateListener for EventLogger {
-    fn on_event(&self, event: acr::data::PlayerEvent) {
-        match event {
-            acr::data::PlayerEvent::StateChanged { source, state } => {
-                info!("[{}] Player {}:{} - State changed: {}", 
-                      self.name, source.player_name, source.player_id, state);
-            },
-            acr::data::PlayerEvent::SongChanged { source, song } => {
-                match song {
-                    Some(s) => info!("[{}] Player {}:{} - Song changed: {} by {}", 
-                        self.name,
-                        source.player_name,
-                        source.player_id,
-                        s.title.as_deref().unwrap_or("Unknown"), 
-                        s.artist.as_deref().unwrap_or("Unknown")),
-                    None => info!("[{}] Player {}:{} - Song cleared", 
-                                  self.name, source.player_name, source.player_id),
-                }
-            },
-            acr::data::PlayerEvent::LoopModeChanged { source, mode } => {
-                info!("[{}] Player {}:{} - Loop mode changed: {}", 
-                      self.name, source.player_name, source.player_id, mode);
-            },
-            acr::data::PlayerEvent::CapabilitiesChanged { source, capabilities } => {
-                info!("[{}] Player {}:{} - Capabilities changed:", 
-                      self.name, source.player_name, source.player_id);
-                for cap in capabilities {
-                    debug!("[{}] Player {}:{} - Capability: {}", 
-                           self.name, source.player_name, source.player_id, cap);
-                }
-            },
-        }
-    }
-    
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 fn main() {
     // Initialize the logger with default configuration
@@ -105,7 +52,7 @@ fn main() {
     };
     
     // Wrap the AudioController in a Box that implements PlayerController
-    let mut player: Box<dyn PlayerController + Send + Sync> = Box::new(controller.as_ref().clone());
+    let player: Box<dyn PlayerController + Send + Sync> = Box::new(controller.as_ref().clone());
     
     // Let's determine what type of player we're using
     let player_type = if player.get_capabilities().contains(&PlayerCapability::Seek) {
@@ -121,17 +68,6 @@ fn main() {
         info!("Player initialized and started successfully");
     } else {
         warn!("Failed to start player");
-    }
-    
-    // Create an event logger and subscribe to player events
-    let event_logger = Arc::new(EventLogger::new("PlayerLogger"));
-    let weak_logger = Arc::downgrade(&event_logger) as Weak<dyn PlayerStateListener>;
-    
-    // Register the logger with the player
-    if player.register_state_listener(weak_logger) {
-        println!("Successfully registered event listener");
-    } else {
-        println!("Failed to register event listener");
     }
     
     // Get initial state information and log it

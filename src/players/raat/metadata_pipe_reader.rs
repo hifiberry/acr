@@ -12,6 +12,7 @@ use crate::data::player::Player;
 use crate::data::player_state::PlayerState;
 use crate::data::capabilities::PlayerCapability;
 use crate::data::stream_details::StreamDetails;
+use crate::data::loop_mode::LoopMode;
 
 /// A reader for metadata from a named pipe or network connection
 pub struct MetadataPipeReader {
@@ -156,11 +157,22 @@ impl MetadataPipeReader {
                 // Store shuffle state if available
                 if let Some(shuffle) = json.get("shuffle").and_then(|v| v.as_bool()) {
                     player_metadata.insert("shuffle".to_string(), Value::Bool(shuffle));
+                    // Fix: Use Some() to convert bool to Option<bool>
+                    player.shuffle = Some(shuffle);
                 }
                 
                 // Store loop mode if available
-                if let Some(loop_mode) = json.get("loop").and_then(|v| v.as_str()) {
-                    player_metadata.insert("loop".to_string(), Value::String(loop_mode.to_string()));
+                if let Some(loop_mode_str) = json.get("loop").and_then(|v| v.as_str()) {
+                    player_metadata.insert("loop".to_string(), Value::String(loop_mode_str.to_string()));
+                    
+                    // Convert string to LoopMode enum and set in the Player struct
+                    let loop_mode = match loop_mode_str.to_lowercase().as_str() {
+                        "no" | "none" | "off" => LoopMode::None,
+                        "song" | "track" | "one" => LoopMode::Track,
+                        "playlist" | "all" => LoopMode::Playlist,
+                        _ => LoopMode::None, // Default to None for unrecognized values
+                    };
+                    player.loop_mode = loop_mode;
                 }
                 
                 // Store stream format in player metadata
@@ -300,6 +312,11 @@ impl MetadataPipeReader {
                                        player.name,
                                        player.type_.as_deref().unwrap_or("unknown"),
                                        player.state);
+                                
+                                // Add logging for loop and shuffle mode
+                                warn!("  Loop mode: {:?}, Shuffle: {}", 
+                                       player.loop_mode,
+                                       player.shuffle.unwrap_or(false));
                                 
                                 if !capabilities.is_empty() {
                                     warn!("  Capabilities: {:?}", capabilities);

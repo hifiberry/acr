@@ -5,6 +5,7 @@ use serde::{Serialize, Deserialize};
 // Update the import path for PlayerState since it's now in the same module
 use super::player_state::PlayerState;
 use super::capabilities::PlayerCapability;
+use super::loop_mode::LoopMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
@@ -34,6 +35,12 @@ pub struct Player {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<f64>, // Current playback position in seconds
     
+    #[serde(default)]
+    pub loop_mode: LoopMode, // Loop mode (None, Track, Playlist)
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shuffle: Option<bool>, // Whether shuffle is enabled
+    
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
 }
@@ -51,6 +58,8 @@ impl Player {
             capabilities: None,
             active: None,
             position: None,
+            loop_mode: LoopMode::default(),
+            shuffle: None,
             metadata: HashMap::new(),
         }
     }

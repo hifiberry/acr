@@ -1,21 +1,22 @@
 // Data structures for AudioControl3
 
-mod player_state;
-mod song;
-mod player;
-mod loop_mode;
-mod capabilities;
-mod player_command;
-mod serializable;
-mod player_event;
+pub mod capabilities;
+pub mod loop_mode;
+pub mod player;
+pub mod player_command;
+pub mod player_event;
+pub mod player_state;
+pub mod serializable;
+pub mod song;
+pub mod stream_details; // Add the new module
 
-// Re-export all items for easier imports
-pub use player_state::PlayerState;
-pub use song::Song;
-pub use player::Player;
-pub use loop_mode::LoopMode;
+// Re-export types from child modules
 pub use capabilities::*;
-pub use player_command::PlayerCommand;
-pub use serializable::{Serializable, Deserializable, SerializationError};
-pub use player_event::PlayerEvent;
-pub use player_event::PlayerSource;
+pub use loop_mode::*;
+pub use player::*;
+pub use player_command::*;
+pub use player_event::*;
+pub use player_state::*;
+pub use serializable::*;
+pub use song::*;
+pub use stream_details::*; // Re-export the new module

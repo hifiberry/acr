@@ -1,4 +1,4 @@
-use acr::data::{PlayerCapability, PlayerCommand};
+use acr::data::PlayerCommand;
 use acr::players::PlayerController;
 use acr::AudioController;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use ctrlc;
 
 fn main() {
     // Initialize the logger with default configuration
-    env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .format_timestamp_secs()
         .init();
 
@@ -27,7 +27,7 @@ fn main() {
     // Parse the sample configuration string into a JSON Value
     let controllers_config: serde_json::Value = match serde_json::from_str(&sample_config) {
         Ok(config) => {
-            info!("Successfully parsed sample JSON configuration");
+            info!("Successfully parsed sample JSON configuration: \n{}", config);
             config
         },
         Err(e) => {
@@ -53,15 +53,7 @@ fn main() {
     
     // Wrap the AudioController in a Box that implements PlayerController
     let player: Box<dyn PlayerController + Send + Sync> = Box::new(controller.as_ref().clone());
-    
-    // Let's determine what type of player we're using
-    let player_type = if player.get_capabilities().contains(&PlayerCapability::Seek) {
-        "Full-featured player"
-    } else {
-        "Basic player"
-    };
-    println!("Using {} with {} capabilities", player_type, player.get_capabilities().len());
-    
+       
     // Start the player directly through the trait interface
     // No need to downcast to specific implementation
     if player.start() {

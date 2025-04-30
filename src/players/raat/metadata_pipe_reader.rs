@@ -59,7 +59,7 @@ impl MetadataPipeReader {
     /// Open the source and read it line by line until it's closed
     /// Each line is logged using warn!
     pub fn read_and_log_pipe(&self) -> io::Result<()> {
-        warn!("Opening metadata source: {}", self.source);
+       info!("Opening metadata source: {}", self.source);
 
         // Use the helper function with read-only access mode
         let mut stream_wrapper = open_stream(&self.source, AccessMode::Read)?;
@@ -70,7 +70,7 @@ impl MetadataPipeReader {
             Err(e) => return Err(e),
         };
 
-        warn!("Started reading from metadata source");
+        info!("Started reading from metadata source");
 
         // Keep reading until explicitly told to stop
         let result = self.read_stream(reader);

@@ -1,6 +1,4 @@
-use crate::players::base_controller::BasePlayerController;
-use crate::players::player_controller::PlayerController;
-use crate::players::player_controller::PlayerStateListener;
+use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState};
 use delegate::delegate;
 use std::sync::{Arc, Weak, Mutex};
@@ -645,6 +643,7 @@ impl PlayerController for MPDPlayerController {
             fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
             fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
             fn get_capabilities(&self) -> PlayerCapabilitySet;
+            fn get_last_seen(&self) -> Option<std::time::SystemTime>;
         }
     }
     

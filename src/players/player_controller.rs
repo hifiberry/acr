@@ -1,6 +1,7 @@
-use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource, PlayerState};
 use std::sync::{Arc, Weak, RwLock};
 use std::any::Any;
+use std::time::SystemTime;
 use log::{debug, trace, warn};
 
 /// Trait for objects that listen to PlayerController state changes
@@ -50,6 +51,11 @@ pub trait PlayerController: Send + Sync {
     /// 
     /// Returns a string that uniquely identifies this player instance
     fn get_player_id(&self) -> String;
+    
+    /// Get the last time this player was seen active
+    /// 
+    /// Returns the timestamp when the player was last seen, or None if not tracked
+    fn get_last_seen(&self) -> Option<SystemTime>;
     
     /// Send a command to the player
     /// 
@@ -119,6 +125,9 @@ pub struct BasePlayerController {
     
     /// Player unique ID (e.g., "hostname:port" for MPD)
     player_id: Arc<RwLock<String>>,
+    
+    /// Player state
+    player_state: Arc<RwLock<PlayerState>>,
 }
 
 impl BasePlayerController {
@@ -130,6 +139,7 @@ impl BasePlayerController {
             capabilities: Arc::new(RwLock::new(PlayerCapabilitySet::empty())),
             player_name: Arc::new(RwLock::new("unknown".to_string())),
             player_id: Arc::new(RwLock::new("unknown".to_string())),
+            player_state: Arc::new(RwLock::new(PlayerState::new())),
         }
     }
     
@@ -141,6 +151,7 @@ impl BasePlayerController {
             capabilities: Arc::new(RwLock::new(PlayerCapabilitySet::empty())),
             player_name: Arc::new(RwLock::new(name.to_string())),
             player_id: Arc::new(RwLock::new(id.to_string())),
+            player_state: Arc::new(RwLock::new(PlayerState::new())),
         }
     }
     
@@ -475,5 +486,30 @@ impl BasePlayerController {
     /// This is an alias for unregister_listener to match the PlayerController trait
     pub fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool {
         self.unregister_listener(listener)
+    }
+    
+    /// Update the last_seen timestamp for this player
+    /// 
+    /// This should be called by player implementations whenever they are accessed
+    /// or when they update their status to indicate that the player is still active.
+    pub fn alive(&self) {
+        if let Ok(mut state) = self.player_state.write() {
+            state.last_seen = Some(SystemTime::now());
+            debug!("Updated last_seen timestamp for player {}:{}", 
+                  self.get_player_name(), self.get_player_id());
+        } else {
+            warn!("Failed to acquire write lock for updating last_seen timestamp");
+        }
+    }
+
+    /// Get the last time this player was seen active
+    /// Implementation for the PlayerController trait
+    pub fn get_last_seen(&self) -> Option<SystemTime> {
+        if let Ok(state) = self.player_state.read() {
+            state.last_seen
+        } else {
+            warn!("Failed to acquire read lock for player state");
+            None
+        }
     }
 }

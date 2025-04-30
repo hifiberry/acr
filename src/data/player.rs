@@ -1,5 +1,6 @@
 /// Class representing metadata for a media player
 use std::collections::HashMap;
+use std::time::SystemTime;
 use serde::{Serialize, Deserialize};
 use strum_macros::EnumString;
 
@@ -70,6 +71,9 @@ pub struct PlayerState {
     
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<SystemTime>, // Timestamp of the last time the player was seen
 }
 
 impl PlayerState {
@@ -84,6 +88,7 @@ impl PlayerState {
             loop_mode: LoopMode::default(),
             shuffle: false,
             metadata: HashMap::new(),
+            last_seen: None,
         }
     }
 

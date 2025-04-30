@@ -88,6 +88,15 @@ impl PlayerController for AudioController {
         "none".to_string() // Default ID if no active controller
     }
     
+    fn get_last_seen(&self) -> Option<std::time::SystemTime> {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.get_last_seen();
+            }
+        }
+        None // Return None if no active controller
+    }
+    
     fn send_command(&self, command: PlayerCommand) -> bool {
         if let Some(idx) = self.active_index {
             if let Ok(controller) = self.controllers[idx].read() {

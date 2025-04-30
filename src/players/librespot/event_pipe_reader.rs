@@ -282,8 +282,10 @@ impl EventPipeReader {
                             player.metadata = metadata;
                         }
                     },
-                    "loading" | "play_request_id_changed" => {
+                    "loading" | "play_request_id_changed" | "preloading" => {
                         // don't use for anything
+                        debug!("Ignoring event type: {}", event_type);
+                        return None
                     },
                     _ => {
                         // Unknown event type, log but don't try to process it

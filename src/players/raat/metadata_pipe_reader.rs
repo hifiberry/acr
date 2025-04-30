@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, BufReader, Read};
-use log::{warn, error, debug};
+use log::{warn, error, debug, info};
 use std::collections::HashMap;
 use serde_json::Value;
 

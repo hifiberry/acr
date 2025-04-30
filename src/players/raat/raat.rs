@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
+use std::fs::OpenOptions;
+use std::io::Write;
 
 /// RAAT player controller implementation
 /// This controller interfaces with RAAT (Roon Audio Advanced Transport) metadata pipes
@@ -20,6 +22,9 @@ pub struct RAATPlayerController {
     
     /// Metadata pipe source path/URL
     metadata_source: String,
+
+    /// Control pipe path/URL for sending commands
+    control_pipe: String,
     
     /// Current song information
     current_song: Arc<RwLock<Option<Song>>>,
@@ -41,6 +46,7 @@ impl Clone for RAATPlayerController {
             // Share the BasePlayerController instance to maintain listener registrations
             base: self.base.clone(),
             metadata_source: self.metadata_source.clone(),
+            control_pipe: self.control_pipe.clone(),
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
@@ -66,6 +72,7 @@ impl RAATPlayerController {
     pub fn new() -> Self {
         debug!("Creating new RAATPlayerController with default settings");
         let source = "/var/run/raat/metadata_pipe"; // Default pipe path
+        let control = "/var/run/raat/control_pipe"; // Default control pipe path
         
         // Create a base controller with player name and ID
         let base = BasePlayerController::with_player_info("raat", "raat");
@@ -73,28 +80,7 @@ impl RAATPlayerController {
         let player = Self {
             base,
             metadata_source: source.to_string(),
-            current_song: Arc::new(RwLock::new(None)),
-            current_state: Arc::new(RwLock::new(PlayerState::new())),
-            stream_details: Arc::new(RwLock::new(None)),
-            reopen_metadata_pipe: true,
-        };
-        
-        // Set default capabilities
-        player.set_default_capabilities();
-        
-        player
-    }
-    
-    /// Create a new RAAT player controller with custom metadata source
-    pub fn with_source(source: &str) -> Self {
-        debug!("Creating new RAATPlayerController with source: {}", source);
-        
-        // Create a base controller with player name and ID
-        let base = BasePlayerController::with_player_info("raat", "raat");
-        
-        let player = Self {
-            base,
-            metadata_source: source.to_string(),
+            control_pipe: control.to_string(),
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
@@ -110,6 +96,7 @@ impl RAATPlayerController {
     /// Create a new RAAT player controller with custom metadata source and reopen setting
     pub fn with_source_and_reopen(source: &str, reopen: bool) -> Self {
         debug!("Creating new RAATPlayerController with source: {} and reopen: {}", source, reopen);
+        let control = "/var/run/raat/control_pipe"; // Default control pipe path
         
         // Create a base controller with player name and ID
         let base = BasePlayerController::with_player_info("raat", "raat");
@@ -117,6 +104,31 @@ impl RAATPlayerController {
         let player = Self {
             base,
             metadata_source: source.to_string(),
+            control_pipe: control.to_string(),
+            current_song: Arc::new(RwLock::new(None)),
+            current_state: Arc::new(RwLock::new(PlayerState::new())),
+            stream_details: Arc::new(RwLock::new(None)),
+            reopen_metadata_pipe: reopen,
+        };
+        
+        // Set default capabilities
+        player.set_default_capabilities();
+        
+        player
+    }
+
+    /// Create a new RAAT player controller with custom metadata source, control pipe, and reopen setting
+    pub fn with_pipes_and_reopen(metadata_source: &str, control_pipe: &str, reopen: bool) -> Self {
+        debug!("Creating new RAATPlayerController with metadata_source: {}, control_pipe: {}, reopen: {}", 
+               metadata_source, control_pipe, reopen);
+        
+        // Create a base controller with player name and ID
+        let base = BasePlayerController::with_player_info("raat", "raat");
+        
+        let player = Self {
+            base,
+            metadata_source: metadata_source.to_string(),
+            control_pipe: control_pipe.to_string(),
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
@@ -368,6 +380,47 @@ impl RAATPlayerController {
             warn!("Failed to acquire write lock for current song");
         }
     }
+
+    /// Write a command to the control pipe
+    fn write_to_control_pipe(&self, command: &str) -> bool {
+        debug!("Writing command to control pipe: {}", command);
+        
+        // Use the stream helper to open the control pipe
+        // This automatically handles different types of destinations:
+        // - Local files/pipes
+        // - TCP network streams (using tcp:// URL format)
+        // - Windows named pipes or Unix FIFOs
+        use crate::helpers::stream_helper::{open_stream, AccessMode};
+        
+        match open_stream(&self.control_pipe, AccessMode::Write) {
+            Ok(mut stream_wrapper) => {
+                match stream_wrapper.as_writer() {
+                    Ok(writer) => {
+                        if let Err(e) = writeln!(writer, "{}", command) {
+                            error!("Failed to write command to control pipe: {}", e);
+                            false
+                        } else {
+                            true
+                        }
+                    },
+                    Err(e) => {
+                        error!("Failed to get writer from stream: {}", e);
+                        false
+                    }
+                }
+            },
+            Err(e) => {
+                error!("Failed to open control pipe '{}': {}", self.control_pipe, e);
+                false
+            }
+        }
+    }
+
+    /// Send a seek command to the control pipe
+    fn send_seek_command(&self, position: f64) -> bool {
+        debug!("Sending seek command to control pipe: seek to {:.1}s", position);
+        self.write_to_control_pipe(&format!("seek {:.1}", position))
+    }
 }
 
 impl PlayerController for RAATPlayerController {
@@ -413,7 +466,7 @@ impl PlayerController for RAATPlayerController {
             },
             Err(_) => {
                 // If we can't get a read lock immediately, log a warning
-                debug!("Could not acquire immediate read lock for playback state, returning cached value");
+                warn!("Could not acquire immediate read lock for playback state, returning unknown state");
                 return PlaybackState::Unknown; // Return a default value if we can't read the state
             }
         }
@@ -438,12 +491,31 @@ impl PlayerController for RAATPlayerController {
     }
     
     fn send_command(&self, command: PlayerCommand) -> bool {
-        info!("Received command for RAAT player: {}", command);
+        info!("Sending command to RAAT player: {}", command);
         
-        // RAAT metadata pipe is read-only, we can't send commands through it
-        // In a real implementation, you would need to use RAAT APIs to control playback
-        warn!("Cannot send command to RAAT player: commands are not implemented");
-        false
+        // Map the PlayerCommand to the corresponding string command for RAAT
+        let cmd_string = match command {
+            PlayerCommand::Play => "play",
+            PlayerCommand::Pause => "pause",
+            PlayerCommand::PlayPause => "playpause",
+            PlayerCommand::Next => "next",
+            PlayerCommand::Previous => "previous",
+            PlayerCommand::Seek(position) => return self.send_seek_command(position),
+            PlayerCommand::SetLoopMode(mode) => {
+                match mode {
+                    LoopMode::None => "loop_off",
+                    LoopMode::Track => "loop_track",
+                    LoopMode::Playlist => "loop_playlist",
+                }
+            },
+            PlayerCommand::SetRandom(enabled) => {
+                if enabled { "shuffle_on" } else { "shuffle_off" }
+            },
+            PlayerCommand::Kill => "kill",
+        };
+        
+        // Send the command to the control pipe
+        self.write_to_control_pipe(cmd_string)
     }
     
     fn as_any(&self) -> &dyn Any {

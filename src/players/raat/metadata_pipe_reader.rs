@@ -14,9 +14,14 @@ use crate::data::capabilities::{PlayerCapability, PlayerCapabilitySet};
 use crate::data::stream_details::StreamDetails;
 use crate::data::loop_mode::LoopMode;
 
+/// Type definition for the metadata callback function
+pub type MetadataCallback = Box<dyn Fn(Song, PlayerState, PlayerCapabilitySet, StreamDetails) + Send + Sync>;
+
 /// A reader for metadata from a named pipe or network connection
 pub struct MetadataPipeReader {
     source: String,
+    callback: Option<MetadataCallback>,
+    reopen: bool,
 }
 
 impl MetadataPipeReader {
@@ -24,7 +29,33 @@ impl MetadataPipeReader {
     pub fn new(source: &str) -> Self {
         Self {
             source: source.to_string(),
+            callback: None,
+            reopen: true, // Default to reopen behavior
         }
+    }
+    
+    /// Create a new metadata pipe reader with both callback and reopen settings
+    pub fn with_callback_and_reopen(source: &str, callback: MetadataCallback, reopen: bool) -> Self {
+        Self {
+            source: source.to_string(),
+            callback: Some(callback),
+            reopen,
+        }
+    }
+
+    /// Set a callback function to be called when metadata is parsed
+    pub fn set_callback(&mut self, callback: MetadataCallback) {
+        self.callback = Some(callback);
+    }
+    
+    /// Set whether the pipe should be reopened when closed
+    pub fn set_reopen(&mut self, reopen: bool) {
+        self.reopen = reopen;
+    }
+    
+    /// Get whether the pipe will reopen when closed
+    pub fn get_reopen(&self) -> bool {
+        self.reopen
     }
 
     /// Open the source and read it line by line until it's closed
@@ -44,12 +75,22 @@ impl MetadataPipeReader {
         warn!("Started reading from metadata source");
 
         // Keep reading until explicitly told to stop
-        self.read_stream_with_retry(reader)
+        let result = self.read_stream_with_retry(reader);
+        
+        // Check if we should exit or reopen
+        if !self.reopen {
+            return result;
+        }
+        
+        // If we get here and reopen is true, return Ok so the calling
+        // code knows it can try to reopen
+        Ok(())
     }
 
     /// Parse a JSON line of metadata and return a tuple of (Song, PlayerState, PlayerCapabilitySet, StreamDetails) if successful
     pub fn parse_line(line: &str) -> Option<(Song, PlayerState, PlayerCapabilitySet, StreamDetails)> {
         // Parse the JSON string
+        debug!("Parsing JSON line: {}", line);
         match serde_json::from_str::<Value>(line) {
             Ok(json) => {
                 // Initialize a player with default values
@@ -97,7 +138,10 @@ impl MetadataPipeReader {
                 
                 // Set player position from seek value
                 if let Some(seek) = json.get("seek").and_then(|v| v.as_i64()) {
-                    player.position = Some(seek as f64);
+                    let position = seek as f64;
+                    // Convert to seconds if in milliseconds (RAAT sometimes provides milliseconds)
+                    let position = if position > 10000.0 { position / 1000.0 } else { position };
+                    player.position = Some(position);
                 }
                 
                 // Add player capabilities based on JSON data
@@ -295,23 +339,36 @@ impl MetadataPipeReader {
                     
                     if !buffer.is_empty() {
                         // Instead of just logging the raw text, parse the line and log structured data
-                        warn!("Metadata [{}]: Processing...", line_number);
+                        debug!("Metadata [{}]: Processing...", line_number);
                         
                         match Self::parse_line(&buffer) {
-                            Some((song, player, _capabilities, _stream_details)) => {
+                            Some((song, player, capabilities, stream_details)) => {
                                 // Log the structured data
-                                warn!("Parsed metadata [{}]:", line_number);
-                                warn!("  Song: '{} - {}' from album '{}'", 
+                                debug!("Parsed metadata [{}]:", line_number);
+                                debug!("  Song: '{} - {}' from album '{}'", 
                                        song.title.as_deref().unwrap_or("Unknown"),
                                        song.artist.as_deref().unwrap_or("Unknown"),
                                        song.album.as_deref().unwrap_or("Unknown"));
                                 
-                                warn!("  Player state: {:?}", player.state);
+                                debug!("  Player state: {:?}", player.state);
                                 
                                 // Add logging for loop and shuffle mode
-                                warn!("  Loop mode: {:?}, Shuffle: {}", 
+                                debug!("  Loop mode: {:?}, Shuffle: {}", 
                                        player.loop_mode,
                                        player.shuffle);
+                                
+                                if !capabilities.is_empty() {
+                                    debug!("  Capabilities: {:?}", capabilities);
+                                }
+                                
+                                if let Some(_sample_rate) = stream_details.sample_rate {
+                                    debug!("  Audio format: {}", stream_details.format_description());
+                                }
+                                
+                                // If we have a callback function, call it with the parsed metadata
+                                if let Some(callback) = &self.callback {
+                                    callback(song, player, capabilities, stream_details);
+                                }
                             },
                             None => {
                                 warn!("Metadata [{}]: Failed to parse JSON data", line_number);

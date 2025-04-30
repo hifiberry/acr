@@ -1,4 +1,4 @@
-use crate::players::{MPDPlayerController, NullPlayerController, PlayerController};
+use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController};
 use serde_json::Value;
 use std::error::Error;
 use std::fmt;
@@ -53,6 +53,20 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                 let player = MPDPlayerController::with_connection(host, port);
                 Ok(Box::new(player))
             },
+            "raat" => {
+                // Create RAATPlayerController with config
+                let source = config_obj.get("metadata_source")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("/var/run/raat/metadata_pipe");
+                
+                // Check if reopen_metadata_pipe parameter is specified in the JSON
+                let reopen = config_obj.get("reopen_metadata_pipe")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true); // Default to true if not specified
+                
+                let player = RAATPlayerController::with_source_and_reopen(source, reopen);
+                Ok(Box::new(player))
+            },
             "null" => {
                 // Create NullPlayerController
                 let player = NullPlayerController::new();
@@ -90,6 +104,13 @@ pub fn sample_json_config() -> String {
             "mpd": {
                 "host": "localhost", 
                 "port": 6600,
+                "enable": true
+            }
+        },
+        {
+            "raat": {
+                "metadata_source": "/var/run/raat/metadata_pipe",
+                "reopen_metadata_pipe": true,  // Whether to reconnect when the pipe is closed
                 "enable": true
             }
         },

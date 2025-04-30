@@ -40,7 +40,12 @@ pub trait PlayerController: Send + Sync {
     /// Get the current player state
     /// 
     /// Returns the current state of the player (playing, paused, stopped, etc.)
-    fn get_player_state(&self) -> PlaybackState;
+    fn get_playback_state(&self) -> PlaybackState;
+    
+    /// Get whether shuffle is enabled
+    /// 
+    /// Returns true if shuffle is enabled, false otherwise
+    fn get_shuffle(&self) -> bool;
     
     /// Get the name of this player controller
     /// 
@@ -411,6 +416,34 @@ impl BasePlayerController {
             }
         } else {
             warn!("Failed to acquire read lock for listeners when notifying capabilities change");
+        }
+    }
+
+    /// Notify all registered listeners that the player position has changed
+    pub fn notify_position_changed(&self, position: f64) {
+        let player_name = self.get_player_name();
+        let player_id = self.get_player_id();
+        
+        debug!("Notifying listeners of position change: {:.1}s", position);
+        self.prune_dead_listeners();
+        
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::PositionChanged {
+            source,
+            position,
+        };
+        
+        if let Ok(listeners) = self.listeners.read() {
+            debug!("Notifying {} listeners of position change", listeners.len());
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    trace!("Notifying listener of position change");
+                    listener.on_event(event.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when notifying position change");
         }
     }
 

@@ -10,6 +10,8 @@ use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
 use ctrlc;
+use std::fs;
+use std::path::Path;
 
 fn main() {
     // Initialize the logger with default configuration
@@ -35,20 +37,37 @@ fn main() {
     //}
     //info!("MetadataPipeReader finished, continuing with application");
     
-    // Use the sample JSON configuration from AudioController
-    let sample_config = AudioController::sample_json_config();
-    info!("Using sample configuration: {}", sample_config);
-    
-    // Parse the sample configuration string into a JSON Value
-    let controllers_config: serde_json::Value = match serde_json::from_str(&sample_config) {
-        Ok(config) => {
-            info!("Successfully parsed sample JSON configuration: \n{}", config);
-            config
-        },
-        Err(e) => {
-            error!("Failed to parse sample JSON configuration: {}", e);
-            panic!("Cannot continue with invalid sample configuration");
+    // Check if acr.json exists in the current directory
+    let config_path = Path::new("acr.json");
+    let controllers_config: serde_json::Value = if config_path.exists() {
+        // Read the configuration from acr.json
+        info!("Found acr.json configuration file, using it");
+        match fs::read_to_string(config_path) {
+            Ok(config_str) => {
+                match serde_json::from_str(&config_str) {
+                    Ok(config) => {
+                        info!("Successfully loaded configuration from acr.json");
+                        config
+                    },
+                    Err(e) => {
+                        error!("Failed to parse acr.json: {}", e);
+                        info!("Falling back to sample configuration");
+                        // Fall back to sample config if parsing fails
+                        parse_sample_config()
+                    }
+                }
+            },
+            Err(e) => {
+                error!("Failed to read acr.json: {}", e);
+                info!("Falling back to sample configuration");
+                // Fall back to sample config if reading fails
+                parse_sample_config()
+            }
         }
+    } else {
+        // Use sample configuration
+        info!("No acr.json found, using sample configuration");
+        parse_sample_config()
     };
     
     // Create an AudioController from the JSON configuration
@@ -79,7 +98,7 @@ fn main() {
     
     // Get initial state information and log it
     info!("\nInitial player state:");
-    info!("State: {}", player.get_player_state());
+    info!("State: {}", player.get_playback_state());
     
     let capabilities = player.get_capabilities();
     info!("Capabilities:");
@@ -167,4 +186,23 @@ fn main() {
     }
     
     info!("Exiting application");
+}
+
+// Helper function to parse the sample configuration
+fn parse_sample_config() -> serde_json::Value {
+    // Use the sample JSON configuration from AudioController
+    let sample_config = AudioController::sample_json_config();
+    info!("Using sample configuration: {}", sample_config);
+    
+    // Parse the sample configuration string into a JSON Value
+    match serde_json::from_str(&sample_config) {
+        Ok(config) => {
+            info!("Successfully parsed sample JSON configuration");
+            config
+        },
+        Err(e) => {
+            error!("Failed to parse sample JSON configuration: {}", e);
+            panic!("Cannot continue with invalid sample configuration");
+        }
+    }
 }

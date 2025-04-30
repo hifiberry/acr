@@ -93,6 +93,7 @@ impl EventLogger {
             PlayerEvent::SongChanged { .. } => "song",
             PlayerEvent::LoopModeChanged { .. } => "loop",
             PlayerEvent::CapabilitiesChanged { .. } => "capabilities",
+            PlayerEvent::PositionChanged { .. } => "position",
         }
     }
     
@@ -178,6 +179,17 @@ impl EventLogger {
                         source.player_name(),
                         source.player_id(),
                         capabilities
+                    ),
+                    is_active_player
+                );
+            },
+            PlayerEvent::PositionChanged { source, position } => {
+                logger.log(
+                    &format!(
+                        "Player {} (ID: {}) position changed to {:.1}s",
+                        source.player_name(),
+                        source.player_id(),
+                        position
                     ),
                     is_active_player
                 );

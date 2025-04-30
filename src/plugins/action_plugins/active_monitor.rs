@@ -44,22 +44,30 @@ impl ActiveMonitor {
             
             // Find the controller with matching name and ID
             let controllers = controller_ref.list_controllers();
+            let mut target_index = None;
+            
+            // First find the matching player and store its index
             for (idx, player_controller) in controllers.iter().enumerate() {
                 if let Ok(player) = player_controller.read() {
                     if player.get_player_name() == player_name && player.get_player_id() == player_id {
-                        info!("ActiveMonitor: Setting player {}:{} as active", player_name, player_id);
-                        if controller_ref.set_active_controller(idx) {
-                            info!("ActiveMonitor: Successfully set active player to {}:{}", 
-                                  player_name, player_id);
-                        } else {
-                            warn!("ActiveMonitor: Failed to set active player");
-                        }
-                        return;
+                        target_index = Some(idx);
+                        break;
                     }
                 }
             }
             
-            warn!("ActiveMonitor: Could not find player {}:{} to set active", player_name, player_id);
+            // Now set the active controller after all locks have been released
+            if let Some(idx) = target_index {
+                info!("ActiveMonitor: Setting player {}:{} as active", player_name, player_id);
+                if controller_ref.set_active_controller(idx) {
+                    info!("ActiveMonitor: Successfully set active player to {}:{}", 
+                          player_name, player_id);
+                } else {
+                    warn!("ActiveMonitor: Failed to set active player");
+                }
+            } else {
+                warn!("ActiveMonitor: Could not find player {}:{} to set active", player_name, player_id);
+            }
         } else {
             warn!("ActiveMonitor: No valid AudioController reference available");
         }

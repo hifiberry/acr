@@ -61,13 +61,22 @@ impl PlayerController for AudioController {
         LoopMode::None // Default loop mode if no active controller
     }
     
-    fn get_player_state(&self) -> PlaybackState {
+    fn get_playback_state(&self) -> PlaybackState {
         if let Some(idx) = self.active_index {
             if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_player_state();
+                return controller.get_playback_state();
             }
         }
         PlaybackState::Stopped // Default state if no active controller
+    }
+    
+    fn get_shuffle(&self) -> bool {
+        if let Some(idx) = self.active_index {
+            if let Ok(controller) = self.controllers[idx].read() {
+                return controller.get_shuffle();
+            }
+        }
+        false // Default shuffle state if no active controller
     }
     
     fn get_player_name(&self) -> String {
@@ -130,21 +139,39 @@ impl PlayerController for AudioController {
     }
     
     fn start(&self) -> bool {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.start();
+        let mut success = false;
+        
+        // Start all controllers, not just the active one
+        for controller_lock in &self.controllers {
+            if let Ok(controller) = controller_lock.read() {
+                if controller.start() {
+                    success = true;  // If at least one controller starts successfully
+                    debug!("Successfully started player controller: {}", controller.get_player_name());
+                } else {
+                    warn!("Failed to start player controller: {}", controller.get_player_name());
+                }
             }
         }
-        false // Return false if no active controller
+        
+        success // Return true if at least one controller started successfully
     }
     
     fn stop(&self) -> bool {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.stop();
+        let mut success = false;
+        
+        // Stop all controllers, not just the active one
+        for controller_lock in &self.controllers {
+            if let Ok(controller) = controller_lock.read() {
+                if controller.stop() {
+                    success = true;  // If at least one controller stops successfully
+                    debug!("Successfully stopped player controller: {}", controller.get_player_name());
+                } else {
+                    warn!("Failed to stop player controller: {}", controller.get_player_name());
+                }
             }
         }
-        false // Return false if no active controller
+        
+        success // Return true if at least one controller stopped successfully
     }
 }
 
@@ -160,6 +187,8 @@ impl PlayerStateListener for AudioController {
             PlayerEvent::LoopModeChanged { source, .. } => 
                 self.is_active_player(&source.player_name, &source.player_id),
             PlayerEvent::CapabilitiesChanged { source, .. } => 
+                self.is_active_player(&source.player_name, &source.player_id),
+            PlayerEvent::PositionChanged { source, .. } => 
                 self.is_active_player(&source.player_name, &source.player_id),
         };
 
@@ -301,8 +330,6 @@ impl AudioController {
     /// Set the active controller by index
     /// 
     /// Returns true if the active controller was changed, false if the index was invalid.
-    /// When the active controller changes, immediately notifies listeners about the 
-    /// new active controller's state, song, and capabilities.
     pub fn set_active_controller(&mut self, index: usize) -> bool {
         if index >= self.controllers.len() {
             return false;
@@ -317,32 +344,6 @@ impl AudioController {
         // Set the new active index
         debug!("Changing active controller to index {}", index);
         self.active_index = Some(index);
-        
-        // Get current state of the new active player and notify listeners
-        if let Ok(controller) = self.controllers[index].read() {
-            let player_name = controller.get_player_name();
-            let player_id = controller.get_player_id();
-            
-            // Notify about current state
-            let state = controller.get_player_state();
-            debug!("Notifying about state of new active controller: {}", state);
-            self.forward_state_changed(player_name.clone(), player_id.clone(), state);
-            
-            // Notify about current song
-            let song = controller.get_song();
-            debug!("Notifying about song of new active controller");
-            self.forward_song_changed(player_name.clone(), player_id.clone(), song);
-            
-            // Notify about current loop mode
-            let loop_mode = controller.get_loop_mode();
-            debug!("Notifying about loop mode of new active controller: {}", loop_mode);
-            self.forward_loop_mode_changed(player_name.clone(), player_id.clone(), loop_mode);
-            
-            // Notify about current capabilities
-            let capabilities = controller.get_capabilities();
-            debug!("Notifying about capabilities of new active controller");
-            self.forward_capabilities_changed(player_name, player_id, capabilities);
-        }
         
         true
     }
@@ -639,6 +640,30 @@ impl AudioController {
         }
     }
     
+    /// Forward position changed event to all registered listeners
+    fn forward_position_changed(&self, player_name: String, player_id: String, position: f64) {
+        // Prune dead listeners
+        self.prune_dead_listeners();
+        
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::PositionChanged {
+            source,
+            position,
+        };
+        
+        // Forward the event to all active listeners
+        if let Ok(listeners) = self.listeners.read() {
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    listener.on_event(event.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when forwarding position change");
+        }
+    }
+    
     /// Remove any dead (dropped) listeners
     fn prune_dead_listeners(&self) {
         if let Ok(mut listeners) = self.listeners.write() {
@@ -843,6 +868,15 @@ impl AudioController {
                     self.forward_capabilities_changed(source.player_name, source.player_id, capabilities);
                 } else {
                     debug!("AudioController ignoring capabilities change from inactive player {}", source.player_id);
+                }
+            },
+            PlayerEvent::PositionChanged { source, position } => {
+                // Check if the event is from the active player
+                if is_active {
+                    debug!("AudioController forwarding position change from active player {}: {:.1}s", source.player_id, position);
+                    self.forward_position_changed(source.player_name, source.player_id, position);
+                } else {
+                    debug!("AudioController ignoring position change from inactive player {}", source.player_id);
                 }
             },
         }

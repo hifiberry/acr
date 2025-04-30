@@ -54,6 +54,12 @@ pub enum PlayerEvent {
         source: PlayerSource,
         capabilities: PlayerCapabilitySet,
     },
+    
+    /// Playback position has changed
+    PositionChanged {
+        source: PlayerSource,
+        position: f64,
+    },
 }
 
 impl PlayerEvent {
@@ -64,6 +70,7 @@ impl PlayerEvent {
             PlayerEvent::SongChanged { source, .. } => source,
             PlayerEvent::LoopModeChanged { source, .. } => source,
             PlayerEvent::CapabilitiesChanged { source, .. } => source,
+            PlayerEvent::PositionChanged { source, .. } => source,
         }
     }
     

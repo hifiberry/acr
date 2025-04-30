@@ -2,7 +2,7 @@ use crate::players::player_controller::{BasePlayerController, PlayerController, 
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState};
 use delegate::delegate;
 use std::sync::{Arc, Weak, Mutex};
-use log::{debug, info, warn, error};
+use log::{debug, info, warn, error, trace};
 use mpd::{Client, error::Error as MpdError, idle::Subsystem};
 use mpd::Idle; // Add the Idle trait import
 use std::net::TcpStream;
@@ -658,15 +658,44 @@ impl PlayerController for MPDPlayerController {
     }
     
     fn get_loop_mode(&self) -> LoopMode {
-        debug!("Getting current loop mode (not implemented yet)");
-        // Not implemented yet
+        trace!("MPDController: get_loop_mode called");
+        if let Some(mut mpd_client) = self.get_fresh_client() {
+            if let Ok(status) = mpd_client.status() {
+                return match (status.repeat, status.single) {
+                    (true, true) => LoopMode::Track,
+                    (true, false) => LoopMode::Playlist,
+                    _ => LoopMode::None,
+                };
+            }
+        }
+        debug!("Failed to get loop mode from MPD");
         LoopMode::None
     }
     
-    fn get_player_state(&self) -> PlaybackState {
-        debug!("Getting current player state (not implemented yet)");
-        // Not implemented yet
-        PlaybackState::Stopped
+    fn get_playback_state(&self) -> PlaybackState {
+        trace!("MPDController: get_playback_state called");
+        if let Some(mut mpd_client) = self.get_fresh_client() {
+            if let Ok(status) = mpd_client.status() {
+                match status.state {
+                    mpd::State::Play => return PlaybackState::Playing,
+                    mpd::State::Pause => return PlaybackState::Paused,
+                    mpd::State::Stop => return PlaybackState::Stopped,
+                }
+            }
+        }
+        debug!("Failed to get state from MPD");
+        PlaybackState::Unknown
+    }
+    
+    fn get_shuffle(&self) -> bool {
+        trace!("MPDController: get_shuffle called");
+        if let Some(mut mpd_client) = self.get_fresh_client() {
+            if let Ok(status) = mpd_client.status() {
+                return status.random;
+            }
+        }
+        debug!("Failed to get shuffle status from MPD");
+        false
     }
     
     fn get_player_name(&self) -> String {

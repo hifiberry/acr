@@ -68,9 +68,14 @@ impl PlayerController for NullPlayerController {
         LoopMode::None // Default loop mode
     }
     
-    fn get_player_state(&self) -> PlaybackState {
-        debug!("NullPlayerController: get_player_state called");
+    fn get_playback_state(&self) -> PlaybackState {
+        debug!("NullPlayerController: get_playback_state called");
         PlaybackState::Stopped // Always return stopped state
+    }
+    
+    fn get_shuffle(&self) -> bool {
+        debug!("NullPlayerController: get_shuffle called");
+        false // Default shuffle state
     }
     
     fn get_player_name(&self) -> String {

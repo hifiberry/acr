@@ -116,7 +116,7 @@ pub fn sample_json_config() -> String {
             "raat": {
                 "metadata_pipe": "/var/run/raat/metadata_pipe",
                 "control_pipe": "/var/run/raat/control_pipe",
-                "reopen_metadata_pipe": true,  // Whether to reconnect when the pipe is closed
+                "reopen_metadata_pipe": true, 
                 "enable": true
             }
         },

@@ -1,7 +1,5 @@
-use std::io::{self, BufRead, BufReader, ErrorKind, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use log::{warn, error, debug};
-use std::thread;
-use std::time::Duration;
 use std::collections::HashMap;
 use serde_json::Value;
 

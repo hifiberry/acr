@@ -129,17 +129,16 @@ fn main() {
     info!("\nEntering player event listening loop. Press Ctrl+C to exit.");
     println!("\nListening for player events. Press Ctrl+C to exit.");
     
-    // Create a shared reference to the player for the keyboard handler
-    let player_ref = Arc::new(player);
-    let player_clone = player_ref.clone();
-    
     // Start a thread to monitor keypresses
     let keyboard_running = running.clone();
+    // Create a clone of the controller to access all players
+    let controller_clone = controller.clone();
     thread::spawn(move || {
         println!("Keyboard controls active:");
         println!("  Space: Play/Pause");
         println!("  n: Next track");
         println!("  p: Previous track");
+        println!("  ?: Display state of all players");
         println!("  Ctrl+C: Exit");
         
         // Set up terminal for raw input mode if possible
@@ -155,17 +154,22 @@ fn main() {
                     // Space key (32 is ASCII for space)
                     32 => {
                         info!("Space key pressed: toggling play/pause");
-                        player_clone.send_command(PlayerCommand::PlayPause);
+                        controller_clone.send_command(PlayerCommand::PlayPause);
                     },
                     // 'n' key
                     110 | 78 => {  // ASCII for 'n' or 'N'
                         info!("'n' key pressed: next track");
-                        player_clone.send_command(PlayerCommand::Next);
+                        controller_clone.send_command(PlayerCommand::Next);
                     },
                     // 'p' key
                     112 | 80 => {  // ASCII for 'p' or 'P'
                         info!("'p' key pressed: previous track");
-                        player_clone.send_command(PlayerCommand::Previous);
+                        controller_clone.send_command(PlayerCommand::Previous);
+                    },
+                    // '?' key
+                    63 => {  // ASCII for '?'
+                        info!("'?' key pressed: displaying state of all players");
+                        controller_clone.display_all_player_states();
                     },
                     _ => {
                         // Ignore other keys

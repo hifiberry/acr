@@ -7,6 +7,9 @@ use std::thread;
 use log::{warn, debug};
 use url::Url;
 
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+
 /// AccessMode for opening a stream
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AccessMode {

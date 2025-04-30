@@ -75,7 +75,7 @@ impl MetadataPipeReader {
         warn!("Started reading from metadata source");
 
         // Keep reading until explicitly told to stop
-        let result = self.read_stream_with_retry(reader);
+        let result = self.read_stream(reader);
         
         // Check if we should exit or reopen
         if !self.reopen {
@@ -303,33 +303,17 @@ impl MetadataPipeReader {
         }
     }
 
-    /// Read from a stream with retry logic for network interruptions
-    fn read_stream_with_retry<R: Read>(&self, mut reader: BufReader<R>) -> io::Result<()> {
+    /// Read from a stream until it's closed
+    fn read_stream<R: Read>(&self, mut reader: BufReader<R>) -> io::Result<()> {
         let mut buffer = String::new();
-        let mut consecutive_errors = 0;
-        let mut empty_reads = 0;
         let mut line_number = 1; // Track line numbers
-        const MAX_CONSECUTIVE_ERRORS: u32 = 5;
-        const MAX_CONSECUTIVE_EMPTY_READS: u32 = 10; // Allow multiple empty reads before sleeping
-        const RETRY_DELAY_MS: u64 = 500;
-        const EMPTY_READ_DELAY_MS: u64 = 100; // Shorter delay for empty reads
 
         loop {
             match reader.read_line(&mut buffer) {
                 Ok(0) => {
-                    // No data available at the moment, but the pipe might still be open
-                    empty_reads += 1;
-                    
-                    if empty_reads >= MAX_CONSECUTIVE_EMPTY_READS {
-                        // After several consecutive empty reads, sleep to avoid busy waiting
-                        debug!("No data currently available in pipe, waiting for more...");
-                        thread::sleep(Duration::from_millis(EMPTY_READ_DELAY_MS));
-                        empty_reads = 0; // Reset the counter after sleeping
-                    }
-                    
-                    // Continue the loop instead of returning
-                    buffer.clear();
-                    continue;
+                    // End of data, exit the loop
+                    debug!("End of data (OK(0)) received from pipe, exiting read loop");
+                    return Ok(());
                 },
                 Ok(_) => {
                     // Successfully read some data
@@ -379,30 +363,11 @@ impl MetadataPipeReader {
                     }
                     
                     buffer.clear();
-                    consecutive_errors = 0; // Reset error counter on success
-                    empty_reads = 0;       // Reset empty reads counter on success
                 },
                 Err(e) => {
-                    // Check for specific errors that might be temporary
-                    match e.kind() {
-                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted => {
-                            consecutive_errors += 1;
-                            
-                            if consecutive_errors > MAX_CONSECUTIVE_ERRORS {
-                                error!("Too many consecutive errors while reading metadata: {}", e);
-                                return Err(e);
-                            }
-                            
-                            warn!("Temporary error while reading metadata (will retry): {}", e);
-                            thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
-                            continue;
-                        },
-                        _ => {
-                            // For other errors, exit the loop
-                            error!("Error reading from metadata source: {}", e);
-                            return Err(e);
-                        }
-                    }
+                    // For errors, exit the loop
+                    error!("Error reading from metadata source: {}", e);
+                    return Err(e);
                 }
             }
         }

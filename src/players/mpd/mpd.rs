@@ -256,6 +256,9 @@ impl MPDPlayerController {
     
     /// Handle a specific MPD subsystem event
     fn handle_subsystem_event(subsystem: Subsystem, client: &mut Client<TcpStream>, player: Arc<Self>) {
+        // mark player as alive
+        player.base.alive();
+
         match subsystem {
             Subsystem::Player => {
                 debug!("Player state changed");
@@ -284,6 +287,7 @@ impl MPDPlayerController {
     
     /// Handle player events and log song information
     fn handle_player_event(client: &mut Client<TcpStream>, player: Arc<Self>) {
+
         // Update the song information and capabilities
         Self::update_song_from_mpd(client, player.clone());
         

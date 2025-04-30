@@ -16,3 +16,4 @@ Cargo.lock
 out/
 devtools/
 Cargo.lock
+acr.json

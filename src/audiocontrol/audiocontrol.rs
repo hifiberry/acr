@@ -108,6 +108,7 @@ impl PlayerController for AudioController {
     
     fn send_command(&self, command: PlayerCommand) -> bool {
         if let Some(idx) = self.active_index {
+            debug!("Sending command to active controller [{}]: {}", idx, command);
             if let Ok(controller) = self.controllers[idx].read() {
                 return controller.send_command(command);
             }
@@ -917,6 +918,53 @@ impl AudioController {
         });
         
         serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Display the state of all players to the console
+    pub fn display_all_player_states(&self) {
+        println!("\n=== Player States ===");
+        
+        if self.controllers.is_empty() {
+            println!("No players registered.");
+            return;
+        }
+        
+        for (idx, controller) in self.controllers.iter().enumerate() {
+            if let Ok(player) = controller.read() {
+                let is_active = Some(idx) == self.active_index;
+                let active_marker = if is_active { "* " } else { "  " };
+                
+                println!("{}[{}] {}: {}", 
+                    active_marker,
+                    idx,
+                    player.get_player_name(),
+                    player.get_player_id());
+                
+                println!("    State: {}", player.get_playback_state());
+                
+                if let Some(song) = player.get_song() {
+                    let title = song.title.unwrap_or_else(|| "Unknown".to_string());
+                    let artist = song.artist.unwrap_or_else(|| "Unknown".to_string());
+                    let album = song.album.unwrap_or_else(|| "Unknown".to_string());
+                    
+                    println!("    Now playing: {} by {} ({})", title, artist, album);
+                } else {
+                    println!("    No song currently playing");
+                }
+                
+                println!("    Loop mode: {}", player.get_loop_mode());
+                println!("    Shuffle: {}", if player.get_shuffle() { "On" } else { "Off" });
+                
+                let capabilities = player.get_capabilities();
+                println!("    Capabilities: {}", capabilities);
+                
+                println!();
+            } else {
+                println!("  [{}] <Unable to access player>", idx);
+            }
+        }
+        
+        println!("===================");
     }
 }
 

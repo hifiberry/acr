@@ -1,5 +1,5 @@
-use std::io::{self, Read, Write};
-use std::fs::OpenOptions;
+use std::io::{self, Read, Write, BufReader, BufWriter};
+use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::net::TcpStream;
 use std::time::Duration;
@@ -8,7 +8,10 @@ use log::{warn, debug};
 use url::Url;
 
 #[cfg(windows)]
-use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::prelude::*;
+
+#[cfg(unix)]
+use std::os::unix::net::{UnixStream, UnixListener};
 
 /// AccessMode for opening a stream
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,7 +101,6 @@ pub fn open_stream(source: &str, mode: AccessMode) -> io::Result<StreamWrapper> 
         #[cfg(windows)]
         {
             // Windows named pipe handling with retry logic
-            use std::os::windows::fs::OpenOptionsExt;
             
             const FILE_FLAG_OVERLAPPED: u32 = 0x40000000;
             const ERROR_PIPE_BUSY: i32 = 231;

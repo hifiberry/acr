@@ -1,8 +1,7 @@
-use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController};
+use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController};
 use serde_json::Value;
 use std::error::Error;
 use std::fmt;
-use log::{info, warn};
 
 /// Error type for player creation
 #[derive(Debug)]
@@ -56,7 +55,7 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
             },
             "raat" => {
                 // Create RAATPlayerController with config
-                let metadata_source = config_obj.get("metadata_pipe")
+                let metadata_source = config_obj.get("event_pipe")
                     .and_then(|v| v.as_str())
                     .unwrap_or("/var/run/raat/metadata_pipe");
 
@@ -64,12 +63,30 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_str())
                     .unwrap_or("/var/run/raat/control_pipe");
                 
-                // Check if reopen_metadata_pipe parameter is specified in the JSON
-                let reopen = config_obj.get("reopen_metadata_pipe")
+                // Check if reopen_event_pipe parameter is specified in the JSON
+                let reopen = config_obj.get("reopen_event_pipe")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true); // Default to true if not specified
                 
                 let player = RAATPlayerController::with_pipes_and_reopen(metadata_source, control_pipe, reopen);
+                Ok(Box::new(player))
+            },
+            "librespot" => {
+                // Create LibrespotPlayerController with config
+                let event_source = config_obj.get("event_pipe")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("/var/run/librespot/events_pipe");
+                    
+                let process_name = config_obj.get("process_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("/usr/bin/librespot");
+                
+                // Check if reopen_event_pipe parameter is specified in the JSON
+                let reopen = config_obj.get("reopen_event_pipe")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true); // Default to true if not specified
+                
+                let player = LibrespotPlayerController::with_config(event_source, process_name, reopen);
                 Ok(Box::new(player))
             },
             "null" => {
@@ -114,9 +131,17 @@ pub fn sample_json_config() -> String {
         },
         {
             "raat": {
-                "metadata_pipe": "/var/run/raat/metadata_pipe",
+                "event_pipe": "/var/run/raat/metadata_pipe",
                 "control_pipe": "/var/run/raat/control_pipe",
-                "reopen_metadata_pipe": true, 
+                "reopen_event_pipe": true, 
+                "enable": true
+            }
+        },
+        {
+            "librespot": {
+                "event_pipe": "/var/run/librespot/events_pipe",
+                "process_name": "/usr/bin/librespot",
+                "reopen_event_pipe": true,
                 "enable": true
             }
         },

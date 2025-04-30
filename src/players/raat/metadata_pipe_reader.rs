@@ -52,10 +52,8 @@ impl MetadataPipeReader {
         // Parse the JSON string
         match serde_json::from_str::<Value>(line) {
             Ok(json) => {
-                // Initialize a player with RAAT type
-                let mut player = PlayerState::new("RAAT".to_string());
-                player.type_ = Some("raat".to_string());
-                player.player_id = Some("raat".to_string());
+                // Initialize a player with default values
+                let mut player = PlayerState::new();
                 
                 // Initialize empty capabilities set
                 let mut capabilities = PlayerCapabilitySet::empty();
@@ -157,8 +155,8 @@ impl MetadataPipeReader {
                 // Store shuffle state if available
                 if let Some(shuffle) = json.get("shuffle").and_then(|v| v.as_bool()) {
                     player_metadata.insert("shuffle".to_string(), Value::Bool(shuffle));
-                    // Fix: Use Some() to convert bool to Option<bool>
-                    player.shuffle = Some(shuffle);
+                    // Set as non-optional boolean
+                    player.shuffle = shuffle;
                 }
                 
                 // Store loop mode if available
@@ -300,7 +298,7 @@ impl MetadataPipeReader {
                         warn!("Metadata [{}]: Processing...", line_number);
                         
                         match Self::parse_line(&buffer) {
-                            Some((song, player, capabilities, stream_details)) => {
+                            Some((song, player, _capabilities, _stream_details)) => {
                                 // Log the structured data
                                 warn!("Parsed metadata [{}]:", line_number);
                                 warn!("  Song: '{} - {}' from album '{}'", 
@@ -308,27 +306,12 @@ impl MetadataPipeReader {
                                        song.artist.as_deref().unwrap_or("Unknown"),
                                        song.album.as_deref().unwrap_or("Unknown"));
                                 
-                                warn!("  Player: '{}' ({}), state: {:?}", 
-                                       player.name,
-                                       player.type_.as_deref().unwrap_or("unknown"),
-                                       player.state);
+                                warn!("  Player state: {:?}", player.state);
                                 
                                 // Add logging for loop and shuffle mode
                                 warn!("  Loop mode: {:?}, Shuffle: {}", 
                                        player.loop_mode,
-                                       player.shuffle.unwrap_or(false));
-                                
-                                if !capabilities.is_empty() {
-                                    warn!("  Capabilities: {:?}", capabilities);
-                                }
-                                
-                                if let Some(_sample_rate) = stream_details.sample_rate {
-                                    warn!("  Audio format: {}", stream_details.format_description());
-                                }
-                                
-                                // Here you would typically send this parsed data elsewhere in your application
-                                // For example, update a player state cache, notify listeners, etc.
-                                // This is where you would integrate with the rest of your application
+                                       player.shuffle);
                             },
                             None => {
                                 warn!("Metadata [{}]: Failed to parse JSON data", line_number);

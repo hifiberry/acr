@@ -48,28 +48,16 @@ impl std::fmt::Display for PlaybackState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerState {
-    pub name: String, // Name of the player (required)
-    
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub player_id: Option<String>, // Unique identifier for the player
-    
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub type_: Option<String>, // Type of player (e.g., "mpd", "spotify", "bluetooth")
-    
     #[serde(default)]
     pub state: PlaybackState, // Current state (e.g., "playing", "paused", "stopped")
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<i32>, // Current volume level (0-100)
     
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub muted: Option<bool>, // Whether the player is muted
+    pub muted: bool, // Whether the player is muted
     
     #[serde(default, skip_serializing_if = "PlayerCapabilitySet::is_empty")]
     pub capabilities: PlayerCapabilitySet, // Player capabilities using bitflags
-    
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active: Option<bool>, // Whether this player is the currently active one
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<f64>, // Current playback position in seconds
@@ -77,28 +65,24 @@ pub struct PlayerState {
     #[serde(default)]
     pub loop_mode: LoopMode, // Loop mode (None, Track, Playlist)
     
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shuffle: Option<bool>, // Whether shuffle is enabled
+    #[serde(default)]
+    pub shuffle: bool, // Whether shuffle is enabled
     
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
 impl PlayerState {
-    /// Create a new PlayerState with the given name and default values for other fields
-    pub fn new(name: String) -> Self {
+    /// Create a new PlayerState with default values for fields
+    pub fn new() -> Self {
         Self {
-            name,
-            player_id: None,
-            type_: None,
             state: PlaybackState::default(),
             volume: None,
-            muted: None,
+            muted: false,
             capabilities: PlayerCapabilitySet::empty(),
-            active: None,
             position: None,
             loop_mode: LoopMode::default(),
-            shuffle: None,
+            shuffle: false,
             metadata: HashMap::new(),
         }
     }

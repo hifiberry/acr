@@ -62,7 +62,7 @@ impl MPDPlayerController {
             hostname: host.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
-            current_state: Arc::new(Mutex::new(PlayerState::new("mpd".to_string()))),
+            current_state: Arc::new(Mutex::new(PlayerState::new())),
         };
         
         // Set default capabilities
@@ -83,7 +83,7 @@ impl MPDPlayerController {
             hostname: hostname.to_string(),
             port,
             current_song: Arc::new(Mutex::new(None)),
-            current_state: Arc::new(Mutex::new(PlayerState::new(format!("mpd-{}", hostname)))),
+            current_state: Arc::new(Mutex::new(PlayerState::new())),
         };
         
         // Set default capabilities
@@ -409,13 +409,8 @@ impl MPDPlayerController {
                     debug!("Updated loop mode: {:?}", current_state.loop_mode);
                     
                     // Update shuffle status
-                    current_state.shuffle = Some(status.random);
+                    current_state.shuffle = status.random;
                     debug!("Updated shuffle: {}", status.random);
-                    
-                    // Update player name and type for consistency
-                    current_state.name = player.get_player_name();
-                    current_state.type_ = Some("mpd".to_string());
-                    current_state.player_id = Some(player.get_player_id());
                     
                     // Update playback position if available
                     if let Some(elapsed) = status.elapsed {

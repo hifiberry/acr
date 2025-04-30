@@ -11,8 +11,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
-use std::fs::OpenOptions;
-use std::io::Write;
 
 /// RAAT player controller implementation
 /// This controller interfaces with RAAT (Roon Audio Advanced Transport) metadata pipes
@@ -94,6 +92,7 @@ impl RAATPlayerController {
     }
     
     /// Create a new RAAT player controller with custom metadata source and reopen setting
+    #[allow(dead_code)]
     pub fn with_source_and_reopen(source: &str, reopen: bool) -> Self {
         debug!("Creating new RAATPlayerController with source: {} and reopen: {}", source, reopen);
         let control = "/var/run/raat/control_pipe"; // Default control pipe path

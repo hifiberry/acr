@@ -30,6 +30,22 @@
             }
         },
         {
+            "raat": {
+                "enable": true,
+                "event_pipe": "/var/run/raat/metadata_pipe",
+                "control_pipe": "/var/run/raat/control_pipe",
+                "reopen_event_pipe": true
+            }
+        },
+        {
+            "librespot": {
+                "enable": true,
+                "event_pipe": "/var/run/librespot/events_pipe",
+                "process_name": "/usr/bin/librespot",
+                "reopen_event_pipe": true
+            }
+        },
+        {
             "null": {
                 "enable": false
             }

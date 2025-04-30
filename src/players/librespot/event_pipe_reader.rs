@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, BufReader, ErrorKind, Read};
-use log::{warn, error, debug, info};
+use log::{warn, error, debug};
 use std::thread;
 use std::time::Duration;
 use std::collections::HashMap;

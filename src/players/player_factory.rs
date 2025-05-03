@@ -50,7 +50,13 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_u64())
                     .unwrap_or(6600) as u16;
                 
-                let player = MPDPlayerController::with_connection(host, port);
+                // Check if load_mpd_library parameter is specified in the JSON
+                let load_library = config_obj.get("load_mpd_library")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true); // Default to true if not specified
+                
+                let mut player = MPDPlayerController::with_connection(host, port);
+                player.set_load_mpd_library(load_library);
                 Ok(Box::new(player))
             },
             "raat" => {
@@ -126,6 +132,7 @@ pub fn sample_json_config() -> String {
             "mpd": {
                 "host": "localhost", 
                 "port": 6600,
+                "load_mpd_library": true,
                 "enable": true
             }
         },

@@ -1,5 +1,6 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState};
+use crate::data::library::LibraryInterface;
 use delegate::delegate;
 use std::sync::{Arc, Weak, Mutex};
 use log::{debug, info, warn, error, trace};
@@ -29,6 +30,12 @@ pub struct MPDPlayerController {
 
     // current player state
     current_state: Arc<Mutex<PlayerState>>,
+    
+    /// Whether to load the MPD library into memory
+    load_mpd_library: bool,
+    
+    /// MPD library instance wrapped in Arc and Mutex for thread-safe access
+    library: Arc<Mutex<Option<crate::players::mpd::library::MPDLibrary>>>,
 }
 
 // Manually implement Clone for MPDPlayerController
@@ -41,6 +48,8 @@ impl Clone for MPDPlayerController {
             port: self.port,
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
+            load_mpd_library: self.load_mpd_library,
+            library: Arc::clone(&self.library),
         }
     }
 }
@@ -61,6 +70,8 @@ impl MPDPlayerController {
             port,
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
+            load_mpd_library: true,
+            library: Arc::new(Mutex::new(None)),
         };
         
         // Set default capabilities
@@ -82,6 +93,8 @@ impl MPDPlayerController {
             port,
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
+            load_mpd_library: true,
+            library: Arc::new(Mutex::new(None)),
         };
         
         // Set default capabilities
@@ -158,6 +171,47 @@ impl MPDPlayerController {
         debug!("Updating MPD connection to {}:{}", hostname, port);
         self.hostname = hostname.to_string();
         self.port = port;
+    }
+    
+    /// Get whether to load MPD library into memory
+    pub fn load_mpd_library(&self) -> bool {
+        self.load_mpd_library
+    }
+    
+    /// Set whether to load MPD library into memory
+    pub fn set_load_mpd_library(&mut self, load: bool) {
+        self.load_mpd_library = load;
+    }
+    
+    /// Get a reference to the MPD library, if available
+    pub fn get_library(&self) -> Option<crate::players::mpd::library::MPDLibrary> {
+        // Lock the mutex and clone the library if it exists
+        if let Ok(library_guard) = self.library.lock() {
+            // Clone the library if it exists
+            return library_guard.clone();
+        }
+        None
+    }
+    
+    /// Force a refresh of the MPD library
+    pub fn refresh_library(&self) -> Result<(), crate::data::library::LibraryError> {
+        debug!("Requesting MPD library refresh");
+        
+        // Get the library instance if available
+        if let Some(library) = self.get_library() {
+            // Run the refresh in a separate thread
+            let library_clone = library;
+            thread::spawn(move || {
+                match library_clone.refresh_library() {
+                    Ok(_) => info!("MPD library refreshed successfully"),
+                    Err(e) => warn!("Failed to refresh MPD library: {}", e),
+                }
+            });
+            
+            return Ok(());
+        }
+        
+        Err(crate::data::library::LibraryError::InternalError("Library not initialized".to_string()))
     }
     
     /// Starts a background thread that listens for MPD events
@@ -464,6 +518,7 @@ impl MPDPlayerController {
                 let has_next = current_pos + 1 < queue_len;
                 
                 // Check if we have a previous song
+                let current_pos = status.song.map(|s| s.pos).unwrap_or(0);
                 let has_previous = current_pos > 0;
                 
                 debug!("Playlist status: position {}/{}, has_next={}, has_previous={}", 
@@ -883,6 +938,39 @@ impl PlayerController for MPDPlayerController {
             // Initialize song state and capabilities
             info!("Fetching initial song state from MPD");
             Self::update_song_from_mpd(&mut client, player_arc.clone());
+            
+            // Load MPD library if configured to do so
+            if self.load_mpd_library {
+                info!("Loading MPD library data");
+                // Import MPDLibrary here to ensure it's available
+                use crate::players::mpd::library::MPDLibrary;
+                
+                // Create a library with the same connection parameters
+                let library = MPDLibrary::with_connection(&self.hostname, self.port);
+                
+                // Store the library in the controller first
+                {
+                    let mut library_guard = self.library.lock().unwrap();
+                    *library_guard = Some(library.clone());
+                }
+                
+                // Explicitly call refresh_library on the library instance
+                // This ensures the library refresh is triggered immediately
+                info!("Starting MPD library refresh...");
+                
+                // Get a clone of the library for the thread
+                let library_clone = library.clone();
+                
+                // Run the refresh in a separate thread to avoid blocking startup
+                thread::spawn(move || {
+                    match library_clone.refresh_library() {
+                        Ok(_) => info!("MPD library loaded successfully"),
+                        Err(e) => warn!("Failed to load MPD library: {}", e),
+                    }
+                });
+            } else {
+                debug!("Skipping MPD library loading (disabled in config)");
+            }
         } else {
             warn!("Could not connect to MPD to fetch initial song state");
         }

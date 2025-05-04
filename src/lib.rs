@@ -13,6 +13,9 @@ pub mod plugins;
 /// Helper utilities for I/O and other common tasks
 pub mod helpers;
 
+/// Web API server for remote control and monitoring
+pub mod webserver;
+
 // Re-export items from data module for backward compatibility
 pub use data::{PlaybackState, Song, PlayerState};
 

@@ -4,15 +4,14 @@ use crate::data::library::LibraryInterface;
 use crate::helpers::attributecache;
 use crate::helpers::imagecache;
 use crate::helpers::fanarttv;
+use crate::helpers::fanarttv::path_with_any_extension_exists;
 use log::{info, warn, error, debug};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::time::Duration;
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::HashMap;
 use std::thread;
-use std::path::Path;
 use deunicode::deunicode;
 
 /// Result type for MusicBrainz artist search
@@ -595,7 +594,7 @@ pub fn update_library_artists_metadata_in_background<L: LibraryInterface + Send 
 /// * `artist` - The artist to update with images
 ///
 /// # Returns
-/// * `bool` - True if any images were downloaded and cached
+/// * `bool` - True if any images were downloaded or if the API call was successful even with no images
 pub fn download_artist_images(artist: &mut Artist) -> bool {    
     // Get the artist's MusicBrainz ID
     let mbid = match get_artist_mbid(&artist.name) {
@@ -606,42 +605,78 @@ pub fn download_artist_images(artist: &mut Artist) -> bool {
         }
     };
     
-    // Create a safe basename for the artist
-    let safe_name = artist_basename(&artist.name);
-    let mut images_updated = false;
-    
-    // Create the artist directory path
-    let artist_dir = format!("artist/{}", safe_name);
-
-    warn!("Downloading images for artist '{}'", artist.name);
-    
-    // Try to get and store the thumbnail
-    if let Some(thumb_url) = fanarttv::get_artist_thumbnail(&mbid) {
-        match download_and_cache_image(&thumb_url, &artist_dir, "artist", artist) {
-            Ok(_) => {
-                debug!("Successfully downloaded and cached thumbnail for '{}'", artist.name);
-                images_updated = true;
-            },
-            Err(e) => {
-                warn!("Failed to download thumbnail for '{}': {}", artist.name, e);
-            }
+    // Check if we've already checked this artist with FanartTV
+    let api_checked_key = format!("artist::{}::fanarttv_checked", artist.name);
+    match attributecache::get::<bool>(&api_checked_key) {
+        Ok(Some(true)) => {
+            debug!("Already checked FanartTV for artist '{}', skipping download", artist.name);
+            return true; // API was already successfully called before
+        },
+        _ => {
+            // Not in cache, proceed with the API call
         }
     }
     
-    // Try to get and store the banner
-    if let Some(banner_url) = fanarttv::get_artist_banner(&mbid) {
-        match download_and_cache_image(&banner_url, &artist_dir, "artist-banner", artist) {
-            Ok(_) => {
-                debug!("Successfully downloaded and cached banner for '{}'", artist.name);
-                images_updated = true;
-            },
-            Err(e) => {
-                warn!("Failed to download banner for '{}': {}", artist.name, e);
+    // Call FanartTV API and process the result
+    debug!("Calling FanartTV API for artist '{}'", artist.name);
+    let api_success = fanarttv::download_artist_images(&mbid, &artist.name);
+    
+    // Store the API check status in the cache regardless of whether images were found
+    if api_success {
+        debug!("FanartTV API call successful for artist '{}'", artist.name);
+        
+        // Mark this artist as checked in the cache
+        if let Err(e) = attributecache::set(&api_checked_key, &true) {
+            warn!("Failed to store FanartTV check status in cache for '{}': {}", artist.name, e);
+        } else {
+            debug!("Stored FanartTV check status in cache for '{}'", artist.name);
+        }
+        
+        // Create a safe basename for the artist
+        let safe_name = artist_basename(&artist.name);
+        
+        // Check if images were actually found and downloaded
+        let thumb_path = format!("artists/{}/artist.0", safe_name);
+        let banner_path = format!("artists/{}/banner.0", safe_name);
+        
+        // Update the artist's metadata with the cached image paths if the files exist
+        if let Some(ref mut meta) = artist.metadata {
+            // Check for artist thumbnails
+            if path_with_any_extension_exists(&thumb_path) {
+                meta.set_thumb_url(format!("cache://{}", thumb_path));
+                
+                // Store the thumbnail URL in the attribute cache
+                let cache_key = format!("artist::{}::thumbnail", artist.name);
+                if let Err(e) = attributecache::set(&cache_key, &format!("cache://{}", thumb_path)) {
+                    warn!("Failed to store thumbnail URL in attribute cache: {}", e);
+                }
+            }
+            
+            // Check for artist banners
+            if path_with_any_extension_exists(&banner_path) {
+                meta.set_banner_url(format!("cache://{}", banner_path));
+                
+                // Store the banner URL in the attribute cache
+                let cache_key = format!("artist::{}::banner", artist.name);
+                if let Err(e) = attributecache::set(&cache_key, &format!("cache://{}", banner_path)) {
+                    warn!("Failed to store banner URL in attribute cache: {}", e);
+                }
             }
         }
+        
+        return true;
+    } else {
+        warn!("FanartTV API call failed for artist '{}'", artist.name);
+        
+        // Mark this artist as checked in the cache even if the API call failed
+        if let Err(e) = attributecache::set(&api_checked_key, &true) {
+            warn!("Failed to store FanartTV check status in cache for '{}': {}", artist.name, e);
+        } else {
+            debug!("Stored FanartTV check status in cache for '{}'", artist.name);
+        }
+        
+        return false;
     }
-    
-    images_updated
 }
 
 /// Helper function to download an image and store it in the cache
@@ -744,16 +779,16 @@ pub fn update_artist_images(artist: &mut Artist) -> bool {
     warn!("Downloading images for artist '{}'", artist.name);
     
     // Use the comprehensive function to download all thumbnails and banners
-    let (thumbs_downloaded, banners_downloaded) = fanarttv::download_artist_images(&mbid, &artist.name);
+    let api_success = fanarttv::download_artist_images(&mbid, &artist.name);
     
-    if thumbs_downloaded || banners_downloaded {
+    if api_success {
         debug!("Successfully downloaded images for '{}'", artist.name);
         
         // Update the artist's metadata with the cached image paths
         if let Some(ref mut meta) = artist.metadata {
-            if thumbs_downloaded {
-                let thumb_path = format!("artists/{}/artist.0", safe_name);
-                // Use the first thumbnail (artist.0.xxx) for the artist
+            // Check for artist thumbnails
+            let thumb_path = format!("artists/{}/artist.0", safe_name);
+            if path_with_any_extension_exists(&thumb_path) {
                 meta.set_thumb_url(format!("cache://{}", thumb_path));
                 
                 // Store the thumbnail URL in the attribute cache
@@ -763,9 +798,9 @@ pub fn update_artist_images(artist: &mut Artist) -> bool {
                 }
             }
             
-            if banners_downloaded {
-                let banner_path = format!("artists/{}/banner.0", safe_name);
-                // Use the first banner (banner.0.xxx) for the artist
+            // Check for artist banners
+            let banner_path = format!("artists/{}/banner.0", safe_name);
+            if path_with_any_extension_exists(&banner_path) {
                 meta.set_banner_url(format!("cache://{}", banner_path));
                 
                 // Store the banner URL in the attribute cache

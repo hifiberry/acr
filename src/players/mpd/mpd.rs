@@ -1027,4 +1027,13 @@ impl PlayerController for MPDPlayerController {
         debug!("No active event listener thread found");
         false
     }
+    
+    // Implement the get_library method for MPDPlayerController
+    fn get_library(&self) -> Option<Box<dyn LibraryInterface>> {
+        if let Some(library) = self.get_library() {
+            Some(Box::new(library))
+        } else {
+            None
+        }
+    }
 }

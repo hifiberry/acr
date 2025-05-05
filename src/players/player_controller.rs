@@ -1,4 +1,5 @@
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource, PlayerState};
+use crate::data::library::LibraryInterface;
 use std::sync::{Arc, Weak, RwLock};
 use std::any::Any;
 use std::time::SystemTime;
@@ -116,6 +117,24 @@ pub trait PlayerController: Send + Sync {
     /// This cleans up any resources used by the player, including stopping background threads
     /// and closing connections. Returns true if the player was successfully stopped, false otherwise.
     fn stop(&self) -> bool;
+    
+    /// Get the library interface for this player, if available
+    /// 
+    /// Returns a library interface that can be used to query albums, artists, and tracks,
+    /// or None if the player does not support library functionality.
+    fn get_library(&self) -> Option<Box<dyn LibraryInterface>> {
+        None  // Default implementation returns None
+    }
+    
+    /// Check if this player offers library functionality
+    /// 
+    /// Returns true if the player has a library interface, false otherwise
+    /// This is a convenience method that checks if get_library() would return Some
+    fn has_library(&self) -> bool {
+        // Since get_library consumes resources to create the Box, we just want to check
+        // if the player has the capability rather than actually creating the library interface
+        self.get_library().is_some()
+    }
 }
 
 /// Base implementation of PlayerController that handles state listener management

@@ -1,4 +1,5 @@
 use crate::AudioController;
+use crate::api::players;
 use log::info;
 use rocket::{routes, get};
 use rocket::serde::json::Json;
@@ -33,7 +34,11 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         .merge(("address", "0.0.0.0"));
     
     let _rocket = rocket::custom(config)
-        .mount("/", routes![get_version])
+        .mount("/", routes![
+            get_version,
+            players::get_current_player,
+            players::list_players
+        ])
         .manage(controller)
         .launch()
         .await?;

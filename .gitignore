@@ -17,3 +17,8 @@ out/
 devtools/
 Cargo.lock
 acr.json
+
+# Sample cache files
+# These are generated during debuggiong and are not needed in the repository
+attributecache.sled/*
+cache/*

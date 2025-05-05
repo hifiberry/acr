@@ -6,7 +6,6 @@ use rocket::{get, State, post};
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
-use std::str::FromStr;
 
 /// Response struct for the current active player
 #[derive(serde::Serialize)]
@@ -14,6 +13,7 @@ pub struct CurrentPlayerResponse {
     name: String,
     id: String,
     state: PlaybackState,
+    last_seen: Option<String>, // ISO 8601 formatted timestamp of when the player was last seen
 }
 
 /// Response struct for listing all available players
@@ -29,6 +29,7 @@ pub struct PlayerInfo {
     id: String,
     state: PlaybackState,
     is_active: bool,
+    last_seen: Option<String>, // ISO 8601 formatted timestamp of when the player was last seen
 }
 
 /// Response for command execution
@@ -49,10 +50,18 @@ pub fn get_current_player(controller: &State<Arc<AudioController>>) -> Json<Curr
             let id = player.get_player_id();
             let state = player.get_playback_state();
             
+            // Format last_seen timestamp if available
+            let last_seen = player.get_last_seen()
+                .map(|time| {
+                    // Convert SystemTime to ISO 8601 format string
+                    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
+                });
+            
             return Json(CurrentPlayerResponse {
                 name,
                 id,
                 state,
+                last_seen,
             });
         }
     }
@@ -62,6 +71,7 @@ pub fn get_current_player(controller: &State<Arc<AudioController>>) -> Json<Curr
         name: "none".to_string(),
         id: "none".to_string(),
         state: PlaybackState::Unknown,
+        last_seen: None,
     })
 }
 
@@ -82,11 +92,19 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
                 let name = ctrl.get_player_name();
                 let id = ctrl.get_player_id();
                 
+                // Format last_seen timestamp if available
+                let last_seen = ctrl.get_last_seen()
+                    .map(|time| {
+                        // Convert SystemTime to ISO 8601 format string
+                        chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
+                    });
+                
                 PlayerInfo {
                     name: name.clone(),
                     id: id.clone(),
                     state: ctrl.get_playback_state(),
                     is_active: name == current_player_name && id == current_player_id,
+                    last_seen,
                 }
             } else {
                 // Fallback for locked controllers
@@ -95,6 +113,7 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
                     id: "unknown".to_string(),
                     state: PlaybackState::Unknown,
                     is_active: false,
+                    last_seen: None,
                 }
             }
         })

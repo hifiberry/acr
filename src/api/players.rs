@@ -177,80 +177,8 @@ pub fn send_command_to_active(
     }
 }
 
-/// Send a command to a specific player by ID
-#[post("/player/id/<id>/send/<command>")]
-pub fn send_command_to_player(
-    id: &str,
-    command: &str,
-    controller: &State<Arc<AudioController>>
-) -> Result<Json<CommandResponse>, Custom<Json<CommandResponse>>> {
-    // Get all controllers
-    let controllers = controller.inner().list_controllers();
-    
-    // Find the controller with the matching ID
-    let mut found_controller = None;
-    for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_id() == id {
-                found_controller = Some(ctrl_lock.clone());
-                break;
-            }
-        }
-    }
-    
-    // If no controller with the given ID was found, return a 404
-    let target_controller = match found_controller {
-        Some(ctrl) => ctrl,
-        None => {
-            return Err(Custom(
-                Status::NotFound,
-                Json(CommandResponse {
-                    success: false,
-                    message: format!("No player found with ID: {}", id),
-                })
-            ));
-        }
-    };
-    
-    // Parse the command string into a PlayerCommand
-    let parsed_command = match parse_player_command(command) {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            return Err(Custom(
-                Status::BadRequest,
-                Json(CommandResponse {
-                    success: false,
-                    message: format!("Invalid command: {} - {}", command, e),
-                })
-            ));
-        }
-    };
-    
-    // Send the command to the found player
-    let success = if let Ok(ctrl) = target_controller.read() {
-        ctrl.send_command(parsed_command.clone())
-    } else {
-        false
-    };
-    
-    if success {
-        Ok(Json(CommandResponse {
-            success: true,
-            message: format!("Command '{}' sent successfully to player with ID: {}", command, id),
-        }))
-    } else {
-        Err(Custom(
-            Status::InternalServerError,
-            Json(CommandResponse {
-                success: false,
-                message: format!("Failed to send command '{}' to player with ID: {}", command, id),
-            })
-        ))
-    }
-}
-
 /// Send a command to a specific player by name
-#[post("/player/name/<n>/send/<command>")]
+#[post("/player/<n>/command/<command>")]
 pub fn send_command_to_player_by_name(
     n: &str,
     command: &str,

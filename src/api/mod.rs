@@ -6,3 +6,6 @@ pub mod players;
 
 // Export the plugins module
 pub mod plugins;
+
+// Export the library module
+pub mod library;

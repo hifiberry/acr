@@ -15,6 +15,19 @@ use std::thread;
 use std::path::Path;
 use deunicode::deunicode;
 
+/// Result type for MusicBrainz artist search
+#[derive(Debug, Clone, PartialEq)]
+pub enum MusicBrainzSearchResult {
+    /// Artist found with its MusicBrainz ID
+    Found(String),
+    /// Artist was intentionally ignored (e.g., contains multiple artists)
+    Ignored,
+    /// Artist couldn't be found in MusicBrainz
+    NotFound,
+    /// Error occurred during the search
+    Error(String),
+}
+
 /// Convert an artist name to a safe basename for files
 ///
 /// This function:
@@ -162,20 +175,39 @@ pub fn get_artist_meta(artist_name: &str) -> Option<ArtistMeta> {
     
     // If not found in cache, search MusicBrainz for the artist
     if !found_in_cache {
-        match search_musicbrainz_for_artist(artist_name) {
-            Some(mbid) => {
-                debug!("Found MusicBrainz ID for '{}': {}", artist_name, mbid);
-                meta.set_mbid(mbid.clone());
-                
-                // Store in cache for future use
-                if let Err(e) = attributecache::set(&cache_key_mbid, &mbid) {
-                    warn!("Failed to cache MusicBrainz ID for '{}': {}", artist_name, e);
-                }
-            },
-            None => {
-                warn!("Could not find MusicBrainz ID for '{}'", artist_name);
-                // Return None if we couldn't find any metadata
+        // Check if this artist was previously flagged as having multiple artists
+        let ignored_flag_key = format!("artist::{}::ignored_multiple_artists", artist_name);
+        match attributecache::get::<bool>(&ignored_flag_key) {
+            Ok(Some(true)) => {
+                // Artist was intentionally ignored, return None without displaying a warning
+                debug!("Artist '{}' was previously flagged as containing multiple artists, skipping", artist_name);
                 return None;
+            },
+            _ => {
+                // Continue with the search if not found or there was an error
+                match search_musicbrainz_for_artist(artist_name) {
+                    MusicBrainzSearchResult::Found(mbid) => {
+                        debug!("Found MusicBrainz ID for '{}': {}", artist_name, mbid);
+                        meta.set_mbid(mbid.clone());
+                        
+                        // Store in cache for future use
+                        if let Err(e) = attributecache::set(&cache_key_mbid, &mbid) {
+                            warn!("Failed to cache MusicBrainz ID for '{}': {}", artist_name, e);
+                        }
+                    },
+                    MusicBrainzSearchResult::Ignored => {
+                        debug!("Artist '{}' was intentionally ignored", artist_name);
+                        return None;
+                    },
+                    MusicBrainzSearchResult::NotFound => {
+                        warn!("Could not find MusicBrainz ID for '{}'", artist_name);
+                        return None;
+                    },
+                    MusicBrainzSearchResult::Error(e) => {
+                        warn!("Error occurred while searching MusicBrainz for '{}': {}", artist_name, e);
+                        return None;
+                    }
+                }
             }
         }
     }
@@ -191,7 +223,7 @@ pub fn get_artist_meta(artist_name: &str) -> Option<ArtistMeta> {
 }
 
 /// Search MusicBrainz API for an artist and return their MBID if found
-pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
+pub fn search_musicbrainz_for_artist(artist_name: &str) -> MusicBrainzSearchResult {
     debug!("Searching MusicBrainz for artist: '{}'", artist_name);
     
     // First check if this artist was previously flagged as having multiple artists
@@ -199,7 +231,7 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
     match attributecache::get::<bool>(&ignored_flag_key) {
         Ok(Some(true)) => {
             debug!("Skipping search for '{}' as it was previously flagged as containing multiple artists", artist_name);
-            return None;
+            return MusicBrainzSearchResult::Ignored;
         },
         _ => {} // Continue with the search if not found or there was an error
     }
@@ -212,7 +244,7 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create HTTP client for MusicBrainz search: {}", e);
-            return None;
+            return MusicBrainzSearchResult::Error(format!("HTTP client error: {}", e));
         }
     };
     
@@ -230,13 +262,13 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
         Ok(response) => {
             if !response.status().is_success() {
                 warn!("MusicBrainz API returned error status: {}", response.status());
-                return None;
+                return MusicBrainzSearchResult::Error(format!("API error status: {}", response.status()));
             }
             response
         },
         Err(e) => {
             error!("Failed to execute MusicBrainz API request: {}", e);
-            return None;
+            return MusicBrainzSearchResult::Error(format!("API request error: {}", e));
         }
     };
     
@@ -245,7 +277,7 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
         Ok(json) => json,
         Err(e) => {
             error!("Failed to parse MusicBrainz API response: {}", e);
-            return None;
+            return MusicBrainzSearchResult::Error(format!("JSON parsing error: {}", e));
         }
     };
     
@@ -299,7 +331,7 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
                     }
                     
                     // Return the MBID
-                    return Some(mbid_string);
+                    return MusicBrainzSearchResult::Found(mbid_string);
                 } else {
                     // For cases where the names don't exactly match, implement a fuzzy comparison
                     // Check if one name is fully contained within the other
@@ -316,7 +348,7 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
                                 debug!("Stored ignored flag for artist with multiple names: '{}'", artist_name);
                             }
                             
-                            return None;
+                            return MusicBrainzSearchResult::Ignored;
                         }
 
                         info!("Found similar artist: '{}' (searched for: '{}') with MBID: {}", 
@@ -331,7 +363,7 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
                             Err(e) => error!("Failed to cache MBID for similar artist: {}", e)
                         }
                         
-                        return Some(mbid_string);
+                        return MusicBrainzSearchResult::Found(mbid_string);
                     } else {
                         // Names don't match and aren't similar enough
                         warn!("Artist name mismatch! Searched for: '{}', but found: '{}'", 
@@ -347,7 +379,7 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
     }
     
     info!("No matching MusicBrainz ID found for artist '{}'", artist_name);
-    None
+    MusicBrainzSearchResult::NotFound
 }
 
 /// Update an artist's metadata by retrieving information from MusicBrainz
@@ -653,7 +685,10 @@ pub fn get_artist_mbid(artist_name: &str) -> Option<String> {
         },
         _ => {
             // Not in cache, search MusicBrainz
-            search_musicbrainz_for_artist(artist_name)
+            match search_musicbrainz_for_artist(artist_name) {
+                MusicBrainzSearchResult::Found(mbid) => Some(mbid),
+                _ => None,
+            }
         }
     }
 }

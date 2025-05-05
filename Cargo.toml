@@ -22,6 +22,8 @@ enumflags2 = "0.7.7"
 chrono = "0.4"  # For timestamp formatting
 # Added Rocket for API server
 rocket = { version = "0.5.0-rc.2", features = ["json"] }
+# MusicBrainz API client
+musicbrainz_rs = "0.5.0"
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]

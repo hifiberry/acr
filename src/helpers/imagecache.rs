@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::fs::{self, File};
-use std::io::{self, Write, Read};
+use std::io::{Write, Read};
 use std::sync::Mutex;
 use lazy_static::lazy_static;
 use log::{info, error, debug};
@@ -179,6 +179,11 @@ impl ImageCache {
 /// Get a reference to the global image cache
 pub fn get_image_cache() -> std::sync::MutexGuard<'static, ImageCache> {
     IMAGE_CACHE.lock().unwrap()
+}
+
+/// Get the full path for a relative path in the image cache
+pub fn get_full_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    get_image_cache().get_full_path(path)
 }
 
 /// Check if an image exists in the cache

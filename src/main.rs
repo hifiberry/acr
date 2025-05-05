@@ -214,12 +214,19 @@ fn parse_sample_config() -> serde_json::Value {
 
 // Helper function to initialize the global attribute cache
 fn initialize_attribute_cache(config: &serde_json::Value) {
+    // Default path is attributecache.sled in the current directory
+    let default_path = "attributecache.sled";
+    
     if let Some(cache_path) = config.get("attribute_cache_path").and_then(|p| p.as_str()) {
         match AttributeCache::initialize(cache_path) {
             Ok(_) => info!("Attribute cache initialized with path: {}", cache_path),
             Err(e) => warn!("Failed to initialize attribute cache: {}", e)
         }
     } else {
-        info!("No attribute_cache_path specified in configuration, using default path");
+        info!("No attribute_cache_path specified in configuration, using default path: {}", default_path);
+        match AttributeCache::initialize(default_path) {
+            Ok(_) => info!("Attribute cache initialized with default path"),
+            Err(e) => warn!("Failed to initialize attribute cache with default path: {}", e)
+        }
     }
 }

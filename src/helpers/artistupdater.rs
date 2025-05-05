@@ -194,6 +194,16 @@ pub fn get_artist_meta(artist_name: &str) -> Option<ArtistMeta> {
 pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
     debug!("Searching MusicBrainz for artist: '{}'", artist_name);
     
+    // First check if this artist was previously flagged as having multiple artists
+    let ignored_flag_key = format!("artist::{}::ignored_multiple_artists", artist_name);
+    match attributecache::get::<bool>(&ignored_flag_key) {
+        Ok(Some(true)) => {
+            debug!("Skipping search for '{}' as it was previously flagged as containing multiple artists", artist_name);
+            return None;
+        },
+        _ => {} // Continue with the search if not found or there was an error
+    }
+    
     // Create a reqwest client with appropriate timeouts
     let client = match Client::builder()
         .timeout(Duration::from_secs(10))
@@ -297,6 +307,15 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> Option<String> {
                         // ignore if the artist name contains "," or "feat."
                         if artist_name.contains(",") || artist_name.contains("feat.") {
                             debug!("Ignoring similar artist match due to multiple artists in name: '{}'", artist_name);
+                            
+                            // Store a flag in the attribute cache to avoid looking up this artist again
+                            let ignored_flag_key = format!("artist::{}::ignored_multiple_artists", artist_name);
+                            if let Err(e) = attributecache::set(&ignored_flag_key, &true) {
+                                warn!("Failed to store ignored flag for artist with multiple names '{}': {}", artist_name, e);
+                            } else {
+                                debug!("Stored ignored flag for artist with multiple names: '{}'", artist_name);
+                            }
+                            
                             return None;
                         }
 

@@ -29,6 +29,8 @@ reqwest = { version = "0.11", features = ["json", "blocking"] }
 bytes = "1.4"
 # In-memory database with persistence
 sled = "0.34.7"
+# Add the urlencoding dependency
+urlencoding = "2.1.3"
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]

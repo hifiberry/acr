@@ -1025,6 +1025,30 @@ impl AudioController {
         
         println!("===================");
     }
+
+    /// Get information about all registered event filters
+    pub fn get_event_filter_info(&self) -> Vec<(String, String)> {
+        if let Ok(filters) = self.event_filters.read() {
+            filters.iter()
+                .map(|filter| (filter.name().to_string(), filter.version().to_string()))
+                .collect()
+        } else {
+            error!("Failed to acquire read lock for event_filters");
+            Vec::new()
+        }
+    }
+
+    /// Get information about all registered action plugins
+    pub fn get_action_plugin_info(&self) -> Vec<(String, String)> {
+        if let Ok(plugins) = self.action_plugins.read() {
+            plugins.iter()
+                .map(|plugin| (plugin.name().to_string(), plugin.version().to_string()))
+                .collect()
+        } else {
+            error!("Failed to acquire read lock for action_plugins");
+            Vec::new()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -24,6 +24,9 @@ chrono = "0.4"  # For timestamp formatting
 rocket = { version = "0.5.0-rc.2", features = ["json"] }
 # MusicBrainz API client
 musicbrainz_rs = "0.5.0"
+# For image cache
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+bytes = "1.4"
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]

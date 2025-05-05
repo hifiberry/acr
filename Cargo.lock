@@ -6,6 +6,7 @@ version = 4
 name = "acr"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "chrono",
  "ctrlc",
  "delegate",
@@ -18,6 +19,7 @@ dependencies = [
  "musicbrainz_rs",
  "named_pipe",
  "once_cell",
+ "reqwest",
  "rocket",
  "serde",
  "serde_json",

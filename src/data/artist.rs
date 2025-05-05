@@ -66,6 +66,11 @@ impl Artist {
         }
     }
     
+    /// Check if this is a multi-artist entry (contains comma in the name)
+    pub fn is_multi(&self) -> bool {
+        self.name.contains(',')
+    }
+    
     /// Clear all metadata for this artist
     pub fn clear_metadata(&mut self) {
         self.metadata = None;

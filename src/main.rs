@@ -1,21 +1,19 @@
 use acr::data::PlayerCommand;
 use acr::players::PlayerController;
 use acr::AudioController;
-use acr::webserver::{ApiServer, ApiConfig}; // Import the API server components
 use std::thread;
 use std::time::Duration;
 use std::io::{self, Read};
 use log::{debug, info, warn, error};
 use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc as StdArc;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use ctrlc;
 use std::fs;
 use std::path::Path;
-use std::sync::mpsc;
 
-#[actix_web::main] // Use actix_web main attribute for async support
-async fn main() {
+fn main() {
     // Initialize the logger with default configuration
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .format_timestamp_secs()
@@ -58,7 +56,7 @@ async fn main() {
     };
 
     // Set up a shared flag for graceful shutdown
-    let running = StdArc::new(AtomicBool::new(true));
+    let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     
     // Set up Ctrl+C handler
@@ -67,81 +65,7 @@ async fn main() {
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl+C handler");
     
-    // Initialize and start API server first
-    let api_config = match controllers_config.get("api") {
-        Some(api_json) => {
-            // Extract configuration options with defaults
-            let enable = api_json.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
-            let host = api_json.get("host").and_then(|v| v.as_str()).unwrap_or("0.0.0.0").to_string();
-            let port = api_json.get("port").and_then(|v| v.as_u64()).unwrap_or(1080) as u16;
-            
-            ApiConfig {
-                enable,
-                host,
-                port,
-            }
-        },
-        None => {
-            info!("No API configuration found, using defaults");
-            ApiConfig::default()
-        }
-    };
-    
-    // Create API server with configuration
-    let api_server = ApiServer::with_config(api_config.clone());
-    
-    // Clone running flag for API server thread
-    let api_running = running.clone();
-    
-    // Start API server in a separate thread
-    let (api_tx, api_rx) = mpsc::channel();
-    
-    thread::spawn(move || {
-        let runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        
-        runtime.block_on(async {
-            // Start the API server
-            if api_config.enable {
-                info!("Starting API server on {}:{}", api_config.host, api_config.port);
-                
-                // Send back signal that API server is starting
-                let _ = api_tx.send(true);
-                
-                // Create a future that completes when the running flag is false
-                let shutdown_signal = async {
-                    while api_running.load(Ordering::SeqCst) {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                };
-                
-                // Start the server and handle shutdown
-                tokio::select! {
-                    result = api_server.start() => {
-                        if let Err(e) = result {
-                            error!("API server error: {}", e);
-                        }
-                    },
-                    _ = shutdown_signal => {
-                        info!("API server shutting down");
-                    }
-                }
-            } else {
-                info!("API server is disabled in configuration");
-                let _ = api_tx.send(false);
-            }
-        });
-        
-        info!("API server thread exited");
-    });
-    
-    // Wait for confirmation that API server has started (or been disabled)
-    match api_rx.recv() {
-        Ok(true) => info!("API server started successfully"),
-        Ok(false) => info!("API server disabled, continuing with player initialization"),
-        Err(_) => error!("Failed to receive confirmation from API server thread"),
-    }
-    
-    // Create an AudioController from the JSON configuration
+    // Create an AudioController from the JSON configuration first
     let audio_controller_result = AudioController::from_json(&controllers_config);
     
     // This will now contain an Arc<AudioController> with initialized self-reference

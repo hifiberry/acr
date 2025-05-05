@@ -92,6 +92,11 @@ impl PlayerState {
         }
     }
 
+    /// Get the current playback position
+    pub fn get_position(&self) -> Option<f64> {
+        self.position
+    }
+
     /// Add a capability to the player
     pub fn add_capability(&mut self, capability: PlayerCapability) {
         self.capabilities.add_capability(capability);

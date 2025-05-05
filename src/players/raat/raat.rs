@@ -471,6 +471,21 @@ impl PlayerController for RAATPlayerController {
         }
     }
     
+    fn get_position(&self) -> Option<f64> {
+        trace!("Getting current playback position");
+        // Try to get the position from the current state with a non-blocking read
+        match self.current_state.try_read() {
+            Ok(state) => {
+                trace!("Got current position: {:?}", state.position);
+                return state.position;
+            },
+            Err(_) => {
+                warn!("Could not acquire immediate read lock for position, returning None");
+                return None; // Return None if we can't read the position
+            }
+        }
+    }
+    
     fn get_shuffle(&self) -> bool {
         debug!("Getting current shuffle state");
         if let Ok(state) = self.current_state.read() {

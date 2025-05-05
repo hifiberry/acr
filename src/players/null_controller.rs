@@ -73,6 +73,11 @@ impl PlayerController for NullPlayerController {
         PlaybackState::Stopped // Always return stopped state
     }
     
+    fn get_position(&self) -> Option<f64> {
+        debug!("NullPlayerController: get_position called");
+        None // No position information for the null player
+    }
+    
     fn get_shuffle(&self) -> bool {
         debug!("NullPlayerController: get_shuffle called");
         false // Default shuffle state

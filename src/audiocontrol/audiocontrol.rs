@@ -78,6 +78,17 @@ impl PlayerController for AudioController {
         PlaybackState::Stopped // Default state if no active controller
     }
     
+    fn get_position(&self) -> Option<f64> {
+        if let Ok(active_idx) = self.active_index.read() {
+            if *active_idx < self.controllers.len() {
+                if let Ok(controller) = self.controllers[*active_idx].read() {
+                    return controller.get_position();
+                }
+            }
+        }
+        None // Return None if no active controller
+    }
+    
     fn get_shuffle(&self) -> bool {
         if let Ok(active_idx) = self.active_index.read() {
             if *active_idx < self.controllers.len() {

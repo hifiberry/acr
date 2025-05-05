@@ -742,6 +742,20 @@ impl PlayerController for MPDPlayerController {
         PlaybackState::Unknown
     }
     
+    fn get_position(&self) -> Option<f64> {
+        trace!("MPDController: get_position called");
+        if let Some(mut mpd_client) = self.get_fresh_client() {
+            if let Ok(status) = mpd_client.status() {
+                if let Some(elapsed) = status.elapsed {
+                    // Convert Duration to f64 seconds
+                    return Some(elapsed.as_secs_f64());
+                }
+            }
+        }
+        debug!("Failed to get position from MPD");
+        None
+    }
+    
     fn get_shuffle(&self) -> bool {
         trace!("MPDController: get_shuffle called");
         if let Some(mut mpd_client) = self.get_fresh_client() {

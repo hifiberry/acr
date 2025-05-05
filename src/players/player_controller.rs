@@ -42,6 +42,11 @@ pub trait PlayerController: Send + Sync {
     /// Returns the current state of the player (playing, paused, stopped, etc.)
     fn get_playback_state(&self) -> PlaybackState;
     
+    /// Get the current playback position in seconds
+    ///
+    /// Returns the current position as seconds from the start of the track, or None if position is unknown
+    fn get_position(&self) -> Option<f64>;
+    
     /// Get whether shuffle is enabled
     /// 
     /// Returns true if shuffle is enabled, false otherwise
@@ -532,6 +537,17 @@ impl BasePlayerController {
                   self.get_player_name(), self.get_player_id());
         } else {
             warn!("Failed to acquire write lock for updating last_seen timestamp");
+        }
+    }
+
+    /// Get the current playback position
+    /// Implementation for the PlayerController trait
+    pub fn get_position(&self) -> Option<f64> {
+        if let Ok(state) = self.player_state.read() {
+            state.position
+        } else {
+            warn!("Failed to acquire read lock for player state");
+            None
         }
     }
 

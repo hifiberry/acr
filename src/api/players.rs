@@ -1,6 +1,6 @@
 use crate::AudioController;
-use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song};
-use crate::players::PlayerController;  // Import the trait
+use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, PlayerState};
+use crate::players::PlayerController;
 use rocket::serde::json::Json;
 use rocket::{get, State, post};
 use std::sync::Arc;
@@ -47,6 +47,7 @@ pub struct NowPlayingResponse {
     state: PlaybackState,
     shuffle: bool,
     loop_mode: LoopMode,
+    position: Option<f64>, // Current playback position in seconds
 }
 
 /// Get the current active player
@@ -331,6 +332,7 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
             let song = player.get_song();
             let shuffle = player.get_shuffle();
             let loop_mode = player.get_loop_mode();
+            let position = player.get_position(); // Use the new get_position method
             
             // Format last_seen timestamp if available
             let last_seen = player.get_last_seen()
@@ -350,6 +352,7 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
                 state,
                 shuffle,
                 loop_mode,
+                position,
             });
         }
     }
@@ -367,6 +370,7 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
         state: PlaybackState::Unknown,
         shuffle: false,
         loop_mode: LoopMode::None,
+        position: None,
     })
 }
 

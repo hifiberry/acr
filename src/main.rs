@@ -1,6 +1,7 @@
 use acr::data::PlayerCommand;
 use acr::players::PlayerController;
 use acr::AudioController;
+use acr::api::server;
 use std::thread;
 use std::time::Duration;
 use std::io::{self, Read};
@@ -8,7 +9,6 @@ use log::{debug, info, warn, error};
 use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use ctrlc;
 use std::fs;
 use std::path::Path;
@@ -164,6 +164,22 @@ fn main() {
         
         info!("Keyboard handler thread exiting");
     });
+    
+    // Start the API server in a Tokio runtime
+    let controllers_config_clone = controllers_config.clone();
+    let api_controller = controller.clone();
+    let _api_thread = thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+        rt.block_on(async {
+            if let Err(e) = server::start_rocket_server(api_controller, &controllers_config_clone).await {
+                error!("API server error: {}", e);
+            }
+        });
+    });
+    
+    info!("API server started on port {}", controllers_config.get("api_port")
+        .and_then(|p| p.as_u64())
+        .unwrap_or(1080));
     
     // Keep the main thread alive until Ctrl+C is received
     while running.load(Ordering::SeqCst) {

@@ -2,6 +2,7 @@ use acr::data::PlayerCommand;
 use acr::players::PlayerController;
 use acr::AudioController;
 use acr::api::server;
+use acr::helpers::attributecache::AttributeCache;
 use std::thread;
 use std::time::Duration;
 use std::io::{self, Read};
@@ -55,6 +56,9 @@ fn main() {
         parse_sample_config()
     };
 
+    // Initialize the global attribute cache with the configured path from JSON
+    initialize_attribute_cache(&controllers_config);
+    
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -205,5 +209,17 @@ fn parse_sample_config() -> serde_json::Value {
             error!("Failed to parse sample JSON configuration: {}", e);
             panic!("Cannot continue with invalid sample configuration");
         }
+    }
+}
+
+// Helper function to initialize the global attribute cache
+fn initialize_attribute_cache(config: &serde_json::Value) {
+    if let Some(cache_path) = config.get("attribute_cache_path").and_then(|p| p.as_str()) {
+        match AttributeCache::initialize(cache_path) {
+            Ok(_) => info!("Attribute cache initialized with path: {}", cache_path),
+            Err(e) => warn!("Failed to initialize attribute cache: {}", e)
+        }
+    } else {
+        info!("No attribute_cache_path specified in configuration, using default path");
     }
 }

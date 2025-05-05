@@ -13,6 +13,7 @@ pub mod song;
 pub mod stream_details;
 pub mod library;
 pub mod track;
+pub mod metadata;
 
 // Re-export types from child modules
 pub use album::*;
@@ -28,3 +29,4 @@ pub use song::*;
 pub use stream_details::*;
 pub use library::*;
 pub use track::*;
+pub use metadata::*;

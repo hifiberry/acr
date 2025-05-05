@@ -1,8 +1,8 @@
 use crate::AudioController;
-use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, PlayerState};
-use crate::players::PlayerController;
+use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song};
+use crate::players::PlayerController; // Fixed: Using the public re-export
 use rocket::serde::json::Json;
-use rocket::{get, State, post};
+use rocket::{get, post, State};
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;

@@ -1,9 +1,4 @@
 {
-    "api": {
-        "enable": true,
-        "host": "0.0.0.0",
-        "port": 1080
-    },
     "action_plugins": [
         {
             "active-monitor": {
@@ -14,45 +9,47 @@
     "event_filters": [
         {
             "event-logger": {
-                "enabled": false,
+                "enabled": true,
                 "event_types": [
                     "state",
                     "song",
                     "loop",
-                    "capabilities"
+                    "capabilities",
+                    "position"
                 ],
-                "log_level": "debug",
+                "log_level": "info",
                 "only_active": false
             }
         }
     ],
+    "api": {
+        "enable": true,
+        "host": "0.0.0.0",
+        "port": 1080
+    },
+    "attribute_cache_path": "cache/attributes",
     "players": [
         {
             "mpd": {
                 "enable": true,
                 "host": "localhost",
-                "port": 6600
+                "port": 6600,
+                "load_on_startup": true
             }
         },
         {
             "raat": {
-                "enable": true,
-                "event_pipe": "/var/run/raat/metadata_pipe",
-                "control_pipe": "/var/run/raat/control_pipe",
-                "reopen_event_pipe": true
+                "enable": false,
+                "metadata_pipe": "tcp://headphone:12100",
+                "control_pipe": "tcp://headphone:12101",
+                "reopen_metadata_pipe": true
             }
         },
         {
             "librespot": {
-                "enable": true,
-                "event_pipe": "/var/run/librespot/events_pipe",
-                "process_name": "/usr/bin/librespot",
+                "enable": false,
+                "event_pipe": "tcp://headphone:12102",
                 "reopen_event_pipe": true
-            }
-        },
-        {
-            "null": {
-                "enable": false
             }
         }
     ]

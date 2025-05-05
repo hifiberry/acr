@@ -447,6 +447,7 @@ impl MPDLibrary {
                         name: artist_name.clone(),
                         albums: albums.clone(),
                         track_count,
+                        metadata: None,
                     });
                 }
             } else {

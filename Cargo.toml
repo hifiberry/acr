@@ -27,6 +27,8 @@ musicbrainz_rs = "0.5.0"
 # For image cache
 reqwest = { version = "0.11", features = ["json", "blocking"] }
 bytes = "1.4"
+# In-memory database with persistence
+sled = "0.34.7"
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]

@@ -1,12 +1,10 @@
 use crate::AudioController;
-use crate::data::library::LibraryInterface;
 use crate::data::{Album, Artist};
 use rocket::serde::json::Json;
 use rocket::{get, State};
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
-use serde::Serialize;
 
 /// Response structure for library information
 #[derive(serde::Serialize)]
@@ -56,6 +54,14 @@ pub struct ArtistAlbumsResponse {
     include_tracks: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     albums: Vec<Album>,
+}
+
+/// Response structure for artist image information
+#[derive(serde::Serialize)]
+pub struct ArtistImageResponse {
+    artist_name: String,
+    image_path: Option<String>, 
+    error: Option<String>,
 }
 
 /// Get library information for a player
@@ -374,6 +380,59 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                                 format!("Failed to refresh library: {}", e),
                             ));
                         }
+                    }
+                } else {
+                    // Player exists but doesn't have a library
+                    return Err(Custom(
+                        Status::NotFound,
+                        format!("Player '{}' does not have a library", player_name),
+                    ));
+                }
+            }
+        }
+    }
+    
+    // Player not found
+    Err(Custom(
+        Status::NotFound,
+        format!("Player '{}' not found", player_name),
+      ))
+}
+
+/// Get the image for an artist
+/// 
+/// API endpoint to retrieve the thumbnail image for an artist
+#[get("/player/<player_name>/library/artist/<artist_name>/image")]
+pub fn get_artist_image(
+    player_name: &str,
+    artist_name: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<ArtistImageResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    
+    // Find the controller with the matching name
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == player_name {
+                // Check if the player has a library
+                if let Some(library) = ctrl.get_library() {
+                    // Get the artist by name
+                    if let Some(artist) = library.get_artist(artist_name) {
+                        // Check if the artist has an image
+                        let image_path = artist.metadata.as_ref()
+                            .and_then(|metadata| metadata.thumb_url.clone());
+                        
+                        return Ok(Json(ArtistImageResponse {
+                            artist_name: artist_name.to_string(),
+                            image_path,
+                            error: None,
+                        }));
+                    } else {
+                        // Artist not found
+                        return Err(Custom(
+                            Status::NotFound,
+                            format!("Artist '{}' not found", artist_name),
+                        ));
                     }
                 } else {
                     // Player exists but doesn't have a library

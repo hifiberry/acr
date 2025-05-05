@@ -1,5 +1,5 @@
 use crate::AudioController;
-use crate::data::{PlaybackState, PlayerCommand, LoopMode};
+use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song};
 use crate::players::PlayerController;  // Import the trait
 use rocket::serde::json::Json;
 use rocket::{get, State, post};
@@ -37,6 +37,16 @@ pub struct PlayerInfo {
 pub struct CommandResponse {
     success: bool,
     message: String,
+}
+
+/// Response struct for the now-playing information
+#[derive(serde::Serialize)]
+pub struct NowPlayingResponse {
+    player: PlayerInfo,
+    song: Option<Song>, 
+    state: PlaybackState,
+    shuffle: bool,
+    loop_mode: LoopMode,
 }
 
 /// Get the current active player
@@ -305,6 +315,59 @@ pub fn send_command_to_player_by_name(
             })
         ))
     }
+}
+
+/// Get the currently playing song information
+#[get("/now-playing")]
+pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlayingResponse> {
+    let audio_controller = controller.inner();
+    let active_controller = audio_controller.get_active_controller();
+    
+    if let Some(active_ctrl) = active_controller {
+        if let Ok(player) = active_ctrl.read() {
+            let name = player.get_player_name();
+            let id = player.get_player_id();
+            let state = player.get_playback_state();
+            let song = player.get_song();
+            let shuffle = player.get_shuffle();
+            let loop_mode = player.get_loop_mode();
+            
+            // Format last_seen timestamp if available
+            let last_seen = player.get_last_seen()
+                .map(|time| {
+                    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
+                });
+            
+            return Json(NowPlayingResponse {
+                player: PlayerInfo {
+                    name,
+                    id,
+                    state,
+                    is_active: true,
+                    last_seen,
+                },
+                song,
+                state,
+                shuffle,
+                loop_mode,
+            });
+        }
+    }
+    
+    // Return a default response if no active player
+    Json(NowPlayingResponse {
+        player: PlayerInfo {
+            name: "none".to_string(),
+            id: "none".to_string(),
+            state: PlaybackState::Unknown,
+            is_active: false,
+            last_seen: None,
+        },
+        song: None,
+        state: PlaybackState::Unknown,
+        shuffle: false,
+        loop_mode: LoopMode::None,
+    })
 }
 
 /// Helper function to parse player commands

@@ -16,7 +16,7 @@ pub struct AudioController {
     controllers: Vec<Arc<RwLock<Box<dyn PlayerController + Send + Sync>>>>,
     
     /// Index of the active player controller in the list
-    active_index: Option<usize>,
+    active_index: Arc<RwLock<Option<usize>>>,
     
     /// List of state listeners registered with this controller
     listeners: Arc<RwLock<Vec<Weak<dyn PlayerStateListener>>>>,
@@ -35,82 +35,100 @@ pub struct AudioController {
 // Implement PlayerController for AudioController
 impl PlayerController for AudioController {
     fn get_capabilities(&self) -> PlayerCapabilitySet {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_capabilities();
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.get_capabilities();
+                }
             }
         }
         PlayerCapabilitySet::empty() // Return empty capabilities if no active controller
     }
     
     fn get_song(&self) -> Option<Song> {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_song();
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.get_song();
+                }
             }
         }
         None // Return None if no active controller
     }
     
     fn get_loop_mode(&self) -> LoopMode {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_loop_mode();
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.get_loop_mode();
+                }
             }
         }
         LoopMode::None // Default loop mode if no active controller
     }
     
     fn get_playback_state(&self) -> PlaybackState {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_playback_state();
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.get_playback_state();
+                }
             }
         }
         PlaybackState::Stopped // Default state if no active controller
     }
     
     fn get_shuffle(&self) -> bool {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_shuffle();
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.get_shuffle();
+                }
             }
         }
         false // Default shuffle state if no active controller
     }
     
     fn get_player_name(&self) -> String {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_player_name();
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.get_player_name();
+                }
             }
         }
         "audiocontroller".to_string() // Default name if no active controller
     }
     
     fn get_player_id(&self) -> String {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_player_id();
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.get_player_id();
+                }
             }
         }
         "none".to_string() // Default ID if no active controller
     }
     
     fn get_last_seen(&self) -> Option<std::time::SystemTime> {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_last_seen();
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.get_last_seen();
+                }
             }
         }
         None // Return None if no active controller
     }
     
     fn send_command(&self, command: PlayerCommand) -> bool {
-        if let Some(idx) = self.active_index {
-            debug!("Sending command to active controller [{}]: {}", idx, command);
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.send_command(command);
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                debug!("Sending command to active controller [{}]: {}", idx, command);
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.send_command(command);
+                }
             }
         }
         false // Return false if no active controller
@@ -223,7 +241,7 @@ impl AudioController {
     pub fn new() -> Self {
         Self {
             controllers: Vec::new(),
-            active_index: None,
+            active_index: Arc::new(RwLock::new(None)),
             listeners: Arc::new(RwLock::new(Vec::new())),
             event_filters: Arc::new(RwLock::new(Vec::new())),
             action_plugins: Arc::new(RwLock::new(Vec::new())),
@@ -258,7 +276,11 @@ impl AudioController {
                 self.controllers.push(controller);
                 
                 if self.controllers.len() == 1 {
-                    self.active_index = Some(0);
+                    if let Ok(mut active_idx) = self.active_index.write() {
+                        *active_idx = Some(0);
+                    } else {
+                        error!("Failed to acquire write lock for active_index");
+                    }
                 }
                 
                 return self.controllers.len() - 1;
@@ -271,7 +293,11 @@ impl AudioController {
             self.controllers.push(controller);
             
             if self.controllers.len() == 1 {
-                self.active_index = Some(0);
+                if let Ok(mut active_idx) = self.active_index.write() {
+                    *active_idx = Some(0);
+                } else {
+                    error!("Failed to acquire write lock for active_index");
+                }
             }
             
             return self.controllers.len() - 1;
@@ -291,7 +317,11 @@ impl AudioController {
         
         // If this is the first controller, make it active
         if self.controllers.len() == 1 {
-            self.active_index = Some(0);
+            if let Ok(mut active_idx) = self.active_index.write() {
+                *active_idx = Some(0);
+            } else {
+                error!("Failed to acquire write lock for active_index");
+            }
         }
         
         // Return the index of the added controller
@@ -310,13 +340,15 @@ impl AudioController {
         self.controllers.remove(index);
         
         // If the active controller was removed, update active_index
-        if let Some(active_idx) = self.active_index {
-            if active_idx == index {
-                // The active controller was removed
-                self.active_index = None;
-            } else if active_idx > index {
-                // The active controller index needs to be adjusted
-                self.active_index = Some(active_idx - 1);
+        if let Ok(mut active_idx) = self.active_index.write() {
+            if let Some(idx) = *active_idx {
+                if idx == index {
+                    // The active controller was removed
+                    *active_idx = None;
+                } else if idx > index {
+                    // The active controller index needs to be adjusted
+                    *active_idx = Some(idx - 1);
+                }
             }
         }
         
@@ -337,30 +369,43 @@ impl AudioController {
         }
         
         // Check if this is actually a change
-        if Some(index) == self.active_index {
-            debug!("Active controller already set to index {}", index);
-            return true;
+        if let Ok(active_idx) = self.active_index.read() {
+            if Some(index) == *active_idx {
+                debug!("Active controller already set to index {}", index);
+                return true;
+            }
         }
         
         // Set the new active index
-        debug!("Changing active controller to index {}", index);
-        self.active_index = Some(index);
-        
-        true
+        if let Ok(mut active_idx) = self.active_index.write() {
+            *active_idx = Some(index);
+            debug!("Changing active controller to index {}", index);
+            true
+        } else {
+            error!("Failed to acquire write lock for active_index");
+            false
+        }
     }
     
     /// Get the currently active controller, if any
     pub fn get_active_controller(&self) -> Option<Arc<RwLock<Box<dyn PlayerController + Send + Sync>>>> {
-        self.active_index.map(|idx| self.controllers[idx].clone())
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                return Some(self.controllers[idx].clone());
+            }
+        }
+        None
     }
     
     /// Send a command to the active player controller
     /// 
     /// Returns true if the command was sent successfully, false if there is no active controller.
     pub fn send_command(&self, command: PlayerCommand) -> bool {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.send_command(command);
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.send_command(command);
+                }
             }
         }
         false
@@ -372,9 +417,15 @@ impl AudioController {
     pub fn send_command_to_inactives(&self, command: PlayerCommand) -> usize {
         let mut success_count = 0;
         
+        let active_idx_value = if let Ok(active_idx) = self.active_index.read() {
+            *active_idx
+        } else {
+            None
+        };
+        
         for (idx, controller) in self.controllers.iter().enumerate() {
             // Skip the active controller
-            if Some(idx) == self.active_index {
+            if Some(idx) == active_idx_value {
                 continue;
             }
             
@@ -536,10 +587,12 @@ impl AudioController {
 
     /// Check if the given player name and ID match the active player
     fn is_active_player(&self, player_name: &str, player_id: &str) -> bool {
-        if let Some(idx) = self.active_index {
-            if let Ok(controller) = self.controllers[idx].read() {
-                return controller.get_player_name() == player_name && 
-                       controller.get_player_id() == player_id;
+        if let Ok(active_idx) = self.active_index.read() {
+            if let Some(idx) = *active_idx {
+                if let Ok(controller) = self.controllers[idx].read() {
+                    return controller.get_player_name() == player_name && 
+                           controller.get_player_id() == player_id;
+                }
             }
         }
         false
@@ -929,9 +982,15 @@ impl AudioController {
             return;
         }
         
+        let active_idx_value = if let Ok(active_idx) = self.active_index.read() {
+            *active_idx
+        } else {
+            None
+        };
+        
         for (idx, controller) in self.controllers.iter().enumerate() {
             if let Ok(player) = controller.read() {
-                let is_active = Some(idx) == self.active_index;
+                let is_active = Some(idx) == active_idx_value;
                 let active_marker = if is_active { "* " } else { "  " };
                 
                 println!("{}[{}] {}: {}", 

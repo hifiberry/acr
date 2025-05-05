@@ -3,6 +3,9 @@ use acr::players::PlayerController;
 use acr::AudioController;
 use acr::api::server;
 use acr::helpers::attributecache::AttributeCache;
+use acr::helpers::imagecache::ImageCache;
+use acr::helpers::artistupdater;
+use acr::data::artist::Artist;
 use std::thread;
 use std::time::Duration;
 use std::io::{self, Read};
@@ -22,7 +25,7 @@ fn main() {
 
     println!("AudioControl3 (ACR) Player Controller Demo\n");
     info!("AudioControl3 (ACR) Player Controller Demo starting");
-
+    
     // Check if acr.json exists in the current directory
     let config_path = Path::new("acr.json");
     let controllers_config: serde_json::Value = if config_path.exists() {
@@ -56,8 +59,43 @@ fn main() {
         parse_sample_config()
     };
 
+    // Get the attribute cache path from configuration
+    let attribute_cache_path = if let Some(cache_config) = controllers_config.get("cache") {
+        if let Some(cache_path) = cache_config.get("attribute_cache_path").and_then(|p| p.as_str()) {
+            info!("Using attribute cache path from config: {}", cache_path);
+            cache_path.to_string()
+        } else {
+            let default_path = "cache/attributes".to_string();
+            info!("No attribute_cache_path specified in cache configuration, using default path: {}", default_path);
+            default_path
+        }
+    } else {
+        let default_path = "cache/attributes".to_string();
+        info!("No cache configuration found, using default attribute cache path: {}", default_path);
+        default_path
+    };
+
+    // Get the image cache path from configuration
+    let image_cache_path = if let Some(cache_config) = controllers_config.get("cache") {
+        if let Some(cache_path) = cache_config.get("image_cache_path").and_then(|p| p.as_str()) {
+            info!("Using image cache path from config: {}", cache_path);
+            cache_path.to_string()
+        } else {
+            let default_path = "cache/images".to_string();
+            info!("No image_cache_path specified in cache configuration, using default path: {}", default_path);
+            default_path
+        }
+    } else {
+        let default_path = "cache/images".to_string();
+        info!("No cache configuration found, using default image cache path: {}", default_path);
+        default_path
+    };
+
     // Initialize the global attribute cache with the configured path from JSON
-    initialize_attribute_cache(&controllers_config);
+    initialize_attribute_cache(&attribute_cache_path);
+
+    // Initialize the global image cache with the configured path from JSON
+    initialize_image_cache(&image_cache_path);
     
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
@@ -213,20 +251,17 @@ fn parse_sample_config() -> serde_json::Value {
 }
 
 // Helper function to initialize the global attribute cache
-fn initialize_attribute_cache(config: &serde_json::Value) {
-    // Default path is attributecache.sled in the current directory
-    let default_path = "attributecache.sled";
-    
-    if let Some(cache_path) = config.get("attribute_cache_path").and_then(|p| p.as_str()) {
-        match AttributeCache::initialize(cache_path) {
-            Ok(_) => info!("Attribute cache initialized with path: {}", cache_path),
-            Err(e) => warn!("Failed to initialize attribute cache: {}", e)
-        }
-    } else {
-        info!("No attribute_cache_path specified in configuration, using default path: {}", default_path);
-        match AttributeCache::initialize(default_path) {
-            Ok(_) => info!("Attribute cache initialized with default path"),
-            Err(e) => warn!("Failed to initialize attribute cache with default path: {}", e)
-        }
+fn initialize_attribute_cache(attribute_cache_path: &str) {
+    match AttributeCache::initialize(attribute_cache_path) {
+        Ok(_) => info!("Attribute cache initialized with path: {}", attribute_cache_path),
+        Err(e) => warn!("Failed to initialize attribute cache: {}", e)
+    }
+}
+
+// Helper function to initialize the global image cache
+fn initialize_image_cache(image_cache_path: &str) {
+    match ImageCache::initialize(image_cache_path) {
+        Ok(_) => info!("Image cache initialized with path: {}", image_cache_path),
+        Err(e) => warn!("Failed to initialize image cache: {}", e)
     }
 }

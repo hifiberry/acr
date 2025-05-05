@@ -64,4 +64,12 @@ pub trait LibraryInterface {
     
     /// Get album cover art (if available)
     fn get_album_cover(&self, album_name: &str) -> Option<String>;
+    
+    /// Update artist metadata in background
+    /// 
+    /// This method should update the metadata for all artists in the library using
+    /// background worker thread. The default implementation does nothing.
+    fn update_artist_metadata(&self) {
+        // Default empty implementation
+    }
 }

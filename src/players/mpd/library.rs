@@ -456,6 +456,10 @@ impl MPDLibrary {
             }
         }
         
+        // Update artist metadata using the LibraryInterface method
+        info!("Starting background metadata update for artists");
+        self.update_artist_metadata();
+        
         // Build album to artist relationships using AlbumArtists
         {
             // Get read locks for the albums and artists HashMaps
@@ -675,5 +679,12 @@ impl LibraryInterface for MPDLibrary {
     
     fn get_album_cover(&self, _album_name: &str) -> Option<String> {
         None
+    }
+    
+    fn update_artist_metadata(&self) {
+        info!("Starting background metadata update for MPDLibrary artists");
+        // Use the generic function from artistupdater for updating artists
+        let library_arc = Arc::new(self.clone());
+        crate::helpers::artistupdater::update_library_artists_metadata_in_background(library_arc);
     }
 }

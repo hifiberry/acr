@@ -1,5 +1,6 @@
-// Re-export the stream helper
-pub mod stream_helper;
-pub mod memory_report;
-pub mod imageretriever;
 pub mod attributecache;
+pub mod imagecache;
+pub mod artistupdater;
+pub mod fanarttv;
+pub mod memory_report;
+pub mod stream_helper;

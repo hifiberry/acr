@@ -27,7 +27,10 @@
         "host": "0.0.0.0",
         "port": 1080
     },
-    "attribute_cache_path": "cache/attributes",
+    "cache": {
+        "attribute_cache_path": "cache/attributes",
+        "image_cache_path": "cache/images"
+    },
     "players": [
         {
             "mpd": {

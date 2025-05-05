@@ -21,11 +21,9 @@
 //! FanArt.tv API client for retrieving album and artist artwork
 //! Based on the original Python implementation from audiocontrol2
 
-use std::collections::HashMap;
 use serde_json::Value;
 use log::{debug, warn};
 use reqwest;
-use crate::data::Song;
 
 // API key for fanart.tv
 const APIKEY: &str = "749a8fca4f2d3b0462b287820ad6ab06";
@@ -39,7 +37,7 @@ const APIKEY: &str = "749a8fca4f2d3b0462b287820ad6ab06";
 /// 
 /// # Returns
 /// * `Option<String>` - URL of the cover if found, otherwise None
-pub fn get_fanart_cover(artist_mbid: &str, allow_artist_picture: bool) -> Option<String> {
+pub fn get_fanart_cover(artist_mbid: &str, album_mbid: Option<&str>, allow_artist_picture: bool) -> Option<String> {
     let url = format!(
         "http://webservice.fanart.tv/v3/music/{}?api_key={}", 
         artist_mbid,

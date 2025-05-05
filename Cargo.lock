@@ -10,6 +10,7 @@ dependencies = [
  "chrono",
  "ctrlc",
  "delegate",
+ "deunicode",
  "enumflags2",
  "env_logger",
  "futures",
@@ -309,6 +310,12 @@ checksum = "9c9e6a11ca8224451684bc0d7d5a7adbf8f2fd6887261a1cfc3c0432f9d4068e"
 dependencies = [
  "powerfmt",
 ]
+
+[[package]]
+name = "deunicode"
+version = "1.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
 
 [[package]]
 name = "devise"

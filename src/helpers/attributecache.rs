@@ -28,6 +28,7 @@ pub struct AttributeCache {
 impl AttributeCache {
     /// Create a new attribute cache with default settings
     pub fn new() -> Self {
+        // Using the default path that matches our cache.attribute_cache_path setting
         let cache_dir = PathBuf::from("cache/attributes");
         Self::with_directory(cache_dir)
     }

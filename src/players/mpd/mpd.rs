@@ -34,6 +34,9 @@ pub struct MPDPlayerController {
     /// Whether to load the MPD library into memory
     load_mpd_library: bool,
     
+    /// Custom artist separators for splitting artist names
+    artist_separators: Option<Vec<String>>,
+    
     /// MPD library instance wrapped in Arc and Mutex for thread-safe access
     library: Arc<Mutex<Option<crate::players::mpd::library::MPDLibrary>>>,
 }
@@ -49,6 +52,7 @@ impl Clone for MPDPlayerController {
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             load_mpd_library: self.load_mpd_library,
+            artist_separators: self.artist_separators.clone(),
             library: Arc::clone(&self.library),
         }
     }
@@ -71,6 +75,7 @@ impl MPDPlayerController {
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             load_mpd_library: true,
+            artist_separators: None,
             library: Arc::new(Mutex::new(None)),
         };
         
@@ -94,6 +99,7 @@ impl MPDPlayerController {
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             load_mpd_library: true,
+            artist_separators: None,
             library: Arc::new(Mutex::new(None)),
         };
         
@@ -198,7 +204,12 @@ impl MPDPlayerController {
         debug!("Requesting MPD library refresh");
         
         // Get the library instance if available
-        if let Some(library) = self.get_library() {
+        if let Some(mut library) = self.get_library() {
+            // Pass the artist separators to the library before refreshing
+            if let Some(separators) = &self.artist_separators {
+                library.set_artist_separators(separators.clone());
+            }
+            
             // Run the refresh in a separate thread
             let library_clone = library;
             thread::spawn(move || {
@@ -212,6 +223,17 @@ impl MPDPlayerController {
         }
         
         Err(crate::data::library::LibraryError::InternalError("Library not initialized".to_string()))
+    }
+    
+    /// Set the custom artist separators for splitting artist names
+    pub fn set_artist_separators(&mut self, separators: Vec<String>) {
+        debug!("Setting custom artist separators: {:?}", separators);
+        self.artist_separators = Some(separators);
+    }
+    
+    /// Get the current custom artist separators if set
+    pub fn get_artist_separators(&self) -> Option<&[String]> {
+        self.artist_separators.as_deref()
     }
     
     /// Starts a background thread that listens for MPD events

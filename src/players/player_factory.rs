@@ -55,8 +55,23 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true); // Default to true if not specified
                 
+                // Check if artist_separator array is specified in the JSON
+                let artist_separators = config_obj.get("artist_separator")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|val| val.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<String>>()
+                    });
+                
                 let mut player = MPDPlayerController::with_connection(host, port);
                 player.set_load_mpd_library(load_library);
+                
+                // Set custom artist separators if provided
+                if let Some(separators) = artist_separators {
+                    player.set_artist_separators(separators);
+                }
+                
                 Ok(Box::new(player))
             },
             "raat" => {
@@ -133,6 +148,7 @@ pub fn sample_json_config() -> String {
                 "host": "localhost", 
                 "port": 6600,
                 "load_mpd_library": true,
+                "artist_separator": [",", "feat. "],
                 "enable": true
             }
         },

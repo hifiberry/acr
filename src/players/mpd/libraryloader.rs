@@ -106,7 +106,7 @@ impl MPDLibraryLoader {
     /// 
     /// This extracts album information from a song including album name, artist, year
     /// and creates a properly structured Album object
-    fn album_from_mpd_song(song: &mpd::Song) -> crate::data::Album {
+    fn album_from_mpd_song(song: &mpd::Song, custom_separators: Option<&[String]>) -> crate::data::Album {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         use std::sync::{Arc, Mutex};
@@ -137,7 +137,7 @@ impl MPDLibraryLoader {
                 let year_part = date_str.split('-').next().unwrap_or(date_str);
                 year_part.parse::<i32>().ok()
             });
-            
+        
         // Generate a unique ID for the album based on the album key
         let album_key = Self::album_key(song);
         let mut hasher = DefaultHasher::new();
@@ -147,8 +147,8 @@ impl MPDLibraryLoader {
         // Create an empty track list - typically you'd populate this later
         let tracks = Arc::new(Mutex::new(Vec::<Track>::new()));
         
-        // Create artists list by splitting the album artist string using musicbrainz helper
-        let artists = match musicbrainz::split_artist_names(&album_artist, false) {
+        // Create artists list by splitting the album artist string using musicbrainz helper with custom separators
+        let artists = match musicbrainz::split_artist_names(&album_artist, false, custom_separators) {
             Some(split_artists) => Arc::new(Mutex::new(split_artists)),
             None => Arc::new(Mutex::new(vec![album_artist]))
         };
@@ -214,13 +214,13 @@ impl MPDLibraryLoader {
         }
         
         let elapsed = start_time.elapsed();
-        debug!("Loaded {} album artists in {:?}", albumartists.len(), elapsed);
+        info!("Loaded {} album artists in {:?}", albumartists.len(), elapsed);
         
         Ok(albumartists)
     }
     
     /// Load albums from MPD
-    pub fn load_albums_from_mpd(&self) -> Result<Vec<crate::data::Album>, LibraryError> {
+    pub fn load_albums_from_mpd(&self, custom_separators: Option<Vec<String>>) -> Result<Vec<crate::data::Album>, LibraryError> {
         info!("Loading MPD library from {}:{}", self.hostname, self.port);
         let start_time = Instant::now();
         
@@ -251,9 +251,9 @@ impl MPDLibraryLoader {
             let album_key = Self::album_key(song);
 
             // check if the album already exists in the map
-            if ! albums_map.contains_key(&album_key) {
-                // Create an album object from the song
-                let album = Self::album_from_mpd_song(song);                
+            if !albums_map.contains_key(&album_key) {
+                // Create an album object from the song, using custom separators if provided
+                let album = Self::album_from_mpd_song(song, custom_separators.as_deref());
                 // Insert into the map using the album ID as key
                 albums_map.insert(album_key.clone(), album);
             }

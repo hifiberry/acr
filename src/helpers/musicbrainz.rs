@@ -118,21 +118,22 @@ fn normalize_artist_name_for_comparison(artist_name: &str) -> String {
     result.replace(" ", "")
 }
 
-/// Split an artist name that might contain multiple artists
+/// Split an artist name using custom separators
 /// 
 /// # Arguments
 /// * `artist_name` - The artist name to split
+/// * `separators` - The separators to use for splitting
 /// 
 /// # Returns
 /// * `Vec<String>` - Vector containing individual artist names
-pub fn split_artist(artist_name: &str) -> Vec<String> {
-    debug!("Splitting artist name: '{}'", artist_name);
+fn split_artist_with_separators(artist_name: &str, separators: &[String]) -> Vec<String> {
+    debug!("Splitting artist name: '{}' with custom separators", artist_name);
     
     // Initial result will contain the full string
     let mut result = vec![artist_name.to_string()];
     
     // Iteratively split by each separator
-    for &separator in ARTIST_SEPARATORS {
+    for separator in separators {
         let mut new_result = Vec::new();
         
         for part in result {
@@ -168,6 +169,21 @@ pub fn split_artist(artist_name: &str) -> Vec<String> {
     
     debug!("Split artist '{}' into: {:?}", artist_name, result);
     result
+}
+
+/// Split an artist name that might contain multiple artists
+/// 
+/// # Arguments
+/// * `artist_name` - The artist name to split
+/// 
+/// # Returns
+/// * `Vec<String>` - Vector containing individual artist names
+pub fn split_artist(artist_name: &str) -> Vec<String> {
+    debug!("Splitting artist name: '{}'", artist_name);
+    
+    // Convert string slice array to string array for the internal function
+    let default_separators: Vec<String> = ARTIST_SEPARATORS.iter().map(|&s| s.to_string()).collect();
+    split_artist_with_separators(artist_name, &default_separators)
 }
 
 /// Compare two artist names to see if they match, using both exact normalized comparison
@@ -524,23 +540,35 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
 /// # Arguments
 /// * `artist_name` - The name of the artist to check
 /// * `cache_only` - If true, only check the cache and don't make API calls (default: true)
+/// * `custom_separators` - Optional list of custom separators to use instead of the default
 ///
 /// # Returns
 /// * `Option<Vec<String>>` - None if single artist, or Some(Vec<String>) with split artist names if multiple
-pub fn split_artist_names(artist_name: &str, cache_only: bool) -> Option<Vec<String>> {
+pub fn split_artist_names(artist_name: &str, cache_only: bool, custom_separators: Option<&[String]>) -> Option<Vec<String>> {
     debug!("Checking if '{}' contains multiple artists (cache_only: {})", artist_name, cache_only);
     
+    // Determine which separators to use
+    let separators: Vec<&str> = match custom_separators {
+        Some(seps) => seps.iter().map(|s| s.as_str()).collect(), // Convert &[String] to Vec<&str>
+        None => ARTIST_SEPARATORS.to_vec(), // Convert &[&str] to Vec<&str>
+    };
+    
     // First, quickly check if the string contains any separator
-    let contains_separator = ARTIST_SEPARATORS.iter().any(|&separator| artist_name.contains(separator));
+    let contains_separator = separators.iter().any(|separator| artist_name.contains(*separator));
     if !contains_separator {
         debug!("'{}' doesn't contain any separators, assuming single artist", artist_name);
         return None;
     }
 
-    // if musicbrainz lookups are disabled, implement a "dumb" split
+    // if musicbrainz lookups are disabled, implement a "dumb" split using provided separators
     if !is_enabled() {
         debug!("MusicBrainz lookups are disabled, performing dumb split for '{}'", artist_name);
-        let split_artists = split_artist(artist_name);
+        
+        // Convert string slices to Strings for processing
+        let string_separators: Vec<String> = separators.iter().map(|&s| s.to_string()).collect();
+        
+        // Call split_artist with our separators
+        let split_artists = split_artist_with_separators(artist_name, &string_separators);
         
         // Only return if we actually split into multiple parts
         if split_artists.len() > 1 {
@@ -558,7 +586,12 @@ pub fn split_artist_names(artist_name: &str, cache_only: bool) -> Option<Vec<Str
             // If multiple MBIDs found, this might be a combined artist name
             if mbids.len() > 1 {
                 debug!("Multiple MBIDs found for '{}', splitting artist name", artist_name);
-                let split_artists = split_artist(artist_name);
+                
+                // Convert string slices to Strings for processing
+                let string_separators: Vec<String> = separators.iter().map(|&s| s.to_string()).collect();
+                
+                // Split using provided separators
+                let split_artists = split_artist_with_separators(artist_name, &string_separators);
                 
                 // Only return if we actually split into multiple parts
                 if split_artists.len() > 1 {

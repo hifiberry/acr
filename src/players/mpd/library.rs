@@ -29,6 +29,9 @@ pub struct MPDLibrary {
     
     /// Library loading progress (0.0 - 1.0)
     loading_progress: Arc<Mutex<f32>>,
+    
+    /// Custom artist separators for splitting artist names
+    artist_separators: Arc<Mutex<Option<Vec<String>>>>,
 }
 
 impl MPDLibrary {
@@ -44,6 +47,7 @@ impl MPDLibrary {
             album_artists: Arc::new(RwLock::new(AlbumArtists::new())),
             library_loaded: Arc::new(Mutex::new(false)),
             loading_progress: Arc::new(Mutex::new(0.0)),
+            artist_separators: Arc::new(Mutex::new(None)),
         }
     }
     
@@ -53,6 +57,27 @@ impl MPDLibrary {
             *progress
         } else {
             0.0 // Default to 0 if we can't get the lock
+        }
+    }
+    
+    /// Set custom artist separators for use in library operations
+    pub fn set_artist_separators(&mut self, separators: Vec<String>) {
+        debug!("Setting custom artist separators in MPDLibrary: {:?}", separators);
+        if let Ok(mut sep_guard) = self.artist_separators.lock() {
+            *sep_guard = Some(separators);
+        } else {
+            warn!("Failed to acquire lock for setting artist separators");
+        }
+    }
+    
+    /// Get custom artist separators for artist name splitting
+    pub fn get_artist_separators(&self) -> Option<Vec<String>> {
+        // Return the stored separators if available
+        if let Ok(sep_guard) = self.artist_separators.lock() {
+            sep_guard.clone()
+        } else {
+            warn!("Failed to acquire lock for artist separators");
+            None
         }
     }
     
@@ -252,7 +277,11 @@ impl LibraryInterface for MPDLibrary {
         
         // Use our MPDLibraryLoader to load albums
         let loader = super::libraryloader::MPDLibraryLoader::new(&self.hostname, self.port);
-        match loader.load_albums_from_mpd() {
+        
+        // Get artist separators from the MPD configuration, if any
+        let artist_separators = self.get_artist_separators();
+        
+        match loader.load_albums_from_mpd(artist_separators) {
             Ok(albums) => {
                 // Mark as not loaded during update
                 *self.library_loaded.lock().unwrap() = false;

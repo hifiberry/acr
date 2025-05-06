@@ -2,9 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use std::mem;
-use std::io::{Write, BufRead};
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 use log::{debug, info, warn, error};
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError, Track};
 use crate::helpers::memory_report::MemoryUsage;
@@ -58,473 +55,180 @@ impl MPDLibrary {
             0.0 // Default to 0 if we can't get the lock
         }
     }
-        
-    /// Fetch all songs for a specific artist
-    pub fn fetch_all_songs_for_artist(&self, artist_name: &str) -> Result<Vec<mpd::Song>, LibraryError> {
-        debug!("Fetching all songs for artist: {}", artist_name);
-        
-        // Connect to MPD server
-        let addr = format!("{}:{}", self.hostname, self.port);
-        let mut stream = std::net::TcpStream::connect(&addr)
-            .map_err(|e| LibraryError::ConnectionError(format!("Failed to connect to MPD: {}", e)))?;
-        
-        // Create find command for this artist
-        let cmd = format!("find artist \"{}\"\n", artist_name.replace("\"", "\\\""));
-        
-        if let Err(e) = stream.write_all(cmd.as_bytes()) {
-            return Err(LibraryError::ConnectionError(format!("Failed to send command: {}", e)));
-        }
-        
-        // Read response
-        let mut reader = std::io::BufReader::new(stream);
-        let mut line = String::new();
-        let mut songs = Vec::new();
-        
-        // Current song being processed
-        let mut current_file = None;
-        let mut current_title = None;
-        let mut current_artist = None;
-        let mut current_album = None;
-        let mut current_album_artist = None;
-        let mut current_track = None;
-        let mut current_date = None;
-        let mut current_duration = None;
-        
-        // Process response line by line
-        while let Ok(bytes) = reader.read_line(&mut line) {
-            if bytes == 0 {
-                break; // End of stream
-            }
-            
-            let line_trimmed = line.trim();
-            if line_trimmed == "OK" {
-                // End of response
-                break;
-            }
-            
-            // Process each line based on field
-            if line_trimmed.starts_with("file: ") {
-                // New song entry, save previous if exists
-                if let Some(file) = current_file.take() {
-                    // Create a song object from gathered data
-                    let mut song = mpd::Song::default();
-                    song.file = file;
-                    song.title = current_title;
-                    
-                    // Add tags
-                    if let Some(artist) = current_artist {
-                        song.tags.push(("Artist".to_string(), artist));
-                    }
-                    
-                    if let Some(album) = current_album {
-                        song.tags.push(("Album".to_string(), album));
-                    }
-                    
-                    if let Some(album_artist) = current_album_artist {
-                        song.tags.push(("AlbumArtist".to_string(), album_artist));
-                    }
-                    
-                    if let Some(track) = current_track {
-                        song.tags.push(("Track".to_string(), track));
-                    }
-                    
-                    if let Some(date) = current_date {
-                        song.tags.push(("Date".to_string(), date));
-                    }
-                    
-                    if let Some(duration) = current_duration {
-                        song.duration = Some(std::time::Duration::from_secs_f64(duration));
-                    }
-                    
-                    songs.push(song);
-                }
-                
-                // Start new song
-                current_file = Some(line_trimmed[6..].to_string());
-                current_title = None;
-                current_artist = None;
-                current_album = None;
-                current_album_artist = None;
-                current_track = None;
-                current_date = None;
-                current_duration = None;
-            } else if line_trimmed.starts_with("Title: ") {
-                current_title = Some(line_trimmed[7..].to_string());
-            } else if line_trimmed.starts_with("Artist: ") {
-                current_artist = Some(line_trimmed[8..].to_string());
-            } else if line_trimmed.starts_with("Album: ") {
-                current_album = Some(line_trimmed[7..].to_string());
-            } else if line_trimmed.starts_with("AlbumArtist: ") {
-                current_album_artist = Some(line_trimmed[13..].to_string());
-            } else if line_trimmed.starts_with("Track: ") {
-                current_track = Some(line_trimmed[7..].to_string());
-            } else if line_trimmed.starts_with("Date: ") {
-                current_date = Some(line_trimmed[6..].to_string());
-            } else if line_trimmed.starts_with("duration: ") {
-                if let Ok(dur) = line_trimmed[10..].parse::<f64>() {
-                    current_duration = Some(dur);
-                }
-            }
-            
-            line.clear();
-        }
-        
-        // Process the last song if there's one in progress
-        if let Some(file) = current_file.take() {
-            // Create a song object from gathered data
-            let mut song = mpd::Song::default();
-            song.file = file;
-            song.title = current_title;
-            
-            // Add tags
-            if let Some(artist) = current_artist {
-                song.tags.push(("Artist".to_string(), artist));
-            }
-            
-            if let Some(album) = current_album {
-                song.tags.push(("Album".to_string(), album));
-            }
-            
-            if let Some(album_artist) = current_album_artist {
-                song.tags.push(("AlbumArtist".to_string(), album_artist));
-            }
-            
-            if let Some(track) = current_track {
-                song.tags.push(("Track".to_string(), track));
-            }
-            
-            if let Some(date) = current_date {
-                song.tags.push(("Date".to_string(), date));
-            }
-            
-            if let Some(duration) = current_duration {
-                song.duration = Some(std::time::Duration::from_secs_f64(duration));
-            }
-            
-            songs.push(song);
-        }
-        
-        debug!("Found {} songs for artist '{}'", songs.len(), artist_name);
-        Ok(songs)
-    }
     
-    /// Build the library by mapping all songs for all album artists
-    pub fn build_library_from_artists(&self) -> Result<(), LibraryError> {
-        info!("Building library by mapping all songs for all album artists");
+    /// Create artist objects from all album artist data
+    ///
+    /// This method scans all albums in the library, extracts all artist names
+    /// from the album artists list, and creates Artist objects for each if they 
+    /// don't already exist. It also updates the album-artist relationships.
+    pub fn create_artists(&self) -> Result<usize, LibraryError> {
+        debug!("Creating artist objects from album artist data");
         let start_time = Instant::now();
         
-        // Clear existing data
-        *self.library_loaded.lock().unwrap() = false;
+        let mut created_count = 0;
+        
+        // First, get a read lock on the albums to extract all artist names
+        let albums = match self.albums.read() {
+            Ok(albums) => albums,
+            Err(_) => {
+                error!("Failed to acquire read lock on albums");
+                return Err(LibraryError::InternalError("Failed to acquire lock on albums".to_string()));
+            }
+        };
+        
+        // Collect all artist names from albums and their IDs
+        let mut artist_names = HashSet::new();
+        let mut album_artist_relations = Vec::new();
+        
+        // Go through all albums and collect artist names
+        for album in albums.values() {
+            // Extract artist names from the album's artists list
+            if let Ok(album_artists) = album.artists.lock() {
+                for artist_name in album_artists.iter() {
+                    artist_names.insert(artist_name.clone());
+                    
+                    // Store album-artist relationship for later
+                    album_artist_relations.push((album.id, artist_name.clone()));
+                }
+            }
+        }
+        
+        debug!("Found {} unique artist names in albums", artist_names.len());
+        
+        // Now, get a write lock on the artists collection to add new artists
+        let mut artists = match self.artists.write() {
+            Ok(artists) => artists,
+            Err(_) => {
+                error!("Failed to acquire write lock on artists");
+                return Err(LibraryError::InternalError("Failed to acquire lock on artists".to_string()));
+            }
+        };
+        
+        // Get a write lock on the album_artists relationships
+        let mut album_artists = match self.album_artists.write() {
+            Ok(album_artists) => album_artists,
+            Err(_) => {
+                error!("Failed to acquire write lock on album_artists");
+                return Err(LibraryError::InternalError("Failed to acquire lock on album_artists".to_string()));
+            }
+        };
+        
+        // Create a new artist object for each name that doesn't already exist
+        for artist_name in artist_names {
+            // Skip if the artist already exists
+            if artists.contains_key(&artist_name) {
+                continue;
+            }
+            
+            // Create a unique ID for the artist based on the name
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            
+            let mut hasher = DefaultHasher::new();
+            artist_name.hash(&mut hasher);
+            let artist_id = hasher.finish();
+            
+            // Create a new Artist object
+            let artist = Artist {
+                id: artist_id,
+                name: artist_name.clone(),
+                albums: HashSet::new(),
+                track_count: 0,  // Will be updated when processing tracks
+                metadata: None,
+            };
+            
+            // Insert the new artist
+            artists.insert(artist_name.clone(), artist);
+            created_count += 1;
+        }
+        
+        // Update album-artist relationships
+        for (album_id, artist_name) in album_artist_relations {
+            // Get artist ID (if it exists)
+            if let Some(artist) = artists.get(&artist_name) {
+                // Add relationship between album and artist
+                album_artists.add_mapping(album_id, artist.id);
+                
+                // Add the album name to the artist's albums list
+                if let Some(artist) = artists.get_mut(&artist_name) {
+                    // Find album name from ID
+                    for album in albums.values() {
+                        if album.id == album_id {
+                            artist.albums.insert(album.name.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        let elapsed = start_time.elapsed();
+        info!("Created {} new artists in {:?}", created_count, elapsed);
+        
+        Ok(created_count)
+    }
+    
+    /// Transfer data from another MPDLibrary instance
+    fn transfer_data_from(&self, other: &MPDLibrary) -> Result<(), LibraryError> {
+        debug!("Transferring library data from newly loaded library");
         
         // Reset loading progress to 0
         if let Ok(mut progress) = self.loading_progress.lock() {
             *progress = 0.0;
         }
         
+        // Mark as not loaded during transfer
+        *self.library_loaded.lock().unwrap() = false;
+        
+        // Transfer albums
         {
-            if let Ok(mut albums) = self.albums.write() {
-                albums.clear();
-            } else {
-                error!("Failed to acquire write lock on albums");
-                return Err(LibraryError::InternalError("Failed to acquire lock".to_string()));
-            }
-            
-            if let Ok(mut artists) = self.artists.write() {
-                artists.clear();
-            } else {
-                error!("Failed to acquire write lock on artists");
-                return Err(LibraryError::InternalError("Failed to acquire lock".to_string()));
-            }
-            
-            if let Ok(mut album_artists) = self.album_artists.write() {
-                album_artists.clear();
-            } else {
-                error!("Failed to acquire write lock on album_artists");
-                return Err(LibraryError::InternalError("Failed to acquire lock".to_string()));
-            }
-        }
-        
-        // First, get a list of all album artists in the database
-        let artist_list = self.get_all_album_artists()?;
-        let total_artists = artist_list.len();
-        info!("Found {} album artists", total_artists);
-        
-        // Track metrics
-        let mut total_albums = 0;
-        let mut total_songs = 0;
-        let mut processed_artists = 0;
-        
-        // Maps to build album and artist data
-        let mut artist_albums: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut artist_track_counts: HashMap<String, usize> = HashMap::new();
-        let mut album_tracks: HashMap<String, Vec<Track>> = HashMap::new(); // Changed from Vec<String> to Vec<Track>
-        let mut album_metadata: HashMap<String, (Vec<String>, Option<i32>)> = HashMap::new(); // (artists, year)
-        let mut album_first_file: HashMap<String, String> = HashMap::new(); // Store first file path for each album
-        
-        // Process each artist
-        for artist_name in &artist_list {
-            debug!("Processing artist: {}", artist_name);
-            let artist_start = Instant::now();
-            
-            match self.fetch_all_songs_for_artist(artist_name) {
-                Ok(songs) => {
-                    debug!("Found {} songs for artist '{}'", songs.len(), artist_name);
-                    total_songs += songs.len();
-                    
-                    // Extract albums from songs
-                    let mut artist_album_set = HashSet::new();
-                    let mut artist_songs_count = 0;
-                    
-                    for song in &songs {
-                        // Extract album name
-                        if let Some(album_name) = song.tags.iter()
-                            .find(|(tag, _)| tag == "Album")
-                            .map(|(_, value)| value.to_string()) {
-                                
-                            // Add album to artist's collection
-                            artist_album_set.insert(album_name.clone());
-                            
-                            // Extract track title
-                            let track_title = song.title.as_deref().unwrap_or("Unknown").to_string();
-                            
-                            // Extract track number and disc number
-                            let track_num = song.tags.iter()
-                                .find(|(tag, _)| tag == "Track")
-                                .and_then(|(_, track_str)| {
-                                    // Track number might be in format "5" or "5/12"
-                                    track_str.split('/').next().and_then(|n| n.parse::<u16>().ok())
-                                }).unwrap_or(0);
-                                
-                            // Use "1" as default disc number if not specified
-                            let disc_num = song.tags.iter()
-                                .find(|(tag, _)| tag == "Disc")
-                                .map(|(_, disc_str)| disc_str.to_string())
-                                .unwrap_or_else(|| "1".to_string());
-                                
-                            // Extract track artist (might be different from album artist)
-                            let track_artist = song.tags.iter()
-                                .find(|(tag, _)| tag == "Artist")
-                                .map(|(_, artist_str)| artist_str.to_string());
-                                
-                            // Get album artist for comparison
-                            let album_artist = album_metadata.entry(album_name.clone())
-                                .or_insert_with(|| (Vec::new(), None))
-                                .0.join(", ");
-                                
-                            // Create track with artist only if different from album artist
-                            let track = if let Some(artist) = track_artist {
-                                if album_artist.is_empty() || artist != album_artist {
-                                    Track::with_artist(disc_num, track_num, track_title, artist, Some(&album_artist))
-                                } else {
-                                    Track::new(disc_num, track_num, track_title)
-                                }
-                            } else {
-                                Track::new(disc_num, track_num, track_title)
-                            };
-                            
-                            // Add track to album
-                            album_tracks.entry(album_name.clone())
-                                .or_insert_with(Vec::new)
-                                .push(track);
-                            
-                            // Store the first file path for the album if not already stored
-                            album_first_file.entry(album_name.clone())
-                                .or_insert_with(|| song.file.clone());
-                            
-                            // Extract year if available
-                            let year = song.tags.iter()
-                                .find(|(tag, _)| tag == "Date")
-                                .and_then(|(_, date_str)| {
-                                    let year_part = date_str.split('-').next().unwrap_or(date_str);
-                                    year_part.parse::<i32>().ok()
-                                });
-                            
-                            // Store album metadata (artists, year)
-                            album_metadata.entry(album_name.clone())
-                                .or_insert_with(|| (Vec::new(), year))
-                                .0.push(artist_name.clone());
-
-                            // Ensure we don't have duplicates in the artists list
-                            if let Some((artists, _)) = album_metadata.get_mut(&album_name) {
-                                artists.sort();
-                                artists.dedup();
-                            }
-                            
-                            artist_songs_count += 1;
-                        }
-                    }
-                    
-                    // Store artist's albums and track count
-                    artist_albums.insert(artist_name.clone(), artist_album_set.clone());
-                    artist_track_counts.insert(artist_name.clone(), artist_songs_count);
-                    
-                    total_albums += artist_album_set.len();
-                    let artist_time = artist_start.elapsed();
-                    debug!("Processed artist '{}' with {} albums and {} songs in {:.2?}", 
-                          artist_name, artist_album_set.len(), artist_songs_count, artist_time);
-                    
-                    processed_artists += 1;
-                    
-                    // Update progress based on number of artists processed
-                    if let Ok(mut progress) = self.loading_progress.lock() {
-                        *progress = if total_artists > 0 {
-                            processed_artists as f32 / total_artists as f32
-                        } else {
-                            0.0
-                        };
-                    }
-                },
-                Err(e) => {
-                    warn!("Failed to fetch songs for artist '{}': {}", artist_name, e);
-                    
-                    // Count as processed even if it failed
-                    processed_artists += 1;
-                    
-                    // Update progress
-                    if let Ok(mut progress) = self.loading_progress.lock() {
-                        *progress = if total_artists > 0 {
-                            processed_artists as f32 / total_artists as f32
-                        } else {
-                            0.0
-                        };
-                    }
+            if let (Ok(mut self_albums), Ok(other_albums)) = (self.albums.write(), other.albums.read()) {
+                self_albums.clear();
+                for (key, value) in other_albums.iter() {
+                    self_albums.insert(key.clone(), value.clone());
                 }
-            }
-        }
-        
-        // Build album objects
-        {
-            if let Ok(mut albums) = self.albums.write() {
-                for (album_name, (album_artists, year)) in &album_metadata {
-                    let tracks = album_tracks.get(album_name).cloned().unwrap_or_default();
-                    let first_file = album_first_file.get(album_name).cloned();
-                    
-                    // Create a unique ID for the album using a 64-bit hash
-                    // Combine all artist names and the album name to create a unique ID
-                    let mut hasher = DefaultHasher::new();
-                    album_name.hash(&mut hasher);
-                    for artist in album_artists {
-                        artist.hash(&mut hasher);
-                    }
-                    let album_id = hasher.finish();
-                    
-                    albums.insert(album_name.clone(), Album {
-                        id: album_id,
-                        name: album_name.clone(),
-                        artists: Arc::new(Mutex::new(album_artists.clone())),
-                        year: *year,
-                        tracks: Arc::new(Mutex::new(tracks)),
-                        cover_art: None,
-                        uri: first_file,
-                    });
-                }
+                debug!("Transferred {} albums", self_albums.len());
             } else {
-                error!("Failed to acquire write lock on albums");
-                return Err(LibraryError::InternalError("Failed to acquire lock".to_string()));
-            }
-        }
-        
-        // Build artist objects
-        {
-            if let Ok(mut artists) = self.artists.write() {
-                for (artist_name, albums) in &artist_albums {
-                    let track_count = artist_track_counts.get(artist_name).cloned().unwrap_or(0);
-                    
-                    // Create a unique ID for the artist using a hash
-                    let mut hasher = DefaultHasher::new();
-                    artist_name.hash(&mut hasher);
-                    let artist_id = hasher.finish();
-                    
-                    artists.insert(artist_name.clone(), Artist {
-                        id: artist_id,
-                        name: artist_name.clone(),
-                        albums: albums.clone(),
-                        track_count,
-                        metadata: None,
-                    });
-                }
-            } else {
-                error!("Failed to acquire write lock on artists");
-                return Err(LibraryError::InternalError("Failed to acquire lock".to_string()));
-            }
-        }
-        
-        // Update artist metadata using the LibraryInterface method
-        info!("Starting background metadata update for artists");
-        self.update_artist_metadata();
-        
-        // Build album to artist relationships using AlbumArtists
-        {
-            // Get read locks for the albums and artists HashMaps
-            if let (Ok(albums_guard), Ok(artists_guard), Ok(mut album_artists_guard)) = 
-                (self.albums.read(), self.artists.read(), self.album_artists.write()) {
-                
-                // Use the new build_from_hashmaps method which directly accepts the HashMaps
-                *album_artists_guard = AlbumArtists::build_from_hashmaps(&albums_guard, &artists_guard);
-                
-                debug!("Built album-artist relationships with {} mappings", album_artists_guard.count());
-            } else {
-                error!("Failed to acquire locks for building album-artist relationships");
+                error!("Failed to acquire locks for album transfer");
                 return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));
             }
         }
         
-        // Set progress to 1.0 when complete
+        // Transfer artists
+        {
+            if let (Ok(mut self_artists), Ok(other_artists)) = (self.artists.write(), other.artists.read()) {
+                self_artists.clear();
+                for (key, value) in other_artists.iter() {
+                    self_artists.insert(key.clone(), value.clone());
+                }
+                debug!("Transferred {} artists", self_artists.len());
+            } else {
+                error!("Failed to acquire locks for artist transfer");
+                return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));
+            }
+        }
+        
+        // Transfer album-artist relationships
+        {
+            if let (Ok(mut self_relationships), Ok(other_relationships)) = 
+                (self.album_artists.write(), other.album_artists.read()) {
+                *self_relationships = other_relationships.clone();
+                debug!("Transferred album-artist relationships");
+            } else {
+                error!("Failed to acquire locks for relationship transfer");
+                return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));
+            }
+        }
+        
+        // Mark as loaded and update progress
+        *self.library_loaded.lock().unwrap() = true;
         if let Ok(mut progress) = self.loading_progress.lock() {
             *progress = 1.0;
         }
         
-        // Mark library as loaded
-        *self.library_loaded.lock().unwrap() = true;
-        
-        let total_time = start_time.elapsed();
-        info!("Library built in {:.2?}: {} artists, {} albums, {} songs", 
-            total_time, artist_list.len(), total_albums, total_songs);
+        debug!("Library data transfer complete");
         
         Ok(())
-    }
-    
-    /// Get a list of all album artists in the database
-    fn get_all_album_artists(&self) -> Result<Vec<String>, LibraryError> {
-        debug!("Fetching list of all album artists");
-        
-        // Connect to MPD server
-        let addr = format!("{}:{}", self.hostname, self.port);
-        let mut stream = std::net::TcpStream::connect(&addr)
-            .map_err(|e| LibraryError::ConnectionError(format!("Failed to connect to MPD: {}", e)))?;
-        
-        // Send command to list all album artists
-        if let Err(e) = stream.write_all(b"list albumartist\n") {
-            return Err(LibraryError::ConnectionError(format!("Failed to send command: {}", e)));
-        }
-        
-        // Read response
-        let mut reader = std::io::BufReader::new(stream);
-        let mut line = String::new();
-        let mut artists = Vec::new();
-        
-        while let Ok(bytes) = reader.read_line(&mut line) {
-            if bytes == 0 {
-                break;
-            }
-            
-            let line_trimmed = line.trim();
-            if line_trimmed == "OK" {
-                break;
-            }
-            
-            if line_trimmed.starts_with("AlbumArtist: ") {
-                let artist_name = line_trimmed[13..].to_string();
-                if !artist_name.is_empty() {
-                    artists.push(artist_name);
-                }
-            }
-            
-            line.clear();
-        }
-        
-        debug!("Found {} album artists", artists.len());
-        Ok(artists)
     }
 }
 
@@ -543,70 +247,59 @@ impl LibraryInterface for MPDLibrary {
     }
     
     fn refresh_library(&self) -> Result<(), LibraryError> {
-        debug!("Refreshing MPD library data");
+        debug!("Refreshing MPD library data using MPDLibraryLoader");
         let start_time = Instant::now();
         
-        // Use build_library_from_artists method instead of db_from_listallinfo
-        if let Err(e) = self.build_library_from_artists() {
-            error!("Error loading library data: {}", e);
-            return Err(e);
-        }
-        
-        // Calculate memory usage
-        let mut memory_usage = MemoryUsage::new();
-        
-        // Calculate memory used by artists
-        if let Ok(artists) = self.artists.read() {
-            memory_usage.artist_count = artists.len();
-            
-            // Base size of HashMap
-            memory_usage.overhead_memory += mem::size_of::<HashMap<String, Artist>>();
-            
-            // Calculate size of each artist
-            for artist in artists.values() {
-                memory_usage.artists_memory += MemoryUsage::calculate_artist_memory(artist);
-                memory_usage.track_count += artist.track_count;
+        // Use our MPDLibraryLoader to load albums
+        let loader = super::libraryloader::MPDLibraryLoader::new(&self.hostname, self.port);
+        match loader.load_albums_from_mpd() {
+            Ok(albums) => {
+                // Mark as not loaded during update
+                *self.library_loaded.lock().unwrap() = false;
+                
+                // Reset loading progress to 0
+                if let Ok(mut progress) = self.loading_progress.lock() {
+                    *progress = 0.0;
+                }
+                
+                // Update albums collection
+                {
+                    if let Ok(mut self_albums) = self.albums.write() {
+                        self_albums.clear();
+                        
+                        // Add each album to the collection with name as key
+                        for album in albums {
+                            self_albums.insert(album.name.clone(), album);
+                        }
+                        
+                        debug!("Updated library with {} albums", self_albums.len());
+                    } else {
+                        error!("Failed to acquire write lock on albums");
+                        return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));
+                    }
+                }
+                
+                // Create artists and update album-artist relationships
+                if let Err(e) = self.create_artists() {
+                    error!("Error creating artists: {}", e);
+                }
+                
+                // Mark as loaded and update progress
+                *self.library_loaded.lock().unwrap() = true;
+                if let Ok(mut progress) = self.loading_progress.lock() {
+                    *progress = 1.0;
+                }
+                
+                let total_time = start_time.elapsed();
+                info!("Library load complete in {:.2?}", total_time);
+                
+                Ok(())
+            },
+            Err(e) => {
+                error!("Error loading MPD library: {}", e);
+                Err(e)
             }
-            
-            // Add overhead for HashMap capacity (rough estimate)
-            memory_usage.overhead_memory += artists.capacity() * mem::size_of::<(String, Artist)>();
         }
-        
-        // Calculate memory used by albums
-        if let Ok(albums) = self.albums.read() {
-            memory_usage.album_count = albums.len();
-            
-            // Base size of HashMap
-            memory_usage.overhead_memory += mem::size_of::<HashMap<String, Album>>();
-            
-            // Calculate size of each album including tracks
-            for album in albums.values() {
-                memory_usage.albums_memory += MemoryUsage::calculate_album_memory(album);
-                memory_usage.tracks_memory += MemoryUsage::calculate_tracks_memory(&album.tracks);
-            }
-            
-            // Add overhead for HashMap capacity (rough estimate)
-            memory_usage.overhead_memory += albums.capacity() * mem::size_of::<(String, Album)>();
-        }
-        
-        // Add overhead for album_artists
-        if let Ok(album_artists) = self.album_artists.read() {
-            memory_usage.album_artists_count = album_artists.len();
-            memory_usage.overhead_memory += mem::size_of::<AlbumArtists>();
-        }
-        
-        // Add overhead for Arc, RwLock, Mutex
-        memory_usage.overhead_memory += 4 * mem::size_of::<Arc<RwLock<HashMap<String, Artist>>>>();
-        
-        // Log the memory statistics
-        memory_usage.log_stats();
-        
-        let total_time = start_time.elapsed();
-        
-        // Summary of timing information
-        info!("Library load complete in {:.2?}", total_time);
-        
-        Ok(())
     }
     
     fn get_albums(&self) -> Vec<Album> {

@@ -420,7 +420,7 @@ pub fn get_artist_image(
                     if let Some(artist) = library.get_artist(artist_name) {
                         // Check if the artist has an image
                         let image_path = artist.metadata.as_ref()
-                            .and_then(|metadata| metadata.thumb_url.clone());
+                            .and_then(|metadata| metadata.thumb_url.first().cloned());
                         
                         return Ok(Json(ArtistImageResponse {
                             artist_name: artist_name.to_string(),

@@ -20,48 +20,33 @@ pub struct Artist {
 }
 
 impl Artist {
-    /// Get the artist's MusicBrainz ID if available
-    pub fn mbid(&self) -> Option<String> {
-        self.metadata.as_ref().and_then(|m| m.mbid.clone())
-    }
-    
-    /// Get the artist's thumbnail URL if available
-    pub fn thumb_url(&self) -> Option<String> {
-        self.metadata.as_ref().and_then(|m| m.thumb_url.clone())
-    }
-    
-    /// Get the artist's banner URL if available
-    pub fn banner_url(&self) -> Option<String> {
-        self.metadata.as_ref().and_then(|m| m.banner_url.clone())
-    }
-    
-    /// Set the artist's MusicBrainz ID
-    pub fn set_mbid(&mut self, mbid: String) {
+    /// Add a MusicBrainz ID to the artist
+    pub fn add_mbid(&mut self, mbid: String) {
         if let Some(meta) = &mut self.metadata {
-            meta.set_mbid(mbid);
+            meta.add_mbid(mbid);
         } else {
             self.metadata = Some(ArtistMeta::with_mbid(mbid));
         }
     }
     
-    /// Set the artist's thumbnail URL
-    pub fn set_thumb_url(&mut self, url: String) {
+    /// Add a thumbnail URL to the artist
+    pub fn add_thumb_url(&mut self, url: String) {
         if let Some(meta) = &mut self.metadata {
-            meta.set_thumb_url(url);
+            meta.add_thumb_url(url);
         } else {
             let mut meta = ArtistMeta::new();
-            meta.set_thumb_url(url);
+            meta.add_thumb_url(url);
             self.metadata = Some(meta);
         }
     }
     
-    /// Set the artist's banner URL
-    pub fn set_banner_url(&mut self, url: String) {
+    /// Add a banner URL to the artist
+    pub fn add_banner_url(&mut self, url: String) {
         if let Some(meta) = &mut self.metadata {
-            meta.set_banner_url(url);
+            meta.add_banner_url(url);
         } else {
             let mut meta = ArtistMeta::new();
-            meta.set_banner_url(url);
+            meta.add_banner_url(url);
             self.metadata = Some(meta);
         }
     }

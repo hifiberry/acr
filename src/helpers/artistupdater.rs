@@ -77,7 +77,7 @@ pub fn get_artist_meta(artist_name: &str) -> Option<ArtistMeta> {
     match attributecache::get::<String>(&cache_key_mbid) {
         Ok(Some(mbid)) => {
             debug!("Found MusicBrainz ID for '{}' in cache: {}", artist_name, mbid);
-            meta.set_mbid(mbid);
+            meta.add_mbid(mbid);
             found_in_cache = true;
         },
         Ok(None) => {
@@ -103,7 +103,7 @@ pub fn get_artist_meta(artist_name: &str) -> Option<ArtistMeta> {
                 match search_musicbrainz_for_artist(artist_name) {
                     MusicBrainzSearchResult::Found(mbid) => {
                         debug!("Found MusicBrainz ID for '{}': {}", artist_name, mbid);
-                        meta.set_mbid(mbid.clone());
+                        meta.add_mbid(mbid.clone());
                         
                         // Store in cache for future use
                         if let Err(e) = attributecache::set(&cache_key_mbid, &mbid) {
@@ -130,7 +130,7 @@ pub fn get_artist_meta(artist_name: &str) -> Option<ArtistMeta> {
     // Note: Thumbnail and banner retrieval is not implemented yet as per requirements
     
     // Return the metadata if we have at least a MusicBrainz ID
-    if meta.mbid.is_some() {
+    if !meta.mbid.is_empty() {
         Some(meta)
     } else {
         None
@@ -145,8 +145,8 @@ pub fn update_artist_metadata(artist: &mut Artist) -> bool {
             artist.metadata = Some(meta);
         } else if let Some(ref mut current_meta) = artist.metadata {
             // Update existing metadata
-            if let Some(mbid) = meta.mbid {
-                current_meta.set_mbid(mbid);
+            for mbid in meta.mbid {
+                current_meta.add_mbid(mbid);
             }
             // Thumbnail and banner handling will be added later
         }
@@ -178,33 +178,37 @@ pub fn update_artist(artist: &mut Artist) -> bool {
             // Artist already has metadata, update fields if needed
             debug!("Updating existing metadata for artist '{}'", artist.name);
             if let Some(ref mut current_meta) = artist.metadata {
-                // Update MusicBrainz ID if we have one
-                if let Some(mbid) = meta.mbid {
-                    if current_meta.mbid.is_none() || current_meta.mbid.as_ref().unwrap() != &mbid {
+                // Update MusicBrainz IDs if we have any new ones
+                for mbid in meta.mbid {
+                    if !current_meta.mbid.contains(&mbid) {
                         debug!("Updated MusicBrainz ID for artist '{}': {}", artist.name, mbid);
-                        current_meta.set_mbid(mbid);
+                        current_meta.add_mbid(mbid);
                         updated = true;
                     }
                 }
                 
-                // Transfer any thumbnail URL if available
-                if current_meta.thumb_url.is_none() && meta.thumb_url.is_some() {
-                    current_meta.set_thumb_url(meta.thumb_url.unwrap());
-                    debug!("Added thumbnail URL for artist '{}'", artist.name);
-                    updated = true;
+                // Transfer any new thumbnail URLs
+                for url in meta.thumb_url {
+                    if !current_meta.thumb_url.contains(&url) {
+                        current_meta.add_thumb_url(url);
+                        debug!("Added thumbnail URL for artist '{}'", artist.name);
+                        updated = true;
+                    }
                 }
                 
-                // Transfer any banner URL if available
-                if current_meta.banner_url.is_none() && meta.banner_url.is_some() {
-                    current_meta.set_banner_url(meta.banner_url.unwrap());
-                    debug!("Added banner URL for artist '{}'", artist.name);
-                    updated = true;
+                // Transfer any new banner URLs
+                for url in meta.banner_url {
+                    if !current_meta.banner_url.contains(&url) {
+                        current_meta.add_banner_url(url);
+                        debug!("Added banner URL for artist '{}'", artist.name);
+                        updated = true;
+                    }
                 }
             }
         }
         
         // Download artist images after metadata is updated
-        if updated && artist.metadata.as_ref().and_then(|m| m.mbid.as_ref()).is_some() {
+        if updated && !artist.metadata.as_ref().unwrap().mbid.is_empty() {
             debug!("Downloading images for artist '{}'", artist.name);
             if download_artist_images(artist) {
                 debug!("Successfully downloaded images for artist '{}'", artist.name);
@@ -399,7 +403,7 @@ pub fn download_artist_images(artist: &mut Artist) -> bool {
         if let Some(ref mut meta) = artist.metadata {
             // Check for artist thumbnails
             if path_with_any_extension_exists(&thumb_path) {
-                meta.set_thumb_url(format!("cache://{}", thumb_path));
+                meta.add_thumb_url(format!("cache://{}", thumb_path));
                 
                 // Store the thumbnail URL in the attribute cache
                 let cache_key = format!("artist::{}::thumbnail", artist.name);
@@ -410,7 +414,7 @@ pub fn download_artist_images(artist: &mut Artist) -> bool {
             
             // Check for artist banners
             if path_with_any_extension_exists(&banner_path) {
-                meta.set_banner_url(format!("cache://{}", banner_path));
+                meta.add_banner_url(format!("cache://{}", banner_path));
                 
                 // Store the banner URL in the attribute cache
                 let cache_key = format!("artist::{}::banner", artist.name);
@@ -461,7 +465,7 @@ fn download_and_cache_image(url: &str, dir: &str, basename: &str, artist: &mut A
     // Update the artist's metadata with the cached image path
     if let Some(ref mut meta) = artist.metadata {
         if basename == "artist" {
-            meta.set_thumb_url(format!("cache://{}", filename));
+            meta.add_thumb_url(format!("cache://{}", filename));
             
             // Store the thumbnail URL in the attribute cache
             let cache_key = format!("artist::{}::thumbnail", artist.name);
@@ -469,7 +473,7 @@ fn download_and_cache_image(url: &str, dir: &str, basename: &str, artist: &mut A
                 warn!("Failed to store thumbnail URL in attribute cache: {}", e);
             }
         } else if basename == "artist-banner" {
-            meta.set_banner_url(format!("cache://{}", filename));
+            meta.add_banner_url(format!("cache://{}", filename));
             
             // Store the banner URL in the attribute cache
             let cache_key = format!("artist::{}::banner", artist.name);
@@ -525,7 +529,7 @@ pub fn update_artist_images(artist: &mut Artist) -> bool {
             // Check for artist thumbnails
             let thumb_path = format!("artists/{}/artist.0", safe_name);
             if path_with_any_extension_exists(&thumb_path) {
-                meta.set_thumb_url(format!("cache://{}", thumb_path));
+                meta.add_thumb_url(format!("cache://{}", thumb_path));
                 
                 // Store the thumbnail URL in the attribute cache
                 let cache_key = format!("artist::{}::thumbnail", artist.name);
@@ -537,7 +541,7 @@ pub fn update_artist_images(artist: &mut Artist) -> bool {
             // Check for artist banners
             let banner_path = format!("artists/{}/banner.0", safe_name);
             if path_with_any_extension_exists(&banner_path) {
-                meta.set_banner_url(format!("cache://{}", banner_path));
+                meta.add_banner_url(format!("cache://{}", banner_path));
                 
                 // Store the banner URL in the attribute cache
                 let cache_key = format!("artist::{}::banner", artist.name);

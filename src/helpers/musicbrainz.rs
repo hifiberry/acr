@@ -2,12 +2,35 @@ use crate::helpers::attributecache;
 use log::{info, warn, error, debug};
 use std::time::Duration;
 use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
 use deunicode::deunicode;
 // Imports for musicbrainz_rs
 use musicbrainz_rs::entity::artist::{Artist, ArtistSearchQuery};
 use musicbrainz_rs::prelude::*;
 // Import tokio for async runtime
 use tokio::runtime::Runtime;
+
+/// Global flag to indicate if MusicBrainz lookups are enabled
+pub static MUSICBRAINZ_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Initialize the MusicBrainz module from configuration
+pub fn initialize_from_config(config: &serde_json::Value) {
+    if let Some(mb_config) = config.get("musicbrainz") {
+        if let Some(enabled) = mb_config.get("enable").and_then(|v| v.as_bool()) {
+            MUSICBRAINZ_ENABLED.store(enabled, Ordering::SeqCst);
+            info!("MusicBrainz lookup {}", if enabled { "enabled" } else { "disabled" });
+        }
+    } else {
+        // Default to disabled if not in config
+        MUSICBRAINZ_ENABLED.store(false, Ordering::SeqCst);
+        debug!("MusicBrainz configuration not found, lookups disabled");
+    }
+}
+
+/// Check if MusicBrainz lookups are enabled
+pub fn is_enabled() -> bool {
+    MUSICBRAINZ_ENABLED.load(Ordering::SeqCst)
+}
 
 /// Separators used to split artist names into individual artists
 pub static ARTIST_SEPARATORS: &[&str] = &[",", "&", " feat ", " feat.", " featuring ", " with "];
@@ -227,6 +250,12 @@ fn artist_names_match(query_name: &str, response_name: &str, response_aliases: O
 fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBrainzSearchResult {
     debug!("Searching MusicBrainz for artist: '{}' (cache_only: {})", artist_name, cache_only);
     
+    // Check if MusicBrainz lookups are enabled
+    if !is_enabled() {
+        debug!("MusicBrainz lookups are disabled, skipping search for '{}'", artist_name);
+        return MusicBrainzSearchResult::NotFound;
+    }
+    
     // Try to get MBID from cache first
     let cache_key = format!("artist::{}::mbid", artist_name);
     match attributecache::get::<String>(&cache_key) {
@@ -357,6 +386,12 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
                                cache_only: bool, cache_failures: bool) -> MusicBrainzSearchResult {
     debug!("Searching MBIDs for artist: '{}' (allow_multiple: {}, cache_only: {}, cache_failures: {})", 
            artist_name, allow_multiple, cache_only, cache_failures);
+    
+    // Check if MusicBrainz lookups are enabled
+    if !is_enabled() {
+        debug!("MusicBrainz lookups are disabled, skipping search for '{}'", artist_name);
+        return MusicBrainzSearchResult::NotFound;
+    }
     
     // Try to get MBID from cache first for the full combined name
     let cache_key = format!("artist::{}::mbid", artist_name);
@@ -500,6 +535,21 @@ pub fn split_artist_names(artist_name: &str, cache_only: bool) -> Option<Vec<Str
     if !contains_separator {
         debug!("'{}' doesn't contain any separators, assuming single artist", artist_name);
         return None;
+    }
+
+    // if musicbrainz lookups are disabled, implement a "dumb" split
+    if !is_enabled() {
+        debug!("MusicBrainz lookups are disabled, performing dumb split for '{}'", artist_name);
+        let split_artists = split_artist(artist_name);
+        
+        // Only return if we actually split into multiple parts
+        if split_artists.len() > 1 {
+            debug!("Split '{}' into multiple artists: {:?}", artist_name, split_artists);
+            return Some(split_artists);
+        } else {
+            debug!("'{}' appears to be a single artist", artist_name);
+            return None;
+        }
     }
     
     // Look up MBIDs for the artist

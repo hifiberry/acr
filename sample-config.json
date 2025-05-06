@@ -31,6 +31,9 @@
         "attribute_cache_path": "cache/attributes",
         "image_cache_path": "cache/images"
     },
+    "musicbrainz": {
+        "enable": true
+    },
     "players": [
         {
             "mpd": {

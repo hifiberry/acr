@@ -4,7 +4,7 @@ use acr::AudioController;
 use acr::api::server;
 use acr::helpers::attributecache::AttributeCache;
 use acr::helpers::imagecache::ImageCache;
-use acr::helpers::artistupdater;
+use acr::helpers::musicbrainz;
 use acr::data::artist::Artist;
 use std::thread;
 use std::time::Duration;
@@ -93,9 +93,12 @@ fn main() {
 
     // Initialize the global attribute cache with the configured path from JSON
     initialize_attribute_cache(&attribute_cache_path);
-
+    
     // Initialize the global image cache with the configured path from JSON
     initialize_image_cache(&image_cache_path);
+    
+    // Initialize MusicBrainz with the configuration
+    initialize_musicbrainz(&controllers_config);
     
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
@@ -264,4 +267,10 @@ fn initialize_image_cache(image_cache_path: &str) {
         Ok(_) => info!("Image cache initialized with path: {}", image_cache_path),
         Err(e) => warn!("Failed to initialize image cache: {}", e)
     }
+}
+
+// Helper function to initialize MusicBrainz
+fn initialize_musicbrainz(config: &serde_json::Value) {
+    musicbrainz::initialize_from_config(config);
+    info!("MusicBrainz initialized successfully");
 }

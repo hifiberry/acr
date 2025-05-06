@@ -12,6 +12,8 @@ pub struct Album {
     pub name: String,
     /// List of artists for this album
     pub artists: Arc<Mutex<Vec<String>>>,
+    // Artists in a single string (might not be populated)
+    pub artists_flat: Option<String>,
     /// Year of album release (if available)
     pub year: Option<i32>,
     /// List of tracks on this album
@@ -101,6 +103,7 @@ impl<'de> Deserialize<'de> for Album {
             id: helper.id,
             name: helper.name,
             artists: Arc::new(Mutex::new(artists)),
+            artists_flat: None, // Initialize artists_flat as None
             year: helper.year,
             tracks: Arc::new(Mutex::new(helper.tracks)),
             cover_art: helper.cover_art,

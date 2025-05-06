@@ -9,8 +9,8 @@ use deunicode::deunicode;
 /// Result type for MusicBrainz artist search
 #[derive(Debug, Clone, PartialEq)]
 pub enum MusicBrainzSearchResult {
-    /// Artist found with its MusicBrainz ID
-    Found(String),
+    /// Artist(s) found with their MusicBrainz ID(s)
+    Found(Vec<String>),
     /// Artist was intentionally ignored (e.g., contains multiple artists)
     Ignored,
     /// Artist couldn't be found in MusicBrainz
@@ -21,7 +21,7 @@ pub enum MusicBrainzSearchResult {
 
 /// Normalize an artist name for comparison by removing all special characters
 /// and common words like "the", "and", etc.
-///
+/// 
 /// This function:
 /// - Converts to ASCII (removing accents, etc.)
 /// - Removes ALL special characters (keeping only letters, numbers, and spaces)
@@ -29,10 +29,10 @@ pub enum MusicBrainzSearchResult {
 /// - Removes common words like "the", "and" (only complete words, not substrings)
 /// - Removes ALL spaces in the final result
 /// - Trims whitespace and collapses multiple spaces to single space
-///
+/// 
 /// # Arguments
 /// * `artist_name` - The artist name to normalize
-///
+/// 
 /// # Returns
 /// A normalized string suitable for comparison
 fn normalize_artist_name_for_comparison(artist_name: &str) -> String {
@@ -90,8 +90,53 @@ fn normalize_artist_name_for_comparison(artist_name: &str) -> String {
 }
 
 /// Search MusicBrainz API for an artist and return their MBID if found
-pub fn search_musicbrainz_for_artist(artist_name: &str) -> MusicBrainzSearchResult {
+/// 
+/// # Arguments
+/// * `artist_name` - The name of the artist to search for
+/// * `search_multiple` - If true and artist name contains commas, split and search for each part
+/// 
+/// # Returns
+/// * `MusicBrainzSearchResult` - Found with vector of MBIDs, or error/not found status
+pub fn search_musicbrainz_for_artist(artist_name: &str, search_multiple: bool) -> MusicBrainzSearchResult {
     debug!("Searching MusicBrainz for artist: '{}'", artist_name);
+    
+    // If search_multiple is true and artist name contains commas, split and search for each part
+    if search_multiple && artist_name.contains(',') {
+        debug!("Artist name contains multiple artists, splitting and searching individually");
+        let artist_names: Vec<&str> = artist_name.split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        
+        let mut all_mbids = Vec::new();
+        
+        for name in artist_names {
+            debug!("Searching for individual artist: '{}'", name);
+            match search_musicbrainz_for_artist(name, false) {
+                MusicBrainzSearchResult::Found(mut mbids) => {
+                    debug!("Found MBID(s) for '{}': {:?}", name, mbids);
+                    all_mbids.append(&mut mbids);
+                },
+                MusicBrainzSearchResult::NotFound => {
+                    debug!("No MBID found for '{}'", name);
+                },
+                MusicBrainzSearchResult::Error(e) => {
+                    warn!("Error searching for '{}': {}", name, e);
+                },
+                MusicBrainzSearchResult::Ignored => {
+                    debug!("Artist '{}' was ignored", name);
+                }
+            }
+        }
+        
+        if !all_mbids.is_empty() {
+            debug!("Found combined {} MBID(s) for split search of '{}'", all_mbids.len(), artist_name);
+            return MusicBrainzSearchResult::Found(all_mbids);
+        } else {
+            debug!("No MBIDs found for any part of '{}'", artist_name);
+            return MusicBrainzSearchResult::NotFound;
+        }
+    }
     
     // First check if this artist was previously flagged as having multiple artists
     let ignored_flag_key = format!("artist::{}::ignored_multiple_artists", artist_name);
@@ -198,13 +243,13 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> MusicBrainzSearchResu
                     }
                     
                     // Return the MBID
-                    return MusicBrainzSearchResult::Found(mbid_string);
+                    return MusicBrainzSearchResult::Found(vec![mbid_string]);
                 } else {
                     // For cases where the names don't exactly match, implement a fuzzy comparison
                     // Check if one name is fully contained within the other
                     if normalized_query.contains(&normalized_response) || normalized_response.contains(&normalized_query) {
-                        // ignore if the artist name contains "," or "feat."
-                        if artist_name.contains(",") || artist_name.contains("feat.") {
+                        // ignore if the artist name contains "," or "feat." and we're not in a recursive search
+                        if search_multiple && (artist_name.contains(",") || artist_name.contains("feat.")) {
                             debug!("Ignoring similar artist match due to multiple artists in name: '{}'", artist_name);
                             
                             // Store a flag in the attribute cache to avoid looking up this artist again
@@ -230,7 +275,7 @@ pub fn search_musicbrainz_for_artist(artist_name: &str) -> MusicBrainzSearchResu
                             Err(e) => error!("Failed to cache MBID for similar artist: {}", e)
                         }
                         
-                        return MusicBrainzSearchResult::Found(mbid_string);
+                        return MusicBrainzSearchResult::Found(vec![mbid_string]);
                     } else {
                         // Names don't match and aren't similar enough
                         warn!("Artist name mismatch! Searched for: '{}', but found: '{}'", 
@@ -261,9 +306,36 @@ pub fn get_artist_mbid(artist_name: &str) -> Option<String> {
         },
         _ => {
             // Not in cache, search MusicBrainz
-            match search_musicbrainz_for_artist(artist_name) {
-                MusicBrainzSearchResult::Found(mbid) => Some(mbid),
+            match search_musicbrainz_for_artist(artist_name, true) {
+                MusicBrainzSearchResult::Found(mbids) => {
+                    if !mbids.is_empty() {
+                        debug!("Found {} MBID(s) for '{}', using the first one", mbids.len(), artist_name);
+                        Some(mbids[0].clone())
+                    } else {
+                        None
+                    }
+                },
                 _ => None,
+            }
+        }
+    }
+}
+
+/// Get all MusicBrainz IDs for an artist or artists, first checking the cache
+pub fn get_artist_mbids(artist_name: &str) -> Vec<String> {
+    // Try to get MBID from cache first
+    let cache_key = format!("artist::{}::mbid", artist_name);
+    
+    match attributecache::get::<String>(&cache_key) {
+        Ok(Some(mbid)) => {
+            debug!("Found MusicBrainz ID for '{}' in cache: {}", artist_name, mbid);
+            vec![mbid]
+        },
+        _ => {
+            // Not in cache, search MusicBrainz
+            match search_musicbrainz_for_artist(artist_name, true) {
+                MusicBrainzSearchResult::Found(mbids) => mbids,
+                _ => Vec::new(),
             }
         }
     }

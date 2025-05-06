@@ -100,14 +100,20 @@ pub fn get_artist_meta(artist_name: &str) -> Option<ArtistMeta> {
             },
             _ => {
                 // Continue with the search if not found or there was an error
-                match search_musicbrainz_for_artist(artist_name) {
-                    MusicBrainzSearchResult::Found(mbid) => {
-                        debug!("Found MusicBrainz ID for '{}': {}", artist_name, mbid);
-                        meta.add_mbid(mbid.clone());
+                match search_musicbrainz_for_artist(artist_name, true) {
+                    MusicBrainzSearchResult::Found(mbids) => {
+                        debug!("Found MusicBrainz ID(s) for '{}': {:?}", artist_name, mbids);
                         
-                        // Store in cache for future use
-                        if let Err(e) = attributecache::set(&cache_key_mbid, &mbid) {
-                            warn!("Failed to cache MusicBrainz ID for '{}': {}", artist_name, e);
+                        // Store first ID in cache for future use
+                        if !mbids.is_empty() {
+                            if let Err(e) = attributecache::set(&cache_key_mbid, &mbids[0]) {
+                                warn!("Failed to cache MusicBrainz ID for '{}': {}", artist_name, e);
+                            }
+                            
+                            // Add all found MBIDs to metadata
+                            for mbid in mbids {
+                                meta.add_mbid(mbid);
+                            }
                         }
                     },
                     MusicBrainzSearchResult::Ignored => {

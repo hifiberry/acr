@@ -153,7 +153,7 @@ impl MPDLibraryLoader {
             None => Arc::new(Mutex::new(vec![album_artist]))
         };
 
-        info!("Album ID: {}, Name: {}, Artists: {:?}", album_id, album_name, artists.lock().unwrap());
+        debug!("Album ID: {}, Name: {}, Artists: {:?}", album_id, album_name, artists.lock().unwrap());
         
         // Use the song file as the URI
         let uri = Some(song.file.clone());

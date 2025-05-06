@@ -308,10 +308,10 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                     
                     } else {
                         // Names don't match and aren't similar enough
-                        warn!("Artist name mismatch! Searched for: '{}', but found: '{}'", 
+                        debug!("Artist name mismatch! Searched for: '{}', but found: '{}'", 
                             artist_name, response_name);
-                        warn!("Normalized names: '{}' vs '{}'", normalized_query, normalized_response);
-                        warn!("Rejecting MBID due to name mismatch");
+                        debug!("Normalized names: '{}' vs '{}'", normalized_query, normalized_response);
+                        debug!("Rejecting MBID due to name mismatch");
                         
                         // Fall through to continue searching or return None
                     }

@@ -63,6 +63,13 @@ impl Artist {
     pub fn clear_metadata(&mut self) {
         self.metadata = None;
     }
+    
+    /// Ensure that the artist has metadata, creating it if needed
+    pub fn ensure_metadata(&mut self) {
+        if self.metadata.is_none() {
+            self.metadata = Some(ArtistMeta::new());
+        }
+    }
 }
 
 // Implement Hash trait to ensure the id is used as the hash

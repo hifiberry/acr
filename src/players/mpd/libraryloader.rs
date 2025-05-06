@@ -235,7 +235,7 @@ impl MPDLibraryLoader {
             
             // Fetch all songs for this artist
             let songs = self.fetch_all_songs_for_artist(artist)?;
-            info!("Found {} songs for album artist '{}'", songs.len(), artist);
+            debug!("Found {} songs for album artist '{}'", songs.len(), artist);
             all_songs.extend(songs);
         }
 

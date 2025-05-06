@@ -9,9 +9,24 @@ use musicbrainz_rs::entity::artist::{Artist, ArtistSearchQuery};
 use musicbrainz_rs::prelude::*;
 // Import tokio for async runtime
 use tokio::runtime::Runtime;
+// Import moka for negative caching (using the sync module)
+use moka::sync::Cache;
+use lazy_static::lazy_static;
 
 /// Global flag to indicate if MusicBrainz lookups are enabled
 pub static MUSICBRAINZ_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Cache of failed artist lookups with 24-hour expiry
+lazy_static! {
+    static ref FAILED_ARTIST_CACHE: Cache<String, bool> = {
+        Cache::builder()
+            // Set a 24-hour time-to-live (TTL)
+            .time_to_live(Duration::from_secs(24 * 60 * 60))
+            // Optionally set a maximum capacity for the cache
+            .max_capacity(1000) 
+            .build()
+    };
+}
 
 /// Initialize the MusicBrainz module from configuration
 pub fn initialize_from_config(config: &serde_json::Value) {
@@ -258,7 +273,6 @@ fn artist_names_match(query_name: &str, response_name: &str, response_aliases: O
 /// 
 /// # Arguments
 /// * `artist_name` - The name of the artist to search for
-/// * `search_multiple` - If true and artist name contains commas, split and search for each part
 /// * `cache_only` - If true, only check the cache and don't make API calls
 /// 
 /// # Returns
@@ -289,6 +303,12 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         }
     }
     
+    // Check negative cache for failed lookups
+    if FAILED_ARTIST_CACHE.get(artist_name).is_some() {
+        debug!("Artist '{}' found in negative cache (previous lookup failed)", artist_name);
+        return MusicBrainzSearchResult::NotFound;
+    }
+    
     // If cache_only is true, we shouldn't reach this point (should have returned earlier)
     if cache_only {
         debug!("Artist '{}' not found in cache and cache_only=true", artist_name);
@@ -305,6 +325,8 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         Ok(rt) => rt,
         Err(e) => {
             error!("Failed to create Tokio runtime: {}", e);
+            // Add to negative cache before returning
+            FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
             return MusicBrainzSearchResult::Error(format!("Failed to create Tokio runtime: {}", e));
         }
     };
@@ -370,8 +392,14 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                     // Return the MBID
                     return MusicBrainzSearchResult::Found(vec![mbid]);
                 } else {
-                    // Fall through to continue searching or return None
+                    // No matching artist found, add to negative cache
+                    debug!("Found artist but names don't match: '{}' vs '{}'", artist_name, response_name);
+                    FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
                 }
+            } else {
+                // No results found, add to negative cache
+                debug!("No results found for artist '{}'", artist_name);
+                FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
             }
             
             info!("No matching MusicBrainz ID found for artist '{}'", artist_name);
@@ -379,6 +407,8 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         },
         Err(e) => {
             error!("Failed to execute MusicBrainz API request: {}", e);
+            // Add to negative cache before returning
+            FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
             MusicBrainzSearchResult::Error(format!("API request error: {}", e))
         }
     }

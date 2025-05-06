@@ -9,6 +9,9 @@ use musicbrainz_rs::prelude::*;
 // Import tokio for async runtime
 use tokio::runtime::Runtime;
 
+/// Separators used to split artist names into individual artists
+pub static ARTIST_SEPARATORS: &[&str] = &[",", "&", " feat ", " feat.", " featuring ", " with "];
+
 /// Result type for MusicBrainz artist search
 #[derive(Debug, Clone, PartialEq)]
 pub enum MusicBrainzSearchResult {
@@ -102,56 +105,46 @@ fn normalize_artist_name_for_comparison(artist_name: &str) -> String {
 pub fn split_artist(artist_name: &str) -> Vec<String> {
     debug!("Splitting artist name: '{}'", artist_name);
     
-    // Define separators that indicate multiple artists
-    let separators = [',', '&'];
+    // Initial result will contain the full string
+    let mut result = vec![artist_name.to_string()];
     
-    // Check if the artist name contains any of the separators
-    let mut contains_separator = false;
-    for &sep in &separators {
-        if artist_name.contains(sep) {
-            contains_separator = true;
-            break;
-        }
-    }
-    
-    // If no separators are found, return the artist name as is
-    if !contains_separator {
-        debug!("No separators found in artist name: '{}'", artist_name);
-        return vec![artist_name.to_string()];
-    }
-    
-    // Split the artist name by separators
-    let mut artists = Vec::new();
-    let mut current = String::new();
-    
-    for c in artist_name.chars() {
-        if separators.contains(&c) {
-            // Found a separator, add the current part if not empty
-            let trimmed = current.trim();
-            if !trimmed.is_empty() {
-                artists.push(trimmed.to_string());
+    // Iteratively split by each separator
+    for &separator in ARTIST_SEPARATORS {
+        let mut new_result = Vec::new();
+        
+        for part in result {
+            // Skip empty parts
+            if part.trim().is_empty() {
+                continue;
             }
-            current.clear();
-        } else {
-            current.push(c);
+            
+            // For each existing part, split it by the current separator
+            if part.contains(separator) {
+                for sub_part in part.split(separator) {
+                    let trimmed = sub_part.trim();
+                    if !trimmed.is_empty() {
+                        new_result.push(trimmed.to_string());
+                    }
+                }
+            } else {
+                // If no separator in this part, keep it as is
+                new_result.push(part);
+            }
         }
+        
+        // Update result for the next separator
+        result = new_result;
     }
     
-    // Add the last part if not empty
-    let trimmed = current.trim();
-    if !trimmed.is_empty() {
-        artists.push(trimmed.to_string());
-    }
-    
-    // Filter out any empty strings and remove any "feat." prefixes
-    let artists: Vec<String> = artists
+    // Filter out any "feat." prefixes and empty strings
+    result = result
         .into_iter()
         .map(|a| a.trim().to_string())
         .filter(|a| !a.is_empty() && !a.to_lowercase().starts_with("feat."))
         .collect();
     
-    debug!("Split artist '{}' into: {:?}", artist_name, artists);
-    artists
+    debug!("Split artist '{}' into: {:?}", artist_name, result);
+    result
 }
 
 /// Compare two artist names to see if they match, using both exact normalized comparison
@@ -363,6 +356,19 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool, cache_on
     debug!("Searching MBIDs for artist: '{}' (allow_multiple: {}, cache_only: {})", 
            artist_name, allow_multiple, cache_only);
     
+    // Try to get MBID from cache first for the full combined name
+    let cache_key = format!("artist::{}::mbid", artist_name);
+    match attributecache::get::<Vec<String>>(&cache_key) {
+        Ok(Some(mbids)) => {
+            debug!("Found MusicBrainz IDs for '{}' in cache: {:?}", artist_name, mbids);
+            return MusicBrainzSearchResult::FoundCached(mbids);
+        },
+        _ => {
+            // Continue with search if not found in cache
+            debug!("No cached MusicBrainz IDs found for '{}'", artist_name);
+        }
+    }
+    
     // First try to lookup the artist as a single entity
     let result = search_musicbrainz_for_artist(artist_name, cache_only);
     
@@ -396,9 +402,33 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool, cache_on
                         }
                     }
                     
-                    // If we found any MBIDs, return them
+                    // If we found any MBIDs, return them and store in cache
                     if any_found {
                         debug!("Found {} MusicBrainz ID(s) for split artists in '{}'", all_mbids.len(), artist_name);
+                        
+                        // Store the combined result in the cache with the full artist name
+                        match attributecache::set(&cache_key, &all_mbids) {
+                            Ok(_) => {
+                                debug!("Successfully stored multiple MusicBrainz IDs for '{}' in cache", artist_name);
+                                
+                                // Verify the cache write by reading it back
+                                match attributecache::get::<Vec<String>>(&cache_key) {
+                                    Ok(Some(cached_mbids)) => {
+                                        if cached_mbids == all_mbids {
+                                            debug!("Verified multiple MBIDs in cache match: {:?}", cached_mbids);
+                                        } else {
+                                            warn!("Cache verification failed! Expected: {:?}, Got: {:?}", all_mbids, cached_mbids);
+                                        }
+                                    },
+                                    Ok(None) => warn!("Failed to verify multiple MBIDs in cache - not found after writing!"),
+                                    Err(e) => warn!("Failed to verify multiple MBIDs in cache: {}", e)
+                                }
+                            },
+                            Err(e) => {
+                                error!("Failed to cache multiple MusicBrainz IDs for '{}': {}", artist_name, e);
+                            }
+                        }
+                        
                         return MusicBrainzSearchResult::Found(all_mbids);
                     }
                     
@@ -412,6 +442,52 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool, cache_on
         _ => {
             // For errors, just return the original result
             return result;
+        }
+    }
+}
+
+/// Check if an artist name contains multiple artists by looking up MBIDs
+/// and splitting the name if multiple MBIDs are found
+///
+/// # Arguments
+/// * `artist_name` - The name of the artist to check
+/// * `cache_only` - If true, only check the cache and don't make API calls (default: true)
+///
+/// # Returns
+/// * `Option<Vec<String>>` - None if single artist, or Some(Vec<String>) with split artist names if multiple
+pub fn split_artist_names(artist_name: &str, cache_only: bool) -> Option<Vec<String>> {
+    debug!("Checking if '{}' contains multiple artists (cache_only: {})", artist_name, cache_only);
+    
+    // First, quickly check if the string contains any separator
+    let contains_separator = ARTIST_SEPARATORS.iter().any(|&separator| artist_name.contains(separator));
+    if !contains_separator {
+        debug!("'{}' doesn't contain any separators, assuming single artist", artist_name);
+        return None;
+    }
+    
+    // Look up MBIDs for the artist
+    match search_mbids_for_artist(artist_name, true, cache_only) {
+        MusicBrainzSearchResult::Found(mbids) | MusicBrainzSearchResult::FoundCached(mbids) => {
+            // If multiple MBIDs found, this might be a combined artist name
+            if mbids.len() > 1 {
+                debug!("Multiple MBIDs found for '{}', splitting artist name", artist_name);
+                let split_artists = split_artist(artist_name);
+                
+                // Only return if we actually split into multiple parts
+                if split_artists.len() > 1 {
+                    debug!("Split '{}' into multiple artists: {:?}", artist_name, split_artists);
+                    return Some(split_artists);
+                }
+            }
+            
+            // Single MBID found or couldn't split into multiple parts
+            debug!("'{}' appears to be a single artist", artist_name);
+            None
+        },
+        _ => {
+            // No MBIDs found or error occurred, can't determine if multiple
+            debug!("Couldn't determine if '{}' contains multiple artists", artist_name);
+            None
         }
     }
 }

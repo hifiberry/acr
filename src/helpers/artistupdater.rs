@@ -5,7 +5,7 @@ use crate::helpers::attributecache;
 use crate::helpers::imagecache;
 use crate::helpers::fanarttv;
 use crate::helpers::fanarttv::path_with_any_extension_exists;
-use crate::helpers::musicbrainz::{MusicBrainzSearchResult, search_musicbrainz_for_artist, get_artist_mbid};
+use crate::helpers::musicbrainz::{MusicBrainzSearchResult, search_musicbrainz_for_artist, get_artist_mbids};
 use log::{info, warn, error, debug};
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
@@ -293,7 +293,7 @@ pub fn update_library_artists_metadata_in_background<L: LibraryInterface + Send 
 /// Download and cache artist images from FanartTV
 /// 
 /// This function:
-/// 1. Looks up the MusicBrainz ID for the artist
+/// 1. Uses the artist's MusicBrainz ID from metadata
 /// 2. Fetches thumbnail and banner images from FanartTV
 /// 3. Stores the images in the image cache
 /// 4. Updates the artist metadata with image URLs
@@ -304,23 +304,27 @@ pub fn update_library_artists_metadata_in_background<L: LibraryInterface + Send 
 /// # Returns
 /// * `bool` - True if any images were downloaded or if the API call was successful even with no images
 pub fn download_artist_images(artist: &mut Artist) -> bool {    
-    // Check if artist has metadata with multiple MBIDs
-    if let Some(ref meta) = artist.metadata {
-        if meta.mbid.len() > 1 {
-            // TODO: Implement image handling for artists with multiple MBIDs
-            // Currently we skip image lookup for artists with multiple MBIDs as we need
-            // to determine which MBID to use or whether to combine images from multiple sources
-            debug!("Skipping image lookup for '{}' as it has multiple MBIDs ({})", 
-                artist.name, meta.mbid.len());
-            return false;
-        }
-    }
-
-    // Get the artist's MusicBrainz ID
-    let mbid = match get_artist_mbid(&artist.name) {
-        Some(id) => id,
+    // Check if artist has metadata with MBIDs
+    let mbid = match &artist.metadata {
+        Some(meta) => {
+            // Skip if the artist has multiple MBIDs (consistent with previous behavior)
+            if meta.mbid.len() > 1 {
+                debug!("Skipping image lookup for '{}' as it has multiple MBIDs ({})", 
+                    artist.name, meta.mbid.len());
+                return false;
+            }
+            
+            // Check if we have at least one MBID
+            if meta.mbid.is_empty() {
+                debug!("No MusicBrainz IDs found in artist '{}' metadata", artist.name);
+                return false;
+            }
+            
+            // Use the first MBID directly
+            meta.mbid[0].clone()
+        },
         None => {
-            debug!("No MusicBrainz ID found for artist '{}'", artist.name);
+            debug!("No metadata available for artist '{}'", artist.name);
             return false;
         }
     };
@@ -338,7 +342,7 @@ pub fn download_artist_images(artist: &mut Artist) -> bool {
     }
     
     // Call FanartTV API and process the result
-    debug!("Calling FanartTV API for artist '{}'", artist.name);
+    debug!("Calling FanartTV API for artist '{}' with MBID {}", artist.name, mbid);
     let api_success = fanarttv::download_artist_images(&mbid, &artist.name);
     
     // Store the API check status in the cache regardless of whether images were found
@@ -460,59 +464,4 @@ pub fn update_artist_with_images(artist: &mut Artist) -> bool {
     let images_updated = download_artist_images(artist);
     
     metadata_updated || images_updated
-}
-
-/// Update images for an artist
-pub fn update_artist_images(artist: &mut Artist) -> bool {
-    // Try to get the MusicBrainz ID for the artist
-    let mbid = match get_artist_mbid(&artist.name) {
-        Some(id) => id,
-        None => {
-            debug!("No MusicBrainz ID found for artist '{}'", artist.name);
-            return false;
-        }
-    };
-    
-    // Create a safe basename for the artist
-    let safe_name = artist_basename(&artist.name);
-    
-    warn!("Downloading images for artist '{}'", artist.name);
-    
-    // Use the comprehensive function to download all thumbnails and banners
-    let api_success = fanarttv::download_artist_images(&mbid, &artist.name);
-    
-    if api_success {
-        debug!("Successfully downloaded images for '{}'", artist.name);
-        
-        // Update the artist's metadata with the cached image paths
-        if let Some(ref mut meta) = artist.metadata {
-            // Check for artist thumbnails
-            let thumb_path = format!("artists/{}/artist.0", safe_name);
-            if path_with_any_extension_exists(&thumb_path) {
-                meta.add_thumb_url(format!("cache://{}", thumb_path));
-                
-                // Store the thumbnail URL in the attribute cache
-                let cache_key = format!("artist::{}::thumbnail", artist.name);
-                if let Err(e) = attributecache::set(&cache_key, &format!("cache://{}", thumb_path)) {
-                    warn!("Failed to store thumbnail URL in attribute cache: {}", e);
-                }
-            }
-            
-            // Check for artist banners
-            let banner_path = format!("artists/{}/banner.0", safe_name);
-            if path_with_any_extension_exists(&banner_path) {
-                meta.add_banner_url(format!("cache://{}", banner_path));
-                
-                // Store the banner URL in the attribute cache
-                let cache_key = format!("artist::{}::banner", artist.name);
-                if let Err(e) = attributecache::set(&cache_key, &format!("cache://{}", banner_path)) {
-                    warn!("Failed to store banner URL in attribute cache: {}", e);
-                }
-            }
-        }
-        
-        return true;
-    }
-    
-    false
 }

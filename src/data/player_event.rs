@@ -60,6 +60,15 @@ pub enum PlayerEvent {
         source: PlayerSource,
         position: f64,
     },
+
+    /// Database is being updated
+    DatabaseUpdating {
+        source: PlayerSource,
+        artist: Option<String>,
+        album: Option<String>,
+        song: Option<String>,
+        percentage: Option<f32>,
+    },
 }
 
 impl PlayerEvent {
@@ -71,6 +80,7 @@ impl PlayerEvent {
             PlayerEvent::LoopModeChanged { source, .. } => source,
             PlayerEvent::CapabilitiesChanged { source, .. } => source,
             PlayerEvent::PositionChanged { source, .. } => source,
+            PlayerEvent::DatabaseUpdating { source, .. } => source,
         }
     }
     

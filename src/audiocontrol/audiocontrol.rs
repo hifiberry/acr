@@ -942,6 +942,25 @@ impl AudioController {
                     debug!("AudioController ignoring position change from inactive player {}", source.player_id);
                 }
             },
+            PlayerEvent::DatabaseUpdating { source, artist, album, song, percentage } => {
+                // Database updates are currently handled only by action plugins
+                // Log that we received the event but don't forward it
+                if is_active {
+                    let progress_str = percentage.map_or(String::new(), |p| format!(" ({:.1}%)", p));
+                    let details = match (artist.as_deref(), album.as_deref(), song.as_deref()) {
+                        (Some(a), Some(b), Some(s)) => format!("artist: {}, album: {}, song: {}", a, b, s),
+                        (Some(a), Some(b), None) => format!("artist: {}, album: {}", a, b),
+                        (Some(a), None, None) => format!("artist: {}", a),
+                        (None, Some(b), None) => format!("album: {}", b),
+                        (None, None, Some(s)) => format!("song: {}", s),
+                        _ => "database".to_string(),
+                    };
+                    debug!("AudioController received database update from active player {}: {}{}", 
+                           source.player_id, details, progress_str);
+                } else {
+                    debug!("AudioController ignoring database update from inactive player {}", source.player_id);
+                }
+            },
         }
     }
 

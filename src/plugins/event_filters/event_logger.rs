@@ -94,6 +94,7 @@ impl EventLogger {
             PlayerEvent::LoopModeChanged { .. } => "loop",
             PlayerEvent::CapabilitiesChanged { .. } => "capabilities",
             PlayerEvent::PositionChanged { .. } => "position",
+            PlayerEvent::DatabaseUpdating { .. } => "database",
         }
     }
     
@@ -190,6 +191,35 @@ impl EventLogger {
                         source.player_name(),
                         source.player_id(),
                         position
+                    ),
+                    is_active_player
+                );
+            },
+            PlayerEvent::DatabaseUpdating { source, artist, album, song, percentage } => {
+                let progress_str = if let Some(pct) = percentage {
+                    format!(" - {:.1}%", pct)
+                } else {
+                    String::new()
+                };
+                
+                let item_str = match (artist, album, song) {
+                    (Some(a), Some(b), Some(s)) => format!("artist: {}, album: {}, song: {}", a, b, s),
+                    (Some(a), Some(b), None) => format!("artist: {}, album: {}", a, b),
+                    (Some(a), None, None) => format!("artist: {}", a),
+                    (None, Some(b), None) => format!("album: {}", b),
+                    (None, None, Some(s)) => format!("song: {}", s),
+                    (None, Some(b), Some(s)) => format!("album: {}, song: {}", b, s),
+                    (Some(a), None, Some(s)) => format!("artist: {}, song: {}", a, s),
+                    _ => "database".to_string(),
+                };
+                
+                logger.log(
+                    &format!(
+                        "Player {} (ID: {}) updating {}{}",
+                        source.player_name(),
+                        source.player_id(),
+                        item_str,
+                        progress_str
                     ),
                     is_active_player
                 );

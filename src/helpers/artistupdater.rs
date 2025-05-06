@@ -76,6 +76,47 @@ pub fn lookup_artist_mbids(artist_name: &str) -> Vec<String> {
     }
 }
 
+/// Updates an artist's thumbnails using FanArt.tv service
+/// 
+/// This function fetches thumbnail URLs for an artist and downloads them for caching.
+/// 
+/// # Arguments
+/// * `artist` - The artist to update
+/// * `mbid` - The MusicBrainz ID to use for looking up thumbnails
+/// 
+/// # Returns
+/// The updated artist with thumbnail URLs
+fn update_artist_thumbnails_from_fanarttv(mut artist: Artist, mbid: &str) -> Artist {
+    debug!("Fetching thumbnail URLs for artist {} with MBID {}", artist.name, mbid);
+    
+    // Get thumbnail URLs from FanArt.tv
+    let thumbnail_urls = crate::helpers::fanarttv::get_artist_thumbnails(mbid, Some(5));
+    
+    // Check if we have any thumbnails before trying to add them
+    let has_thumbnails = !thumbnail_urls.is_empty();
+    
+    // Add each thumbnail URL to the artist
+    if let Some(meta) = &mut artist.metadata {
+        for url in &thumbnail_urls {
+            meta.thumb_url.push(url.clone());
+            debug!("Added thumbnail URL for artist {}", artist.name);
+        }
+    }
+    
+    // If thumbnails were found, also try to download them for caching
+    if has_thumbnails {
+        debug!("Downloading artist images for {}", artist.name);
+        let download_result = crate::helpers::fanarttv::download_artist_images(mbid, &artist.name);
+        if download_result {
+            debug!("Successfully downloaded images for artist {}", artist.name);
+        } else {
+            debug!("Failed to download some images for artist {}", artist.name);
+        }
+    }
+    
+    artist
+}
+
 /// Updates artist data by fetching additional information like MusicBrainz IDs
 /// 
 /// This function takes an artist and attempts to retrieve and set any missing data
@@ -129,30 +170,8 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
             let mbid_opt = artist.metadata.as_ref().and_then(|meta| meta.mbid.first().cloned());
             
             if let Some(mbid) = mbid_opt {
-                // Get thumbnail URLs from FanArt.tv
-                let thumbnail_urls = crate::helpers::fanarttv::get_artist_thumbnails(&mbid, Some(5));
-                
-                // Check if we have any thumbnails before trying to add them
-                let has_thumbnails = !thumbnail_urls.is_empty();
-                
-                // Add each thumbnail URL to the artist
-                if let Some(meta) = &mut artist.metadata {
-                    for url in &thumbnail_urls {
-                        meta.thumb_url.push(url.clone());
-                        debug!("Added thumbnail URL for artist {}", artist.name);
-                    }
-                }
-                
-                // If thumbnails were found, also try to download them for caching
-                if has_thumbnails {
-                    debug!("Downloading artist images for {}", artist.name);
-                    let download_result = crate::helpers::fanarttv::download_artist_images(&mbid, &artist.name);
-                    if download_result {
-                        debug!("Successfully downloaded images for artist {}", artist.name);
-                    } else {
-                        debug!("Failed to download some images for artist {}", artist.name);
-                    }
-                }
+                // Update thumbnails using the dedicated function
+                artist = update_artist_thumbnails_from_fanarttv(artist, &mbid);
             }
         }
     } else if has_thumbnails {

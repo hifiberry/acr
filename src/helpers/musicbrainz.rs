@@ -133,6 +133,22 @@ fn normalize_artist_name_for_comparison(artist_name: &str) -> String {
     result.replace(" ", "")
 }
 
+/// Sanitize an artist name for MusicBrainz API queries by replacing problematic characters
+/// 
+/// # Arguments
+/// * `artist_name` - The artist name to sanitize
+/// 
+/// # Returns
+/// * `String` - Sanitized artist name
+fn sanitize_artist_name_for_search(artist_name: &str) -> String {
+    // Replace ampersands with "and" as they can cause search issues
+    let sanitized = artist_name.replace("&", "and");
+    
+    debug!("Sanitized artist name '{}' to '{}' for MusicBrainz search", artist_name, sanitized);
+    
+    sanitized
+}
+
 /// Split an artist name using custom separators
 /// 
 /// # Arguments
@@ -318,8 +334,6 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
     // Add a 1-second delay between artists to limit API requests (respecting MusicBrainz rate limits)
     thread::sleep(Duration::from_secs(1));
     
-    debug!("Searching MusicBrainz for artist: '{}'", artist_name);
-    
     // Create a Tokio runtime to handle async API calls
     let rt = match Runtime::new() {
         Ok(rt) => rt,
@@ -331,10 +345,14 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         }
     };
     
+    // Sanitize artist name for the API query
+    let sanitized_artist_name = sanitize_artist_name_for_search(artist_name);
+    debug!("Searching MusicBrainz for artist: '{}' (sanitized from '{}')", sanitized_artist_name, artist_name);
+    
     // Using musicbrainz_rs correctly with async handling:
-    // 1. Create the search query
+    // 1. Create the search query with the sanitized name
     let search_query = ArtistSearchQuery::query_builder()
-        .artist(artist_name)
+        .artist(&sanitized_artist_name)
         .build();
     
     // 2. Execute the async query in the runtime

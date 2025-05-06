@@ -5,6 +5,7 @@ use acr::api::server;
 use acr::helpers::attributecache::AttributeCache;
 use acr::helpers::imagecache::ImageCache;
 use acr::helpers::musicbrainz;
+use acr::helpers::theartistdb;
 use acr::data::artist::Artist;
 use std::thread;
 use std::time::Duration;
@@ -99,6 +100,9 @@ fn main() {
     
     // Initialize MusicBrainz with the configuration
     initialize_musicbrainz(&controllers_config);
+
+    // Initialize TheArtistDB with the configuration
+    initialize_theartistdb(&controllers_config);
     
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
@@ -273,4 +277,10 @@ fn initialize_image_cache(image_cache_path: &str) {
 fn initialize_musicbrainz(config: &serde_json::Value) {
     musicbrainz::initialize_from_config(config);
     info!("MusicBrainz initialized successfully");
+}
+
+// Helper function to initialize TheArtistDB
+fn initialize_theartistdb(config: &serde_json::Value) {
+    theartistdb::initialize_from_config(config);
+    info!("TheArtistDB initialized successfully");
 }

@@ -5,3 +5,4 @@ pub mod fanarttv;
 pub mod memory_report;
 pub mod stream_helper;
 pub mod musicbrainz;
+pub mod theartistdb;

@@ -22,3 +22,4 @@ acr.json
 # These are generated during debuggiong and are not needed in the repository
 attributecache.sled/*
 cache/*
+src/devtest.rs

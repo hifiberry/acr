@@ -420,7 +420,7 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                 FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
             }
             
-            info!("No matching MusicBrainz ID found for artist '{}'", artist_name);
+            debug!("No matching MusicBrainz ID found for artist '{}'", artist_name);
             MusicBrainzSearchResult::NotFound
         },
         Err(e) => {

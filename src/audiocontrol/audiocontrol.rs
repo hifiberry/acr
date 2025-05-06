@@ -220,6 +220,8 @@ impl PlayerStateListener for AudioController {
                 self.is_active_player(&source.player_name, &source.player_id),
             PlayerEvent::PositionChanged { source, .. } => 
                 self.is_active_player(&source.player_name, &source.player_id),
+            PlayerEvent::DatabaseUpdating { source, .. } => 
+                self.is_active_player(&source.player_name, &source.player_id)
         };
 
         // Pass the event through all filters

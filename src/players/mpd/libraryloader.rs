@@ -3,7 +3,8 @@ use std::time::Instant;
 use std::io::{Write, BufReader, BufRead};
 use std::net::TcpStream;
 use log::{debug, info, error};
-use crate::data::{LibraryError, Track};
+use crate::data::{LibraryError, Track, PlayerEvent, PlayerSource};
+use crate::players::player_controller::notify_database_update;
 use super::library::MPDLibrary;
 
 /// MPD library loader that can load a library from MPD
@@ -221,12 +222,23 @@ impl MPDLibraryLoader {
     
     /// Load albums from MPD
     pub fn load_albums_from_mpd(&self, custom_separators: Option<Vec<String>>) -> Result<Vec<crate::data::Album>, LibraryError> {
+        // progress indicator (f32 0.0..100.0)
+        let mut progress: f32 = 0.0;
+        // use the player source's name and id
+        let source = crate::data::PlayerSource::new("mpd".to_string(), "mpd".to_string());
+
         info!("Loading MPD library from {}:{}", self.hostname, self.port);
         let start_time = Instant::now();
         
         // Step 1: Load all album artists
         let albumartists = self.load_albumartists()?;
         info!("Found {} album artists in MPD database", albumartists.len());
+        progress = 10.0; // Update progress to 10%
+        
+        // Send database update event to show initial progress
+        notify_database_update(&source, Some("Loading artists".to_string()), None, None, Some(progress));
+        
+        info!("Database loading progress: {:.1}%", progress);
 
         // Step 2: Load all songs for each album artist
         let mut all_songs = Vec::new();
@@ -238,6 +250,12 @@ impl MPDLibraryLoader {
             debug!("Found {} songs for album artist '{}'", songs.len(), artist);
             all_songs.extend(songs);
         }
+        progress = 20.0; // Update progress to 20%
+        
+        // Send database update event to show progress
+        notify_database_update(&source, Some("Processing songs".to_string()), None, None, Some(progress));
+        
+        info!("Database loading progress: {:.1}%", progress);
 
         info!("Loaded {} songs in total", all_songs.len());
 
@@ -246,7 +264,10 @@ impl MPDLibraryLoader {
         // This will also help in tracking the number of unique albums
         // and their associated tracks
         let mut albums_map: HashMap<String, crate::data::Album> = std::collections::HashMap::new();
-        for song in &all_songs {
+        let total_songs = all_songs.len();
+        let songs_per_progress_point = (90.0 - 20.0) / (total_songs as f32);
+        
+        for (index, song) in all_songs.iter().enumerate() {
             // Create a unique key for the album based on song metadata
             let album_key = Self::album_key(song);
 
@@ -271,7 +292,37 @@ impl MPDLibraryLoader {
             } else {
                 error!("Album not found in map for key: {}", album_key);
             }
+            
+            // Update progress every 100 songs or on the last song
+            if index % 100 == 0 || index == total_songs - 1 {
+                // Calculate progress (range 20-90%)
+                progress = 20.0 + (index as f32 * songs_per_progress_point);
+                progress = progress.min(90.0); // Cap at 90%
+                
+                debug!("Album processing progress: {:.1}% ({}/{} songs)", progress, index + 1, total_songs);
+                
+                // Get album and artist names for the current song
+                let album_name = song.tags.iter()
+                    .find(|(tag, _)| tag == "Album")
+                    .map(|(_, value)| value.as_str())
+                    .unwrap_or("Unknown Album").to_string();
+                
+                let artist_name = song.tags.iter()
+                    .find(|(tag, _)| tag == "Artist")
+                    .map(|(_, value)| value.as_str())
+                    .unwrap_or("Unknown Artist").to_string();
+                
+                let song_name = song.title.as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or("Unknown Song").to_string();
+                
+                // Send database update event with current item details
+                notify_database_update(&source, Some(artist_name), Some(album_name), Some(song_name), Some(progress));
+                
+                info!("Database loading progress: {:.1}%", progress);
+            }
         }
+        
         info!("Created {} unique albums from songs", albums_map.len());
         
         // Move albums from HashMap to vector without copying
@@ -279,6 +330,14 @@ impl MPDLibraryLoader {
         for (_, album) in albums_map.drain() {
             albums.push(album);
         }
+        
+        // Final progress update (100%)
+        progress = 100.0;
+        
+        // Send the final database update event
+        notify_database_update(&source, Some("Library load complete".to_string()), None, None, Some(progress));
+        
+        info!("Database loading progress: {:.1}%", progress);
         
         let elapsed = start_time.elapsed();
         info!("Loaded {} albums in {:?}", albums.len(), elapsed);

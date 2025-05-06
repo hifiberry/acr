@@ -10,10 +10,12 @@ const APIKEY: &str = "749a8fca4f2d3b0462b287820ad6ab06";
 /// 
 /// # Arguments
 /// * `artist_mbid` - MusicBrainz ID of the artist
+/// * `max_images` - Maximum number of images to return (default: 10)
 /// 
 /// # Returns
 /// * `Vec<String>` - URLs of all available thumbnails, empty if none found
-pub fn get_artist_thumbnails(artist_mbid: &str) -> Vec<String> {
+pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Vec<String> {
+    let max = max_images.unwrap_or(10);
     let url = format!(
         "http://webservice.fanart.tv/v3/music/{}?api_key={}", 
         artist_mbid,
@@ -37,11 +39,14 @@ pub fn get_artist_thumbnails(artist_mbid: &str) -> Vec<String> {
                         for thumb in artist_thumbs {
                             if let Some(url) = thumb.get("url").and_then(|u| u.as_str()) {
                                 thumbnail_urls.push(url.to_string());
+                                if thumbnail_urls.len() >= max {
+                                    break;
+                                }
                             }
                         }
                         
                         if !thumbnail_urls.is_empty() {
-                            debug!("Found {} artist thumbnails on fanart.tv", thumbnail_urls.len());
+                            debug!("Found {} artist thumbnails on fanart.tv (limited to max {})", thumbnail_urls.len(), max);
                         } else {
                             debug!("Found no artist thumbnails on fanart.tv");
                         }
@@ -138,7 +143,7 @@ pub fn download_artist_images(artist_mbid: &str, artist_name: &str) -> bool {
     let first_thumb_path = format!("artists/{}/artist.0", artist_basename);
     if !path_with_any_extension_exists(&first_thumb_path) {
         // Download all thumbnails
-        let thumbnail_urls = get_artist_thumbnails(artist_mbid);
+        let thumbnail_urls = get_artist_thumbnails(artist_mbid, None);
         if thumbnail_urls.is_empty() {
             debug!("No thumbnails found on fanart.tv for '{}'", artist_name);
             // This is still considered a success since the API call succeeded

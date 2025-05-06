@@ -22,14 +22,6 @@ impl ArtistMeta {
         Self::default()
     }
     
-    /// Create ArtistMeta with a MusicBrainz ID
-    pub fn with_mbid(mbid: String) -> Self {
-        Self {
-            mbid: vec![mbid],
-            ..Self::default()
-        }
-    }
-    
     /// Add a MusicBrainz ID
     pub fn add_mbid(&mut self, mbid: String) {
         if !self.mbid.contains(&mbid) {

@@ -69,6 +69,7 @@ pub fn get_artist_meta(artist_name: &str) -> Option<ArtistMeta> {
     
     // Get all MusicBrainz IDs for this artist (which will check cache internally)
     let mbids = crate::helpers::musicbrainz::get_artist_mbids(artist_name);
+    info!("Found {} MusicBrainz IDs for artist '{}'", mbids.len(), artist_name);
     
     // If we have any MBIDs, create metadata with them
     if !mbids.is_empty() {

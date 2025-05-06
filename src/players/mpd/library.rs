@@ -293,6 +293,11 @@ impl LibraryInterface for MPDLibrary {
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
                 
+                // Start background update of artist metadata now that the library is fully loaded
+                info!("Starting background metadata update for artists");
+                let library_arc = Arc::new(self.clone());
+                crate::helpers::artistupdater::update_library_artists_metadata_in_background(library_arc);
+                
                 Ok(())
             },
             Err(e) => {

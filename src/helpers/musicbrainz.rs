@@ -9,8 +9,10 @@ use deunicode::deunicode;
 /// Result type for MusicBrainz artist search
 #[derive(Debug, Clone, PartialEq)]
 pub enum MusicBrainzSearchResult {
-    /// Artist(s) found with their MusicBrainz ID(s)
+    /// Artist(s) found with their MusicBrainz ID(s) from API search
     Found(Vec<String>),
+    /// Artist(s) found with their MusicBrainz ID(s) from cache
+    FoundCached(Vec<String>),
     /// Artist was intentionally ignored (e.g., contains multiple artists)
     Ignored,
     /// Artist couldn't be found in MusicBrainz
@@ -100,6 +102,16 @@ fn normalize_artist_name_for_comparison(artist_name: &str) -> String {
 pub fn search_musicbrainz_for_artist(artist_name: &str, search_multiple: bool) -> MusicBrainzSearchResult {
     debug!("Searching MusicBrainz for artist: '{}'", artist_name);
     
+    // Try to get MBID from cache first
+    let cache_key = format!("artist::{}::mbid", artist_name);
+    match attributecache::get::<String>(&cache_key) {
+        Ok(Some(mbid)) => {
+            debug!("Found MusicBrainz ID for '{}' in cache: {}", artist_name, mbid);
+            return MusicBrainzSearchResult::FoundCached(vec![mbid]);
+        },
+        _ => {} // Continue with API search if not found in cache
+    }
+    
     // If search_multiple is true and artist name contains commas, split and search for each part
     if search_multiple && artist_name.contains(',') {
         debug!("Artist name contains multiple artists, splitting and searching individually");
@@ -109,12 +121,18 @@ pub fn search_musicbrainz_for_artist(artist_name: &str, search_multiple: bool) -
             .collect();
         
         let mut all_mbids = Vec::new();
+        let mut any_cached = false;
         
         for name in artist_names {
             debug!("Searching for individual artist: '{}'", name);
             match search_musicbrainz_for_artist(name, false) {
                 MusicBrainzSearchResult::Found(mut mbids) => {
-                    debug!("Found MBID(s) for '{}': {:?}", name, mbids);
+                    debug!("Found MBID(s) for '{}' from API: {:?}", name, mbids);
+                    all_mbids.append(&mut mbids);
+                },
+                MusicBrainzSearchResult::FoundCached(mut mbids) => {
+                    debug!("Found MBID(s) for '{}' from cache: {:?}", name, mbids);
+                    any_cached = true;
                     all_mbids.append(&mut mbids);
                 },
                 MusicBrainzSearchResult::NotFound => {
@@ -131,6 +149,7 @@ pub fn search_musicbrainz_for_artist(artist_name: &str, search_multiple: bool) -
         
         if !all_mbids.is_empty() {
             debug!("Found combined {} MBID(s) for split search of '{}'", all_mbids.len(), artist_name);
+            // If any results were from cache, the combined result is considered from the API
             return MusicBrainzSearchResult::Found(all_mbids);
         } else {
             debug!("No MBIDs found for any part of '{}'", artist_name);
@@ -307,9 +326,17 @@ pub fn get_artist_mbid(artist_name: &str) -> Option<String> {
         _ => {
             // Not in cache, search MusicBrainz
             match search_musicbrainz_for_artist(artist_name, true) {
-                MusicBrainzSearchResult::Found(mbids) => {
+                MusicBrainzSearchResult::Found(mbids) | MusicBrainzSearchResult::FoundCached(mbids) => {
                     if !mbids.is_empty() {
                         debug!("Found {} MBID(s) for '{}', using the first one", mbids.len(), artist_name);
+                        
+                        // Store the first ID in cache for future quick lookups
+                        if let Err(e) = attributecache::set(&cache_key, &mbids[0]) {
+                            warn!("Failed to cache MusicBrainz ID for '{}': {}", artist_name, e);
+                        } else {
+                            debug!("Cached MusicBrainz ID for '{}': {}", artist_name, mbids[0]);
+                        }
+                        
                         Some(mbids[0].clone())
                     } else {
                         None
@@ -323,20 +350,45 @@ pub fn get_artist_mbid(artist_name: &str) -> Option<String> {
 
 /// Get all MusicBrainz IDs for an artist or artists, first checking the cache
 pub fn get_artist_mbids(artist_name: &str) -> Vec<String> {
-    // Try to get MBID from cache first
+    // Try to get MBID from cache first - we'll get the first ID from cache if available
     let cache_key = format!("artist::{}::mbid", artist_name);
+    let mut mbids = Vec::new();
     
-    match attributecache::get::<String>(&cache_key) {
+    // First check if we have a cached MBID
+    let found_in_cache = match attributecache::get::<String>(&cache_key) {
         Ok(Some(mbid)) => {
             debug!("Found MusicBrainz ID for '{}' in cache: {}", artist_name, mbid);
-            vec![mbid]
+            mbids.push(mbid);
+            true
         },
-        _ => {
-            // Not in cache, search MusicBrainz
-            match search_musicbrainz_for_artist(artist_name, true) {
-                MusicBrainzSearchResult::Found(mbids) => mbids,
-                _ => Vec::new(),
-            }
+        _ => false
+    };
+    
+    // If not found in cache or if artist name contains commas (might be multiple artists),
+    // do a fresh search to make sure we catch all IDs
+    if !found_in_cache || artist_name.contains(',') {
+        match search_musicbrainz_for_artist(artist_name, true) {
+            MusicBrainzSearchResult::Found(new_mbids) | MusicBrainzSearchResult::FoundCached(new_mbids) => {
+                // If we already have an ID from cache, make sure we don't duplicate it
+                for mbid in new_mbids {
+                    if !mbids.contains(&mbid) {
+                        mbids.push(mbid);
+                    }
+                }
+                
+                // If we found at least one MBID and nothing was in cache before,
+                // cache the first one for future quick lookups
+                if !mbids.is_empty() && !found_in_cache {
+                    if let Err(e) = attributecache::set(&cache_key, &mbids[0]) {
+                        warn!("Failed to cache MusicBrainz ID for '{}': {}", artist_name, e);
+                    } else {
+                        debug!("Cached MusicBrainz ID for '{}': {}", artist_name, mbids[0]);
+                    }
+                }
+            },
+            _ => {}
         }
     }
+    
+    mbids
 }

@@ -62,83 +62,24 @@ pub fn artist_basename(artist_name: &str) -> String {
     processed.to_lowercase()
 }
 
-/// Get metadata for an artist, first checking the attribute cache and then searching MusicBrainz if needed
+/// Get metadata for an artist from MusicBrainz
 pub fn get_artist_meta(artist_name: &str) -> Option<ArtistMeta> {
-    // Try to get metadata from the attribute cache first
-    let cache_key_mbid = format!("artist::{}::mbid", artist_name);
-    let _cache_key_thumb = format!("artist::{}::thumbnail", artist_name);
-    let _cache_key_banner = format!("artist::{}::banner", artist_name);
-    
     // Create an ArtistMeta to store the retrieved metadata
     let mut meta = ArtistMeta::new();
-    let mut found_in_cache = false;
     
-    // Try to get MusicBrainz ID from cache
-    match attributecache::get::<String>(&cache_key_mbid) {
-        Ok(Some(mbid)) => {
-            debug!("Found MusicBrainz ID for '{}' in cache: {}", artist_name, mbid);
+    // Get all MusicBrainz IDs for this artist (which will check cache internally)
+    let mbids = crate::helpers::musicbrainz::get_artist_mbids(artist_name);
+    
+    // If we have any MBIDs, create metadata with them
+    if !mbids.is_empty() {
+        // Add all found MBIDs to metadata
+        for mbid in mbids {
             meta.add_mbid(mbid);
-            found_in_cache = true;
-        },
-        Ok(None) => {
-            debug!("No MusicBrainz ID found in cache for '{}'", artist_name);
-        },
-        Err(e) => {
-            warn!("Error retrieving MusicBrainz ID from cache for '{}': {}", artist_name, e);
         }
-    }
-    
-    // If not found in cache, search MusicBrainz for the artist
-    if !found_in_cache {
-        // Check if this artist was previously flagged as having multiple artists
-        let ignored_flag_key = format!("artist::{}::ignored_multiple_artists", artist_name);
-        match attributecache::get::<bool>(&ignored_flag_key) {
-            Ok(Some(true)) => {
-                // Artist was intentionally ignored, return None without displaying a warning
-                debug!("Artist '{}' was previously flagged as containing multiple artists, skipping", artist_name);
-                return None;
-            },
-            _ => {
-                // Continue with the search if not found or there was an error
-                match search_musicbrainz_for_artist(artist_name, true) {
-                    MusicBrainzSearchResult::Found(mbids) => {
-                        debug!("Found MusicBrainz ID(s) for '{}': {:?}", artist_name, mbids);
-                        
-                        // Store first ID in cache for future use
-                        if !mbids.is_empty() {
-                            if let Err(e) = attributecache::set(&cache_key_mbid, &mbids[0]) {
-                                warn!("Failed to cache MusicBrainz ID for '{}': {}", artist_name, e);
-                            }
-                            
-                            // Add all found MBIDs to metadata
-                            for mbid in mbids {
-                                meta.add_mbid(mbid);
-                            }
-                        }
-                    },
-                    MusicBrainzSearchResult::Ignored => {
-                        debug!("Artist '{}' was intentionally ignored", artist_name);
-                        return None;
-                    },
-                    MusicBrainzSearchResult::NotFound => {
-                        warn!("Could not find MusicBrainz ID for '{}'", artist_name);
-                        return None;
-                    },
-                    MusicBrainzSearchResult::Error(e) => {
-                        warn!("Error occurred while searching MusicBrainz for '{}': {}", artist_name, e);
-                        return None;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Note: Thumbnail and banner retrieval is not implemented yet as per requirements
-    
-    // Return the metadata if we have at least a MusicBrainz ID
-    if !meta.mbid.is_empty() {
+        
         Some(meta)
     } else {
+        // No MBIDs found, return None
         None
     }
 }
@@ -362,6 +303,18 @@ pub fn update_library_artists_metadata_in_background<L: LibraryInterface + Send 
 /// # Returns
 /// * `bool` - True if any images were downloaded or if the API call was successful even with no images
 pub fn download_artist_images(artist: &mut Artist) -> bool {    
+    // Check if artist has metadata with multiple MBIDs
+    if let Some(ref meta) = artist.metadata {
+        if meta.mbid.len() > 1 {
+            // TODO: Implement image handling for artists with multiple MBIDs
+            // Currently we skip image lookup for artists with multiple MBIDs as we need
+            // to determine which MBID to use or whether to combine images from multiple sources
+            debug!("Skipping image lookup for '{}' as it has multiple MBIDs ({})", 
+                artist.name, meta.mbid.len());
+            return false;
+        }
+    }
+
     // Get the artist's MusicBrainz ID
     let mbid = match get_artist_mbid(&artist.name) {
         Some(id) => id,

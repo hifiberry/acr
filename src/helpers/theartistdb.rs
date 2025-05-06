@@ -130,18 +130,36 @@ pub fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
     // Parse the response as JSON
     match response.json::<Value>() {
         Ok(json_data) => {
-            // Check if the artists array exists and is not empty
+            // Check if the artists array exists, is not empty, and contains exactly one artist
             if let Some(artists) = json_data.get("artists") {
-                if artists.is_null() || (artists.as_array().map_or(true, |a| a.is_empty())) {
-                    debug!("No artist found with MBID {}", mbid);
+                if artists.is_null() {
+                    debug!("No artist data found for MBID {}", mbid);
                     return Err(format!("No artist found with MBID {}", mbid));
                 }
                 
-                debug!("Successfully retrieved artist data for MBID {}", mbid);
-                Ok(json_data)
+                if let Some(artists_array) = artists.as_array() {
+                    match artists_array.len() {
+                        0 => {
+                            debug!("Empty artists array for MBID {}", mbid);
+                            return Err(format!("No artist found with MBID {}", mbid));
+                        },
+                        1 => {
+                            debug!("Successfully retrieved artist data for MBID {}", mbid);
+                            // Return just the artist object, not the whole array
+                            return Ok(artists_array[0].clone());
+                        },
+                        n => {
+                            debug!("Found {} artists for MBID {}, expected exactly 1", n, mbid);
+                            return Err(format!("Found {} artists for MBID {}, expected exactly 1", n, mbid));
+                        }
+                    }
+                } else {
+                    debug!("Invalid artists field format from TheArtistDB");
+                    return Err("Invalid response format from TheArtistDB (artists is not an array)".to_string());
+                }
             } else {
-                debug!("Invalid response format from TheArtistDB");
-                Ok(json!({ "artists": null }))
+                debug!("Invalid response format from TheArtistDB (no artists field)");
+                return Err("Invalid response format from TheArtistDB (no artists field)".to_string());
             }
         },
         Err(e) => Err(format!("Failed to parse TheArtistDB response: {}", e))

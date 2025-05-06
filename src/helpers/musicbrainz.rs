@@ -349,15 +349,33 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
 /// * `artist_name` - The name of the artist to search for
 /// * `allow_multiple` - If true, handle potential multiple artists in the name
 /// * `cache_only` - If true, only check the cache and don't make API calls
+/// * `cache_failures` - If true, cache artists that are not found to avoid repeated lookups
 /// 
 /// # Returns
 /// * `MusicBrainzSearchResult` - Found with vector of MBIDs, or error/not found status
-pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool, cache_only: bool) -> MusicBrainzSearchResult {
-    debug!("Searching MBIDs for artist: '{}' (allow_multiple: {}, cache_only: {})", 
-           artist_name, allow_multiple, cache_only);
+pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool, 
+                               cache_only: bool, cache_failures: bool) -> MusicBrainzSearchResult {
+    debug!("Searching MBIDs for artist: '{}' (allow_multiple: {}, cache_only: {}, cache_failures: {})", 
+           artist_name, allow_multiple, cache_only, cache_failures);
     
     // Try to get MBID from cache first for the full combined name
     let cache_key = format!("artist::{}::mbid", artist_name);
+    
+    // Check if we have already determined this artist doesn't exist
+    if cache_failures {
+        let not_found_cache_key = format!("artist::{}::not_found", artist_name);
+        match attributecache::get::<bool>(&not_found_cache_key) {
+            Ok(Some(true)) => {
+                debug!("Artist '{}' previously marked as not found in cache", artist_name);
+                return MusicBrainzSearchResult::NotFound;
+            },
+            _ => {
+                // Continue with search if not marked as not found or error reading cache
+            }
+        }
+    }
+    
+    // Try to get MBID from cache first
     match attributecache::get::<Vec<String>>(&cache_key) {
         Ok(Some(mbids)) => {
             debug!("Found MusicBrainz IDs for '{}' in cache: {:?}", artist_name, mbids);
@@ -436,7 +454,26 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool, cache_on
                 }
             }
             
-            // Return the original result if splitting didn't help or wasn't allowed
+            // If we reached here, the artist was not found. Cache this result if requested.
+            if cache_failures {
+                let not_found_cache_key = format!("artist::{}::not_found", artist_name);
+                match attributecache::set(&not_found_cache_key, &true) {
+                    Ok(_) => {
+                        debug!("Cached '{}' as not found to prevent future lookups", artist_name);
+                        
+                        // Verify the cache write
+                        match attributecache::get::<bool>(&not_found_cache_key) {
+                            Ok(Some(true)) => debug!("Verified not_found cache for '{}'", artist_name),
+                            Ok(Some(false)) => warn!("Cache verification failed for not_found status of '{}'!", artist_name),
+                            Ok(None) => warn!("Failed to verify not_found cache - not found after writing!"),
+                            Err(e) => warn!("Failed to verify not_found cache: {}", e)
+                        }
+                    },
+                    Err(e) => error!("Failed to cache not_found status for '{}': {}", artist_name, e)
+                }
+            }
+            
+            // Return the original result
             return result;
         },
         _ => {
@@ -466,7 +503,7 @@ pub fn split_artist_names(artist_name: &str, cache_only: bool) -> Option<Vec<Str
     }
     
     // Look up MBIDs for the artist
-    match search_mbids_for_artist(artist_name, true, cache_only) {
+    match search_mbids_for_artist(artist_name, true, cache_only, false) {
         MusicBrainzSearchResult::Found(mbids) | MusicBrainzSearchResult::FoundCached(mbids) => {
             // If multiple MBIDs found, this might be a combined artist name
             if mbids.len() > 1 {

@@ -57,7 +57,7 @@ pub fn lookup_artist_mbids(artist_name: &str) -> Vec<String> {
     debug!("Looking up MusicBrainz IDs for artist: {}", artist_name);
     
     // Try to retrieve MusicBrainz ID using search_mbids_for_artist function
-    let search_result = search_mbids_for_artist(artist_name, true, false);
+    let search_result = search_mbids_for_artist(artist_name, true, false, true);
     
     match search_result {
         MusicBrainzSearchResult::Found(mbids) | MusicBrainzSearchResult::FoundCached(mbids) => {

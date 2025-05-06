@@ -25,7 +25,10 @@ impl Artist {
         if let Some(meta) = &mut self.metadata {
             meta.add_mbid(mbid);
         } else {
-            self.metadata = Some(ArtistMeta::with_mbid(mbid));
+            // Create a new ArtistMeta and add the MBID
+            let mut meta = ArtistMeta::new();
+            meta.add_mbid(mbid);
+            self.metadata = Some(meta);
         }
     }
     

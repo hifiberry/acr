@@ -1,10 +1,13 @@
 use crate::helpers::attributecache;
 use log::{info, warn, error, debug};
-use reqwest::blocking::Client;
-use serde_json::Value;
 use std::time::Duration;
 use std::thread;
 use deunicode::deunicode;
+// Imports for musicbrainz_rs
+use musicbrainz_rs::entity::artist::{Artist, ArtistSearchQuery};
+use musicbrainz_rs::prelude::*;
+// Import tokio for async runtime
+use tokio::runtime::Runtime;
 
 /// Result type for MusicBrainz artist search
 #[derive(Debug, Clone, PartialEq)]
@@ -186,65 +189,42 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         return MusicBrainzSearchResult::NotFound;
     }
     
-    // Create a reqwest client with appropriate timeouts
-    let client = match Client::builder()
-        .timeout(Duration::from_secs(10))
-        .user_agent("AudioControl3/1.0 (https://github.com/hifiberry/audiocontrol3)")
-        .build() {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to create HTTP client for MusicBrainz search: {}", e);
-            return MusicBrainzSearchResult::Error(format!("HTTP client error: {}", e));
-        }
-    };
-    
-    // URL encode the artist name for the query
-    let encoded_name = urlencoding::encode(artist_name).to_string();
-    
-    // Construct the MusicBrainz API query URL
-    let url = format!("https://musicbrainz.org/ws/2/artist?query={}&fmt=json", encoded_name);
-    
-    // Add a 1-second delay between artists to limit API requests
+    // Add a 1-second delay between artists to limit API requests (respecting MusicBrainz rate limits)
     thread::sleep(Duration::from_secs(1));
-
-    debug!("Sending request to MusicBrainz API: {}", url);
-    let response = match client.get(&url).send() {
-        Ok(response) => {
-            if !response.status().is_success() {
-                warn!("MusicBrainz API returned error status: {}", response.status());
-                return MusicBrainzSearchResult::Error(format!("API error status: {}", response.status()));
-            }
-            response
-        },
+    
+    debug!("Searching MusicBrainz for artist: '{}'", artist_name);
+    
+    // Create a Tokio runtime to handle async API calls
+    let rt = match Runtime::new() {
+        Ok(rt) => rt,
         Err(e) => {
-            error!("Failed to execute MusicBrainz API request: {}", e);
-            return MusicBrainzSearchResult::Error(format!("API request error: {}", e));
+            error!("Failed to create Tokio runtime: {}", e);
+            return MusicBrainzSearchResult::Error(format!("Failed to create Tokio runtime: {}", e));
         }
     };
     
-    // Parse the response JSON
-    let json: Value = match response.json() {
-        Ok(json) => json,
-        Err(e) => {
-            error!("Failed to parse MusicBrainz API response: {}", e);
-            return MusicBrainzSearchResult::Error(format!("JSON parsing error: {}", e));
-        }
-    };
+    // Using musicbrainz_rs correctly with async handling:
+    // 1. Create the search query
+    let search_query = ArtistSearchQuery::query_builder()
+        .artist(artist_name)
+        .build();
     
-    // Extract the first artist's MBID and name if available
-    if let Some(artists) = json.get("artists").and_then(|a| a.as_array()) {
-        if !artists.is_empty() {
-            let artist_obj = &artists[0];
-            
-            // Extract MBID and artist name from response
-            let mbid = artist_obj.get("id").and_then(|id| id.as_str());
-            let response_name = artist_obj.get("name").and_then(|name| name.as_str());
-            
-            // Process the response only if we have both MBID and name
-            if let (Some(mbid), Some(response_name)) = (mbid, response_name) {
-                let mbid_string = mbid.to_string();
+    // 2. Execute the async query in the runtime
+    let result = rt.block_on(async {
+        Artist::search(search_query).execute().await
+    });
+    
+    // 3. Process the result
+    match result {
+        Ok(results) => {
+            // Check if we have any results
+            if !results.entities.is_empty() {
+                // Get the first artist from results
+                let artist = &results.entities[0];
+                let mbid = artist.id.to_string();
+                let response_name = &artist.name;
                 
-                // Use our new normalized comparison that removes all special characters
+                // Use our normalized comparison that removes all special characters
                 let normalized_query = normalize_artist_name_for_comparison(artist_name);
                 let normalized_response = normalize_artist_name_for_comparison(response_name);
                 
@@ -252,23 +232,23 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                 
                 // Check if the normalized names match
                 if normalized_query == normalized_response {
-                    debug!("Found exactly matching artist: '{}' with MBID: {}", response_name, mbid_string);
+                    debug!("Found exactly matching artist: '{}' with MBID: {}", response_name, mbid);
                     
                     // Store the MBID in the attribute cache
                     let cache_key = format!("artist::{}::mbid", artist_name);
                     debug!("Attempting to store MBID in cache with key: {}", cache_key);
                     
-                    match attributecache::set(&cache_key, &mbid_string) {
+                    match attributecache::set(&cache_key, &mbid) {
                         Ok(_) => {
                             debug!("Successfully stored MusicBrainz ID for '{}' in cache", artist_name);
                             
                             // Verify the cache write by reading it back
                             match attributecache::get::<String>(&cache_key) {
                                 Ok(Some(cached_mbid)) => {
-                                    if cached_mbid == mbid_string {
+                                    if cached_mbid == mbid {
                                         debug!("Verified MBID in cache matches: {}", cached_mbid);
                                     } else {
-                                        warn!("Cache verification failed! Expected: {}, Got: {}", mbid_string, cached_mbid);
+                                        warn!("Cache verification failed! Expected: {}, Got: {}", mbid, cached_mbid);
                                     }
                                 },
                                 Ok(None) => warn!("Failed to verify MBID in cache - not found after writing!"),
@@ -281,20 +261,20 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                     }
                     
                     // Return the MBID
-                    return MusicBrainzSearchResult::Found(vec![mbid_string]);
+                    return MusicBrainzSearchResult::Found(vec![mbid]);
                 } else {
                     // For cases where the names don't exactly match, implement a fuzzy comparison
                     // Check if the names are similar enough to be considered a match
                     let similarity_threshold = 0.9; // Adjust this threshold as needed
                     let similarity = strsim::jaro_winkler(normalized_query.as_str(), normalized_response.as_str());
                     if similarity >= similarity_threshold {
-                        debug!("Found similar artist: '{}' with MBID: {}", response_name, mbid_string);
+                        debug!("Found similar artist: '{}' with MBID: {}", response_name, mbid);
                         
                         // Store the MBID in the attribute cache
                         let cache_key = format!("artist::{}::mbid", artist_name);
                         debug!("Attempting to store MBID in cache with key: {}", cache_key);
                         
-                        match attributecache::set(&cache_key, &mbid_string) {
+                        match attributecache::set(&cache_key, &mbid) {
                             Ok(_) => {
                                 debug!("Successfully stored MusicBrainz ID for '{}' in cache", artist_name);
                             },
@@ -304,7 +284,7 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                         }
                         
                         // Return the MBID
-                        return MusicBrainzSearchResult::Found(vec![mbid_string]);
+                        return MusicBrainzSearchResult::Found(vec![mbid]);
                     
                     } else {
                         // Names don't match and aren't similar enough
@@ -317,11 +297,15 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                     }
                 }
             }
+            
+            info!("No matching MusicBrainz ID found for artist '{}'", artist_name);
+            MusicBrainzSearchResult::NotFound
+        },
+        Err(e) => {
+            error!("Failed to execute MusicBrainz API request: {}", e);
+            MusicBrainzSearchResult::Error(format!("API request error: {}", e))
         }
     }
-    
-    info!("No matching MusicBrainz ID found for artist '{}'", artist_name);
-    MusicBrainzSearchResult::NotFound
 }
 
 /// Search for MusicBrainz IDs for an artist, handling multiple artists if needed

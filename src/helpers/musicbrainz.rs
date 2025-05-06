@@ -341,7 +341,7 @@ fn search_musicbrainz_for_multiple_artists(artist_name: &str, cache_only: bool) 
 }
 
 /// Get MusicBrainz ID for an artist, first checking the cache
-pub fn get_artist_mbid(artist_name: &str) -> Option<String> {
+fn get_artist_mbid(artist_name: &str) -> Option<String> {
     // Try to get MBID from cache first
     let cache_key = format!("artist::{}::mbid", artist_name);
     

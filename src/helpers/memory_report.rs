@@ -96,6 +96,28 @@ impl MemoryUsage {
         }
     }
     
+    /// Estimate the memory used by a vector of strings
+    pub fn string_vec_size(strings: &[String]) -> usize {
+        // Base size of the Vec
+        let base_size = mem::size_of::<Vec<String>>();
+        
+        // Size of each string in the vector
+        let strings_size = strings.iter().fold(0, |acc, s| {
+            acc + mem::size_of::<String>() + s.capacity()
+        });
+        
+        // We can't get the capacity from a slice, so we'll just add a small overhead
+        // based on the length of the slice as an estimate
+        let capacity_overhead = if !strings.is_empty() {
+            // Assume a typical Vec reserves a bit more than its length
+            (strings.len() / 4) * mem::size_of::<String>()
+        } else {
+            0
+        };
+        
+        base_size + strings_size + capacity_overhead
+    }
+    
     /// Calculate memory used by an artist
     pub fn calculate_artist_memory(artist: &Artist) -> usize {
         // Base size of Artist struct
@@ -124,8 +146,15 @@ impl MemoryUsage {
         // Size of album name
         let name_size = album.name.capacity();
         
-        // Size of artist name if present
-        let artist_size = Self::string_size(&album.artist);
+        // Size of artists (Arc<Mutex<Vec<String>>>)
+        let artists_size = mem::size_of::<Arc<Mutex<Vec<String>>>>();
+        
+        // Try to access the artists to calculate their memory usage
+        let artists_content_size = if let Ok(artists_guard) = album.artists.lock() {
+            Self::string_vec_size(&artists_guard)
+        } else {
+            0 // If we can't get the lock, estimate as 0
+        };
         
         // Size of year (i32)
         let year_size = if album.year.is_some() { mem::size_of::<i32>() } else { 0 };
@@ -138,8 +167,8 @@ impl MemoryUsage {
         
         // The size of the tracks is calculated separately with calculate_tracks_memory
         
-        base_size + id_size + name_size + artist_size + year_size + 
-            cover_art_size + uri_size
+        base_size + id_size + name_size + artists_size + artists_content_size + 
+            year_size + cover_art_size + uri_size
     }
     
     /// Calculate memory used by tracks

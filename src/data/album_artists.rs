@@ -86,10 +86,10 @@ impl AlbumArtists {
         
         // Process all albums and their artists
         for album in albums.values() {
-            // Get the artist for this album
-            if let Some(artist_string) = &album.artist {
-                // Split the artist string on commas to handle multiple artists
-                for artist_name in artist_string.split(',').map(|s| s.trim()) {
+            // Get the artists for this album
+            if let Ok(artist_names) = album.artists.lock() {
+                // Process each artist name in the vector
+                for artist_name in artist_names.iter() {
                     if let Some(artist) = artists.get(artist_name) {
                         mapping.add_mapping(album.id, artist.id);
                     }
@@ -112,11 +112,11 @@ impl AlbumArtists {
         
         // Process all albums and their artists
         for album in albums {
-            // Get the artist for this album
-            if let Some(artist_name) = &album.artist {
-                // Split the artist string on commas to handle multiple artists
-                for name in artist_name.split(',').map(|s| s.trim()) {
-                    if let Some(&artist_id) = artist_name_to_id.get(&name.to_string()) {
+            // Get the artists for this album
+            if let Ok(artist_names) = album.artists.lock() {
+                // Process each artist name in the vector
+                for name in artist_names.iter() {
+                    if let Some(&artist_id) = artist_name_to_id.get(name) {
                         mapping.add_mapping(album.id, artist_id);
                     }
                 }

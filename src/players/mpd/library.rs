@@ -399,13 +399,6 @@ impl MPDLibrary {
                     let tracks = album_tracks.get(album_name).cloned().unwrap_or_default();
                     let first_file = album_first_file.get(album_name).cloned();
                     
-                    // For backward compatibility, join multiple artists with comma for the single artist field
-                    let primary_artist = if !album_artists.is_empty() {
-                        Some(album_artists.iter().cloned().collect::<Vec<_>>().join(", "))
-                    } else {
-                        None
-                    };
-                    
                     // Create a unique ID for the album using a 64-bit hash
                     // Combine all artist names and the album name to create a unique ID
                     let mut hasher = DefaultHasher::new();
@@ -418,7 +411,7 @@ impl MPDLibrary {
                     albums.insert(album_name.clone(), Album {
                         id: album_id,
                         name: album_name.clone(),
-                        artist: primary_artist,
+                        artists: Arc::new(Mutex::new(album_artists.clone())),
                         year: *year,
                         tracks: Arc::new(Mutex::new(tracks)),
                         cover_art: None,

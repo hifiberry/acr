@@ -10,8 +10,8 @@ pub struct Album {
     pub id: u64,
     /// Album name
     pub name: String,
-    /// Artist names joined by ","
-    pub artist: Option<String>,
+    /// List of artists for this album
+    pub artists: Arc<Mutex<Vec<String>>>,
     /// Year of album release (if available)
     pub year: Option<i32>,
     /// List of tracks on this album
@@ -33,7 +33,15 @@ impl Serialize for Album {
         
         state.serialize_field("id", &self.id)?;
         state.serialize_field("name", &self.name)?;
-        state.serialize_field("artist", &self.artist)?;
+        
+        // Get lock on artists and serialize directly as Vec<String>
+        if let Ok(artists) = self.artists.lock() {
+            state.serialize_field("artists", &*artists)?;
+        } else {
+            // If we can't get the lock, serialize an empty vector
+            state.serialize_field("artists", &Vec::<String>::new())?;
+        }
+        
         state.serialize_field("year", &self.year)?;
         
         // Get lock on tracks and serialize directly as Vec<Track>
@@ -61,7 +69,10 @@ impl<'de> Deserialize<'de> for Album {
         struct AlbumHelper {
             id: u64,
             name: String,
-            #[serde(skip_serializing_if = "Option::is_none")]
+            #[serde(default)]
+            artists: Vec<String>,
+            // For backward compatibility, also accept the old 'artist' field
+            #[serde(default)]
             artist: Option<String>,
             year: Option<i32>,
             tracks: Vec<Track>,
@@ -74,11 +85,22 @@ impl<'de> Deserialize<'de> for Album {
         // Deserialize to the helper struct first
         let helper = AlbumHelper::deserialize(deserializer)?;
         
+        // Convert old artist field to artists if needed
+        let mut artists = helper.artists;
+        if artists.is_empty() && helper.artist.is_some() {
+            // Split the old artist field by commas and add each artist
+            for artist in helper.artist.unwrap().split(',').map(|s| s.trim().to_string()) {
+                if !artist.is_empty() {
+                    artists.push(artist);
+                }
+            }
+        }
+        
         // Convert helper to actual Album
         Ok(Album {
             id: helper.id,
             name: helper.name,
-            artist: helper.artist,
+            artists: Arc::new(Mutex::new(artists)),
             year: helper.year,
             tracks: Arc::new(Mutex::new(helper.tracks)),
             cover_art: helper.cover_art,

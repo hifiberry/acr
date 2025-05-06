@@ -44,6 +44,38 @@ pub fn artist_basename(artist_name: &str) -> String {
     result.trim().to_string()
 }
 
+/// Looks up MusicBrainz IDs for an artist and returns them if found
+/// 
+/// This function searches for MusicBrainz IDs associated with the given artist name.
+/// 
+/// # Arguments
+/// * `artist_name` - The name of the artist to look up
+/// 
+/// # Returns
+/// A vector of MusicBrainz IDs if found, empty vector otherwise
+pub fn lookup_artist_mbids(artist_name: &str) -> Vec<String> {
+    debug!("Looking up MusicBrainz IDs for artist: {}", artist_name);
+    
+    // Try to retrieve MusicBrainz ID using search_mbids_for_artist function
+    let search_result = search_mbids_for_artist(artist_name, true, false);
+    
+    match search_result {
+        MusicBrainzSearchResult::Found(mbids) | MusicBrainzSearchResult::FoundCached(mbids) => {
+            info!("Found {} MusicBrainz ID(s) for artist {}: {:?}", 
+                  mbids.len(), artist_name, mbids);
+            mbids
+        },
+        MusicBrainzSearchResult::NotFound => {
+            warn!("No MusicBrainz ID found for artist: {}", artist_name);
+            Vec::new()
+        },
+        MusicBrainzSearchResult::Error(error) => {
+            warn!("Error retrieving MusicBrainz ID for artist {}: {}", artist_name, error);
+            Vec::new()
+        }
+    }
+}
+
 /// Updates artist data by fetching additional information like MusicBrainz IDs
 /// 
 /// This function takes an artist and attempts to retrieve and set any missing data
@@ -66,25 +98,12 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     if !has_mbid {
         debug!("No MusicBrainz ID set for artist {}, attempting to retrieve it", artist.name);
         
-        // Try to retrieve MusicBrainz ID using search_mbids_for_artist function
-        let search_result = search_mbids_for_artist(&artist.name, true, false);
+        // Use the extracted function to look up MusicBrainz IDs
+        let mbids = lookup_artist_mbids(&artist.name);
         
-        match search_result {
-            MusicBrainzSearchResult::Found(mbids) | MusicBrainzSearchResult::FoundCached(mbids) => {
-                info!("Found {} MusicBrainz ID(s) for artist {}: {:?}", 
-                      mbids.len(), artist.name, mbids);
-                
-                // Add each MusicBrainz ID to the artist using the provided helper method
-                for mbid in mbids {
-                    artist.add_mbid(mbid);
-                }
-            },
-            MusicBrainzSearchResult::NotFound => {
-                warn!("No MusicBrainz ID found for artist: {}", artist.name);
-            },
-            MusicBrainzSearchResult::Error(error) => {
-                warn!("Error retrieving MusicBrainz ID for artist {}: {}", artist.name, error);
-            }
+        // Add each MusicBrainz ID to the artist if any were found
+        for mbid in mbids {
+            artist.add_mbid(mbid);
         }
     } else {
         debug!("Artist {} already has MusicBrainz ID(s)", artist.name);

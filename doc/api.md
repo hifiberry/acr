@@ -23,6 +23,11 @@ Retrieves the current version of the API.
   }
   ```
 
+#### Example
+```bash
+curl http://<device-ip>:1080/version
+```
+
 ## Player API
 
 ### Get Current Player
@@ -40,6 +45,11 @@ Retrieves information about the currently active player.
     "last_seen": "2023-01-01T12:00:00Z" // ISO 8601 format, null if not available
   }
   ```
+
+#### Example
+```bash
+curl http://<device-ip>:1080/player
+```
 
 ### List Available Players
 
@@ -62,6 +72,11 @@ Retrieves a list of all available audio players.
     ]
   }
   ```
+
+#### Example
+```bash
+curl http://<device-ip>:1080/players
+```
 
 ### Send Command to Active Player
 
@@ -91,6 +106,27 @@ Sends a playback command to the currently active player.
   }
   ```
 
+#### Examples
+```bash
+# Simple command
+curl -X POST http://<device-ip>:1080/player/active/send/play
+
+# Play/pause toggle
+curl -X POST http://<device-ip>:1080/player/active/send/playpause
+
+# Next track
+curl -X POST http://<device-ip>:1080/player/active/send/next
+
+# Set loop mode to playlist
+curl -X POST http://<device-ip>:1080/player/active/send/set_loop:playlist
+
+# Seek to 30 seconds
+curl -X POST http://<device-ip>:1080/player/active/send/seek:30.0
+
+# Enable shuffle
+curl -X POST http://<device-ip>:1080/player/active/send/set_random:true
+```
+
 ### Send Command to Specific Player
 
 Sends a playback command to a specific player by name.
@@ -102,6 +138,18 @@ Sends a playback command to a specific player by name.
   - `command` (string): The command to send (same options as above)
 - **Response**: Same as "Send Command to Active Player"
 - **Error Response** (400 Bad Request, 404 Not Found, 500 Internal Server Error): Same structure as above
+
+#### Examples
+```bash
+# Play on a specific player
+curl -X POST http://<device-ip>:1080/player/spotify/command/play
+
+# Set volume on a specific player
+curl -X POST http://<device-ip>:1080/player/mpd/command/set_volume:80
+
+# Pause a specific player
+curl -X POST http://<device-ip>:1080/player/raat/command/pause
+```
 
 ### Get Now Playing Information
 
@@ -131,6 +179,11 @@ Retrieves information about the currently playing track and player status.
   }
   ```
 
+#### Example
+```bash
+curl http://<device-ip>:1080/now-playing
+```
+
 ## Plugin API
 
 ### List Action Plugins
@@ -151,6 +204,11 @@ Retrieves a list of all active action plugins.
   }
   ```
 
+#### Example
+```bash
+curl http://<device-ip>:1080/plugins/actions
+```
+
 ### List Event Filters
 
 Retrieves a list of all active event filters.
@@ -168,6 +226,11 @@ Retrieves a list of all active event filters.
     ]
   }
   ```
+
+#### Example
+```bash
+curl http://<device-ip>:1080/plugins/event-filters
+```
 
 ## Library API
 
@@ -192,6 +255,11 @@ Retrieves library information for a specific player.
   ```
 - **Error Response** (404 Not Found): Same structure as successful response but with `has_library: false`
 
+#### Example
+```bash
+curl http://<device-ip>:1080/player/mpd/library
+```
+
 ### Get Player Albums
 
 Retrieves all albums for a specific player.
@@ -214,6 +282,15 @@ Retrieves all albums for a specific player.
   }
   ```
 - **Error Response** (404 Not Found): String error message
+
+#### Examples
+```bash
+# Get albums without tracks
+curl http://<device-ip>:1080/player/mpd/library/albums
+
+# Get albums with tracks included
+curl http://<device-ip>:1080/player/mpd/library/albums?include_tracks=true
+```
 
 ### Get Player Artists
 
@@ -239,6 +316,15 @@ Retrieves all artists for a specific player.
   ```
 - **Error Response** (404 Not Found): String error message
 
+#### Examples
+```bash
+# Get artists without albums
+curl http://<device-ip>:1080/player/mpd/library/artists
+
+# Get artists with albums included
+curl http://<device-ip>:1080/player/mpd/library/artists?include_albums=true
+```
+
 ### Get Album by Name
 
 Retrieves a specific album by name for a player.
@@ -263,6 +349,15 @@ Retrieves a specific album by name for a player.
   }
   ```
 - **Error Response** (404 Not Found): String error message
+
+#### Examples
+```bash
+# Get an album without tracks
+curl "http://<device-ip>:1080/player/mpd/library/album/Dark%20Side%20of%20the%20Moon"
+
+# Get an album with tracks included
+curl "http://<device-ip>:1080/player/mpd/library/album/Dark%20Side%20of%20the%20Moon?include_tracks=true"
+```
 
 ### Get Albums by Artist
 
@@ -290,6 +385,15 @@ Retrieves all albums by a specific artist for a player.
   ```
 - **Error Response** (404 Not Found): String error message
 
+#### Examples
+```bash
+# Get albums for an artist without tracks
+curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd/albums"
+
+# Get albums for an artist with tracks included
+curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd/albums?include_tracks=true"
+```
+
 ### Refresh Player Library
 
 Triggers a refresh of the library for a specific player.
@@ -300,6 +404,11 @@ Triggers a refresh of the library for a specific player.
   - `player-name` (string): The name of the player
 - **Response**: Same as "Get Library Information"
 - **Error Response** (404 Not Found, 500 Internal Server Error): String error message
+
+#### Example
+```bash
+curl http://<device-ip>:1080/player/mpd/library/refresh
+```
 
 ### Get Artist Image
 
@@ -319,3 +428,8 @@ Retrieves image information for a specific artist.
   }
   ```
 - **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd/image"
+```

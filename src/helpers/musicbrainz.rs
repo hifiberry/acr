@@ -154,6 +154,74 @@ pub fn split_artist(artist_name: &str) -> Vec<String> {
     artists
 }
 
+/// Compare two artist names to see if they match, using both exact normalized comparison
+/// and fuzzy matching when needed
+/// 
+/// # Arguments
+/// * `query_name` - The artist name we're searching for
+/// * `response_name` - The artist name returned from MusicBrainz
+/// * `response_aliases` - Optional vector of artist aliases/alternative names
+/// 
+/// # Returns
+/// * `bool` - True if names are considered a match, false otherwise
+fn artist_names_match(query_name: &str, response_name: &str, response_aliases: Option<&Vec<String>>) -> bool {
+    // Use normalized comparison that removes all special characters
+    let normalized_query = normalize_artist_name_for_comparison(query_name);
+    let normalized_response = normalize_artist_name_for_comparison(response_name);
+    
+    debug!("Comparing normalized names: '{}' vs '{}'", normalized_query, normalized_response);
+    
+    // Check for exact match first
+    if normalized_query == normalized_response {
+        debug!("Found exactly matching artist: '{}' vs '{}'", query_name, response_name);
+        return true;
+    }
+    
+    // For cases where the names don't exactly match, implement a fuzzy comparison
+    // Check if the names are similar enough to be considered a match
+    let similarity_threshold = 0.9; // Adjust this threshold as needed
+    let similarity = strsim::jaro_winkler(normalized_query.as_str(), normalized_response.as_str());
+    
+    if similarity >= similarity_threshold {
+        debug!("Found similar artist: '{}' vs '{}' (similarity: {})", 
+              query_name, response_name, similarity);
+        return true;
+    }
+    
+    // Check aliases if provided and main name didn't match
+    if let Some(aliases) = response_aliases {
+        debug!("Checking {} aliases for artist '{}'", aliases.len(), response_name);
+        
+        for alias in aliases {
+            let normalized_alias = normalize_artist_name_for_comparison(alias);
+            
+            // Try exact match with alias
+            if normalized_query == normalized_alias {
+                debug!("Found exactly matching alias: '{}' vs '{}'", query_name, alias);
+                return true;
+            }
+            
+            // Try fuzzy match with alias
+            let alias_similarity = strsim::jaro_winkler(normalized_query.as_str(), normalized_alias.as_str());
+            if alias_similarity >= similarity_threshold {
+                debug!("Found similar alias: '{}' vs '{}' (similarity: {})",
+                      query_name, alias, alias_similarity);
+                return true;
+            }
+        }
+        
+        debug!("No matching aliases found for '{}'", query_name);
+    }
+    
+    // Names don't match and aren't similar enough
+    debug!("Artist name mismatch! Searched for: '{}', but found: '{}'", 
+          query_name, response_name);
+    debug!("Normalized names: '{}' vs '{}'", normalized_query, normalized_response);
+    debug!("Rejecting due to name mismatch");
+    
+    false
+}
+
 /// Search MusicBrainz API for an artist and return their MBID if found
 /// 
 /// # Arguments
@@ -224,15 +292,16 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                 let mbid = artist.id.to_string();
                 let response_name = &artist.name;
                 
-                // Use our normalized comparison that removes all special characters
-                let normalized_query = normalize_artist_name_for_comparison(artist_name);
-                let normalized_response = normalize_artist_name_for_comparison(response_name);
+                // Extract aliases if available
+                let aliases = artist.aliases.as_ref().map(|aliases| {
+                    aliases.iter()
+                        .filter_map(|alias| Some(alias.name.clone()))
+                        .collect::<Vec<String>>()
+                });
                 
-                debug!("Comparing normalized names: '{}' vs '{}'", normalized_query, normalized_response);
-                
-                // Check if the normalized names match
-                if normalized_query == normalized_response {
-                    debug!("Found exactly matching artist: '{}' with MBID: {}", response_name, mbid);
+                // Use our dedicated function to compare artist names
+                if artist_names_match(artist_name, response_name, aliases.as_ref()) {
+                    debug!("Found matching artist: '{}' with MBID: {}", response_name, mbid);
                     
                     // Store the MBID in the attribute cache
                     let cache_key = format!("artist::{}::mbid", artist_name);
@@ -263,38 +332,7 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                     // Return the MBID
                     return MusicBrainzSearchResult::Found(vec![mbid]);
                 } else {
-                    // For cases where the names don't exactly match, implement a fuzzy comparison
-                    // Check if the names are similar enough to be considered a match
-                    let similarity_threshold = 0.9; // Adjust this threshold as needed
-                    let similarity = strsim::jaro_winkler(normalized_query.as_str(), normalized_response.as_str());
-                    if similarity >= similarity_threshold {
-                        debug!("Found similar artist: '{}' with MBID: {}", response_name, mbid);
-                        
-                        // Store the MBID in the attribute cache
-                        let cache_key = format!("artist::{}::mbid", artist_name);
-                        debug!("Attempting to store MBID in cache with key: {}", cache_key);
-                        
-                        match attributecache::set(&cache_key, &mbid) {
-                            Ok(_) => {
-                                debug!("Successfully stored MusicBrainz ID for '{}' in cache", artist_name);
-                            },
-                            Err(e) => {
-                                error!("Failed to cache MusicBrainz ID for '{}': {}", artist_name, e);
-                            }
-                        }
-                        
-                        // Return the MBID
-                        return MusicBrainzSearchResult::Found(vec![mbid]);
-                    
-                    } else {
-                        // Names don't match and aren't similar enough
-                        debug!("Artist name mismatch! Searched for: '{}', but found: '{}'", 
-                            artist_name, response_name);
-                        debug!("Normalized names: '{}' vs '{}'", normalized_query, normalized_response);
-                        debug!("Rejecting MBID due to name mismatch");
-                        
-                        // Fall through to continue searching or return None
-                    }
+                    // Fall through to continue searching or return None
                 }
             }
             

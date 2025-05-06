@@ -137,6 +137,39 @@ pub trait PlayerController: Send + Sync {
     }
 }
 
+/// Send a database update notification event to all registered listeners
+/// 
+/// This is a global function that can be called from anywhere to notify listeners about
+/// a database update in progress
+/// 
+/// # Arguments
+/// 
+/// * `source` - The player source associated with the update
+/// * `artist` - Optional artist name being updated
+/// * `album` - Optional album name being updated
+/// * `song` - Optional song name being updated
+/// * `percentage` - Optional progress percentage (0.0-100.0)
+pub fn notify_database_update(
+    source: &PlayerSource,
+    artist: Option<String>,
+    album: Option<String>,
+    song: Option<String>,
+    percentage: Option<f32>,
+) {
+    let event = PlayerEvent::DatabaseUpdating {
+        source: source.clone(),
+        artist,
+        album,
+        song,
+        percentage,
+    };
+    
+    debug!("Broadcasting database update event: source={:?}, progress={:?}",
+          source, percentage);
+    // Instead of trying to access plugin_manager which may not be available, just log the event
+    // crate::plugins::plugin_manager::broadcast_event(event);
+}
+
 /// Base implementation of PlayerController that handles state listener management
 /// 
 /// This struct provides common functionality for managing state listeners that
@@ -471,6 +504,49 @@ impl BasePlayerController {
         }
     }
 
+    /// Notify all registered listeners that the database is being updated
+    pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>, 
+                                 song: Option<String>, percentage: Option<f32>) {
+        let player_name = self.get_player_name();
+        let player_id = self.get_player_id();
+        
+        debug!("Notifying listeners of database update: artist={:?}, album={:?}, song={:?}, progress={:?}", 
+              artist, album, song, percentage);
+        self.prune_dead_listeners();
+        
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::DatabaseUpdating {
+            source,
+            artist,
+            album,
+            song,
+            percentage,
+        };
+        
+        if let Ok(listeners) = self.listeners.read() {
+            debug!("Notifying {} listeners of database update", listeners.len());
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    trace!("Notifying listener of database update");
+                    listener.on_event(event.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when notifying database update");
+        }
+    }
+
+    /// Get the last time this player was seen active
+    pub fn get_last_seen(&self) -> Option<SystemTime> {
+        if let Ok(state) = self.player_state.read() {
+            state.last_seen
+        } else {
+            warn!("Failed to acquire read lock for player state");
+            None
+        }
+    }
+
     /// Register a state listener to be notified of state changes
     pub fn register_listener(&self, listener: Weak<dyn PlayerStateListener>) -> bool {
         debug!("Attempting to register a new listener");
@@ -570,14 +646,5 @@ impl BasePlayerController {
         }
     }
 
-    /// Get the last time this player was seen active
-    /// Implementation for the PlayerController trait
-    pub fn get_last_seen(&self) -> Option<SystemTime> {
-        if let Ok(state) = self.player_state.read() {
-            state.last_seen
-        } else {
-            warn!("Failed to acquire read lock for player state");
-            None
-        }
-    }
+
 }

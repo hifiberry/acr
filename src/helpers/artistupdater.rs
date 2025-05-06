@@ -109,6 +109,49 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         debug!("Artist {} already has MusicBrainz ID(s)", artist.name);
     }
     
+    // Check if the artist has thumbnail images
+    let has_thumbnails = match &artist.metadata {
+        Some(meta) => !meta.thumb_url.is_empty(),
+        None => false,
+    };
+    
+    // If the artist has MusicBrainz IDs but no thumbnails, try to get them
+    if !has_thumbnails && artist.metadata.as_ref().map_or(false, |meta| !meta.mbid.is_empty()) {
+        debug!("No thumbnails set for artist {}, attempting to retrieve them", artist.name);
+        
+        // Get the first MusicBrainz ID for the artist
+        let mbid_opt = artist.metadata.as_ref().and_then(|meta| meta.mbid.first().cloned());
+        
+        if let Some(mbid) = mbid_opt {
+            // Get thumbnail URLs from FanArt.tv
+            let thumbnail_urls = crate::helpers::fanarttv::get_artist_thumbnails(&mbid, Some(5));
+            
+            // Check if we have any thumbnails before trying to add them
+            let has_thumbnails = !thumbnail_urls.is_empty();
+            
+            // Add each thumbnail URL to the artist
+            if let Some(meta) = &mut artist.metadata {
+                for url in &thumbnail_urls {
+                    meta.thumb_url.push(url.clone());
+                    debug!("Added thumbnail URL for artist {}", artist.name);
+                }
+            }
+            
+            // If thumbnails were found, also try to download them for caching
+            if has_thumbnails {
+                debug!("Downloading artist images for {}", artist.name);
+                let download_result = crate::helpers::fanarttv::download_artist_images(&mbid, &artist.name);
+                if download_result {
+                    debug!("Successfully downloaded images for artist {}", artist.name);
+                } else {
+                    debug!("Failed to download some images for artist {}", artist.name);
+                }
+            }
+        }
+    } else if has_thumbnails {
+        debug!("Artist {} already has thumbnail image(s)", artist.name);
+    }
+    
     // Return the potentially updated artist
     artist
 }

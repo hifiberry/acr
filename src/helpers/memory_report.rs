@@ -126,13 +126,29 @@ impl MemoryUsage {
         // Size of artist name
         let name_size = artist.name.capacity();
         
-        // Size of albums HashSet
-        let albums_size = mem::size_of::<HashSet<String>>() + 
-            artist.albums.iter().fold(0, |acc, album_name| {
-                acc + mem::size_of::<String>() + album_name.capacity()
-            });
+        // Size of metadata if present
+        let metadata_size = match &artist.metadata {
+            Some(meta) => {
+                // Estimate size of metadata - this could be improved with more detailed calculation
+                let mbid_size = meta.mbid.iter().fold(0, |acc, id| acc + id.capacity());
+                
+                // These are Vec<String>, not Option<String>, so calculate directly
+                let thumb_url_size = meta.thumb_url.iter().fold(0, |acc, url| acc + url.capacity());
+                let banner_url_size = meta.banner_url.iter().fold(0, |acc, url| acc + url.capacity());
+                
+                // Add potential biography size
+                let biography_size = meta.biography.as_ref().map_or(0, |bio| bio.capacity());
+                
+                // Add genres size
+                let genres_size = meta.genres.iter().fold(0, |acc, genre| acc + genre.capacity());
+                
+                mbid_size + thumb_url_size + banner_url_size + biography_size + genres_size + 
+                    mem::size_of::<crate::data::metadata::ArtistMeta>()
+            },
+            None => 0
+        };
         
-        base_size + name_size + albums_size
+        base_size + name_size + metadata_size
     }
     
     /// Calculate memory used by an album

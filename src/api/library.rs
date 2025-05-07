@@ -26,12 +26,11 @@ pub struct AlbumsResponse {
     albums: Vec<Album>,
 }
 
-/// Response structure for artists list with conditional album inclusion
+/// Response structure for artists list
 #[derive(serde::Serialize)]
 pub struct ArtistsResponse {
     player_name: String,
     count: usize,
-    include_albums: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     artists: Vec<Artist>,
 }
@@ -40,7 +39,6 @@ pub struct ArtistsResponse {
 #[derive(serde::Serialize)]
 pub struct ArtistResponse {
     player_name: String,
-    include_albums: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     artist: Option<Artist>,
 }
@@ -176,13 +174,9 @@ pub fn get_player_albums(
 }
 
 /// Get all artists for a player
-/// 
-/// Optional query parameter:
-/// - include_albums: When set to "true", includes album data for each artist
-#[get("/player/<player_name>/library/artists?<include_albums>")]
+#[get("/player/<player_name>/library/artists")]
 pub fn get_player_artists(
     player_name: &str,
-    include_albums: Option<bool>,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistsResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
@@ -194,24 +188,12 @@ pub fn get_player_artists(
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
                     // Get all artists
-                    let mut artists = library.get_artists();
-                    
-                    // Only include albums if specifically requested
-                    let include_albums_flag = include_albums == Some(true);
-                    
-                    // If include_albums is not true, remove album lists from artists
-                    if !include_albums_flag {
-                        for artist in &mut artists {
-                            // Clear the album list to reduce response size
-                            artist.albums.clear();
-                        }
-                    }
+                    let artists = library.get_artists();
                     
                     return Ok(Json(ArtistsResponse {
                         player_name: player_name.to_string(),
                         count: artists.len(),
                         artists,
-                        include_albums: include_albums_flag,
                     }));
                 } else {
                     // Player exists but doesn't have a library
@@ -404,14 +386,10 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
 /// 
 /// If the artist_name parameter is formatted like a MusicBrainz ID (UUID format),
 /// it will search for an artist with that MBID instead of by name.
-/// 
-/// Optional query parameter:
-/// - include_albums: When set to "true", includes album data for the artist
-#[get("/player/<player_name>/library/artist/<artist_name>?<include_albums>")]
+#[get("/player/<player_name>/library/artist/<artist_name>")]
 pub fn get_artist_by_name(
     player_name: &str, 
     artist_name: &str,
-    include_albums: Option<bool>, 
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
@@ -425,7 +403,7 @@ pub fn get_artist_by_name(
                     // Check if artist_name looks like a MusicBrainz ID using our helper function
                     let is_mbid = crate::helpers::musicbrainz::is_mbid(artist_name);
                     
-                    let mut artist = if is_mbid {
+                    let artist = if is_mbid {
                         // If it's an MBID, find artists with this MBID
                         let all_artists = library.get_artists();
                         
@@ -442,20 +420,9 @@ pub fn get_artist_by_name(
                         library.get_artist(artist_name)
                     };
                     
-                    // If include_albums is not set to true and we have an artist, remove albums list
-                    let include_albums_flag = include_albums == Some(true);
-                    
-                    if !include_albums_flag {
-                        if let Some(ref mut art) = artist {
-                            // Clear the albums to reduce response size
-                            art.albums.clear();
-                        }
-                    }
-                    
                     return Ok(Json(ArtistResponse {
                         player_name: player_name.to_string(),
                         artist,
-                        include_albums: include_albums_flag,
                     }));
                 } else {
                     // Player exists but doesn't have a library
@@ -472,5 +439,5 @@ pub fn get_artist_by_name(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-    ))
+      ))
 }

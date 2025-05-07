@@ -162,7 +162,6 @@ impl MPDLibrary {
                 id: artist_id,
                 name: artist_name.clone(),
                 is_multi: false,  // Default to false, can be updated later if needed
-                albums: HashSet::new(),
                 track_count: 0,  // Will be updated when processing tracks
                 metadata: None,
             };
@@ -179,16 +178,7 @@ impl MPDLibrary {
                 // Add relationship between album and artist
                 album_artists.add_mapping(album_id, artist.id);
                 
-                // Add the album name to the artist's albums list
-                if let Some(artist) = artists.get_mut(&artist_name) {
-                    // Find album name from ID
-                    for album in albums.values() {
-                        if album.id == album_id {
-                            artist.albums.insert(album.name.clone());
-                            break;
-                        }
-                    }
-                }
+                // No longer adding album names to artist.albums since we removed that attribute
             }
         }
         

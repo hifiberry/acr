@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::collections::HashSet;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use crate::data::metadata::ArtistMeta;
 
@@ -12,8 +12,6 @@ pub struct Artist {
     pub name: String,
     /// Is not a single, but multiple artists (e.g. "Artist1, Artist2")
     pub is_multi: bool,
-    /// List of albums by this artist
-    pub albums: HashSet<String>,
     /// Number of tracks by this artist
     pub track_count: usize,
     /// Additional metadata for the artist (MusicBrainz ID, images, etc)
@@ -27,13 +25,12 @@ impl Serialize for Artist {
         S: Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Artist", 6)?;
+        let mut state = serializer.serialize_struct("Artist", 5)?;
         
         // Serialize id as string
         state.serialize_field("id", &self.id.to_string())?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("is_multi", &self.is_multi)?;
-        state.serialize_field("albums", &self.albums)?;
         state.serialize_field("track_count", &self.track_count)?;
         state.serialize_field("metadata", &self.metadata)?;
         
@@ -54,7 +51,8 @@ impl<'de> Deserialize<'de> for Artist {
             id: u64,
             name: String,
             is_multi: bool,
-            albums: HashSet<String>,
+            #[serde(default)]
+            albums: HashSet<String>,  // Keep for backward compatibility
             track_count: usize,
             #[serde(default)]
             metadata: Option<ArtistMeta>,
@@ -68,7 +66,6 @@ impl<'de> Deserialize<'de> for Artist {
             id: helper.id,
             name: helper.name,
             is_multi: helper.is_multi,
-            albums: helper.albums,
             track_count: helper.track_count,
             metadata: helper.metadata,
         })

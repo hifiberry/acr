@@ -162,7 +162,6 @@ impl MPDLibrary {
                 id: artist_id,
                 name: artist_name.clone(),
                 is_multi: false,  // Default to false, can be updated later if needed
-                track_count: 0,  // Will be updated when processing tracks
                 metadata: None,
             };
             

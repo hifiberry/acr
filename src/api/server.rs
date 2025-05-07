@@ -48,14 +48,18 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         plugins::list_event_filters,
         
         // Library routes
-        library::list_libraries,  // New endpoint to list all players with library status
+        library::list_libraries,
         library::get_library_info,
         library::get_player_albums,
         library::get_player_artists,
         library::get_album_by_name,
+        library::get_album_by_id,
         library::get_albums_by_artist,
+        library::get_albums_by_artist_id, // New endpoint for getting albums by artist ID
         library::refresh_player_library,
         library::get_artist_by_name,
+        library::get_artist_by_id,
+        library::get_artist_by_mbid,
     ];
     
     let _rocket = rocket::custom(config)

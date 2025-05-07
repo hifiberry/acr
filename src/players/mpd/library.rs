@@ -254,6 +254,43 @@ impl MPDLibrary {
     pub fn get_artists_arc(&self) -> Arc<RwLock<HashMap<String, Artist>>> {
         self.artists.clone()
     }
+
+    /// Get album by ID
+    pub fn get_album_by_id(&self, id: u64) -> Option<Album> {
+        if let Ok(albums) = self.albums.read() {
+            // Search through all albums to find one with matching ID
+            for album in albums.values() {
+                if album.id == id {
+                    return Some(album.clone());
+                }
+            }
+            None
+        } else {
+            warn!("Failed to acquire read lock on albums");
+            None
+        }
+    }
+
+    /// Get albums by artist ID
+    pub fn get_albums_by_artist_id(&self, artist_id: u64) -> Vec<Album> {
+        let mut result = Vec::new();
+        
+        // Get albums associated with this artist ID from album_artists mapping
+        if let Ok(album_artists_mapping) = self.album_artists.read() {
+            let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id);
+            
+            // Get all albums and fetch the ones with matching IDs
+            if let Ok(albums) = self.albums.read() {
+                for album in albums.values() {
+                    if album_ids.contains(&album.id) {
+                        result.push(album.clone());
+                    }
+                }
+            }
+        }
+        
+        result
+    }
 }
 
 impl LibraryInterface for MPDLibrary {
@@ -413,5 +450,15 @@ impl LibraryInterface for MPDLibrary {
         info!("Starting background metadata update for MPDLibrary artists");
         // Use the generic function from artistupdater with only the artists collection
         crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
+    }
+    
+    fn get_album_by_id(&self, id: u64) -> Option<Album> {
+        // Use the previously implemented method
+        self.get_album_by_id(id)
+    }
+    
+    fn get_albums_by_artist_id(&self, artist_id: u64) -> Vec<Album> {
+        // Use the previously implemented method
+        self.get_albums_by_artist_id(artist_id)
     }
 }

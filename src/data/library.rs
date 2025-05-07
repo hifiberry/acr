@@ -56,11 +56,17 @@ pub trait LibraryInterface {
     /// Get album by name
     fn get_album(&self, name: &str) -> Option<Album>;
     
+    /// Get album by ID
+    fn get_album_by_id(&self, id: u64) -> Option<Album>;
+    
     /// Get artist by name
     fn get_artist(&self, name: &str) -> Option<Artist>;
     
     /// Get albums by artist
     fn get_albums_by_artist(&self, artist_name: &str) -> Vec<Album>;
+    
+    /// Get albums by artist ID
+    fn get_albums_by_artist_id(&self, artist_id: u64) -> Vec<Album>;
     
     /// Get album cover art (if available)
     fn get_album_cover(&self, album_name: &str) -> Option<String>;

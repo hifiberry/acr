@@ -317,14 +317,36 @@ pub fn get_player_artists(
 
 /// Get a specific album by name
 /// 
-/// Optional query parameter:
-/// - include_tracks: When set to "true", includes track data for the album
-#[get("/library/<player_name>/album/<album_name>?<include_tracks>")]
+/// This endpoint always includes track data for the album
+#[get("/library/<player_name>/album/by-name/<album_name>")]
 pub fn get_album_by_name(
     player_name: &str, 
     album_name: &str,
-    include_tracks: Option<bool>,
     controller: &State<Arc<AudioController>>
+) -> Result<Json<AlbumResponse>, Custom<String>> {
+    get_album_internal(player_name, album_name, controller, false)
+}
+
+/// Get a specific album by ID
+/// 
+/// This endpoint always includes track data for the album
+#[get("/library/<player_name>/album/by-id/<album_id>")]
+pub fn get_album_by_id(
+    player_name: &str, 
+    album_id: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<AlbumResponse>, Custom<String>> {
+    get_album_internal(player_name, album_id, controller, true)
+}
+
+/// Internal function to handle album lookup by either name or ID
+/// 
+/// This function abstracts the common logic for both endpoints
+fn get_album_internal(
+    player_name: &str,
+    identifier: &str,
+    controller: &State<Arc<AudioController>>,
+    is_id_lookup: bool
 ) -> Result<Json<AlbumResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
@@ -334,25 +356,27 @@ pub fn get_album_by_name(
             if ctrl.get_player_name() == player_name {
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
-                    // Get the album by name
-                    let mut album = library.get_album(album_name);
-                    
-                    // If include_tracks is not set to true and we have an album, remove tracks
-                    let include_tracks_flag = include_tracks == Some(true);
-                    
-                    if !include_tracks_flag {
-                        if let Some(ref mut alb) = album {
-                            // Clear the tracks to reduce response size
-                            if let Ok(mut tracks) = alb.tracks.lock() {
-                                tracks.clear();
+                    // Get the album by name or ID depending on the lookup type
+                    let album = if is_id_lookup {
+                        // Try to parse the ID as u64
+                        match identifier.parse::<u64>() {
+                            Ok(id) => library.get_album_by_id(id),
+                            Err(_) => {
+                                return Err(Custom(
+                                    Status::BadRequest,
+                                    format!("Invalid album ID format: {}", identifier),
+                                ));
                             }
                         }
-                    }
+                    } else {
+                        // Get album by name
+                        library.get_album(identifier)
+                    };
                     
                     return Ok(Json(AlbumResponse {
                         player_name: player_name.to_string(),
                         album,
-                        include_tracks: include_tracks_flag,
+                        include_tracks: true, // Always include tracks
                     }));
                 } else {
                     // Player exists but doesn't have a library
@@ -376,7 +400,7 @@ pub fn get_album_by_name(
 /// 
 /// Optional query parameter:
 /// - include_tracks: When set to "true", includes track data for each album
-#[get("/library/<player_name>/artist/<artist_name>/albums?<include_tracks>")]
+#[get("/library/<player_name>/albums/by-artist/<artist_name>?<include_tracks>")]
 pub fn get_albums_by_artist(
     player_name: &str, 
     artist_name: &str,
@@ -409,6 +433,84 @@ pub fn get_albums_by_artist(
                     return Ok(Json(ArtistAlbumsResponse {
                         player_name: player_name.to_string(),
                         artist_name: artist_name.to_string(),
+                        count: albums.len(),
+                        albums,
+                        include_tracks: include_tracks_flag,
+                    }));
+                } else {
+                    // Player exists but doesn't have a library
+                    return Err(Custom(
+                        Status::NotFound,
+                        format!("Player '{}' does not have a library", player_name),
+                    ));
+                }
+            }
+        }
+    }
+    
+    // Player not found
+    Err(Custom(
+        Status::NotFound,
+        format!("Player '{}' not found", player_name),
+    ))
+}
+
+/// Get all albums by a specific artist ID
+/// 
+/// Optional query parameter:
+/// - include_tracks: When set to "true", includes track data for each album
+#[get("/library/<player_name>/albums/by-artist-id/<artist_id>?<include_tracks>")]
+pub fn get_albums_by_artist_id(
+    player_name: &str, 
+    artist_id: &str,
+    include_tracks: Option<bool>,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<ArtistAlbumsResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    
+    // Find the controller with the matching name
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == player_name {
+                // Check if the player has a library
+                if let Some(library) = ctrl.get_library() {
+                    // Parse the artist ID
+                    let artist_id_parsed = match artist_id.parse::<u64>() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            return Err(Custom(
+                                Status::BadRequest,
+                                format!("Invalid artist ID: {}", artist_id),
+                            ));
+                        }
+                    };
+                    
+                    // Get albums by artist ID
+                    let mut albums = library.get_albums_by_artist_id(artist_id_parsed);
+                    
+                    // If include_tracks is not set to true, remove tracks from albums
+                    let include_tracks_flag = include_tracks == Some(true);
+                    
+                    if !include_tracks_flag {
+                        for album in &mut albums {
+                            // Clear the tracks to reduce response size
+                            if let Ok(mut tracks) = album.tracks.lock() {
+                                tracks.clear();
+                            }
+                        }
+                    }
+                    
+                    // Try to find the artist name for better response
+                    let artist_name = library.get_artists().into_iter()
+                        .find(|artist| artist.id == artist_id_parsed)
+                        .map_or_else(
+                            || format!("Artist ID: {}", artist_id),
+                            |artist| artist.name
+                        );
+                    
+                    return Ok(Json(ArtistAlbumsResponse {
+                        player_name: player_name.to_string(),
+                        artist_name,
                         count: albums.len(),
                         albums,
                         include_tracks: include_tracks_flag,
@@ -481,18 +583,54 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-      ))
+    ))
 }
 
-/// Get a specific artist by name or MusicBrainz ID
-/// 
-/// If the artist_name parameter is formatted like a MusicBrainz ID (UUID format),
-/// it will search for an artist with that MBID instead of by name.
-#[get("/library/<player_name>/artist/<artist_name>")]
+/// Get a specific artist by name
+#[get("/library/<player_name>/artist/by-name/<artist_name>")]
 pub fn get_artist_by_name(
     player_name: &str, 
     artist_name: &str,
     controller: &State<Arc<AudioController>>
+) -> Result<Json<ArtistResponse>, Custom<String>> {
+    get_artist_internal(player_name, artist_name, controller, ArtistLookupType::ByName)
+}
+
+/// Get a specific artist by ID
+#[get("/library/<player_name>/artist/by-id/<artist_id>")]
+pub fn get_artist_by_id(
+    player_name: &str, 
+    artist_id: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<ArtistResponse>, Custom<String>> {
+    get_artist_internal(player_name, artist_id, controller, ArtistLookupType::ById)
+}
+
+/// Get a specific artist by MusicBrainz ID (MBID)
+#[get("/library/<player_name>/artist/by-mbid/<mbid>")]
+pub fn get_artist_by_mbid(
+    player_name: &str, 
+    mbid: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<ArtistResponse>, Custom<String>> {
+    get_artist_internal(player_name, mbid, controller, ArtistLookupType::ByMbid)
+}
+
+/// Enum representing the different ways to look up an artist
+enum ArtistLookupType {
+    ByName,
+    ById,
+    ByMbid,
+}
+
+/// Internal function to handle artist lookup by name, ID, or MBID
+/// 
+/// This function abstracts the common logic for all artist endpoints
+fn get_artist_internal(
+    player_name: &str,
+    identifier: &str,
+    controller: &State<Arc<AudioController>>,
+    lookup_type: ArtistLookupType
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
@@ -502,24 +640,39 @@ pub fn get_artist_by_name(
             if ctrl.get_player_name() == player_name {
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
-                    // Check if artist_name looks like a MusicBrainz ID using our helper function
-                    let is_mbid = crate::helpers::musicbrainz::is_mbid(artist_name);
-                    
-                    let artist = if is_mbid {
-                        // If it's an MBID, find artists with this MBID
-                        let all_artists = library.get_artists();
-                        
-                        // Find the first artist with the matching MBID
-                        all_artists.into_iter().find(|a| {
-                            if let Some(meta) = &a.metadata {
-                                meta.mbid.iter().any(|id| id == artist_name)
-                            } else {
-                                false
+                    // Get the artist based on the lookup type
+                    let artist = match lookup_type {
+                        ArtistLookupType::ByName => {
+                            // Get artist by name
+                            library.get_artist(identifier)
+                        },
+                        ArtistLookupType::ById => {
+                            // Try to parse the ID as u64
+                            match identifier.parse::<u64>() {
+                                Ok(id) => {
+                                    // Find artist with matching ID
+                                    let all_artists = library.get_artists();
+                                    all_artists.into_iter().find(|a| a.id == id)
+                                },
+                                Err(_) => {
+                                    return Err(Custom(
+                                        Status::BadRequest,
+                                        format!("Invalid artist ID format: {}", identifier),
+                                    ));
+                                }
                             }
-                        })
-                    } else {
-                        // Get the artist by name (normal lookup)
-                        library.get_artist(artist_name)
+                        },
+                        ArtistLookupType::ByMbid => {
+                            // Find artist with matching MBID
+                            let all_artists = library.get_artists();
+                            all_artists.into_iter().find(|a| {
+                                if let Some(meta) = &a.metadata {
+                                    meta.mbid.iter().any(|id| id == identifier)
+                                } else {
+                                    false
+                                }
+                            })
+                        }
                     };
                     
                     return Ok(Json(ArtistResponse {
@@ -541,5 +694,5 @@ pub fn get_artist_by_name(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-             ))
+    ))
 }

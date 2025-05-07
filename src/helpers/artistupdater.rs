@@ -5,6 +5,18 @@ use crate::helpers::theartistdb;
 use std::sync::Arc;
 use std::thread;
 
+/// Trait for services that can update artist metadata
+pub trait ArtistUpdater {
+    /// Update an artist with additional metadata from a service
+    /// 
+    /// # Arguments
+    /// * `artist` - The artist to update
+    /// 
+    /// # Returns
+    /// The updated artist with additional metadata
+    fn update_artist(&self, artist: Artist) -> Artist;
+}
+
 /// Create a "clean" artist name without unicode characters (converted to ascii), 
 /// special characters or double spaces
 /// convert to lowercase and trim whitespace
@@ -244,9 +256,10 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         // Get the first MusicBrainz ID for the artist
         let mbid_opt = artist.metadata.as_ref().and_then(|meta| meta.mbid.first().cloned());
         
-        if let Some(mbid) = mbid_opt {
-            // Try to get artist info from TheArtistDB first
-            artist = update_artist_from_artistdb(artist, &mbid);
+        if mbid_opt.is_some() {
+            // Create a TheArtistDbUpdater and use it to update the artist
+            let artist_db_updater = theartistdb::TheArtistDbUpdater::new();
+            artist = artist_db_updater.update_artist(artist);
             
             // If we still don't have thumbnails, try FanArt.tv
             if !has_thumbnails && artist.metadata.as_ref().map_or(true, |meta| meta.thumb_url.is_empty()) {
@@ -257,7 +270,7 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
                 
                 if mbid_count > 1 {
                     debug!("Artist {} has multiple MusicBrainz IDs ({}), skipping FanArt.tv image download", artist.name, mbid_count);
-                } else {
+                } else if let Some(mbid) = mbid_opt {
                     // Update thumbnails using the FanArt.tv function
                     artist = update_artist_thumbnails_from_fanarttv(artist, &mbid);
                 }

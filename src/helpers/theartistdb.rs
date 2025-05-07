@@ -6,6 +6,8 @@ use std::sync::Mutex;
 use serde_json::{Value, json};
 use std::time::Duration;
 use crate::helpers::imagecache;
+use crate::data::artist::Artist;
+use crate::helpers::artistupdater::ArtistUpdater;
 
 /// Global flag to indicate if TheArtistDB lookups are enabled
 static THEARTISTDB_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -240,6 +242,109 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
             debug!("Failed to retrieve artist data from TheArtistDB for '{}': {}", artist_name, e);
             return false;
         }
+    }
+}
+
+/// Implement the ArtistUpdater trait for TheArtistDB
+pub struct TheArtistDbUpdater;
+
+impl TheArtistDbUpdater {
+    pub fn new() -> Self {
+        TheArtistDbUpdater
+    }
+}
+
+impl ArtistUpdater for TheArtistDbUpdater {
+    /// Updates artist information using TheArtistDB service
+    /// 
+    /// This function fetches artist information from TheArtistDB using the MusicBrainz ID
+    /// from the artist's metadata and updates the artist with thumbnail URLs and other
+    /// available metadata.
+    /// 
+    /// # Arguments
+    /// * `artist` - The artist to update
+    /// 
+    /// # Returns
+    /// The updated artist with information from TheArtistDB
+    fn update_artist(&self, mut artist: Artist) -> Artist {
+        // Check if TheArtistDB lookups are enabled
+        if !is_enabled() {
+            debug!("TheArtistDB lookups are disabled, skipping artist {}", artist.name);
+            return artist;
+        }
+        
+        // Extract and clone the MusicBrainz ID to avoid borrowing issues
+        let mbid_opt = artist.metadata.as_ref()
+            .and_then(|meta| meta.mbid.first())
+            .cloned();
+        
+        // Proceed only if a MusicBrainz ID is available
+        if let Some(mbid) = mbid_opt {
+            debug!("Looking up artist information in TheArtistDB for {} with MBID {}", artist.name, mbid);
+            
+            // Lookup artist by MBID
+            match lookup_mbid(&mbid) {
+                Ok(artist_data) => {
+                    debug!("Successfully retrieved artist data from TheArtistDB for {}", artist.name);
+                    
+                    // Extract the artist thumbnail URL
+                    if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
+                        if !thumb_url.is_empty() {
+                            debug!("Found thumbnail URL for artist {}: {}", artist.name, thumb_url);
+                            
+                            // Ensure we have a metadata struct
+                            if artist.metadata.is_none() {
+                                artist.ensure_metadata();
+                            }
+                            
+                            // Add the thumbnail URL to the artist metadata
+                            if let Some(meta) = &mut artist.metadata {
+                                meta.thumb_url.push(thumb_url.to_string());
+                                info!("Added TheArtistDB thumbnail URL for artist {}", artist.name);
+                            }
+                            
+                            // Download and cache the thumbnail
+                            if download_artist_thumbnail(&mbid, &artist.name) {
+                                debug!("Successfully downloaded and cached thumbnail for artist {}", artist.name);
+                            } else {
+                                debug!("Failed to download thumbnail for artist {}", artist.name);
+                            }
+                        } else {
+                            debug!("Empty thumbnail URL from TheArtistDB for artist {}", artist.name);
+                        }
+                    } else {
+                        debug!("No thumbnail available from TheArtistDB for artist {}", artist.name);
+                    }
+                    
+                    // Extract additional artist metadata that could be useful
+                    if let Some(biography) = artist_data.get("strBiographyEN").and_then(|v| v.as_str()) {
+                        if !biography.is_empty() {
+                            if let Some(meta) = &mut artist.metadata {
+                                meta.biography = Some(biography.to_string());
+                                debug!("Added biography from TheArtistDB for artist {}", artist.name);
+                            }
+                        }
+                    }
+                    
+                    // Extract genre information
+                    if let Some(genre) = artist_data.get("strGenre").and_then(|v| v.as_str()) {
+                        if !genre.is_empty() {
+                            if let Some(meta) = &mut artist.metadata {
+                                meta.genres.push(genre.to_string());
+                                debug!("Added genre '{}' from TheArtistDB for artist {}", genre, artist.name);
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to retrieve artist data from TheArtistDB for {} with MBID {}: {}", artist.name, mbid, e);
+                }
+            }
+        } else {
+            debug!("No MusicBrainz ID available for artist {}, skipping TheArtistDB lookup", artist.name);
+        }
+        
+        artist
     }
 }
 

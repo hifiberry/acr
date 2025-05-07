@@ -256,6 +256,11 @@ impl MPDLibrary {
         
         Ok(())
     }
+    
+    /// Get artists collection as Arc for direct updating
+    pub fn get_artists_arc(&self) -> Arc<RwLock<HashMap<String, Artist>>> {
+        self.artists.clone()
+    }
 }
 
 impl LibraryInterface for MPDLibrary {
@@ -325,8 +330,9 @@ impl LibraryInterface for MPDLibrary {
                 
                 // Start background update of artist metadata now that the library is fully loaded
                 info!("Starting background metadata update for artists");
-                let library_arc = Arc::new(self.clone());
-                crate::helpers::artistupdater::update_library_artists_metadata_in_background(library_arc);
+                crate::helpers::artistupdater::update_library_artists_metadata_in_background(
+                    self.artists.clone()
+                );
                 
                 Ok(())
             },
@@ -404,8 +410,7 @@ impl LibraryInterface for MPDLibrary {
     
     fn update_artist_metadata(&self) {
         info!("Starting background metadata update for MPDLibrary artists");
-        // Use the generic function from artistupdater for updating artists
-        let library_arc = Arc::new(self.clone());
-        crate::helpers::artistupdater::update_library_artists_metadata_in_background(library_arc);
+        // Use the generic function from artistupdater with only the artists collection
+        crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
     }
 }

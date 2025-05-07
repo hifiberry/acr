@@ -33,7 +33,8 @@ impl Serialize for Album {
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("Album", 7)?;
         
-        state.serialize_field("id", &self.id)?;
+        // Serialize id as string
+        state.serialize_field("id", &self.id.to_string())?;
         state.serialize_field("name", &self.name)?;
         
         // Get lock on artists and serialize directly as Vec<String>
@@ -69,6 +70,7 @@ impl<'de> Deserialize<'de> for Album {
         // Use a helper struct for deserialization
         #[derive(Deserialize)]
         struct AlbumHelper {
+            #[serde(deserialize_with = "deserialize_id_from_string")]
             id: u64,
             name: String,
             #[serde(default)]
@@ -110,6 +112,45 @@ impl<'de> Deserialize<'de> for Album {
             uri: helper.uri,
         })
     }
+}
+
+// Helper function to deserialize ID that could be a string or a number
+fn deserialize_id_from_string<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct IdVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for IdVisitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or integer representing a u64")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            value.parse::<u64>().map_err(serde::de::Error::custom)
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            value.parse::<u64>().map_err(serde::de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(IdVisitor)
 }
 
 // Implement Hash trait to ensure the id is used as the hash

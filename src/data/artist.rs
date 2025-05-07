@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use crate::data::metadata::ArtistMeta;
 
 /// Represents an Artist in the music database
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Artist {
     /// Unique identifier for the artist (64-bit hash)
     pub id: u64,
@@ -17,8 +17,101 @@ pub struct Artist {
     /// Number of tracks by this artist
     pub track_count: usize,
     /// Additional metadata for the artist (MusicBrainz ID, images, etc)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ArtistMeta>,
+}
+
+// Custom serialization implementation for Artist to represent u64 id as string
+impl Serialize for Artist {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Artist", 6)?;
+        
+        // Serialize id as string
+        state.serialize_field("id", &self.id.to_string())?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("is_multi", &self.is_multi)?;
+        state.serialize_field("albums", &self.albums)?;
+        state.serialize_field("track_count", &self.track_count)?;
+        state.serialize_field("metadata", &self.metadata)?;
+        
+        state.end()
+    }
+}
+
+// Custom deserialization implementation for Artist to handle string id
+impl<'de> Deserialize<'de> for Artist {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Use a helper struct for deserialization
+        #[derive(Deserialize)]
+        struct ArtistHelper {
+            #[serde(deserialize_with = "deserialize_id_from_string")]
+            id: u64,
+            name: String,
+            is_multi: bool,
+            albums: HashSet<String>,
+            track_count: usize,
+            #[serde(default)]
+            metadata: Option<ArtistMeta>,
+        }
+
+        // Deserialize the helper struct first
+        let helper = ArtistHelper::deserialize(deserializer)?;
+        
+        // Convert helper to actual Artist
+        Ok(Artist {
+            id: helper.id,
+            name: helper.name,
+            is_multi: helper.is_multi,
+            albums: helper.albums,
+            track_count: helper.track_count,
+            metadata: helper.metadata,
+        })
+    }
+}
+
+// Helper function to deserialize ID that could be a string or a number
+fn deserialize_id_from_string<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct IdVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for IdVisitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or integer representing a u64")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            value.parse::<u64>().map_err(serde::de::Error::custom)
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            value.parse::<u64>().map_err(serde::de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(IdVisitor)
 }
 
 impl Artist {

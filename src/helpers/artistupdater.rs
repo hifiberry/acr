@@ -3,7 +3,8 @@ use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 use crate::helpers::theartistdb;
 use crate::helpers::fanarttv;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
 use std::thread;
 
 /// Trait for services that can update artist metadata
@@ -189,23 +190,31 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
 
 /// Start a background thread to update metadata for all artists in the library
 ///
-/// This function takes a library that implements the LibraryInterface trait, gets all artists,
-/// and updates their metadata using the update_data_for_artist method in a background thread.
+/// This function updates artist metadata using the update_data_for_artist method in a background thread.
+/// It takes an Arc to the artists collection for direct updating and reading.
 ///
 /// # Arguments
-/// * `library` - An Arc-wrapped library instance implementing the LibraryInterface trait
-pub fn update_library_artists_metadata_in_background<T>(library: Arc<T>) 
-where
-    T: crate::data::LibraryInterface + Send + Sync + 'static,
-{
+/// * `artists_collection` - Arc to the artists collection for updating
+pub fn update_library_artists_metadata_in_background(
+    artists_collection: Arc<RwLock<HashMap<String, Artist>>>
+) {
     debug!("Starting background thread to update artist metadata");
     
     // Spawn a new thread to handle the metadata updates
     thread::spawn(move || {
         info!("Artist metadata update thread started");
         
-        // Get all artists from the library
-        let artists = library.get_artists();
+        // Get all artists from the collection
+        let artists = {
+            if let Ok(artists_map) = artists_collection.read() {
+                // Clone all artists for processing
+                artists_map.values().cloned().collect::<Vec<_>>()
+            } else {
+                warn!("Failed to acquire read lock on artists collection");
+                Vec::new()
+            }
+        };
+        
         let total = artists.len();
         info!("Processing metadata for {} artists", total);
         
@@ -213,23 +222,50 @@ where
         
         // Process each artist one by one
         for artist in artists {
-            debug!("Updating metadata for artist: {}", artist.name);
+            let artist_name = artist.name.clone();
+            debug!("Updating metadata for artist: {}", artist_name);
             
             // Use the existing update_data_for_artist function
             let updated_artist = update_data_for_artist(artist);
             
-            // Save the updated artist back to the library
-            if let Some(metadata) = &updated_artist.metadata {
-                if !metadata.mbid.is_empty() {
-                    // Only update if we actually got new MusicBrainz IDs
-                    if let Some(stored_artist) = library.get_artist(&updated_artist.name) {
-                        if stored_artist.metadata.is_none() || 
-                           stored_artist.metadata.as_ref().map_or(true, |m| m.mbid.is_empty()) {
-                            // Only print when we're actually adding new metadata
-                            info!("Adding MusicBrainz ID(s) to artist {}", updated_artist.name);
-                        }
+            // Check if we found new metadata to log appropriately
+            let has_new_metadata = {
+                let original_metadata = {
+                    if let Ok(artists_map) = artists_collection.read() {
+                        artists_map.get(&artist_name).and_then(|a| a.metadata.clone())
+                    } else {
+                        None
                     }
+                };
+                
+                if let Some(new_metadata) = &updated_artist.metadata {
+                    if !new_metadata.mbid.is_empty() {
+                        match original_metadata {
+                            Some(old_meta) if !old_meta.mbid.is_empty() => false,
+                            _ => {
+                                // Only print when we're actually adding new metadata
+                                info!("Adding MusicBrainz ID(s) to artist {}", artist_name);
+                                true
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
                 }
+            };
+            
+            // Update the artist in the collection
+            if let Ok(mut artists_map) = artists_collection.write() {
+                // Update the artist in the HashMap
+                artists_map.insert(artist_name.clone(), updated_artist);
+                
+                if has_new_metadata {
+                    debug!("Successfully updated artist {} in library collection", artist_name);
+                }
+            } else {
+                warn!("Failed to acquire write lock on artists collection for {}", artist_name);
             }
             
             count += 1;

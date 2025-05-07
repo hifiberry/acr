@@ -53,10 +53,14 @@ pub static ARTIST_SEPARATORS: &[&str] = &[",", "&", " feat ", " feat.", " featur
 /// Result type for MusicBrainz artist search
 #[derive(Debug, Clone, PartialEq)]
 pub enum MusicBrainzSearchResult {
-    /// Artist(s) found with their MusicBrainz ID(s) from API search
-    Found(Vec<String>),
-    /// Artist(s) found with their MusicBrainz ID(s) from cache
-    FoundCached(Vec<String>),
+    /// Artist(s) found with their MusicBrainz ID(s)
+    /// First parameter is the list of MusicBrainz IDs
+    /// Second parameter indicates whether result was cached (true) or from API (false)
+    Found(Vec<String>, bool),
+    /// Partial match - some artists in a multi-artist name were found, but not all
+    /// First parameter is the list of found MusicBrainz IDs
+    /// Second parameter indicates whether result was cached (true) or from API (false)
+    FoundPartial(Vec<String>, bool),
     /// Artist couldn't be found in MusicBrainz
     NotFound,
     /// Error occurred during the search
@@ -307,7 +311,7 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
     match attributecache::get::<String>(&cache_key) {
         Ok(Some(mbid)) => {
             debug!("Found MusicBrainz ID for '{}' in cache: {}", artist_name, mbid);
-            return MusicBrainzSearchResult::FoundCached(vec![mbid]);
+            return MusicBrainzSearchResult::Found(vec![mbid], true);
         },
         _ => {
             // If cache_only is true and we didn't find it in cache, return NotFound
@@ -408,7 +412,7 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                     }
                     
                     // Return the MBID
-                    return MusicBrainzSearchResult::Found(vec![mbid]);
+                    return MusicBrainzSearchResult::Found(vec![mbid], false);
                 } else {
                     // No matching artist found, add to negative cache
                     debug!("Found artist but names don't match: '{}' vs '{}'", artist_name, response_name);
@@ -478,7 +482,7 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
     match attributecache::get::<Vec<String>>(&cache_key) {
         Ok(Some(mbids)) => {
             debug!("Found MusicBrainz IDs for '{}' in cache: {:?}", artist_name, mbids);
-            return MusicBrainzSearchResult::FoundCached(mbids);
+            return MusicBrainzSearchResult::Found(mbids, true);
         },
         _ => {
             // Continue with search if not found in cache
@@ -490,7 +494,7 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
     let result = search_musicbrainz_for_artist(artist_name, cache_only);
     
     match result {
-        MusicBrainzSearchResult::Found(ref _mbids) | MusicBrainzSearchResult::FoundCached(ref _mbids) => {
+        MusicBrainzSearchResult::Found(ref mbids, _) => {
             // If we found results, return them
             return result;
         },
@@ -510,7 +514,7 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
                     // Search for each artist individually
                     for artist in split_artists {
                         match search_musicbrainz_for_artist(&artist, cache_only) {
-                            MusicBrainzSearchResult::Found(mbids) | MusicBrainzSearchResult::FoundCached(mbids) => {
+                            MusicBrainzSearchResult::Found(mbids, _) => {
                                 debug!("Found MusicBrainz ID(s) for split artist '{}': {:?}", artist, mbids);
                                 all_mbids.extend(mbids);
                                 any_found = true;
@@ -546,7 +550,7 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
                             }
                         }
                         
-                        return MusicBrainzSearchResult::Found(all_mbids);
+                        return MusicBrainzSearchResult::FoundPartial(all_mbids, false);
                     }
                     
                     // Otherwise, fall through to return the original NotFound result
@@ -630,7 +634,7 @@ pub fn split_artist_names(artist_name: &str, cache_only: bool, custom_separators
     
     // Look up MBIDs for the artist
     match search_mbids_for_artist(artist_name, true, cache_only, false) {
-        MusicBrainzSearchResult::Found(mbids) | MusicBrainzSearchResult::FoundCached(mbids) => {
+        MusicBrainzSearchResult::Found(mbids, _) => {
             // If multiple MBIDs found, this might be a combined artist name
             if mbids.len() > 1 {
                 debug!("Multiple MBIDs found for '{}', splitting artist name", artist_name);

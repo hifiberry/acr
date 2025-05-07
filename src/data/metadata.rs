@@ -22,6 +22,10 @@ pub struct ArtistMeta {
     /// Musical genres associated with this artist
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub genres: Vec<String>,
+    
+    /// Indicates if this is a partial match (only some artists in a multi-artist name found)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_partial_match: bool,
 }
 
 impl ArtistMeta {
@@ -33,6 +37,7 @@ impl ArtistMeta {
             banner_url: Vec::new(),
             biography: None,
             genres: Vec::new(),
+            is_partial_match: false,
         }
     }
     
@@ -70,7 +75,8 @@ impl ArtistMeta {
         self.thumb_url.is_empty() && 
         self.banner_url.is_empty() && 
         self.biography.is_none() &&
-        self.genres.is_empty()
+        self.genres.is_empty() &&
+        !self.is_partial_match
     }
     
     /// Clear all metadata
@@ -80,5 +86,6 @@ impl ArtistMeta {
         self.banner_url.clear();
         self.biography = None;
         self.genres.clear();
+        self.is_partial_match = false;
     }
 }

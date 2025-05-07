@@ -65,26 +65,33 @@ pub fn artist_basename(artist_name: &str) -> String {
 /// * `artist_name` - The name of the artist to look up
 /// 
 /// # Returns
-/// A vector of MusicBrainz IDs if found, empty vector otherwise
-pub fn lookup_artist_mbids(artist_name: &str) -> Vec<String> {
+/// A tuple containing:
+/// * `Vec<String>` - Vector of MusicBrainz IDs if found, empty vector otherwise
+/// * `bool` - true if this is a partial match (only some artists in a multi-artist name found)
+pub fn lookup_artist_mbids(artist_name: &str) -> (Vec<String>, bool) {
     debug!("Looking up MusicBrainz IDs for artist: {}", artist_name);
     
     // Try to retrieve MusicBrainz ID using search_mbids_for_artist function
     let search_result = search_mbids_for_artist(artist_name, true, false, true);
     
     match search_result {
-        MusicBrainzSearchResult::Found(mbids) | MusicBrainzSearchResult::FoundCached(mbids) => {
-            info!("Found {} MusicBrainz ID(s) for artist {}: {:?}", 
+        MusicBrainzSearchResult::Found(mbids, _) => {
+            debug!("Found {} MusicBrainz ID(s) for artist {}: {:?}", 
                   mbids.len(), artist_name, mbids);
-            mbids
+            (mbids, false) // Complete match
+        },
+        MusicBrainzSearchResult::FoundPartial(mbids, _) => {
+            warn!("Found {} partial MusicBrainz ID(s) for multi-artist {}: {:?}", 
+                  mbids.len(), artist_name, mbids);
+            (mbids, true) // Partial match
         },
         MusicBrainzSearchResult::NotFound => {
-            warn!("No MusicBrainz ID found for artist: {}", artist_name);
-            Vec::new()
+            info!("No MusicBrainz ID found for artist: {}", artist_name);
+            (Vec::new(), false)
         },
         MusicBrainzSearchResult::Error(error) => {
             warn!("Error retrieving MusicBrainz ID for artist {}: {}", artist_name, error);
-            Vec::new()
+            (Vec::new(), false)
         }
     }
 }
@@ -235,11 +242,29 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         debug!("No MusicBrainz ID set for artist {}, attempting to retrieve it", artist.name);
         
         // Use the extracted function to look up MusicBrainz IDs
-        let mbids = lookup_artist_mbids(&artist.name);
+        let (mbids, partial_match) = lookup_artist_mbids(&artist.name);
+        let mbid_count = mbids.len();
         
         // Add each MusicBrainz ID to the artist if any were found
         for mbid in mbids {
             artist.add_mbid(mbid);
+        }
+
+        // if there is more than one mbid or it was a partial match, it's a multi-artist entry
+        if mbid_count > 1 || partial_match {
+            artist.is_multi = true; // Mark as multi-artist entry
+            artist.clear_metadata(); // Clear metadata for multi-artist entries
+            debug!("Cleared metadata for multi-artist entry: {}", artist.name);
+        } else {
+            debug!("Added MusicBrainz ID(s) to artist {}", artist.name);
+        }
+        
+        // Record if this is a partial match in the artist metadata
+        if partial_match {
+            warn!("Partial match found for multi-artist name: {}", artist.name);
+            if let Some(meta) = &mut artist.metadata {
+                meta.is_partial_match = true;
+            }
         }
     } else {
         debug!("Artist {} already has MusicBrainz ID(s)", artist.name);

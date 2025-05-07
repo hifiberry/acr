@@ -10,6 +10,8 @@ pub struct Artist {
     pub id: u64,
     /// Artist name
     pub name: String,
+    /// Is not a single, but multiple artists (e.g. "Artist1, Artist2")
+    pub is_multi: bool,
     /// List of albums by this artist
     pub albums: HashSet<String>,
     /// Number of tracks by this artist

@@ -172,8 +172,8 @@ impl MemoryUsage {
             0 // If we can't get the lock, estimate as 0
         };
         
-        // Size of year (i32)
-        let year_size = if album.year.is_some() { mem::size_of::<i32>() } else { 0 };
+        // Size of release_date (NaiveDate)
+        let release_date_size = if album.release_date.is_some() { mem::size_of::<chrono::NaiveDate>() } else { 0 };
         
         // Size of cover art URL if present
         let cover_art_size = Self::string_size(&album.cover_art);
@@ -184,7 +184,7 @@ impl MemoryUsage {
         // The size of the tracks is calculated separately with calculate_tracks_memory
         
         base_size + id_size + name_size + artists_size + artists_content_size + 
-            year_size + cover_art_size + uri_size
+            release_date_size + cover_art_size + uri_size
     }
     
     /// Calculate memory used by tracks

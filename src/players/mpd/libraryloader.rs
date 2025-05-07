@@ -3,7 +3,8 @@ use std::time::Instant;
 use std::io::{Write, BufReader, BufRead};
 use std::net::TcpStream;
 use std::sync::Arc;
-use log::{debug, info, error};
+use log::{debug, info, error, warn};
+use chrono::NaiveDate;
 use crate::data::LibraryError;
 use crate::players::mpd::mpd::MPDPlayerController;
 use crate::data::{Track, PlayerEvent, PlayerSource};
@@ -114,7 +115,7 @@ impl MPDLibraryLoader {
     
     /// Create an Album object from an MPD song
     /// 
-    /// This extracts album information from a song including album name, artist, year
+    /// This extracts album information from a song including album name, artist, release date
     /// and creates a properly structured Album object
     fn album_from_mpd_song(song: &mpd::Song, custom_separators: Option<&[String]>) -> crate::data::Album {
         use std::collections::hash_map::DefaultHasher;
@@ -140,12 +141,12 @@ impl MPDLibraryLoader {
             "Unknown Artist".to_string()
         };
         
-        // Extract year from date if available
-        let year = song.tags.iter()
+        // Extract date from tags and convert to NaiveDate
+        let release_date = song.tags.iter()
             .find(|(tag, _)| tag == "Date")
             .and_then(|(_, date_str)| {
-                let year_part = date_str.split('-').next().unwrap_or(date_str);
-                year_part.parse::<i32>().ok()
+                // Try to parse the date string in various formats
+                Self::parse_release_date(date_str)
             });
         
         // Generate a unique ID for the album based on the album key
@@ -174,11 +175,46 @@ impl MPDLibraryLoader {
             name: album_name.to_string(),
             artists,
             artists_flat: None,
-            year,
+            release_date,
             tracks,
             cover_art: None,
             uri,
         }
+    }
+    
+    /// Parse a date string into a NaiveDate
+    /// 
+    /// Attempts to parse various date formats including:
+    /// - Full ISO dates (YYYY-MM-DD)
+    /// - Partial dates (YYYY-MM)
+    /// - Year only (YYYY)
+    /// 
+    /// If only the year is known, it will use January 1st of that year
+    fn parse_release_date(date_str: &str) -> Option<NaiveDate> {
+        // Try full ISO date format (YYYY-MM-DD)
+        if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            return Some(date);
+        }
+        
+        // Try year-month format (YYYY-MM)
+        if let Ok(date) = NaiveDate::parse_from_str(&format!("{}-01", date_str), "%Y-%m-%d") {
+            return Some(date);
+        }
+        
+        // Try to extract just the year part (YYYY)
+        let year_part = date_str.split('-').next().unwrap_or(date_str);
+        if let Ok(year) = year_part.parse::<i32>() {
+            // Use January 1st for the date when only the year is known
+            if let Some(date) = NaiveDate::from_ymd_opt(year, 1, 1) {
+                return Some(date);
+            } else {
+                warn!("Invalid year in date string: {}", date_str);
+            }
+        }
+        
+        // Could not parse the date string
+        debug!("Could not parse release date from: {}", date_str);
+        None
     }
     
     /// Load all album artists from the MPD server

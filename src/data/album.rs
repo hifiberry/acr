@@ -14,8 +14,8 @@ pub struct Album {
     pub artists: Arc<Mutex<Vec<String>>>,
     // Artists in a single string (might not be populated)
     pub artists_flat: Option<String>,
-    /// Year of album release (if available)
-    pub year: Option<i32>,
+    /// Release date of the album (optional)
+    pub release_date: Option<chrono::NaiveDate>,
     /// List of tracks on this album
     pub tracks: Arc<Mutex<Vec<Track>>>,
     /// Cover art path (if available)
@@ -45,7 +45,8 @@ impl Serialize for Album {
             state.serialize_field("artists", &Vec::<String>::new())?;
         }
         
-        state.serialize_field("year", &self.year)?;
+        // Serialize release_date field
+        state.serialize_field("release_date", &self.release_date)?;
         
         // Get lock on tracks and serialize directly as Vec<Track>
         if let Ok(tracks) = self.tracks.lock() {
@@ -78,7 +79,8 @@ impl<'de> Deserialize<'de> for Album {
             // For backward compatibility, also accept the old 'artist' field
             #[serde(default)]
             artist: Option<String>,
-            year: Option<i32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            release_date: Option<chrono::NaiveDate>,
             tracks: Vec<Track>,
             #[serde(skip_serializing_if = "Option::is_none")]
             cover_art: Option<String>,
@@ -106,7 +108,7 @@ impl<'de> Deserialize<'de> for Album {
             name: helper.name,
             artists: Arc::new(Mutex::new(artists)),
             artists_flat: None, // Initialize artists_flat as None
-            year: helper.year,
+            release_date: helper.release_date,
             tracks: Arc::new(Mutex::new(helper.tracks)),
             cover_art: helper.cover_art,
             uri: helper.uri,

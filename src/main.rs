@@ -24,8 +24,8 @@ fn main() {
         .format_timestamp_secs()
         .init();
 
-    println!("AudioControl3 (ACR) Player Controller Demo\n");
-    info!("AudioControl3 (ACR) Player Controller Demo starting");
+    println!("AudioControl3 (ACR) Player Controller\n");
+    info!("AudioControl3 (ACR) Player Controller starting");
     
     // Check if acr.json exists in the current directory
     let config_path = Path::new("acr.json");

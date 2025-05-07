@@ -2,6 +2,8 @@ use serde_json::Value;
 use log::{debug, warn, info};
 use reqwest;
 use crate::helpers::imagecache;
+use crate::data::artist::Artist;
+use crate::helpers::artistupdater::ArtistUpdater;
 
 // API key for fanart.tv
 const APIKEY: &str = "749a8fca4f2d3b0462b287820ad6ab06";
@@ -281,6 +283,82 @@ pub fn extract_extension_from_url(url: &str) -> String {
             }
         })
         .unwrap_or("jpg".to_string())
+}
+
+/// Implement the ArtistUpdater trait for FanArt.tv
+pub struct FanarttvUpdater;
+
+impl FanarttvUpdater {
+    pub fn new() -> Self {
+        FanarttvUpdater
+    }
+}
+
+impl ArtistUpdater for FanarttvUpdater {
+    /// Updates artist information using FanArt.tv service
+    /// 
+    /// This function fetches thumbnail URLs for an artist and downloads them for caching.
+    /// First checks if images already exist for this provider, and if so, skips fetching.
+    /// 
+    /// # Arguments
+    /// * `artist` - The artist to update
+    /// 
+    /// # Returns
+    /// The updated artist with thumbnail URLs
+    fn update_artist(&self, mut artist: Artist) -> Artist {
+        // Extract and clone the MusicBrainz ID to avoid borrowing issues
+        let mbid_opt = artist.metadata.as_ref()
+            .and_then(|meta| meta.mbid.first())
+            .cloned();
+            
+        // Proceed only if a MusicBrainz ID is available
+        if let Some(mbid) = mbid_opt {
+            let artist_basename = crate::helpers::artistupdater::artist_basename(&artist.name);
+            
+            // Check if we already have cached images for this artist from our provider
+            let thumb_base_path = format!("artists/{}/artist", artist_basename);
+            let existing_thumbs = imagecache::count_provider_files(&thumb_base_path, PROVIDER);
+            
+            if existing_thumbs > 0 {
+                debug!("Artist {} already has {} thumbnail(s) from {}, skipping fetch", 
+                      artist.name, existing_thumbs, PROVIDER);
+                
+                // We already have images, no need to fetch URLs or download again
+                return artist;
+            }
+            
+            debug!("Fetching thumbnail URLs for artist {} with MBID {}", artist.name, mbid);
+            
+            // Get thumbnail URLs from FanArt.tv
+            let thumbnail_urls = get_artist_thumbnails(&mbid, Some(5));
+            
+            // Check if we have any thumbnails before trying to add them
+            let has_thumbnails = !thumbnail_urls.is_empty();
+            
+            // Add each thumbnail URL to the artist
+            if let Some(meta) = &mut artist.metadata {
+                for url in &thumbnail_urls {
+                    meta.thumb_url.push(url.clone());
+                    debug!("Added thumbnail URL for artist {}", artist.name);
+                }
+            }
+            
+            // If thumbnails were found, also try to download them for caching
+            if has_thumbnails {
+                debug!("Downloading artist images for {}", artist.name);
+                let download_result = download_artist_images(&mbid, &artist.name);
+                if download_result {
+                    debug!("Successfully downloaded images for artist {}", artist.name);
+                } else {
+                    debug!("Failed to download some images for artist {}", artist.name);
+                }
+            }
+        } else {
+            debug!("No MusicBrainz ID available for artist {}, skipping FanArt.tv lookup", artist.name);
+        }
+        
+        artist
+    }
 }
 
 #[cfg(test)]

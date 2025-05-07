@@ -89,6 +89,16 @@ pub struct ArtistAlbumsResponse {
     albums: Vec<Album>,
 }
 
+/// Custom response structure for artist data with specific field order
+#[derive(serde::Serialize)]
+struct ArtistCustomResponse {
+    name: String,
+    id: String,
+    is_multi: bool,
+    album_count: usize,
+    thumb_url: Vec<String>,
+}
+
 /// List all players with library information
 #[get("/library")]
 pub fn list_libraries(controller: &State<Arc<AudioController>>) -> Json<LibraryListResponse> {
@@ -246,7 +256,10 @@ pub fn get_player_artists(
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
                     // Get all artists
-                    let artists = library.get_artists();
+                    let mut artists = library.get_artists();
+                    
+                    // Sort artists by name
+                    artists.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                     
                     // Create a custom JSON response with only the required fields
                     let mut artists_json = Vec::with_capacity(artists.len());
@@ -261,16 +274,19 @@ pub fn get_player_artists(
                             .map(|meta| meta.thumb_url.clone())
                             .unwrap_or_default();
                         
-                        // Create a simplified JSON object with only the requested fields
-                        let artist_json = serde_json::json!({
-                            "name": artist.name,
-                            "id": artist.id.to_string(),
-                            "is_multi": artist.is_multi,
-                            "album_count": album_count,
-                            "thumb_url": thumb_urls
-                        });
+                        // Create a struct with fields in the specific order
+                        let artist_data = ArtistCustomResponse {
+                            name: artist.name.clone(),
+                            id: artist.id.to_string(),
+                            is_multi: artist.is_multi,
+                            album_count,
+                            thumb_url: thumb_urls,
+                        };
                         
-                        artists_json.push(artist_json);
+                        // Convert to serde_json::Value to include in the response
+                        if let Ok(json_value) = serde_json::to_value(artist_data) {
+                            artists_json.push(json_value);
+                        }
                     }
                     
                     // Build the final response
@@ -525,5 +541,5 @@ pub fn get_artist_by_name(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-          ))
+             ))
 }

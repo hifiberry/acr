@@ -5,6 +5,7 @@ use rocket::{get, State};
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
+use serde::{Serialize, Serializer};
 
 /// Response structure for library information
 #[derive(serde::Serialize)]
@@ -41,13 +42,23 @@ pub struct AlbumsResponse {
     albums: Vec<Album>,
 }
 
+/// Enhanced artist information with album count
+#[derive(Serialize)]
+struct EnhancedArtist<'a> {
+    /// Reference to the original artist
+    #[serde(flatten)]
+    artist: &'a Artist,
+    /// Number of albums associated with this artist
+    albums_count: usize,
+}
+
 /// Response structure for artists list
 #[derive(serde::Serialize)]
-pub struct ArtistsResponse {
+pub struct ArtistsResponse<'a> {
     player_name: String,
     count: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    artists: Vec<Artist>,
+    artists: Vec<EnhancedArtist<'a>>,
 }
 
 /// Response structure for a single artist
@@ -225,7 +236,7 @@ pub fn get_player_albums(
 pub fn get_player_artists(
     player_name: &str,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<ArtistsResponse>, Custom<String>> {
+) -> Result<Json<serde_json::Value>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -237,11 +248,39 @@ pub fn get_player_artists(
                     // Get all artists
                     let artists = library.get_artists();
                     
-                    return Ok(Json(ArtistsResponse {
-                        player_name: player_name.to_string(),
-                        count: artists.len(),
-                        artists,
-                    }));
+                    // Create a custom JSON response with only the required fields
+                    let mut artists_json = Vec::with_capacity(artists.len());
+                    
+                    for artist in &artists {
+                        // Get albums for this artist by name to determine the count
+                        let albums = library.get_albums_by_artist(&artist.name);
+                        let album_count = albums.len();
+                        
+                        // Extract all thumbnail URLs from metadata if available
+                        let thumb_urls = artist.metadata.as_ref()
+                            .map(|meta| meta.thumb_url.clone())
+                            .unwrap_or_default();
+                        
+                        // Create a simplified JSON object with only the requested fields
+                        let artist_json = serde_json::json!({
+                            "name": artist.name,
+                            "id": artist.id.to_string(),
+                            "is_multi": artist.is_multi,
+                            "album_count": album_count,
+                            "thumb_url": thumb_urls
+                        });
+                        
+                        artists_json.push(artist_json);
+                    }
+                    
+                    // Build the final response
+                    let response = serde_json::json!({
+                        "player_name": player_name,
+                        "count": artists.len(),
+                        "artists": artists_json
+                    });
+                    
+                    return Ok(Json(response));
                 } else {
                     // Player exists but doesn't have a library
                     return Err(Custom(
@@ -486,5 +525,5 @@ pub fn get_artist_by_name(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-     ))
+          ))
 }

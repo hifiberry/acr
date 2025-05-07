@@ -17,6 +17,21 @@ pub struct LibraryResponse {
     artists_count: usize,
 }
 
+/// Response structure for library list - lists all players with library info
+#[derive(serde::Serialize)]
+pub struct LibraryListResponse {
+    players: Vec<LibraryPlayerInfo>,
+}
+
+/// Player information with library status
+#[derive(serde::Serialize)]
+pub struct LibraryPlayerInfo {
+    player_name: String,
+    player_id: String,
+    has_library: bool,
+    is_loaded: bool,
+}
+
 /// Response structure for albums list
 #[derive(serde::Serialize)]
 pub struct AlbumsResponse {
@@ -61,6 +76,38 @@ pub struct ArtistAlbumsResponse {
     include_tracks: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     albums: Vec<Album>,
+}
+
+/// List all players with library information
+#[get("/library")]
+pub fn list_libraries(controller: &State<Arc<AudioController>>) -> Json<LibraryListResponse> {
+    let controllers = controller.inner().list_controllers();
+    let mut players = Vec::new();
+    
+    // Iterate through all controllers and check their library status
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            let player_name = ctrl.get_player_name();
+            let player_id = ctrl.get_player_id();
+            let library = ctrl.get_library();
+            
+            // Determine library status
+            let (has_library, is_loaded) = match &library {
+                Some(lib) => (true, lib.is_loaded()),
+                None => (false, false),
+            };
+            
+            // Add player info to the list
+            players.push(LibraryPlayerInfo {
+                player_name,
+                player_id,
+                has_library,
+                is_loaded,
+            });
+        }
+    }
+    
+    Json(LibraryListResponse { players })
 }
 
 /// Get library information for a player
@@ -439,5 +486,5 @@ pub fn get_artist_by_name(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-    ))
+     ))
 }

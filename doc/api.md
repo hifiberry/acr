@@ -234,11 +234,42 @@ curl http://<device-ip>:1080/plugins/event-filters
 
 ## Library API
 
+### List All Players with Library Information
+
+Retrieves a list of all players and shows whether they offer library functionality.
+
+- **Endpoint**: `/library`
+- **Method**: GET
+- **Response**:
+  ```json
+  {
+    "players": [
+      {
+        "player_name": "player-name",
+        "player_id": "player-id",
+        "has_library": true,
+        "is_loaded": true
+      },
+      {
+        "player_name": "another-player",
+        "player_id": "another-player-id",
+        "has_library": false,
+        "is_loaded": false
+      }
+    ]
+  }
+  ```
+
+#### Example
+```bash
+curl http://<device-ip>:1080/library
+```
+
 ### Get Library Information
 
 Retrieves library information for a specific player.
 
-- **Endpoint**: `/player/<player-name>/library`
+- **Endpoint**: `/library/<player-name>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -257,14 +288,14 @@ Retrieves library information for a specific player.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/player/mpd/library
+curl http://<device-ip>:1080/library/mpd
 ```
 
 ### Get Player Albums
 
 Retrieves all albums for a specific player.
 
-- **Endpoint**: `/player/<player-name>/library/albums`
+- **Endpoint**: `/library/<player-name>/albums`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -286,31 +317,27 @@ Retrieves all albums for a specific player.
 #### Examples
 ```bash
 # Get albums without tracks
-curl http://<device-ip>:1080/player/mpd/library/albums
+curl http://<device-ip>:1080/library/mpd/albums
 
 # Get albums with tracks included
-curl http://<device-ip>:1080/player/mpd/library/albums?include_tracks=true
+curl http://<device-ip>:1080/library/mpd/albums?include_tracks=true
 ```
 
 ### Get Player Artists
 
 Retrieves all artists for a specific player.
 
-- **Endpoint**: `/player/<player-name>/library/artists`
+- **Endpoint**: `/library/<player-name>/artists`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
-- **Query Parameters**:
-  - `include_albums` (boolean, optional): Whether to include album data for each artist
 - **Response**:
   ```json
   {
     "player_name": "player-name",
     "count": 50,
-    "include_albums": true,
     "artists": [
       // Artist objects
-      // If include_albums=true, each artist will include its albums
     ]
   }
   ```
@@ -318,18 +345,15 @@ Retrieves all artists for a specific player.
 
 #### Examples
 ```bash
-# Get artists without albums
-curl http://<device-ip>:1080/player/mpd/library/artists
-
-# Get artists with albums included
-curl http://<device-ip>:1080/player/mpd/library/artists?include_albums=true
+# Get artists
+curl http://<device-ip>:1080/library/mpd/artists
 ```
 
 ### Get Album by Name
 
 Retrieves a specific album by name for a player.
 
-- **Endpoint**: `/player/<player-name>/library/album/<album-name>`
+- **Endpoint**: `/library/<player-name>/album/<album-name>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -353,17 +377,17 @@ Retrieves a specific album by name for a player.
 #### Examples
 ```bash
 # Get an album without tracks
-curl "http://<device-ip>:1080/player/mpd/library/album/Dark%20Side%20of%20the%20Moon"
+curl "http://<device-ip>:1080/library/mpd/album/Dark%20Side%20of%20the%20Moon"
 
 # Get an album with tracks included
-curl "http://<device-ip>:1080/player/mpd/library/album/Dark%20Side%20of%20the%20Moon?include_tracks=true"
+curl "http://<device-ip>:1080/library/mpd/album/Dark%20Side%20of%20the%20Moon?include_tracks=true"
 ```
 
 ### Get Albums by Artist
 
 Retrieves all albums by a specific artist for a player.
 
-- **Endpoint**: `/player/<player-name>/library/artist/<artist-name>/albums`
+- **Endpoint**: `/library/<player-name>/artist/<artist-name>/albums`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -388,17 +412,17 @@ Retrieves all albums by a specific artist for a player.
 #### Examples
 ```bash
 # Get albums for an artist without tracks
-curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd/albums"
+curl "http://<device-ip>:1080/library/mpd/artist/Pink%20Floyd/albums"
 
 # Get albums for an artist with tracks included
-curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd/albums?include_tracks=true"
+curl "http://<device-ip>:1080/library/mpd/artist/Pink%20Floyd/albums?include_tracks=true"
 ```
 
 ### Refresh Player Library
 
 Triggers a refresh of the library for a specific player.
 
-- **Endpoint**: `/player/<player-name>/library/refresh`
+- **Endpoint**: `/library/<player-name>/refresh`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -407,7 +431,7 @@ Triggers a refresh of the library for a specific player.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/player/mpd/library/refresh
+curl http://<device-ip>:1080/library/mpd/refresh
 ```
 
 ### Get Artist by Name or MusicBrainz ID
@@ -416,18 +440,15 @@ Retrieves complete information for a specific artist, including metadata and ima
 If the artist-name parameter is formatted like a MusicBrainz ID (UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx),
 it will search for artists with that MBID instead of by name.
 
-- **Endpoint**: `/player/<player-name>/library/artist/<artist-name-or-mbid>`
+- **Endpoint**: `/library/<player-name>/artist/<artist-name-or-mbid>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
   - `artist-name-or-mbid` (string): The name of the artist or a MusicBrainz ID
-- **Query Parameters**:
-  - `include_albums` (boolean, optional): Whether to include album data for the artist
 - **Response**:
   ```json
   {
     "player_name": "player-name",
-    "include_albums": true,
     "artist": {
       "id": 12345678,
       "name": "artist-name", 
@@ -450,11 +471,8 @@ it will search for artists with that MBID instead of by name.
 #### Example
 ```bash
 # Get artist information by name
-curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd"
+curl "http://<device-ip>:1080/library/mpd/artist/Pink%20Floyd"
 
 # Get artist information by MusicBrainz ID
-curl "http://<device-ip>:1080/player/mpd/library/artist/83d91898-7763-47d7-b03b-b92132375c47"
-
-# Get artist information with albums included
-curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd?include_albums=true"
+curl "http://<device-ip>:1080/library/mpd/artist/83d91898-7763-47d7-b03b-b92132375c47"
 ```

@@ -28,6 +28,39 @@ Retrieves the current version of the API.
 curl http://<device-ip>:1080/version
 ```
 
+### Get System Memory Usage
+
+Retrieves the memory usage statistics of the library components.
+
+- **Endpoint**: `/system/memory`
+- **Method**: GET
+- **Response**:
+  ```json
+  {
+    "artists_memory": 1024000,
+    "albums_memory": 2048000,
+    "tracks_memory": 4096000,
+    "overhead_memory": 512000,
+    "artist_count": 300,
+    "album_count": 500,
+    "track_count": 5000,
+    "album_artists_count": 450,
+    "total_memory": 7680000,
+    "formatted": {
+      "artists_memory": "1000.00 KB",
+      "albums_memory": "2000.00 KB",
+      "tracks_memory": "4000.00 KB", 
+      "overhead_memory": "500.00 KB",
+      "total_memory": "7500.00 KB"
+    }
+  }
+  ```
+
+#### Example
+```bash
+curl http://<device-ip>:1080/system/memory
+```
+
 ## Player API
 
 ### Get Current Player
@@ -476,3 +509,90 @@ curl "http://<device-ip>:1080/library/mpd/artist/Pink%20Floyd"
 # Get artist information by MusicBrainz ID
 curl "http://<device-ip>:1080/library/mpd/artist/83d91898-7763-47d7-b03b-b92132375c47"
 ```
+
+## Data Structures
+
+The following section describes the main data structures used in the API responses.
+
+### Album
+
+An Album represents a collection of tracks/songs by one or more artists.
+
+```json
+{
+  "id": "12345678",
+  "name": "Album Name",
+  "artists": ["Artist 1", "Artist 2"],
+  "release_date": "2023-01-01",
+  "tracks_count": 12,
+  "tracks": [
+    // Track objects (if include_tracks=true)
+  ],
+  "cover_art": "/path/to/cover.jpg",
+  "uri": "file:///music/album/"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | string | Unique identifier for the album (string representation of a 64-bit hash) |
+| name | string | Album name |
+| artists | array | List of artist names for this album |
+| release_date | string | ISO 8601 formatted date of album release (YYYY-MM-DD), may be null |
+| tracks_count | number | Number of tracks on the album |
+| tracks | array | Array of Track objects (only included when requested) |
+| cover_art | string | URL or path to album cover art image, may be null |
+| uri | string | URI/filename of the first song in the album, may be null |
+
+### Artist
+
+An Artist represents a musician or band in the music library.
+
+```json
+{
+  "id": "87654321",
+  "name": "Artist Name",
+  "is_multi": false,
+  "metadata": {
+    "mbid": ["musicbrainz-id-1", "musicbrainz-id-2"],
+    "thumb_url": ["/path/to/image1.jpg", "/path/to/image2.jpg"],
+    "banner_url": ["/path/to/banner.jpg"],
+    "biography": "Artist biography text...",
+    "genres": ["rock", "alternative"]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | string | Unique identifier for the artist (string representation of a 64-bit hash) |
+| name | string | Artist name |
+| is_multi | boolean | Whether this is a multi-artist entry (e.g., "Artist1, Artist2") |
+| metadata | object | Optional metadata information, may be null |
+| metadata.mbid | array | List of MusicBrainz IDs for this artist |
+| metadata.thumb_url | array | List of thumbnail image URLs |
+| metadata.banner_url | array | List of banner image URLs |
+| metadata.biography | string | Artist biography, may be null |
+| metadata.genres | array | List of music genres associated with this artist |
+
+### Track
+
+A Track represents a single song on an album.
+
+```json
+{
+  "disc_number": "1",
+  "track_number": 5,
+  "name": "Track Name",
+  "artist": "Track Artist",
+  "uri": "file:///music/track.mp3"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| disc_number | string | Disc number as a string (to support formats like "1/2") |
+| track_number | number | Track number on the disc |
+| name | string | Track title |
+| artist | string | Track-specific artist (only included if different from album artist), may be null |
+| uri | string | URI/filename of the track, may be null |

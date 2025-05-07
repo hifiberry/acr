@@ -5,6 +5,7 @@ use reqwest;
 use std::sync::Mutex;
 use serde_json::{Value, json};
 use std::time::Duration;
+use crate::helpers::imagecache;
 
 /// Global flag to indicate if TheArtistDB lookups are enabled
 static THEARTISTDB_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -163,6 +164,82 @@ pub fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
             }
         },
         Err(e) => Err(format!("Failed to parse TheArtistDB response: {}", e))
+    }
+}
+
+/// Download artist thumbnail from TheArtistDB
+/// 
+/// This function downloads the artist thumbnail from TheArtistDB if available
+/// and stores it in the image cache following the naming convention:
+/// - artistdb.0.xxx for the main thumbnail
+/// 
+/// # Arguments
+/// * `mbid` - MusicBrainz ID of the artist
+/// * `artist_name` - Name of the artist for caching
+/// 
+/// # Returns
+/// * `bool` - true if the download was successful, false otherwise
+pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
+    if !is_enabled() {
+        debug!("TheArtistDB lookups are disabled, skipping thumbnail download");
+        return false;
+    }
+
+    let artist_basename = crate::helpers::artistupdater::artist_basename(artist_name);
+
+    // Check if the thumbnail already exists
+    let thumb_path = format!("artists/{}/artistdb.0", artist_basename);
+    if crate::helpers::fanarttv::path_with_any_extension_exists(&thumb_path) {
+        debug!("TheArtistDB thumbnail already exists for '{}', skipping download", artist_name);
+        return true;
+    }
+
+    debug!("Attempting to download TheArtistDB thumbnail for artist '{}'", artist_name);
+
+    // Lookup the artist by MBID to get the thumbnail URL
+    match lookup_mbid(mbid) {
+        Ok(artist_data) => {
+            // Extract the thumbnail URL from the response
+            if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
+                if !thumb_url.is_empty() {
+                    debug!("Found thumbnail URL for artist {}: {}", artist_name, thumb_url);
+                    
+                    // Download the thumbnail
+                    match crate::helpers::fanarttv::download_image(thumb_url) {
+                        Ok(image_data) => {
+                            // Determine the file extension
+                            let extension = crate::helpers::fanarttv::extract_extension_from_url(thumb_url);
+                            
+                            // Create the full path with extension
+                            let full_path = format!("artists/{}/artistdb.0.{}", artist_basename, extension);
+                            
+                            // Store the image in the cache
+                            if let Err(e) = imagecache::store_image(&full_path, &image_data) {
+                                warn!("Failed to store TheArtistDB thumbnail for '{}': {}", artist_name, e);
+                                return false;
+                            } else {
+                                info!("Stored TheArtistDB thumbnail for '{}'", artist_name);
+                                return true;
+                            }
+                        },
+                        Err(e) => {
+                            warn!("Failed to download TheArtistDB thumbnail for '{}': {}", artist_name, e);
+                            return false;
+                        }
+                    }
+                } else {
+                    debug!("Empty thumbnail URL for artist '{}' in TheArtistDB", artist_name);
+                    return false;
+                }
+            } else {
+                debug!("No thumbnail URL found for artist '{}' in TheArtistDB", artist_name);
+                return false;
+            }
+        },
+        Err(e) => {
+            debug!("Failed to retrieve artist data from TheArtistDB for '{}': {}", artist_name, e);
+            return false;
+        }
     }
 }
 

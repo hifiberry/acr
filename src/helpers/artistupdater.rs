@@ -1,6 +1,7 @@
-use log::{debug, info, warn};
+use log::{debug, info, warn, error};
 use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
+use crate::helpers::theartistdb;
 use std::sync::Arc;
 use std::thread;
 
@@ -117,6 +118,88 @@ fn update_artist_thumbnails_from_fanarttv(mut artist: Artist, mbid: &str) -> Art
     artist
 }
 
+/// Updates artist information using TheArtistDB service
+/// 
+/// This function fetches artist information from TheArtistDB using the MusicBrainz ID
+/// and updates the artist with thumbnail URLs.
+/// 
+/// # Arguments
+/// * `artist` - The artist to update
+/// * `mbid` - The MusicBrainz ID to use for looking up artist information
+/// 
+/// # Returns
+/// The updated artist with information from TheArtistDB
+pub fn update_artist_from_artistdb(mut artist: Artist, mbid: &str) -> Artist {
+    debug!("Looking up artist information in TheArtistDB for {} with MBID {}", artist.name, mbid);
+    
+    // Check if TheArtistDB lookups are enabled
+    if !theartistdb::is_enabled() {
+        debug!("TheArtistDB lookups are disabled, skipping");
+        return artist;
+    }
+    
+    // Lookup artist by MBID
+    match theartistdb::lookup_mbid(mbid) {
+        Ok(artist_data) => {
+            debug!("Successfully retrieved artist data from TheArtistDB for {}", artist.name);
+            
+            // Extract the artist thumbnail URL
+            if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
+                if !thumb_url.is_empty() {
+                    debug!("Found thumbnail URL for artist {}: {}", artist.name, thumb_url);
+                    
+                    // Ensure we have a metadata struct
+                    if artist.metadata.is_none() {
+                        artist.ensure_metadata();
+                    }
+                    
+                    // Add the thumbnail URL to the artist metadata
+                    if let Some(meta) = &mut artist.metadata {
+                        meta.thumb_url.push(thumb_url.to_string());
+                        info!("Added TheArtistDB thumbnail URL for artist {}", artist.name);
+                    }
+                    
+                    // Download and cache the thumbnail
+                    if theartistdb::download_artist_thumbnail(mbid, &artist.name) {
+                        debug!("Successfully downloaded and cached thumbnail for artist {}", artist.name);
+                    } else {
+                        debug!("Failed to download thumbnail for artist {}", artist.name);
+                    }
+                } else {
+                    debug!("Empty thumbnail URL from TheArtistDB for artist {}", artist.name);
+                }
+            } else {
+                debug!("No thumbnail available from TheArtistDB for artist {}", artist.name);
+            }
+            
+            // Extract additional artist metadata that could be useful
+            if let Some(biography) = artist_data.get("strBiographyEN").and_then(|v| v.as_str()) {
+                if !biography.is_empty() {
+                    if let Some(meta) = &mut artist.metadata {
+                        meta.biography = Some(biography.to_string());
+                        debug!("Added biography from TheArtistDB for artist {}", artist.name);
+                    }
+                }
+            }
+            
+            // Extract genre information
+            if let Some(genre) = artist_data.get("strGenre").and_then(|v| v.as_str()) {
+                if !genre.is_empty() {
+                    if let Some(meta) = &mut artist.metadata {
+                        meta.genres.push(genre.to_string());
+                        debug!("Added genre '{}' from TheArtistDB for artist {}", genre, artist.name);
+                    }
+                }
+            }
+        },
+        Err(e) => {
+            error!("Failed to retrieve artist data from TheArtistDB for {} with MBID {}: {}", artist.name, mbid, e);
+        }
+    }
+    
+    artist
+}
+
 /// Updates artist data by fetching additional information like MusicBrainz IDs
 /// 
 /// This function takes an artist and attempts to retrieve and set any missing data
@@ -157,21 +240,27 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     };
     
     // If the artist has MusicBrainz IDs but no thumbnails, try to get them
-    if !has_thumbnails && artist.metadata.as_ref().map_or(false, |meta| !meta.mbid.is_empty()) {
-        debug!("No thumbnails set for artist {}, attempting to retrieve them", artist.name);
+    if artist.metadata.as_ref().map_or(false, |meta| !meta.mbid.is_empty()) {
+        // Get the first MusicBrainz ID for the artist
+        let mbid_opt = artist.metadata.as_ref().and_then(|meta| meta.mbid.first().cloned());
         
-        // Check if there's only a single MusicBrainz ID
-        let mbid_count = artist.metadata.as_ref().map_or(0, |meta| meta.mbid.len());
-        
-        if mbid_count > 1 {
-            debug!("Artist {} has multiple MusicBrainz IDs ({}), skipping image download", artist.name, mbid_count);
-        } else {
-            // Get the first MusicBrainz ID for the artist
-            let mbid_opt = artist.metadata.as_ref().and_then(|meta| meta.mbid.first().cloned());
+        if let Some(mbid) = mbid_opt {
+            // Try to get artist info from TheArtistDB first
+            artist = update_artist_from_artistdb(artist, &mbid);
             
-            if let Some(mbid) = mbid_opt {
-                // Update thumbnails using the dedicated function
-                artist = update_artist_thumbnails_from_fanarttv(artist, &mbid);
+            // If we still don't have thumbnails, try FanArt.tv
+            if !has_thumbnails && artist.metadata.as_ref().map_or(true, |meta| meta.thumb_url.is_empty()) {
+                debug!("No thumbnails set from TheArtistDB for artist {}, trying FanArt.tv", artist.name);
+                
+                // Check if there's only a single MusicBrainz ID
+                let mbid_count = artist.metadata.as_ref().map_or(0, |meta| meta.mbid.len());
+                
+                if mbid_count > 1 {
+                    debug!("Artist {} has multiple MusicBrainz IDs ({}), skipping FanArt.tv image download", artist.name, mbid_count);
+                } else {
+                    // Update thumbnails using the FanArt.tv function
+                    artist = update_artist_thumbnails_from_fanarttv(artist, &mbid);
+                }
             }
         }
     } else if has_thumbnails {

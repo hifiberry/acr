@@ -3,7 +3,7 @@ use log::{info, debug, warn, error};
 use lazy_static::lazy_static;
 use reqwest;
 use std::sync::Mutex;
-use serde_json::{Value, json};
+use serde_json::{Value};
 use std::time::Duration;
 use crate::helpers::imagecache;
 use crate::data::artist::Artist;

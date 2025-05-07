@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use std::mem;
 use log::{debug, info, warn, error};
-use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError, Track};
+use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
 use crate::helpers::memory_report::MemoryUsage;
 
 /// MPD library interface that provides access to albums and artists

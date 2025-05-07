@@ -123,8 +123,14 @@ impl MemoryUsage {
         // Base size of Artist struct
         let base_size = mem::size_of::<Artist>();
         
+        // Size of artist id
+        let id_size = mem::size_of::<u64>();
+        
         // Size of artist name
         let name_size = artist.name.capacity();
+        
+        // Size of is_multi boolean
+        let is_multi_size = mem::size_of::<bool>();
         
         // Size of metadata if present
         let metadata_size = match &artist.metadata {
@@ -148,7 +154,7 @@ impl MemoryUsage {
             None => 0
         };
         
-        base_size + name_size + metadata_size
+        base_size + id_size + name_size + is_multi_size + metadata_size
     }
     
     /// Calculate memory used by an album
@@ -172,6 +178,12 @@ impl MemoryUsage {
             0 // If we can't get the lock, estimate as 0
         };
         
+        // Size of artists_flat if present
+        let artists_flat_size = match &album.artists_flat {
+            Some(flat) => mem::size_of::<String>() + flat.capacity(),
+            None => 0
+        };
+        
         // Size of release_date (NaiveDate)
         let release_date_size = if album.release_date.is_some() { mem::size_of::<chrono::NaiveDate>() } else { 0 };
         
@@ -184,7 +196,7 @@ impl MemoryUsage {
         // The size of the tracks is calculated separately with calculate_tracks_memory
         
         base_size + id_size + name_size + artists_size + artists_content_size + 
-            release_date_size + cover_art_size + uri_size
+            artists_flat_size + release_date_size + cover_art_size + uri_size
     }
     
     /// Calculate memory used by tracks
@@ -207,12 +219,20 @@ impl MemoryUsage {
                 // String data for disc_number
                 size += track.disc_number.capacity();
                 
+                // Track number (u16)
+                size += std::mem::size_of::<u16>();
+                
                 // String data for name
                 size += track.name.capacity();
                 
                 // Optional artist string data
                 if let Some(artist) = &track.artist {
-                    size += artist.capacity();
+                    size += mem::size_of::<String>() + artist.capacity();
+                }
+                
+                // Optional URI string data
+                if let Some(uri) = &track.uri {
+                    size += mem::size_of::<String>() + uri.capacity();
                 }
             }
         }

@@ -463,6 +463,7 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
     
     // Try to get MBID from cache first for the full combined name
     let cache_key = format!("artist::{}::mbid", artist_name);
+    let cache_partial_key = format!("artist::{}::partial", artist_name);
     
     // Check if we have already determined this artist doesn't exist
     if cache_failures {
@@ -478,11 +479,22 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
         }
     }
     
-    // Try to get MBID from cache first
+    // Try to get MBIDs and partial status from cache first
     match attributecache::get::<Vec<String>>(&cache_key) {
         Ok(Some(mbids)) => {
             debug!("Found MusicBrainz IDs for '{}' in cache: {:?}", artist_name, mbids);
-            return MusicBrainzSearchResult::Found(mbids, true);
+            
+            // Check if this was a partial result
+            match attributecache::get::<bool>(&cache_partial_key) {
+                Ok(Some(true)) => {
+                    debug!("Cached result for '{}' was marked as partial", artist_name);
+                    return MusicBrainzSearchResult::FoundPartial(mbids, true);
+                },
+                _ => {
+                    // Default to standard Found if not marked as partial or error reading cache
+                    return MusicBrainzSearchResult::Found(mbids, true);
+                }
+            }
         },
         _ => {
             // Continue with search if not found in cache
@@ -531,6 +543,24 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
                         match attributecache::set(&cache_key, &all_mbids) {
                             Ok(_) => {
                                 debug!("Successfully stored multiple MusicBrainz IDs for '{}' in cache", artist_name);
+                                
+                                // Also store that this is a partial result
+                                match attributecache::set(&cache_partial_key, &true) {
+                                    Ok(_) => {
+                                        debug!("Successfully marked '{}' as a partial match in cache", artist_name);
+                                        
+                                        // Verify the partial flag cache write
+                                        match attributecache::get::<bool>(&cache_partial_key) {
+                                            Ok(Some(true)) => debug!("Verified partial flag in cache for '{}'", artist_name),
+                                            Ok(Some(false)) => warn!("Cache verification failed for partial flag of '{}'!", artist_name),
+                                            Ok(None) => warn!("Failed to verify partial flag in cache - not found after writing!"),
+                                            Err(e) => warn!("Failed to verify partial flag in cache: {}", e)
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!("Failed to cache partial status for '{}': {}", artist_name, e);
+                                    }
+                                }
                                 
                                 // Verify the cache write by reading it back
                                 match attributecache::get::<Vec<String>>(&cache_key) {

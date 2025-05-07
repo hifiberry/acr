@@ -400,7 +400,10 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
       ))
 }
 
-/// Get a specific artist by name
+/// Get a specific artist by name or MusicBrainz ID
+/// 
+/// If the artist_name parameter is formatted like a MusicBrainz ID (UUID format),
+/// it will search for an artist with that MBID instead of by name.
 /// 
 /// Optional query parameter:
 /// - include_albums: When set to "true", includes album data for the artist
@@ -419,8 +422,25 @@ pub fn get_artist_by_name(
             if ctrl.get_player_name() == player_name {
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
-                    // Get the artist by name
-                    let mut artist = library.get_artist(artist_name);
+                    // Check if artist_name looks like a MusicBrainz ID using our helper function
+                    let is_mbid = crate::helpers::musicbrainz::is_mbid(artist_name);
+                    
+                    let mut artist = if is_mbid {
+                        // If it's an MBID, find artists with this MBID
+                        let all_artists = library.get_artists();
+                        
+                        // Find the first artist with the matching MBID
+                        all_artists.into_iter().find(|a| {
+                            if let Some(meta) = &a.metadata {
+                                meta.mbid.iter().any(|id| id == artist_name)
+                            } else {
+                                false
+                            }
+                        })
+                    } else {
+                        // Get the artist by name (normal lookup)
+                        library.get_artist(artist_name)
+                    };
                     
                     // If include_albums is not set to true and we have an artist, remove albums list
                     let include_albums_flag = include_albums == Some(true);

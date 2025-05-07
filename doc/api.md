@@ -410,15 +410,17 @@ Triggers a refresh of the library for a specific player.
 curl http://<device-ip>:1080/player/mpd/library/refresh
 ```
 
-### Get Artist by Name
+### Get Artist by Name or MusicBrainz ID
 
 Retrieves complete information for a specific artist, including metadata and image URLs.
+If the artist-name parameter is formatted like a MusicBrainz ID (UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx),
+it will search for artists with that MBID instead of by name.
 
-- **Endpoint**: `/player/<player-name>/library/artist/<artist-name>`
+- **Endpoint**: `/player/<player-name>/library/artist/<artist-name-or-mbid>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
-  - `artist-name` (string): The name of the artist
+  - `artist-name-or-mbid` (string): The name of the artist or a MusicBrainz ID
 - **Query Parameters**:
   - `include_albums` (boolean, optional): Whether to include album data for the artist
 - **Response**:
@@ -447,8 +449,11 @@ Retrieves complete information for a specific artist, including metadata and ima
 
 #### Example
 ```bash
-# Get artist information without albums
+# Get artist information by name
 curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd"
+
+# Get artist information by MusicBrainz ID
+curl "http://<device-ip>:1080/player/mpd/library/artist/83d91898-7763-47d7-b03b-b92132375c47"
 
 # Get artist information with albums included
 curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd?include_albums=true"

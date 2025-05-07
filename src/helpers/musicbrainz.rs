@@ -669,3 +669,20 @@ pub fn split_artist_names(artist_name: &str, cache_only: bool, custom_separators
     }
 }
 
+/// Check if a string appears to be a valid MusicBrainz ID (MBID)
+/// 
+/// MusicBrainz IDs are formatted as UUIDs: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+/// 
+/// # Arguments
+/// * `input` - The string to check
+/// 
+/// # Returns
+/// true if the string looks like a valid MBID, false otherwise
+pub fn is_mbid(input: &str) -> bool {
+    // MusicBrainz IDs are in UUID format:
+    // 8 chars, dash, 4 chars, dash, 4 chars, dash, 4 chars, dash, 12 chars
+    input.len() == 36 
+        && input.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        && input.matches('-').count() == 4
+}
+

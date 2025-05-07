@@ -64,7 +64,7 @@ pub struct ArtistAlbumsResponse {
 }
 
 /// Get library information for a player
-#[get("/player/<player_name>/library")]
+#[get("/library/<player_name>")]
 pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioController>>) -> Result<Json<LibraryResponse>, Custom<Json<LibraryResponse>>> {
     let controllers = controller.inner().list_controllers();
     
@@ -123,7 +123,7 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
 /// 
 /// Optional query parameter:
 /// - include_tracks: When set to "true", includes track data for each album
-#[get("/player/<player_name>/library/albums?<include_tracks>")]
+#[get("/library/<player_name>/albums?<include_tracks>")]
 pub fn get_player_albums(
     player_name: &str, 
     include_tracks: Option<bool>,
@@ -174,7 +174,7 @@ pub fn get_player_albums(
 }
 
 /// Get all artists for a player
-#[get("/player/<player_name>/library/artists")]
+#[get("/library/<player_name>/artists")]
 pub fn get_player_artists(
     player_name: &str,
     controller: &State<Arc<AudioController>>
@@ -217,7 +217,7 @@ pub fn get_player_artists(
 /// 
 /// Optional query parameter:
 /// - include_tracks: When set to "true", includes track data for the album
-#[get("/player/<player_name>/library/album/<album_name>?<include_tracks>")]
+#[get("/library/<player_name>/album/<album_name>?<include_tracks>")]
 pub fn get_album_by_name(
     player_name: &str, 
     album_name: &str,
@@ -274,7 +274,7 @@ pub fn get_album_by_name(
 /// 
 /// Optional query parameter:
 /// - include_tracks: When set to "true", includes track data for each album
-#[get("/player/<player_name>/library/artist/<artist_name>/albums?<include_tracks>")]
+#[get("/library/<player_name>/artist/<artist_name>/albums?<include_tracks>")]
 pub fn get_albums_by_artist(
     player_name: &str, 
     artist_name: &str,
@@ -330,7 +330,7 @@ pub fn get_albums_by_artist(
 }
 
 /// Refresh the library for a player
-#[get("/player/<player_name>/library/refresh")]
+#[get("/library/<player_name>/refresh")]
 pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioController>>) -> Result<Json<LibraryResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
@@ -386,7 +386,7 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
 /// 
 /// If the artist_name parameter is formatted like a MusicBrainz ID (UUID format),
 /// it will search for an artist with that MBID instead of by name.
-#[get("/player/<player_name>/library/artist/<artist_name>")]
+#[get("/library/<player_name>/artist/<artist_name>")]
 pub fn get_artist_by_name(
     player_name: &str, 
     artist_name: &str,
@@ -439,5 +439,5 @@ pub fn get_artist_by_name(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-      ))
+    ))
 }

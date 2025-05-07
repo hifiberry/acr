@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
-use std::mem;
 use log::{debug, info, warn, error};
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
 use crate::helpers::memory_report::MemoryUsage;
+use crate::players::mpd::mpd::MPDPlayerController;
 
 /// MPD library interface that provides access to albums and artists
 #[derive(Clone)]
@@ -32,11 +32,14 @@ pub struct MPDLibrary {
     
     /// Custom artist separators for splitting artist names
     artist_separators: Arc<Mutex<Option<Vec<String>>>>,
+    
+    /// Reference to the MPDPlayerController that owns this library
+    controller: Arc<MPDPlayerController>,
 }
 
 impl MPDLibrary {
     /// Create a new MPD library interface with specific connection details
-    pub fn with_connection(hostname: &str, port: u16) -> Self {
+    pub fn with_connection(hostname: &str, port: u16, controller: Arc<MPDPlayerController>) -> Self {
         debug!("Creating new MPDLibrary with connection {}:{}", hostname, port);
         
         MPDLibrary {
@@ -48,6 +51,7 @@ impl MPDLibrary {
             library_loaded: Arc::new(Mutex::new(false)),
             loading_progress: Arc::new(Mutex::new(0.0)),
             artist_separators: Arc::new(Mutex::new(None)),
+            controller,
         }
     }
     
@@ -266,7 +270,10 @@ impl MPDLibrary {
 impl LibraryInterface for MPDLibrary {
     fn new() -> Self {
         debug!("Creating new MPDLibrary with default connection");
-        Self::with_connection("localhost", 6600)
+        // Create a new default MPDPlayerController
+        let controller = Arc::new(MPDPlayerController::new());
+        
+        Self::with_connection("localhost", 6600, controller)
     }
     
     fn is_loaded(&self) -> bool {
@@ -281,8 +288,8 @@ impl LibraryInterface for MPDLibrary {
         debug!("Refreshing MPD library data using MPDLibraryLoader");
         let start_time = Instant::now();
         
-        // Use our MPDLibraryLoader to load albums
-        let loader = super::libraryloader::MPDLibraryLoader::new(&self.hostname, self.port);
+        // Use our MPDLibraryLoader to load albums, passing the controller reference
+        let loader = super::libraryloader::MPDLibraryLoader::new(&self.hostname, self.port, self.controller.clone());
         
         // Get artist separators from the MPD configuration, if any
         let artist_separators = self.get_artist_separators();

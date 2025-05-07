@@ -236,6 +236,14 @@ impl MPDPlayerController {
         self.artist_separators.as_deref()
     }
     
+    /// Notify all registered listeners that the database is being updated
+    pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>, 
+                                 song: Option<String>, percentage: Option<f32>) {
+        // The source parameter is redundant since BasePlayerController creates its own source
+        // Just pass the remaining parameters to the base method
+        self.base.notify_database_update(artist, album, song, percentage);
+    }
+    
     /// Starts a background thread that listens for MPD events
     /// The thread will run until the running flag is set to false
     fn start_event_listener(&self, running: Arc<AtomicBool>, self_arc: Arc<Self>) {
@@ -981,8 +989,8 @@ impl PlayerController for MPDPlayerController {
                 // Import MPDLibrary here to ensure it's available
                 use crate::players::mpd::library::MPDLibrary;
                 
-                // Create a library with the same connection parameters
-                let library = MPDLibrary::with_connection(&self.hostname, self.port);
+                // Create a library with the same connection parameters and pass self as controller
+                let library = MPDLibrary::with_connection(&self.hostname, self.port, player_arc.clone());
                 
                 // Store the library in the controller first
                 {

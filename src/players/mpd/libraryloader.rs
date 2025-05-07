@@ -2,10 +2,15 @@ use std::collections::HashMap;
 use std::time::Instant;
 use std::io::{Write, BufReader, BufRead};
 use std::net::TcpStream;
+use std::sync::Arc;
 use log::{debug, info, error};
-use crate::data::{LibraryError, Track, PlayerEvent, PlayerSource};
-use crate::players::player_controller::notify_database_update;
+use crate::data::LibraryError;
+use crate::players::mpd::mpd::MPDPlayerController;
+use crate::data::{Track, PlayerEvent, PlayerSource};
 use super::library::MPDLibrary;
+
+/// Number of songs to process before updating progress
+const PROGRESS_UPDATE_FREQUENCY: usize = 100;
 
 /// MPD library loader that can load a library from MPD
 pub struct MPDLibraryLoader {
@@ -14,16 +19,20 @@ pub struct MPDLibraryLoader {
     
     /// MPD server port
     port: u16,
+    
+    /// Reference to the MPDPlayerController that owns this library
+    controller: Arc<MPDPlayerController>,
 }
 
 impl MPDLibraryLoader {
     /// Create a new MPD library loader with specific connection details
-    pub fn new(hostname: &str, port: u16) -> Self {
+    pub fn new(hostname: &str, port: u16, controller: Arc<MPDPlayerController>) -> Self {
         debug!("Creating new MPDLibraryLoader with connection {}:{}", hostname, port);
         
         MPDLibraryLoader {
             hostname: hostname.to_string(),
             port,
+            controller,
         }
     }
 
@@ -224,8 +233,6 @@ impl MPDLibraryLoader {
     pub fn load_albums_from_mpd(&self, custom_separators: Option<Vec<String>>) -> Result<Vec<crate::data::Album>, LibraryError> {
         // progress indicator (f32 0.0..100.0)
         let mut progress: f32 = 0.0;
-        // use the player source's name and id
-        let source = crate::data::PlayerSource::new("mpd".to_string(), "mpd".to_string());
 
         info!("Loading MPD library from {}:{}", self.hostname, self.port);
         let start_time = Instant::now();
@@ -236,9 +243,10 @@ impl MPDLibraryLoader {
         progress = 10.0; // Update progress to 10%
         
         // Send database update event to show initial progress
-        notify_database_update(&source, Some("Loading artists".to_string()), None, None, Some(progress));
+        // Note: We no longer need to pass the source parameter
+        self.controller.notify_database_update(Some("Loading artists".to_string()), None, None, Some(progress));
         
-        info!("Database loading progress: {:.1}%", progress);
+        debug!("Database loading progress: {:.1}%", progress);
 
         // Step 2: Load all songs for each album artist
         let mut all_songs = Vec::new();
@@ -253,9 +261,9 @@ impl MPDLibraryLoader {
         progress = 20.0; // Update progress to 20%
         
         // Send database update event to show progress
-        notify_database_update(&source, Some("Processing songs".to_string()), None, None, Some(progress));
+        self.controller.notify_database_update(Some("Processing songs".to_string()), None, None, Some(progress));
         
-        info!("Database loading progress: {:.1}%", progress);
+        debug!("Database loading progress: {:.1}%", progress);
 
         info!("Loaded {} songs in total", all_songs.len());
 
@@ -293,8 +301,8 @@ impl MPDLibraryLoader {
                 error!("Album not found in map for key: {}", album_key);
             }
             
-            // Update progress every 100 songs or on the last song
-            if index % 100 == 0 || index == total_songs - 1 {
+            // Update progress every PROGRESS_UPDATE_FREQUENCY songs or on the last song
+            if index % PROGRESS_UPDATE_FREQUENCY == 0 || index == total_songs - 1 {
                 // Calculate progress (range 20-90%)
                 progress = 20.0 + (index as f32 * songs_per_progress_point);
                 progress = progress.min(90.0); // Cap at 90%
@@ -317,9 +325,9 @@ impl MPDLibraryLoader {
                     .unwrap_or("Unknown Song").to_string();
                 
                 // Send database update event with current item details
-                notify_database_update(&source, Some(artist_name), Some(album_name), Some(song_name), Some(progress));
+                self.controller.notify_database_update(Some(artist_name), Some(album_name), Some(song_name), Some(progress));
                 
-                info!("Database loading progress: {:.1}%", progress);
+                debug!("Database loading progress: {:.1}%", progress);
             }
         }
         
@@ -331,13 +339,13 @@ impl MPDLibraryLoader {
             albums.push(album);
         }
         
-        // Final progress update (100%)
-        progress = 100.0;
+        // Final progress update (99%)
+        progress = 99.0;
         
         // Send the final database update event
-        notify_database_update(&source, Some("Library load complete".to_string()), None, None, Some(progress));
+        self.controller.notify_database_update(Some("Library load complete".to_string()), None, None, Some(progress));
         
-        info!("Database loading progress: {:.1}%", progress);
+        debug!("Database loading progress: {:.1}%", progress);
         
         let elapsed = start_time.elapsed();
         info!("Loaded {} albums in {:?}", albums.len(), elapsed);

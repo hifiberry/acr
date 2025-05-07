@@ -12,6 +12,9 @@ use crate::helpers::artistupdater::ArtistUpdater;
 /// Global flag to indicate if TheArtistDB lookups are enabled
 static THEARTISTDB_ENABLED: AtomicBool = AtomicBool::new(false);
 
+// Provider name for image naming
+const PROVIDER: &str = "artistdb";
+
 /// API key storage for TheArtistDB
 #[derive(Default)]
 struct TheArtistDBConfig {
@@ -173,7 +176,7 @@ pub fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
 /// 
 /// This function downloads the artist thumbnail from TheArtistDB if available
 /// and stores it in the image cache following the naming convention:
-/// - artistdb.0.xxx for the main thumbnail
+/// - artist.artistdb.0.xxx for the main thumbnail
 /// 
 /// # Arguments
 /// * `mbid` - MusicBrainz ID of the artist
@@ -190,9 +193,11 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
     let artist_basename = crate::helpers::artistupdater::artist_basename(artist_name);
 
     // Check if the thumbnail already exists
-    let thumb_path = format!("artists/{}/artistdb.0", artist_basename);
-    if crate::helpers::fanarttv::path_with_any_extension_exists(&thumb_path) {
-        debug!("TheArtistDB thumbnail already exists for '{}', skipping download", artist_name);
+    let thumb_base_path = format!("artists/{}/artist", artist_basename);
+    let existing_thumbs = imagecache::count_provider_files(&thumb_base_path, PROVIDER);
+    
+    if existing_thumbs > 0 {
+        debug!("Artist already has {} thumbnails from {}, skipping download", existing_thumbs, PROVIDER);
         return true;
     }
 
@@ -212,8 +217,12 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
                             // Determine the file extension
                             let extension = crate::helpers::fanarttv::extract_extension_from_url(thumb_url);
                             
-                            // Create the full path with extension
-                            let full_path = format!("artists/{}/artistdb.0.{}", artist_basename, extension);
+                            // Create the full path with extension using the new naming convention
+                            let full_path = format!("artists/{}/artist.{}.{}.{}", 
+                                                  artist_basename, 
+                                                  PROVIDER, 
+                                                  0,
+                                                  extension);
                             
                             // Store the image in the cache
                             if let Err(e) = imagecache::store_image(&full_path, &image_data) {

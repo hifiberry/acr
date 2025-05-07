@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::fs::{self, File};
+use std::fs::{self, File, read_dir};
 use std::io::{Write, Read};
 use std::sync::Mutex;
 use lazy_static::lazy_static;
@@ -204,4 +204,67 @@ pub fn get_image<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, String> {
 /// Delete an image from the cache
 pub fn delete_image<P: AsRef<Path>>(path: P) -> Result<(), String> {
     get_image_cache().delete_image(path)
+}
+
+/// Count files with any extension matching a base path and provider pattern
+/// 
+/// # Arguments
+/// * `base_path` - Base path without extension
+/// * `provider` - Provider name (e.g., "fanarttv")
+/// 
+/// # Returns
+/// * `usize` - Number of matching files found
+pub fn count_provider_files<P: AsRef<Path>>(base_path: P, provider: &str) -> usize {
+    if !get_image_cache().is_enabled() {
+        return 0;
+    }
+
+    let base = base_path.as_ref();
+    let dir_path = if let Some(parent) = base.parent() {
+        parent.to_path_buf()
+    } else {
+        PathBuf::new()
+    };
+
+    let file_name = base.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+
+    // Get the full path to the directory
+    let full_dir_path = get_image_cache().get_full_path(dir_path);
+    
+    // If directory doesn't exist, return 0
+    if !full_dir_path.exists() {
+        return 0;
+    }
+
+    let pattern = format!("{}.{}", file_name, provider);
+    
+    // Read directory and count matching files
+    match read_dir(full_dir_path) {
+        Ok(entries) => {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.file_name()
+                        .to_str()
+                        .map(|name| name.starts_with(&pattern))
+                        .unwrap_or(false)
+                })
+                .count()
+        },
+        Err(_) => 0,
+    }
+}
+
+/// Check if any files with a given base path and provider pattern exist
+/// 
+/// # Arguments
+/// * `base_path` - Base path without extension
+/// * `provider` - Provider name (e.g., "fanarttv")
+/// 
+/// # Returns
+/// * `bool` - True if any matching files exist
+pub fn provider_files_exist<P: AsRef<Path>>(base_path: P, provider: &str) -> bool {
+    count_provider_files(base_path, provider) > 0
 }

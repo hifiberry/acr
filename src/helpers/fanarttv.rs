@@ -5,6 +5,8 @@ use crate::helpers::imagecache;
 
 // API key for fanart.tv
 const APIKEY: &str = "749a8fca4f2d3b0462b287820ad6ab06";
+// Provider name for image naming
+const PROVIDER: &str = "fanarttv";
 
 /// Get artist thumbnail URLs from FanArt.tv
 /// 
@@ -122,10 +124,10 @@ pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
 /// Download artist thumbnails and banners from FanArt.tv
 /// 
 /// This function follows the naming convention:
-/// - artist.0.xxx, artist.1.xxx, etc. for thumbnails
-/// - banner.0.xxx, banner.1.xxx, etc. for banners
+/// - artist.fanarttv.0.xxx, artist.fanarttv.1.xxx, etc. for thumbnails
+/// - banner.fanarttv.0.xxx, banner.fanarttv.1.xxx, etc. for banners
 /// 
-/// If the .0 image already exists, it won't download more images of that type.
+/// If images of the type already exist, it won't download more images of that type.
 /// 
 /// # Arguments
 /// * `artist_mbid` - MusicBrainz ID of the artist
@@ -139,9 +141,11 @@ pub fn download_artist_images(artist_mbid: &str, artist_name: &str) -> bool {
     let mut _banner_downloaded = false;
     let mut api_success = true; // Track overall API success
     
-    // Check if the first thumbnail already exists
-    let first_thumb_path = format!("artists/{}/artist.0", artist_basename);
-    if !path_with_any_extension_exists(&first_thumb_path) {
+    // Check if thumbnails already exist
+    let thumb_base_path = format!("artists/{}/artist", artist_basename);
+    let existing_thumbs = imagecache::count_provider_files(&thumb_base_path, PROVIDER);
+    
+    if existing_thumbs == 0 {
         // Download all thumbnails
         let thumbnail_urls = get_artist_thumbnails(artist_mbid, None);
         if thumbnail_urls.is_empty() {
@@ -150,8 +154,9 @@ pub fn download_artist_images(artist_mbid: &str, artist_name: &str) -> bool {
         }
         
         for (i, url) in thumbnail_urls.iter().enumerate() {
-            let path = format!("artists/{}/artist.{}.{}", 
-                               artist_basename, 
+            let path = format!("artists/{}/artist.{}.{}.{}", 
+                               artist_basename,
+                               PROVIDER, 
                                i,
                                extract_extension_from_url(url));
             
@@ -172,12 +177,14 @@ pub fn download_artist_images(artist_mbid: &str, artist_name: &str) -> bool {
             }
         }
     } else {
-        debug!("Artist thumbnail already exists for '{}', skipping download", artist_name);
+        debug!("Artist already has {} thumbnails from {}, skipping download", existing_thumbs, PROVIDER);
     }
     
-    // Check if the first banner already exists
-    let first_banner_path = format!("artists/{}/banner.0", artist_basename);
-    if !path_with_any_extension_exists(&first_banner_path) {
+    // Check if banners already exist
+    let banner_base_path = format!("artists/{}/banner", artist_basename);
+    let existing_banners = imagecache::count_provider_files(&banner_base_path, PROVIDER);
+    
+    if existing_banners == 0 {
         // Download all banners
         let banner_urls = get_artist_banners(artist_mbid);
         if banner_urls.is_empty() {
@@ -186,8 +193,9 @@ pub fn download_artist_images(artist_mbid: &str, artist_name: &str) -> bool {
         }
         
         for (i, url) in banner_urls.iter().enumerate() {
-            let path = format!("artists/{}/banner.{}.{}", 
-                               artist_basename, 
+            let path = format!("artists/{}/banner.{}.{}.{}", 
+                               artist_basename,
+                               PROVIDER, 
                                i,
                                extract_extension_from_url(url));
             
@@ -208,34 +216,13 @@ pub fn download_artist_images(artist_mbid: &str, artist_name: &str) -> bool {
             }
         }
     } else {
-        debug!("Artist banner already exists for '{}', skipping download", artist_name);
+        debug!("Artist already has {} banners from {}, skipping download", existing_banners, PROVIDER);
     }
     
     // Return api_success instead of thumb_downloaded || banner_downloaded
     // This allows the function to return true even if no images were found,
     // as long as the API call itself was successful
     api_success
-}
-
-/// Check if a path with any extension exists in the image cache
-/// 
-/// # Arguments
-/// * `base_path` - Base path without extension
-/// 
-/// # Returns
-/// * `bool` - True if any file with the base path and any extension exists
-pub fn path_with_any_extension_exists(base_path: &str) -> bool {
-    // Common image file extensions
-    let extensions = ["jpg", "jpeg", "png", "gif", "webp"];
-    
-    for ext in &extensions {
-        let full_path = format!("{}.{}", base_path, ext);
-        if std::path::Path::new(&imagecache::get_full_path(&full_path)).exists() {
-            return true;
-        }
-    }
-    
-    false
 }
 
 /// Download an image from a URL

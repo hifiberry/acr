@@ -294,7 +294,7 @@ impl LibraryInterface for MPDLibrary {
         // Get artist separators from the MPD configuration, if any
         let artist_separators = self.get_artist_separators();
         
-        match loader.load_albums_from_mpd(artist_separators) {
+        let result = match loader.load_albums_from_mpd(artist_separators) {
             Ok(albums) => {
                 // Mark as not loaded during update
                 *self.library_loaded.lock().unwrap() = false;
@@ -347,7 +347,12 @@ impl LibraryInterface for MPDLibrary {
                 error!("Error loading MPD library: {}", e);
                 Err(e)
             }
-        }
+        };
+        
+        // Send an update_database notification of 100% before exiting, even in case of errors
+        self.controller.notify_database_update(None, None, None, Some(100.0));
+        
+        result
     }
     
     fn get_albums(&self) -> Vec<Album> {

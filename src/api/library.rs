@@ -42,6 +42,15 @@ pub struct AlbumsResponse {
     albums: Vec<Album>,
 }
 
+/// Response structure for albums list using the DTO model
+#[derive(serde::Serialize)]
+pub struct AlbumsDTOResponse {
+    player_name: String,
+    count: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    albums: Vec<AlbumDTO>,
+}
+
 /// Enhanced artist information with album count
 #[derive(Serialize)]
 struct EnhancedArtist<'a> {
@@ -69,24 +78,40 @@ pub struct ArtistResponse {
     artist: Option<Artist>,
 }
 
-/// Response structure for a single album with conditional track inclusion
+/// Response structure for a single album (always includes tracks)
 #[derive(serde::Serialize)]
 pub struct AlbumResponse {
     player_name: String,
-    include_tracks: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     album: Option<Album>,
 }
 
-/// Response structure for albums by artist with conditional track inclusion
+/// Response structure for a single album using the DTO model
+#[derive(serde::Serialize)]
+pub struct AlbumDTOResponse {
+    player_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    album: Option<AlbumDTO>,
+}
+
+/// Response structure for albums by artist (without tracks)
 #[derive(serde::Serialize)]
 pub struct ArtistAlbumsResponse {
     player_name: String,
     artist_name: String,
     count: usize,
-    include_tracks: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     albums: Vec<Album>,
+}
+
+/// Response structure for albums by artist using the DTO model
+#[derive(serde::Serialize)]
+pub struct ArtistAlbumsDTOResponse {
+    player_name: String,
+    artist_name: String,
+    count: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    albums: Vec<AlbumDTO>,
 }
 
 /// Custom response structure for artist data with specific field order
@@ -97,6 +122,63 @@ struct ArtistCustomResponse {
     is_multi: bool,
     album_count: usize,
     thumb_url: Vec<String>,
+}
+
+/// Data Transfer Object for Album to include tracks_count without modifying Album struct
+#[derive(serde::Serialize)]
+struct AlbumDTO {
+    id: String,
+    name: String,
+    artists: Vec<String>,
+    release_date: Option<chrono::NaiveDate>,
+    tracks_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tracks: Option<Vec<crate::data::track::Track>>,
+    cover_art: Option<String>,
+    uri: Option<String>,
+}
+
+impl From<Album> for AlbumDTO {
+    fn from(album: Album) -> Self {
+        // Get the tracks for counting and optional inclusion
+        let tracks_lock = album.tracks.lock().unwrap_or_else(|_| {
+            // If poisoned, create an empty list
+            panic!("Tracks mutex poisoned")
+        });
+        
+        let tracks_count = tracks_lock.len();
+        let tracks_clone = Some(tracks_lock.clone());
+        
+        // Get artists
+        let artists = album.artists.lock().unwrap_or_else(|_| panic!("Artists mutex poisoned"))
+            .clone();
+        
+        // Drop the lock before returning
+        drop(tracks_lock);
+        
+        AlbumDTO {
+            id: album.id.to_string(),
+            name: album.name,
+            artists,
+            release_date: album.release_date,
+            tracks_count,
+            tracks: tracks_clone,
+            cover_art: album.cover_art,
+            uri: album.uri,
+        }
+    }
+}
+
+/// Creates an AlbumDTO from an Album with optional track inclusion
+fn create_album_dto(album: Album, include_tracks: bool) -> AlbumDTO {
+    let mut dto = AlbumDTO::from(album);
+    
+    // If we don't want to include tracks, set to None
+    if !include_tracks {
+        dto.tracks = None;
+    }
+    
+    dto
 }
 
 /// List all players with library information
@@ -189,14 +271,12 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
 
 /// Get all albums for a player
 /// 
-/// Optional query parameter:
-/// - include_tracks: When set to "true", includes track data for each album
-#[get("/library/<player_name>/albums?<include_tracks>")]
+/// This endpoint returns albums without track data but includes track count
+#[get("/library/<player_name>/albums")]
 pub fn get_player_albums(
-    player_name: &str, 
-    include_tracks: Option<bool>,
+    player_name: &str,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<AlbumsResponse>, Custom<String>> {
+) -> Result<Json<AlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -206,22 +286,17 @@ pub fn get_player_albums(
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
                     // Get all albums
-                    let mut albums = library.get_albums();
+                    let albums = library.get_albums();
                     
-                    // If include_tracks is not set to true, remove tracks from albums
-                    if include_tracks != Some(true) {
-                        for album in &mut albums {
-                            // Clear the tracks to reduce response size
-                            if let Ok(mut tracks) = album.tracks.lock() {
-                                tracks.clear();
-                            }
-                        }
-                    }
+                    // Convert albums to DTOs without including tracks
+                    let album_dtos = albums.into_iter()
+                        .map(|album| create_album_dto(album, false))
+                        .collect::<Vec<AlbumDTO>>();
                     
-                    return Ok(Json(AlbumsResponse {
+                    return Ok(Json(AlbumsDTOResponse {
                         player_name: player_name.to_string(),
-                        count: albums.len(),
-                        albums,
+                        count: album_dtos.len(),
+                        albums: album_dtos,
                     }));
                 } else {
                     // Player exists but doesn't have a library
@@ -323,8 +398,8 @@ pub fn get_album_by_name(
     player_name: &str, 
     album_name: &str,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<AlbumResponse>, Custom<String>> {
-    get_album_internal(player_name, album_name, controller, false)
+) -> Result<Json<AlbumDTOResponse>, Custom<String>> {
+    get_album_internal_dto(player_name, album_name, controller, false)
 }
 
 /// Get a specific album by ID
@@ -335,19 +410,19 @@ pub fn get_album_by_id(
     player_name: &str, 
     album_id: &str,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<AlbumResponse>, Custom<String>> {
-    get_album_internal(player_name, album_id, controller, true)
+) -> Result<Json<AlbumDTOResponse>, Custom<String>> {
+    get_album_internal_dto(player_name, album_id, controller, true)
 }
 
-/// Internal function to handle album lookup by either name or ID
+/// Internal function to handle album lookup by either name or ID using DTO model
 /// 
 /// This function abstracts the common logic for both endpoints
-fn get_album_internal(
+fn get_album_internal_dto(
     player_name: &str,
     identifier: &str,
     controller: &State<Arc<AudioController>>,
     is_id_lookup: bool
-) -> Result<Json<AlbumResponse>, Custom<String>> {
+) -> Result<Json<AlbumDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -357,7 +432,7 @@ fn get_album_internal(
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
                     // Get the album by name or ID depending on the lookup type
-                    let album = if is_id_lookup {
+                    let album_option = if is_id_lookup {
                         // Try to parse the ID as u64
                         match identifier.parse::<u64>() {
                             Ok(id) => library.get_album_by_id(id),
@@ -373,10 +448,12 @@ fn get_album_internal(
                         library.get_album(identifier)
                     };
                     
-                    return Ok(Json(AlbumResponse {
+                    // Convert album to DTO with tracks included (single album endpoint)
+                    let album_dto = album_option.map(|album| create_album_dto(album, true));
+                    
+                    return Ok(Json(AlbumDTOResponse {
                         player_name: player_name.to_string(),
-                        album,
-                        include_tracks: true, // Always include tracks
+                        album: album_dto,
                     }));
                 } else {
                     // Player exists but doesn't have a library
@@ -398,15 +475,13 @@ fn get_album_internal(
 
 /// Get all albums by a specific artist
 /// 
-/// Optional query parameter:
-/// - include_tracks: When set to "true", includes track data for each album
-#[get("/library/<player_name>/albums/by-artist/<artist_name>?<include_tracks>")]
+/// This endpoint returns albums without track data but includes track count
+#[get("/library/<player_name>/albums/by-artist/<artist_name>")]
 pub fn get_albums_by_artist(
     player_name: &str, 
     artist_name: &str,
-    include_tracks: Option<bool>,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<ArtistAlbumsResponse>, Custom<String>> {
+) -> Result<Json<ArtistAlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -416,26 +491,18 @@ pub fn get_albums_by_artist(
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
                     // Get albums by artist
-                    let mut albums = library.get_albums_by_artist(artist_name);
+                    let albums = library.get_albums_by_artist(artist_name);
                     
-                    // If include_tracks is not set to true, remove tracks from albums
-                    let include_tracks_flag = include_tracks == Some(true);
+                    // Convert albums to DTOs without including tracks
+                    let album_dtos = albums.into_iter()
+                        .map(|album| create_album_dto(album, false))
+                        .collect::<Vec<AlbumDTO>>();
                     
-                    if !include_tracks_flag {
-                        for album in &mut albums {
-                            // Clear the tracks to reduce response size
-                            if let Ok(mut tracks) = album.tracks.lock() {
-                                tracks.clear();
-                            }
-                        }
-                    }
-                    
-                    return Ok(Json(ArtistAlbumsResponse {
+                    return Ok(Json(ArtistAlbumsDTOResponse {
                         player_name: player_name.to_string(),
                         artist_name: artist_name.to_string(),
-                        count: albums.len(),
-                        albums,
-                        include_tracks: include_tracks_flag,
+                        count: album_dtos.len(),
+                        albums: album_dtos,
                     }));
                 } else {
                     // Player exists but doesn't have a library
@@ -457,15 +524,13 @@ pub fn get_albums_by_artist(
 
 /// Get all albums by a specific artist ID
 /// 
-/// Optional query parameter:
-/// - include_tracks: When set to "true", includes track data for each album
-#[get("/library/<player_name>/albums/by-artist-id/<artist_id>?<include_tracks>")]
+/// This endpoint returns albums without track data but includes track count
+#[get("/library/<player_name>/albums/by-artist-id/<artist_id>")]
 pub fn get_albums_by_artist_id(
     player_name: &str, 
     artist_id: &str,
-    include_tracks: Option<bool>,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<ArtistAlbumsResponse>, Custom<String>> {
+) -> Result<Json<ArtistAlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -486,19 +551,12 @@ pub fn get_albums_by_artist_id(
                     };
                     
                     // Get albums by artist ID
-                    let mut albums = library.get_albums_by_artist_id(artist_id_parsed);
+                    let albums = library.get_albums_by_artist_id(artist_id_parsed);
                     
-                    // If include_tracks is not set to true, remove tracks from albums
-                    let include_tracks_flag = include_tracks == Some(true);
-                    
-                    if !include_tracks_flag {
-                        for album in &mut albums {
-                            // Clear the tracks to reduce response size
-                            if let Ok(mut tracks) = album.tracks.lock() {
-                                tracks.clear();
-                            }
-                        }
-                    }
+                    // Convert albums to DTOs without including tracks
+                    let album_dtos = albums.into_iter()
+                        .map(|album| create_album_dto(album, false))
+                        .collect::<Vec<AlbumDTO>>();
                     
                     // Try to find the artist name for better response
                     let artist_name = library.get_artists().into_iter()
@@ -508,12 +566,11 @@ pub fn get_albums_by_artist_id(
                             |artist| artist.name
                         );
                     
-                    return Ok(Json(ArtistAlbumsResponse {
+                    return Ok(Json(ArtistAlbumsDTOResponse {
                         player_name: player_name.to_string(),
                         artist_name,
-                        count: albums.len(),
-                        albums,
-                        include_tracks: include_tracks_flag,
+                        count: album_dtos.len(),
+                        albums: album_dtos,
                     }));
                 } else {
                     // Player exists but doesn't have a library
@@ -694,5 +751,5 @@ fn get_artist_internal(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-    ))
+     ))
 }

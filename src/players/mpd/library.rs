@@ -85,6 +85,185 @@ impl MPDLibrary {
         }
     }
     
+    /// Retrieve album cover art for a specific URI using MPD's albumart command
+    /// 
+    /// Returns the binary data of the cover art if found, None otherwise
+    pub fn cover_art(&self, uri: &str) -> Option<Vec<u8>> {
+        use std::io::{Read, BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        debug!("Retrieving cover art for URI: {}", uri);
+        
+        // Connect to MPD server
+        let stream = match TcpStream::connect(format!("{}:{}", self.hostname, self.port)) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to connect to MPD server: {}", e);
+                return None;
+            }
+        };
+        
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        
+        // Read the welcome message
+        let mut welcome = String::new();
+        if reader.read_line(&mut welcome).is_err() {
+            error!("Failed to read welcome message from MPD");
+            return None;
+        }
+        
+        if !welcome.starts_with("OK") {
+            error!("Unexpected welcome message from MPD: {}", welcome);
+            return None;
+        }
+        
+        // Send albumart command with URI and offset 0
+        let cmd = format!("albumart \"{}\" 0\n", uri);
+        if writer.write_all(cmd.as_bytes()).is_err() {
+            error!("Failed to send albumart command to MPD");
+            return None;
+        }
+        
+        // Read the size response
+        let mut size_line = String::new();
+        if reader.read_line(&mut size_line).is_err() {
+            error!("Failed to read size response from MPD");
+            return None;
+        }
+        
+        // Parse the size
+        let size: usize = match size_line.strip_prefix("size: ") {
+            Some(size_str) => match size_str.trim().parse() {
+                Ok(size) => size,
+                Err(e) => {
+                    error!("Failed to parse cover art size: {}", e);
+                    return None;
+                }
+            },
+            None => {
+                error!("Unexpected size response format: {}", size_line);
+                return None;
+            }
+        };
+        
+        // Read the binary size line
+        let mut binary_line = String::new();
+        if reader.read_line(&mut binary_line).is_err() {
+            error!("Failed to read binary size response from MPD");
+            return None;
+        }
+        
+        // Parse the binary chunk size
+        let chunk_size: usize = match binary_line.strip_prefix("binary: ") {
+            Some(size_str) => match size_str.trim().parse() {
+                Ok(size) => size,
+                Err(e) => {
+                    error!("Failed to parse binary chunk size: {}", e);
+                    return None;
+                }
+            },
+            None => {
+                error!("Unexpected binary size response format: {}", binary_line);
+                return None;
+            }
+        };
+        
+        // Read the binary data
+        let mut buffer = vec![0u8; chunk_size];
+        match reader.read_exact(&mut buffer) {
+            Ok(_) => {},
+            Err(e) => {
+                error!("Failed to read binary data from MPD: {}", e);
+                return None;
+            }
+        }
+        
+        // Read the OK line
+        let mut ok_line = String::new();
+        if reader.read_line(&mut ok_line).is_err() {
+            error!("Failed to read OK line from MPD");
+            return None;
+        }
+        
+        if !ok_line.trim().eq("OK") {
+            error!("Unexpected response after binary data: {}", ok_line);
+            return None;
+        }
+        
+        // If this is the complete image, we're done
+        if chunk_size == size {
+            return Some(buffer);
+        }
+        
+        // For larger images, we need to fetch multiple chunks
+        let mut full_data = buffer;
+        let mut offset = chunk_size;
+        
+        while offset < size {
+            // Send command to get next chunk
+            let cmd = format!("albumart \"{}\" {}\n", uri, offset);
+            if writer.write_all(cmd.as_bytes()).is_err() {
+                error!("Failed to send albumart command for chunk at offset {}", offset);
+                return None;
+            }
+            
+            // Read size line (we already know the full size)
+            let mut size_line = String::new();
+            if reader.read_line(&mut size_line).is_err() {
+                error!("Failed to read size response for chunk at offset {}", offset);
+                return None;
+            }
+            
+            // Read binary size line
+            let mut binary_line = String::new();
+            if reader.read_line(&mut binary_line).is_err() {
+                error!("Failed to read binary size for chunk at offset {}", offset);
+                return None;
+            }
+            
+            // Parse the binary chunk size
+            let chunk_size: usize = match binary_line.strip_prefix("binary: ") {
+                Some(size_str) => match size_str.trim().parse() {
+                    Ok(size) => size,
+                    Err(e) => {
+                        error!("Failed to parse binary chunk size at offset {}: {}", offset, e);
+                        return None;
+                    }
+                },
+                None => {
+                    error!("Unexpected binary size format at offset {}: {}", offset, binary_line);
+                    return None;
+                }
+            };
+            
+            // Read the binary data for this chunk
+            let mut buffer = vec![0u8; chunk_size];
+            match reader.read_exact(&mut buffer) {
+                Ok(_) => {},
+                Err(e) => {
+                    error!("Failed to read binary data at offset {}: {}", offset, e);
+                    return None;
+                }
+            }
+            
+            // Append to our full data
+            full_data.extend_from_slice(&buffer);
+            
+            // Read the OK line
+            let mut ok_line = String::new();
+            if reader.read_line(&mut ok_line).is_err() {
+                error!("Failed to read OK line at offset {}", offset);
+                return None;
+            }
+            
+            // Update offset for next chunk
+            offset += chunk_size;
+        }
+        
+        debug!("Successfully retrieved cover art of size {} bytes", full_data.len());
+        Some(full_data)
+    }
+    
     /// Create artist objects from all album artist data
     ///
     /// This method scans all albums in the library, extracts all artist names

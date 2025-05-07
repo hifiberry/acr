@@ -307,7 +307,7 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
     }
     
     // Try to get MBID from cache first
-    let cache_key = format!("artist::{}::mbid", artist_name);
+    let cache_key = format!("artist::mbid::{}", artist_name);
     match attributecache::get::<String>(&cache_key) {
         Ok(Some(mbid)) => {
             debug!("Found MusicBrainz ID for '{}' in cache: {}", artist_name, mbid);
@@ -386,25 +386,12 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                     debug!("Found matching artist: '{}' with MBID: {}", response_name, mbid);
                     
                     // Store the MBID in the attribute cache
-                    let cache_key = format!("artist::{}::mbid", artist_name);
+                    let cache_key = format!("artist::mbid::{}", artist_name);
                     debug!("Attempting to store MBID in cache with key: {}", cache_key);
                     
                     match attributecache::set(&cache_key, &mbid) {
                         Ok(_) => {
                             debug!("Successfully stored MusicBrainz ID for '{}' in cache", artist_name);
-                            
-                            // Verify the cache write by reading it back
-                            match attributecache::get::<String>(&cache_key) {
-                                Ok(Some(cached_mbid)) => {
-                                    if cached_mbid == mbid {
-                                        debug!("Verified MBID in cache matches: {}", cached_mbid);
-                                    } else {
-                                        warn!("Cache verification failed! Expected: {}, Got: {}", mbid, cached_mbid);
-                                    }
-                                },
-                                Ok(None) => warn!("Failed to verify MBID in cache - not found after writing!"),
-                                Err(e) => warn!("Failed to verify MBID in cache: {}", e)
-                            }
                         },
                         Err(e) => {
                             error!("Failed to cache MusicBrainz ID for '{}': {}", artist_name, e);
@@ -462,12 +449,12 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
     }
     
     // Try to get MBID from cache first for the full combined name
-    let cache_key = format!("artist::{}::mbid", artist_name);
-    let cache_partial_key = format!("artist::{}::partial", artist_name);
+    let cache_key = format!("artist::mbid::{}", artist_name);
+    let cache_partial_key = format!("artist::mbid_partial::{}", artist_name);
     
     // Check if we have already determined this artist doesn't exist
     if cache_failures {
-        let not_found_cache_key = format!("artist::{}::not_found", artist_name);
+        let not_found_cache_key = format!("artist::not_found::{}", artist_name);
         match attributecache::get::<bool>(&not_found_cache_key) {
             Ok(Some(true)) => {
                 debug!("Artist '{}' previously marked as not found in cache", artist_name);
@@ -522,16 +509,20 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
                     
                     let mut all_mbids = Vec::new();
                     let mut any_found = false;
+                    let mut all_found = true;  // New flag to track if all split artists were found
                     
                     // Search for each artist individually
-                    for artist in split_artists {
-                        match search_musicbrainz_for_artist(&artist, cache_only) {
+                    for artist in &split_artists {
+                        match search_musicbrainz_for_artist(artist, cache_only) {
                             MusicBrainzSearchResult::Found(mbids, _) => {
                                 debug!("Found MusicBrainz ID(s) for split artist '{}': {:?}", artist, mbids);
                                 all_mbids.extend(mbids);
                                 any_found = true;
                             },
-                            _ => debug!("No MusicBrainz ID found for split artist: '{}'", artist)
+                            _ => {
+                                debug!("No MusicBrainz ID found for split artist: '{}'", artist);
+                                all_found = false;  // Mark that at least one artist wasn't found
+                            }
                         }
                     }
                     
@@ -544,43 +535,35 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
                             Ok(_) => {
                                 debug!("Successfully stored multiple MusicBrainz IDs for '{}' in cache", artist_name);
                                 
-                                // Also store that this is a partial result
-                                match attributecache::set(&cache_partial_key, &true) {
-                                    Ok(_) => {
-                                        debug!("Successfully marked '{}' as a partial match in cache", artist_name);
-                                        
-                                        // Verify the partial flag cache write
-                                        match attributecache::get::<bool>(&cache_partial_key) {
-                                            Ok(Some(true)) => debug!("Verified partial flag in cache for '{}'", artist_name),
-                                            Ok(Some(false)) => warn!("Cache verification failed for partial flag of '{}'!", artist_name),
-                                            Ok(None) => warn!("Failed to verify partial flag in cache - not found after writing!"),
-                                            Err(e) => warn!("Failed to verify partial flag in cache: {}", e)
+                                // Only store partial status if we didn't find all the artists
+                                if !all_found {
+                                    debug!("Not all artists in '{}' were found, marking as partial result", artist_name);
+                                    match attributecache::set(&cache_partial_key, &true) {
+                                        Ok(_) => {
+                                            debug!("Successfully marked '{}' as a partial match in cache", artist_name);
+                                        },
+                                        Err(e) => {
+                                            error!("Failed to cache partial status for '{}': {}", artist_name, e);
                                         }
-                                    },
-                                    Err(e) => {
-                                        error!("Failed to cache partial status for '{}': {}", artist_name, e);
                                     }
-                                }
-                                
-                                // Verify the cache write by reading it back
-                                match attributecache::get::<Vec<String>>(&cache_key) {
-                                    Ok(Some(cached_mbids)) => {
-                                        if cached_mbids == all_mbids {
-                                            debug!("Verified multiple MBIDs in cache match: {:?}", cached_mbids);
-                                        } else {
-                                            warn!("Cache verification failed! Expected: {:?}, Got: {:?}", all_mbids, cached_mbids);
-                                        }
-                                    },
-                                    Ok(None) => warn!("Failed to verify multiple MBIDs in cache - not found after writing!"),
-                                    Err(e) => warn!("Failed to verify multiple MBIDs in cache: {}", e)
+                                    
+                                    return MusicBrainzSearchResult::FoundPartial(all_mbids, false);
+                                } else {
+                                    debug!("All split artists in '{}' were found, returning as full match", artist_name);
+                                    return MusicBrainzSearchResult::Found(all_mbids, false);
                                 }
                             },
                             Err(e) => {
                                 error!("Failed to cache multiple MusicBrainz IDs for '{}': {}", artist_name, e);
+                                
+                                // Even if caching failed, return the appropriate result type
+                                if !all_found {
+                                    return MusicBrainzSearchResult::FoundPartial(all_mbids, false);
+                                } else {
+                                    return MusicBrainzSearchResult::Found(all_mbids, false);
+                                }
                             }
                         }
-                        
-                        return MusicBrainzSearchResult::FoundPartial(all_mbids, false);
                     }
                     
                     // Otherwise, fall through to return the original NotFound result
@@ -589,18 +572,10 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
             
             // If we reached here, the artist was not found. Cache this result if requested.
             if cache_failures {
-                let not_found_cache_key = format!("artist::{}::not_found", artist_name);
+                let not_found_cache_key = format!("artist::not_found::{}", artist_name);
                 match attributecache::set(&not_found_cache_key, &true) {
                     Ok(_) => {
                         debug!("Cached '{}' as not found to prevent future lookups", artist_name);
-                        
-                        // Verify the cache write
-                        match attributecache::get::<bool>(&not_found_cache_key) {
-                            Ok(Some(true)) => debug!("Verified not_found cache for '{}'", artist_name),
-                            Ok(Some(false)) => warn!("Cache verification failed for not_found status of '{}'!", artist_name),
-                            Ok(None) => warn!("Failed to verify not_found cache - not found after writing!"),
-                            Err(e) => warn!("Failed to verify not_found cache: {}", e)
-                        }
                     },
                     Err(e) => error!("Failed to cache not_found status for '{}': {}", artist_name, e)
                 }

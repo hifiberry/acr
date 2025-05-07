@@ -12,6 +12,9 @@ pub struct Track {
     /// Track artist (only stored if different from album artist)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artist: Option<String>,
+    /// URI/filename of the track (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
 }
 
 impl Track {
@@ -22,6 +25,7 @@ impl Track {
             track_number,
             name,
             artist: None,
+            uri: None,
         }
     }
     
@@ -43,6 +47,13 @@ impl Track {
             track_number,
             name,
             artist: track_artist,
+            uri: None,
         }
+    }
+    
+    /// Set the URI/filename for this track
+    pub fn with_uri(mut self, uri: String) -> Self {
+        self.uri = Some(uri);
+        self
     }
 }

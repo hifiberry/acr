@@ -71,7 +71,7 @@ impl MPDLibraryLoader {
 
     /// Create a Track object from an MPD song
     /// 
-    /// This extracts track information from a song including track name, number, disc, and artist
+    /// This extracts track information from a song including track name, number, disc, artist, and uri
     /// and creates a properly structured Track object
     fn track_from_mpd_song(song: &mpd::Song, album_artist: Option<&str>) -> crate::data::Track {
         use crate::data::Track;
@@ -103,14 +103,19 @@ impl MPDLibraryLoader {
         let artist = song.tags.iter()
             .find(|(tag, _)| tag == "Artist")
             .map(|(_, value)| value.clone());
-            
-        // Create Track object - if artist is present, use with_artist method,
-        // otherwise use the basic constructor
-        if let Some(artist) = artist {
+        
+        // Get the file URI from the song
+        let uri = song.file.clone();
+        
+        // Create Track object with appropriate fields
+        let track = if let Some(artist) = artist {
             Track::with_artist(disc_number, track_number, track_name.to_string(), artist, album_artist)
         } else {
             Track::new(disc_number, track_number, track_name.to_string())
-        }
+        };
+        
+        // Add URI to the track and return it
+        track.with_uri(uri)
     }
     
     /// Create an Album object from an MPD song
@@ -165,9 +170,7 @@ impl MPDLibraryLoader {
         };
 
         debug!("Album ID: {}, Name: {}, Artists: {:?}", album_id, album_name, artists.lock().unwrap());
-        
-        // Use the song file as the URI
-        let uri = Some(song.file.clone());
+
         
         // Create album object
         Album {
@@ -178,7 +181,7 @@ impl MPDLibraryLoader {
             release_date,
             tracks,
             cover_art: None,
-            uri,
+            uri: None
         }
     }
     

@@ -33,30 +33,32 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         .merge(("port", api_port))
         .merge(("address", "0.0.0.0"));
     
+    let api_routes = routes![
+        get_version,
+        
+        // Player routes
+        players::get_current_player,
+        players::list_players,
+        players::send_command_to_active,
+        players::send_command_to_player_by_name,
+        players::get_now_playing,
+        
+        // Plugin routes
+        plugins::list_action_plugins,
+        plugins::list_event_filters,
+        
+        // Library routes
+        library::get_library_info,
+        library::get_player_albums,
+        library::get_player_artists,
+        library::get_album_by_name,
+        library::get_albums_by_artist,
+        library::refresh_player_library,
+        library::get_artist_by_name, // New endpoint for full artist details
+    ];
+    
     let _rocket = rocket::custom(config)
-        .mount("/", routes![
-            get_version,
-            
-            // Player routes
-            players::get_current_player,
-            players::list_players,
-            players::send_command_to_active,
-            players::send_command_to_player_by_name,
-            players::get_now_playing,
-            
-            // Plugin routes
-            plugins::list_action_plugins,
-            plugins::list_event_filters,
-            
-            // Library routes
-            library::get_library_info,
-            library::get_player_albums,
-            library::get_player_artists,
-            library::get_album_by_name,
-            library::get_albums_by_artist,
-            library::refresh_player_library,
-            library::get_artist_image
-        ])
+        .mount("/", api_routes)
         .manage(controller)
         .launch()
         .await?;

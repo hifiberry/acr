@@ -410,26 +410,46 @@ Triggers a refresh of the library for a specific player.
 curl http://<device-ip>:1080/player/mpd/library/refresh
 ```
 
-### Get Artist Image
+### Get Artist by Name
 
-Retrieves image information for a specific artist.
+Retrieves complete information for a specific artist, including metadata and image URLs.
 
-- **Endpoint**: `/player/<player-name>/library/artist/<artist-name>/image`
+- **Endpoint**: `/player/<player-name>/library/artist/<artist-name>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
   - `artist-name` (string): The name of the artist
+- **Query Parameters**:
+  - `include_albums` (boolean, optional): Whether to include album data for the artist
 - **Response**:
   ```json
   {
-    "artist_name": "artist-name",
-    "image_path": "/path/to/image.jpg", // or null if no image
-    "error": null // or error string if applicable
+    "player_name": "player-name",
+    "include_albums": true,
+    "artist": {
+      "id": 12345678,
+      "name": "artist-name", 
+      "is_multi": false,
+      "albums": ["album1", "album2"],
+      "track_count": 25,
+      "metadata": {
+        "mbid": ["musicbrainz-id-1", "musicbrainz-id-2"],
+        "thumb_url": ["/path/to/image1.jpg", "/path/to/image2.jpg"],
+        "banner_url": ["/path/to/banner.jpg"],
+        "biography": "Artist biography text...",
+        "genres": ["rock", "alternative"],
+        "is_partial_match": false
+      }
+    }
   }
   ```
 - **Error Response** (404 Not Found): String error message
 
 #### Example
 ```bash
-curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd/image"
+# Get artist information without albums
+curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd"
+
+# Get artist information with albums included
+curl "http://<device-ip>:1080/player/mpd/library/artist/Pink%20Floyd?include_albums=true"
 ```

@@ -36,6 +36,15 @@ pub struct ArtistsResponse {
     artists: Vec<Artist>,
 }
 
+/// Response structure for a single artist
+#[derive(serde::Serialize)]
+pub struct ArtistResponse {
+    player_name: String,
+    include_albums: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artist: Option<Artist>,
+}
+
 /// Response structure for a single album with conditional track inclusion
 #[derive(serde::Serialize)]
 pub struct AlbumResponse {
@@ -54,14 +63,6 @@ pub struct ArtistAlbumsResponse {
     include_tracks: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     albums: Vec<Album>,
-}
-
-/// Response structure for artist image information
-#[derive(serde::Serialize)]
-pub struct ArtistImageResponse {
-    artist_name: String,
-    image_path: Option<String>, 
-    error: Option<String>,
 }
 
 /// Get library information for a player
@@ -399,15 +400,17 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
       ))
 }
 
-/// Get the image for an artist
+/// Get a specific artist by name
 /// 
-/// API endpoint to retrieve the thumbnail image for an artist
-#[get("/player/<player_name>/library/artist/<artist_name>/image")]
-pub fn get_artist_image(
-    player_name: &str,
+/// Optional query parameter:
+/// - include_albums: When set to "true", includes album data for the artist
+#[get("/player/<player_name>/library/artist/<artist_name>?<include_albums>")]
+pub fn get_artist_by_name(
+    player_name: &str, 
     artist_name: &str,
+    include_albums: Option<bool>, 
     controller: &State<Arc<AudioController>>
-) -> Result<Json<ArtistImageResponse>, Custom<String>> {
+) -> Result<Json<ArtistResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -417,23 +420,23 @@ pub fn get_artist_image(
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
                     // Get the artist by name
-                    if let Some(artist) = library.get_artist(artist_name) {
-                        // Check if the artist has an image
-                        let image_path = artist.metadata.as_ref()
-                            .and_then(|metadata| metadata.thumb_url.first().cloned());
-                        
-                        return Ok(Json(ArtistImageResponse {
-                            artist_name: artist_name.to_string(),
-                            image_path,
-                            error: None,
-                        }));
-                    } else {
-                        // Artist not found
-                        return Err(Custom(
-                            Status::NotFound,
-                            format!("Artist '{}' not found", artist_name),
-                        ));
+                    let mut artist = library.get_artist(artist_name);
+                    
+                    // If include_albums is not set to true and we have an artist, remove albums list
+                    let include_albums_flag = include_albums == Some(true);
+                    
+                    if !include_albums_flag {
+                        if let Some(ref mut art) = artist {
+                            // Clear the albums to reduce response size
+                            art.albums.clear();
+                        }
                     }
+                    
+                    return Ok(Json(ArtistResponse {
+                        player_name: player_name.to_string(),
+                        artist,
+                        include_albums: include_albums_flag,
+                    }));
                 } else {
                     // Player exists but doesn't have a library
                     return Err(Custom(

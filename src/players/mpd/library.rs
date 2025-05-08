@@ -645,10 +645,6 @@ impl LibraryInterface for MPDLibrary {
         self.get_artist_by_name(name)
     }
     
-    fn get_album_cover(&self, _album_name: &str) -> Option<String> {
-        None
-    }
-    
     fn update_artist_metadata(&self) {
         info!("Starting background metadata update for MPDLibrary artists");
         // Use the generic function from artistupdater with only the artists collection

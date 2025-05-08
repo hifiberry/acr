@@ -66,8 +66,13 @@ pub trait LibraryInterface {
     /// Get albums by artist ID
     fn get_albums_by_artist_id(&self, artist_id: &Identifier) -> Vec<Album>;
     
-    /// Get album cover art (if available)
-    fn get_album_cover(&self, album_name: &str) -> Option<String>;
+    /// Get an image by identifier
+    /// 
+    /// This is a generic image retrieval method that will be implemented 
+    /// by a dedicated image interface in the future.
+    fn get_image(&self, _identifier: String) -> Option<String> {
+        None // Default implementation returns None
+    }
     
     /// Update artist metadata in background
     /// 

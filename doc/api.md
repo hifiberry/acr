@@ -5,6 +5,7 @@ This document describes the REST API endpoints available in the Audio Control RE
 ## Base Information
 
 - **Base URL**: `http://<device-ip>:1080`
+- **API Prefix**: All endpoints are prefixed with `/api`
 - **Content Type**: All responses are in JSON format
 - **Version**: As per current package version
 
@@ -14,7 +15,7 @@ This document describes the REST API endpoints available in the Audio Control RE
 
 Retrieves the current version of the API.
 
-- **Endpoint**: `/version`
+- **Endpoint**: `/api/version`
 - **Method**: GET
 - **Response**:
   ```json
@@ -25,40 +26,7 @@ Retrieves the current version of the API.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/version
-```
-
-### Get System Memory Usage
-
-Retrieves the memory usage statistics of the library components.
-
-- **Endpoint**: `/system/memory`
-- **Method**: GET
-- **Response**:
-  ```json
-  {
-    "artists_memory": 1024000,
-    "albums_memory": 2048000,
-    "tracks_memory": 4096000,
-    "overhead_memory": 512000,
-    "artist_count": 300,
-    "album_count": 500,
-    "track_count": 5000,
-    "album_artists_count": 450,
-    "total_memory": 7680000,
-    "formatted": {
-      "artists_memory": "1000.00 KB",
-      "albums_memory": "2000.00 KB",
-      "tracks_memory": "4000.00 KB", 
-      "overhead_memory": "500.00 KB",
-      "total_memory": "7500.00 KB"
-    }
-  }
-  ```
-
-#### Example
-```bash
-curl http://<device-ip>:1080/system/memory
+curl http://<device-ip>:1080/api/version
 ```
 
 ## Player API
@@ -67,7 +35,7 @@ curl http://<device-ip>:1080/system/memory
 
 Retrieves information about the currently active player.
 
-- **Endpoint**: `/player`
+- **Endpoint**: `/api/player`
 - **Method**: GET
 - **Response**:
   ```json
@@ -81,14 +49,14 @@ Retrieves information about the currently active player.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/player
+curl http://<device-ip>:1080/api/player
 ```
 
 ### List Available Players
 
 Retrieves a list of all available audio players.
 
-- **Endpoint**: `/players`
+- **Endpoint**: `/api/players`
 - **Method**: GET
 - **Response**:
   ```json
@@ -108,14 +76,14 @@ Retrieves a list of all available audio players.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/players
+curl http://<device-ip>:1080/api/players
 ```
 
 ### Send Command to Active Player
 
 Sends a playback command to the currently active player.
 
-- **Endpoint**: `/player/active/send/<command>`
+- **Endpoint**: `/api/player/active/send/<command>`
 - **Method**: POST
 - **Path Parameters**:
   - `command` (string): The command to send. Supported values:
@@ -142,29 +110,29 @@ Sends a playback command to the currently active player.
 #### Examples
 ```bash
 # Simple command
-curl -X POST http://<device-ip>:1080/player/active/send/play
+curl -X POST http://<device-ip>:1080/api/player/active/send/play
 
 # Play/pause toggle
-curl -X POST http://<device-ip>:1080/player/active/send/playpause
+curl -X POST http://<device-ip>:1080/api/player/active/send/playpause
 
 # Next track
-curl -X POST http://<device-ip>:1080/player/active/send/next
+curl -X POST http://<device-ip>:1080/api/player/active/send/next
 
 # Set loop mode to playlist
-curl -X POST http://<device-ip>:1080/player/active/send/set_loop:playlist
+curl -X POST http://<device-ip>:1080/api/player/active/send/set_loop:playlist
 
 # Seek to 30 seconds
-curl -X POST http://<device-ip>:1080/player/active/send/seek:30.0
+curl -X POST http://<device-ip>:1080/api/player/active/send/seek:30.0
 
 # Enable shuffle
-curl -X POST http://<device-ip>:1080/player/active/send/set_random:true
+curl -X POST http://<device-ip>:1080/api/player/active/send/set_random:true
 ```
 
 ### Send Command to Specific Player
 
 Sends a playback command to a specific player by name.
 
-- **Endpoint**: `/player/<player-name>/command/<command>`
+- **Endpoint**: `/api/player/<player-name>/command/<command>`
 - **Method**: POST
 - **Path Parameters**:
   - `player-name` (string): The name of the target player
@@ -175,20 +143,17 @@ Sends a playback command to a specific player by name.
 #### Examples
 ```bash
 # Play on a specific player
-curl -X POST http://<device-ip>:1080/player/spotify/command/play
-
-# Set volume on a specific player
-curl -X POST http://<device-ip>:1080/player/mpd/command/set_volume:80
+curl -X POST http://<device-ip>:1080/api/player/spotify/command/play
 
 # Pause a specific player
-curl -X POST http://<device-ip>:1080/player/raat/command/pause
+curl -X POST http://<device-ip>:1080/api/player/raat/command/pause
 ```
 
 ### Get Now Playing Information
 
 Retrieves information about the currently playing track and player status.
 
-- **Endpoint**: `/now-playing`
+- **Endpoint**: `/api/now-playing`
 - **Method**: GET
 - **Response**:
   ```json
@@ -214,7 +179,81 @@ Retrieves information about the currently playing track and player status.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/now-playing
+curl http://<device-ip>:1080/api/now-playing
+```
+
+### Get Player Queue
+
+Retrieves the current queue for a specific player.
+
+- **Endpoint**: `/api/player/<player-name>/queue`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+- **Response**:
+  ```json
+  {
+    "player": "player-name",
+    "queue": [
+      // Track objects in the queue
+    ]
+  }
+  ```
+- **Error Response** (404 Not Found): Error message if player not found
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/player/mpd/queue
+```
+
+### Get Player Metadata
+
+Retrieves all metadata for a specific player.
+
+- **Endpoint**: `/api/player/<player-name>/meta`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+- **Response**:
+  ```json
+  {
+    "player_name": "player-name",
+    "metadata": {
+      "key1": "value1",
+      "key2": "value2"
+      // Various metadata key-value pairs
+    }
+  }
+  ```
+- **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/player/mpd/meta
+```
+
+### Get Specific Player Metadata Key
+
+Retrieves a specific metadata key for a player.
+
+- **Endpoint**: `/api/player/<player-name>/meta/<key>`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+  - `key` (string): The metadata key to retrieve
+- **Response**:
+  ```json
+  {
+    "player_name": "player-name",
+    "key": "requested-key",
+    "value": "metadata-value" // Can be null if key not found
+  }
+  ```
+- **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/player/mpd/meta/volume
 ```
 
 ## Plugin API
@@ -223,7 +262,7 @@ curl http://<device-ip>:1080/now-playing
 
 Retrieves a list of all active action plugins.
 
-- **Endpoint**: `/plugins/actions`
+- **Endpoint**: `/api/plugins/actions`
 - **Method**: GET
 - **Response**:
   ```json
@@ -239,14 +278,14 @@ Retrieves a list of all active action plugins.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/plugins/actions
+curl http://<device-ip>:1080/api/plugins/actions
 ```
 
 ### List Event Filters
 
 Retrieves a list of all active event filters.
 
-- **Endpoint**: `/plugins/event-filters`
+- **Endpoint**: `/api/plugins/event-filters`
 - **Method**: GET
 - **Response**:
   ```json
@@ -262,7 +301,7 @@ Retrieves a list of all active event filters.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/plugins/event-filters
+curl http://<device-ip>:1080/api/plugins/event-filters
 ```
 
 ## Library API
@@ -271,7 +310,7 @@ curl http://<device-ip>:1080/plugins/event-filters
 
 Retrieves a list of all players and shows whether they offer library functionality.
 
-- **Endpoint**: `/library`
+- **Endpoint**: `/api/library`
 - **Method**: GET
 - **Response**:
   ```json
@@ -295,14 +334,14 @@ Retrieves a list of all players and shows whether they offer library functionali
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/library
+curl http://<device-ip>:1080/api/library
 ```
 
 ### Get Library Information
 
 Retrieves library information for a specific player.
 
-- **Endpoint**: `/library/<player-name>`
+- **Endpoint**: `/api/library/<player-name>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -321,14 +360,14 @@ Retrieves library information for a specific player.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/library/mpd
+curl http://<device-ip>:1080/api/library/mpd
 ```
 
 ### Get Player Albums
 
 Retrieves all albums for a specific player.
 
-- **Endpoint**: `/library/<player-name>/albums`
+- **Endpoint**: `/api/library/<player-name>/albums`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -346,15 +385,14 @@ Retrieves all albums for a specific player.
 
 #### Examples
 ```bash
-# Get albums
-curl http://<device-ip>:1080/library/mpd/albums
+curl http://<device-ip>:1080/api/library/mpd/albums
 ```
 
 ### Get Player Artists
 
 Retrieves all artists for a specific player.
 
-- **Endpoint**: `/library/<player-name>/artists`
+- **Endpoint**: `/api/library/<player-name>/artists`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -379,15 +417,14 @@ Retrieves all artists for a specific player.
 
 #### Examples
 ```bash
-# Get artists
-curl http://<device-ip>:1080/library/mpd/artists
+curl http://<device-ip>:1080/api/library/mpd/artists
 ```
 
 ### Get Album by ID
 
 Retrieves a specific album by its unique identifier.
 
-- **Endpoint**: `/library/<player-name>/album/by-id/<album-id>`
+- **Endpoint**: `/api/library/<player-name>/album/by-id/<album-id>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -406,15 +443,14 @@ Retrieves a specific album by its unique identifier.
 
 #### Examples
 ```bash
-# Get an album by ID
-curl "http://<device-ip>:1080/library/mpd/album/by-id/12345678"
+curl "http://<device-ip>:1080/api/library/mpd/album/by-id/12345678"
 ```
 
 ### Get Artist by Name
 
 Retrieves complete information for a specific artist by name.
 
-- **Endpoint**: `/library/<player-name>/artist/by-name/<artist-name>`
+- **Endpoint**: `/api/library/<player-name>/artist/by-name/<artist-name>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -441,15 +477,14 @@ Retrieves complete information for a specific artist by name.
 
 #### Example
 ```bash
-# Get artist information by name
-curl "http://<device-ip>:1080/library/mpd/artist/by-name/Pink%20Floyd"
+curl "http://<device-ip>:1080/api/library/mpd/artist/by-name/Pink%20Floyd"
 ```
 
 ### Get Artist by ID
 
 Retrieves complete information for a specific artist by ID.
 
-- **Endpoint**: `/library/<player-name>/artist/by-id/<artist-id>`
+- **Endpoint**: `/api/library/<player-name>/artist/by-id/<artist-id>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -459,15 +494,14 @@ Retrieves complete information for a specific artist by ID.
 
 #### Example
 ```bash
-# Get artist information by ID
-curl "http://<device-ip>:1080/library/mpd/artist/by-id/12345678"
+curl "http://<device-ip>:1080/api/library/mpd/artist/by-id/12345678"
 ```
 
 ### Get Artist by MusicBrainz ID
 
 Retrieves complete information for a specific artist by MusicBrainz ID.
 
-- **Endpoint**: `/library/<player-name>/artist/by-mbid/<mbid>`
+- **Endpoint**: `/api/library/<player-name>/artist/by-mbid/<mbid>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -477,15 +511,14 @@ Retrieves complete information for a specific artist by MusicBrainz ID.
 
 #### Example
 ```bash
-# Get artist information by MusicBrainz ID
-curl "http://<device-ip>:1080/library/mpd/artist/by-mbid/83d91898-7763-47d7-b03b-b92132375c47"
+curl "http://<device-ip>:1080/api/library/mpd/artist/by-mbid/83d91898-7763-47d7-b03b-b92132375c47"
 ```
 
 ### Get Albums by Artist Name
 
 Retrieves all albums by a specific artist for a player.
 
-- **Endpoint**: `/library/<player-name>/albums/by-artist/<artist-name>`
+- **Endpoint**: `/api/library/<player-name>/albums/by-artist/<artist-name>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -505,15 +538,14 @@ Retrieves all albums by a specific artist for a player.
 
 #### Examples
 ```bash
-# Get albums for an artist
-curl "http://<device-ip>:1080/library/mpd/albums/by-artist/Pink%20Floyd"
+curl "http://<device-ip>:1080/api/library/mpd/albums/by-artist/Pink%20Floyd"
 ```
 
 ### Get Albums by Artist ID
 
 Retrieves all albums by a specific artist ID for a player.
 
-- **Endpoint**: `/library/<player-name>/albums/by-artist-id/<artist-id>`
+- **Endpoint**: `/api/library/<player-name>/albums/by-artist-id/<artist-id>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -523,15 +555,14 @@ Retrieves all albums by a specific artist ID for a player.
 
 #### Examples
 ```bash
-# Get albums for an artist by ID
-curl "http://<device-ip>:1080/library/mpd/albums/by-artist-id/12345678"
+curl "http://<device-ip>:1080/api/library/mpd/albums/by-artist-id/12345678"
 ```
 
 ### Refresh Player Library
 
 Triggers a refresh of the library for a specific player.
 
-- **Endpoint**: `/library/<player-name>/refresh`
+- **Endpoint**: `/api/library/<player-name>/refresh`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
@@ -540,7 +571,74 @@ Triggers a refresh of the library for a specific player.
 
 #### Example
 ```bash
-curl http://<device-ip>:1080/library/mpd/refresh
+curl http://<device-ip>:1080/api/library/mpd/refresh
+```
+
+### Get Library Metadata
+
+Retrieves all metadata for a player's library.
+
+- **Endpoint**: `/api/library/<player-name>/meta`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+- **Response**:
+  ```json
+  {
+    "player_name": "player-name",
+    "metadata": {
+      "key1": "value1",
+      "key2": "value2"
+      // Various metadata key-value pairs
+    }
+  }
+  ```
+- **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/library/mpd/meta
+```
+
+### Get Specific Library Metadata Key
+
+Retrieves a specific metadata key for a player's library.
+
+- **Endpoint**: `/api/library/<player-name>/meta/<key>`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+  - `key` (string): The metadata key to retrieve
+- **Response**:
+  ```json
+  {
+    "player_name": "player-name",
+    "key": "requested-key",
+    "value": "metadata-value" // Can be null if key not found
+  }
+  ```
+- **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/library/mpd/meta/album_count
+```
+
+### Get Image from Library
+
+Retrieves an image (such as album art) from a player's library.
+
+- **Endpoint**: `/api/library/<player-name>/image/<identifier>`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+  - `identifier` (string): The identifier for the image (e.g., "album:12345")
+- **Response**: Binary image data with appropriate Content-Type header
+- **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/library/mpd/image/album:12345 --output cover.jpg
 ```
 
 ## Data Structures

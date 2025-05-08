@@ -34,6 +34,9 @@ pub struct MPDPlayerController {
     /// Whether to load the MPD library into memory
     load_mpd_library: bool,
     
+    /// Flag to disable automatic artist metadata updates
+    disable_metadata_update: bool,
+    
     /// Custom artist separators for splitting artist names
     artist_separators: Option<Vec<String>>,
     
@@ -52,6 +55,7 @@ impl Clone for MPDPlayerController {
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             load_mpd_library: self.load_mpd_library,
+            disable_metadata_update: self.disable_metadata_update,
             artist_separators: self.artist_separators.clone(),
             library: Arc::clone(&self.library),
         }
@@ -75,6 +79,7 @@ impl MPDPlayerController {
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             load_mpd_library: true,
+            disable_metadata_update: false,
             artist_separators: None,
             library: Arc::new(Mutex::new(None)),
         };
@@ -99,6 +104,7 @@ impl MPDPlayerController {
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             load_mpd_library: true,
+            disable_metadata_update: false,
             artist_separators: None,
             library: Arc::new(Mutex::new(None)),
         };
@@ -187,6 +193,16 @@ impl MPDPlayerController {
     /// Set whether to load MPD library into memory
     pub fn set_load_mpd_library(&mut self, load: bool) {
         self.load_mpd_library = load;
+    }
+    
+    /// Get whether to disable automatic artist metadata updates
+    pub fn get_disable_metadata_update(&self) -> Option<bool> {
+        Some(self.disable_metadata_update)
+    }
+
+    /// Set whether to disable automatic artist metadata updates
+    pub fn set_disable_metadata_update(&mut self, disable: bool) {
+        self.disable_metadata_update = disable;
     }
     
     /// Get a reference to the MPD library, if available

@@ -32,6 +32,9 @@ pub struct MPDLibrary {
     /// Custom artist separators for splitting artist names
     artist_separators: Arc<Mutex<Option<Vec<String>>>>,
     
+    /// Flag to disable automatic metadata updates for artists
+    disable_metadata_update: bool,
+    
     /// Reference to the MPDPlayerController that owns this library
     controller: Arc<MPDPlayerController>,
 }
@@ -40,6 +43,9 @@ impl MPDLibrary {
     /// Create a new MPD library interface with specific connection details
     pub fn with_connection(hostname: &str, port: u16, controller: Arc<MPDPlayerController>) -> Self {
         debug!("Creating new MPDLibrary with connection {}:{}", hostname, port);
+        
+        // Get the disable_metadata_update setting from the controller, if available
+        let disable_metadata_update = controller.get_disable_metadata_update().unwrap_or(false);
         
         MPDLibrary {
             hostname: hostname.to_string(),
@@ -50,6 +56,7 @@ impl MPDLibrary {
             library_loaded: Arc::new(Mutex::new(false)),
             loading_progress: Arc::new(Mutex::new(0.0)),
             artist_separators: Arc::new(Mutex::new(None)),
+            disable_metadata_update,
             controller,
         }
     }
@@ -86,8 +93,8 @@ impl MPDLibrary {
     
     /// Retrieve album cover art for a specific URI using MPD's albumart command
     /// 
-    /// Returns the binary data of the cover art if found, None otherwise
-    pub fn cover_art(&self, uri: &str) -> Option<Vec<u8>> {
+    /// Returns a tuple of (binary data, mime-type) of the cover art if found, None otherwise
+    pub fn cover_art(&self, uri: &str) -> Option<(Vec<u8>, String)> {
         use std::io::{Read, BufRead, BufReader, Write};
         use std::net::TcpStream;
         debug!("Retrieving cover art for URI: {}", uri);
@@ -176,12 +183,21 @@ impl MPDLibrary {
                 return None;
             }
         }
-        
-        // Read the OK line
+
+        // Read the OK line (there might be an empty line before it)
         let mut ok_line = String::new();
         if reader.read_line(&mut ok_line).is_err() {
             error!("Failed to read OK line from MPD");
             return None;
+        }
+        
+        // Handle empty line by reading another line if needed
+        if ok_line.trim().is_empty() {
+            ok_line.clear();
+            if reader.read_line(&mut ok_line).is_err() {
+                error!("Failed to read OK line after empty line from MPD");
+                return None;
+            }
         }
         
         if !ok_line.trim().eq("OK") {
@@ -190,79 +206,133 @@ impl MPDLibrary {
         }
         
         // If this is the complete image, we're done
-        if chunk_size == size {
-            return Some(buffer);
-        }
+        let mut full_data = buffer;
         
         // For larger images, we need to fetch multiple chunks
-        let mut full_data = buffer;
-        let mut offset = chunk_size;
-        
-        while offset < size {
-            // Send command to get next chunk
-            let cmd = format!("albumart \"{}\" {}\n", uri, offset);
-            if writer.write_all(cmd.as_bytes()).is_err() {
-                error!("Failed to send albumart command for chunk at offset {}", offset);
-                return None;
-            }
+        if chunk_size < size {
+            let mut offset = chunk_size;
             
-            // Read size line (we already know the full size)
-            let mut size_line = String::new();
-            if reader.read_line(&mut size_line).is_err() {
-                error!("Failed to read size response for chunk at offset {}", offset);
-                return None;
-            }
-            
-            // Read binary size line
-            let mut binary_line = String::new();
-            if reader.read_line(&mut binary_line).is_err() {
-                error!("Failed to read binary size for chunk at offset {}", offset);
-                return None;
-            }
-            
-            // Parse the binary chunk size
-            let chunk_size: usize = match binary_line.strip_prefix("binary: ") {
-                Some(size_str) => match size_str.trim().parse() {
-                    Ok(size) => size,
-                    Err(e) => {
-                        error!("Failed to parse binary chunk size at offset {}: {}", offset, e);
+            while offset < size {
+                // Send command to get next chunk
+                let cmd = format!("albumart \"{}\" {}\n", uri, offset);
+                if writer.write_all(cmd.as_bytes()).is_err() {
+                    error!("Failed to send albumart command for chunk at offset {}", offset);
+                    return None;
+                }
+                
+                // Read size line (we already know the full size)
+                let mut size_line = String::new();
+                if reader.read_line(&mut size_line).is_err() {
+                    error!("Failed to read size response for chunk at offset {}", offset);
+                    return None;
+                }
+                
+                // Read binary size line
+                let mut binary_line = String::new();
+                if reader.read_line(&mut binary_line).is_err() {
+                    error!("Failed to read binary size for chunk at offset {}", offset);
+                    return None;
+                }
+                
+                // Parse the binary chunk size
+                let chunk_size: usize = match binary_line.strip_prefix("binary: ") {
+                    Some(size_str) => match size_str.trim().parse() {
+                        Ok(size) => size,
+                        Err(e) => {
+                            error!("Failed to parse binary chunk size at offset {}: {}", offset, e);
+                            return None;
+                        }
+                    },
+                    None => {
+                        error!("Unexpected binary size format at offset {}: {}", offset, binary_line);
                         return None;
                     }
-                },
-                None => {
-                    error!("Unexpected binary size format at offset {}: {}", offset, binary_line);
+                };
+                
+                // Read the binary data for this chunk
+                let mut buffer = vec![0u8; chunk_size];
+                match reader.read_exact(&mut buffer) {
+                    Ok(_) => {},
+                    Err(e) => {
+                        error!("Failed to read binary data at offset {}: {}", offset, e);
+                        return None;
+                    }
+                }
+                
+                // Append to our full data
+                full_data.extend_from_slice(&buffer);
+                
+                // Read the OK line (there might be an empty line before it)
+                let mut ok_line = String::new();
+                if reader.read_line(&mut ok_line).is_err() {
+                    error!("Failed to read OK line at offset {}", offset);
                     return None;
                 }
-            };
-            
-            // Read the binary data for this chunk
-            let mut buffer = vec![0u8; chunk_size];
-            match reader.read_exact(&mut buffer) {
-                Ok(_) => {},
-                Err(e) => {
-                    error!("Failed to read binary data at offset {}: {}", offset, e);
+                
+                // Handle empty line by reading another line if needed
+                if ok_line.trim().is_empty() {
+                    ok_line.clear();
+                    if reader.read_line(&mut ok_line).is_err() {
+                        error!("Failed to read OK line after empty line at offset {}", offset);
+                        return None;
+                    }
+                }
+                
+                if !ok_line.trim().eq("OK") {
+                    error!("Unexpected response after binary data at offset {}: {}", offset, ok_line);
                     return None;
                 }
+                
+                // Update offset for next chunk
+                offset += chunk_size;
             }
-            
-            // Append to our full data
-            full_data.extend_from_slice(&buffer);
-            
-            // Read the OK line
-            let mut ok_line = String::new();
-            if reader.read_line(&mut ok_line).is_err() {
-                error!("Failed to read OK line at offset {}", offset);
-                return None;
-            }
-            
-            // Update offset for next chunk
-            offset += chunk_size;
         }
         
-        debug!("Successfully retrieved cover art of size {} bytes", full_data.len());
-        Some(full_data)
+        // Detect MIME type based on image data
+        let mime_type = Self::detect_mime_type(&full_data);
+        
+        debug!("Successfully retrieved cover art of size {} bytes with MIME type {}", full_data.len(), mime_type);
+        Some((full_data, mime_type))
     }
     
+    /// Detect the MIME type of an image from its binary data
+    fn detect_mime_type(data: &[u8]) -> String {
+        // Check for magic numbers in header bytes to identify image format
+        if data.len() < 4 {
+            return "application/octet-stream".to_string();
+        }
+        
+        // JPEG starts with FF D8 FF
+        if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            return "image/jpeg".to_string();
+        }
+        
+        // PNG starts with 89 50 4E 47 0D 0A 1A 0A
+        if data.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return "image/png".to_string();
+        }
+        
+        // GIF starts with "GIF87a" or "GIF89a"
+        if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+            return "image/gif".to_string();
+        }
+        
+        // WebP starts with "RIFF" followed by 4 bytes, followed by "WEBP"
+        if data.len() >= 12 && 
+           data.starts_with(b"RIFF") && 
+           data[8..12].starts_with(b"WEBP") {
+            return "image/webp".to_string();
+        }
+        
+        // BMP starts with "BM"
+        if data.starts_with(b"BM") {
+            return "image/bmp".to_string();
+        }
+        
+        // Default to binary if we can't identify it
+        "application/octet-stream".to_string()
+    }
+
     /// Create artist objects from all album artist data
     ///
     /// This method scans all albums in the library, extracts all artist names
@@ -529,6 +599,44 @@ impl MPDLibrary {
             None
         }
     }
+
+    /// Get album cover art using the album's identifier
+    /// 
+    /// This function looks up the album in the library, extracts the URI of the first song,
+    /// and uses that to fetch the cover art.
+    /// 
+    /// Returns a tuple of (binary data, mime-type) of the cover art if found, None otherwise
+    pub fn get_album_cover(&self, id: &crate::data::Identifier) -> Option<(Vec<u8>, String)> {
+        // First, look up the album by its ID
+        let album = self.get_album_by_id(id)?;
+
+        warn!("Found album with ID {}: {}", id, album.name);
+        
+        // Get the URI of the first song in the album
+        let uri = match album.tracks.lock() {
+            Ok(tracks) => {
+                if let Some(first_track) = tracks.first() {
+                    first_track.uri.clone()
+                } else {
+                    return None;
+                }
+            },
+            Err(_) => {
+                warn!("Failed to acquire lock on album songs for {}", album.name);
+                return None;
+            }
+        };
+
+        if uri.is_none() {
+            warn!("No URI found for album {}, probably empty", album.name);
+            return None;
+        }
+
+        warn!("Retrieving cover art for album {} using URI: {}", album.name, uri.as_deref().unwrap());
+        
+        // Use the existing cover_art function to get the image data
+        self.cover_art(uri.as_deref().unwrap())
+    }
 }
 
 impl LibraryInterface for MPDLibrary {
@@ -600,10 +708,12 @@ impl LibraryInterface for MPDLibrary {
                 info!("Library load complete in {:.2?}", total_time);
                 
                 // Start background update of artist metadata now that the library is fully loaded
-                info!("Starting background metadata update for artists");
-                crate::helpers::artistupdater::update_library_artists_metadata_in_background(
-                    self.artists.clone()
-                );
+                if !self.disable_metadata_update {
+                    info!("Starting background metadata update for artists");
+                    crate::helpers::artistupdater::update_library_artists_metadata_in_background(
+                        self.artists.clone()
+                    );
+                }
                 
                 Ok(())
             },
@@ -646,9 +756,11 @@ impl LibraryInterface for MPDLibrary {
     }
     
     fn update_artist_metadata(&self) {
-        info!("Starting background metadata update for MPDLibrary artists");
-        // Use the generic function from artistupdater with only the artists collection
-        crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
+        if !self.disable_metadata_update {
+            info!("Starting background metadata update for MPDLibrary artists");
+            // Use the generic function from artistupdater with only the artists collection
+            crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
+        }
     }
     
     fn get_album_by_id(&self, id: &crate::data::Identifier) -> Option<Album> {
@@ -657,5 +769,33 @@ impl LibraryInterface for MPDLibrary {
     
     fn get_albums_by_artist_id(&self, artist_id: &crate::data::Identifier) -> Vec<Album> {
         self.get_albums_by_artist_id(artist_id)
+    }
+    
+    fn get_image(&self, identifier: String) -> Option<(Vec<u8>, String)> {
+        debug!("Retrieving image for identifier: {}", identifier);
+        
+        // Check if the identifier starts with "album:"
+        if let Some(album_id_str) = identifier.strip_prefix("album:") {
+            warn!("Detected album identifier: {}", album_id_str);
+            
+            // Parse the album ID as a numeric ID (MPD only supports numeric IDs)
+            match album_id_str.parse::<u64>() {
+                Ok(album_id_num) => {
+                    let album_id = crate::data::Identifier::Numeric(album_id_num);
+                    warn!("Parsed album ID: {}", album_id);
+                    
+                    // Use get_album_cover to retrieve the image
+                    return self.get_album_cover(&album_id);
+                },
+                Err(e) => {
+                    warn!("Failed to parse album ID '{}' as a number: {}", album_id_str, e);
+                    return None;
+                }
+            }
+        }
+        
+        // If we reach here, the identifier is not supported
+        warn!("Unsupported image identifier format: {}", identifier);
+        None
     }
 }

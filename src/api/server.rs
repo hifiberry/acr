@@ -58,7 +58,8 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::refresh_player_library,
         library::get_artist_by_name,
         library::get_artist_by_id,
-        library::get_artist_by_mbid
+        library::get_artist_by_mbid,
+        library::get_image // Register the new image endpoint
     ];
     
     let _rocket = rocket::custom(config)

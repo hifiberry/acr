@@ -730,5 +730,61 @@ fn get_artist_internal(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
+     ))
+}
+
+/// Retrieve an image from the library based on an identifier
+/// 
+/// This endpoint maps directly to the library's get_image function, allowing
+/// access to image data like album covers through the REST API.
+/// The identifier format depends on the library implementation, but typically
+/// supports formats like "album:123" for album covers.
+#[get("/library/<player_name>/image/<identifier>")]
+pub fn get_image(
+    player_name: &str,
+    identifier: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<(rocket::http::ContentType, Vec<u8>), Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    
+    // Find the controller with the matching name
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == player_name {
+                // Check if the player has a library
+                if let Some(library) = ctrl.get_library() {
+                    // Call the library's get_image function
+                    if let Some((data, mime_type)) = library.get_image(identifier.to_string()) {
+                        // Extract MIME type components
+                        let media_type = mime_type.split('/').next().unwrap_or("application").to_string();
+                        let media_subtype = mime_type.split('/').nth(1).unwrap_or("octet-stream").to_string();
+                        
+                        // Create a ContentType object
+                        let content_type = rocket::http::ContentType::new(media_type, media_subtype);
+                        
+                        // Return the content type paired with data, which implements Responder
+                        return Ok((content_type, data));
+                    } else {
+                        // Image not found
+                        return Err(Custom(
+                            Status::NotFound,
+                            format!("Image with identifier '{}' not found", identifier),
+                        ));
+                    }
+                } else {
+                    // Player exists but doesn't have a library
+                    return Err(Custom(
+                        Status::NotFound,
+                        format!("Player '{}' does not have a library", player_name),
+                    ));
+                }
+            }
+        }
+    }
+    
+    // Player not found
+    Err(Custom(
+        Status::NotFound,
+        format!("Player '{}' not found", player_name),
     ))
 }

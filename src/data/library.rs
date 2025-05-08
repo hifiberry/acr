@@ -67,18 +67,14 @@ pub trait LibraryInterface {
     fn get_albums_by_artist_id(&self, artist_id: &Identifier) -> Vec<Album>;
     
     /// Get an image by identifier
-    /// 
-    /// This is a generic image retrieval method that will be implemented 
-    /// by a dedicated image interface in the future.
-    fn get_image(&self, _identifier: String) -> Option<String> {
-        None // Default implementation returns None
-    }
+    /// the identifier has no specific format, it can be used differently 
+    /// depending on the library implementation
+    /// returns a tuple of (image data, mime type)
+    fn get_image(&self, identifier: String) -> Option<(Vec<u8>, String)>;
     
     /// Update artist metadata in background
     /// 
     /// This method should update the metadata for all artists in the library using
     /// background worker thread. The default implementation does nothing.
-    fn update_artist_metadata(&self) {
-        // Default empty implementation
-    }
+    fn update_artist_metadata(&self);
 }

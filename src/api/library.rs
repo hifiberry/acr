@@ -341,7 +341,7 @@ pub fn get_player_artists(
                     
                     for artist in &artists {
                         // Get albums for this artist by name to determine the count
-                        let albums = library.get_albums_by_artist(&artist.name);
+                        let albums = library.get_albums_by_artist_id(&artist.id);
                         let album_count = albums.len();
                         
                         // Extract all thumbnail URLs from metadata if available
@@ -390,18 +390,6 @@ pub fn get_player_artists(
     ))
 }
 
-/// Get a specific album by name
-/// 
-/// This endpoint always includes track data for the album
-#[get("/library/<player_name>/album/by-name/<album_name>")]
-pub fn get_album_by_name(
-    player_name: &str, 
-    album_name: &str,
-    controller: &State<Arc<AudioController>>
-) -> Result<Json<AlbumDTOResponse>, Custom<String>> {
-    get_album_internal_dto(player_name, album_name, controller, false)
-}
-
 /// Get a specific album by ID
 /// 
 /// This endpoint always includes track data for the album
@@ -411,18 +399,6 @@ pub fn get_album_by_id(
     album_id: &str,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<AlbumDTOResponse>, Custom<String>> {
-    get_album_internal_dto(player_name, album_id, controller, true)
-}
-
-/// Internal function to handle album lookup by either name or ID using DTO model
-/// 
-/// This function abstracts the common logic for both endpoints
-fn get_album_internal_dto(
-    player_name: &str,
-    identifier: &str,
-    controller: &State<Arc<AudioController>>,
-    is_id_lookup: bool
-) -> Result<Json<AlbumDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -431,24 +407,17 @@ fn get_album_internal_dto(
             if ctrl.get_player_name() == player_name {
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
-                    // Get the album by name or ID depending on the lookup type
-                    let album_option = if is_id_lookup {
-                        // Try to parse the ID as u64
-                        match identifier.parse::<u64>() {
-                            Ok(id) => library.get_album_by_id(id),
-                            Err(_) => {
-                                return Err(Custom(
-                                    Status::BadRequest,
-                                    format!("Invalid album ID format: {}", identifier),
-                                ));
-                            }
-                        }
+                    // Create identifier based on album_id format
+                    let identifier = if let Ok(id) = album_id.parse::<u64>() {
+                        crate::data::Identifier::Numeric(id)
                     } else {
-                        // Get album by name
-                        library.get_album(identifier)
+                        crate::data::Identifier::String(album_id.to_string())
                     };
                     
-                    // Convert album to DTO with tracks included (single album endpoint)
+                    // Get the album by ID
+                    let album_option = library.get_album_by_id(&identifier);
+                    
+                    // Convert album to DTO with tracks included
                     let album_dto = album_option.map(|album| create_album_dto(album, true));
                     
                     return Ok(Json(AlbumDTOResponse {
@@ -490,20 +459,29 @@ pub fn get_albums_by_artist(
             if ctrl.get_player_name() == player_name {
                 // Check if the player has a library
                 if let Some(library) = ctrl.get_library() {
-                    // Get albums by artist
-                    let albums = library.get_albums_by_artist(artist_name);
-                    
-                    // Convert albums to DTOs without including tracks
-                    let album_dtos = albums.into_iter()
-                        .map(|album| create_album_dto(album, false))
-                        .collect::<Vec<AlbumDTO>>();
-                    
-                    return Ok(Json(ArtistAlbumsDTOResponse {
-                        player_name: player_name.to_string(),
-                        artist_name: artist_name.to_string(),
-                        count: album_dtos.len(),
-                        albums: album_dtos,
-                    }));
+                    // First get the artist to get their ID
+                    if let Some(artist) = library.get_artist_by_name(artist_name) {
+                        // Get albums by artist ID
+                        let albums = library.get_albums_by_artist_id(&artist.id);
+                        
+                        // Convert albums to DTOs without including tracks
+                        let album_dtos = albums.into_iter()
+                            .map(|album| create_album_dto(album, false))
+                            .collect::<Vec<AlbumDTO>>();
+                        
+                        return Ok(Json(ArtistAlbumsDTOResponse {
+                            player_name: player_name.to_string(),
+                            artist_name: artist_name.to_string(),
+                            count: album_dtos.len(),
+                            albums: album_dtos,
+                        }));
+                    } else {
+                        // Artist not found
+                        return Err(Custom(
+                            Status::NotFound,
+                            format!("Artist '{}' not found", artist_name),
+                        ));
+                    }
                 } else {
                     // Player exists but doesn't have a library
                     return Err(Custom(
@@ -550,8 +528,9 @@ pub fn get_albums_by_artist_id(
                         }
                     };
                     
-                    // Get albums by artist ID
-                    let albums = library.get_albums_by_artist_id(artist_id_parsed);
+                    // Create Identifier and get albums by artist ID
+                    let artist_id_identifier = crate::data::Identifier::Numeric(artist_id_parsed);
+                    let albums = library.get_albums_by_artist_id(&artist_id_identifier);
                     
                     // Convert albums to DTOs without including tracks
                     let album_dtos = albums.into_iter()
@@ -701,7 +680,7 @@ fn get_artist_internal(
                     let artist = match lookup_type {
                         ArtistLookupType::ByName => {
                             // Get artist by name
-                            library.get_artist(identifier)
+                            library.get_artist_by_name(identifier)
                         },
                         ArtistLookupType::ById => {
                             // Try to parse the ID as u64
@@ -751,5 +730,5 @@ fn get_artist_internal(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-      ))
+    ))
 }

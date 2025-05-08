@@ -1,6 +1,7 @@
 use std::error::Error;
 use crate::data::album::Album;
 use crate::data::artist::Artist;
+use crate::data::Identifier;
 
 //
 // Library Error Definition
@@ -53,20 +54,17 @@ pub trait LibraryInterface {
     /// Get all artists
     fn get_artists(&self) -> Vec<Artist>;
     
-    /// Get album by name
-    fn get_album(&self, name: &str) -> Option<Album>;
+    /// Get album by artist and album name
+    fn get_album_by_artist_and_name(&self, artist: &str, album: &str) -> Option<Album>;
     
     /// Get album by ID
-    fn get_album_by_id(&self, id: u64) -> Option<Album>;
+    fn get_album_by_id(&self, id: &Identifier) -> Option<Album>;
     
     /// Get artist by name
-    fn get_artist(&self, name: &str) -> Option<Artist>;
-    
-    /// Get albums by artist
-    fn get_albums_by_artist(&self, artist_name: &str) -> Vec<Album>;
+    fn get_artist_by_name(&self, name: &str) -> Option<Artist>;
     
     /// Get albums by artist ID
-    fn get_albums_by_artist_id(&self, artist_id: u64) -> Vec<Album>;
+    fn get_albums_by_artist_id(&self, artist_id: &Identifier) -> Vec<Album>;
     
     /// Get album cover art (if available)
     fn get_album_cover(&self, album_name: &str) -> Option<String>;

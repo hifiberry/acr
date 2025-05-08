@@ -332,8 +332,6 @@ Retrieves all albums for a specific player.
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
-- **Query Parameters**:
-  - `include_tracks` (boolean, optional): Whether to include track data for each album
 - **Response**:
   ```json
   {
@@ -341,7 +339,6 @@ Retrieves all albums for a specific player.
     "count": 100,
     "albums": [
       // Album objects
-      // If include_tracks=true, each album will include its tracks
     ]
   }
   ```
@@ -349,11 +346,8 @@ Retrieves all albums for a specific player.
 
 #### Examples
 ```bash
-# Get albums without tracks
+# Get albums
 curl http://<device-ip>:1080/library/mpd/albums
-
-# Get albums with tracks included
-curl http://<device-ip>:1080/library/mpd/albums?include_tracks=true
 ```
 
 ### Get Player Artists
@@ -370,7 +364,14 @@ Retrieves all artists for a specific player.
     "player_name": "player-name",
     "count": 50,
     "artists": [
-      // Artist objects
+      // Artist objects with album counts and thumbnail URLs
+      {
+        "name": "artist-name",
+        "id": "12345678",
+        "is_multi": false,
+        "album_count": 3,
+        "thumb_url": ["/path/to/image1.jpg", "/path/to/image2.jpg"]
+      }
     ]
   }
   ```
@@ -382,25 +383,21 @@ Retrieves all artists for a specific player.
 curl http://<device-ip>:1080/library/mpd/artists
 ```
 
-### Get Album by Name
+### Get Album by ID
 
-Retrieves a specific album by name for a player.
+Retrieves a specific album by its unique identifier.
 
-- **Endpoint**: `/library/<player-name>/album/<album-name>`
+- **Endpoint**: `/library/<player-name>/album/by-id/<album-id>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
-  - `album-name` (string): The name of the album
-- **Query Parameters**:
-  - `include_tracks` (boolean, optional): Whether to include track data for the album
+  - `album-id` (string): The unique identifier of the album
 - **Response**:
   ```json
   {
     "player_name": "player-name",
-    "include_tracks": true,
     "album": {
-      // Album object with its metadata
-      // If include_tracks=true, includes tracks data
+      // Album object with its metadata and tracks
       // Will be null if album not found
     }
   }
@@ -409,34 +406,98 @@ Retrieves a specific album by name for a player.
 
 #### Examples
 ```bash
-# Get an album without tracks
-curl "http://<device-ip>:1080/library/mpd/album/Dark%20Side%20of%20the%20Moon"
-
-# Get an album with tracks included
-curl "http://<device-ip>:1080/library/mpd/album/Dark%20Side%20of%20the%20Moon?include_tracks=true"
+# Get an album by ID
+curl "http://<device-ip>:1080/library/mpd/album/by-id/12345678"
 ```
 
-### Get Albums by Artist
+### Get Artist by Name
 
-Retrieves all albums by a specific artist for a player.
+Retrieves complete information for a specific artist by name.
 
-- **Endpoint**: `/library/<player-name>/artist/<artist-name>/albums`
+- **Endpoint**: `/library/<player-name>/artist/by-name/<artist-name>`
 - **Method**: GET
 - **Path Parameters**:
   - `player-name` (string): The name of the player
   - `artist-name` (string): The name of the artist
-- **Query Parameters**:
-  - `include_tracks` (boolean, optional): Whether to include track data for each album
+- **Response**:
+  ```json
+  {
+    "player_name": "player-name",
+    "artist": {
+      "id": "12345678",
+      "name": "artist-name", 
+      "is_multi": false,
+      "metadata": {
+        "mbid": ["musicbrainz-id-1", "musicbrainz-id-2"],
+        "thumb_url": ["/path/to/image1.jpg", "/path/to/image2.jpg"],
+        "banner_url": ["/path/to/banner.jpg"],
+        "biography": "Artist biography text...",
+        "genres": ["rock", "alternative"]
+      }
+    }
+  }
+  ```
+- **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+# Get artist information by name
+curl "http://<device-ip>:1080/library/mpd/artist/by-name/Pink%20Floyd"
+```
+
+### Get Artist by ID
+
+Retrieves complete information for a specific artist by ID.
+
+- **Endpoint**: `/library/<player-name>/artist/by-id/<artist-id>`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+  - `artist-id` (string): The unique identifier of the artist
+- **Response**: Same structure as "Get Artist by Name"
+- **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+# Get artist information by ID
+curl "http://<device-ip>:1080/library/mpd/artist/by-id/12345678"
+```
+
+### Get Artist by MusicBrainz ID
+
+Retrieves complete information for a specific artist by MusicBrainz ID.
+
+- **Endpoint**: `/library/<player-name>/artist/by-mbid/<mbid>`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+  - `mbid` (string): The MusicBrainz ID of the artist
+- **Response**: Same structure as "Get Artist by Name"
+- **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+# Get artist information by MusicBrainz ID
+curl "http://<device-ip>:1080/library/mpd/artist/by-mbid/83d91898-7763-47d7-b03b-b92132375c47"
+```
+
+### Get Albums by Artist Name
+
+Retrieves all albums by a specific artist for a player.
+
+- **Endpoint**: `/library/<player-name>/albums/by-artist/<artist-name>`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+  - `artist-name` (string): The name of the artist
 - **Response**:
   ```json
   {
     "player_name": "player-name",
     "artist_name": "artist-name",
     "count": 5,
-    "include_tracks": true,
     "albums": [
       // Album objects for this artist
-      // If include_tracks=true, each album will include its tracks
     ]
   }
   ```
@@ -444,11 +505,26 @@ Retrieves all albums by a specific artist for a player.
 
 #### Examples
 ```bash
-# Get albums for an artist without tracks
-curl "http://<device-ip>:1080/library/mpd/artist/Pink%20Floyd/albums"
+# Get albums for an artist
+curl "http://<device-ip>:1080/library/mpd/albums/by-artist/Pink%20Floyd"
+```
 
-# Get albums for an artist with tracks included
-curl "http://<device-ip>:1080/library/mpd/artist/Pink%20Floyd/albums?include_tracks=true"
+### Get Albums by Artist ID
+
+Retrieves all albums by a specific artist ID for a player.
+
+- **Endpoint**: `/library/<player-name>/albums/by-artist-id/<artist-id>`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+  - `artist-id` (string): The unique identifier of the artist
+- **Response**: Same structure as "Get Albums by Artist Name"
+- **Error Response** (404 Not Found): String error message
+
+#### Examples
+```bash
+# Get albums for an artist by ID
+curl "http://<device-ip>:1080/library/mpd/albums/by-artist-id/12345678"
 ```
 
 ### Refresh Player Library
@@ -465,49 +541,6 @@ Triggers a refresh of the library for a specific player.
 #### Example
 ```bash
 curl http://<device-ip>:1080/library/mpd/refresh
-```
-
-### Get Artist by Name or MusicBrainz ID
-
-Retrieves complete information for a specific artist, including metadata and image URLs.
-If the artist-name parameter is formatted like a MusicBrainz ID (UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx),
-it will search for artists with that MBID instead of by name.
-
-- **Endpoint**: `/library/<player-name>/artist/<artist-name-or-mbid>`
-- **Method**: GET
-- **Path Parameters**:
-  - `player-name` (string): The name of the player
-  - `artist-name-or-mbid` (string): The name of the artist or a MusicBrainz ID
-- **Response**:
-  ```json
-  {
-    "player_name": "player-name",
-    "artist": {
-      "id": 12345678,
-      "name": "artist-name", 
-      "is_multi": false,
-      "albums": ["album1", "album2"],
-      "track_count": 25,
-      "metadata": {
-        "mbid": ["musicbrainz-id-1", "musicbrainz-id-2"],
-        "thumb_url": ["/path/to/image1.jpg", "/path/to/image2.jpg"],
-        "banner_url": ["/path/to/banner.jpg"],
-        "biography": "Artist biography text...",
-        "genres": ["rock", "alternative"],
-        "is_partial_match": false
-      }
-    }
-  }
-  ```
-- **Error Response** (404 Not Found): String error message
-
-#### Example
-```bash
-# Get artist information by name
-curl "http://<device-ip>:1080/library/mpd/artist/Pink%20Floyd"
-
-# Get artist information by MusicBrainz ID
-curl "http://<device-ip>:1080/library/mpd/artist/83d91898-7763-47d7-b03b-b92132375c47"
 ```
 
 ## Data Structures

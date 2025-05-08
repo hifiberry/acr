@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
-use crate::helpers::memory_report::MemoryUsage;
 use crate::players::mpd::mpd::MPDPlayerController;
 
 /// MPD library interface that provides access to albums and artists
@@ -436,11 +435,11 @@ impl MPDLibrary {
     }
 
     /// Get album by ID
-    pub fn get_album_by_id(&self, id: u64) -> Option<Album> {
+    pub fn get_album_by_id(&self, id: &crate::data::Identifier) -> Option<Album> {
         if let Ok(albums) = self.albums.read() {
             // Search through all albums to find one with matching ID
             for album in albums.values() {
-                if album.id == crate::data::Identifier::Numeric(id) {
+                if &album.id == id {
                     return Some(album.clone());
                 }
             }
@@ -452,13 +451,12 @@ impl MPDLibrary {
     }
 
     /// Get albums by artist ID
-    pub fn get_albums_by_artist_id(&self, artist_id: u64) -> Vec<Album> {
+    pub fn get_albums_by_artist_id(&self, artist_id: &crate::data::Identifier) -> Vec<Album> {
         let mut result = Vec::new();
         
         // Get albums associated with this artist ID from album_artists mapping
         if let Ok(album_artists_mapping) = self.album_artists.read() {
-            let artist_id_identifier = crate::data::Identifier::Numeric(artist_id);
-            let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id_identifier);
+            let album_ids = album_artists_mapping.get_albums_for_artist(artist_id);
             
             // Get all albums and fetch the ones with matching IDs
             if let Ok(albums) = self.albums.read() {
@@ -478,7 +476,7 @@ impl MPDLibrary {
         let mut result = Vec::new();
         
         // First get the artist by name to get the artist ID
-        if let Some(artist) = self.get_artist(artist_name) {
+        if let Some(artist) = self.get_artist_by_name(artist_name) {
             let artist_id = artist.id;
             
             // Get albums associated with this artist from album_artists mapping
@@ -497,6 +495,39 @@ impl MPDLibrary {
         }
         
         result
+    }
+
+    /// Get album by artist and album name
+    pub fn get_album_by_artist_and_name(&self, artist: &str, album: &str) -> Option<Album> {
+        // Implementation to find album by both artist and album name
+        if let Ok(albums) = self.albums.read() {
+            // Look for an album with the specified name
+            if let Some(album_obj) = albums.get(album) {
+                // If we found the album, check if it has the specified artist
+                if let Ok(album_artists) = album_obj.artists.lock() {
+                    // If the album has the specified artist (case-insensitive comparison)
+                    if album_artists.iter().any(|a| a.to_lowercase() == artist.to_lowercase()) {
+                        return Some(album_obj.clone());
+                    }
+                }
+            }
+            
+            // Album not found or artist doesn't match
+            None
+        } else {
+            warn!("Failed to acquire read lock on albums");
+            None
+        }
+    }
+
+    /// Get artist by name
+    pub fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
+        if let Ok(artists) = self.artists.read() {
+            artists.get(name).cloned()
+        } else {
+            warn!("Failed to acquire read lock on artists");
+            None
+        }
     }
 }
 
@@ -606,47 +637,12 @@ impl LibraryInterface for MPDLibrary {
         }
     }
     
-    fn get_album(&self, name: &str) -> Option<Album> {
-        if let Ok(albums) = self.albums.read() {
-            albums.get(name).cloned()
-        } else {
-            warn!("Failed to acquire read lock on albums");
-            None
-        }
+    fn get_album_by_artist_and_name(&self, artist: &str, album: &str) -> Option<Album> {
+        self.get_album_by_artist_and_name(artist, album)
     }
     
-    fn get_artist(&self, name: &str) -> Option<Artist> {
-        if let Ok(artists) = self.artists.read() {
-            artists.get(name).cloned()
-        } else {
-            warn!("Failed to acquire read lock on artists");
-            None
-        }
-    }
-    
-    fn get_albums_by_artist(&self, artist_name: &str) -> Vec<Album> {
-        let mut result = Vec::new();
-        
-        // First get the artist by name to get the artist ID
-        if let Some(artist) = self.get_artist(artist_name) {
-            let artist_id = artist.id;
-            
-            // Get albums associated with this artist from album_artists mapping
-            if let Ok(album_artists_mapping) = self.album_artists.read() {
-                let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id);
-                
-                // Get all albums and fetch the ones with matching IDs
-                if let Ok(albums) = self.albums.read() {
-                    for album in albums.values() {
-                        if album_ids.contains(&album.id) {
-                            result.push(album.clone());
-                        }
-                    }
-                }
-            }
-        }
-        
-        result
+    fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
+        self.get_artist_by_name(name)
     }
     
     fn get_album_cover(&self, _album_name: &str) -> Option<String> {
@@ -659,13 +655,11 @@ impl LibraryInterface for MPDLibrary {
         crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
     }
     
-    fn get_album_by_id(&self, id: u64) -> Option<Album> {
-        // Use the previously implemented method
+    fn get_album_by_id(&self, id: &crate::data::Identifier) -> Option<Album> {
         self.get_album_by_id(id)
     }
     
-    fn get_albums_by_artist_id(&self, artist_id: u64) -> Vec<Album> {
-        // Use the previously implemented method
+    fn get_albums_by_artist_id(&self, artist_id: &crate::data::Identifier) -> Vec<Album> {
         self.get_albums_by_artist_id(artist_id)
     }
 }

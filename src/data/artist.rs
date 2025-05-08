@@ -1,5 +1,4 @@
 use std::hash::{Hash, Hasher};
-use std::collections::HashSet;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use crate::data::{Identifier, metadata::ArtistMeta};
 
@@ -47,10 +46,6 @@ impl<'de> Deserialize<'de> for Artist {
             id: Identifier,
             name: String,
             is_multi: bool,
-            #[serde(default)]
-            albums: HashSet<String>,  // Keep for backward compatibility
-            #[serde(default)]
-            track_count: usize,       // Keep for backward compatibility
             #[serde(default)]
             metadata: Option<ArtistMeta>,
         }

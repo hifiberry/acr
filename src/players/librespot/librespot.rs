@@ -1,5 +1,5 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
-use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::players::librespot::event_pipe_reader::EventPipeReader;
 use crate::data::stream_details::StreamDetails;
 use delegate::delegate;
@@ -485,5 +485,10 @@ impl PlayerController for LibrespotPlayerController {
         
         debug!("No active event listener thread found");
         false
+    }
+
+    fn get_queue(&self) -> Vec<Track> {
+        debug!("LibrespotController: get_queue called - returning empty vector");
+        Vec::new()
     }
 }

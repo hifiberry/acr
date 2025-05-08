@@ -120,3 +120,31 @@ async fn get_version(app_state: web::Data<AppState>) -> impl Responder {
     
     HttpResponse::Ok().json(response)
 }
+
+/// Build a complete Rocket instance with all API routes
+fn build_rocket(
+    address: String,
+    port: u16,
+    static_path: Option<String>,
+    controller: Arc<AudioController>
+) -> rocket::Rocket<rocket::Build> {
+    
+    let figment = rocket::Config::figment()
+        .merge(("address", address))
+        .merge(("port", port));
+        
+    let mut rocket_builder = rocket::custom(figment)
+        .mount(
+            "/api",
+            routes![
+                crate::api::players::get_current_player,
+                crate::api::players::list_players,
+                crate::api::players::send_command_to_active,
+                crate::api::players::send_command_to_player_by_name,
+                crate::api::players::get_now_playing,
+                crate::api::players::get_player_queue,
+                crate::api::library::list_artists,
+                // ...existing routes...
+            ]
+        );
+}

@@ -120,4 +120,9 @@ impl PlayerController for NullPlayerController {
         // Nothing to do for the null player, just return success
         true
     }
+    
+    fn get_queue(&self) -> Vec<crate::data::Track> {
+        debug!("NullPlayerController: get_queue called - returning empty vector");
+        Vec::new()
+    }
 }

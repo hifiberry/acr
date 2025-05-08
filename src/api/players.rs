@@ -1,5 +1,5 @@
 use crate::AudioController;
-use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song};
+use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track};
 use crate::players::PlayerController; // Fixed: Using the public re-export
 use rocket::serde::json::Json;
 use rocket::{get, post, State};
@@ -49,6 +49,13 @@ pub struct NowPlayingResponse {
     shuffle: bool,
     loop_mode: LoopMode,
     position: Option<f64>, // Current playback position in seconds
+}
+
+/// Response struct for the player queue
+#[derive(serde::Serialize)]
+pub struct QueueResponse {
+    player: String,
+    queue: Vec<Track>,
 }
 
 /// Get the current active player
@@ -305,6 +312,53 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
         loop_mode: LoopMode::None,
         position: None,
     })
+}
+
+/// Get the queue from a specific player
+#[get("/player/<n>/queue")]
+pub fn get_player_queue(
+    n: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<QueueResponse>, Custom<Json<CommandResponse>>> {
+    // Get all controllers
+    let controllers = controller.inner().list_controllers();
+    
+    // Find the controller with the matching name
+    let mut found_controller = None;
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == n {
+                found_controller = Some(ctrl_lock.clone());
+                break;
+            }
+        }
+    }
+    
+    // If no controller with the given name was found, return a 404
+    let target_controller = match found_controller {
+        Some(ctrl) => ctrl,
+        None => {
+            return Err(Custom(
+                Status::NotFound,
+                Json(CommandResponse {
+                    success: false,
+                    message: format!("No player found with name: {}", n),
+                })
+            ));
+        }
+    };
+    
+    // Get the queue from the found player
+    let queue = if let Ok(ctrl) = target_controller.read() {
+        ctrl.get_queue()
+    } else {
+        Vec::new()
+    };
+    
+    Ok(Json(QueueResponse {
+        player: n.to_string(),
+        queue,
+    }))
 }
 
 /// Helper function to parse player commands

@@ -1,4 +1,4 @@
-use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource, PlayerState};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, Track, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource, PlayerState};
 use crate::data::library::LibraryInterface;
 use std::sync::{Arc, Weak, RwLock};
 use std::any::Any;
@@ -32,6 +32,12 @@ pub trait PlayerController: Send + Sync {
     /// 
     /// Returns the current song, or None if no song is playing
     fn get_song(&self) -> Option<Song>;
+
+    /// Get the queue of songs
+    /// 
+    /// Returns a vector of songs in the queue (can be empty if no songs are queued)
+    /// If the player does not support queues, this will return an empty vector
+    fn get_queue(&self) -> Vec<Track>;
     
     /// Get the current loop mode setting
     /// 
@@ -76,7 +82,7 @@ pub trait PlayerController: Send + Sync {
     /// 
     /// # Returns
     /// 
-    /// `true` if the command was successfully processed, `false` otherwise
+    /// Return s`true` if the command was successfully processed, `false` otherwise
     fn send_command(&self, command: PlayerCommand) -> bool;
     
     /// Register a state listener to be notified of state changes

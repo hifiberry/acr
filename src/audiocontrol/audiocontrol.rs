@@ -1,6 +1,6 @@
 use crate::players::PlayerController;
 use crate::players::PlayerStateListener;
-use crate::data::{PlayerCommand, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerEvent, PlayerSource};
+use crate::data::{PlayerCommand, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerEvent, PlayerSource, Track};
 use crate::players::{create_player_from_json, PlayerCreationError};
 use crate::plugins::EventFilter;
 use crate::plugins::ActionPlugin;
@@ -202,6 +202,17 @@ impl PlayerController for AudioController {
         }
         
         success // Return true if at least one controller stopped successfully
+    }
+
+    fn get_queue(&self) -> Vec<Track> {
+        if let Ok(active_idx) = self.active_index.read() {
+            if *active_idx < self.controllers.len() {
+                if let Ok(controller) = self.controllers[*active_idx].read() {
+                    return controller.get_queue();
+                }
+            }
+        }
+        Vec::new() // Return empty vector if no active controller
     }
 }
 

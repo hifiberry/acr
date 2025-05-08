@@ -1,5 +1,5 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
-use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::library::LibraryInterface;
 use delegate::delegate;
 use std::sync::{Arc, Weak, Mutex};
@@ -1135,5 +1135,62 @@ impl PlayerController for MPDPlayerController {
         } else {
             None
         }
+    }
+
+    fn get_queue(&self) -> Vec<Track> {
+        debug!("MPDController: get_queue called - fetching playlist");
+        
+        // Get a fresh client connection
+        if let Some(mut client) = self.get_fresh_client() {
+            // Use the queue method to get all songs in the current queue
+            match client.queue() {
+                Ok(songs) => {
+                    debug!("Retrieved {} songs from MPD queue", songs.len());
+                    
+                    // Convert MPD songs to our Track format
+                    let tracks: Vec<Track> = songs.into_iter()
+                        .map(|mpd_song| {
+                            // Extract useful information from the song
+                            let title = mpd_song.title.unwrap_or_else(|| "Unknown Title".to_string());
+                            let artist = mpd_song.artist;
+                            
+                            // Default values as requested
+                            let disc_number = "".to_string();
+                            let track_number = 0;
+                            let album_artist: Option<String> = None;
+                            
+                            // Create a Track with the extracted information
+                            let mut track = Track::new(
+                                disc_number,
+                                track_number,
+                                title
+                            );
+                            
+                            // Set artist if available
+                            if let Some(artist_name) = artist {
+                                track.artist = Some(artist_name);
+                            }
+                            
+                            // Set URI if available
+                            if !mpd_song.file.is_empty() {
+                                track.uri = Some(mpd_song.file);
+                            }
+                            
+                            track
+                        })
+                        .collect();
+                    
+                    return tracks;
+                },
+                Err(e) => {
+                    warn!("Failed to retrieve queue from MPD: {}", e);
+                }
+            }
+        } else {
+            warn!("Failed to create MPD client connection for get_queue");
+        }
+        
+        // Return empty vector if anything fails
+        Vec::new()
     }
 }

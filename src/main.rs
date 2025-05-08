@@ -6,7 +6,6 @@ use acr::helpers::attributecache::AttributeCache;
 use acr::helpers::imagecache::ImageCache;
 use acr::helpers::musicbrainz;
 use acr::helpers::theartistdb;
-use acr::data::artist::Artist;
 use std::thread;
 use std::time::Duration;
 use std::io::{self, Read};

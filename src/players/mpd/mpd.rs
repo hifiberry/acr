@@ -969,6 +969,9 @@ impl PlayerController for MPDPlayerController {
                         warn!("Failed to kill MPD process, might not have permission");
                     }
                 },
+                PlayerCommand::Queue(cmd) => {
+                    // TODO: Implement queue commands
+                },  
             }
             
             // If the command was successful, we may want to update our stored state

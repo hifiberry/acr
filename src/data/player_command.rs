@@ -3,6 +3,35 @@ use serde::{Serialize, Deserialize};
 use strum_macros::EnumString;
 use super::LoopMode;
 
+/// Queue-related commands for managing the playback queue
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueCommand {
+    /// Add tracks to the queue
+    AddTracks {
+        /// Track URIs to add to the queue
+        uris: Vec<String>,
+        /// Whether to insert at beginning (true) or append at end (false)
+        insert_at_beginning: bool,
+    },
+    
+    /// Remove a track from the queue by its index
+    RemoveTrack(usize),
+    
+    /// Clear the entire queue
+    Clear,
+    
+    /// Get the current queue contents
+    GetQueue,
+}
+
+/// Default implementation for QueueCommand
+impl Default for QueueCommand {
+    fn default() -> Self {
+        QueueCommand::GetQueue
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, EnumString)]
 #[serde(rename_all = "lowercase")]
 pub enum PlayerCommand {
@@ -35,6 +64,10 @@ pub enum PlayerCommand {
     /// Kill (forcefully terminate) the player
     #[serde(rename = "kill")]
     Kill,
+    
+    /// Queue-related command
+    #[serde(rename = "queue")]
+    Queue(QueueCommand),
 }
 
 impl Default for PlayerCommand {
@@ -55,6 +88,20 @@ impl std::fmt::Display for PlayerCommand {
             PlayerCommand::Seek(position) => write!(f, "seek:{}", position),
             PlayerCommand::SetRandom(enabled) => write!(f, "set_random:{}", if *enabled { "on" } else { "off" }),
             PlayerCommand::Kill => write!(f, "kill"),
+            PlayerCommand::Queue(cmd) => {
+                match cmd {
+                    QueueCommand::AddTracks { insert_at_beginning, .. } => {
+                        if *insert_at_beginning {
+                            write!(f, "queue:add_tracks_beginning")
+                        } else {
+                            write!(f, "queue:add_tracks_end")
+                        }
+                    },
+                    QueueCommand::RemoveTrack(index) => write!(f, "queue:remove_track:{}", index),
+                    QueueCommand::Clear => write!(f, "queue:clear"),
+                    QueueCommand::GetQueue => write!(f, "queue:get"),
+                }
+            },
         }
     }
 }

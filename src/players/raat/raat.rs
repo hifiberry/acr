@@ -526,6 +526,11 @@ impl PlayerController for RAATPlayerController {
                 if enabled { "shuffle_on" } else { "shuffle_off" }
             },
             PlayerCommand::Kill => "kill",
+            PlayerCommand::Queue(queue_cmd) => {
+                // RAAT doesn't currently support queue operations directly
+                warn!("Queue commands not supported by RAAT player: {:?}", queue_cmd);
+                return false;
+            },
         };
         
         // Send the command to the control pipe

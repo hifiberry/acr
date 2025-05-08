@@ -216,11 +216,15 @@ impl MemoryUsage {
 
             // Add size of each track's data
             for track in tracks_guard.iter() {
-                // String data for disc_number
-                size += track.disc_number.capacity();
+                // Optional String data for disc_number
+                if let Some(disc_number) = &track.disc_number {
+                    size += mem::size_of::<String>() + disc_number.capacity();
+                }
                 
-                // Track number (u16)
-                size += std::mem::size_of::<u16>();
+                // Optional track_number (u16)
+                if track.track_number.is_some() {
+                    size += std::mem::size_of::<u16>();
+                }
                 
                 // String data for name
                 size += track.name.capacity();

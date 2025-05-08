@@ -109,9 +109,9 @@ impl MPDLibraryLoader {
         
         // Create Track object with appropriate fields
         let track = if let Some(artist) = artist {
-            Track::with_artist(disc_number, track_number, track_name.to_string(), artist, album_artist)
+            Track::with_artist(Some(disc_number), Some(track_number), track_name.to_string(), artist, album_artist)
         } else {
-            Track::new(disc_number, track_number, track_name.to_string())
+            Track::new(Some(disc_number), Some(track_number), track_name.to_string())
         };
         
         // Add URI to the track and return it

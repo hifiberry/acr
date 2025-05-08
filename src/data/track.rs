@@ -4,9 +4,11 @@ use serde::{Serialize, Deserialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     /// Disc number (as a string to support formats like "1/2")
-    pub disc_number: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disc_number: Option<String>,
     /// Track number
-    pub track_number: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_number: Option<u16>,
     /// Track name
     pub name: String,
     /// Track artist (only stored if different from album artist)
@@ -19,7 +21,7 @@ pub struct Track {
 
 impl Track {
     /// Create a new Track
-    pub fn new(disc_number: String, track_number: u16, name: String) -> Self {
+    pub fn new(disc_number: Option<String>, track_number: Option<u16>, name: String) -> Self {
         Self {
             disc_number,
             track_number,
@@ -29,8 +31,19 @@ impl Track {
         }
     }
     
+    /// Create a new Track with just the name (convenience method)
+    pub fn with_name(name: String) -> Self {
+        Self {
+            disc_number: None,
+            track_number: None,
+            name,
+            artist: None,
+            uri: None,
+        }
+    }
+    
     /// Create a new Track with an artist
-    pub fn with_artist(disc_number: String, track_number: u16, name: String, artist: String, album_artist: Option<&str>) -> Self {
+    pub fn with_artist(disc_number: Option<String>, track_number: Option<u16>, name: String, artist: String, album_artist: Option<&str>) -> Self {
         // Only store artist if it differs from the album artist
         let track_artist = if let Some(album_artist) = album_artist {
             if artist != album_artist {

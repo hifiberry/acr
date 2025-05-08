@@ -1154,17 +1154,8 @@ impl PlayerController for MPDPlayerController {
                             let title = mpd_song.title.unwrap_or_else(|| "Unknown Title".to_string());
                             let artist = mpd_song.artist;
                             
-                            // Default values as requested
-                            let disc_number = "".to_string();
-                            let track_number = 0;
-                            let album_artist: Option<String> = None;
-                            
-                            // Create a Track with the extracted information
-                            let mut track = Track::new(
-                                disc_number,
-                                track_number,
-                                title
-                            );
+                            // Create a Track with just the name
+                            let mut track = Track::with_name(title);
                             
                             // Set artist if available
                             if let Some(artist_name) = artist {

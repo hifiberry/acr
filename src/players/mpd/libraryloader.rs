@@ -270,6 +270,7 @@ impl MPDLibraryLoader {
     pub fn load_albums_from_mpd(&self, custom_separators: Option<Vec<String>>) -> Result<Vec<crate::data::Album>, LibraryError> {
         // progress indicator (f32 0.0..100.0)
         let mut progress: f32 = 0.0;
+        self.controller.notify_database_update(Some("Starting MPD database import".to_string()), None, None, Some(progress)); 
 
         info!("Loading MPD library from {}:{}", self.hostname, self.port);
         let start_time = Instant::now();

@@ -440,30 +440,30 @@ impl MPDLibraryLoader {
                     // Create a song object from gathered data
                     let mut song = mpd::Song::default();
                     song.file = file;
-                    song.title = current_title;
+                    song.title = current_title.take();
                     
                     // Add tags
-                    if let Some(artist) = current_artist {
+                    if let Some(artist) = current_artist.take() {
                         song.tags.push(("Artist".to_string(), artist));
                     }
                     
-                    if let Some(album) = current_album {
+                    if let Some(album) = current_album.take() {
                         song.tags.push(("Album".to_string(), album));
                     }
                     
-                    if let Some(album_artist) = current_album_artist {
+                    if let Some(album_artist) = current_album_artist.take() {
                         song.tags.push(("AlbumArtist".to_string(), album_artist));
                     }
                     
-                    if let Some(track) = current_track {
+                    if let Some(track) = current_track.take() {
                         song.tags.push(("Track".to_string(), track));
                     }
                     
-                    if let Some(date) = current_date {
+                    if let Some(date) = current_date.take() {
                         song.tags.push(("Date".to_string(), date));
                     }
                     
-                    if let Some(duration) = current_duration {
+                    if let Some(duration) = current_duration.take() {
                         song.duration = Some(std::time::Duration::from_secs_f64(duration));
                     }
                     
@@ -472,13 +472,6 @@ impl MPDLibraryLoader {
                 
                 // Start new song
                 current_file = Some(line_trimmed[6..].to_string());
-                current_title = None;
-                current_artist = None;
-                current_album = None;
-                current_album_artist = None;
-                current_track = None;
-                current_date = None;
-                current_duration = None;
             } else if line_trimmed.starts_with("Title: ") {
                 current_title = Some(line_trimmed[7..].to_string());
             } else if line_trimmed.starts_with("Artist: ") {
@@ -505,30 +498,30 @@ impl MPDLibraryLoader {
             // Create a song object from gathered data
             let mut song = mpd::Song::default();
             song.file = file;
-            song.title = current_title;
+            song.title = current_title.take();
             
             // Add tags
-            if let Some(artist) = current_artist {
+            if let Some(artist) = current_artist.take() {
                 song.tags.push(("Artist".to_string(), artist));
             }
             
-            if let Some(album) = current_album {
+            if let Some(album) = current_album.take() {
                 song.tags.push(("Album".to_string(), album));
             }
             
-            if let Some(album_artist) = current_album_artist {
+            if let Some(album_artist) = current_album_artist.take() {
                 song.tags.push(("AlbumArtist".to_string(), album_artist));
             }
             
-            if let Some(track) = current_track {
+            if let Some(track) = current_track.take() {
                 song.tags.push(("Track".to_string(), track));
             }
             
-            if let Some(date) = current_date {
+            if let Some(date) = current_date.take() {
                 song.tags.push(("Date".to_string(), date));
             }
             
-            if let Some(duration) = current_duration {
+            if let Some(duration) = current_duration.take() {
                 song.duration = Some(std::time::Duration::from_secs_f64(duration));
             }
             

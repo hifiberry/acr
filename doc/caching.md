@@ -54,6 +54,7 @@ The attribute cache uses specific key formats for various types of data:
 | `artist::mbid_partial::<artistlist>` | Musicbrainz IDs could not be found for all artists in the list |
 | `artist::fanart::<mbid>` | URLs to artist images from FanartTV |
 | `artist::tadb::<mbid>` | Artist data from TheArtistDB |
+| `artist::metadata::<artist>` | Full artist metadata collected from multiple 3rd party sources |
 | `album::mbid::<album>::<artist>` | Musicbrainz ID for this album |
 
 ## Implementation Details

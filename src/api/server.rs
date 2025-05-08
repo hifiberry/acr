@@ -1,5 +1,6 @@
 use crate::AudioController;
 use crate::api::{players, plugins, library};
+use crate::constants::API_PREFIX;
 use log::info;
 use rocket::{routes, get};
 use rocket::serde::json::Json;
@@ -43,8 +44,8 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         players::send_command_to_player_by_name,
         players::get_now_playing,
         players::get_player_queue,
-        players::get_player_metadata,       // New endpoint for getting player metadata
-        players::get_player_metadata_key,   // New endpoint for getting specific player metadata key
+        players::get_player_metadata,      
+        players::get_player_metadata_key,   
         
         // Plugin routes
         plugins::list_action_plugins,
@@ -68,7 +69,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     ];
     
     let _rocket = rocket::custom(config)
-        .mount("/", api_routes)
+        .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting routes
         .manage(controller)
         .launch()
         .await?;

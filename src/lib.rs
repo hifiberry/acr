@@ -16,6 +16,9 @@ pub mod helpers;
 /// API server for REST endpoints
 pub mod api;
 
+/// Global constants
+pub mod constants;
+
 // Re-export items from data module for backward compatibility
 pub use data::{PlaybackState, Song, PlayerState};
 

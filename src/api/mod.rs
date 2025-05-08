@@ -1,3 +1,6 @@
+// Import constants for use in API modules
+pub use crate::constants::API_PREFIX;
+
 // Export the server module
 pub mod server;
 

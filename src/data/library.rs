@@ -77,4 +77,52 @@ pub trait LibraryInterface {
     /// This method should update the metadata for all artists in the library using
     /// background worker thread. The default implementation does nothing.
     fn update_artist_metadata(&self);
+
+    /// Get a list of meta keys for the library
+    /// 
+    /// This method should return a list of meta keys that are available in the 
+    /// library.
+    /// The default implementation returns an empty vector.    
+    fn get_meta_keys(&self) -> Vec<String> {
+        vec![]
+    }
+
+    /// Get a specific metadata value as string
+    /// 
+    /// This method should return a specific metadata value for a given key.
+    /// The default implementation returns None.
+    fn get_metadata_value(&self, _key: &str) -> Option<String> {
+        None
+    }
+    
+    /// Get all metadata as a HashMap with JSON values
+    /// 
+    /// This method should return all metadata for the library as a HashMap with
+    /// JSON values. The default implementation returns an empty HashMap.
+    fn get_metadata(&self) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+        // Convert string metadata to JSON values
+        let mut result = std::collections::HashMap::new();
+        
+        // Add each meta key to the result
+        for key in self.get_meta_keys() {
+            if let Some(value) = self.get_metadata_value(&key) {
+                // Try to parse as JSON, fall back to string value
+                match serde_json::from_str(&value) {
+                    Ok(json_value) => {
+                        result.insert(key, json_value);
+                    },
+                    Err(_) => {
+                        // Use string value
+                        result.insert(key, serde_json::Value::String(value));
+                    }
+                }
+            }
+        }
+        
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
 }

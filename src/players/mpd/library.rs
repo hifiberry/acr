@@ -789,4 +789,133 @@ impl LibraryInterface for MPDLibrary {
         warn!("Unsupported image identifier format: {}", identifier);
         None
     }
+
+    fn get_meta_keys(&self) -> Vec<String> {
+        vec![
+            "memory_usage".to_string(),
+            "album_count".to_string(),
+            "artist_count".to_string(),
+            "track_count".to_string(),
+            "hostname".to_string(),
+            "port".to_string(),
+            "library_loaded".to_string(),
+            "loading_progress".to_string(),
+            "disable_metadata_update".to_string(),
+        ]
+    }
+
+    fn get_metadata_value(&self, key: &str) -> Option<String> {
+        match key {
+            "memory_usage" => {
+                use crate::helpers::memory_report::MemoryUsage;
+                
+                // Create memory usage tracker
+                let mut usage = MemoryUsage::new();
+                
+                // Calculate size of albums and tracks
+                if let Ok(albums) = self.albums.read() {
+                    usage.album_count = albums.len();
+                    
+                    for album in albums.values() {
+                        usage.albums_memory += MemoryUsage::calculate_album_memory(album);
+                        usage.tracks_memory += MemoryUsage::calculate_tracks_memory(&album.tracks);
+                        
+                        // Count tracks
+                        if let Ok(tracks) = album.tracks.lock() {
+                            usage.track_count += tracks.len();
+                        }
+                    }
+                }
+                
+                // Calculate size of artists
+                if let Ok(artists) = self.artists.read() {
+                    usage.artist_count = artists.len();
+                    for artist in artists.values() {
+                        usage.artists_memory += MemoryUsage::calculate_artist_memory(artist);
+                    }
+                }
+                
+                // Calculate album-artist relationships
+                if let Ok(album_artists) = self.album_artists.read() {
+                    usage.album_artists_count = album_artists.len();
+                    usage.overhead_memory += album_artists.memory_usage();
+                }
+                
+                // Log the stats for debugging/monitoring
+                usage.log_stats();
+                
+                // Return as JSON
+                Some(serde_json::to_string_pretty(&serde_json::json!({
+                    "name": "MPDLibrary",
+                    "total_memory": usage.total(),
+                    "total_memory_human": MemoryUsage::format_size(usage.total()),
+                    "components": {
+                        "artists": {
+                            "count": usage.artist_count,
+                            "memory": usage.artists_memory,
+                            "memory_human": MemoryUsage::format_size(usage.artists_memory)
+                        },
+                        "albums": {
+                            "count": usage.album_count,
+                            "memory": usage.albums_memory,
+                            "memory_human": MemoryUsage::format_size(usage.albums_memory)
+                        },
+                        "tracks": {
+                            "count": usage.track_count,
+                            "memory": usage.tracks_memory,
+                            "memory_human": MemoryUsage::format_size(usage.tracks_memory)
+                        },
+                        "album_artist_mappings": {
+                            "count": usage.album_artists_count,
+                            "memory": usage.overhead_memory,
+                            "memory_human": MemoryUsage::format_size(usage.overhead_memory)
+                        }
+                    }
+                })).unwrap_or_else(|_| "{}".to_string()))
+            },
+            "album_count" => {
+                if let Ok(albums) = self.albums.read() {
+                    Some(albums.len().to_string())
+                } else {
+                    Some("0".to_string())
+                }
+            },
+            "artist_count" => {
+                if let Ok(artists) = self.artists.read() {
+                    Some(artists.len().to_string())
+                } else {
+                    Some("0".to_string())
+                }
+            },
+            "track_count" => {
+                let mut total_tracks = 0;
+                if let Ok(albums) = self.albums.read() {
+                    for album in albums.values() {
+                        if let Ok(tracks) = album.tracks.lock() {
+                            total_tracks += tracks.len();
+                        }
+                    }
+                }
+                Some(total_tracks.to_string())
+            },
+            "hostname" => Some(self.hostname.clone()),
+            "port" => Some(self.port.to_string()),
+            "library_loaded" => {
+                if let Ok(loaded) = self.library_loaded.lock() {
+                    Some(loaded.to_string())
+                } else {
+                    Some("false".to_string())
+                }
+            },
+            "loading_progress" => {
+                if let Ok(progress) = self.loading_progress.lock() {
+                    Some(progress.to_string())
+                } else {
+                    Some("0.0".to_string())
+                }
+            },
+            "disable_metadata_update" => Some(self.disable_metadata_update.to_string()),
+            _ => None,
+        }
+    }
 }

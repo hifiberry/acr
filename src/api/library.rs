@@ -24,6 +24,21 @@ pub struct LibraryListResponse {
     players: Vec<LibraryPlayerInfo>,
 }
 
+/// Response structure for library metadata
+#[derive(serde::Serialize)]
+pub struct MetadataResponse {
+    player_name: String,
+    metadata: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Response structure for a single metadata key-value pair
+#[derive(serde::Serialize)]
+pub struct MetadataKeyResponse {
+    player_name: String,
+    key: String,
+    value: Option<serde_json::Value>,
+}
+
 /// Player information with library status
 #[derive(serde::Serialize)]
 pub struct LibraryPlayerInfo {
@@ -771,6 +786,91 @@ pub fn get_image(
                             format!("Image with identifier '{}' not found", identifier),
                         ));
                     }
+                } else {
+                    // Player exists but doesn't have a library
+                    return Err(Custom(
+                        Status::NotFound,
+                        format!("Player '{}' does not have a library", player_name),
+                    ));
+                }
+            }
+        }
+    }
+    
+    // Player not found
+    Err(Custom(
+        Status::NotFound,
+        format!("Player '{}' not found", player_name),
+      ))
+}
+
+/// Get all metadata for a player's library
+#[get("/library/<player_name>/meta")]
+pub fn get_library_metadata(
+    player_name: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<MetadataResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    
+    // Find the controller with the matching name
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == player_name {
+                // Check if the player has a library
+                if let Some(library) = ctrl.get_library() {
+                    // Get all metadata as a HashMap
+                    let metadata = library.get_metadata()
+                        .unwrap_or_default();
+                    
+                    return Ok(Json(MetadataResponse {
+                        player_name: player_name.to_string(),
+                        metadata,
+                    }));
+                } else {
+                    // Player exists but doesn't have a library
+                    return Err(Custom(
+                        Status::NotFound,
+                        format!("Player '{}' does not have a library", player_name),
+                    ));
+                }
+            }
+        }
+    }
+    
+    // Player not found
+    Err(Custom(
+        Status::NotFound,
+        format!("Player '{}' not found", player_name),
+    ))
+}
+
+/// Get a specific metadata key for a player's library
+#[get("/library/<player_name>/meta/<key>")]
+pub fn get_library_metadata_key(
+    player_name: &str,
+    key: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<MetadataKeyResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    
+    // Find the controller with the matching name
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == player_name {
+                // Check if the player has a library
+                if let Some(library) = ctrl.get_library() {
+                    // Get all metadata
+                    let metadata = library.get_metadata()
+                        .unwrap_or_default();
+                    
+                    // Get the specific key
+                    let value = metadata.get(key).cloned();
+                    
+                    return Ok(Json(MetadataKeyResponse {
+                        player_name: player_name.to_string(),
+                        key: key.to_string(),
+                        value,
+                    }));
                 } else {
                     // Player exists but doesn't have a library
                     return Err(Custom(

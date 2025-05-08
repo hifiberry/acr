@@ -1090,16 +1090,6 @@ impl AudioController {
             Vec::new()
         }
     }
-
-    /// Check that the active_index is valid for the current controller list
-    fn check_active_index(&self) {
-        if let Ok(mut active_idx) = self.active_index.write() {
-            if *active_idx >= self.controllers.len() && !self.controllers.is_empty() {
-                *active_idx = 0;
-                debug!("Adjusted active_index to 0 because previous index was out of bounds");
-            }
-        }
-    }
 }
 
 #[cfg(test)]

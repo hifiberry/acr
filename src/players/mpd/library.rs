@@ -32,8 +32,8 @@ pub struct MPDLibrary {
     /// Custom artist separators for splitting artist names
     artist_separators: Arc<Mutex<Option<Vec<String>>>>,
     
-    /// Flag to disable automatic metadata updates for artists
-    disable_metadata_update: bool,
+    /// Flag to control metadata enhancement
+    enhance_metadata: bool,
     
     /// Reference to the MPDPlayerController that owns this library
     controller: Arc<MPDPlayerController>,
@@ -44,8 +44,8 @@ impl MPDLibrary {
     pub fn with_connection(hostname: &str, port: u16, controller: Arc<MPDPlayerController>) -> Self {
         debug!("Creating new MPDLibrary with connection {}:{}", hostname, port);
         
-        // Get the disable_metadata_update setting from the controller, if available
-        let disable_metadata_update = controller.get_disable_metadata_update().unwrap_or(false);
+        // Get the enhance_metadata setting from the controller, if available
+        let enhance_metadata = controller.get_enhance_metadata().unwrap_or(true);
         
         MPDLibrary {
             hostname: hostname.to_string(),
@@ -56,7 +56,7 @@ impl MPDLibrary {
             library_loaded: Arc::new(Mutex::new(false)),
             loading_progress: Arc::new(Mutex::new(0.0)),
             artist_separators: Arc::new(Mutex::new(None)),
-            disable_metadata_update,
+            enhance_metadata,
             controller,
         }
     }
@@ -696,7 +696,7 @@ impl LibraryInterface for MPDLibrary {
                 info!("Library load complete in {:.2?}", total_time);
                 
                 // Start background update of artist metadata now that the library is fully loaded
-                if !self.disable_metadata_update {
+                if self.enhance_metadata {
                     info!("Starting background metadata update for artists");
                     crate::helpers::artistupdater::update_library_artists_metadata_in_background(
                         self.artists.clone()
@@ -747,7 +747,7 @@ impl LibraryInterface for MPDLibrary {
     }
     
     fn update_artist_metadata(&self) {
-        if !self.disable_metadata_update {
+        if self.enhance_metadata {
             info!("Starting background metadata update for MPDLibrary artists");
             // Use the generic function from artistupdater with only the artists collection
             crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
@@ -800,7 +800,7 @@ impl LibraryInterface for MPDLibrary {
             "port".to_string(),
             "library_loaded".to_string(),
             "loading_progress".to_string(),
-            "disable_metadata_update".to_string(),
+            "enhance_metadata".to_string(),
         ]
     }
 
@@ -914,7 +914,7 @@ impl LibraryInterface for MPDLibrary {
                     Some("0.0".to_string())
                 }
             },
-            "disable_metadata_update" => Some(self.disable_metadata_update.to_string()),
+            "enhance_metadata" => Some(self.enhance_metadata.to_string()),
             _ => None,
         }
     }

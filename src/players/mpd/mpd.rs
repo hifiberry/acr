@@ -40,8 +40,8 @@ pub struct MPDPlayerController {
     /// Whether to load the MPD library into memory
     load_mpd_library: bool,
     
-    /// Flag to disable automatic artist metadata updates
-    disable_metadata_update: bool,
+    /// Flag to control metadata enhancement
+    enhance_metadata: bool,
     
     /// Custom artist separators for splitting artist names
     artist_separators: Option<Vec<String>>,
@@ -61,7 +61,7 @@ impl Clone for MPDPlayerController {
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             load_mpd_library: self.load_mpd_library,
-            disable_metadata_update: self.disable_metadata_update,
+            enhance_metadata: self.enhance_metadata,
             artist_separators: self.artist_separators.clone(),
             library: Arc::clone(&self.library),
         }
@@ -85,7 +85,7 @@ impl MPDPlayerController {
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             load_mpd_library: true,
-            disable_metadata_update: false,
+            enhance_metadata: true,
             artist_separators: None,
             library: Arc::new(Mutex::new(None)),
         };
@@ -110,7 +110,7 @@ impl MPDPlayerController {
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             load_mpd_library: true,
-            disable_metadata_update: false,
+            enhance_metadata: true,
             artist_separators: None,
             library: Arc::new(Mutex::new(None)),
         };
@@ -201,14 +201,14 @@ impl MPDPlayerController {
         self.load_mpd_library = load;
     }
     
-    /// Get whether to disable automatic artist metadata updates
-    pub fn get_disable_metadata_update(&self) -> Option<bool> {
-        Some(self.disable_metadata_update)
+    /// Get whether to enhance metadata
+    pub fn get_enhance_metadata(&self) -> Option<bool> {
+        Some(self.enhance_metadata)
     }
 
-    /// Set whether to disable automatic artist metadata updates
-    pub fn set_disable_metadata_update(&mut self, disable: bool) {
-        self.disable_metadata_update = disable;
+    /// Set whether to enhance metadata
+    pub fn set_enhance_metadata(&mut self, enhance: bool) {
+        self.enhance_metadata = enhance;
     }
     
     /// Get a reference to the MPD library, if available

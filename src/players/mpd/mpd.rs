@@ -1184,4 +1184,115 @@ impl PlayerController for MPDPlayerController {
         // Return empty vector if anything fails
         Vec::new()
     }
+
+    fn get_meta_keys(&self) -> Vec<String> {
+        vec![
+            "hostname".to_string(),
+            "port".to_string(),
+            "connection_status".to_string(),
+            "queue_length".to_string(),
+            "volume".to_string(),
+            "playback_state".to_string(),
+            "last_seen".to_string(),
+            "stats".to_string(),
+            "library_loaded".to_string(),
+            "library_loading_progress".to_string(),
+            "mpd_version".to_string(),
+        ]
+    }
+
+    fn get_metadata_value(&self, key: &str) -> Option<String> {
+        match key {
+            "hostname" => Some(self.hostname.clone()),
+            "port" => Some(self.port.to_string()),
+            "connection_status" => {
+                let connected = self.is_connected();
+                Some(if connected { "connected".to_string() } else { "disconnected".to_string() })
+            },
+            "queue_length" => {
+                if let Some(mut client) = self.get_fresh_client() {
+                    match client.status() {
+                        Ok(status) => Some(status.queue_len.to_string()),
+                        Err(_) => Some("0".to_string())
+                    }
+                } else {
+                    Some("0".to_string())
+                }
+            },
+            "mpd_version" => {
+                if let Some(client) = self.get_fresh_client() {
+                    // Get MPD version from the client and format it as major.minor.patch
+                    Some(format!("{}.{}.{}", client.version.0, client.version.1, client.version.2))
+                } else {
+                    Some("unknown".to_string())
+                }
+            },
+            "volume" => {
+                if let Some(mut client) = self.get_fresh_client() {
+                    match client.status() {
+                        Ok(status) => {
+                            if status.volume >= 0 {
+                                Some(status.volume.to_string())
+                            } else {
+                                Some("unknown".to_string())
+                            }
+                        },
+                        Err(_) => Some("unknown".to_string())
+                    }
+                } else {
+                    Some("unknown".to_string())
+                }
+            },
+            "playback_state" => Some(self.get_playback_state().to_string()),
+            "last_seen" => {
+                if let Some(timestamp) = self.get_last_seen() {
+                    let duration = std::time::SystemTime::now()
+                        .duration_since(timestamp)
+                        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+                    Some(format!("{} seconds ago", duration.as_secs()))
+                } else {
+                    Some("never".to_string())
+                }
+            },
+            "stats" => {
+                if let Some(mut client) = self.get_fresh_client() {
+                    match client.stats() {
+                        Ok(stats) => {
+                            // Format MPD stats as JSON
+                            // Note: db_update is not a duration but rather a timestamp
+                            Some(serde_json::json!({
+                                "artists": stats.artists,
+                                "albums": stats.albums,
+                                "songs": stats.songs,
+                                "uptime": stats.uptime.as_secs(),
+                                "db_playtime": stats.db_playtime.as_secs(),
+                                "db_update": stats.db_update,
+                                "playtime": stats.playtime.as_secs()
+                            }).to_string())
+                        },
+                        Err(_) => Some("{}".to_string())
+                    }
+                } else {
+                    Some("{}".to_string())
+                }
+            },
+            "library_loaded" => {
+                // Check if library is loaded
+                if let Some(library) = self.get_library() {
+                    Some(library.is_loaded().to_string())
+                } else {
+                    Some("false".to_string())
+                }
+            },
+            "library_loading_progress" => {
+                // Get library loading progress
+                if let Some(library) = self.get_library() {
+                    Some(format!("{:.1}%", library.get_loading_progress() * 100.0))
+                } else {
+                    Some("0.0%".to_string())
+                }
+            },
+            _ => None,
+        }
+    }
 }

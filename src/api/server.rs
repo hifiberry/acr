@@ -43,6 +43,8 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         players::send_command_to_player_by_name,
         players::get_now_playing,
         players::get_player_queue,
+        players::get_player_metadata,       // New endpoint for getting player metadata
+        players::get_player_metadata_key,   // New endpoint for getting specific player metadata key
         
         // Plugin routes
         plugins::list_action_plugins,
@@ -55,14 +57,14 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::get_player_artists,
         library::get_album_by_id,
         library::get_albums_by_artist,
-        library::get_albums_by_artist_id, // New endpoint for getting albums by artist ID
+        library::get_albums_by_artist_id,
         library::refresh_player_library,
         library::get_artist_by_name,
         library::get_artist_by_id,
         library::get_artist_by_mbid,
-        library::get_image, // Register the image endpoint
-        library::get_library_metadata, // Register the new metadata endpoint
-        library::get_library_metadata_key // Register the specific metadata key endpoint
+        library::get_image,
+        library::get_library_metadata,
+        library::get_library_metadata_key
     ];
     
     let _rocket = rocket::custom(config)

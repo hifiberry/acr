@@ -141,6 +141,68 @@ pub trait PlayerController: Send + Sync {
         // if the player has the capability rather than actually creating the library interface
         self.get_library().is_some()
     }
+
+    /// Get a list of metadata keys available for this player
+    /// 
+    /// Returns a list of metadata keys that can be queried
+    /// via get_metadata_value(). Default implementation returns an empty vector.
+    fn get_meta_keys(&self) -> Vec<String> {
+        vec![]
+    }
+    
+    /// Get a specific metadata value as string
+    /// 
+    /// # Arguments
+    /// 
+    /// * `key` - The metadata key to retrieve
+    /// 
+    /// # Returns
+    /// 
+    /// The metadata value as a string, or None if the key is not found
+    /// or the player doesn't support metadata
+    fn get_metadata_value(&self, _key: &str) -> Option<String> {
+        None
+    }
+    
+    /// Get all metadata as a HashMap with JSON values
+    /// 
+    /// # Returns
+    /// 
+    /// All metadata for the player as a HashMap with JSON values, 
+    /// or None if the player doesn't support metadata
+    fn get_metadata(&self) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+        // Convert string metadata to JSON values
+        let mut result = std::collections::HashMap::new();
+        
+        // Add each meta key to the result
+        for key in self.get_meta_keys() {
+            if let Some(value) = self.get_metadata_value(&key) {
+                // Try to parse as JSON, fall back to string value
+                match serde_json::from_str(&value) {
+                    Ok(json_value) => {
+                        result.insert(key, json_value);
+                    },
+                    Err(_) => {
+                        // Use string value
+                        result.insert(key, serde_json::Value::String(value));
+                    }
+                }
+            }
+        }
+        
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+    
+    /// Check if this player supports metadata
+    /// 
+    /// Returns true if the player provides metadata functionality
+    fn has_metadata(&self) -> bool {
+        !self.get_meta_keys().is_empty()
+    }
 }
 
 /// Base implementation of PlayerController that handles state listener management

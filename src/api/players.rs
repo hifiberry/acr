@@ -58,6 +58,21 @@ pub struct QueueResponse {
     queue: Vec<Track>,
 }
 
+/// Response struct for player metadata
+#[derive(serde::Serialize)]
+pub struct MetadataResponse {
+    player_name: String,
+    metadata: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Response struct for a specific metadata key
+#[derive(serde::Serialize)]
+pub struct MetadataKeyResponse {
+    player_name: String,
+    key: String,
+    value: Option<serde_json::Value>,
+}
+
 /// Get the current active player
 #[get("/player")]
 pub fn get_current_player(controller: &State<Arc<AudioController>>) -> Json<CurrentPlayerResponse> {
@@ -359,6 +374,73 @@ pub fn get_player_queue(
         player: n.to_string(),
         queue,
     }))
+}
+
+/// Get all metadata for a player
+#[get("/player/<player_name>/meta")]
+pub fn get_player_metadata(
+    player_name: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<MetadataResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    
+    // Find the controller with the matching name
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == player_name {
+                // Get all metadata as a HashMap
+                let metadata = ctrl.get_metadata()
+                    .unwrap_or_default();
+                
+                return Ok(Json(MetadataResponse {
+                    player_name: player_name.to_string(),
+                    metadata,
+                }));
+            }
+        }
+    }
+    
+    // Player not found
+    Err(Custom(
+        Status::NotFound,
+        format!("Player '{}' not found", player_name),
+    ))
+}
+
+/// Get a specific metadata key for a player
+#[get("/player/<player_name>/meta/<key>")]
+pub fn get_player_metadata_key(
+    player_name: &str,
+    key: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<MetadataKeyResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    
+    // Find the controller with the matching name
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == player_name {
+                // Get all metadata
+                let metadata = ctrl.get_metadata()
+                    .unwrap_or_default();
+                
+                // Get the specific key
+                let value = metadata.get(key).cloned();
+                
+                return Ok(Json(MetadataKeyResponse {
+                    player_name: player_name.to_string(),
+                    key: key.to_string(),
+                    value,
+                }));
+            }
+        }
+    }
+    
+    // Player not found
+    Err(Custom(
+        Status::NotFound,
+        format!("Player '{}' not found", player_name),
+    ))
 }
 
 /// Helper function to parse player commands

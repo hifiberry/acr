@@ -560,7 +560,7 @@ pub fn get_albums_by_artist_id(
                     
                     // Try to find the artist name for better response
                     let artist_name = library.get_artists().into_iter()
-                        .find(|artist| artist.id == artist_id_parsed)
+                        .find(|artist| artist.id == crate::data::Identifier::Numeric(artist_id_parsed))
                         .map_or_else(
                             || format!("Artist ID: {}", artist_id),
                             |artist| artist.name
@@ -709,7 +709,7 @@ fn get_artist_internal(
                                 Ok(id) => {
                                     // Find artist with matching ID
                                     let all_artists = library.get_artists();
-                                    all_artists.into_iter().find(|a| a.id == id)
+                                    all_artists.into_iter().find(|a| a.id == crate::data::Identifier::Numeric(id))
                                 },
                                 Err(_) => {
                                     return Err(Custom(
@@ -751,5 +751,5 @@ fn get_artist_internal(
     Err(Custom(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
-     ))
+      ))
 }

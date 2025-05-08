@@ -126,7 +126,7 @@ impl MPDLibraryLoader {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         use std::sync::{Arc, Mutex};
-        use crate::data::{Album, Track};
+        use crate::data::{Album, Track, Identifier};
         use crate::helpers::musicbrainz;
         
         // Extract album name (default to "Unknown Album" if not present)
@@ -172,9 +172,9 @@ impl MPDLibraryLoader {
         debug!("Album ID: {}, Name: {}, Artists: {:?}", album_id, album_name, artists.lock().unwrap());
 
         
-        // Create album object
+        // Create album object with new Identifier enum
         Album {
-            id: album_id,
+            id: Identifier::Numeric(album_id),
             name: album_name.to_string(),
             artists,
             artists_flat: None,

@@ -296,7 +296,7 @@ impl MPDLibrary {
                     artist_names.insert(artist_name.clone());
                     
                     // Store album-artist relationship for later
-                    album_artist_relations.push((album.id, artist_name.clone()));
+                    album_artist_relations.push((album.id.clone(), artist_name.clone()));
                 }
             }
         }
@@ -331,6 +331,7 @@ impl MPDLibrary {
             // Create a unique ID for the artist based on the name
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
+            use crate::data::Identifier;
             
             let mut hasher = DefaultHasher::new();
             artist_name.hash(&mut hasher);
@@ -338,7 +339,7 @@ impl MPDLibrary {
             
             // Create a new Artist object
             let artist = Artist {
-                id: artist_id,
+                id: Identifier::Numeric(artist_id),
                 name: artist_name.clone(),
                 is_multi: false,  // Default to false, can be updated later if needed
                 metadata: None,
@@ -354,7 +355,7 @@ impl MPDLibrary {
             // Get artist ID (if it exists)
             if let Some(artist) = artists.get(&artist_name) {
                 // Add relationship between album and artist
-                album_artists.add_mapping(album_id, artist.id);
+                album_artists.add_mapping(album_id, artist.id.clone());
                 
                 // No longer adding album names to artist.albums since we removed that attribute
             }
@@ -439,7 +440,7 @@ impl MPDLibrary {
         if let Ok(albums) = self.albums.read() {
             // Search through all albums to find one with matching ID
             for album in albums.values() {
-                if album.id == id {
+                if album.id == crate::data::Identifier::Numeric(id) {
                     return Some(album.clone());
                 }
             }
@@ -456,13 +457,40 @@ impl MPDLibrary {
         
         // Get albums associated with this artist ID from album_artists mapping
         if let Ok(album_artists_mapping) = self.album_artists.read() {
-            let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id);
+            let artist_id_identifier = crate::data::Identifier::Numeric(artist_id);
+            let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id_identifier);
             
             // Get all albums and fetch the ones with matching IDs
             if let Ok(albums) = self.albums.read() {
                 for album in albums.values() {
                     if album_ids.contains(&album.id) {
                         result.push(album.clone());
+                    }
+                }
+            }
+        }
+        
+        result
+    }
+
+    /// Get albums by artist name
+    pub fn get_albums_by_artist(&self, artist_name: &str) -> Vec<Album> {
+        let mut result = Vec::new();
+        
+        // First get the artist by name to get the artist ID
+        if let Some(artist) = self.get_artist(artist_name) {
+            let artist_id = artist.id;
+            
+            // Get albums associated with this artist from album_artists mapping
+            if let Ok(album_artists_mapping) = self.album_artists.read() {
+                let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id);
+                
+                // Get all albums and fetch the ones with matching IDs
+                if let Ok(albums) = self.albums.read() {
+                    for album in albums.values() {
+                        if album_ids.contains(&album.id) {
+                            result.push(album.clone());
+                        }
                     }
                 }
             }

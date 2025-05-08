@@ -61,6 +61,22 @@ impl MPDLibrary {
         }
     }
     
+    /// Populate calculated fields in album objects
+    /// 
+    /// This adds derived fields like cover_art URL for albums that don't have them yet
+    /// these calculates fields are not stored, but only calculated on demand
+    pub fn populate_calculated_album_fields(&self, album: &mut Album) {
+        // Add cover_art URL if not present
+        if album.cover_art.is_none() {
+            if let crate::data::Identifier::Numeric(album_id) = album.id {
+                // Use the API_IMAGE_PREFIX from MPD controller
+                let image_url = format!("{}/album:{}", 
+                    super::mpd::API_IMAGE_PREFIX, album_id);
+                album.cover_art = Some(image_url);
+            }
+        }
+    }
+
     /// Get the current library loading progress (0.0 to 1.0)
     pub fn get_loading_progress(&self) -> f32 {
         if let Ok(progress) = self.loading_progress.lock() {
@@ -510,7 +526,9 @@ impl MPDLibrary {
             // Search through all albums to find one with matching ID
             for album in albums.values() {
                 if &album.id == id {
-                    return Some(album.clone());
+                    let mut album_clone = album.clone();
+                    self.populate_calculated_album_fields(&mut album_clone);
+                    return Some(album_clone);
                 }
             }
             None
@@ -532,7 +550,9 @@ impl MPDLibrary {
             if let Ok(albums) = self.albums.read() {
                 for album in albums.values() {
                     if album_ids.contains(&album.id) {
-                        result.push(album.clone());
+                        let mut album_clone = album.clone();
+                        self.populate_calculated_album_fields(&mut album_clone);
+                        result.push(album_clone);
                     }
                 }
             }
@@ -557,7 +577,9 @@ impl MPDLibrary {
                 if let Ok(albums) = self.albums.read() {
                     for album in albums.values() {
                         if album_ids.contains(&album.id) {
-                            result.push(album.clone());
+                            let mut album_clone = album.clone();
+                            self.populate_calculated_album_fields(&mut album_clone);
+                            result.push(album_clone);
                         }
                     }
                 }
@@ -577,7 +599,9 @@ impl MPDLibrary {
                 if let Ok(album_artists) = album_obj.artists.lock() {
                     // If the album has the specified artist (case-insensitive comparison)
                     if album_artists.iter().any(|a| a.to_lowercase() == artist.to_lowercase()) {
-                        return Some(album_obj.clone());
+                        let mut album_clone = album_obj.clone();
+                        self.populate_calculated_album_fields(&mut album_clone);
+                        return Some(album_clone);
                     }
                 }
             }
@@ -682,7 +706,8 @@ impl LibraryInterface for MPDLibrary {
                         self_albums.clear();
                         
                         // Add each album to the collection with name as key
-                        for album in albums {
+                        for mut album in albums {
+                            self.populate_calculated_album_fields(&mut album);
                             self_albums.insert(album.name.clone(), album);
                         }
                         
@@ -731,7 +756,10 @@ impl LibraryInterface for MPDLibrary {
     
     fn get_albums(&self) -> Vec<Album> {
         if let Ok(albums) = self.albums.read() {
-            albums.values().cloned().collect()
+            albums.values().cloned().map(|mut album| {
+                self.populate_calculated_album_fields(&mut album);
+                album
+            }).collect()
         } else {
             warn!("Failed to acquire read lock on albums");
             Vec::new()

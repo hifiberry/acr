@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
 
+/// Constant for MPD image API URL prefix
+pub const API_IMAGE_PREFIX: &str = "/library/mpd/image";
 /// MPD player controller implementation
 pub struct MPDPlayerController {
     /// Base controller for managing state listeners

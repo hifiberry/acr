@@ -47,5 +47,5 @@ named_pipe = "0.4"
 
 # Binary targets
 [[bin]]
-name = "show-cache"
-path = "src/tools/show_cache.rs"
+name = "dumpcache"
+path = "src/tools/dumpcache.rs"

@@ -5,7 +5,7 @@ use rocket::{get, State};
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 
 /// Response structure for library information
 #[derive(serde::Serialize)]

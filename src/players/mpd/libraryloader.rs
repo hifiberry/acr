@@ -7,8 +7,6 @@ use log::{debug, info, error, warn};
 use chrono::NaiveDate;
 use crate::data::LibraryError;
 use crate::players::mpd::mpd::MPDPlayerController;
-use crate::data::{Track, PlayerEvent, PlayerSource};
-use super::library::MPDLibrary;
 
 /// Number of songs to process before updating progress
 const PROGRESS_UPDATE_FREQUENCY: usize = 100;

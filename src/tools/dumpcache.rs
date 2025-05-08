@@ -1,7 +1,5 @@
 use std::env;
 use std::path::PathBuf;
-use sled::Db;
-use std::fs;
 
 fn print_usage() {
     println!("show-cache: Dumps the contents of an attribute cache database in key|value format");

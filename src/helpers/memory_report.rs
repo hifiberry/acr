@@ -1,5 +1,4 @@
 use std::mem;
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use log::info;
 use crate::data::{Album, Artist, Track};

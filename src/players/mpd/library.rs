@@ -478,69 +478,6 @@ impl MPDLibrary {
         Ok(created_count)
     }
     
-    /// Transfer data from another MPDLibrary instance
-    fn transfer_data_from(&self, other: &MPDLibrary) -> Result<(), LibraryError> {
-        debug!("Transferring library data from newly loaded library");
-        
-        // Reset loading progress to 0
-        if let Ok(mut progress) = self.loading_progress.lock() {
-            *progress = 0.0;
-        }
-        
-        // Mark as not loaded during transfer
-        *self.library_loaded.lock().unwrap() = false;
-        
-        // Transfer albums
-        {
-            if let (Ok(mut self_albums), Ok(other_albums)) = (self.albums.write(), other.albums.read()) {
-                self_albums.clear();
-                for (key, value) in other_albums.iter() {
-                    self_albums.insert(key.clone(), value.clone());
-                }
-                debug!("Transferred {} albums", self_albums.len());
-            } else {
-                error!("Failed to acquire locks for album transfer");
-                return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));
-            }
-        }
-        
-        // Transfer artists
-        {
-            if let (Ok(mut self_artists), Ok(other_artists)) = (self.artists.write(), other.artists.read()) {
-                self_artists.clear();
-                for (key, value) in other_artists.iter() {
-                    self_artists.insert(key.clone(), value.clone());
-                }
-                debug!("Transferred {} artists", self_artists.len());
-            } else {
-                error!("Failed to acquire locks for artist transfer");
-                return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));
-            }
-        }
-        
-        // Transfer album-artist relationships
-        {
-            if let (Ok(mut self_relationships), Ok(other_relationships)) = 
-                (self.album_artists.write(), other.album_artists.read()) {
-                *self_relationships = other_relationships.clone();
-                debug!("Transferred album-artist relationships");
-            } else {
-                error!("Failed to acquire locks for relationship transfer");
-                return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));
-            }
-        }
-        
-        // Mark as loaded and update progress
-        *self.library_loaded.lock().unwrap() = true;
-        if let Ok(mut progress) = self.loading_progress.lock() {
-            *progress = 1.0;
-        }
-        
-        debug!("Library data transfer complete");
-        
-        Ok(())
-    }
-    
     /// Get artists collection as Arc for direct updating
     pub fn get_artists_arc(&self) -> Arc<RwLock<HashMap<String, Artist>>> {
         self.artists.clone()

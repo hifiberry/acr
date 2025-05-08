@@ -16,7 +16,7 @@ use lazy_static::lazy_static;
 /// Global flag to indicate if MusicBrainz lookups are enabled
 pub static MUSICBRAINZ_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Cache of failed artist lookups with 24-hour expiry
+// Using lazy_static for failed artist cache with 24-hour expiry
 lazy_static! {
     static ref FAILED_ARTIST_CACHE: Cache<String, bool> = {
         Cache::builder()
@@ -493,7 +493,7 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
     let result = search_musicbrainz_for_artist(artist_name, cache_only);
     
     match result {
-        MusicBrainzSearchResult::Found(ref mbids, _) => {
+        MusicBrainzSearchResult::Found(_, _) => {
             // If we found results, return them
             return result;
         },

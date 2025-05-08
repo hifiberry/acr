@@ -4,15 +4,15 @@ use serde::{Serialize, Deserialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ArtistMeta {
     /// MusicBrainz ID for the artist
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mbid: Vec<String>,
     
     /// Thumbnail image URL or filename
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thumb_url: Vec<String>,
     
     /// Banner/background image URL or filename
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub banner_url: Vec<String>,
     
     /// Artist biography text
@@ -20,7 +20,7 @@ pub struct ArtistMeta {
     pub biography: Option<String>,
     
     /// Musical genres associated with this artist
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genres: Vec<String>,
     
     /// Indicates if this is a partial match (only some artists in a multi-artist name found)

@@ -429,9 +429,35 @@ impl MPDLibrary {
                 is_multi: false,  // Default to false, can be updated later if needed
                 metadata: None,
             };
+
+            // lookup cache_key "artist::metadata::<artistname>" for cached metadata
+            let cache_key = format!("artist::metadata::{}", artist_name);
             
-            // Insert the new artist
-            artists.insert(artist_name.clone(), artist);
+            // Try to load metadata from the attribute cache
+            let mut artist_with_metadata = artist;
+            match crate::helpers::attributecache::get::<crate::data::ArtistMeta>(&cache_key) {
+                Ok(Some(cached_metadata)) => {
+                    debug!("Loaded metadata for artist {} from attribute cache", artist_name);
+                    artist_with_metadata.metadata = Some(cached_metadata);
+                    
+                    // Check if this is a multi-artist (having multiple MBIDs or partial match)
+                    if let Some(ref meta) = artist_with_metadata.metadata {
+                        if meta.mbid.len() > 1 || meta.is_partial_match {
+                            artist_with_metadata.is_multi = true;
+                            debug!("Marked {} as multi-artist based on cached metadata", artist_name);
+                        }
+                    }
+                },
+                Ok(None) => {
+                    debug!("No cached metadata found for artist {}", artist_name);
+                },
+                Err(e) => {
+                    warn!("Error loading cached metadata for artist {}: {}", artist_name, e);
+                }
+            }
+
+            // Insert the artist with potentially loaded metadata
+            artists.insert(artist_name.clone(), artist_with_metadata);
             created_count += 1;
         }
         

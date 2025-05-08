@@ -183,6 +183,26 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
             debug!("Artist {} has thumbnail image(s) but no MusicBrainz ID, skipping updates", artist.name);
         }
     }
+
+    // Store the updated metadata in cache
+    if let Some(metadata) = &artist.metadata {
+        // Create a cache key using the artist's name
+        let cache_key = format!("artist::metadata::{}", artist.name);
+        
+        // Store the metadata in the attribute cache
+        match crate::helpers::attributecache::set(&cache_key, metadata) {
+            Ok(_) => debug!("Stored metadata for artist {} in attribute cache", artist.name),
+            Err(e) => warn!("Failed to store metadata for artist {} in attribute cache: {}", artist.name, e),
+        }
+        
+        // If the artist has MusicBrainz IDs, store them separately for faster lookup
+        if !metadata.mbid.is_empty() {
+            let mbid_key = format!("artist::mbid::{}", artist.name);
+            if let Err(e) = crate::helpers::attributecache::set(&mbid_key, &metadata.mbid) {
+                warn!("Failed to store MusicBrainz IDs for artist {} in attribute cache: {}", artist.name, e);
+            }
+        }
+    }
     
     // Return the potentially updated artist
     artist

@@ -969,9 +969,58 @@ impl PlayerController for MPDPlayerController {
                         warn!("Failed to kill MPD process, might not have permission");
                     }
                 },
-                PlayerCommand::Queue(cmd) => {
-                    // TODO: Implement queue commands
-                },  
+                
+                PlayerCommand::QueueTracks { uris, insert_at_beginning } => {
+                    debug!("Adding {} tracks to MPD queue at {}", uris.len(), 
+                          if insert_at_beginning { "beginning" } else { "end" });
+                    
+                    // TODO: add tracks to the queue
+                    // Use the MPD client to add tracks to the queue
+                },
+                
+                PlayerCommand::RemoveTrack(uri) => {
+                    debug!("Removing track with URI {} from MPD queue", uri);
+                    
+                    // Find the track in the queue by URI and remove it
+                    match client.queue() {
+                        Ok(queue) => {
+                            // Find all positions matching the URI
+                            let positions: Vec<u32> = queue.iter()
+                                .filter(|song| song.file == uri)
+                                .filter_map(|song| song.place.as_ref().map(|p| p.pos))
+                                .collect();
+                            
+                            if positions.is_empty() {
+                                warn!("No track with URI {} found in queue", uri);
+                                success = false;
+                            } else {
+                                // Remove tracks from highest position to lowest to avoid index shifting
+                                for pos in positions.iter().rev() {
+                                    if let Err(e) = client.delete(*pos) {
+                                        warn!("Failed to remove track at position {}: {}", pos, e);
+                                    }
+                                }
+                                success = true;
+                                debug!("Successfully removed {} occurrences of track with URI {}", positions.len(), uri);
+                            }
+                        },
+                        Err(e) => {
+                            warn!("Failed to retrieve queue to find track: {}", e);
+                            success = false;
+                        }
+                    }
+                },
+                
+                PlayerCommand::ClearQueue => {
+                    debug!("Clearing MPD queue");
+                    
+                    success = client.clear().is_ok();
+                    if success {
+                        debug!("Successfully cleared MPD queue");
+                    } else {
+                        warn!("Failed to clear MPD queue");
+                    }
+                },
             }
             
             // If the command was successful, we may want to update our stored state

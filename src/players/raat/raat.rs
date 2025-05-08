@@ -526,9 +526,17 @@ impl PlayerController for RAATPlayerController {
                 if enabled { "shuffle_on" } else { "shuffle_off" }
             },
             PlayerCommand::Kill => "kill",
-            PlayerCommand::Queue(queue_cmd) => {
+            PlayerCommand::QueueTracks { .. } => {
                 // RAAT doesn't currently support queue operations directly
-                warn!("Queue commands not supported by RAAT player: {:?}", queue_cmd);
+                warn!("Queue tracks not supported by RAAT player");
+                return false;
+            },
+            PlayerCommand::RemoveTrack(_) => {
+                warn!("Remove track not supported by RAAT player");
+                return false;
+            },
+            PlayerCommand::ClearQueue => {
+                warn!("Clear queue not supported by RAAT player");
                 return false;
             },
         };

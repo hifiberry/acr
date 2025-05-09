@@ -39,3 +39,36 @@ pub fn filename_from_string(input: &str) -> String {
     // Trim whitespace
     result.trim().to_string()
 }
+
+/// Create a key for an album in the format "<artist>/<album>"
+/// If there are multiple artists, concatenate them with "+"
+/// 
+/// # Arguments
+/// * `album` - The album object
+/// 
+/// # Returns
+/// * `String` - A key in the format "<sanitized_artist>/<sanitized_album>"
+pub fn key_from_album(album: &crate::data::Album) -> String {
+    // Get the list of artists for the album
+    let artists = match album.artists.lock() {
+        Ok(artists) => artists.clone(),
+        Err(_) => {
+            log::warn!("Failed to acquire lock on album artists for {}", album.name);
+            Vec::new()
+        }
+    };
+    
+    // Use "unknown" as a placeholder if no artists are found
+    if artists.is_empty() {
+        return format!("unknown/{}", filename_from_string(&album.name));
+    }
+    
+    // Sanitize each artist name and join with "+"
+    let artists_key = artists.iter()
+        .map(|artist| filename_from_string(artist))
+        .collect::<Vec<String>>()
+        .join("+");
+    
+    // Create the final key
+    format!("{}/{}", artists_key, filename_from_string(&album.name))
+}

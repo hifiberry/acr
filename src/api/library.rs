@@ -6,7 +6,6 @@ use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
 use serde::Serialize;
-use log::warn;
 
 /// Response structure for library information
 #[derive(serde::Serialize)]

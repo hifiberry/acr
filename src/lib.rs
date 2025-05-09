@@ -19,8 +19,7 @@ pub mod api;
 /// Global constants
 pub mod constants;
 
-// Re-export items from data module for backward compatibility
-pub use data::{PlaybackState, Song, PlayerState};
-
-// Re-export AudioController for easier access
-pub use audiocontrol::AudioController;
+pub use crate::audiocontrol::audiocontrol::AudioController;
+pub use crate::data::PlayerCommand;
+pub use crate::players::PlayerController;
+pub use crate::players::PlayerStateListener;

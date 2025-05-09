@@ -113,11 +113,8 @@ fn main() {
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl+C handler");
     
-    // Create an AudioController from the JSON configuration first
-    let audio_controller_result = AudioController::from_json(&controllers_config);
-    
-    // This will now contain an Arc<AudioController> with initialized self-reference
-    let controller = match audio_controller_result {
+    // Create an AudioController from the JSON configuration and store it in the singleton
+    let controller = match AudioController::from_json(&controllers_config) {
         Ok(controller) => {
             info!("Successfully created AudioController from JSON configuration");
             controller
@@ -127,6 +124,15 @@ fn main() {
             panic!("Cannot continue without a valid AudioController");
         }
     };
+    
+    // Initialize the AudioController singleton
+    match AudioController::initialize_instance(controller.clone()) {
+        Ok(_) => info!("AudioController singleton initialized successfully"),
+        Err(e) => warn!("AudioController singleton initialization: {}", e),
+    }
+    
+    // Get a reference to the AudioController singleton
+    let controller = AudioController::instance();
     
     // Wrap the AudioController in a Box that implements PlayerController
     let player: Box<dyn PlayerController + Send + Sync> = Box::new(controller.as_ref().clone());
@@ -160,8 +166,7 @@ fn main() {
     
     // Start a thread to monitor keypresses
     let keyboard_running = running.clone();
-    // Create a clone of the controller to access all players
-    let controller_clone = controller.clone();
+    // No need to clone the controller, just get it from the singleton as needed
     thread::spawn(move || {
         println!("Keyboard controls active:");
         println!("  Space: Play/Pause");
@@ -179,26 +184,29 @@ fn main() {
         while keyboard_running.load(Ordering::SeqCst) {
             // Try to read a single keystroke
             if stdin.read_exact(&mut buffer).is_ok() {
+                // Get a fresh reference to the AudioController singleton for each command
+                let controller = AudioController::instance();
+                
                 match buffer[0] {
                     // Space key (32 is ASCII for space)
                     32 => {
                         info!("Space key pressed: toggling play/pause");
-                        controller_clone.send_command(PlayerCommand::PlayPause);
+                        controller.send_command(PlayerCommand::PlayPause);
                     },
                     // 'n' key
                     110 | 78 => {  // ASCII for 'n' or 'N'
                         info!("'n' key pressed: next track");
-                        controller_clone.send_command(PlayerCommand::Next);
+                        controller.send_command(PlayerCommand::Next);
                     },
                     // 'p' key
                     112 | 80 => {  // ASCII for 'p' or 'P'
                         info!("'p' key pressed: previous track");
-                        controller_clone.send_command(PlayerCommand::Previous);
+                        controller.send_command(PlayerCommand::Previous);
                     },
                     // '?' key
                     63 => {  // ASCII for '?'
                         info!("'?' key pressed: displaying state of all players");
-                        controller_clone.display_all_player_states();
+                        controller.display_all_player_states();
                     },
                     _ => {
                         // Ignore other keys
@@ -215,11 +223,13 @@ fn main() {
     
     // Start the API server in a Tokio runtime
     let controllers_config_clone = controllers_config.clone();
-    let api_controller = controller.clone();
+    // No need to pass the controller around, the API server can just access the singleton
     let _api_thread = thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async {
-            if let Err(e) = server::start_rocket_server(api_controller, &controllers_config_clone).await {
+            // Get a reference to the singleton AudioController for the server
+            let controller = AudioController::instance();
+            if let Err(e) = server::start_rocket_server(controller, &controllers_config_clone).await {
                 error!("API server error: {}", e);
             }
         });

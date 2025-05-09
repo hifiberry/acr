@@ -1,6 +1,8 @@
 use crate::AudioController;
-use crate::api::{players, plugins, library, imagecache};
+use crate::api::{players, plugins, library, imagecache, events};
+use crate::api::events::WebSocketManager;
 use crate::constants::API_PREFIX;
+use crate::players::{PlayerController, PlayerStateListener}; // Added PlayerStateListener import
 use log::{info, warn};
 use rocket::{routes, get};
 use rocket::serde::json::Json;
@@ -52,6 +54,21 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         .merge(("port", port))
         .merge(("address", host));
     
+    // Create WebSocket manager and start the background pruning task
+    let ws_manager = Arc::new(WebSocketManager::new());
+    events::start_prune_task(ws_manager.clone());
+    
+    // Register the WebSocket manager as a listener for all player events
+    info!("Registering WebSocketManager as a player event listener");
+    
+    // Get a mutable reference to register the WebSocketManager as a listener
+    let mut_controller = unsafe { &mut *(Arc::as_ptr(&controller) as *mut AudioController) };
+    if mut_controller.register_state_listener(Arc::downgrade(&(ws_manager.clone() as Arc<dyn PlayerStateListener>))) {
+        info!("WebSocketManager successfully registered as listener");
+    } else {
+        warn!("Failed to register WebSocketManager as listener");
+    }
+    
     let api_routes = routes![
         get_version,
         
@@ -84,7 +101,11 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::get_artist_by_mbid,
         library::get_image,
         library::get_library_metadata,
-        library::get_library_metadata_key
+        library::get_library_metadata_key,
+        
+        // WebSocket routes
+        events::event_messages,
+        events::player_event_messages
     ];
     
     // ImageCache routes
@@ -95,7 +116,8 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     let mut rocket_builder = rocket::custom(config)
         .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting routes
         .mount(format!("{}/imagecache", API_PREFIX), imagecache_routes) // Mount imagecache routes
-        .manage(controller);
+        .manage(controller)
+        .manage(ws_manager); // Add WebSocket manager as managed state
     
     // Check for static file routes in the configuration
     if let Some(static_routes) = config_json.get("webserver")

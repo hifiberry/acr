@@ -1,9 +1,6 @@
 // Import constants for use in API modules
 pub use crate::constants::API_PREFIX;
 
-// Export the server module
-pub mod server;
-
 // Export the players module
 pub mod players;
 
@@ -15,3 +12,9 @@ pub mod library;
 
 // Export the imagecache module
 pub mod imagecache;
+
+// Export the event module
+pub mod events;
+
+// Export the server module
+pub mod server;

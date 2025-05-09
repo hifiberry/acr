@@ -5,9 +5,14 @@ use crate::players::{create_player_from_json, PlayerCreationError};
 use crate::plugins::EventFilter;
 use crate::plugins::ActionPlugin;
 use serde_json::Value;
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, RwLock, Weak, Mutex, Once};
 use std::any::Any;
 use log::{debug, warn, error};
+
+// Static singleton instance
+static mut AUDIO_CONTROLLER_INSTANCE: Option<Arc<AudioController>> = None;
+static AUDIO_CONTROLLER_INIT: Once = Once::new();
+static AUDIO_CONTROLLER_MUTEX: Mutex<()> = Mutex::new(());
 
 /// A simple AudioController that manages multiple PlayerController instances
 #[derive(Clone)]
@@ -283,7 +288,56 @@ impl AudioController {
             warn!("Failed to initialize AudioController self-reference");
         }
     }
+
+    /// Get the singleton instance of AudioController
+    pub fn instance() -> Arc<AudioController> {
+        // Initialize once with mutex protection for thread safety
+        let _guard = AUDIO_CONTROLLER_MUTEX.lock().unwrap();
+        
+        unsafe {
+            AUDIO_CONTROLLER_INIT.call_once(|| {
+                // Create a default instance if none exists
+                let default_config = serde_json::from_str(&Self::sample_json_config())
+                    .expect("Failed to parse default AudioController config");
+                
+                let controller = Self::from_json(&default_config)
+                    .expect("Failed to create default AudioController");
+                
+                AUDIO_CONTROLLER_INSTANCE = Some(controller);
+            });
+            
+            // This is safe because we've initialized it in call_once
+            // and we're holding the mutex lock
+            match AUDIO_CONTROLLER_INSTANCE {
+                Some(ref controller) => controller.clone(),
+                None => panic!("AudioController instance is not initialized")
+            }
+        }
+    }
     
+    /// Initialize the singleton instance with a specific controller
+    pub fn initialize_instance(controller: Arc<AudioController>) -> Result<(), String> {
+        unsafe {
+            let _guard = AUDIO_CONTROLLER_MUTEX.lock().unwrap();
+            if AUDIO_CONTROLLER_INIT.is_completed() {
+                return Err("AudioController singleton already initialized".to_string());
+            }
+            
+            AUDIO_CONTROLLER_INSTANCE = Some(controller);
+            AUDIO_CONTROLLER_INIT.call_once(|| {});
+            Ok(())
+        }
+    }
+    
+    /// Reset the singleton instance (mainly for testing)
+    #[cfg(test)]
+    pub fn reset_instance() {
+        unsafe {
+            let _guard = AUDIO_CONTROLLER_MUTEX.lock().unwrap();
+            AUDIO_CONTROLLER_INSTANCE = None;
+        }
+    }
+
     /// Add a player controller to the list
     /// 
     /// If this is the first controller added, it becomes the active controller.
@@ -293,7 +347,6 @@ impl AudioController {
             if let Some(weak_ref) = self_ref.as_ref() {
                 weak_ref.clone() as Weak<dyn PlayerStateListener>
             } else {
-                warn!("AudioController self-reference not initialized, cannot register as listener");
                 // Continue without registering as listener
                 let controller = controller;
                 let controller = Arc::new(RwLock::new(controller));
@@ -310,7 +363,6 @@ impl AudioController {
                 return self.controllers.len() - 1;
             }
         } else {
-            warn!("Failed to acquire read lock for self-reference, cannot register as listener");
             // Continue without registering as listener
             let controller = controller;
             let controller = Arc::new(RwLock::new(controller));
@@ -740,6 +792,35 @@ impl AudioController {
         }
     }
     
+    /// Forward database update event to all registered listeners
+    fn forward_database_update(&self, player_name: String, player_id: String, 
+                             artist: Option<String>, album: Option<String>, 
+                             song: Option<String>, percentage: Option<f32>) {
+        // Prune dead listeners
+        self.prune_dead_listeners();
+        
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::DatabaseUpdating {
+            source,
+            artist,
+            album,
+            song,
+            percentage,
+        };
+        
+        // Forward the event to all active listeners
+        if let Ok(listeners) = self.listeners.read() {
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    listener.on_event(event.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when forwarding database update");
+        }
+    }
+
     /// Remove any dead (dropped) listeners
     fn prune_dead_listeners(&self) {
         if let Ok(mut listeners) = self.listeners.write() {
@@ -956,8 +1037,7 @@ impl AudioController {
                 }
             },
             PlayerEvent::DatabaseUpdating { source, artist, album, song, percentage } => {
-                // Database updates are currently handled only by action plugins
-                // Log that we received the event but don't forward it
+                // Forward database update events to listeners if they're from the active player
                 if is_active {
                     let progress_str = percentage.map_or(String::new(), |p| format!(" ({:.1}%)", p));
                     let details = match (artist.as_deref(), album.as_deref(), song.as_deref()) {
@@ -968,8 +1048,9 @@ impl AudioController {
                         (None, None, Some(s)) => format!("song: {}", s),
                         _ => "database".to_string(),
                     };
-                    debug!("AudioController received database update from active player {}: {}{}", 
+                    debug!("AudioController forwarding database update from active player {}: {}{}", 
                            source.player_id, details, progress_str);
+                    self.forward_database_update(source.player_name, source.player_id, artist, album, song, percentage);
                 } else {
                     debug!("AudioController ignoring database update from inactive player {}", source.player_id);
                 }

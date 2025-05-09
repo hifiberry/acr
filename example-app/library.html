@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Library</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1, h2, h3 {
+            color: #222;
+        }
+        
+        .breadcrumb {
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        
+        .breadcrumb a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+        
+        .artists-grid, .albums-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .artist-card, .album-card {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            cursor: pointer;
+            transition: transform 0.3s ease;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .artist-card:hover, .album-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .artist-img, .album-img {
+            width: 100%;
+            height: 200px;
+            object-fit: cover;
+        }
+        
+        .artist-placeholder, .album-placeholder {
+            width: 100%;
+            height: 200px;
+            background-color: #e9e9e9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #999;
+            font-size: 24px;
+        }
+        
+        .artist-info, .album-info {
+            padding: 15px;
+            flex-grow: 1;
+        }
+        
+        .artist-name, .album-name {
+            font-weight: bold;
+            margin: 0;
+            font-size: 16px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .artist-meta, .album-meta {
+            color: #666;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        
+        .tracks-list {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .track-item {
+            padding: 12px 15px;
+            background-color: white;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 3px solid #007bff;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+        
+        .track-item:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .track-number {
+            display: inline-block;
+            width: 30px;
+            color: #777;
+        }
+        
+        .track-title {
+            font-weight: 500;
+        }
+        
+        .track-artist {
+            color: #666;
+            font-style: italic;
+            margin-left: 10px;
+            font-size: 14px;
+        }
+        
+        #view-container > div {
+            display: none;
+        }
+        
+        #view-container > div.active {
+            display: block;
+        }
+        
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100px;
+        }
+        
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #007bff;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .error {
+            padding: 20px;
+            background-color: #fee;
+            border-left: 5px solid #f44;
+            color: #800;
+            margin-bottom: 20px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Music Library</h1>
+        
+        <div class="breadcrumb" id="breadcrumb">
+            <a href="#" id="home-link">Home</a>
+        </div>
+        
+        <div class="error" id="error-display" style="display: none;"></div>
+        
+        <div id="view-container">
+            <!-- Artists View -->
+            <div id="artists-view" class="active">
+                <h2>Artists</h2>
+                <div class="loading" id="artists-loading">
+                    <div class="spinner"></div>
+                </div>
+                <div class="artists-grid" id="artists-grid"></div>
+            </div>
+            
+            <!-- Albums View -->
+            <div id="albums-view">
+                <h2 id="artist-heading"></h2>
+                <div class="loading" id="albums-loading">
+                    <div class="spinner"></div>
+                </div>
+                <div class="albums-grid" id="albums-grid"></div>
+            </div>
+            
+            <!-- Tracks View -->
+            <div id="tracks-view">
+                <h2 id="album-heading"></h2>
+                <div id="album-details"></div>
+                <div class="loading" id="tracks-loading">
+                    <div class="spinner"></div>
+                </div>
+                <ul class="tracks-list" id="tracks-list"></ul>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Configuration
+        const API_BASE_URL = 'http://127.0.0.1:1080/api';
+        let activeLibrary = null;
+        
+        // State management
+        let currentView = 'artists';
+        let currentArtist = null;
+        let currentAlbum = null;
+        
+        // DOM Elements
+        const viewContainer = document.getElementById('view-container');
+        const artistsView = document.getElementById('artists-view');
+        const albumsView = document.getElementById('albums-view');
+        const tracksView = document.getElementById('tracks-view');
+        const artistsGrid = document.getElementById('artists-grid');
+        const albumsGrid = document.getElementById('albums-grid');
+        const tracksList = document.getElementById('tracks-list');
+        const artistHeading = document.getElementById('artist-heading');
+        const albumHeading = document.getElementById('album-heading');
+        const albumDetails = document.getElementById('album-details');
+        const breadcrumb = document.getElementById('breadcrumb');
+        const homeLink = document.getElementById('home-link');
+        const errorDisplay = document.getElementById('error-display');
+        
+        // Loaders
+        const artistsLoading = document.getElementById('artists-loading');
+        const albumsLoading = document.getElementById('albums-loading');
+        const tracksLoading = document.getElementById('tracks-loading');
+        
+        // Event Listeners
+        homeLink.addEventListener('click', navigateToArtists);
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', initApp);
+        
+        function initApp() {
+            // First, find available libraries
+            findAvailableLibrary()
+                .then(() => {
+                    if (activeLibrary) {
+                        loadArtists();
+                    } else {
+                        showError('No music libraries found. Please check your ACR server configuration.');
+                        hideLoading('artists');
+                    }
+                })
+                .catch(error => {
+                    showError(`Failed to connect to API server: ${error.message}`);
+                    hideLoading('artists');
+                });
+            
+            // Handle browser back button
+            window.addEventListener('popstate', handlePopState);
+        }
+        
+        // Find available music libraries
+        function findAvailableLibrary() {
+            showLoading('artists');
+            hideError();
+            
+            return fetch(`${API_BASE_URL}/library`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch libraries: ${response.status} ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.players && data.players.length > 0) {
+                        // Find the first library that has_library=true and is_loaded=true
+                        const availableLibrary = data.players.find(p => p.has_library && p.is_loaded);
+                        
+                        if (availableLibrary) {
+                            activeLibrary = availableLibrary.player_name;
+                            console.log(`Using music library: ${activeLibrary}`);
+                            document.title = `Music Library (${activeLibrary})`;
+                            return activeLibrary;
+                        } else {
+                            // If no loaded library found, try to use any that has a library
+                            const anyLibrary = data.players.find(p => p.has_library);
+                            if (anyLibrary) {
+                                activeLibrary = anyLibrary.player_name;
+                                console.log(`Using music library: ${activeLibrary} (not fully loaded)`);
+                                document.title = `Music Library (${activeLibrary})`;
+                                return activeLibrary;
+                            }
+                        }
+                    }
+                    
+                    console.error('No available music libraries found');
+                    showError('No available music libraries found');
+                    return null;
+                });
+        }
+        
+        function handlePopState(event) {
+            if (event.state) {
+                if (event.state.view === 'artists') {
+                    navigateToArtists(null, false);
+                } else if (event.state.view === 'albums' && event.state.artistId) {
+                    navigateToAlbums(event.state.artistId, event.state.artistName, false);
+                } else if (event.state.view === 'tracks' && event.state.albumId) {
+                    navigateToTracks(event.state.albumId, event.state.albumName, false);
+                }
+            } else {
+                // Default to artists view if no state
+                navigateToArtists(null, false);
+            }
+        }
+        
+        // Navigation functions
+        function navigateToArtists(event, pushState = true) {
+            if (event) event.preventDefault();
+            
+            setActiveView('artists');
+            updateBreadcrumb();
+            
+            if (pushState) {
+                history.pushState({view: 'artists'}, 'Artists', '#');
+            }
+        }
+        
+        function navigateToAlbums(artistId, artistName, pushState = true) {
+            currentArtist = {
+                id: artistId,
+                name: artistName
+            };
+            
+            setActiveView('albums');
+            artistHeading.textContent = artistName;
+            updateBreadcrumb();
+            loadAlbumsByArtist(artistId);
+            
+            if (pushState) {
+                history.pushState(
+                    {view: 'albums', artistId: artistId, artistName: artistName},
+                    artistName,
+                    `#artist/${artistId}`
+                );
+            }
+        }
+        
+        function navigateToTracks(albumId, albumName, pushState = true) {
+            currentAlbum = {
+                id: albumId,
+                name: albumName
+            };
+            
+            setActiveView('tracks');
+            albumHeading.textContent = albumName;
+            updateBreadcrumb();
+            loadAlbumTracks(albumId);
+            
+            if (pushState) {
+                history.pushState(
+                    {
+                        view: 'tracks',
+                        artistId: currentArtist.id,
+                        artistName: currentArtist.name,
+                        albumId: albumId,
+                        albumName: albumName
+                    },
+                    albumName,
+                    `#artist/${currentArtist.id}/album/${albumId}`
+                );
+            }
+        }
+        
+        // View management
+        function setActiveView(view) {
+            currentView = view;
+            
+            artistsView.classList.remove('active');
+            albumsView.classList.remove('active');
+            tracksView.classList.remove('active');
+            
+            if (view === 'artists') {
+                artistsView.classList.add('active');
+            } else if (view === 'albums') {
+                albumsView.classList.add('active');
+            } else if (view === 'tracks') {
+                tracksView.classList.add('active');
+            }
+        }
+        
+        function updateBreadcrumb() {
+            let html = '<a href="#" id="home-link">Home</a>';
+            
+            if (currentView === 'albums' && currentArtist) {
+                html += ` &gt; ${currentArtist.name}`;
+            } else if (currentView === 'tracks' && currentArtist && currentAlbum) {
+                html += ` &gt; <a href="#artist/${currentArtist.id}" class="artist-breadcrumb-link" data-artist-id="${currentArtist.id}">${currentArtist.name}</a> &gt; ${currentAlbum.name}`;
+            }
+            
+            breadcrumb.innerHTML = html;
+            
+            // Reattach event listeners
+            document.getElementById('home-link').addEventListener('click', navigateToArtists);
+            
+            const artistBreadcrumbLink = document.querySelector('.artist-breadcrumb-link');
+            if (artistBreadcrumbLink) {
+                artistBreadcrumbLink.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    navigateToAlbums(currentArtist.id, currentArtist.name);
+                });
+            }
+        }
+        
+        // Data loading functions
+        function loadArtists() {
+            showLoading('artists');
+            hideError();
+            
+            if (!activeLibrary) {
+                showError('No active library selected');
+                hideLoading('artists');
+                return;
+            }
+            
+            fetch(`${API_BASE_URL}/library/${activeLibrary}/artists`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to load artists: ${response.status} ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    renderArtists(data.artists);
+                    hideLoading('artists');
+                })
+                .catch(error => {
+                    console.error('Error loading artists:', error);
+                    showError(`Failed to load artists: ${error.message}`);
+                    hideLoading('artists');
+                });
+        }
+        
+        function loadAlbumsByArtist(artistId) {
+            showLoading('albums');
+            hideError();
+            albumsGrid.innerHTML = '';
+            
+            fetch(`${API_BASE_URL}/library/${activeLibrary}/albums/by-artist-id/${artistId}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to load albums: ${response.status} ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    renderAlbums(data.albums);
+                    hideLoading('albums');
+                })
+                .catch(error => {
+                    console.error('Error loading albums:', error);
+                    showError(`Failed to load albums: ${error.message}`);
+                    hideLoading('albums');
+                });
+        }
+        
+        function loadAlbumTracks(albumId) {
+            showLoading('tracks');
+            hideError();
+            tracksList.innerHTML = '';
+            albumDetails.innerHTML = '';
+            
+            fetch(`${API_BASE_URL}/library/${activeLibrary}/album/by-id/${albumId}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to load album: ${response.status} ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.album) {
+                        renderTracks(data.album);
+                    } else {
+                        showError('Album not found');
+                    }
+                    hideLoading('tracks');
+                })
+                .catch(error => {
+                    console.error('Error loading album tracks:', error);
+                    showError(`Failed to load album tracks: ${error.message}`);
+                    hideLoading('tracks');
+                });
+        }
+        
+        // Rendering functions
+        function renderArtists(artists) {
+            artistsGrid.innerHTML = '';
+            
+            if (!artists || artists.length === 0) {
+                artistsGrid.innerHTML = '<p>No artists found</p>';
+                return;
+            }
+            
+            artists.forEach(artist => {
+                const artistCard = document.createElement('div');
+                artistCard.className = 'artist-card';
+                artistCard.setAttribute('data-artist-id', artist.id);
+                
+                let imageHtml = '';
+                if (artist.thumb_url && artist.thumb_url.length > 0) {
+                    imageHtml = `<img src="${artist.thumb_url[0]}" alt="${artist.name}" class="artist-img">`;
+                } else {
+                    imageHtml = `<div class="artist-placeholder">${artist.name.charAt(0).toUpperCase()}</div>`;
+                }
+                
+                artistCard.innerHTML = `
+                    ${imageHtml}
+                    <div class="artist-info">
+                        <h3 class="artist-name">${artist.name}</h3>
+                        <div class="artist-meta">${artist.album_count} album${artist.album_count !== 1 ? 's' : ''}</div>
+                    </div>
+                `;
+                
+                artistCard.addEventListener('click', () => {
+                    navigateToAlbums(artist.id, artist.name);
+                });
+                
+                artistsGrid.appendChild(artistCard);
+            });
+        }
+        
+        function renderAlbums(albums) {
+            albumsGrid.innerHTML = '';
+            
+            if (!albums || albums.length === 0) {
+                albumsGrid.innerHTML = '<p>No albums found for this artist</p>';
+                return;
+            }
+            
+            albums.forEach(album => {
+                const albumCard = document.createElement('div');
+                albumCard.className = 'album-card';
+                albumCard.setAttribute('data-album-id', album.id);
+                
+                let imageHtml = '';
+                if (album.cover_art) {
+                    const coverUrl = `${API_BASE_URL}/library/${activeLibrary}/image/album:${album.id}`;
+                    imageHtml = `<img src="${coverUrl}" alt="${album.name}" class="album-img">`;
+                } else {
+                    imageHtml = `<div class="album-placeholder">Album</div>`;
+                }
+                
+                const artistsText = album.artists.join(', ');
+                
+                albumCard.innerHTML = `
+                    ${imageHtml}
+                    <div class="album-info">
+                        <h3 class="album-name">${album.name}</h3>
+                        <div class="album-meta">
+                            ${album.release_date ? album.release_date.substring(0, 4) : 'Unknown year'} • 
+                            ${album.tracks_count} track${album.tracks_count !== 1 ? 's' : ''}
+                        </div>
+                    </div>
+                `;
+                
+                albumCard.addEventListener('click', () => {
+                    navigateToTracks(album.id, album.name);
+                });
+                
+                albumsGrid.appendChild(albumCard);
+            });
+        }
+        
+        function renderTracks(album) {
+            if (!album.tracks || album.tracks.length === 0) {
+                tracksList.innerHTML = '<p>No tracks found for this album</p>';
+                return;
+            }
+            
+            // Display album details
+            let coverArtHtml = '';
+            if (album.cover_art) {
+                const coverUrl = `${API_BASE_URL}/library/${activeLibrary}/image/album:${album.id}`;
+                coverArtHtml = `<img src="${coverUrl}" alt="${album.name}" style="max-width: 300px; margin-bottom: 20px;">`;
+            }
+            
+            albumDetails.innerHTML = `
+                ${coverArtHtml}
+                <p><strong>Artist:</strong> ${album.artists.join(', ')}</p>
+                <p><strong>Release Date:</strong> ${album.release_date || 'Unknown'}</p>
+                <p><strong>Tracks:</strong> ${album.tracks_count}</p>
+            `;
+            
+            // Display tracks
+            tracksList.innerHTML = '';
+            album.tracks.forEach((track, index) => {
+                const trackItem = document.createElement('li');
+                trackItem.className = 'track-item';
+                
+                trackItem.innerHTML = `
+                    <span class="track-number">${track.track_number || index + 1}.</span>
+                    <span class="track-title">${track.name}</span>
+                    ${track.artist ? `<span class="track-artist">by ${track.artist}</span>` : ''}
+                `;
+                
+                tracksList.appendChild(trackItem);
+            });
+        }
+        
+        // Helper functions
+        function showLoading(view) {
+            if (view === 'artists') {
+                artistsLoading.style.display = 'flex';
+            } else if (view === 'albums') {
+                albumsLoading.style.display = 'flex';
+            } else if (view === 'tracks') {
+                tracksLoading.style.display = 'flex';
+            }
+        }
+        
+        function hideLoading(view) {
+            if (view === 'artists') {
+                artistsLoading.style.display = 'none';
+            } else if (view === 'albums') {
+                albumsLoading.style.display = 'none';
+            } else if (view === 'tracks') {
+                tracksLoading.style.display = 'none';
+            }
+        }
+        
+        function showError(message) {
+            errorDisplay.textContent = message;
+            errorDisplay.style.display = 'block';
+        }
+        
+        function hideError() {
+            errorDisplay.style.display = 'none';
+        }
+    </script>
+</body>
+</html>

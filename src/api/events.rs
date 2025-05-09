@@ -12,6 +12,14 @@ use rocket::futures::{SinkExt, StreamExt};
 use crate::data::PlayerEvent;
 use crate::players::PlayerStateListener;
 
+/// New format for WebSocket messages with source at top level
+#[derive(Debug, Clone, Serialize)]
+struct WebSocketMessage {
+    #[serde(flatten)]
+    event_data: serde_json::Value,
+    source: serde_json::Value,
+}
+
 /// Subscription request from client
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventSubscription {
@@ -286,6 +294,67 @@ impl WebSocketManager {
     }
 }
 
+/// Convert PlayerEvent to WebSocketMessage format with source at top level
+fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
+    // Extract source information
+    let source = serde_json::json!({
+        "player_name": event.player_name(),
+        "player_id": format!("{}:{}", event.player_name(), "6600") // Default port for MPD
+    });
+    
+    // Create event-specific data
+    let event_data = match event {
+        PlayerEvent::StateChanged { state, .. } => {
+            // For StateChanged events, include the state directly
+            serde_json::json!({
+                "StateChanged": {
+                    "state": state
+                }
+            })
+        },
+        PlayerEvent::SongChanged { song, .. } => {
+            serde_json::json!({
+                "SongChanged": {
+                    "song": song
+                }
+            })
+        },
+        PlayerEvent::LoopModeChanged { mode, .. } => {
+            serde_json::json!({
+                "LoopModeChanged": {
+                    "mode": mode
+                }
+            })
+        },
+        PlayerEvent::CapabilitiesChanged { capabilities, .. } => {
+            serde_json::json!({
+                "CapabilitiesChanged": {
+                    "capabilities": capabilities
+                }
+            })
+        },
+        PlayerEvent::PositionChanged { position, .. } => {
+            serde_json::json!({
+                "PositionChanged": {
+                    "position": position
+                }
+            })
+        },
+        PlayerEvent::DatabaseUpdating { percentage, .. } => {
+            serde_json::json!({
+                "DatabaseUpdating": {
+                    "percentage": percentage
+                }
+            })
+        },
+    };
+    
+    WebSocketMessage {
+        event_data,
+        source,
+    }
+}
+
 /// Get event type name as a string
 fn event_type_name(event: &PlayerEvent) -> &'static str {
     match event {
@@ -372,7 +441,10 @@ pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketMan
                         // Check for new events
                         let events = manager.get_events_for_client(client_id);
                         for event in events {
-                            if let Ok(json) = serde_json::to_string(&event) {
+                            // Convert to new format with source at top level
+                            let message = convert_to_websocket_message(&event);
+                            
+                            if let Ok(json) = serde_json::to_string(&message) {
                                 debug!("sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
                                       client_id, event.player_name(), event_type_name(&event), json.len());
                                 
@@ -494,7 +566,10 @@ pub fn player_event_messages(ws: WebSocket, player_name: &str, ws_manager: &rock
                         // Check for new events
                         let events = manager.get_events_for_client(client_id);
                         for event in events {
-                            if let Ok(json) = serde_json::to_string(&event) {
+                            // Convert to new format with source at top level
+                            let message = convert_to_websocket_message(&event);
+                            
+                            if let Ok(json) = serde_json::to_string(&message) {
                                 debug!("Sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
                                       client_id, event.player_name(), event_type_name(&event), json.len());
                                 

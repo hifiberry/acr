@@ -208,6 +208,32 @@
             });
         });
         
+        // Get color for player state
+        function getStateColor(state) {
+            switch(state) {
+                case 'playing': return '#28a745'; // green
+                case 'paused': return '#ffc107';  // yellow
+                case 'stopped': return '#dc3545'; // red
+                default: return '#6c757d';        // gray
+            }
+        }
+        
+        // Format time in seconds to MM:SS or HH:MM:SS
+        function formatTime(seconds) {
+            if (seconds === undefined || seconds === null) return '00:00';
+            
+            seconds = Math.floor(seconds);
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            
+            if (hours > 0) {
+                return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            } else {
+                return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+        }
+        
         // Connect to WebSocket
         function connectWebSocket() {
             if (socket) {
@@ -243,19 +269,103 @@
                     
                     if (data.type === 'welcome') {
                         message = `<b>Welcome:</b> ${data.message}`;
-                    } else {
-                        const eventType = getEventType(data);
-                        const playerName = data.source ? data.source.player_name : 'unknown';
+                        logEvent(message);
+                        return;
+                    }
+                    
+                    // Handle new format where event type is a key at the top level
+                    // Example: {"StateChanged": {...}, "source": {...}}
+                    const eventKey = Object.keys(data).find(key => 
+                        key !== 'source' && typeof data[key] === 'object');
+                    
+                    if (eventKey) {
+                        // This is the new format
+                        const eventType = eventKey; // e.g., "StateChanged"
+                        const eventData = data[eventKey]; // The event data
+                        const source = data.source || {}; // Source at the top level
+                        const playerName = source.player_name || 'unknown';
                         
                         message = `<span class="log-event">${eventType}</span> from <b>${playerName}</b>: `;
                         
-                        if (eventType === 'SongChanged' && data.song) {
-                            message += `${data.song.title || 'Unknown'} by ${data.song.artist || 'Unknown'}`;
-                        } else if (eventType === 'StateChanged') {
-                            message += data.state;
-                        } else {
-                            message += JSON.stringify(data);
+                        // Format different event types appropriately
+                        switch(eventType) {
+                            case 'StateChanged':
+                                message += `<span style="font-weight: bold; color: ${getStateColor(eventData.state)}">
+                                    ${eventData.state || 'unknown'}</span>`;
+                                break;
+                                
+                            case 'SongChanged':
+                                if (eventData.song) {
+                                    const song = eventData.song;
+                                    message += `<div style="margin: 5px 0;">
+                                        <div><b>Title:</b> ${song.title || 'Unknown'}</div>
+                                        <div><b>Artist:</b> ${song.artist || 'Unknown'}</div>
+                                        ${song.album ? `<div><b>Album:</b> ${song.album}</div>` : ''}
+                                        ${song.duration ? `<div><b>Duration:</b> ${formatTime(song.duration)}</div>` : ''}
+                                    </div>`;
+                                } else {
+                                    message += 'No song information';
+                                }
+                                break;
+                                
+                            case 'LoopModeChanged':
+                                const mode = eventData.mode || 'unknown';
+                                message += `Loop mode: <b>${mode}</b>`;
+                                break;
+                                
+                            case 'CapabilitiesChanged':
+                                if (eventData.capabilities) {
+                                    const caps = eventData.capabilities;
+                                    message += `<div style="margin: 5px 0;">
+                                        <div><b>Capabilities:</b></div>
+                                        ${caps.can_play !== undefined ? `<div>- Play: ${caps.can_play ? '✓' : '✗'}</div>` : ''}
+                                        ${caps.can_pause !== undefined ? `<div>- Pause: ${caps.can_pause ? '✓' : '✗'}</div>` : ''}
+                                        ${caps.can_toggle_play_pause !== undefined ? `<div>- Toggle play/pause: ${caps.can_toggle_play_pause ? '✓' : '✗'}</div>` : ''}
+                                        ${caps.can_stop !== undefined ? `<div>- Stop: ${caps.can_stop ? '✓' : '✗'}</div>` : ''}
+                                        ${caps.can_next !== undefined ? `<div>- Next: ${caps.can_next ? '✓' : '✗'}</div>` : ''}
+                                        ${caps.can_previous !== undefined ? `<div>- Previous: ${caps.can_previous ? '✓' : '✗'}</div>` : ''}
+                                    </div>`;
+                                } else {
+                                    message += 'No capability information';
+                                }
+                                break;
+                                
+                            case 'PositionChanged':
+                                if (eventData.position !== undefined) {
+                                    const position = eventData.position;
+                                    const percentage = position.duration > 0 ? 
+                                        Math.round((position.position / position.duration) * 100) : 0;
+                                    
+                                    message += `<div style="margin: 5px 0;">
+                                        <div>${formatTime(position.position)} / ${formatTime(position.duration)} (${percentage}%)</div>
+                                        <div style="width: 100%; background-color: #eee; height: 6px; border-radius: 3px; margin: 5px 0;">
+                                            <div style="width: ${percentage}%; background-color: #007bff; height: 6px; border-radius: 3px;"></div>
+                                        </div>
+                                    </div>`;
+                                } else {
+                                    message += 'No position information';
+                                }
+                                break;
+                                
+                            case 'DatabaseUpdating':
+                                const percentage = eventData.percentage !== undefined ? 
+                                    Math.round(eventData.percentage * 100) : 0;
+                                    
+                                message += `<div style="margin: 5px 0;">
+                                    <div>Database update: ${percentage}% complete</div>
+                                    <div style="width: 100%; background-color: #eee; height: 6px; border-radius: 3px; margin: 5px 0;">
+                                        <div style="width: ${percentage}%; background-color: #28a745; height: 6px; border-radius: 3px;"></div>
+                                    </div>
+                                </div>`;
+                                break;
+                                
+                            default:
+                                message += JSON.stringify(eventData);
                         }
+                    } else {
+                        // No need for backward compatibility as per your request
+                        // For unknown event format, dump the complete JSON for debugging
+                        message = `<span class="log-event">Unknown event format</span>: <pre style="margin: 5px 0; padding: 5px; background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; max-height: 200px; overflow: auto; white-space: pre-wrap;">${JSON.stringify(data, null, 2)}</pre>`;
                     }
                     
                     logEvent(message);

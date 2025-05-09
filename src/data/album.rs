@@ -115,6 +115,38 @@ impl<'de> Deserialize<'de> for Album {
     }
 }
 
+impl Album {
+    /// Sort tracks by disc number and track number
+    /// 
+    /// This method sorts the album's track list first by disc number (if available)
+    /// and then by track number within each disc. This ensures tracks are in the
+    /// correct playing order.
+    pub fn sort_tracks(&self) {
+        if let Ok(mut tracks) = self.tracks.lock() {
+            tracks.sort_by(|a, b| {
+                // First compare disc numbers (default to "1" if not present)
+                let disc_a = a.disc_number.as_ref().cloned().unwrap_or_else(|| "1".to_string());
+                let disc_b = b.disc_number.as_ref().cloned().unwrap_or_else(|| "1".to_string());
+                
+                // Try to parse disc numbers as integers
+                let disc_num_a = disc_a.parse::<u32>().unwrap_or(1);
+                let disc_num_b = disc_b.parse::<u32>().unwrap_or(1);
+                
+                // Compare discs first
+                match disc_num_a.cmp(&disc_num_b) {
+                    std::cmp::Ordering::Equal => {
+                        // If discs are the same, compare track numbers
+                        let track_num_a = a.track_number.unwrap_or(0);
+                        let track_num_b = b.track_number.unwrap_or(0);
+                        track_num_a.cmp(&track_num_b)
+                    },
+                    other => other, // If discs are different, sort by disc
+                }
+            });
+        }
+    }
+}
+
 // Implement Hash trait to ensure the id is used as the hash
 impl Hash for Album {
     fn hash<H: Hasher>(&self, state: &mut H) {

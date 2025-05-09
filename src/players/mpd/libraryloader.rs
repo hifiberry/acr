@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 use std::time::Instant;
-use std::io::{Write, BufReader, BufRead};
-use std::net::TcpStream;
 use std::sync::Arc;
 use log::{debug, info, error, warn};
 use chrono::NaiveDate;
@@ -223,40 +221,22 @@ impl MPDLibraryLoader {
         debug!("Loading album artists from MPD server at {}:{}", self.hostname, self.port);
         let start_time = Instant::now();
         
-        // Connect to the MPD server
-        let addr = format!("{}:{}", self.hostname, self.port);
-        let mut stream = TcpStream::connect(&addr)
+        // Create a fresh MPD client using the MPD crate
+        let conn_string = format!("{}:{}", self.hostname, self.port);
+        let mut client = mpd::Client::connect(&conn_string)
             .map_err(|e| LibraryError::ConnectionError(format!("Failed to connect to MPD: {}", e)))?;
         
-        // Send the "list albumartist" command
-        if let Err(e) = stream.write_all(b"list artist\n") {
-            return Err(LibraryError::ConnectionError(format!("Failed to send command: {}", e)));
-        }
+        // Use the list command to get all artists
+        // Convert the string to Cow<str> using .into() as required by the MPD crate
+        let artists = client.list(&mpd::Term::Tag("Artist".into()), &mpd::Query::new())
+            .map_err(|e| LibraryError::ConnectionError(format!("Failed to list artists from MPD: {}", e)))?;
+
+        warn!("MPD list command returned {} artists", artists.len());
         
-        // Read the response from MPD
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        let mut albumartists = Vec::new();
-        
-        while let Ok(bytes) = reader.read_line(&mut line) {
-            if bytes == 0 {
-                break; // End of stream
-            }
-            
-            let line_trimmed = line.trim();
-            if line_trimmed == "OK" {
-                // End of response
-                break;
-            }
-            
-            // Check for Artist: prefix in each line
-            if line_trimmed.starts_with("Artist: ") {
-                // Extract the artist name by taking the part after "Artist: "
-                let artist_name = line_trimmed[8..].to_string();
-                albumartists.push(artist_name);
-            }
-            
-            line.clear();
+        // Collect all artist names
+        let mut albumartists = Vec::with_capacity(artists.len());
+        for artist in artists {
+            albumartists.push(artist);
         }
         
         let elapsed = start_time.elapsed();
@@ -373,6 +353,8 @@ impl MPDLibraryLoader {
         // Move albums from HashMap to vector without copying
         let mut albums = Vec::with_capacity(albums_map.len());
         for (_, album) in albums_map.drain() {
+            // Sort the tracks by disc and track number before adding to the result
+            album.sort_tracks();
             albums.push(album);
         }
         
@@ -394,140 +376,24 @@ impl MPDLibraryLoader {
     pub fn fetch_all_songs_for_artist(&self, artist_name: &str) -> Result<Vec<mpd::Song>, LibraryError> {
         debug!("Fetching all songs for artist: {}", artist_name);
         
-        // Connect to MPD server
-        let addr = format!("{}:{}", self.hostname, self.port);
-        let mut stream = TcpStream::connect(&addr)
+        // Create a new MPD client connection
+        let conn_string = format!("{}:{}", self.hostname, self.port);
+        let mut client = mpd::Client::connect(&conn_string)
             .map_err(|e| LibraryError::ConnectionError(format!("Failed to connect to MPD: {}", e)))?;
         
-        // Create find command for this artist
-        let cmd = format!("find artist \"{}\"\n", artist_name.replace("\"", "\\\""));
+        // Use the MPD find command to get all songs by this artist
+        // Create a query for artist = artist_name using a proper binding
+        // to prevent the temporary value from being dropped
+        let mut query_obj = mpd::Query::new();
+        let query = query_obj.and(
+            mpd::Term::Tag("Artist".into()),
+            artist_name
+        );
         
-        if let Err(e) = stream.write_all(cmd.as_bytes()) {
-            return Err(LibraryError::ConnectionError(format!("Failed to send command: {}", e)));
-        }
-        
-        // Read response
-        let mut reader = std::io::BufReader::new(stream);
-        let mut line = String::new();
-        let mut songs = Vec::new();
-        
-        // Current song being processed
-        let mut current_file = None;
-        let mut current_title = None;
-        let mut current_artist = None;
-        let mut current_album = None;
-        let mut current_album_artist = None;
-        let mut current_track = None;
-        let mut current_date = None;
-        let mut current_duration = None;
-        
-        // Process response line by line
-        while let Ok(bytes) = reader.read_line(&mut line) {
-            if bytes == 0 {
-                break; // End of stream
-            }
+        // Pass None for Window parameter to satisfy the Into<Window> trait
+        let songs = client.find(&query, None)
+            .map_err(|e| LibraryError::ConnectionError(format!("Failed to find songs for artist '{}': {}", artist_name, e)))?;
             
-            let line_trimmed = line.trim();
-            if line_trimmed == "OK" {
-                // End of response
-                break;
-            }
-            
-            // Process each line based on field
-            if line_trimmed.starts_with("file: ") {
-                // New song entry, save previous if exists
-                if let Some(file) = current_file.take() {
-                    // Create a song object from gathered data
-                    let mut song = mpd::Song::default();
-                    song.file = file;
-                    song.title = current_title.take();
-                    
-                    // Add tags
-                    if let Some(artist) = current_artist.take() {
-                        song.tags.push(("Artist".to_string(), artist));
-                    }
-                    
-                    if let Some(album) = current_album.take() {
-                        song.tags.push(("Album".to_string(), album));
-                    }
-                    
-                    if let Some(album_artist) = current_album_artist.take() {
-                        song.tags.push(("AlbumArtist".to_string(), album_artist));
-                    }
-                    
-                    if let Some(track) = current_track.take() {
-                        song.tags.push(("Track".to_string(), track));
-                    }
-                    
-                    if let Some(date) = current_date.take() {
-                        song.tags.push(("Date".to_string(), date));
-                    }
-                    
-                    if let Some(duration) = current_duration.take() {
-                        song.duration = Some(std::time::Duration::from_secs_f64(duration));
-                    }
-                    
-                    songs.push(song);
-                }
-                
-                // Start new song
-                current_file = Some(line_trimmed[6..].to_string());
-            } else if line_trimmed.starts_with("Title: ") {
-                current_title = Some(line_trimmed[7..].to_string());
-            } else if line_trimmed.starts_with("Artist: ") {
-                current_artist = Some(line_trimmed[8..].to_string());
-            } else if line_trimmed.starts_with("Album: ") {
-                current_album = Some(line_trimmed[7..].to_string());
-            } else if line_trimmed.starts_with("AlbumArtist: ") {
-                current_album_artist = Some(line_trimmed[13..].to_string());
-            } else if line_trimmed.starts_with("Track: ") {
-                current_track = Some(line_trimmed[7..].to_string());
-            } else if line_trimmed.starts_with("Date: ") {
-                current_date = Some(line_trimmed[6..].to_string());
-            } else if line_trimmed.starts_with("duration: ") {
-                if let Ok(dur) = line_trimmed[10..].parse::<f64>() {
-                    current_duration = Some(dur);
-                }
-            }
-            
-            line.clear();
-        }
-        
-        // Process the last song if there's one in progress
-        if let Some(file) = current_file.take() {
-            // Create a song object from gathered data
-            let mut song = mpd::Song::default();
-            song.file = file;
-            song.title = current_title.take();
-            
-            // Add tags
-            if let Some(artist) = current_artist.take() {
-                song.tags.push(("Artist".to_string(), artist));
-            }
-            
-            if let Some(album) = current_album.take() {
-                song.tags.push(("Album".to_string(), album));
-            }
-            
-            if let Some(album_artist) = current_album_artist.take() {
-                song.tags.push(("AlbumArtist".to_string(), album_artist));
-            }
-            
-            if let Some(track) = current_track.take() {
-                song.tags.push(("Track".to_string(), track));
-            }
-            
-            if let Some(date) = current_date.take() {
-                song.tags.push(("Date".to_string(), date));
-            }
-            
-            if let Some(duration) = current_duration.take() {
-                song.duration = Some(std::time::Duration::from_secs_f64(duration));
-            }
-            
-            songs.push(song);
-        }
-        
         debug!("Found {} songs for artist '{}'", songs.len(), artist_name);
         Ok(songs)
     }

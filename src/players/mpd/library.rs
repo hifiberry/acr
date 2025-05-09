@@ -70,7 +70,7 @@ impl MPDLibrary {
         if album.cover_art.is_none() {
             if let crate::data::Identifier::Numeric(album_id) = album.id {
                 // Use the mpd_image_url function from MPD controller
-                let image_url = format!("{}/album:{}", 
+                let image_url = format!("{}/album:{}",
                     mpd_image_url(), album_id);
                 album.cover_art = Some(image_url);
             }
@@ -150,6 +150,13 @@ impl MPDLibrary {
         let mut size_line = String::new();
         if reader.read_line(&mut size_line).is_err() {
             error!("Failed to read size response from MPD");
+            return None;
+        }
+        
+        // Check if we got an ACK error response instead of a size line
+        if size_line.starts_with("ACK") {
+            // This is an error from MPD (likely "No file exists" or similar)
+            debug!("MPD returned error response: {}", size_line.trim());
             return None;
         }
         
@@ -243,6 +250,12 @@ impl MPDLibrary {
                     return None;
                 }
                 
+                // Check for ACK errors in subsequent chunks
+                if size_line.starts_with("ACK") {
+                    error!("MPD returned error during chunk request at offset {}: {}", offset, size_line.trim());
+                    return None;
+                }
+                
                 // Read binary size line
                 let mut binary_line = String::new();
                 if reader.read_line(&mut binary_line).is_err() {
@@ -310,7 +323,7 @@ impl MPDLibrary {
         debug!("Successfully retrieved cover art of size {} bytes with MIME type {}", full_data.len(), mime_type);
         Some((full_data, mime_type))
     }
-    
+
     /// Detect the MIME type of an image from its binary data
     fn detect_mime_type(data: &[u8]) -> String {
         // Check for magic numbers in header bytes to identify image format

@@ -813,10 +813,32 @@
         }
         
         function setupWebSocket() {
+            // Close any existing connection first
+            if (window.libraryWebSocket) {
+                console.log('Closing existing WebSocket connection before creating a new one');
+                // Remove event handlers to avoid duplicate handling during reconnection
+                window.libraryWebSocket.onclose = null;
+                window.libraryWebSocket.onerror = null;
+                
+                // Only close if not already closed
+                if (window.libraryWebSocket.readyState !== WebSocket.CLOSED && 
+                    window.libraryWebSocket.readyState !== WebSocket.CLOSING) {
+                    window.libraryWebSocket.close();
+                }
+                
+                // Clear previous reference
+                window.libraryWebSocket = null;
+            }
+            
+            // Clear any existing reconnect interval
+            if (window.reconnectInterval) {
+                clearInterval(window.reconnectInterval);
+                window.reconnectInterval = null;
+            }
+            
             // Create WebSocket connection
             const wsUrl = `ws://127.0.0.1:1080/api/events`;
             let socket = new WebSocket(wsUrl);
-            let reconnectInterval = null;
             
             socket.onopen = () => {
                 console.log('WebSocket connected');
@@ -825,9 +847,9 @@
                 websocketStatus.querySelector('span').textContent = 'Connected';
                 
                 // Clear any reconnect interval
-                if (reconnectInterval) {
-                    clearInterval(reconnectInterval);
-                    reconnectInterval = null;
+                if (window.reconnectInterval) {
+                    clearInterval(window.reconnectInterval);
+                    window.reconnectInterval = null;
                 }
                 
                 // Send subscription to listen for database updates for the active library player
@@ -898,15 +920,18 @@
                 }
             };
             
-            socket.onclose = () => {
-                console.log('WebSocket disconnected');
+            socket.onclose = (event) => {
+                console.log(`WebSocket disconnected (code: ${event.code}, reason: ${event.reason || 'No reason given'})`);
                 websocketStatus.querySelector('.indicator').classList.remove('connected');
                 websocketStatus.querySelector('.indicator').classList.add('disconnected');
                 websocketStatus.querySelector('span').textContent = 'Disconnected';
                 
-                // Attempt to reconnect
-                if (!reconnectInterval) {
-                    reconnectInterval = setInterval(() => {
+                // Attempt to reconnect, but only if not closing intentionally
+                // Codes in 1000-1001 range are normal closures
+                if (event.code !== 1000 && event.code !== 1001) {
+                    console.log('Scheduling reconnection attempt...');
+                    // Use a single reconnection timer stored in window to avoid multiple timers
+                    window.reconnectInterval = setTimeout(() => {
                         console.log('Attempting to reconnect WebSocket...');
                         setupWebSocket();
                     }, 5000); // Try to reconnect every 5 seconds
@@ -915,11 +940,28 @@
             
             socket.onerror = (error) => {
                 console.error('WebSocket error:', error);
+                // Error handling is managed by the onclose handler, no need to do it here
             };
             
-            // Store socket reference globally to prevent garbage collection
+            // Store socket reference globally
             window.libraryWebSocket = socket;
         }
+        
+        // Add cleanup function to handle page unload
+        window.addEventListener('beforeunload', function() {
+            // Close WebSocket connection when page is closed/refreshed
+            if (window.libraryWebSocket) {
+                window.libraryWebSocket.onclose = null; // Prevent reconnection attempts
+                window.libraryWebSocket.close();
+                window.libraryWebSocket = null;
+            }
+            
+            // Clear any reconnection timers
+            if (window.reconnectInterval) {
+                clearInterval(window.reconnectInterval);
+                window.reconnectInterval = null;
+            }
+        });
     </script>
 </body>
 </html>

@@ -746,6 +746,55 @@ impl MPDPlayerController {
         // Update player capabilities based on the current playlist state and the song we just got
         Self::update_state_and_capabilities_from_mpd(client, player, obtained_song);
     }
+
+    /// Add a song URL to the MPD queue
+    /// 
+    /// # Arguments
+    /// * `url` - The URL/path of the song to add
+    /// * `at_beginning` - If Some(true), insert at the beginning of the queue, otherwise append to the end
+    /// 
+    /// # Returns
+    /// * `bool` - true if the operation was successful, false otherwise
+    pub fn queue_url(&self, url: &str, at_beginning: Option<bool>) -> bool {
+        debug!("Adding URL to queue: {}, at_beginning: {:?}", url, at_beginning);
+        
+        if let Some(mut client) = self.get_fresh_client() {
+            // Use the appropriate method based on whether to add at beginning or end
+            let result = if at_beginning.unwrap_or(false) {
+                // Insert at position 0 (beginning of queue)
+                debug!("Inserting track at position 0: {}", url);
+                // Create a song path that mpd library can use
+                let song_path = mpd::Song {
+                    file: url.to_string(),
+                    ..Default::default()
+                };
+                client.insert(&song_path, 0)
+            } else {
+                // Push to the end of the queue
+                debug!("Pushing track to end of queue: {}", url);
+                // Create a song path that mpd library can use
+                let song_path = mpd::Song {
+                    file: url.to_string(),
+                    ..Default::default()
+                };
+                client.push(&song_path).map(|_id| 0) // Convert Result<Id, Error> to Result<usize, Error>
+            };
+            
+            match result {
+                Ok(_) => {
+                    debug!("Successfully added URL to queue: {}", url);
+                    return true;
+                },
+                Err(e) => {
+                    warn!("Failed to add URL to queue: {} - Error: {}", url, e);
+                    return false;
+                }
+            }
+        } else {
+            warn!("Failed to get MPD client connection for queue_url");
+            return false;
+        }
+    }
 }
 
 /// Structure to store player state for each instance
@@ -989,7 +1038,28 @@ impl PlayerController for MPDPlayerController {
                     debug!("Adding {} tracks to MPD queue at {}", uris.len(), 
                           if insert_at_beginning { "beginning" } else { "end" });
                     
-                    success = true
+                    if uris.is_empty() {
+                        debug!("No URIs provided to queue");
+                        success = true; // Nothing to do, but not an error
+                    } else {
+                        let mut all_success = true;
+                        
+                        // Process each URI using our new queue_url function
+                        for uri in &uris {
+                            let result = self.queue_url(uri, Some(insert_at_beginning));
+                            if !result {
+                                all_success = false;
+                            }
+                        }
+                        
+                        success = all_success;
+                    }
+                    
+                    if success {
+                        debug!("Successfully added all tracks to MPD queue");
+                    } else {
+                        warn!("Failed to add some or all tracks to MPD queue");
+                    }
                 },
                     
                 PlayerCommand::RemoveTrack(uri) => {

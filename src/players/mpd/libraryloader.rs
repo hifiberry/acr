@@ -219,7 +219,7 @@ impl MPDLibraryLoader {
     }
     
     /// Load all album artists from the MPD server
-    fn load_albumartists(&self) -> Result<Vec<String>, LibraryError> {
+    fn load_artists(&self) -> Result<Vec<String>, LibraryError> {
         debug!("Loading album artists from MPD server at {}:{}", self.hostname, self.port);
         let start_time = Instant::now();
         
@@ -229,7 +229,7 @@ impl MPDLibraryLoader {
             .map_err(|e| LibraryError::ConnectionError(format!("Failed to connect to MPD: {}", e)))?;
         
         // Send the "list albumartist" command
-        if let Err(e) = stream.write_all(b"list albumartist\n") {
+        if let Err(e) = stream.write_all(b"list artist\n") {
             return Err(LibraryError::ConnectionError(format!("Failed to send command: {}", e)));
         }
         
@@ -249,12 +249,11 @@ impl MPDLibraryLoader {
                 break;
             }
             
-            // Parse album artist entries
-            if line_trimmed.starts_with("AlbumArtist: ") {
-                let artist_name = line_trimmed[13..].to_string();
-                if !artist_name.is_empty() {
-                    albumartists.push(artist_name);
-                }
+            // Check for Artist: prefix in each line
+            if line_trimmed.starts_with("Artist: ") {
+                // Extract the artist name by taking the part after "Artist: "
+                let artist_name = line_trimmed[8..].to_string();
+                albumartists.push(artist_name);
             }
             
             line.clear();
@@ -275,9 +274,9 @@ impl MPDLibraryLoader {
         info!("Loading MPD library from {}:{}", self.hostname, self.port);
         let start_time = Instant::now();
         
-        // Step 1: Load all album artists
-        let albumartists = self.load_albumartists()?;
-        info!("Found {} album artists in MPD database", albumartists.len());
+        // Step 1: Load all artists
+        let artists = self.load_artists()?;
+        warn!("Found {} artists in MPD database", artists.len());
         progress = 10.0; // Update progress to 10%
         
         // Send database update event to show initial progress
@@ -288,7 +287,7 @@ impl MPDLibraryLoader {
 
         // Step 2: Load all songs for each album artist
         let mut all_songs = Vec::new();
-        for artist in &albumartists {
+        for artist in &artists {
             debug!("Loading songs for album artist: {}", artist);
             
             // Fetch all songs for this artist

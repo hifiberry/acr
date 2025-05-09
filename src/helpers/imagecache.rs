@@ -149,7 +149,7 @@ impl ImageCache {
     }
 
     /// Get an image from the cache
-    pub fn get_image<P: AsRef<Path>>(&self, path: P) -> Result<Vec<u8>, String> {
+    pub fn get_image_data<P: AsRef<Path>>(&self, path: P) -> Result<Vec<u8>, String> {
         if !self.is_enabled() {
             return Err("Image cache is disabled".to_string());
         }
@@ -326,8 +326,8 @@ pub fn store_image_from_data<P: AsRef<Path>>(path: P, data: Vec<u8>, mime_type: 
 }
 
 /// Get an image from the cache
-pub fn get_image<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, String> {
-    get_image_cache().get_image(path)
+pub fn get_image_data<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, String> {
+    get_image_cache().get_image_data(path)
 }
 
 /// Delete an image from the cache

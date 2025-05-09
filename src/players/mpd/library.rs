@@ -4,6 +4,8 @@ use std::time::Instant;
 use log::{debug, info, warn, error};
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
 use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
+use crate::helpers::sanitize;
+
 
 /// MPD library interface that provides access to albums and artists
 #[derive(Clone)]
@@ -603,14 +605,24 @@ impl MPDLibrary {
     /// Get album cover art using the album's identifier
     /// 
     /// This function looks up the album in the library, extracts the URI of the first song,
-    /// and uses that to fetch the cover art.
+    /// and uses that to fetch the cover art. The cover art is also stored in the
+    /// imagecache under /albums/<artist>/<album>.
     /// 
     /// Returns a tuple of (binary data, mime-type) of the cover art if found, None otherwise
     pub fn get_album_cover(&self, id: &crate::data::Identifier) -> Option<(Vec<u8>, String)> {
         // First, look up the album by its ID
         let album = self.get_album_by_id(id)?;
-
         debug!("Found album with ID {}: {}", id, album.name);
+
+        // Use the sanitize::key_from_album function to generate a path key
+        let album_key = sanitize::key_from_album(&album);
+
+        // Check if the album has a cover in the cache
+        let cache_path = format!("albums/{}/cover", album_key);
+        if let Ok((image_data, mime_type)) = crate::helpers::imagecache::get_image_with_mime_type(&cache_path) {
+            debug!("Found cached cover art for album {}", album.name);
+            return Some((image_data, mime_type));
+        }
         
         // Get the URI of the first song in the album
         let uri = match album.tracks.lock() {
@@ -635,7 +647,24 @@ impl MPDLibrary {
         debug!("Retrieving cover art for album {} using URI: {}", album.name, uri.as_deref().unwrap());
         
         // Use the existing cover_art function to get the image data
-        self.cover_art(uri.as_deref().unwrap())
+        let image_result = self.cover_art(uri.as_deref().unwrap());
+        
+        // If we got an image, store it in the imagecache
+        if let Some((image_data, mime_type)) = &image_result {
+            
+            
+            // Create the path for storing in imagecache
+            let file_path = format!("albums/{}/cover", album_key);
+            
+            // Store the image in the cache using store_image_from_data
+            if let Err(e) = crate::helpers::imagecache::store_image_from_data(&file_path, image_data.clone(), mime_type.clone()) {
+                warn!("Failed to cache album cover for '{}': {}", album.name, e);
+            } else {
+                debug!("Stored album cover in cache at {}", file_path);
+            }
+        }
+        
+        image_result
     }
 }
 
@@ -801,6 +830,66 @@ impl LibraryInterface for MPDLibrary {
         // If we reach here, the identifier is not supported
         warn!("Unsupported image identifier format: {}", identifier);
         None
+    }
+
+    fn force_update(&self) -> bool {
+        use std::io::{Write, BufRead, BufReader};
+        use std::net::TcpStream;
+        
+        debug!("Sending update command to MPD server at {}:{}", self.hostname, self.port);
+        
+        // Connect to MPD server
+        match TcpStream::connect(format!("{}:{}", self.hostname, self.port)) {
+            Ok(stream) => {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                
+                // Read the welcome message
+                let mut welcome = String::new();
+                if reader.read_line(&mut welcome).is_err() {
+                    error!("Failed to read welcome message from MPD");
+                    return false;
+                }
+                
+                if !welcome.starts_with("OK") {
+                    error!("Unexpected welcome message from MPD: {}", welcome);
+                    return false;
+                }
+                
+                // Send update command to rescan the library
+                match writer.write_all(b"update\n") {
+                    Ok(_) => {
+                        // Read the response
+                        let mut response = String::new();
+                        if reader.read_line(&mut response).is_err() {
+                            error!("Failed to read response from MPD");
+                            return false;
+                        }
+                        
+                        // Check if the response contains the update ID
+                        if response.starts_with("updating_db:") {
+                            debug!("MPD update command accepted: {}", response.trim());
+                            return true;
+                        } else if response == "OK\n" {
+                            // Some MPD servers might just respond with OK
+                            debug!("MPD update command accepted with OK response");
+                            return true;
+                        } else {
+                            error!("Unexpected response from MPD update command: {}", response.trim());
+                            return false;
+                        }
+                    },
+                    Err(e) => {
+                        error!("Failed to send update command to MPD: {}", e);
+                        return false;
+                    }
+                }
+            },
+            Err(e) => {
+                error!("Failed to connect to MPD server: {}", e);
+                return false;
+            }
+        }
     }
 
     fn get_meta_keys(&self) -> Vec<String> {

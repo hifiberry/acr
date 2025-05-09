@@ -453,6 +453,7 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
         "next" => return Ok(PlayerCommand::Next),
         "previous" => return Ok(PlayerCommand::Previous),
         "kill" => return Ok(PlayerCommand::Kill),
+        "clear_queue" => return Ok(PlayerCommand::ClearQueue),
         _ => {} // continue to complex command parsing
     }
     
@@ -483,9 +484,28 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
                     _ => return Err(format!("Invalid random setting: {}", param))
                 }
             },
+            "add_track" => {
+                // Add a single track to the queue (helper command for add_track:<uri>)
+                // URL-decode the parameter to handle special characters correctly
+                let uri = match urlencoding::decode(param) {
+                    Ok(decoded) => decoded.into_owned(),
+                    Err(_) => return Err(format!("Failed to decode URI: {}", param))
+                };
+                return Ok(PlayerCommand::QueueTracks {
+                    uris: vec![uri],
+                    insert_at_beginning: false
+                });
+            },
+            "remove_track" => {
+                // Remove a track from the queue
+                let uri = param.to_string();
+                return Ok(PlayerCommand::RemoveTrack(uri));
+            },
             _ => {}
         }
     }
+    
+    // JSON payload handling for complex commands (handled elsewhere)
     
     // If we get here, we couldn't parse the command
     Err(format!("Unknown command format: {}", cmd_str))

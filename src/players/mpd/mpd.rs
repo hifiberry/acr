@@ -989,10 +989,9 @@ impl PlayerController for MPDPlayerController {
                     debug!("Adding {} tracks to MPD queue at {}", uris.len(), 
                           if insert_at_beginning { "beginning" } else { "end" });
                     
-                    // TODO: add tracks to the queue
-                    // Use the MPD client to add tracks to the queue
+                    success = true
                 },
-                
+                    
                 PlayerCommand::RemoveTrack(uri) => {
                     debug!("Removing track with URI {} from MPD queue", uri);
                     

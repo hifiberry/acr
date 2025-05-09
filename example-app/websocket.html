@@ -273,8 +273,13 @@
                         return;
                     }
                     
+                    if (data.type === 'subscription_updated') {
+                        message = `<span style="color: #28a745;"><b>✓</b> ${data.message}</span>`;
+                        logEvent(message);
+                        return;
+                    }
+                    
                     // Handle new format where event type is a key at the top level
-                    // Example: {"StateChanged": {...}, "source": {...}}
                     const eventKey = Object.keys(data).find(key => 
                         key !== 'source' && typeof data[key] === 'object');
                     

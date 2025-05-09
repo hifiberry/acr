@@ -47,6 +47,8 @@ impl Track {
         // Only store artist if it differs from the album artist
         let track_artist = if let Some(album_artist) = album_artist {
             if artist != album_artist {
+                // log if artist is different from album artist
+                log::debug!("Track artist '{}' differs from album artist '{}'", artist, album_artist);
                 Some(artist)
             } else {
                 None

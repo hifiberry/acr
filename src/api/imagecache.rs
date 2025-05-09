@@ -23,7 +23,7 @@ pub fn get_image_from_cache(filepath: PathBuf) -> Result<(ContentType, Vec<u8>),
     }
 
     // Get the image data
-    match imagecache::get_image(&filepath) {
+    match imagecache::get_image_data(&filepath) {
         Ok(data) => {
             // Detect the content type based on the file extension
             let content_type = detect_content_type(&filepath);

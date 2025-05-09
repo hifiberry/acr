@@ -129,12 +129,12 @@ impl WebSocketManager {
         
         // Add the event to the recent events queue
         if let Ok(mut events) = self.recent_events.lock() {
-            // Add to the front of the queue (most recent events first)
-            events.push_front((event.clone(), now));
+            // Add to the back of the queue to maintain chronological order
+            events.push_back((event.clone(), now));
             
             // Limit the queue size to prevent memory issues
             if events.len() > 100 {
-                events.pop_back();
+                events.pop_front();
             }
             
             debug!("Event queued: Player: {}, Type: {:?}, Queue size: {}", 
@@ -262,26 +262,25 @@ impl WebSocketManager {
         
         // Prune old events
         if let Ok(mut events) = self.recent_events.lock() {
-            // Since events are stored with newest first, once we find an old event,
-            // all further events are also old
-            let mut found_old = false;
-            let mut index = 0;
+            // Since events are now stored in chronological order (oldest first),
+            // we need to remove elements from the front of the queue
+            let mut to_remove = 0;
             
             for (_, time) in events.iter() {
                 if now.duration_since(*time) > event_timeout {
-                    found_old = true;
+                    to_remove += 1;
+                } else {
+                    // Once we find a non-old event, we can stop checking
                     break;
                 }
-                index += 1;
             }
             
-            if found_old && index < events.len() {
-                // Truncate the queue to remove old events
-                let removed = events.len() - index;
-                while events.len() > index {
-                    events.pop_back();
+            // Remove old events from the front of the queue
+            if to_remove > 0 {
+                for _ in 0..to_remove {
+                    events.pop_front();
                 }
-                debug!("Pruned {} old WebSocket events", removed);
+                debug!("Pruned {} old WebSocket events", to_remove);
             }
         }
     }

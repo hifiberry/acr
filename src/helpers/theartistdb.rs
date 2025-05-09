@@ -346,7 +346,7 @@ impl ArtistUpdater for TheArtistDbUpdater {
                     }
                 },
                 Err(e) => {
-                    error!("Failed to retrieve artist data from TheArtistDB for {} with MBID {}: {}", artist.name, mbid, e);
+                    warn!("Failed to retrieve artist data from TheArtistDB for {} with MBID {}: {}", artist.name, mbid, e);
                 }
             }
         } else {

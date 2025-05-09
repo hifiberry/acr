@@ -705,9 +705,13 @@
                 coverArtHtml = `<img src="${coverUrl}" alt="${album.name}" style="max-width: 300px; margin-bottom: 20px;">`;
             }
             
+            // Get album artists for comparison
+            const albumArtists = album.artists || [];
+            const albumArtistsLower = albumArtists.map(artist => artist.toLowerCase());
+            
             albumDetails.innerHTML = `
                 ${coverArtHtml}
-                <p><strong>Artist:</strong> ${album.artists.join(', ')}</p>
+                <p><strong>Artist:</strong> ${albumArtists.join(', ')}</p>
                 <p><strong>Release Date:</strong> ${album.release_date || 'Unknown'}</p>
                 <p><strong>Tracks:</strong> ${album.tracks_count}</p>
             `;
@@ -718,10 +722,21 @@
                 const trackItem = document.createElement('li');
                 trackItem.className = 'track-item';
                 
+                // Show track artist only if different from album artist
+                let artistHtml = '';
+                if (track.artist) {
+                    // Check if track artist isn't in the album artists (case-insensitive)
+                    const trackArtistLower = track.artist.toLowerCase();
+                    // Only display if track artist is different from ALL album artists
+                    if (!albumArtistsLower.includes(trackArtistLower)) {
+                        artistHtml = `<span class="track-artist">by ${track.artist}</span>`;
+                    }
+                }
+                
                 trackItem.innerHTML = `
                     <span class="track-number">${track.track_number || index + 1}.</span>
                     <span class="track-title">${track.name}</span>
-                    ${track.artist ? `<span class="track-artist">by ${track.artist}</span>` : ''}
+                    ${artistHtml}
                 `;
                 
                 tracksList.appendChild(trackItem);

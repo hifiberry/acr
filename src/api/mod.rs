@@ -12,3 +12,6 @@ pub mod plugins;
 
 // Export the library module
 pub mod library;
+
+// Export the imagecache module
+pub mod imagecache;

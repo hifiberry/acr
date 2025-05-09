@@ -1,5 +1,5 @@
 use crate::AudioController;
-use crate::api::{players, plugins, library};
+use crate::api::{players, plugins, library, imagecache};
 use crate::constants::API_PREFIX;
 use log::info;
 use rocket::{routes, get};
@@ -68,8 +68,14 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::get_library_metadata_key
     ];
     
+    // ImageCache routes
+    let imagecache_routes = routes![
+        imagecache::get_image_from_cache
+    ];
+    
     let _rocket = rocket::custom(config)
         .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting routes
+        .mount(format!("{}/imagecache", API_PREFIX), imagecache_routes) // Mount imagecache routes
         .manage(controller)
         .launch()
         .await?;

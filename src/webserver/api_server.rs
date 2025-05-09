@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use actix_web::{web, App, HttpResponse, HttpServer, Responder, get};
 use log::{info, error};
 use serde::{Deserialize, Serialize};
 use crate::AudioController;
+use rocket::routes;
 
 /// API Server configuration
 #[derive(Clone, Debug)]
@@ -83,42 +83,12 @@ impl ApiServer {
             return Ok(());
         }
 
-        info!("Starting API server on {}:{}", self.config.host, self.config.port);
+        info!("API server is configured to run on {}:{}, but Actix Web implementation has been removed", 
+            self.config.host, self.config.port);
         
-        // Clone the values we need from self
-        let host = self.config.host.clone();
-        let port = self.config.port;
-        let version = self.version.clone();
-        let audio_controller = self.audio_controller.clone();
-        
-        // Create shared application state
-        let app_state = web::Data::new(AppState {
-            version,
-            audio_controller,
-        });
-        
-        // Create HTTP server
-        HttpServer::new(move || {
-            App::new()
-                .app_data(app_state.clone())
-                // Register version endpoint
-                .service(get_version)
-        })
-        .bind((host, port))?
-        .run()
-        .await
+        // This is a placeholder - actual server implementation using Rocket is in src/api/server.rs
+        Ok(())
     }
-}
-
-/// GET /version endpoint handler
-#[get("/version")]
-async fn get_version(app_state: web::Data<AppState>) -> impl Responder {
-    let response = VersionResponse {
-        version: app_state.version.clone(),
-        build_date: env!("CARGO_PKG_VERSION").to_string(),
-    };
-    
-    HttpResponse::Ok().json(response)
 }
 
 /// Build a complete Rocket instance with all API routes

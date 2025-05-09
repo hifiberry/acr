@@ -22,10 +22,20 @@
             }
         }
     ],
-    "api": {
+    "webserver": {
         "enable": true,
         "host": "0.0.0.0",
-        "port": 1080
+        "port": 1080,
+        "static_routes": [
+            {
+                "url_path": "/web",
+                "directory": "web"
+            },
+            {
+                "url_path": "/docs",
+                "directory": "doc"
+            }
+        ]
     },
     "cache": {
         "attribute_cache_path": "cache/attributes",

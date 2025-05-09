@@ -1,10 +1,11 @@
 use crate::AudioController;
 use crate::api::{players, plugins, library, imagecache};
 use crate::constants::API_PREFIX;
-use log::info;
+use log::{info, warn};
 use rocket::{routes, get};
 use rocket::serde::json::Json;
 use rocket::config::Config;
+use rocket::fs::FileServer;
 use std::sync::Arc;
 
 // Define the version response struct
@@ -23,16 +24,33 @@ fn get_version() -> Json<VersionResponse> {
 
 // Start the Rocket server
 pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: &serde_json::Value) -> Result<(), rocket::Error> {
-    // Default port is 1080
-    let api_port = config_json.get("api_port")
+    // Check if webserver is enabled (default to true if not specified)
+    let webserver_enabled = config_json.get("webserver")
+        .and_then(|ws| ws.get("enable"))
+        .and_then(|e| e.as_bool())
+        .unwrap_or(true);
+        
+    if !webserver_enabled {
+        info!("Webserver is disabled in configuration");
+        return Ok(());
+    }
+    
+    // Get webserver config or use defaults
+    let host = config_json.get("webserver")
+        .and_then(|ws| ws.get("host"))
+        .and_then(|h| h.as_str())
+        .unwrap_or("0.0.0.0");
+        
+    let port = config_json.get("webserver")
+        .and_then(|ws| ws.get("port"))
         .and_then(|p| p.as_u64())
         .unwrap_or(1080);
     
-    info!("Starting API server on port {}", api_port);
+    info!("Starting webserver on {}:{}", host, port);
     
     let config = Config::figment()
-        .merge(("port", api_port))
-        .merge(("address", "0.0.0.0"));
+        .merge(("port", port))
+        .merge(("address", host));
     
     let api_routes = routes![
         get_version,
@@ -73,12 +91,29 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         imagecache::get_image_from_cache
     ];
     
-    let _rocket = rocket::custom(config)
+    let mut rocket_builder = rocket::custom(config)
         .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting routes
         .mount(format!("{}/imagecache", API_PREFIX), imagecache_routes) // Mount imagecache routes
-        .manage(controller)
-        .launch()
-        .await?;
+        .manage(controller);
+    
+    // Check for static file routes in the configuration
+    if let Some(static_routes) = config_json.get("webserver")
+        .and_then(|ws| ws.get("static_routes"))
+        .and_then(|sr| sr.as_array()) {
+        for (index, route_config) in static_routes.iter().enumerate() {
+            if let (Some(url_path), Some(directory)) = (
+                route_config.get("url_path").and_then(|p| p.as_str()),
+                route_config.get("directory").and_then(|d| d.as_str())
+            ) {
+                info!("Mounting static files from '{}' at URL path '{}'", directory, url_path);
+                rocket_builder = rocket_builder.mount(url_path, FileServer::from(directory));
+            } else {
+                warn!("Invalid static file route configuration at index {}: missing url_path or directory", index);
+            }
+        }
+    }
+    
+    let _rocket = rocket_builder.launch().await?;
     
     Ok(())
 }

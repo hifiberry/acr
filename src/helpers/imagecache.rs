@@ -123,6 +123,31 @@ impl ImageCache {
         }
     }
 
+    /// Store an image in the cache with the extension determined by the MIME type
+    /// 
+    /// # Arguments
+    /// * `path` - Base path without extension
+    /// * `data` - The image data
+    /// * `mime_type` - MIME type of the image (e.g., "image/jpeg", "image/png")
+    /// 
+    /// # Returns
+    /// * `Result<(), String>` - Success or error message
+    pub fn store_image_from_data<P: AsRef<Path>>(&self, path: P, data: Vec<u8>, mime_type: String) -> Result<(), String> {
+        if !self.is_enabled() {
+            return Err("Image cache is disabled".to_string());
+        }
+        
+        // Get the extension from the MIME type
+        let extension = mime_type_to_extension(&mime_type);
+        
+        // Create a new path with the extension
+        let path_str = path.as_ref().to_string_lossy().to_string();
+        let path_with_extension = format!("{}.{}", path_str, extension);
+        
+        // Store the image using the existing method
+        self.store_image(path_with_extension, &data)
+    }
+
     /// Get an image from the cache
     pub fn get_image<P: AsRef<Path>>(&self, path: P) -> Result<Vec<u8>, String> {
         if !self.is_enabled() {
@@ -172,6 +197,105 @@ impl ImageCache {
     fn get_full_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
         self.base_path.join(path)
     }
+
+    /// Get an image from the cache by base name regardless of extension
+    /// 
+    /// # Arguments
+    /// * `base_path` - Base path without extension
+    /// 
+    /// # Returns
+    /// * `Result<(Vec<u8>, String), String>` - Image data and MIME type, or error message
+    pub fn get_image_with_mime_type<P: AsRef<Path>>(&self, base_path: P) -> Result<(Vec<u8>, String), String> {
+        if !self.is_enabled() {
+            return Err("Image cache is disabled".to_string());
+        }
+
+        let base_path = base_path.as_ref();
+        
+        // Get the directory and file name
+        let dir_path = if let Some(parent) = base_path.parent() {
+            parent.to_path_buf()
+        } else {
+            PathBuf::new()
+        };
+
+        let base_name = base_path.file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Invalid path: no file name".to_string())?;
+        
+        // Get the full path to the directory
+        let full_dir_path = self.get_full_path(dir_path);
+        
+        // If directory doesn't exist, return error
+        if !full_dir_path.exists() {
+            return Err(format!("Directory does not exist: {}", full_dir_path.display()));
+        }
+        
+        // Read directory and find matching files
+        match read_dir(full_dir_path) {
+            Ok(entries) => {
+                let found_files: Vec<(PathBuf, String)> = entries
+                    .filter_map(Result::ok)
+                    .filter_map(|entry| {
+                        let path = entry.path();
+                        let file_stem = path.file_stem()?.to_str()?;
+                        let extension = path.extension()?.to_str()?;
+                        
+                        if file_stem == base_name {
+                            // Found a file with matching base name
+                            let mime_type = extension_to_mime_type(extension);
+                            Some((path.clone(), mime_type.to_string()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                
+                // Return the first matching file
+                if let Some((file_path, mime_type)) = found_files.first() {
+                    match File::open(file_path) {
+                        Ok(mut file) => {
+                            let mut data = Vec::new();
+                            if let Err(e) = file.read_to_end(&mut data) {
+                                return Err(format!("Failed to read image data: {}", e));
+                            }
+                            Ok((data, mime_type.clone()))
+                        },
+                        Err(e) => Err(format!("Failed to open image file: {}", e)),
+                    }
+                } else {
+                    Err(format!("No image found with base name: {}", base_name))
+                }
+            },
+            Err(e) => Err(format!("Failed to read directory: {}", e)),
+        }
+    }
+}
+
+/// Convert a MIME type to a file extension
+fn mime_type_to_extension(mime_type: &str) -> &str {
+    match mime_type {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        _ => "bin", // Default extension for unknown types
+    }
+}
+
+/// Convert a file extension to a MIME type
+fn extension_to_mime_type(extension: &str) -> &str {
+    match extension.to_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream", // Default MIME type for unknown extensions
+    }
 }
 
 // Global functions to access the image cache singleton
@@ -196,6 +320,11 @@ pub fn store_image<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(), String> {
     get_image_cache().store_image(path, data)
 }
 
+/// Store an image in the cache with the extension determined by the MIME type
+pub fn store_image_from_data<P: AsRef<Path>>(path: P, data: Vec<u8>, mime_type: String) -> Result<(), String> {
+    get_image_cache().store_image_from_data(path, data, mime_type)
+}
+
 /// Get an image from the cache
 pub fn get_image<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, String> {
     get_image_cache().get_image(path)
@@ -204,6 +333,11 @@ pub fn get_image<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, String> {
 /// Delete an image from the cache
 pub fn delete_image<P: AsRef<Path>>(path: P) -> Result<(), String> {
     get_image_cache().delete_image(path)
+}
+
+/// Get an image from the cache by base name regardless of extension
+pub fn get_image_with_mime_type<P: AsRef<Path>>(base_path: P) -> Result<(Vec<u8>, String), String> {
+    get_image_cache().get_image_with_mime_type(base_path)
 }
 
 /// Count files with any extension matching a base path and provider pattern

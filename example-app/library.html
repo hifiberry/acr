@@ -36,6 +36,24 @@
             text-decoration: underline;
         }
         
+        .actions {
+            margin-bottom: 20px;
+        }
+        
+        .button {
+            padding: 10px 15px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .button:hover {
+            background-color: #0056b3;
+        }
+        
         .artists-grid, .albums-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -168,6 +186,15 @@
             margin-bottom: 20px;
             border-radius: 3px;
         }
+        
+        .message {
+            padding: 20px;
+            background-color: #e6f7e6;
+            border-left: 5px solid #4caf50;
+            color: #2e7d32;
+            margin-bottom: 20px;
+            border-radius: 3px;
+        }
     </style>
 </head>
 <body>
@@ -176,6 +203,10 @@
         
         <div class="breadcrumb" id="breadcrumb">
             <a href="#" id="home-link">Home</a>
+        </div>
+        
+        <div class="actions">
+            <button id="refresh-library" class="button">Update Library</button>
         </div>
         
         <div class="error" id="error-display" style="display: none;"></div>
@@ -235,6 +266,7 @@
         const breadcrumb = document.getElementById('breadcrumb');
         const homeLink = document.getElementById('home-link');
         const errorDisplay = document.getElementById('error-display');
+        const refreshLibraryButton = document.getElementById('refresh-library');
         
         // Loaders
         const artistsLoading = document.getElementById('artists-loading');
@@ -243,6 +275,7 @@
         
         // Event Listeners
         homeLink.addEventListener('click', navigateToArtists);
+        refreshLibraryButton.addEventListener('click', refreshLibrary);
         
         // Initialize
         document.addEventListener('DOMContentLoaded', initApp);
@@ -643,6 +676,60 @@
         
         function hideError() {
             errorDisplay.style.display = 'none';
+        }
+        
+        function refreshLibrary() {
+            if (!activeLibrary) {
+                showError('No active library selected');
+                return;
+            }
+            
+            // Disable the button to prevent multiple clicks
+            refreshLibraryButton.disabled = true;
+            refreshLibraryButton.textContent = 'Updating...';
+            hideError();
+            
+            fetch(`${API_BASE_URL}/library/${activeLibrary}/update`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to update library: ${response.status} ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('Library update initiated:', data);
+                    if (data.update_started) {
+                        showMessage('Library update started successfully. It may take a few minutes to complete.');
+                        
+                        // Allow some time for the update to process before reloading
+                        setTimeout(() => {
+                            loadArtists();
+                            refreshLibraryButton.disabled = false;
+                            refreshLibraryButton.textContent = 'Update Library';
+                        }, 3000);
+                    } else {
+                        showError('Library update could not be started');
+                        refreshLibraryButton.disabled = false;
+                        refreshLibraryButton.textContent = 'Update Library';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error updating library:', error);
+                    showError(`Failed to update library: ${error.message}`);
+                    refreshLibraryButton.disabled = false;
+                    refreshLibraryButton.textContent = 'Update Library';
+                });
+        }
+        
+        function showMessage(message) {
+            const messageDisplay = document.createElement('div');
+            messageDisplay.className = 'message';
+            messageDisplay.textContent = message;
+            document.body.insertBefore(messageDisplay, document.body.firstChild);
+            
+            setTimeout(() => {
+                messageDisplay.remove();
+            }, 5000);
         }
     </script>
 </body>

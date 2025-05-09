@@ -6,6 +6,7 @@ use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
 use serde::Serialize;
+use log::warn;
 
 /// Response structure for library information
 #[derive(serde::Serialize)]
@@ -619,6 +620,49 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                             ));
                         }
                     }
+                } else {
+                    // Player exists but doesn't have a library
+                    return Err(Custom(
+                        Status::NotFound,
+                        format!("Player '{}' does not have a library", player_name),
+                    ));
+                }
+            }
+        }
+    }
+    
+    // Player not found
+    Err(Custom(
+        Status::NotFound,
+        format!("Player '{}' not found", player_name),
+    ))
+}
+
+/// Force an update of the underlying library in the player system
+/// 
+/// This endpoint tells the player to scan for new or changed files, which
+/// may trigger a media database update in the backend system.
+#[get("/library/<player_name>/update")]
+pub fn update_player_library(
+    player_name: &str, 
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<serde_json::Value>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    
+    // Find the controller with the matching name
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == player_name {
+                // Check if the player has a library
+                if let Some(library) = ctrl.get_library() {
+                    // Force an update of the library
+                    let success = library.force_update();
+                    
+                    // Return the result
+                    return Ok(Json(serde_json::json!({
+                        "player_name": player_name,
+                        "update_started": success
+                    })));
                 } else {
                     // Player exists but doesn't have a library
                     return Err(Custom(

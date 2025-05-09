@@ -574,6 +574,29 @@ Triggers a refresh of the library for a specific player.
 curl http://<device-ip>:1080/api/library/mpd/refresh
 ```
 
+### Update Player Library Media Database
+
+Triggers a scan for new files in the underlying system. This is different from refresh in that it asks 
+the backend system (e.g., MPD server) to look for new files on disk.
+
+- **Endpoint**: `/api/library/<player-name>/update`
+- **Method**: GET
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+- **Response**:
+  ```json
+  {
+    "player_name": "player-name",
+    "update_started": true
+  }
+  ```
+- **Error Response** (404 Not Found): String error message
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/library/mpd/update
+```
+
 ### Get Library Metadata
 
 Retrieves all metadata for a player's library.

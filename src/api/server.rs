@@ -78,6 +78,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::get_albums_by_artist,
         library::get_albums_by_artist_id,
         library::refresh_player_library,
+        library::update_player_library,
         library::get_artist_by_name,
         library::get_artist_by_id,
         library::get_artist_by_mbid,

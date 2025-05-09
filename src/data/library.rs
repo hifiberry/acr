@@ -66,6 +66,16 @@ pub trait LibraryInterface {
     /// Get albums by artist ID
     fn get_albums_by_artist_id(&self, artist_id: &Identifier) -> Vec<Album>;
     
+    /// Force an update of the library data in the underlying system
+    /// 
+    /// This differs from refresh_library in that it asks the backend system
+    /// to scan for new files or changes, rather than just refreshing our in-memory data.
+    /// Returns true if the update was initiated successfully, false otherwise.
+    fn force_update(&self) -> bool {
+        // Default implementation does nothing and returns false
+        false
+    }
+    
     /// Get an image by identifier
     /// the identifier has no specific format, it can be used differently 
     /// depending on the library implementation

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
-use crate::players::mpd::mpd::{MPDPlayerController, API_MPD_IMAGE_URL};
+use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
 
 /// MPD library interface that provides access to albums and artists
 #[derive(Clone)]
@@ -69,9 +69,9 @@ impl MPDLibrary {
         // Add cover_art URL if not present
         if album.cover_art.is_none() {
             if let crate::data::Identifier::Numeric(album_id) = album.id {
-                // Use the API_MPD_IMAGE_URL from MPD controller
+                // Use the mpd_image_url function from MPD controller
                 let image_url = format!("{}/album:{}", 
-                    API_MPD_IMAGE_URL, album_id);
+                    mpd_image_url(), album_id);
                 album.cover_art = Some(image_url);
             }
         }

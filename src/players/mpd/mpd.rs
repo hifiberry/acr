@@ -1,6 +1,7 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::library::LibraryInterface;
+use crate::constants::API_PREFIX;
 use delegate::delegate;
 use std::sync::{Arc, Weak, Mutex};
 use log::{debug, info, warn, error, trace};
@@ -14,11 +15,10 @@ use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
 
-/// Constant for MPD image API URL prefix
-pub const API_IMAGE_PREFIX: &str = "/library/mpd/image";
-
 /// Constant for MPD image API URL prefix including API prefix
-pub const API_MPD_IMAGE_URL: &str = "/api/library/mpd/image";
+pub fn mpd_image_url() -> String {
+    format!("{}/library/mpd/image", API_PREFIX)
+}
 
 /// MPD player controller implementation
 pub struct MPDPlayerController {

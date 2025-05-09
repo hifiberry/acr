@@ -3,7 +3,6 @@ use std::time::Instant;
 use std::sync::Arc;
 use log::{debug, info, error, warn};
 use chrono::NaiveDate;
-use serde_json::error;
 use crate::data::LibraryError;
 use crate::players::mpd::mpd::MPDPlayerController;
 

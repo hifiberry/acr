@@ -639,6 +639,25 @@
                 return;
             }
             
+            // Sort albums by release date (newest first)
+            albums.sort((a, b) => {
+                // Compare release dates, handling None values
+                // None values are considered to be older than albums with known dates
+                if (a.release_date && b.release_date) {
+                    // Sort newest first
+                    return new Date(b.release_date) - new Date(a.release_date);
+                } else if (a.release_date) {
+                    // a has date, b doesn't - a is newer
+                    return -1;
+                } else if (b.release_date) {
+                    // b has date, a doesn't - b is newer
+                    return 1;
+                } else {
+                    // Neither has a date, sort by name
+                    return a.name.localeCompare(b.name);
+                }
+            });
+            
             albums.forEach(album => {
                 const albumCard = document.createElement('div');
                 albumCard.className = 'album-card';

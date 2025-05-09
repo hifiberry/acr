@@ -3,6 +3,7 @@ use std::time::Instant;
 use std::sync::Arc;
 use log::{debug, info, error, warn};
 use chrono::NaiveDate;
+use serde_json::error;
 use crate::data::LibraryError;
 use crate::players::mpd::mpd::MPDPlayerController;
 
@@ -69,7 +70,7 @@ impl MPDLibraryLoader {
     /// 
     /// This extracts track information from a song including track name, number, disc, artist, and uri
     /// and creates a properly structured Track object
-    fn track_from_mpd_song(song: &mpd::Song, album_artist: Option<&str>) -> crate::data::Track {
+    fn track_from_mpd_song(song: &mpd::Song) -> crate::data::Track {
         use crate::data::Track;
         
         // Extract track title (default to filename if not present)
@@ -95,17 +96,34 @@ impl MPDLibraryLoader {
             .map(|(_, value)| value.as_str())
             .unwrap_or("1").to_string();
             
-        // Extract artist
-        let artist = song.tags.iter()
-            .find(|(tag, _)| tag == "Artist")
+        // First check song.artist, then fall back to tags if not present
+        let track_artist = if let Some(artist) = &song.artist {
+            Some(artist.clone())
+        } else {
+            song.tags.iter()
+                .find(|(tag, _)| tag == "Artist")
+                .map(|(_, value)| value.clone())
+        };
+
+        // Extract album artist from tags as well, don't use artist from song
+        let album_artist: Option<String> = song.tags.iter()
+            .find(|(tag, _)| tag == "AlbumArtist")
             .map(|(_, value)| value.clone());
         
         // Get the file URI from the song
         let uri = song.file.clone();
         
         // Create Track object with appropriate fields
-        let track = if let Some(artist) = artist {
-            Track::with_artist(Some(disc_number), Some(track_number), track_name.to_string(), artist, album_artist)
+        let track = if let Some(artist) = track_artist {
+            // Convert Option<String> to Option<&str> by mapping with as_str() or using as_deref()
+            let album_artist_ref = album_artist.as_deref();
+            Track::with_artist(
+                Some(disc_number), 
+                Some(track_number), 
+                track_name.to_string(), 
+                artist, 
+                album_artist_ref
+            )
         } else {
             Track::new(Some(disc_number), Some(track_number), track_name.to_string())
         };
@@ -305,7 +323,7 @@ impl MPDLibraryLoader {
             }
 
             // create a track object from the song
-            let track = Self::track_from_mpd_song(song, None);
+            let track = Self::track_from_mpd_song(song);
 
             // Add the track to the album's track list, but only if the track is not already present
             if let Some(album) = albums_map.get_mut(&album_key) {

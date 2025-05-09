@@ -597,7 +597,7 @@ impl MPDLibrary {
         // First, look up the album by its ID
         let album = self.get_album_by_id(id)?;
 
-        warn!("Found album with ID {}: {}", id, album.name);
+        debug!("Found album with ID {}: {}", id, album.name);
         
         // Get the URI of the first song in the album
         let uri = match album.tracks.lock() {
@@ -619,7 +619,7 @@ impl MPDLibrary {
             return None;
         }
 
-        warn!("Retrieving cover art for album {} using URI: {}", album.name, uri.as_deref().unwrap());
+        debug!("Retrieving cover art for album {} using URI: {}", album.name, uri.as_deref().unwrap());
         
         // Use the existing cover_art function to get the image data
         self.cover_art(uri.as_deref().unwrap())
@@ -767,13 +767,13 @@ impl LibraryInterface for MPDLibrary {
         
         // Check if the identifier starts with "album:"
         if let Some(album_id_str) = identifier.strip_prefix("album:") {
-            warn!("Detected album identifier: {}", album_id_str);
+            debug!("Detected album identifier: {}", album_id_str);
             
             // Parse the album ID as a numeric ID (MPD only supports numeric IDs)
             match album_id_str.parse::<u64>() {
                 Ok(album_id_num) => {
                     let album_id = crate::data::Identifier::Numeric(album_id_num);
-                    warn!("Parsed album ID: {}", album_id);
+                    debug!("Parsed album ID: {}", album_id);
                     
                     // Use get_album_cover to retrieve the image
                     return self.get_album_cover(&album_id);

@@ -293,6 +293,9 @@
                 <div class="loading" id="tracks-loading">
                     <div class="spinner"></div>
                 </div>
+                <div class="album-actions" style="margin-bottom: 20px;">
+                    <button id="play-album" class="button">Play Album</button>
+                </div>
                 <ul class="tracks-list" id="tracks-list"></ul>
             </div>
         </div>
@@ -716,6 +719,12 @@
                 <p><strong>Tracks:</strong> ${album.tracks_count}</p>
             `;
             
+            // Add play button functionality
+            const playAlbumButton = document.getElementById('play-album');
+            playAlbumButton.addEventListener('click', () => {
+                playAlbum(album.id);
+            });
+            
             // Display tracks
             tracksList.innerHTML = '';
             album.tracks.forEach((track, index) => {
@@ -740,6 +749,99 @@
                 `;
                 
                 tracksList.appendChild(trackItem);
+            });
+        }
+        
+        function playAlbum(albumId) {
+            if (!activeLibrary) {
+                showError('No active library player selected');
+                return;
+            }
+            
+            console.log(`Playing album with ID: ${albumId}`);
+            showMessage('Preparing to play album...');
+            
+            // Step 1: Clear the current queue using the correct command name
+            fetch(`${API_BASE_URL}/player/${activeLibrary}/command/clear_queue`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`Failed to clear queue: ${response.status} ${response.statusText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Queue cleared:', data);
+                
+                // Step 2: Add all album tracks to the queue
+                fetch(`${API_BASE_URL}/library/${activeLibrary}/album/by-id/${albumId}`)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`Failed to get album details: ${response.status} ${response.statusText}`);
+                        }
+                        return response.json();
+                    })
+                    .then(albumData => {
+                        if (!albumData.album || !albumData.album.tracks) {
+                            throw new Error('Album tracks not found');
+                        }
+                        
+                        // Filter tracks to only include those with URIs
+                        const tracks = albumData.album.tracks.filter(track => track.uri);
+                        
+                        if (tracks.length === 0) {
+                            throw new Error('No valid track URIs found in album');
+                        }
+                        
+                        // Add tracks one by one using sequential promises
+                        return tracks.reduce((promise, track) => {
+                            return promise.then(() => {
+                                // Use the add command with URI parameter
+                                return fetch(`${API_BASE_URL}/player/${activeLibrary}/command/add_track:${encodeURIComponent(track.uri)}`, {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json'
+                                    }
+                                })
+                                .then(response => {
+                                    if (!response.ok) {
+                                        console.warn(`Failed to add track ${track.name}: ${response.status}`);
+                                    } else {
+                                        console.log(`Added track: ${track.name}`);
+                                    }
+                                    // Continue with the chain even if individual tracks fail
+                                    return Promise.resolve();
+                                });
+                            });
+                        }, Promise.resolve()); // Start with a resolved promise
+                    })
+                    .then(() => {
+                        // Step 3: Start playback
+                        return fetch(`${API_BASE_URL}/player/${activeLibrary}/command/play`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        });
+                    })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`Failed to start playback: ${response.status} ${response.statusText}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        console.log('Playback started:', data);
+                        showMessage(`Now playing album: ${currentAlbum.name}`);
+                    });
+            })
+            .catch(error => {
+                console.error('Error playing album:', error);
+                showError(`Failed to play album: ${error.message}`);
             });
         }
         

@@ -383,7 +383,18 @@ impl MPDPlayerController {
                 debug!("Mixer changed (volume)");
             },
             Subsystem::Database => {
-                debug!("Database changed");
+                debug!("Database changed, refreshing library");
+                // Refresh the library if it's available
+                if let Some(library) = player.get_library() {
+                    // Run the refresh in a separate thread to avoid blocking the event handler
+                    let library_clone = library.clone();
+                    thread::spawn(move || {
+                        match library_clone.refresh_library() {
+                            Ok(_) => info!("MPD library refreshed successfully after database change"),
+                            Err(e) => warn!("Failed to refresh MPD library after database change: {}", e),
+                        }
+                    });
+                }
             },
             _ => {
                 debug!("Other subsystem changed: {:?}", subsystem);

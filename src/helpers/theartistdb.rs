@@ -8,6 +8,7 @@ use std::time::Duration;
 use crate::helpers::imagecache;
 use crate::data::artist::Artist;
 use crate::helpers::artistupdater::ArtistUpdater;
+use crate::helpers::sanitize::filename_from_string;
 
 /// Global flag to indicate if TheArtistDB lookups are enabled
 static THEARTISTDB_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -190,7 +191,7 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
         return false;
     }
 
-    let artist_basename = crate::helpers::artistupdater::artist_basename(artist_name);
+    let artist_basename = filename_from_string(artist_name);
 
     // Check if the thumbnail already exists
     let thumb_base_path = format!("artists/{}/artist", artist_basename);

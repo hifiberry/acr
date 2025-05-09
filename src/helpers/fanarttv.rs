@@ -4,6 +4,7 @@ use reqwest;
 use crate::helpers::imagecache;
 use crate::data::artist::Artist;
 use crate::helpers::artistupdater::ArtistUpdater;
+use crate::helpers::sanitize::filename_from_string;
 
 // API key for fanart.tv
 const APIKEY: &str = "749a8fca4f2d3b0462b287820ad6ab06";
@@ -138,7 +139,7 @@ pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
 /// # Returns
 /// * `bool` - true if the API call was successful (even if no images were found), false only on API error
 pub fn download_artist_images(artist_mbid: &str, artist_name: &str) -> bool {
-    let artist_basename = crate::helpers::artistupdater::artist_basename(artist_name);
+    let artist_basename = filename_from_string(artist_name);
     let mut _thumb_downloaded = false;
     let mut _banner_downloaded = false;
     let mut api_success = true; // Track overall API success
@@ -313,7 +314,7 @@ impl ArtistUpdater for FanarttvUpdater {
             
         // Proceed only if a MusicBrainz ID is available
         if let Some(mbid) = mbid_opt {
-            let artist_basename = crate::helpers::artistupdater::artist_basename(&artist.name);
+            let artist_basename = filename_from_string(&artist.name);
             
             // Check if we already have cached images for this artist from our provider
             let thumb_base_path = format!("artists/{}/artist", artist_basename);

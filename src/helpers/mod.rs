@@ -6,6 +6,7 @@ pub mod memory_report;
 pub mod stream_helper;
 pub mod musicbrainz;
 pub mod theartistdb;
+pub mod sanitize;
 
 use crate::data::artist::Artist;
 

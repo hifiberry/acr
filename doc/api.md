@@ -138,7 +138,7 @@ Sends a playback command to a specific player by name.
 - **Endpoint**: `/api/player/<player-name>/command/<command>`
 - **Method**: POST
 - **Path Parameters**:
-  - `player-name` (string): The name of the target player
+  - `player-name` (string): The name of the target player. You can use "active" to target the currently active player.
   - `command` (string): The command to send (same options as above)
 - **Response**: Same as "Send Command to Active Player"
 - **Error Response** (400 Bad Request, 404 Not Found, 500 Internal Server Error): Same structure as above
@@ -150,6 +150,9 @@ curl -X POST http://<device-ip>:1080/api/player/spotify/command/play
 
 # Pause a specific player
 curl -X POST http://<device-ip>:1080/api/player/raat/command/pause
+
+# Send a command to the currently active player (alternative to /api/player/active/send/)
+curl -X POST http://<device-ip>:1080/api/player/active/command/play
 ```
 
 ### Get Now Playing Information
@@ -192,7 +195,7 @@ Retrieves the current queue for a specific player.
 - **Endpoint**: `/api/player/<player-name>/queue`
 - **Method**: GET
 - **Path Parameters**:
-  - `player-name` (string): The name of the player
+  - `player-name` (string): The name of the player. You can use "active" to target the currently active player.
 - **Response**:
   ```json
   {
@@ -207,6 +210,9 @@ Retrieves the current queue for a specific player.
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/player/mpd/queue
+
+# Get queue for the currently active player
+curl http://<device-ip>:1080/api/player/active/queue
 ```
 
 ### Get Player Metadata
@@ -216,7 +222,7 @@ Retrieves all metadata for a specific player.
 - **Endpoint**: `/api/player/<player-name>/meta`
 - **Method**: GET
 - **Path Parameters**:
-  - `player-name` (string): The name of the player
+  - `player-name` (string): The name of the player. You can use "active" to target the currently active player.
 - **Response**:
   ```json
   {
@@ -233,6 +239,9 @@ Retrieves all metadata for a specific player.
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/player/mpd/meta
+
+# Get metadata for the currently active player
+curl http://<device-ip>:1080/api/player/active/meta
 ```
 
 ### Get Specific Player Metadata Key
@@ -242,7 +251,7 @@ Retrieves a specific metadata key for a player.
 - **Endpoint**: `/api/player/<player-name>/meta/<key>`
 - **Method**: GET
 - **Path Parameters**:
-  - `player-name` (string): The name of the player
+  - `player-name` (string): The name of the player. You can use "active" to target the currently active player.
   - `key` (string): The metadata key to retrieve
 - **Response**:
   ```json
@@ -257,6 +266,9 @@ Retrieves a specific metadata key for a player.
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/player/mpd/meta/volume
+
+# Get specific metadata for the currently active player
+curl http://<device-ip>:1080/api/player/active/meta/volume
 ```
 
 ## Plugin API

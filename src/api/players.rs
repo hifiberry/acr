@@ -160,12 +160,55 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
     })
 }
 
-/// Send a command to the active player
-#[post("/player/active/send/<command>")]
-pub fn send_command_to_active(
+/// Send a command to a specific player by name
+/// 
+/// If the player name is "active", the currently active player will be used.
+/// Otherwise, it will find a player with the specified name.
+/// 
+/// Supported commands:
+/// - Simple commands: play, pause, playpause, stop, next, previous, kill, clear_queue
+/// - Complex commands with parameters:
+///   - set_loop:none|track|playlist - Sets loop mode
+///   - seek:<seconds> - Seek to position in seconds
+///   - set_random:true|false - Toggle shuffle mode
+///   - add_track:<uri> - Add a track to the queue
+///   - remove_track:<uri> - Remove a track from the queue
+#[post("/player/<n>/command/<command>")]
+pub fn send_command_to_player_by_name(
+    n: &str,
     command: &str,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<CommandResponse>, Custom<Json<CommandResponse>>> {
+    let audio_controller = controller.inner();
+    let player_name = if n.to_lowercase() == "active" {
+        // Get the active player's name
+        let active_controller = audio_controller.get_active_controller();
+        
+        if let Some(active_ctrl) = active_controller {
+            if let Ok(ctrl) = active_ctrl.read() {
+                ctrl.get_player_name()
+            } else {
+                return Err(Custom(
+                    Status::InternalServerError,
+                    Json(CommandResponse {
+                        success: false,
+                        message: "Failed to access active player".to_string(),
+                    })
+                ));
+            }
+        } else {
+            return Err(Custom(
+                Status::NotFound,
+                Json(CommandResponse {
+                    success: false,
+                    message: "No active player found".to_string(),
+                })
+            ));
+        }
+    } else {
+        n.to_string()
+    };
+    
     // Parse the command string into a PlayerCommand
     let parsed_command = match parse_player_command(command) {
         Ok(cmd) => cmd,
@@ -180,40 +223,12 @@ pub fn send_command_to_active(
         }
     };
     
-    // Send the command to the active player
-    let success = controller.inner().send_command(parsed_command.clone());
-    
-    if success {
-        Ok(Json(CommandResponse {
-            success: true,
-            message: format!("Command '{}' sent successfully to active player", command),
-        }))
-    } else {
-        Err(Custom(
-            Status::InternalServerError,
-            Json(CommandResponse {
-                success: false,
-                message: format!("Failed to send command '{}' to active player", command),
-            })
-        ))
-    }
-}
-
-/// Send a command to a specific player by name
-#[post("/player/<n>/command/<command>")]
-pub fn send_command_to_player_by_name(
-    n: &str,
-    command: &str,
-    controller: &State<Arc<AudioController>>
-) -> Result<Json<CommandResponse>, Custom<Json<CommandResponse>>> {
-    // Get all controllers
-    let controllers = controller.inner().list_controllers();
-    
     // Find the controller with the matching name
+    let controllers = audio_controller.list_controllers();
     let mut found_controller = None;
     for ctrl_lock in controllers {
         if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == n {
+            if ctrl.get_player_name() == player_name {
                 found_controller = Some(ctrl_lock.clone());
                 break;
             }
@@ -228,21 +243,7 @@ pub fn send_command_to_player_by_name(
                 Status::NotFound,
                 Json(CommandResponse {
                     success: false,
-                    message: format!("No player found with name: {}", n),
-                })
-            ));
-        }
-    };
-    
-    // Parse the command string into a PlayerCommand
-    let parsed_command = match parse_player_command(command) {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            return Err(Custom(
-                Status::BadRequest,
-                Json(CommandResponse {
-                    success: false,
-                    message: format!("Invalid command: {} - {}", command, e),
+                    message: format!("No player found with name: {}", player_name),
                 })
             ));
         }
@@ -258,14 +259,14 @@ pub fn send_command_to_player_by_name(
     if success {
         Ok(Json(CommandResponse {
             success: true,
-            message: format!("Command '{}' sent successfully to player with name: {}", command, n),
+            message: format!("Command '{}' sent successfully to player with name: {}", command, player_name),
         }))
     } else {
         Err(Custom(
             Status::InternalServerError,
             Json(CommandResponse {
                 success: false,
-                message: format!("Failed to send command '{}' to player with name: {}", command, n),
+                message: format!("Failed to send command '{}' to player with name: {}", command, player_name),
             })
         ))
     }
@@ -330,19 +331,50 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
 }
 
 /// Get the queue from a specific player
+/// 
+/// If the player name is "active", the currently active player will be used.
+/// Otherwise, it will find a player with the specified name.
 #[get("/player/<n>/queue")]
 pub fn get_player_queue(
     n: &str,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<QueueResponse>, Custom<Json<CommandResponse>>> {
-    // Get all controllers
-    let controllers = controller.inner().list_controllers();
+    let audio_controller = controller.inner();
+    let player_name = if n.to_lowercase() == "active" {
+        // Get the active player's name
+        let active_controller = audio_controller.get_active_controller();
+        
+        if let Some(active_ctrl) = active_controller {
+            if let Ok(ctrl) = active_ctrl.read() {
+                ctrl.get_player_name()
+            } else {
+                return Err(Custom(
+                    Status::InternalServerError,
+                    Json(CommandResponse {
+                        success: false,
+                        message: "Failed to access active player".to_string(),
+                    })
+                ));
+            }
+        } else {
+            return Err(Custom(
+                Status::NotFound,
+                Json(CommandResponse {
+                    success: false,
+                    message: "No active player found".to_string(),
+                })
+            ));
+        }
+    } else {
+        n.to_string()
+    };
     
     // Find the controller with the matching name
+    let controllers = audio_controller.list_controllers();
     let mut found_controller = None;
     for ctrl_lock in controllers {
         if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == n {
+            if ctrl.get_player_name() == player_name {
                 found_controller = Some(ctrl_lock.clone());
                 break;
             }
@@ -357,7 +389,7 @@ pub fn get_player_queue(
                 Status::NotFound,
                 Json(CommandResponse {
                     success: false,
-                    message: format!("No player found with name: {}", n),
+                    message: format!("No player found with name: {}", player_name),
                 })
             ));
         }
@@ -371,29 +403,56 @@ pub fn get_player_queue(
     };
     
     Ok(Json(QueueResponse {
-        player: n.to_string(),
+        player: player_name,
         queue,
     }))
 }
 
 /// Get all metadata for a player
+/// 
+/// If the player name is "active", the currently active player will be used.
+/// Otherwise, it will find a player with the specified name.
 #[get("/player/<player_name>/meta")]
 pub fn get_player_metadata(
     player_name: &str,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<MetadataResponse>, Custom<String>> {
-    let controllers = controller.inner().list_controllers();
+    let audio_controller = controller.inner();
+    let effective_player_name = if player_name.to_lowercase() == "active" {
+        // Get the active player's name
+        let active_controller = audio_controller.get_active_controller();
+        
+        if let Some(active_ctrl) = active_controller {
+            if let Ok(ctrl) = active_ctrl.read() {
+                ctrl.get_player_name()
+            } else {
+                return Err(Custom(
+                    Status::InternalServerError,
+                    "Failed to access active player".to_string(),
+                ));
+            }
+        } else {
+            return Err(Custom(
+                Status::NotFound,
+                "No active player found".to_string(),
+            ));
+        }
+    } else {
+        player_name.to_string()
+    };
     
     // Find the controller with the matching name
+    let controllers = audio_controller.list_controllers();
+    
     for ctrl_lock in controllers {
         if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
+            if ctrl.get_player_name() == effective_player_name {
                 // Get all metadata as a HashMap
                 let metadata = ctrl.get_metadata()
                     .unwrap_or_default();
                 
                 return Ok(Json(MetadataResponse {
-                    player_name: player_name.to_string(),
+                    player_name: effective_player_name,
                     metadata,
                 }));
             }
@@ -403,23 +462,50 @@ pub fn get_player_metadata(
     // Player not found
     Err(Custom(
         Status::NotFound,
-        format!("Player '{}' not found", player_name),
+        format!("Player '{}' not found", effective_player_name),
     ))
 }
 
 /// Get a specific metadata key for a player
+/// 
+/// If the player name is "active", the currently active player will be used.
+/// Otherwise, it will find a player with the specified name.
 #[get("/player/<player_name>/meta/<key>")]
 pub fn get_player_metadata_key(
     player_name: &str,
     key: &str,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<MetadataKeyResponse>, Custom<String>> {
-    let controllers = controller.inner().list_controllers();
+    let audio_controller = controller.inner();
+    let effective_player_name = if player_name.to_lowercase() == "active" {
+        // Get the active player's name
+        let active_controller = audio_controller.get_active_controller();
+        
+        if let Some(active_ctrl) = active_controller {
+            if let Ok(ctrl) = active_ctrl.read() {
+                ctrl.get_player_name()
+            } else {
+                return Err(Custom(
+                    Status::InternalServerError,
+                    "Failed to access active player".to_string(),
+                ));
+            }
+        } else {
+            return Err(Custom(
+                Status::NotFound,
+                "No active player found".to_string(),
+            ));
+        }
+    } else {
+        player_name.to_string()
+    };
     
     // Find the controller with the matching name
+    let controllers = audio_controller.list_controllers();
+    
     for ctrl_lock in controllers {
         if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
+            if ctrl.get_player_name() == effective_player_name {
                 // Get all metadata
                 let metadata = ctrl.get_metadata()
                     .unwrap_or_default();
@@ -428,7 +514,7 @@ pub fn get_player_metadata_key(
                 let value = metadata.get(key).cloned();
                 
                 return Ok(Json(MetadataKeyResponse {
-                    player_name: player_name.to_string(),
+                    player_name: effective_player_name,
                     key: key.to_string(),
                     value,
                 }));
@@ -439,7 +525,7 @@ pub fn get_player_metadata_key(
     // Player not found
     Err(Custom(
         Status::NotFound,
-        format!("Player '{}' not found", player_name),
+        format!("Player '{}' not found", effective_player_name),
     ))
 }
 

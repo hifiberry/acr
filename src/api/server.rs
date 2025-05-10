@@ -75,7 +75,6 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         // Player routes
         players::get_current_player,
         players::list_players,
-        players::send_command_to_active,
         players::send_command_to_player_by_name,
         players::get_now_playing,
         players::get_player_queue,

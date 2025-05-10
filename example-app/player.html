@@ -50,6 +50,31 @@
             box-sizing: border-box;
         }
         
+        .library-link {
+            margin-left: 10px;
+            font-size: 14px;
+            color: #007bff;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+        }
+        
+        .library-link:hover {
+            color: #0056b3;
+            text-decoration: underline;
+        }
+        
+        .library-link i {
+            margin-right: 4px;
+        }
+        
+        .player-option {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 2px 0;
+        }
+        
         button {
             padding: 10px 15px;
             background-color: #007bff;
@@ -179,6 +204,39 @@
             border: 1px solid #ddd;
             border-radius: 4px;
             padding: 15px;
+            position: relative;  /* Add relative positioning to contain absolute elements */
+        }
+        
+        .library-button {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 14px;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-left: 5px;
+        }
+        
+        .library-button:hover:not(:disabled) {
+            background-color: #218838;
+        }
+        
+        .library-button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+            opacity: 0.65;
+        }
+        
+        .selection-controls {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
         }
         
         .state-indicator {
@@ -239,10 +297,15 @@
                 </select>
             </div>
             
-            <button id="refresh-btn"><i class="fas fa-sync-alt"></i> Refresh Player List</button>
-            <div class="websocket-status" id="websocket-status" style="display: inline-flex; align-items: center; margin-left: 10px; font-size: 12px; color: #666;">
-                <div class="indicator disconnected" style="width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; background-color: #dc3545;"></div>
-                <span>Disconnected</span>
+            <div class="selection-controls">
+                <button id="refresh-btn"><i class="fas fa-sync-alt"></i> Refresh Player List</button>
+                <button id="library-button" class="library-button" disabled>
+                    <i class="fas fa-book"></i> Library
+                </button>
+                <div class="websocket-status" id="websocket-status" style="display: inline-flex; align-items: center; margin-left: 10px; font-size: 12px; color: #666;">
+                    <div class="indicator disconnected" style="width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; background-color: #dc3545;"></div>
+                    <span>Disconnected</span>
+                </div>
             </div>
         </div>
         
@@ -302,6 +365,7 @@
         const nowPlayingInfo = document.getElementById('now-playing-info');
         const progressBar = document.getElementById('progress-bar');
         const websocketStatus = document.getElementById('websocket-status');
+        const libraryBtn = document.getElementById('library-button');
         
         // Configuration
         const CONFIG = {
@@ -320,6 +384,101 @@
         let reconnectInterval = null; // Interval for WebSocket reconnection attempts
         let progressInterval = null; // Interval for auto progress updates
         let lastProgressUpdate = null; // Timestamp of the last progress update
+        let playerCapabilities = { // Default capabilities (all disabled)
+            canPlay: false,
+            canPause: false,
+            canStop: false,
+            canPrevious: false,
+            canNext: false,
+            canSeek: false,
+            hasQueue: false,
+            canShuffle: false,
+            canLoop: false
+        };
+
+        // Extract player capabilities from response data
+        function extractPlayerCapabilities(data) {
+            const capabilities = {
+                canPlay: false,
+                canPause: false,
+                canStop: false,
+                canPrevious: false,
+                canNext: false,
+                canSeek: false,
+                hasQueue: false,
+                canShuffle: false,
+                canLoop: false
+            };
+            
+            if (!data || !data.player) {
+                return capabilities;
+            }
+            
+            // Check if player metadata contains capabilities information
+            if (data.player.metadata && data.player.metadata.capabilities) {
+                const caps = data.player.metadata.capabilities;
+                capabilities.canPlay = caps.includes('play');
+                capabilities.canPause = caps.includes('pause');
+                capabilities.canStop = caps.includes('stop');
+                capabilities.canPrevious = caps.includes('previous');
+                capabilities.canNext = caps.includes('next');
+                capabilities.canSeek = caps.includes('seek');
+                capabilities.hasQueue = caps.includes('queue');
+                capabilities.canShuffle = caps.includes('shuffle') || caps.includes('random');
+                capabilities.canLoop = caps.includes('loop');
+                return capabilities;
+            }
+            
+            // Alternative: Check if capabilities are directly in player info
+            if (data.player.capabilities) {
+                const caps = data.player.capabilities;
+                capabilities.canPlay = caps.includes('play');
+                capabilities.canPause = caps.includes('pause');
+                capabilities.canStop = caps.includes('stop');
+                capabilities.canPrevious = caps.includes('previous');
+                capabilities.canNext = caps.includes('next');
+                capabilities.canSeek = caps.includes('seek');
+                capabilities.hasQueue = caps.includes('queue');
+                capabilities.canShuffle = caps.includes('shuffle') || caps.includes('random');
+                capabilities.canLoop = caps.includes('loop');
+                return capabilities;
+            }
+            
+            // Fallback: If no explicit capabilities, infer from player state
+            // Most players will support basic operations
+            if (data.player.is_active) {
+                capabilities.canPlay = true;
+                capabilities.canPause = true;
+                capabilities.canStop = true;
+                
+                // Assume track navigation if a song is playing
+                if (data.song) {
+                    capabilities.canPrevious = true;
+                    capabilities.canNext = true;
+                }
+                
+                // If player has shuffle or loop state, assume it can change these
+                if (typeof data.shuffle === 'boolean') {
+                    capabilities.canShuffle = true;
+                }
+                
+                if (data.loop_mode) {
+                    capabilities.canLoop = true;
+                }
+                
+                // If position is reported, assume seeking is possible
+                if (data.position !== undefined && data.position !== null) {
+                    capabilities.canSeek = true;
+                }
+                
+                // If the player has a library, assume it also has a queue
+                if (data.player.has_library) {
+                    capabilities.hasQueue = true;
+                }
+            }
+            
+            return capabilities;
+        }
 
         // Event Handlers
         playerSelect.addEventListener('change', switchPlayer); // Switch player immediately on selection
@@ -330,6 +489,7 @@
         nextBtn.addEventListener('click', () => sendCommand('next'));
         loopModeBtn.addEventListener('click', cycleLoopMode);
         toggleShuffleBtn.addEventListener('click', toggleShuffle);
+        libraryBtn.addEventListener('click', openPlayerLibrary); // Add click handler for Library button
         
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', initialize);
@@ -379,18 +539,23 @@
             defaultOption.textContent = 'Default (Active Player)';
             playerSelect.appendChild(defaultOption);
             
+            // Find the active player for library button state
+            const activePlayer = players.find(player => player.is_active);
+            if (activePlayer) {
+                // Update library button state based on active player
+                const hasLibrary = activePlayer.has_library;
+                libraryBtn.disabled = !hasLibrary;
+                
+                // Mark the default option as selected
+                defaultOption.selected = true;
+                currentPlayerName = null; // Use the default active player
+            }
+            
+            // Add remaining players to dropdown
             players.forEach(player => {
                 const option = document.createElement('option');
                 option.value = player.name;
-                // Just show the player name, not the state
                 option.textContent = player.name;
-                
-                // If this is the active player, mark the default option as selected
-                if (player.is_active) {
-                    defaultOption.selected = true;
-                    currentPlayerName = null; // Use the default active player
-                }
-                
                 playerSelect.appendChild(option);
             });
         }
@@ -483,6 +648,13 @@
                     <div>Loop mode: ${data.loop_mode}</div>
                     <div>Shuffle: ${data.shuffle ? 'On' : 'Off'}</div>
                 `;
+
+                // Update Library button link if player has a library
+                const hasLibrary = data.player.has_library;
+                libraryBtn.disabled = !hasLibrary;
+                if (hasLibrary) {
+                    libraryBtn.href = `library.html?player=${encodeURIComponent(data.player.name)}`;
+                }
             } else {
                 currentPlayerInfo.textContent = 'No active player';
             }
@@ -527,24 +699,28 @@
         
         // Update control buttons based on available capabilities and current state
         function updateControlButtons(data) {
-            // Enable all buttons if there's an active player
-            const hasActivePlayer = data.player && data.player.is_active;
+            // Extract player capabilities
+            playerCapabilities = extractPlayerCapabilities(data);
             
             // Check playback state
             const isPlaying = data.state && data.state.toLowerCase() === 'playing';
             const isPaused = data.state && data.state.toLowerCase() === 'paused'; 
             const isPlayingOrPaused = isPlaying || isPaused;
             
-            // Enable/disable buttons based on player status and state
-            playPauseBtn.disabled = !hasActivePlayer;
-            stopBtn.disabled = !hasActivePlayer || !isPlayingOrPaused; // Only enable if playing or paused
-            prevBtn.disabled = !hasActivePlayer;
-            nextBtn.disabled = !hasActivePlayer;
-            loopModeBtn.disabled = !hasActivePlayer;
-            toggleShuffleBtn.disabled = !hasActivePlayer;
+            // Enable/disable buttons based on player capabilities
+            playPauseBtn.disabled = !(playerCapabilities.canPlay || playerCapabilities.canPause);
+            stopBtn.disabled = !playerCapabilities.canStop || !isPlayingOrPaused;
+            prevBtn.disabled = !playerCapabilities.canPrevious;
+            nextBtn.disabled = !playerCapabilities.canNext;
+            loopModeBtn.disabled = !playerCapabilities.canLoop;
+            toggleShuffleBtn.disabled = !playerCapabilities.canShuffle;
+            
+            // Enable/disable Library button based on whether player has a library
+            const hasLibrary = data.player && data.player.has_library;
+            libraryBtn.disabled = !hasLibrary;
             
             // Update play/pause button icon based on state
-            if (hasActivePlayer) {
+            if (playPauseBtn.disabled === false) {
                 // Update play/pause button icon
                 if (isPlaying) {
                     playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
@@ -553,7 +729,9 @@
                     playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
                     playPauseBtn.title = 'Play';
                 }
-                
+            }
+            
+            if (loopModeBtn.disabled === false) {
                 // Update loop mode button
                 let loopIcon, loopText;
                 const loopMode = (data.loop_mode || '').toLowerCase();
@@ -577,11 +755,16 @@
                 }
                 loopModeBtn.innerHTML = `<i class="fas ${loopIcon}"></i> ${loopText}`;
                 loopModeBtn.classList.toggle('active', loopMode !== 'none' && loopMode !== 'no');
-                
+            }
+            
+            if (toggleShuffleBtn.disabled === false) {
                 // Update shuffle button state
                 toggleShuffleBtn.classList.toggle('active', data.shuffle);
                 toggleShuffleBtn.innerHTML = `<i class="fas fa-random"></i> Shuffle: ${data.shuffle ? 'On' : 'Off'}`;
             }
+            
+            // Log the current capabilities
+            console.log('Player capabilities:', playerCapabilities);
         }
         
         // Send command to player
@@ -754,7 +937,9 @@
                     "song_changed",
                     "position_changed",
                     "loop_mode_changed", 
-                    "capabilities_changed"
+                    "shuffle_changed",
+                    "capabilities_changed",
+                    "metadata_changed"
                 ]
             };
             
@@ -852,9 +1037,53 @@
                     fetchCurrentPlayer();
                 }
             }
+            else if (data.ShuffleChanged) {
+                const newShuffle = data.ShuffleChanged.shuffle;
+                console.log(`Shuffle mode changed: ${newShuffle}`);
+                
+                // Update shuffle state in UI
+                if (currentData) {
+                    currentData.shuffle = newShuffle;
+                    updatePlayerInfo(currentData);
+                    updateControlButtons(currentData);
+                } else {
+                    fetchCurrentPlayer();
+                }
+            }
             else if (data.CapabilitiesChanged) {
-                console.log(`Player capabilities changed`);
-                // Fetch current player to get updated capabilities
+                console.log('Player capabilities changed:', data.CapabilitiesChanged);
+                
+                // Handle capabilities directly if they are provided in the event
+                if (data.CapabilitiesChanged.capabilities && Array.isArray(data.CapabilitiesChanged.capabilities)) {
+                    const caps = data.CapabilitiesChanged.capabilities;
+                    
+                    // Update our capability object
+                    playerCapabilities.canPlay = caps.includes('play');
+                    playerCapabilities.canPause = caps.includes('pause');
+                    playerCapabilities.canStop = caps.includes('stop');
+                    playerCapabilities.canPrevious = caps.includes('previous');
+                    playerCapabilities.canNext = caps.includes('next');
+                    playerCapabilities.canSeek = caps.includes('seek');
+                    playerCapabilities.hasQueue = caps.includes('queue');
+                    playerCapabilities.canShuffle = caps.includes('shuffle') || caps.includes('random');
+                    playerCapabilities.canLoop = caps.includes('loop');
+                    
+                    console.log('Updated capabilities from event:', playerCapabilities);
+                    
+                    // Update UI with new capabilities
+                    if (currentData) {
+                        updateControlButtons(currentData);
+                    }
+                } else {
+                    // If capabilities not directly provided, fetch from server
+                    console.log('Fetching updated capabilities from server');
+                    fetchCurrentPlayer();
+                }
+            }
+            else if (data.MetadataChanged) {
+                console.log('Player metadata changed');
+                
+                // If the metadata could contain capabilities info, update from server
                 fetchCurrentPlayer();
             }
         }
@@ -962,6 +1191,19 @@
                     positionElement.innerHTML = `<strong>Position:</strong> ${position} / ${duration}`;
                 }
             }
+        }
+        
+        // Open player library
+        function openPlayerLibrary() {
+            if (!currentData || !currentData.player || !currentData.player.name) {
+                console.warn('No player selected to open library');
+                return;
+            }
+            
+            const playerName = currentPlayerName || 'active';
+            const libraryUrl = `library.html?player=${encodeURIComponent(playerName)}`;
+            console.log(`Navigating to library: ${libraryUrl}`);
+            window.location.href = libraryUrl;
         }
     </script>
 </body>

@@ -319,19 +319,22 @@
                                 break;
                                 
                             case 'CapabilitiesChanged':
-                                if (eventData.capabilities) {
+                                if (eventData.capabilities && Array.isArray(eventData.capabilities)) {
                                     const caps = eventData.capabilities;
                                     message += `<div style="margin: 5px 0;">
                                         <div><b>Capabilities:</b></div>
-                                        ${caps.can_play !== undefined ? `<div>- Play: ${caps.can_play ? '✓' : '✗'}</div>` : ''}
-                                        ${caps.can_pause !== undefined ? `<div>- Pause: ${caps.can_pause ? '✓' : '✗'}</div>` : ''}
-                                        ${caps.can_toggle_play_pause !== undefined ? `<div>- Toggle play/pause: ${caps.can_toggle_play_pause ? '✓' : '✗'}</div>` : ''}
-                                        ${caps.can_stop !== undefined ? `<div>- Stop: ${caps.can_stop ? '✓' : '✗'}</div>` : ''}
-                                        ${caps.can_next !== undefined ? `<div>- Next: ${caps.can_next ? '✓' : '✗'}</div>` : ''}
-                                        ${caps.can_previous !== undefined ? `<div>- Previous: ${caps.can_previous ? '✓' : '✗'}</div>` : ''}
+                                        <div>- Play: ${caps.includes('play') ? '✓' : '✗'}</div>
+                                        <div>- Pause: ${caps.includes('pause') ? '✓' : '✗'}</div>
+                                        <div>- Stop: ${caps.includes('stop') ? '✓' : '✗'}</div>
+                                        <div>- Next: ${caps.includes('next') ? '✓' : '✗'}</div>
+                                        <div>- Previous: ${caps.includes('previous') ? '✓' : '✗'}</div>
+                                        <div>- Seek: ${caps.includes('seek') ? '✓' : '✗'}</div>
+                                        <div>- Queue management: ${caps.includes('queue') ? '✓' : '✗'}</div>
+                                        <div>- Random/Shuffle: ${(caps.includes('random') || caps.includes('shuffle')) ? '✓' : '✗'}</div>
+                                        <div>- Loop: ${caps.includes('loop') ? '✓' : '✗'}</div>
                                     </div>`;
                                 } else {
-                                    message += 'No capability information';
+                                    message += 'Capabilities: No capability information';
                                 }
                                 break;
                                 

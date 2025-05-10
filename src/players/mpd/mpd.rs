@@ -135,6 +135,7 @@ impl MPDPlayerController {
             PlayerCapability::Loop,
             PlayerCapability::Shuffle,
             PlayerCapability::Killable,
+            PlayerCapability::Queue,
         ], false); // Don't notify on initialization
     }
     
@@ -581,26 +582,35 @@ impl MPDPlayerController {
                 let has_next = current_pos + 1 < queue_len;
                 
                 // Check if we have a previous song
-                let current_pos = status.song.map(|s| s.pos).unwrap_or(0);
                 let has_previous = current_pos > 0;
                 
-                debug!("Playlist status: position {}/{}, has_next={}, has_previous={}", 
-                       current_pos, queue_len, has_next, has_previous);
+                // Check if player is stopped - if so, disable stop/next/previous buttons
+                let is_stopped = status.state == mpd::State::Stop;
+                
+                debug!("Playlist status: position {}/{}, has_next={}, has_previous={}, is_stopped={}", 
+                       current_pos, queue_len, has_next, has_previous, is_stopped);
                 
                 // Update capabilities without sending notifications yet
                 let mut capabilities_changed = false;
                 
-                // Update Next capability if needed
+                // Update Next capability if needed - disable when stopped
                 capabilities_changed |= player.base.set_capability(
                     PlayerCapability::Next, 
-                    has_next, 
+                    has_next && !is_stopped, 
                     false // Don't notify yet
                 );
                 
-                // Update Previous capability if needed
+                // Update Previous capability if needed - disable when stopped
                 capabilities_changed |= player.base.set_capability(
                     PlayerCapability::Previous, 
-                    has_previous, 
+                    has_previous && !is_stopped, 
+                    false // Don't notify yet
+                );
+                
+                // Update Stop capability - disable when already stopped
+                capabilities_changed |= player.base.set_capability(
+                    PlayerCapability::Stop,
+                    !is_stopped,
                     false // Don't notify yet
                 );
 
@@ -643,7 +653,8 @@ impl MPDPlayerController {
                 if capabilities_changed {
                     let current_caps = player.base.get_capabilities();
                     player.base.notify_capabilities_changed(&current_caps);
-                    debug!("Player capabilities updated: Next={}, Previous={}, Seek={}", has_next, has_previous, is_seekable);
+                    debug!("Player capabilities updated: Next={}, Previous={}, Stop={}, Seek={}", 
+                          has_next && !is_stopped, has_previous && !is_stopped, !is_stopped, is_seekable);
                 }
             },
             Err(e) => {
@@ -663,6 +674,12 @@ impl MPDPlayerController {
                     false, 
                     false // Don't notify yet
                 );
+                
+                capabilities_changed |= player.base.set_capability(
+                    PlayerCapability::Stop,
+                    false,
+                    false // Don't notify yet
+                );
 
                 // Also disable seek capability when there's an error
                 capabilities_changed |= player.base.set_capability(
@@ -674,7 +691,7 @@ impl MPDPlayerController {
                 if capabilities_changed {
                     let current_caps = player.base.get_capabilities();
                     player.base.notify_capabilities_changed(&current_caps);
-                    debug!("Player capabilities updated: disabled Next/Previous/Seek due to error");
+                    debug!("Player capabilities updated: disabled Next/Previous/Stop/Seek due to error");
                 }
                 
                 // Update state to reflect error condition

@@ -744,7 +744,12 @@
             
             // Add play button functionality
             const playAlbumButton = document.getElementById('play-album');
-            playAlbumButton.addEventListener('click', () => {
+            // Remove any existing event listeners first
+            playAlbumButton.replaceWith(playAlbumButton.cloneNode(true));
+            // Get the new button instance after replacement
+            const newPlayAlbumButton = document.getElementById('play-album');
+            // Add fresh event listener
+            newPlayAlbumButton.addEventListener('click', () => {
                 playAlbum(album.id);
             });
             
@@ -773,7 +778,10 @@
                 `;
                 
                 const addButton = trackItem.querySelector('.track-add-button');
-                addButton.addEventListener('click', () => {
+                // Use fresh event listener to avoid duplication
+                const newAddButton = addButton.cloneNode(true);
+                addButton.parentNode.replaceChild(newAddButton, addButton);
+                newAddButton.addEventListener('click', () => {
                     addTrackToQueue(track.uri);
                 });
                 

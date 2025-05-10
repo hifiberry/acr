@@ -172,6 +172,8 @@
             border-radius: 5px;
             border-left: 3px solid #007bff;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            display: flex;
+            align-items: center;
         }
         
         .track-item:hover {
@@ -186,6 +188,7 @@
         
         .track-title {
             font-weight: 500;
+            flex-grow: 1;
         }
         
         .track-artist {
@@ -193,6 +196,26 @@
             font-style: italic;
             margin-left: 10px;
             font-size: 14px;
+        }
+        
+        .track-add-button {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            font-size: 20px;
+            line-height: 1;
+            cursor: pointer;
+            margin-left: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .track-add-button:hover {
+            background-color: #218838;
         }
         
         #view-container > div {
@@ -746,9 +769,45 @@
                     <span class="track-number">${track.track_number || index + 1}.</span>
                     <span class="track-title">${track.name}</span>
                     ${artistHtml}
+                    <button class="track-add-button" data-track-uri="${track.uri}">+</button>
                 `;
                 
+                const addButton = trackItem.querySelector('.track-add-button');
+                addButton.addEventListener('click', () => {
+                    addTrackToQueue(track.uri);
+                });
+                
                 tracksList.appendChild(trackItem);
+            });
+        }
+        
+        function addTrackToQueue(trackUri) {
+            if (!activeLibrary) {
+                showError('No active library player selected');
+                return;
+            }
+            
+            console.log(`Adding track to queue: ${trackUri}`);
+            
+            fetch(`${API_BASE_URL}/player/${activeLibrary}/command/add_track:${encodeURIComponent(trackUri)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`Failed to add track to queue: ${response.status} ${response.statusText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Track added to queue:', data);
+                showMessage('Track added to queue successfully');
+            })
+            .catch(error => {
+                console.error('Error adding track to queue:', error);
+                showError(`Failed to add track to queue: ${error.message}`);
             });
         }
         

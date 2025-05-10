@@ -307,7 +307,8 @@
         const CONFIG = {
             pollingInterval: 30000, // Time in milliseconds between updates (30 seconds)
             fastUpdateAfterCommand: 300, // Time to wait for quick update after sending a command
-            wsReconnectInterval: 5000  // Time to wait before attempting to reconnect WebSocket
+            wsReconnectInterval: 5000,  // Time to wait before attempting to reconnect WebSocket
+            progressUpdateInterval: 500  // Time in milliseconds between progress bar updates (0.5 seconds)
         };
         
         // API Endpoints
@@ -317,6 +318,8 @@
         let currentPlayerName = null; // Track the current player name for commands
         let socket = null; // WebSocket connection
         let reconnectInterval = null; // Interval for WebSocket reconnection attempts
+        let progressInterval = null; // Interval for auto progress updates
+        let lastProgressUpdate = null; // Timestamp of the last progress update
 
         // Event Handlers
         playerSelect.addEventListener('change', switchPlayer); // Switch player immediately on selection
@@ -498,9 +501,19 @@
                     ${song.album ? `<div><strong>Album:</strong> ${song.album}</div>` : ''}
                     <div><strong>Position:</strong> ${position} / ${duration}</div>
                 `;
+                
+                // Start auto progress updates if the player is playing
+                if (data.state && data.state.toLowerCase() === 'playing') {
+                    // Reset the timestamp to now whenever we get a real update
+                    lastProgressUpdate = Date.now();
+                    startAutoProgress();
+                } else {
+                    stopAutoProgress();
+                }
             } else {
                 nowPlayingInfo.textContent = 'Nothing playing';
                 progressBar.style.width = '0%';
+                stopAutoProgress();
             }
         }
         
@@ -764,6 +777,14 @@
                     currentData.state = newState;
                     updatePlayerInfo(currentData);
                     updateControlButtons(currentData);
+                    
+                    // Start or stop auto progress updates based on state
+                    if (newState.toLowerCase() === 'playing') {
+                        lastProgressUpdate = Date.now(); // Reset timestamp on play
+                        startAutoProgress();
+                    } else {
+                        stopAutoProgress();
+                    }
                 } else {
                     // If we don't have current data, fetch everything
                     fetchCurrentPlayer();
@@ -775,7 +796,17 @@
                 // Update song information
                 if (currentData) {
                     currentData.song = data.SongChanged;
+                    // Reset position to 0 for new song if not provided
+                    if (!data.SongChanged.position) {
+                        currentData.position = 0;
+                    }
                     updateNowPlaying(currentData);
+                    
+                    // Reset and restart auto progress for the new song if playing
+                    if (currentData.state && currentData.state.toLowerCase() === 'playing') {
+                        lastProgressUpdate = Date.now();
+                        startAutoProgress();
+                    }
                 } else {
                     fetchCurrentPlayer();
                 }
@@ -791,7 +822,8 @@
                 // Update position in UI
                 if (currentData) {
                     currentData.position = newPosition;
-                    updateNowPlaying(currentData);
+                    lastProgressUpdate = Date.now(); // Reset timestamp on position update
+                    updateProgressBar(); // Just update the progress bar, not the whole UI
                 }
             }
             else if (data.LoopModeChanged) {
@@ -834,7 +866,90 @@
                 clearInterval(updateInterval);
                 updateInterval = null;
             }
+            
+            // Clear progress update interval
+            stopAutoProgress();
         });
+        
+        // Start auto progress updates for the progress bar
+        function startAutoProgress() {
+            // Stop any existing interval first
+            stopAutoProgress();
+            
+            // Only start if we have current data and a song is playing
+            if (!currentData || !currentData.song || !currentData.song.duration) {
+                return;
+            }
+            
+            const isPlaying = currentData.state && currentData.state.toLowerCase() === 'playing';
+            if (!isPlaying) {
+                return;
+            }
+            
+            console.log('Starting auto progress updates');
+            lastProgressUpdate = Date.now();
+            
+            progressInterval = setInterval(() => {
+                if (!currentData || !currentData.position || !currentData.song || !currentData.song.duration) {
+                    return;
+                }
+                
+                // Calculate how much time has passed since the last position update
+                const now = Date.now();
+                const elapsedSeconds = (now - lastProgressUpdate) / 1000;
+                lastProgressUpdate = now;
+                
+                // Add the elapsed time to the current position
+                currentData.position += elapsedSeconds;
+                
+                // Check if we've reached the end of the song
+                if (currentData.position >= currentData.song.duration) {
+                    // Stop at the end of the song
+                    currentData.position = currentData.song.duration;
+                    
+                    // Force an update of player state from server when we reach the end
+                    console.log('Track reached the end, fetching current player state from server');
+                    fetchCurrentPlayer();
+                    
+                    // Don't stop the timer yet - it will be managed based on the updated state
+                }
+                
+                // Update the progress bar and position display
+                updateProgressBar();
+                
+            }, CONFIG.progressUpdateInterval);
+        }
+        
+        // Stop auto progress updates
+        function stopAutoProgress() {
+            if (progressInterval) {
+                clearInterval(progressInterval);
+                progressInterval = null;
+            }
+        }
+        
+        // Update only the progress bar and position text without updating the entire UI
+        function updateProgressBar() {
+            if (!currentData || !currentData.song || !currentData.position) {
+                return;
+            }
+            
+            const song = currentData.song;
+            
+            // Update progress bar
+            if (song.duration) {
+                const percentage = (currentData.position / song.duration) * 100;
+                progressBar.style.width = `${percentage}%`;
+                
+                // Update position text if it exists in the DOM
+                const positionElement = nowPlayingInfo.querySelector('div:last-child');
+                if (positionElement) {
+                    const position = formatTime(currentData.position);
+                    const duration = formatTime(song.duration);
+                    positionElement.innerHTML = `<strong>Position:</strong> ${position} / ${duration}`;
+                }
+            }
+        }
     </script>
 </body>
 </html>

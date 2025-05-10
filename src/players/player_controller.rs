@@ -539,37 +539,47 @@ impl BasePlayerController {
         }
     }
 
-    /// Notify all registered listeners that the database is being updated
-    pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>, 
-                                 song: Option<String>, percentage: Option<f32>) {
-        let player_name = self.get_player_name();
-        let player_id = self.get_player_id();
-        
-        debug!("Notifying listeners of database update: artist={:?}, album={:?}, song={:?}, progress={:?}", 
-              artist, album, song, percentage);
+    /// Create a PlayerSource object for the current player
+    pub fn create_player_source(&self) -> PlayerSource {
+        PlayerSource::new(self.get_player_name(), self.get_player_id())
+    }
+
+    /// Broadcast an event to all registered listeners
+    pub fn broadcast_event(&self, event: PlayerEvent) {
         self.prune_dead_listeners();
         
-        let source = PlayerSource::new(player_name, player_id);
-        
+        if let Ok(listeners) = self.listeners.read() {
+            debug!("Broadcasting event to {} listeners: {:?}", listeners.len(), event);
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    trace!("Notifying listener of event");
+                    listener.on_event(event.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when broadcasting event");
+        }
+    }
+
+    /// Notify listeners that the database is being updated
+    pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>,
+                                song: Option<String>, percentage: Option<f32>) {
         let event = PlayerEvent::DatabaseUpdating {
-            source,
+            source: self.create_player_source(),
             artist,
             album,
             song,
             percentage,
         };
-        
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of database update", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of database update");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying database update");
-        }
+        self.broadcast_event(event);
+    }
+    
+    /// Notify listeners that the player's queue has changed
+    pub fn notify_queue_changed(&self) {
+        let event = PlayerEvent::QueueChanged {
+            source: self.create_player_source(),
+        };
+        self.broadcast_event(event);
     }
 
     /// Get the last time this player was seen active
@@ -680,6 +690,4 @@ impl BasePlayerController {
             None
         }
     }
-
-
 }

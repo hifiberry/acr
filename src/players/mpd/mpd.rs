@@ -373,11 +373,11 @@ impl MPDPlayerController {
                 Self::handle_player_event(client, player);
             },
             Subsystem::Playlist => {
-                debug!("Playlist changed");
+                warn!("Playlist changed");
                 // Could notify about playlist/song changes
             },
             Subsystem::Options => {
-                debug!("Options changed (repeat, random, etc.)");
+                warn!("Options changed (repeat, random, etc.)");
                 // Could query and notify about repeat/random state
             },
             Subsystem::Mixer => {
@@ -1101,6 +1101,9 @@ impl PlayerController for MPDPlayerController {
                     } else {
                         debug!("Successfully removed track at position {}", position);
                         success = true;
+                        
+                        // Notify listeners that the queue has been modified
+                        self.base.notify_queue_changed();
                     }
                 },
                 
@@ -1110,6 +1113,9 @@ impl PlayerController for MPDPlayerController {
                     success = client.clear().is_ok();
                     if success {
                         debug!("Successfully cleared MPD queue");
+                        
+                        // Notify listeners that the queue has been cleared
+                        self.base.notify_queue_changed();
                     } else {
                         warn!("Failed to clear MPD queue");
                     }

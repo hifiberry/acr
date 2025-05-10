@@ -304,47 +304,62 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
     
     // Create event-specific data
     let event_data = match event {
-        PlayerEvent::StateChanged { state, .. } => {
-            // For StateChanged events, include the state directly
+        PlayerEvent::StateChanged { source, state } => {
             serde_json::json!({
-                "StateChanged": {
-                    "state": state
-                }
+                "type": "state_changed",
+                "player_name": source.player_name(),
+                "player_id": source.player_id(),
+                "state": state.to_string()
             })
         },
-        PlayerEvent::SongChanged { song, .. } => {
+        PlayerEvent::SongChanged { source, song } => {
             serde_json::json!({
-                "SongChanged": {
-                    "song": song
-                }
+                "type": "song_changed",
+                "player_name": source.player_name(),
+                "player_id": source.player_id(),
+                "song": song
             })
         },
-        PlayerEvent::LoopModeChanged { mode, .. } => {
+        PlayerEvent::LoopModeChanged { source, mode } => {
             serde_json::json!({
-                "LoopModeChanged": {
-                    "mode": mode
-                }
+                "type": "loop_mode_changed",
+                "player_name": source.player_name(),
+                "player_id": source.player_id(),
+                "mode": mode.to_string()
             })
         },
-        PlayerEvent::CapabilitiesChanged { capabilities, .. } => {
+        PlayerEvent::CapabilitiesChanged { source, capabilities } => {
             serde_json::json!({
-                "CapabilitiesChanged": {
-                    "capabilities": capabilities
-                }
+                "type": "capabilities_changed",
+                "player_name": source.player_name(),
+                "player_id": source.player_id(),
+                "capabilities": capabilities.to_vec()
             })
         },
-        PlayerEvent::PositionChanged { position, .. } => {
+        PlayerEvent::PositionChanged { source, position } => {
             serde_json::json!({
-                "PositionChanged": {
-                    "position": position
-                }
+                "type": "position_changed",
+                "player_name": source.player_name(),
+                "player_id": source.player_id(),
+                "position": position
             })
         },
-        PlayerEvent::DatabaseUpdating { percentage, .. } => {
+        PlayerEvent::DatabaseUpdating { source, artist, album, song, percentage } => {
             serde_json::json!({
-                "DatabaseUpdating": {
-                    "percentage": percentage
-                }
+                "type": "database_updating",
+                "player_name": source.player_name(),
+                "player_id": source.player_id(),
+                "artist": artist,
+                "album": album,
+                "song": song,
+                "percentage": percentage
+            })
+        },
+        PlayerEvent::QueueChanged { source } => {
+            serde_json::json!({
+                "type": "queue_changed",
+                "player_name": source.player_name(),
+                "player_id": source.player_id()
             })
         },
     };
@@ -364,6 +379,7 @@ fn event_type_name(event: &PlayerEvent) -> &'static str {
         PlayerEvent::CapabilitiesChanged { .. } => "capabilities_changed",
         PlayerEvent::PositionChanged { .. } => "position_changed",
         PlayerEvent::DatabaseUpdating { .. } => "database_updating",
+        PlayerEvent::QueueChanged { .. } => "queue_changed",
     }
 }
 

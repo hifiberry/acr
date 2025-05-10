@@ -69,6 +69,11 @@ pub enum PlayerEvent {
         song: Option<String>,
         percentage: Option<f32>,
     },
+
+    /// Queue content has changed
+    QueueChanged {
+        source: PlayerSource,
+    },
 }
 
 impl PlayerEvent {
@@ -81,6 +86,7 @@ impl PlayerEvent {
             PlayerEvent::CapabilitiesChanged { source, .. } => source,
             PlayerEvent::PositionChanged { source, .. } => source,
             PlayerEvent::DatabaseUpdating { source, .. } => source,
+            PlayerEvent::QueueChanged { source } => source,
         }
     }
     

@@ -95,6 +95,7 @@ impl EventLogger {
             PlayerEvent::CapabilitiesChanged { .. } => "capabilities",
             PlayerEvent::PositionChanged { .. } => "position",
             PlayerEvent::DatabaseUpdating { .. } => "database",
+            PlayerEvent::QueueChanged { .. } => "queue",
         }
     }
     
@@ -220,6 +221,16 @@ impl EventLogger {
                         source.player_id(),
                         item_str,
                         progress_str
+                    ),
+                    is_active_player
+                );
+            },
+            PlayerEvent::QueueChanged { source } => {
+                logger.log(
+                    &format!(
+                        "Player {} (ID: {}) queue changed",
+                        source.player_name(),
+                        source.player_id()
                     ),
                     is_active_player
                 );

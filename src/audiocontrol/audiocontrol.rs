@@ -237,7 +237,9 @@ impl PlayerStateListener for AudioController {
             PlayerEvent::PositionChanged { source, .. } => 
                 self.is_active_player(&source.player_name, &source.player_id),
             PlayerEvent::DatabaseUpdating { source, .. } => 
-                self.is_active_player(&source.player_name, &source.player_id)
+                self.is_active_player(&source.player_name, &source.player_id),
+            PlayerEvent::QueueChanged { source } => 
+                self.is_active_player(&source.player_name, &source.player_id),
         };
 
         // Pass the event through all filters
@@ -821,6 +823,27 @@ impl AudioController {
         }
     }
 
+    /// Forward queue changed event to all registered listeners
+    fn forward_queue_changed(&self, player_name: String, player_id: String) {
+        // Prune dead listeners
+        self.prune_dead_listeners();
+
+        let source = PlayerSource::new(player_name, player_id);
+
+        let event = PlayerEvent::QueueChanged { source };
+
+        // Forward the event to all active listeners
+        if let Ok(listeners) = self.listeners.read() {
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    listener.on_event(event.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when forwarding queue change");
+        }
+    }
+
     /// Remove any dead (dropped) listeners
     fn prune_dead_listeners(&self) {
         if let Ok(mut listeners) = self.listeners.write() {
@@ -1055,6 +1078,16 @@ impl AudioController {
                     debug!("AudioController ignoring database update from inactive player {}", source.player_id);
                 }
             },
+            PlayerEvent::QueueChanged { source } => {
+                // Check if the event is from the active player
+                if is_active {
+                    debug!("AudioController forwarding queue change from active player {}", source.player_id);
+                    // Forward the queue changed event
+                    self.forward_queue_changed(source.player_name, source.player_id);
+                } else {
+                    debug!("AudioController ignoring queue change from inactive player {}", source.player_id);
+                }
+            }
         }
     }
 

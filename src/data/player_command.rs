@@ -16,6 +16,9 @@ pub enum PlayerCommand {
     #[serde(rename = "playpause")]
     PlayPause,
 
+    #[serde(rename = "stop")]
+    Stop,
+
     #[serde(rename = "next")]
     Next,
 
@@ -64,6 +67,7 @@ impl std::fmt::Display for PlayerCommand {
             PlayerCommand::Play => write!(f, "play"),
             PlayerCommand::Pause => write!(f, "pause"),
             PlayerCommand::PlayPause => write!(f, "playpause"),
+            PlayerCommand::Stop => write!(f, "stop"),
             PlayerCommand::Next => write!(f, "next"),
             PlayerCommand::Previous => write!(f, "previous"),
             PlayerCommand::SetLoopMode(mode) => write!(f, "set_loop:{}", mode),

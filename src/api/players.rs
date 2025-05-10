@@ -450,6 +450,7 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
         "play" => return Ok(PlayerCommand::Play),
         "pause" => return Ok(PlayerCommand::Pause),
         "playpause" => return Ok(PlayerCommand::PlayPause),
+        "stop" => return Ok(PlayerCommand::Stop),
         "next" => return Ok(PlayerCommand::Next),
         "previous" => return Ok(PlayerCommand::Previous),
         "kill" => return Ok(PlayerCommand::Kill),

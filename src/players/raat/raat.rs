@@ -149,6 +149,7 @@ impl RAATPlayerController {
         self.base.set_capabilities(vec![
             PlayerCapability::Play,
             PlayerCapability::Pause,
+            PlayerCapability::Stop,
         ], false); // Don't notify on initialization
     }
     
@@ -512,6 +513,7 @@ impl PlayerController for RAATPlayerController {
             PlayerCommand::Play => "play",
             PlayerCommand::Pause => "pause",
             PlayerCommand::PlayPause => "playpause",
+            PlayerCommand::Stop => "stop",
             PlayerCommand::Next => "next",
             PlayerCommand::Previous => "previous",
             PlayerCommand::Seek(position) => return self.send_seek_command(position),

@@ -87,7 +87,7 @@ Sends a playback command to the currently active player.
 - **Method**: POST
 - **Path Parameters**:
   - `command` (string): The command to send. Supported values:
-    - Simple commands: `play`, `pause`, `playpause`, `next`, `previous`, `kill`
+    - Simple commands: `play`, `pause`, `playpause`, `stop`, `next`, `previous`, `kill`
     - Parameterized commands:
       - `set_loop:none|track|playlist`
       - `seek:<position>` (position in seconds)
@@ -111,6 +111,9 @@ Sends a playback command to the currently active player.
 ```bash
 # Simple command
 curl -X POST http://<device-ip>:1080/api/player/active/send/play
+
+# Stop playback
+curl -X POST http://<device-ip>:1080/api/player/active/send/stop
 
 # Play/pause toggle
 curl -X POST http://<device-ip>:1080/api/player/active/send/playpause

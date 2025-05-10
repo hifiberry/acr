@@ -937,6 +937,16 @@ impl PlayerController for MPDPlayerController {
                     }
                 },
                 
+                PlayerCommand::Stop => {
+                    // Stop playback
+                    success = client.stop().is_ok();
+                    if success {
+                        debug!("MPD playback stopped");
+                    } else {
+                        warn!("Failed to stop MPD playback");
+                    }
+                },
+                
                 PlayerCommand::Next => {
                     // Skip to next track
                     success = client.next().is_ok();

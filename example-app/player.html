@@ -432,19 +432,27 @@
             if (!currentData) return;
             
             let nextMode;
-            switch(currentData.loop_mode) {
-                case 'None':
+            // Check the loop mode value case-insensitively since API might use different cases
+            const currentMode = (currentData.loop_mode || '').toLowerCase();
+            
+            console.log(`Current loop mode: ${currentMode}`);
+            
+            switch(currentMode) {
+                case 'none':
+                case 'no':
                     nextMode = 'track';
                     break;
-                case 'Track':
+                case 'track':
+                case 'song':
                     nextMode = 'playlist';
                     break;
-                case 'Playlist':
+                case 'playlist':
                 default:
                     nextMode = 'none';
                     break;
             }
             
+            console.log(`Setting new loop mode: ${nextMode}`);
             sendCommand(`set_loop:${nextMode}`);
         }
         
@@ -548,22 +556,27 @@
                 
                 // Update loop mode button
                 let loopIcon, loopText;
-                switch(data.loop_mode) {
-                    case 'Track':
+                const loopMode = (data.loop_mode || '').toLowerCase();
+                
+                switch(loopMode) {
+                    case 'track':
+                    case 'song':
                         loopIcon = 'fa-redo';
                         loopText = 'Loop: Track';
                         break;
-                    case 'Playlist':
+                    case 'playlist':
                         loopIcon = 'fa-retweet';
                         loopText = 'Loop: Playlist';
                         break;
-                    default: // None
+                    case 'none':
+                    case 'no':
+                    default:
                         loopIcon = 'fa-times';
                         loopText = 'Loop: None';
                         break;
                 }
                 loopModeBtn.innerHTML = `<i class="fas ${loopIcon}"></i> ${loopText}`;
-                loopModeBtn.classList.toggle('active', data.loop_mode !== 'None');
+                loopModeBtn.classList.toggle('active', loopMode !== 'none' && loopMode !== 'no');
                 
                 // Update shuffle button state
                 toggleShuffleBtn.classList.toggle('active', data.shuffle);
@@ -581,7 +594,7 @@
                     url = `${API_BASE}/player/${currentPlayerName}/command/${command}`;
                 } else {
                     // Send to active player (default)
-                    url = `${API_BASE}/player/command/${command}`;
+                    url = `${API_BASE}/player/active/command/${command}`;
                 }
                 
                 console.log(`Sending command to: ${url}`);

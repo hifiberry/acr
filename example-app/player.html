@@ -273,6 +273,7 @@
             border-radius: 3px;
             margin: 10px 0;
             overflow: hidden;
+            cursor: pointer; /* Add cursor pointer to indicate it's clickable */
         }
         
         .progress-bar {
@@ -627,6 +628,47 @@
             
             // Initialize WebSocket connection
             setupWebSocket();
+            
+            // Set up progress bar click handler for seeking
+            setupProgressBarClickHandler();
+        }
+        
+        // Set up click handler for progress bar seeking
+        function setupProgressBarClickHandler() {
+            const progressContainer = document.querySelector('.progress-container');
+            
+            progressContainer.addEventListener('click', function(event) {
+                // Only allow seeking if we have a song playing and the player supports seeking
+                if (!currentData || !currentData.song || !currentData.song.duration || !playerCapabilities.canSeek) {
+                    return;
+                }
+                
+                // Calculate the position to seek to based on the click position
+                const rect = this.getBoundingClientRect();
+                const clickOffset = event.clientX - rect.left;
+                const clickPercentage = clickOffset / rect.width;
+                const seekPosition = currentData.song.duration * clickPercentage;
+                
+                // Send the seek command
+                console.log(`Seeking to position: ${formatTime(seekPosition)} (${Math.round(clickPercentage * 100)}%)`);
+                seekToPosition(seekPosition);
+            });
+        }
+        
+        // Send seek command to player
+        async function seekToPosition(position) {
+            try {
+                const seekCommand = `seek:${Math.floor(position)}`;
+                await sendCommand(seekCommand);
+                
+                // Update local position immediately for smoother UI
+                if (currentData && currentData.song) {
+                    currentData.position = position;
+                    updateProgressBar();
+                }
+            } catch (error) {
+                console.error('Error seeking to position:', error);
+            }
         }
         
         // Fetch available players

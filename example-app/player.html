@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACR Player Interface</title>
+    <!-- Add Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        h1, h2, h3 {
+            color: #222;
+        }
+        
+        .panel {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            padding: 20px;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        
+        button {
+            padding: 10px 15px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+        
+        button:hover {
+            background-color: #0056b3;
+        }
+        
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        /* Player control styles */
+        .player-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 20px 0;
+        }
+        
+        .control-btn {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border: none;
+            background-color: #f8f9fa;
+            color: #333;
+            font-size: 18px;
+            margin: 0 5px;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        
+        .control-btn:hover {
+            background-color: #e9ecef;
+            transform: scale(1.1);
+        }
+        
+        .control-btn:disabled {
+            color: #aaa;
+            background-color: #f1f1f1;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        
+        .play-pause-btn {
+            width: 60px;
+            height: 60px;
+            font-size: 22px;
+            background-color: #007bff;
+            color: white;
+        }
+        
+        .play-pause-btn:hover {
+            background-color: #0069d9;
+        }
+        
+        .play-pause-btn:disabled {
+            background-color: #99c5ff;
+            color: #e6f0ff;
+        }
+        
+        .audio-settings {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 20px;
+            justify-content: center;
+        }
+        
+        .setting-btn {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            border-radius: 20px;
+            border: 1px solid #ddd;
+            background-color: white;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 14px;
+        }
+        
+        .setting-btn i {
+            margin-right: 6px;
+        }
+        
+        .setting-btn:hover {
+            background-color: #f8f9fa;
+            border-color: #bbb;
+        }
+        
+        .setting-btn:disabled {
+            color: #aaa;
+            background-color: #f1f1f1;
+            cursor: not-allowed;
+        }
+        
+        .setting-btn.active {
+            background-color: #007bff;
+            color: white;
+            border-color: #0056b3;
+            font-weight: bold;
+            text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+        }
+        
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        
+        .player-info {
+            margin-top: 20px;
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+        }
+        
+        .state-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        
+        .state-playing {
+            background-color: #28a745;
+        }
+        
+        .state-paused {
+            background-color: #ffc107;
+        }
+        
+        .state-stopped {
+            background-color: #dc3545;
+        }
+        
+        .state-unknown {
+            background-color: #6c757d;
+        }
+        
+        .now-playing {
+            margin-top: 20px;
+        }
+        
+        .progress-container {
+            height: 5px;
+            background-color: #e9ecef;
+            border-radius: 3px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            height: 100%;
+            background-color: #007bff;
+            border-radius: 3px;
+            width: 0%;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ACR Player Interface</h1>
+        
+        <div class="panel">
+            <h2>Player Selection</h2>
+            
+            <div class="form-group">
+                <label for="player-select">Select Player</label>
+                <select id="player-select">
+                    <option value="">Loading players...</option>
+                </select>
+            </div>
+            
+            <button id="refresh-btn"><i class="fas fa-sync-alt"></i> Refresh Player List</button>
+            <div class="websocket-status" id="websocket-status" style="display: inline-flex; align-items: center; margin-left: 10px; font-size: 12px; color: #666;">
+                <div class="indicator disconnected" style="width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; background-color: #dc3545;"></div>
+                <span>Disconnected</span>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <h2>Player Controls</h2>
+            
+            <div class="player-controls">
+                <button id="prev-btn" class="control-btn" disabled title="Previous">
+                    <i class="fas fa-step-backward"></i>
+                </button>
+                <button id="play-pause-btn" class="control-btn play-pause-btn" disabled title="Play/Pause">
+                    <i class="fas fa-play"></i>
+                </button>
+                <button id="stop-btn" class="control-btn" disabled title="Stop">
+                    <i class="fas fa-stop"></i>
+                </button>
+                <button id="next-btn" class="control-btn" disabled title="Next">
+                    <i class="fas fa-step-forward"></i>
+                </button>
+            </div>
+            
+            <div class="audio-settings">
+                <button id="toggle-shuffle-btn" class="setting-btn" disabled>
+                    <i class="fas fa-random"></i> Shuffle: Off
+                </button>
+                <button id="loop-mode-btn" class="setting-btn" disabled>
+                    <i class="fas fa-times"></i> Loop: None
+                </button>
+            </div>
+            
+            <div class="player-info">
+                <h3>Current Player:</h3>
+                <div id="current-player-info">No player selected</div>
+                
+                <div class="now-playing">
+                    <h3>Now Playing:</h3>
+                    <div id="now-playing-info">Nothing playing</div>
+                    <div class="progress-container">
+                        <div class="progress-bar" id="progress-bar"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // DOM Elements
+        const playerSelect = document.getElementById('player-select');
+        const refreshBtn = document.getElementById('refresh-btn');
+        const playPauseBtn = document.getElementById('play-pause-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const prevBtn = document.getElementById('prev-btn');
+        const nextBtn = document.getElementById('next-btn');
+        const loopModeBtn = document.getElementById('loop-mode-btn');
+        const toggleShuffleBtn = document.getElementById('toggle-shuffle-btn');
+        const currentPlayerInfo = document.getElementById('current-player-info');
+        const nowPlayingInfo = document.getElementById('now-playing-info');
+        const progressBar = document.getElementById('progress-bar');
+        const websocketStatus = document.getElementById('websocket-status');
+        
+        // Configuration
+        const CONFIG = {
+            pollingInterval: 30000, // Time in milliseconds between updates (30 seconds)
+            fastUpdateAfterCommand: 300, // Time to wait for quick update after sending a command
+            wsReconnectInterval: 5000  // Time to wait before attempting to reconnect WebSocket
+        };
+        
+        // API Endpoints
+        const API_BASE = '/api';
+        let updateInterval = null;
+        let currentData = null;
+        let currentPlayerName = null; // Track the current player name for commands
+        let socket = null; // WebSocket connection
+        let reconnectInterval = null; // Interval for WebSocket reconnection attempts
+
+        // Event Handlers
+        playerSelect.addEventListener('change', switchPlayer); // Switch player immediately on selection
+        refreshBtn.addEventListener('click', fetchPlayers);
+        playPauseBtn.addEventListener('click', togglePlayPause);
+        stopBtn.addEventListener('click', () => sendCommand('stop'));
+        prevBtn.addEventListener('click', () => sendCommand('previous'));
+        nextBtn.addEventListener('click', () => sendCommand('next'));
+        loopModeBtn.addEventListener('click', cycleLoopMode);
+        toggleShuffleBtn.addEventListener('click', toggleShuffle);
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', initialize);
+        
+        function initialize() {
+            fetchPlayers();
+            fetchCurrentPlayer();
+            
+            // Set up periodic updates using the configured polling interval
+            updateInterval = setInterval(fetchCurrentPlayer, CONFIG.pollingInterval);
+            
+            // Initialize WebSocket connection
+            setupWebSocket();
+        }
+        
+        // Fetch available players
+        async function fetchPlayers() {
+            try {
+                const response = await fetch(`${API_BASE}/players`);
+                const data = await response.json();
+                
+                if (data.players && Array.isArray(data.players)) {
+                    updatePlayerDropdown(data.players);
+                } else {
+                    console.error('Invalid players data structure:', data);
+                }
+            } catch (error) {
+                console.error('Failed to fetch players:', error);
+            }
+        }
+        
+        // Update player dropdown with available players
+        function updatePlayerDropdown(players) {
+            playerSelect.innerHTML = '';
+            
+            if (players.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = 'No players available';
+                playerSelect.appendChild(option);
+                return;
+            }
+            
+            // Add a default option for the active player
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = 'Default (Active Player)';
+            playerSelect.appendChild(defaultOption);
+            
+            players.forEach(player => {
+                const option = document.createElement('option');
+                option.value = player.name;
+                // Just show the player name, not the state
+                option.textContent = player.name;
+                
+                // If this is the active player, mark the default option as selected
+                if (player.is_active) {
+                    defaultOption.selected = true;
+                    currentPlayerName = null; // Use the default active player
+                }
+                
+                playerSelect.appendChild(option);
+            });
+        }
+        
+        // Switch to selected player
+        function switchPlayer() {
+            const selectedPlayer = playerSelect.value;
+            
+            if (!selectedPlayer) {
+                // Selected the default "active player" option
+                currentPlayerName = null;
+            } else {
+                // Selected a specific player
+                currentPlayerName = selectedPlayer;
+            }
+            
+            // Update UI to reflect the change
+            fetchCurrentPlayer();
+            
+            // Update WebSocket subscription for the new player
+            subscribeToPlayerEvents();
+        }
+        
+        // Toggle play/pause based on current state
+        function togglePlayPause() {
+            if (!currentData) return;
+            
+            // Check state case-insensitively to handle different API response formats
+            const isPlaying = currentData.state && 
+                             currentData.state.toLowerCase() === 'playing';
+            
+            const command = isPlaying ? 'pause' : 'play';
+            console.log(`Sending command: ${command} based on state: ${currentData.state}`);
+            sendCommand(command);
+        }
+        
+        // Cycle through loop modes: None -> Track -> Playlist -> None
+        function cycleLoopMode() {
+            if (!currentData) return;
+            
+            let nextMode;
+            switch(currentData.loop_mode) {
+                case 'None':
+                    nextMode = 'track';
+                    break;
+                case 'Track':
+                    nextMode = 'playlist';
+                    break;
+                case 'Playlist':
+                default:
+                    nextMode = 'none';
+                    break;
+            }
+            
+            sendCommand(`set_loop:${nextMode}`);
+        }
+        
+        // Fetch current player and now playing information
+        async function fetchCurrentPlayer() {
+            try {
+                const response = await fetch(`${API_BASE}/now-playing`);
+                const data = await response.json();
+                
+                currentData = data;
+                updatePlayerInfo(data);
+                updateNowPlaying(data);
+                updateControlButtons(data);
+            } catch (error) {
+                console.error('Failed to fetch current player:', error);
+            }
+        }
+        
+        // Update player info display
+        function updatePlayerInfo(data) {
+            if (data.player && data.player.name) {
+                const stateClass = `state-${data.state.toLowerCase()}`;
+                currentPlayerInfo.innerHTML = `
+                    <div>
+                        <span class="state-indicator ${stateClass}"></span>
+                        <strong>${data.player.name}</strong> (${data.state})
+                    </div>
+                    <div>Loop mode: ${data.loop_mode}</div>
+                    <div>Shuffle: ${data.shuffle ? 'On' : 'Off'}</div>
+                `;
+            } else {
+                currentPlayerInfo.textContent = 'No active player';
+            }
+        }
+        
+        // Update now playing information
+        function updateNowPlaying(data) {
+            if (data.song) {
+                const song = data.song;
+                const position = data.position ? formatTime(data.position) : '0:00';
+                const duration = song.duration ? formatTime(song.duration) : '0:00';
+                
+                // Update progress bar
+                if (song.duration && data.position) {
+                    const percentage = (data.position / song.duration) * 100;
+                    progressBar.style.width = `${percentage}%`;
+                } else {
+                    progressBar.style.width = '0%';
+                }
+                
+                nowPlayingInfo.innerHTML = `
+                    <div><strong>Title:</strong> ${song.title || 'Unknown'}</div>
+                    <div><strong>Artist:</strong> ${song.artist || 'Unknown'}</div>
+                    ${song.album ? `<div><strong>Album:</strong> ${song.album}</div>` : ''}
+                    <div><strong>Position:</strong> ${position} / ${duration}</div>
+                `;
+            } else {
+                nowPlayingInfo.textContent = 'Nothing playing';
+                progressBar.style.width = '0%';
+            }
+        }
+        
+        // Update control buttons based on available capabilities and current state
+        function updateControlButtons(data) {
+            // Enable all buttons if there's an active player
+            const hasActivePlayer = data.player && data.player.is_active;
+            
+            // Check playback state
+            const isPlaying = data.state && data.state.toLowerCase() === 'playing';
+            const isPaused = data.state && data.state.toLowerCase() === 'paused'; 
+            const isPlayingOrPaused = isPlaying || isPaused;
+            
+            // Enable/disable buttons based on player status and state
+            playPauseBtn.disabled = !hasActivePlayer;
+            stopBtn.disabled = !hasActivePlayer || !isPlayingOrPaused; // Only enable if playing or paused
+            prevBtn.disabled = !hasActivePlayer;
+            nextBtn.disabled = !hasActivePlayer;
+            loopModeBtn.disabled = !hasActivePlayer;
+            toggleShuffleBtn.disabled = !hasActivePlayer;
+            
+            // Update play/pause button icon based on state
+            if (hasActivePlayer) {
+                // Update play/pause button icon
+                if (isPlaying) {
+                    playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
+                    playPauseBtn.title = 'Pause';
+                } else {
+                    playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+                    playPauseBtn.title = 'Play';
+                }
+                
+                // Update loop mode button
+                let loopIcon, loopText;
+                switch(data.loop_mode) {
+                    case 'Track':
+                        loopIcon = 'fa-redo';
+                        loopText = 'Loop: Track';
+                        break;
+                    case 'Playlist':
+                        loopIcon = 'fa-retweet';
+                        loopText = 'Loop: Playlist';
+                        break;
+                    default: // None
+                        loopIcon = 'fa-times';
+                        loopText = 'Loop: None';
+                        break;
+                }
+                loopModeBtn.innerHTML = `<i class="fas ${loopIcon}"></i> ${loopText}`;
+                loopModeBtn.classList.toggle('active', data.loop_mode !== 'None');
+                
+                // Update shuffle button state
+                toggleShuffleBtn.classList.toggle('active', data.shuffle);
+                toggleShuffleBtn.innerHTML = `<i class="fas fa-random"></i> Shuffle: ${data.shuffle ? 'On' : 'Off'}`;
+            }
+        }
+        
+        // Send command to player
+        async function sendCommand(command) {
+            try {
+                // Build the URL based on whether we're using a specific player or the active player
+                let url;
+                if (currentPlayerName) {
+                    // Send to specific player
+                    url = `${API_BASE}/player/${currentPlayerName}/command/${command}`;
+                } else {
+                    // Send to active player (default)
+                    url = `${API_BASE}/player/command/${command}`;
+                }
+                
+                console.log(`Sending command to: ${url}`);
+                const response = await fetch(url, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    // Update UI after command was successfully sent
+                    setTimeout(fetchCurrentPlayer, CONFIG.fastUpdateAfterCommand);
+                } else {
+                    console.error('Failed to send command:', await response.text());
+                }
+            } catch (error) {
+                console.error('Error sending command:', error);
+            }
+        }
+        
+        // Toggle shuffle state
+        async function toggleShuffle() {
+            try {
+                // First fetch the current state to toggle it
+                const response = await fetch(`${API_BASE}/now-playing`);
+                const data = await response.json();
+                
+                if (data.shuffle !== undefined) {
+                    // Send the opposite of the current shuffle state
+                    await sendCommand(`set_random:${!data.shuffle}`);
+                }
+            } catch (error) {
+                console.error('Error toggling shuffle:', error);
+            }
+        }
+        
+        // Format time in seconds to MM:SS or HH:MM:SS
+        function formatTime(seconds) {
+            if (seconds === undefined || seconds === null) return '00:00';
+            
+            seconds = Math.floor(seconds);
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            
+            if (hours > 0) {
+                return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            } else {
+                return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+        }
+        
+        // Setup WebSocket connection
+        function setupWebSocket() {
+            // Close any existing connection first
+            if (socket) {
+                console.log('Closing existing WebSocket connection before creating a new one');
+                socket.onclose = null; // Remove the event handler to avoid reconnect loops
+                if (socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
+                    socket.close();
+                }
+                socket = null;
+            }
+            
+            // Clear any existing reconnect interval
+            if (reconnectInterval) {
+                clearInterval(reconnectInterval);
+                reconnectInterval = null;
+            }
+            
+            // Create WebSocket connection
+            const wsUrl = `ws://${window.location.hostname}:${window.location.port || 1080}/api/events`;
+            console.log(`Connecting to WebSocket at: ${wsUrl}`);
+            
+            try {
+                socket = new WebSocket(wsUrl);
+                
+                socket.onopen = function() {
+                    console.log('WebSocket connected');
+                    websocketStatus.querySelector('.indicator').style.backgroundColor = '#28a745';
+                    websocketStatus.querySelector('span').textContent = 'Connected';
+                    
+                    // Subscribe to events for the current player
+                    subscribeToPlayerEvents();
+                    
+                    // Clear any reconnect interval
+                    if (reconnectInterval) {
+                        clearInterval(reconnectInterval);
+                        reconnectInterval = null;
+                    }
+                };
+                
+                socket.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log('WebSocket message received:', data);
+                        
+                        // Handle welcome message
+                        if (data.type === 'welcome' || data.type === 'subscription_updated') {
+                            console.log('WebSocket:', data.message);
+                            return;
+                        }
+                        
+                        // Process player events
+                        handlePlayerEvent(data);
+                    } catch (error) {
+                        console.error('Error parsing WebSocket message:', error);
+                    }
+                };
+                
+                socket.onclose = function(event) {
+                    console.log(`WebSocket disconnected (code: ${event.code}, reason: ${event.reason || 'No reason given'})`);
+                    websocketStatus.querySelector('.indicator').style.backgroundColor = '#dc3545';
+                    websocketStatus.querySelector('span').textContent = 'Disconnected';
+                    
+                    // Attempt to reconnect, but only if not closing intentionally
+                    if (event.code !== 1000 && event.code !== 1001) {
+                        console.log('Scheduling reconnection attempt...');
+                        if (!reconnectInterval) {
+                            reconnectInterval = setTimeout(() => {
+                                console.log('Attempting to reconnect WebSocket...');
+                                setupWebSocket();
+                            }, CONFIG.wsReconnectInterval);
+                        }
+                    }
+                };
+                
+                socket.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                    // Error handling is managed by onclose handler
+                };
+            } catch (error) {
+                console.error('Failed to create WebSocket connection:', error);
+                websocketStatus.querySelector('.indicator').style.backgroundColor = '#dc3545';
+                websocketStatus.querySelector('span').textContent = 'Connection Failed';
+                
+                // Schedule reconnection attempt
+                if (!reconnectInterval) {
+                    reconnectInterval = setTimeout(setupWebSocket, CONFIG.wsReconnectInterval);
+                }
+            }
+        }
+        
+        // Subscribe to events for the current player
+        function subscribeToPlayerEvents() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                console.warn('Cannot subscribe to player events: WebSocket not open');
+                return;
+            }
+            
+            // Get the current player name to subscribe to
+            const playerToSubscribe = currentPlayerName || 'active';
+            
+            // Create subscription message
+            const subscription = {
+                players: [playerToSubscribe],
+                event_types: [
+                    "state_changed",
+                    "song_changed",
+                    "position_changed",
+                    "loop_mode_changed", 
+                    "capabilities_changed"
+                ]
+            };
+            
+            console.log(`Subscribing to events for player: ${playerToSubscribe}`);
+            socket.send(JSON.stringify(subscription));
+        }
+        
+        // Handle player events received from WebSocket
+        function handlePlayerEvent(data) {
+            // Get the event source (player name)
+            const source = data.source || {};
+            const playerName = source.player_name;
+            
+            // Check if this event is for our current player
+            const isForCurrentPlayer = 
+                !currentPlayerName || // We're using the active player
+                playerName === currentPlayerName || // Event is for our selected player
+                (source.is_active && !currentPlayerName); // Event is for the active player and we're using the active player
+                
+            if (!isForCurrentPlayer) {
+                return; // Ignore events for other players
+            }
+            
+            console.log(`Processing event for player: ${playerName}`);
+            
+            // Process different event types
+            if (data.StateChanged) {
+                const newState = data.StateChanged.state;
+                console.log(`Player state changed to: ${newState}`);
+                
+                // Update UI for state change
+                if (currentData) {
+                    currentData.state = newState;
+                    updatePlayerInfo(currentData);
+                    updateControlButtons(currentData);
+                } else {
+                    // If we don't have current data, fetch everything
+                    fetchCurrentPlayer();
+                }
+            }
+            else if (data.SongChanged) {
+                console.log(`Song changed: ${data.SongChanged.title || 'Unknown'} by ${data.SongChanged.artist || 'Unknown'}`);
+                
+                // Update song information
+                if (currentData) {
+                    currentData.song = data.SongChanged;
+                    updateNowPlaying(currentData);
+                } else {
+                    fetchCurrentPlayer();
+                }
+            }
+            else if (data.PositionChanged) {
+                const newPosition = data.PositionChanged.position;
+                
+                // Only log position changes every 5 seconds to reduce console spam
+                if (Math.floor(newPosition) % 5 === 0) {
+                    console.log(`Position changed: ${formatTime(newPosition)}`);
+                }
+                
+                // Update position in UI
+                if (currentData) {
+                    currentData.position = newPosition;
+                    updateNowPlaying(currentData);
+                }
+            }
+            else if (data.LoopModeChanged) {
+                const newLoopMode = data.LoopModeChanged.loop_mode;
+                console.log(`Loop mode changed: ${newLoopMode}`);
+                
+                // Update loop mode in UI
+                if (currentData) {
+                    currentData.loop_mode = newLoopMode;
+                    updatePlayerInfo(currentData);
+                    updateControlButtons(currentData);
+                } else {
+                    fetchCurrentPlayer();
+                }
+            }
+            else if (data.CapabilitiesChanged) {
+                console.log(`Player capabilities changed`);
+                // Fetch current player to get updated capabilities
+                fetchCurrentPlayer();
+            }
+        }
+        
+        // Clean up resources when page is unloaded
+        window.addEventListener('beforeunload', function() {
+            // Close WebSocket connection cleanly
+            if (socket) {
+                socket.onclose = null; // Prevent reconnection attempts
+                socket.close();
+                socket = null;
+            }
+            
+            // Clear any reconnection timers
+            if (reconnectInterval) {
+                clearInterval(reconnectInterval);
+                reconnectInterval = null;
+            }
+            
+            // Clear polling interval
+            if (updateInterval) {
+                clearInterval(updateInterval);
+                updateInterval = null;
+            }
+        });
+    </script>
+</body>
+</html>

@@ -49,7 +49,7 @@ pub enum PlayerCommand {
     },
     
     #[serde(rename = "remove_track")]
-    RemoveTrack(String),
+    RemoveTrack(usize), // Changed from String to usize for position-based removal
     
     #[serde(rename = "clear_queue")]
     ClearQueue,
@@ -81,7 +81,7 @@ impl std::fmt::Display for PlayerCommand {
                     write!(f, "queue_tracks_end")
                 }
             },
-            PlayerCommand::RemoveTrack(uri) => write!(f, "remove_track:{}", uri),
+            PlayerCommand::RemoveTrack(position) => write!(f, "remove_track:{}", position),
             PlayerCommand::ClearQueue => write!(f, "clear_queue"),
         }
     }

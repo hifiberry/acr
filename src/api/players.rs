@@ -6,6 +6,7 @@ use rocket::{get, post, State};
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
+use std::str::FromStr; // Add this line to import FromStr trait
 
 /// Response struct for the current active player
 #[derive(serde::Serialize)]
@@ -544,7 +545,7 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
         _ => {} // continue to complex command parsing
     }
     
-    // Commands with parameters
+    // Commands with parameters using colon as separator
     if let Some((cmd, param)) = cmd_str.split_once(':') {
         match cmd.to_lowercase().as_str() {
             "set_loop" | "loop" => {
@@ -553,7 +554,13 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
                     "none" => return Ok(PlayerCommand::SetLoopMode(LoopMode::None)),
                     "track" => return Ok(PlayerCommand::SetLoopMode(LoopMode::Track)),
                     "playlist" => return Ok(PlayerCommand::SetLoopMode(LoopMode::Playlist)),
-                    _ => return Err(format!("Invalid loop mode: {}", param))
+                    _ => {
+                        // Try parsing with from_str if available
+                        if let Ok(loop_mode) = LoopMode::from_str(param) {
+                            return Ok(PlayerCommand::SetLoopMode(loop_mode));
+                        }
+                        return Err(format!("Invalid loop mode: {}", param));
+                    }
                 }
             },
             "seek" => {
@@ -566,8 +573,8 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
             "set_random" | "random" => {
                 // Parse random/shuffle setting
                 match param.to_lowercase().as_str() {
-                    "true" | "on" | "1" => return Ok(PlayerCommand::SetRandom(true)),
-                    "false" | "off" | "0" => return Ok(PlayerCommand::SetRandom(false)),
+                    "true" | "on" | "1" | "yes" => return Ok(PlayerCommand::SetRandom(true)),
+                    "false" | "off" | "0" | "no" => return Ok(PlayerCommand::SetRandom(false)),
                     _ => return Err(format!("Invalid random setting: {}", param))
                 }
             },
@@ -584,15 +591,15 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
                 });
             },
             "remove_track" => {
-                // Remove a track from the queue
-                let uri = param.to_string();
-                return Ok(PlayerCommand::RemoveTrack(uri));
+                // Parse position as usize for track removal
+                match param.parse::<usize>() {
+                    Ok(position) => return Ok(PlayerCommand::RemoveTrack(position)),
+                    Err(_) => return Err(format!("Invalid track position: {}", param))
+                }
             },
             _ => {}
         }
     }
-    
-    // JSON payload handling for complex commands (handled elsewhere)
     
     // If we get here, we couldn't parse the command
     Err(format!("Unknown command format: {}", cmd_str))

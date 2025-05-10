@@ -1089,36 +1089,18 @@ impl PlayerController for MPDPlayerController {
                     }
                 },
                     
-                PlayerCommand::RemoveTrack(uri) => {
-                    debug!("Removing track with URI {} from MPD queue", uri);
+                PlayerCommand::RemoveTrack(position) => {
+                    debug!("Removing track at position {} from MPD queue", position);
                     
-                    // Find the track in the queue by URI and remove it
-                    match client.queue() {
-                        Ok(queue) => {
-                            // Find all positions matching the URI
-                            let positions: Vec<u32> = queue.iter()
-                                .filter(|song| song.file == uri)
-                                .filter_map(|song| song.place.as_ref().map(|p| p.pos))
-                                .collect();
-                            
-                            if positions.is_empty() {
-                                warn!("No track with URI {} found in queue", uri);
-                                success = false;
-                            } else {
-                                // Remove tracks from highest position to lowest to avoid index shifting
-                                for pos in positions.iter().rev() {
-                                    if let Err(e) = client.delete(*pos) {
-                                        warn!("Failed to remove track at position {}: {}", pos, e);
-                                    }
-                                }
-                                success = true;
-                                debug!("Successfully removed {} occurrences of track with URI {}", positions.len(), uri);
-                            }
-                        },
-                        Err(e) => {
-                            warn!("Failed to retrieve queue to find track: {}", e);
-                            success = false;
-                        }
+                    // Remove the track at the specified position
+                    let result = client.delete(position as u32);
+                    
+                    if let Err(e) = result {
+                        warn!("Failed to remove track at position {}: {}", position, e);
+                        success = false;
+                    } else {
+                        debug!("Successfully removed track at position {}", position);
+                        success = true;
                     }
                 },
                 

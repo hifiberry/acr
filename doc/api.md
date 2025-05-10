@@ -9,6 +9,24 @@ This document describes the REST API endpoints available in the Audio Control RE
 - **Content Type**: All responses are in JSON format
 - **Version**: As per current package version
 
+## Events
+
+The ACR system uses an event-based architecture to communicate state changes between components. Events can be monitored via WebSockets or server-sent events (SSE).
+
+### Player Events
+
+These events are emitted when a player's state changes:
+
+- `StateChanged` - Player state has changed (playing, paused, stopped, etc.)
+- `SongChanged` - Current song has changed
+- `LoopModeChanged` - Loop mode has changed
+- `CapabilitiesChanged` - Player capabilities have changed
+- `PositionChanged` - Playback position has changed
+- `DatabaseUpdating` - Database is being updated
+- `QueueChanged` - Queue content has changed (note: many players might not actively emit this event when their queue changes)
+
+Note: Not all players actively emit all event types. In particular, queue changes might not be detected automatically for some player implementations. In this case, manual polling of the queue endpoint might be necessary.
+
 ## Core API
 
 ### Get API Version
@@ -206,6 +224,7 @@ Retrieves the current queue for a specific player.
   }
   ```
 - **Error Response** (404 Not Found): Error message if player not found
+- **Note**: While some players will emit `QueueChanged` events when their queue is modified (such as when tracks are added, removed, or reordered), many player implementations might not actively inform about these updates. If you're building a UI that displays queue content, you may need to periodically poll this endpoint to ensure the display remains current.
 
 #### Example
 ```bash

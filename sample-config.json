@@ -78,7 +78,8 @@
                 "autodiscovery": true,
                 "player_name": null,
                 "player_mac": null,
-                "reconnection_interval": 30
+                "reconnection_interval": 30,
+                "polling_interval": 30
             }
         }
     ]

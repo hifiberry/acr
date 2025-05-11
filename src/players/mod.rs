@@ -5,6 +5,7 @@ mod null_controller;
 pub mod player_factory;
 mod raat;
 mod librespot;
+pub mod lms;
 
 // Re-export the PlayerController trait and related components
 pub use player_controller::{PlayerController, PlayerStateListener, BasePlayerController};

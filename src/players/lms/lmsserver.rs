@@ -1,10 +1,12 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::net::{IpAddr};
 use std::time::Duration;
 use log::{debug, info, warn};
 use std::io;
 use get_if_addrs::get_if_addrs;
 use mac_address::MacAddress;
+use tokio::net::{UdpSocket, ToSocketAddrs};
+use tokio::time::timeout;
 
 use crate::players::lms::jsonrps::{LmsRpcClient, Player};
 
@@ -38,7 +40,7 @@ pub struct LmsServer {
 
 impl LmsServer {
     /// Create a new RPC client for this server
-    pub fn create_client(&self) -> LmsRpcClient {
+    pub async fn create_client(&self) -> LmsRpcClient {
         LmsRpcClient::new(&self.ip.to_string(), self.port)
     }
 }
@@ -50,14 +52,13 @@ impl LmsServer {
 ///
 /// # Returns
 /// A vector of discovered LMS servers
-pub fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer>> {
-    let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_DISCOVERY_TIMEOUT));
+pub async fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer>> {
+    let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_DISCOVERY_TIMEOUT));
     
-    debug!("Starting LMS discovery with timeout of {}s", timeout.as_secs());
+    debug!("Starting LMS discovery with timeout of {}s", timeout_duration.as_secs());
     
     // Create a UDP socket for broadcast
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
-    socket.set_read_timeout(Some(timeout))?;
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
     socket.set_broadcast(true)?;
     
     // Prepare the discovery message that matches the working client format
@@ -88,28 +89,34 @@ pub fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer
     debug!("Sending discovery message: {:?}", discovery_msg);
     
     // Send broadcast to the standard LMS SlimProto port
-    debug!("Sending discovery broadcast to port {}", LMS_SLIMPROTO_PORT);
-    socket.send_to(&discovery_msg, format!("255.255.255.255:{}", LMS_SLIMPROTO_PORT))?;
+    let broadcast_addr = format!("255.255.255.255:{}", LMS_SLIMPROTO_PORT);
+    debug!("Sending discovery broadcast to {}", broadcast_addr);
+    socket.send_to(&discovery_msg, &broadcast_addr).await?;
     
     // Also try more specific broadcast addresses
     // This covers common subnet broadcast addresses
     for subnet in &["192.168.1.255", "192.168.0.255", "10.0.0.255", "10.0.1.255"] {
-        let _ = socket.send_to(&discovery_msg, format!("{}:{}", subnet, LMS_SLIMPROTO_PORT));
+        let addr = format!("{}:{}", subnet, LMS_SLIMPROTO_PORT);
+        let _ = socket.send_to(&discovery_msg, &addr).await;
     }
     
     let mut servers = HashMap::new();
     let mut buffer = [0u8; BUFFER_SIZE];
     
-    // Continue receiving until timeout
+    // Keep receiving until timeout
     let start_time = std::time::Instant::now();
     
-    while start_time.elapsed() < timeout {
-        match socket.recv_from(&mut buffer) {
-            Ok((bytes_read, src_addr)) => {
+    while start_time.elapsed() < timeout_duration {
+        // Set a shorter timeout for each recv attempt to allow multiple attempts within the overall timeout
+        match timeout(
+            std::cmp::min(Duration::from_millis(500), timeout_duration.saturating_sub(start_time.elapsed())),
+            socket.recv_from(&mut buffer)
+        ).await {
+            Ok(Ok((bytes_read, src_addr))) => {
                 debug!("Received {} bytes from {}", bytes_read, src_addr);
                 
                 // Try to parse the response
-                if let Some(server) = parse_server_response(&buffer[..bytes_read], src_addr) {
+                if let Some(server) = parse_server_response(&buffer[..bytes_read], src_addr.ip()) {
                     // Log before inserting into the HashMap
                     info!("Found LMS server: {} at {}:{}", server.name, server.ip, server.port);
                     
@@ -117,15 +124,13 @@ pub fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer
                     servers.insert(server.ip, server);
                 }
             },
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock || 
-                       err.kind() == io::ErrorKind::TimedOut => {
-                // No more responses within timeout - break out of the loop
-                debug!("No more responses after waiting {}ms", start_time.elapsed().as_millis());
-                break;
-            },
-            Err(err) => {
+            Ok(Err(err)) => {
                 warn!("Error receiving response: {}", err);
                 // Continue trying to receive messages
+            },
+            Err(_) => {
+                // Timeout for this recv_from, but keep trying until overall timeout
+                debug!("No response in recv_from after waiting {}ms", start_time.elapsed().as_millis());
             }
         }
     }
@@ -138,7 +143,7 @@ pub fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer
 }
 
 /// Parse a server response to extract LMS server information
-fn parse_server_response(buffer: &[u8], src_addr: SocketAddr) -> Option<LmsServer> {
+fn parse_server_response(buffer: &[u8], src_addr: IpAddr) -> Option<LmsServer> {
     // Check if this is a valid response from an LMS server
     if buffer.len() < 4 {
         debug!("Response too short: {} bytes", buffer.len());
@@ -172,11 +177,11 @@ fn parse_server_response(buffer: &[u8], src_addr: SocketAddr) -> Option<LmsServe
             }
         } else {
             // Try binary parsing for older LMS versions
-            name = format!("LMS at {}", src_addr.ip());
+            name = format!("LMS at {}", src_addr);
         }
         
         Some(LmsServer {
-            ip: src_addr.ip(),
+            ip: src_addr,
             port: LMS_HTTP_PORT,  // Default HTTP port for LMS JSON-RPC API
             name,
             version,
@@ -200,7 +205,7 @@ fn parse_server_response(buffer: &[u8], src_addr: SocketAddr) -> Option<LmsServe
                 debug!("Extracted server name: {}", name);
                 
                 Some(LmsServer {
-                    ip: src_addr.ip(),
+                    ip: src_addr,
                     port: LMS_HTTP_PORT,
                     name,
                     version: None,
@@ -208,17 +213,17 @@ fn parse_server_response(buffer: &[u8], src_addr: SocketAddr) -> Option<LmsServe
             } else {
                 // Fallback if UTF-8 parsing fails
                 Some(LmsServer {
-                    ip: src_addr.ip(),
+                    ip: src_addr,
                     port: LMS_HTTP_PORT,
-                    name: format!("LMS at {}", src_addr.ip()),
+                    name: format!("LMS at {}", src_addr),
                     version: None,
                 })
             }
         } else {
             Some(LmsServer {
-                ip: src_addr.ip(),
+                ip: src_addr,
                 port: LMS_HTTP_PORT,
-                name: format!("LMS at {}", src_addr.ip()),
+                name: format!("LMS at {}", src_addr),
                 version: None,
             })
         }
@@ -247,7 +252,7 @@ fn parse_server_response(buffer: &[u8], src_addr: SocketAddr) -> Option<LmsServe
                             response_str[start_idx..].trim().to_string()
                         }
                     } else {
-                        format!("LMS at {}", src_addr.ip())
+                        format!("LMS at {}", src_addr)
                     }
                 });
             
@@ -255,7 +260,7 @@ fn parse_server_response(buffer: &[u8], src_addr: SocketAddr) -> Option<LmsServe
             let version = extract_server_version(response_str);
             
             Some(LmsServer {
-                ip: src_addr.ip(),
+                ip: src_addr,
                 port: LMS_HTTP_PORT,
                 name,
                 version,
@@ -411,21 +416,25 @@ pub fn normalize_mac_address(mac_str: &str) -> Result<MacAddress, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::runtime::Runtime;
     
     #[test]
     fn test_discover_lms_servers() {
-        // This test will actively try to discover LMS servers
-        match find_local_servers(Some(5)) {
-            Ok(servers) => {
-                println!("Discovered {} LMS servers:", servers.len());
-                for (i, server) in servers.iter().enumerate() {
-                    println!("  {}. {} at {}:{} (version: {:?})", 
-                             i+1, server.name, server.ip, server.port, server.version);
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            // This test will actively try to discover LMS servers
+            match find_local_servers(Some(5)).await {
+                Ok(servers) => {
+                    println!("Discovered {} LMS servers:", servers.len());
+                    for (i, server) in servers.iter().enumerate() {
+                        println!("  {}. {} at {}:{} (version: {:?})", 
+                                 i+1, server.name, server.ip, server.port, server.version);
+                    }
+                },
+                Err(e) => {
+                    println!("Error discovering LMS servers: {}", e);
                 }
-            },
-            Err(e) => {
-                println!("Error discovering LMS servers: {}", e);
             }
-        }
+        });
     }
 }

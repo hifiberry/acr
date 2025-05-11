@@ -1,5 +1,4 @@
 use std::error::Error;
-use tokio;
 
 use crate::players::lms::jsonrps::LmsRpcClient;
 
@@ -108,7 +107,6 @@ pub async fn lms_client_example() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::runtime::Runtime;
     
     #[test]
     fn test_example() {
@@ -118,7 +116,7 @@ mod tests {
             return;
         }
         
-        let rt = Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         match rt.block_on(lms_client_example()) {
             Ok(_) => println!("Example completed successfully"),
             Err(e) => panic!("Example failed: {}", e),

@@ -1,7 +1,6 @@
 use std::error::Error;
 use clap::{Parser, Subcommand};
 use log::info;
-use log::warn;
 
 use acr::players::lms::jsonrps::LmsRpcClient;
 

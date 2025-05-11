@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
-use log::{debug, error, warn};
+use log::{debug, error};
 
 /// The standard JSON-RPC path for Lyrion Music Server
 const JSONRPC_PATH: &str = "/jsonrpc.js";
@@ -38,12 +38,16 @@ struct JsonRpcRequest {
 /// Response structure for LMS JSON-RPC API
 #[derive(Debug, Deserialize)]
 struct JsonRpcResponse {
+    #[allow(dead_code)]
     id: Value,
     #[serde(default)]
     result: Value,
     #[serde(default)]
+    #[allow(dead_code)]
     error: Option<Value>,
+    #[allow(dead_code)]
     method: String,
+    #[allow(dead_code)]
     params: Vec<Value>,
 }
 
@@ -109,12 +113,9 @@ impl LmsRpcClient {
     /// The result field of the response as a JSON Value
     pub async fn request(&mut self, player_id: &str, command: Vec<&str>) -> Result<Value, LmsRpcError> {
         // Convert command string vec to Value vec
-        warn!("Command: {:?}", command);
+        debug!("Command: {:?}", command);
         let command_values: Vec<Value> = command.iter().map(|&s| Value::String(s.to_string())).collect();
 
-        // display the command values
-        warn!("Command values: {:?}", command_values);
-        
         self.request_raw(player_id, command_values).await
     }
     

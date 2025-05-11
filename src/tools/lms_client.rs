@@ -1,16 +1,17 @@
 use std::error::Error;
 use clap::{Parser, Subcommand};
-use log::info;
+use log::{info, warn};
 
 use acr::players::lms::jsonrps::LmsRpcClient;
+use acr::players::lms::lmsserver::find_local_servers;
 
 /// Command line client for interacting with a Lyrion Music Server (LMS)
 #[derive(Parser)]
 #[clap(author, version, about)]
 struct Cli {
     /// LMS server hostname or IP address
-    #[clap(short = 'H', long, default_value = "127.0.0.1")]
-    host: String,
+    #[clap(short = 'H', long)]
+    host: Option<String>,
 
     /// LMS server port
     #[clap(short, long, default_value_t = 9000)]
@@ -28,6 +29,14 @@ struct Cli {
     /// Display extended information with all fields returned by LMS
     #[clap(short = 'e', long)]
     extended: bool,
+    
+    /// Timeout in seconds for auto-discovery (default: 2)
+    #[clap(short = 't', long, default_value_t = 2)]
+    timeout: u64,
+    
+    /// Enable debug logging for troubleshooting
+    #[clap(long)]
+    debug: bool,
     
     #[clap(subcommand)]
     command: Commands,
@@ -110,16 +119,61 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize logger
-    env_logger::init_from_env(
-        env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info")
-    );
-    
-    // Parse command line arguments
+    // Parse command line arguments first to check for debug flag
     let cli = Cli::parse();
     
-    // Create LMS client
-    let mut client = LmsRpcClient::new(&cli.host, cli.port);
+    // Initialize logger with appropriate level based on debug flag
+    if cli.debug {
+        // Set log level to debug when --debug is specified
+        env_logger::Builder::from_env(env_logger::Env::default())
+            .filter_level(log::LevelFilter::Debug)
+            .init();
+        info!("Debug logging enabled");
+    } else {
+        // Use default info level otherwise
+        env_logger::init_from_env(
+            env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info")
+        );
+    }
+    
+    // Create LMS client - use auto-discovery if no host is specified
+    let mut client = match cli.host {
+        Some(host) => {
+            info!("Using LMS server at {}:{}", host, cli.port);
+            LmsRpcClient::new(&host, cli.port)
+        },
+        None => {
+            info!("No server specified, using auto-discovery (timeout: {}s)...", cli.timeout);
+            
+            // Use SSDP discovery to find a server
+            match find_local_servers(Some(cli.timeout)) {
+                Ok(servers) => {
+                    if servers.is_empty() {
+                        return Err("No LMS servers found on the network. Please specify a server with -H/--host.".into());
+                    }
+                    
+                    // Use the first discovered server
+                    let server = &servers[0];
+                    info!("Using auto-discovered LMS server: {} at {}:{}", server.name, server.ip, server.port);
+                    
+                    // Print all discovered servers
+                    if servers.len() > 1 {
+                        info!("Multiple servers found:");
+                        for (i, s) in servers.iter().enumerate() {
+                            info!("  {}. {} at {}:{}", i+1, s.name, s.ip, s.port);
+                        }
+                    }
+                    
+                    // Create a client using the first discovered server
+                    LmsRpcClient::new(&server.ip.to_string(), server.port)
+                },
+                Err(e) => {
+                    warn!("Error during auto-discovery: {}", e);
+                    return Err("Failed to discover LMS servers. Please specify a server with -H/--host.".into());
+                }
+            }
+        }
+    };
     
     // Check if this command requires a player ID
     let requires_player = match cli.command {

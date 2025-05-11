@@ -7,6 +7,7 @@ pub mod stream_helper;
 pub mod musicbrainz;
 pub mod theartistdb;
 pub mod sanitize;
+pub mod macaddress;
 
 use crate::data::artist::Artist;
 

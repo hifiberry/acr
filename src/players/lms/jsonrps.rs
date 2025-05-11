@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use log::{debug, error, warn};
+use crate::helpers::macaddress::normalize_mac_address;
 
 /// The standard JSON-RPC path for Lyrion Music Server
 const JSONRPC_PATH: &str = "/jsonrpc.js";
@@ -603,23 +604,12 @@ impl LmsRpcClient {
     /// Check if a specific MAC address is connected to this LMS server
     /// If no MAC address is provided, it will check all local interfaces
     pub async fn is_connected(&mut self, mac_addr: Option<&str>) -> Result<bool, LmsRpcError> {
-        use crate::players::lms::lmsserver::{LmsServer, normalize_mac_address};
         use std::str::FromStr;
         
         // Create a temporary LmsServer instance from our connection details
         let ip = match std::net::IpAddr::from_str(&self.base_url.split("://").nth(1).unwrap_or("").split(':').next().unwrap_or("")) {
             Ok(ip) => ip,
             Err(_) => return Err(LmsRpcError::ServerError("Unable to parse server IP".to_string())),
-        };
-        
-        let server = LmsServer {
-            ip,
-            port: self.base_url.split(':').last()
-                .and_then(|s| s.split('/').next())
-                .and_then(|s| s.parse::<u16>().ok())
-                .unwrap_or(9000),
-            name: "LMS Server".to_string(),
-            version: None,
         };
         
         // Get players to check connections

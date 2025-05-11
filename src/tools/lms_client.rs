@@ -1,6 +1,6 @@
 use std::error::Error;
 use clap::{Parser, Subcommand};
-use log::{info, warn};
+use log::info;
 
 use acr::players::lms::jsonrps::LmsRpcClient;
 
@@ -24,6 +24,10 @@ struct Cli {
     /// Number of items to display in list commands
     #[clap(short, long, default_value_t = 20)]
     limit: u32,
+    
+    /// Display extended information with all fields returned by LMS
+    #[clap(short = 'e', long)]
+    extended: bool,
     
     #[clap(subcommand)]
     command: Commands,
@@ -297,8 +301,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if !results.albums.is_empty() {
                 println!("\nAlbums:");
                 for (i, album) in results.albums.iter().enumerate() {
-                    println!("  {}. {} - {} (id: {})", 
-                             i + 1, album.album, album.artist, album.id);
+                    // Use .as_ref().map_or() to safely handle Option<String> values
+                    let title = album.title.as_ref().map_or("Unknown", |s| s.as_str());
+                    let artist = album.artist.as_ref().map_or("Unknown", |s| s.as_str());
+                    let id = album.id.as_ref().map_or("Unknown", |s| s.as_str());
+                    
+                    println!("  {}. {} - {} (id: {})", i + 1, title, artist, id);
                 }
             }
             
@@ -314,8 +322,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         
         Commands::ListArtists => {
             println!("Listing artists (up to {})", cli.limit);
-            // LMS doesn't have a direct method to list all artists,
-            // so we'll search for "" which returns all content
             
             let results = client.request(&player_id, "artists", 0, cli.limit, vec![]).await?;
             
@@ -337,7 +343,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             }
                         }).unwrap_or("Unknown".to_string());
                         
-                        println!("  {}. {} (id: {})", i + 1, name, id);
+                        if cli.extended {
+                            println!("  {}. Artist: {}", i + 1, name);
+                            println!("     ID: {}", id);
+                            
+                            // Print all other fields in the artist object
+                            for (key, value) in artist.as_object().unwrap().iter() {
+                                // Skip fields we've already handled
+                                if key != "artist" && key != "id" {
+                                    println!("     {}: {}", key, value);
+                                }
+                            }
+                            println!(); // Add a blank line between artists
+                        } else {
+                            println!("  {}. {} (id: {})", i + 1, name, id);
+                        }
                     }
                 }
             } else {
@@ -348,8 +368,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Commands::ListAlbums { artist } => {
             println!("Listing albums for artist ID: {} (up to {})", artist, cli.limit);
             
+            // Request comprehensive tags when extended mode is enabled
+            let tags = if cli.extended {
+                // Request all available metadata from LMS
+                "aAlTYydJKLNogqrtuv" // Comprehensive tag set
+            } else {
+                "al" // Basic album and ID info only
+            };
+            
             // LMS uses artist_id parameter for listing albums by artist
-            let results = client.request(&player_id, "albums", 0, cli.limit, vec![("artist_id", &artist), ("tags", "al")]).await?;
+            let results = client.request(&player_id, "albums", 0, cli.limit, vec![("artist_id", &artist), ("tags", tags)]).await?;
             
             if let Some(albums_array) = results.get("albums_loop") {
                 if let Some(albums) = albums_array.as_array() {
@@ -369,7 +397,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             }
                         }).unwrap_or("Unknown".to_string());
                         
-                        println!("  {}. {} (id: {})", i + 1, title, id);
+                        if cli.extended {
+                            println!("  {}. Album: {}", i + 1, title);
+                            println!("     ID: {}", id);
+                            
+                            // Print ALL fields in the album object, with proper JSON formatting
+                            if let Some(object) = album.as_object() {
+                                for (key, value) in object {
+                                    // Don't skip any fields, we want to show everything in extended mode
+                                    // Format the value according to its type for better readability
+                                    let formatted_value = match value {
+                                        serde_json::Value::String(s) => format!("\"{}\"", s),
+                                        serde_json::Value::Number(_) |
+                                        serde_json::Value::Bool(_) |
+                                        serde_json::Value::Null => value.to_string(),
+                                        serde_json::Value::Array(_) |
+                                        serde_json::Value::Object(_) => serde_json::to_string_pretty(value)
+                                            .unwrap_or_else(|_| value.to_string()),
+                                    };
+                                    
+                                    // For already displayed fields, also show them for consistency
+                                    println!("     {}: {}", key, formatted_value);
+                                }
+                            }
+                            println!(); // Add a blank line between albums
+                        } else {
+                            println!("  {}. {} (id: {})", i + 1, title, id);
+                        }
                     }
                 }
             } else {
@@ -380,8 +434,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Commands::ListTracks { album } => {
             println!("Listing tracks for album ID: {} (up to {})", album, cli.limit);
             
+            // Request comprehensive tags when extended mode is enabled
+            let tags = if cli.extended {
+                // Request all available track metadata from LMS
+                "acdeitloquyJKNrs" // Comprehensive tag set including artist, album, duration, etc.
+            } else {
+                "at" // Basic title and ID info only
+            };
+            
             // LMS uses album_id parameter for listing tracks by album
-            let results = client.request(&player_id, "titles", 0, cli.limit, vec![("album_id", &album), ("tags", "at")]).await?;
+            let results = client.request(&player_id, "titles", 0, cli.limit, vec![("album_id", &album), ("tags", tags)]).await?;
             
             if let Some(tracks_array) = results.get("titles_loop") {
                 if let Some(tracks) = tracks_array.as_array() {
@@ -403,7 +465,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         
                         let track_num = track.get("tracknum").and_then(|n| n.as_i64()).unwrap_or(0);
                         
-                        println!("  {}. {} (track #{}, id: {})", i + 1, title, track_num, id);
+                        if cli.extended {
+                            println!("  {}. Title: {}", i + 1, title);
+                            println!("     ID: {}", id);
+                            println!("     Track #: {}", track_num);
+                            
+                            // Print ALL fields in the track object, with proper JSON formatting
+                            if let Some(object) = track.as_object() {
+                                for (key, value) in object {
+                                    // Format the value according to its type for better readability
+                                    let formatted_value = match value {
+                                        serde_json::Value::String(s) => format!("\"{}\"", s),
+                                        serde_json::Value::Number(_) |
+                                        serde_json::Value::Bool(_) |
+                                        serde_json::Value::Null => value.to_string(),
+                                        serde_json::Value::Array(_) |
+                                        serde_json::Value::Object(_) => serde_json::to_string_pretty(value)
+                                            .unwrap_or_else(|_| value.to_string()),
+                                    };
+                                    
+                                    // For already displayed fields, also show them for consistency
+                                    println!("     {}: {}", key, formatted_value);
+                                }
+                            }
+                            println!(); // Add a blank line between tracks
+                        } else {
+                            println!("  {}. {} (track #{}, id: {})", i + 1, title, track_num, id);
+                        }
                     }
                 }
             } else {

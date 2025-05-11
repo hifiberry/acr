@@ -416,6 +416,201 @@ impl LmsRpcClient {
     pub async fn clear_playlist(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
         self.request(player_id, "playlist", 0, 0, vec![("clear", "")]).await
     }
+
+    /// Get albums with support for all tagged parameters
+    /// 
+    /// # Arguments
+    /// * `player_id` - MAC address of player or "0" for server-level commands
+    /// * `start` - Start index for pagination (0-based)
+    /// * `items_per_response` - Number of items to return per response
+    /// * `params` - Optional parameters to filter and customize the album response
+    /// 
+    /// # Supported Parameters
+    /// * `search` - Search substring (case insensitive)
+    /// * `genre_id` - Genre ID to filter albums, can be comma-separated list
+    /// * `artist_id` - Artist ID to filter albums 
+    /// * `track_id` - Track ID to get the album of a specific track
+    /// * `album_id` - Album ID or comma-separated list of album IDs
+    /// * `role_id` - Contributor role ID, comma-separated list of role IDs or tokens
+    /// * `library_id` - Virtual library ID to filter albums
+    /// * `year` - Year to filter albums
+    /// * `compilation` - Filter by compilation status (1=yes, 0=no)
+    /// * `sort` - Sort order: album, new, changed, artflow, artistalbum, yearalbum, yearartistalbum, random
+    /// * `tags` - Determines which tags are returned (see LMS API docs)
+    ///
+    /// # Returns
+    /// The result field of the response as a JSON Value containing album information
+    pub async fn get_albums(&mut self, player_id: &str, start: u32, items_per_response: u32, 
+                           params: Vec<(&str, &str)>) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "albums", start, items_per_response, params).await
+    }
+    
+    /// Get albums with detailed information using default tags
+    pub async fn get_albums_with_details(&mut self, player_id: &str, start: u32, items_per_response: u32) 
+        -> Result<Vec<Album>, LmsRpcError> {
+        // Use comprehensive tags to get detailed album information
+        // l=album name, y=year, j=artwork track id, t=title, i=disc number,
+        // q=disccount, w=compilation, a=artist, S=artist_id, s=textkey
+        let result = self.get_albums(player_id, start, items_per_response, vec![
+            ("tags", "lyjtiaqwSs")
+        ]).await?;
+        
+        match result.get("albums_loop") {
+            Some(albums) => {
+                serde_json::from_value::<Vec<Album>>(albums.clone())
+                    .map_err(|e| LmsRpcError::ParseError(format!("Failed to parse albums: {}", e)))
+            },
+            None => Ok(Vec::new()), // No albums found
+        }
+    }
+
+    /// Search for albums with a specific query
+    pub async fn search_albums(&mut self, player_id: &str, query: &str, start: u32, items_per_response: u32) 
+        -> Result<Vec<Album>, LmsRpcError> {
+        let result = self.get_albums(player_id, start, items_per_response, vec![
+            ("search", query),
+            ("tags", "lyjtiaqwSs")
+        ]).await?;
+        
+        match result.get("albums_loop") {
+            Some(albums) => {
+                serde_json::from_value::<Vec<Album>>(albums.clone())
+                    .map_err(|e| LmsRpcError::ParseError(format!("Failed to parse albums: {}", e)))
+            },
+            None => Ok(Vec::new()), // No albums found
+        }
+    }
+    
+    /// Get albums by a specific artist
+    pub async fn get_artist_albums(&mut self, player_id: &str, artist_id: &str, start: u32, items_per_response: u32) 
+        -> Result<Vec<Album>, LmsRpcError> {
+        let result = self.get_albums(player_id, start, items_per_response, vec![
+            ("artist_id", artist_id),
+            ("tags", "lyjtiaqwSs")
+        ]).await?;
+        
+        match result.get("albums_loop") {
+            Some(albums) => {
+                serde_json::from_value::<Vec<Album>>(albums.clone())
+                    .map_err(|e| LmsRpcError::ParseError(format!("Failed to parse albums: {}", e)))
+            },
+            None => Ok(Vec::new()), // No albums found
+        }
+    }
+
+    /// Get albums by genre
+    pub async fn get_genre_albums(&mut self, player_id: &str, genre_id: &str, start: u32, items_per_response: u32) 
+        -> Result<Vec<Album>, LmsRpcError> {
+        let result = self.get_albums(player_id, start, items_per_response, vec![
+            ("genre_id", genre_id),
+            ("tags", "lyjtiaqwSs")
+        ]).await?;
+        
+        match result.get("albums_loop") {
+            Some(albums) => {
+                serde_json::from_value::<Vec<Album>>(albums.clone())
+                    .map_err(|e| LmsRpcError::ParseError(format!("Failed to parse albums: {}", e)))
+            },
+            None => Ok(Vec::new()), // No albums found
+        }
+    }
+
+    /// Get albums with all available details using the complete set of tagged parameters
+    /// 
+    /// # Arguments
+    /// * `player_id` - MAC address of player or "0" for server-level commands
+    /// * `start` - Start index for pagination (0-based)
+    /// * `items_per_response` - Number of items to return per response
+    /// * `sort` - Optional sort method (album, new, random, etc.)
+    /// * `search` - Optional search query
+    /// * `artist_id` - Optional artist ID filter
+    /// * `genre_id` - Optional genre ID filter
+    /// 
+    /// # Returns
+    /// Vector of Album structs with comprehensive details
+    pub async fn get_albums_with_full_details(
+        &mut self, 
+        player_id: &str, 
+        start: u32, 
+        items_per_response: u32,
+        sort: Option<&str>,
+        search: Option<&str>,
+        artist_id: Option<&str>,
+        genre_id: Option<&str>
+    ) -> Result<Vec<Album>, LmsRpcError> {
+        // Set up base parameters
+        let mut params = vec![
+            ("tags", "aCdleJKoOPy"), // Request album details including artwork, year, genre
+        ];
+        
+        // Add optional parameters
+        if let Some(sort_field) = sort {
+            params.push(("sort", sort_field));
+        }
+        
+        if let Some(search_query) = search {
+            params.push(("search", search_query));
+        }
+        
+        if let Some(artist) = artist_id {
+            params.push(("artist_id", artist));
+        }
+        
+        if let Some(genre) = genre_id {
+            params.push(("genre_id", genre));
+        }
+        
+        // Convert params to &str tuples using a different approach that avoids str_as_str
+        let param_refs: Vec<(&str, &str)> = params
+            .into_iter()
+            .map(|(k, v)| (k, v))
+            .collect();
+        
+        let result = self.request(player_id, "albums", start, items_per_response, param_refs).await?;
+        
+        // Extract the albums array
+        match result.get("albums_loop") {
+            Some(albums_array) => {
+                match serde_json::from_value::<Vec<Album>>(albums_array.clone()) {
+                    Ok(albums) => Ok(albums),
+                    Err(e) => Err(LmsRpcError::ParseError(format!("Failed to parse albums: {}", e))),
+                }
+            },
+            None => Ok(Vec::new()), // No albums available
+        }
+    }
+    
+    /// Get details of a specific album by ID
+    pub async fn get_album_by_id(&mut self, player_id: &str, album_id: &str) -> Result<Option<Album>, LmsRpcError> {
+        // Request a single album with the specified ID
+        let result = self.request(
+            player_id, 
+            "albums", 
+            0, 
+            1, 
+            vec![
+                ("album_id", album_id),
+                ("tags", "aCdleJKoOPsy")  // Request full album details
+            ]
+        ).await?;
+        
+        // Extract the album information
+        match result.get("albums_loop") {
+            Some(albums_array) => {
+                match serde_json::from_value::<Vec<Album>>(albums_array.clone()) {
+                    Ok(mut albums) => {
+                        if albums.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(albums.remove(0)))
+                        }
+                    },
+                    Err(e) => Err(LmsRpcError::ParseError(format!("Failed to parse album: {}", e))),
+                }
+            },
+            None => Ok(None), // Album not found
+        }
+    }
 }
 
 /// Player information
@@ -480,14 +675,16 @@ pub struct Track {
 }
 
 /// Album information
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Album {
-    pub id: String,
-    pub album: String,
-    #[serde(default)]
-    pub artist: String,
-    #[serde(default)]
-    pub artwork_track_id: Option<String>,
+    pub id: Option<String>,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub artwork_url: Option<String>,
+    pub year: Option<String>,
+    pub genres: Option<String>,
+    pub added_time: Option<String>,
+    // Add other fields as needed
 }
 
 /// Artist information

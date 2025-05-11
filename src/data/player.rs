@@ -23,6 +23,9 @@ pub enum PlaybackState {
     /// Player process has been killed or crashed
     #[serde(rename = "killed")]
     Killed,
+    /// Player is disconnected or not available
+    #[serde(rename = "disconnected")]
+    Disconnected,
     /// Player state cannot be determined
     #[serde(rename = "unknown")]
     Unknown,
@@ -42,6 +45,7 @@ impl std::fmt::Display for PlaybackState {
             PlaybackState::Paused => write!(f, "paused"),
             PlaybackState::Stopped => write!(f, "stopped"),
             PlaybackState::Killed => write!(f, "killed"),
+            PlaybackState::Disconnected => write!(f, "disconnected"),
             PlaybackState::Unknown => write!(f, "unknown"),
         }
     }

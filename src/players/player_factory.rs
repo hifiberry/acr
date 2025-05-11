@@ -1,4 +1,4 @@
-use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController};
+use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController};
 use serde_json::Value;
 use std::error::Error;
 use std::fmt;
@@ -116,6 +116,11 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                 let player = LibrespotPlayerController::with_config(event_source, process_name, reopen);
                 Ok(Box::new(player))
             },
+            "lms" => {
+                // Create LMSAudioController with config
+                let player = LMSAudioController::new(config_obj.clone());
+                Ok(Box::new(player))
+            },
             "null" => {
                 // Create NullPlayerController
                 let player = NullPlayerController::new();
@@ -172,6 +177,14 @@ pub fn sample_json_config() -> String {
                 "event_pipe": "/var/run/librespot/events_pipe",
                 "process_name": "/usr/bin/librespot",
                 "reopen_event_pipe": true,
+                "enable": true
+            }
+        },
+        {
+            "lms": {
+                "server": null,
+                "port": 9000,
+                "autodiscovery": true,
                 "enable": true
             }
         },

@@ -69,6 +69,17 @@
                 "event_pipe": "tcp://headphone:12102",
                 "reopen_event_pipe": true
             }
+        },
+        {
+            "lms": {
+                "enable": false,
+                "server": null,
+                "port": 9000,
+                "autodiscovery": true,
+                "player_name": null,
+                "player_mac": null,
+                "reconnection_interval": 30
+            }
         }
     ]
 }

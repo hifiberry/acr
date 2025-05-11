@@ -6,6 +6,9 @@ use acr::helpers::attributecache::AttributeCache;
 use acr::helpers::imagecache::ImageCache;
 use acr::helpers::musicbrainz;
 use acr::helpers::theartistdb;
+// Import LMS modules to ensure they're included in the build
+#[allow(unused_imports)]
+use acr::players::lms::lmsaudio::LMSAudioController;
 use std::thread;
 use std::time::Duration;
 use std::io::{self, Read};
@@ -16,14 +19,34 @@ use std::sync::Arc;
 use ctrlc;
 use std::fs;
 use std::path::Path;
+use std::env;
+// Import global Tokio runtime functions from lib.rs
+use acr::{initialize_tokio_runtime, get_tokio_runtime};
 
 fn main() {
-    // Initialize the logger with default configuration
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp_secs()
-        .init();
+    // Initialize the Tokio runtime early
+    initialize_tokio_runtime();
+    
+    // Parse command line arguments
+    let args: Vec<String> = env::args().collect();
+    let debug_mode = args.iter().any(|arg| arg == "--debug");
+    
+    // Initialize the logger with the appropriate level based on debug flag
+    if debug_mode {
+        env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
+            .format_timestamp_secs()
+            .init();
+        info!("Debug mode enabled");
+    } else {
+        env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+            .format_timestamp_secs()
+            .init();
+    }
 
     println!("AudioControl3 (ACR) Player Controller\n");
+    if debug_mode {
+        println!("Running in debug mode (--debug flag detected)");
+    }
     info!("AudioControl3 (ACR) Player Controller starting");
     
     // Check if acr.json exists in the current directory
@@ -221,12 +244,10 @@ fn main() {
         info!("Keyboard handler thread exiting");
     });
     
-    // Start the API server in a Tokio runtime
+    // Start the API server using the global Tokio runtime
     let controllers_config_clone = controllers_config.clone();
-    // No need to pass the controller around, the API server can just access the singleton
     let _api_thread = thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        rt.block_on(async {
+        get_tokio_runtime().block_on(async {
             // Get a reference to the singleton AudioController for the server
             let controller = AudioController::instance();
             if let Err(e) = server::start_rocket_server(controller, &controllers_config_clone).await {

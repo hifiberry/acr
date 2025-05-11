@@ -11,7 +11,6 @@ use acr::helpers::theartistdb;
 use acr::players::lms::lmsaudio::LMSAudioController;
 use std::thread;
 use std::time::Duration;
-use std::io::{self, Read};
 use log::{debug, info, warn, error};
 use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,10 +42,6 @@ fn main() {
             .init();
     }
 
-    println!("AudioControl3 (ACR) Player Controller\n");
-    if debug_mode {
-        println!("Running in debug mode (--debug flag detected)");
-    }
     info!("AudioControl3 (ACR) Player Controller starting");
     
     // Check if acr.json exists in the current directory
@@ -132,7 +127,7 @@ fn main() {
     
     // Set up Ctrl+C handler
     ctrlc::set_handler(move || {
-        println!("\nReceived Ctrl+C, shutting down...");
+        info!("Received Ctrl+C, shutting down...");
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl+C handler");
     
@@ -161,88 +156,31 @@ fn main() {
     let player: Box<dyn PlayerController + Send + Sync> = Box::new(controller.as_ref().clone());
        
     // Start the player directly through the trait interface
-    // No need to downcast to specific implementation
     if player.start() {
         info!("Player initialized and started successfully");
     } else {
         warn!("Failed to start player");
     }
     
-    // Get initial state information and log it
-    info!("\nInitial player state:");
-    info!("State: {}", player.get_playback_state());
+    // Log initial state information
+    debug!("Initial player state:");
+    debug!("State: {}", player.get_playback_state());
     
     let capabilities = player.get_capabilities();
-    info!("Capabilities:");
+    debug!("Capabilities:");
     for cap in &capabilities {
         debug!("  - {}", cap);
     }
     
-    info!("Loop mode: {}", player.get_loop_mode());
+    debug!("Loop mode: {}", player.get_loop_mode());
     
-    match player.get_song() {
-        Some(song) => info!("Current song: {} by {}", 
+    if let Some(song) = player.get_song() {
+        debug!("Current song: {} by {}", 
             song.title.unwrap_or_else(|| "Unknown".to_string()), 
-            song.artist.unwrap_or_else(|| "Unknown".to_string())),
-        None => info!("No song currently playing"),
+            song.artist.unwrap_or_else(|| "Unknown".to_string()));
+    } else {
+        debug!("No song currently playing");
     }
-    
-    // Start a thread to monitor keypresses
-    let keyboard_running = running.clone();
-    // No need to clone the controller, just get it from the singleton as needed
-    thread::spawn(move || {
-        println!("Keyboard controls active:");
-        println!("  Space: Play/Pause");
-        println!("  n: Next track");
-        println!("  p: Previous track");
-        println!("  ?: Display state of all players");
-        println!("  Ctrl+C: Exit");
-        
-        // Set up terminal for raw input mode if possible
-        let mut stdin = io::stdin();
-        
-        // Buffer for reading single bytes
-        let mut buffer = [0; 1];
-        
-        while keyboard_running.load(Ordering::SeqCst) {
-            // Try to read a single keystroke
-            if stdin.read_exact(&mut buffer).is_ok() {
-                // Get a fresh reference to the AudioController singleton for each command
-                let controller = AudioController::instance();
-                
-                match buffer[0] {
-                    // Space key (32 is ASCII for space)
-                    32 => {
-                        info!("Space key pressed: toggling play/pause");
-                        controller.send_command(PlayerCommand::PlayPause);
-                    },
-                    // 'n' key
-                    110 | 78 => {  // ASCII for 'n' or 'N'
-                        info!("'n' key pressed: next track");
-                        controller.send_command(PlayerCommand::Next);
-                    },
-                    // 'p' key
-                    112 | 80 => {  // ASCII for 'p' or 'P'
-                        info!("'p' key pressed: previous track");
-                        controller.send_command(PlayerCommand::Previous);
-                    },
-                    // '?' key
-                    63 => {  // ASCII for '?'
-                        info!("'?' key pressed: displaying state of all players");
-                        controller.display_all_player_states();
-                    },
-                    _ => {
-                        // Ignore other keys
-                    }
-                }
-            } else {
-                // If read failed, sleep a bit to avoid tight looping
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
-        
-        info!("Keyboard handler thread exiting");
-    });
     
     // Start the API server using the global Tokio runtime
     let controllers_config_clone = controllers_config.clone();

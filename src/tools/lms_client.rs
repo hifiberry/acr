@@ -1,6 +1,6 @@
 use std::error::Error;
 use clap::{Parser, Subcommand};
-use log::info;
+use log::{info, warn};
 
 use acr::players::lms::jsonrps::LmsRpcClient;
 
@@ -79,13 +79,13 @@ enum Commands {
     
     /// List albums by a specific artist
     ListAlbums {
-        /// Artist ID or name
+        /// Artist ID
         artist: String,
     },
     
     /// List tracks from a specific album
     ListTracks {
-        /// Album ID or name
+        /// Album ID
         album: String,
     },
     
@@ -316,7 +316,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             println!("Listing artists (up to {})", cli.limit);
             // LMS doesn't have a direct method to list all artists,
             // so we'll search for "" which returns all content
-            let results = client.request(&player_id, vec!["artists", "0", &cli.limit.to_string()]).await?;
+            
+            let results = client.request(&player_id, "artists", 0, cli.limit, vec![]).await?;
             
             if let Some(artists_array) = results.get("artists_loop") {
                 if let Some(artists) = artists_array.as_array() {
@@ -345,16 +346,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         
         Commands::ListAlbums { artist } => {
-            println!("Listing albums for artist: {} (up to {})", artist, cli.limit);
+            println!("Listing albums for artist ID: {} (up to {})", artist, cli.limit);
             
-            // Try to determine if the input is an artist ID or a name
-            let is_id = artist.parse::<i32>().is_ok();
-            
-            let results = if is_id {
-                client.request(&player_id, vec!["albums", "0", &cli.limit.to_string(), "artist_id:", &artist, "tags:al"]).await?
-            } else {
-                client.request(&player_id, vec!["albums", "0", &cli.limit.to_string(), "artist:", &artist, "tags:al"]).await?
-            };
+            // LMS uses artist_id parameter for listing albums by artist
+            let results = client.request(&player_id, "albums", 0, cli.limit, vec![("artist_id", &artist), ("tags", "al")]).await?;
             
             if let Some(albums_array) = results.get("albums_loop") {
                 if let Some(albums) = albums_array.as_array() {
@@ -378,21 +373,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             } else {
-                println!("No albums found for artist '{}'", artist);
+                println!("No albums found for artist ID '{}'", artist);
             }
         },
         
         Commands::ListTracks { album } => {
-            println!("Listing tracks for album: {} (up to {})", album, cli.limit);
+            println!("Listing tracks for album ID: {} (up to {})", album, cli.limit);
             
-            // Try to determine if the input is an album ID or a name
-            let is_id = album.parse::<i32>().is_ok();
-            
-            let results = if is_id {
-                client.request(&player_id, vec!["titles", "0", &cli.limit.to_string(), "album_id:", &album, "tags:at"]).await?
-            } else {
-                client.request(&player_id, vec!["titles", "0", &cli.limit.to_string(), "album:", &album, "tags:at"]).await?
-            };
+            // LMS uses album_id parameter for listing tracks by album
+            let results = client.request(&player_id, "titles", 0, cli.limit, vec![("album_id", &album), ("tags", "at")]).await?;
             
             if let Some(tracks_array) = results.get("titles_loop") {
                 if let Some(tracks) = tracks_array.as_array() {
@@ -418,7 +407,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             } else {
-                println!("No tracks found for album '{}'", album);
+                println!("No tracks found for album ID '{}'", album);
             }
         },
         

@@ -44,6 +44,8 @@ thiserror = "1.0"
 mac_address = "1.1.8"
 get_if_addrs = "0.5.3"
 hex = "0.4.3"
+# For async trait implementations
+async-trait = "0.1.77"
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]

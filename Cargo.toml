@@ -38,6 +38,9 @@ strsim = "0.11.1"
 moka = { version = "0.12", features = ["sync"] }
 # For WebSocket support
 rocket_ws = "0.1.0"
+# For command line argument parsing
+clap = { version = "4.5", features = ["derive"] }
+thiserror = "1.0"
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
@@ -51,3 +54,7 @@ named_pipe = "0.4"
 [[bin]]
 name = "dumpcache"
 path = "src/tools/dumpcache.rs"
+
+[[bin]]
+name = "lms_client"
+path = "src/tools/lms_client.rs"

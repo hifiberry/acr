@@ -50,6 +50,14 @@ enum Commands {
     /// Show current player status
     Status,
     
+    /// Check if this device is connected to the server
+    /// Uses MAC addresses of local network interfaces
+    IsConnected {
+        /// Optional MAC address to check (in format XX:XX:XX:XX:XX:XX)
+        #[clap(long)]
+        mac: Option<String>,
+    },
+    
     /// Play the current track
     Play,
     
@@ -117,8 +125,7 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     // Parse command line arguments first to check for debug flag
     let cli = Cli::parse();
     
@@ -190,7 +197,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Some(id) => id,
             None => {
                 // Get all players
-                match client.get_players().await {
+                match client.get_players() {
                     Ok(players) => {
                         if players.is_empty() {
                             if requires_player {
@@ -230,7 +237,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Execute the appropriate command
     match cli.command {
         Commands::ListPlayers => {
-            let players = client.get_players().await?;
+            let players = client.get_players()?;
             println!("Available players ({}):", players.len());
             
             for (i, player) in players.iter().enumerate() {
@@ -242,7 +249,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         
         Commands::Status => {
-            let status = client.get_player_status(&player_id).await?;
+            let status = client.get_player_status(&player_id)?;
             
             println!("Player: {}", player_id);
             println!("State: {}", status.mode);
@@ -287,54 +294,66 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         },
         
+        Commands::IsConnected { mac } => {
+            println!("Checking connection status...");
+            match client.is_connected(mac.as_deref()) {
+                Ok(is_connected) => {
+                    println!("Connection status: {}", if is_connected { "Connected" } else { "Not connected" });
+                },
+                Err(e) => {
+                    return Err(format!("Failed to check connection status: {}", e).into());
+                }
+            }
+        },
+        
         Commands::Play => {
             println!("Playing");
-            client.play(&player_id).await?;
+            client.play(&player_id)?;
         },
         
         Commands::Pause => {
             println!("Pausing");
-            client.pause(&player_id).await?;
+            client.pause(&player_id)?;
         },
         
         Commands::Resume => {
             println!("Resuming");
-            client.play(&player_id).await?;
+            client.play(&player_id)?;
         },
         
         Commands::Stop => {
             println!("Stopping");
-            client.stop(&player_id).await?;
+            client.stop(&player_id)?;
         },
         
         Commands::Next => {
             println!("Skipping to next track");
-            client.next(&player_id).await?;
+            client.next(&player_id)?;
         },
         
         Commands::Previous => {
             println!("Skipping to previous track");
-            client.previous(&player_id).await?;
+            client.previous(&player_id)?;
         },
         
         Commands::Volume { level } => {
             println!("Setting volume to: {}", level);
-            client.set_volume(&player_id, level).await?;
+            client.set_volume(&player_id, level)?;
         },
         
         Commands::Mute => {
             println!("Muting");
-            client.set_mute(&player_id, true).await?;
+            client.set_mute(&player_id, true)?;
         },
         
         Commands::Unmute => {
             println!("Unmuting");
-            client.set_mute(&player_id, false).await?;
+            client.set_mute(&player_id, false)?;
         },
         
         Commands::Search { query } => {
             println!("Searching for: {}", query);
-            let results = client.search(&player_id, &query, cli.limit).await?;
+            let results = client.search(&player_id, &query, cli.limit)?;
             
             if results.tracks.is_empty() && 
                results.albums.is_empty() && 
@@ -377,7 +396,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Commands::ListArtists => {
             println!("Listing artists (up to {})", cli.limit);
             
-            let results = client.request(&player_id, "artists", 0, cli.limit, vec![]).await?;
+            let results = client.request(&player_id, "artists", 0, cli.limit, vec![])?;
             
             if let Some(artists_array) = results.get("artists_loop") {
                 if let Some(artists) = artists_array.as_array() {
@@ -431,7 +450,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             };
             
             // LMS uses artist_id parameter for listing albums by artist
-            let results = client.request(&player_id, "albums", 0, cli.limit, vec![("artist_id", &artist), ("tags", tags)]).await?;
+            let results = client.request(&player_id, "albums", 0, cli.limit, vec![("artist_id", &artist), ("tags", tags)])?;
             
             if let Some(albums_array) = results.get("albums_loop") {
                 if let Some(albums) = albums_array.as_array() {
@@ -497,7 +516,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             };
             
             // LMS uses album_id parameter for listing tracks by album
-            let results = client.request(&player_id, "titles", 0, cli.limit, vec![("album_id", &album), ("tags", tags)]).await?;
+            let results = client.request(&player_id, "titles", 0, cli.limit, vec![("album_id", &album), ("tags", tags)])?;
             
             if let Some(tracks_array) = results.get("titles_loop") {
                 if let Some(tracks) = tracks_array.as_array() {
@@ -562,7 +581,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             };
             
             println!("Setting repeat mode to {} ({})", mode, mode_name);
-            client.set_repeat(&player_id, mode).await?;
+            client.set_repeat(&player_id, mode)?;
         },
         
         Commands::Shuffle { mode } => {
@@ -574,7 +593,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             };
             
             println!("Setting shuffle mode to {} ({})", mode, mode_name);
-            client.set_shuffle(&player_id, mode).await?;
+            client.set_shuffle(&player_id, mode)?;
         },
     }
     

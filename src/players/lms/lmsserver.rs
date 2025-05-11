@@ -3,8 +3,10 @@ use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::Duration;
 use log::{debug, info, warn};
 use std::io;
+use get_if_addrs::get_if_addrs;
+use mac_address::MacAddress;
 
-use crate::players::lms::jsonrps::LmsRpcClient;
+use crate::players::lms::jsonrps::{LmsRpcClient, Player};
 
 /// Default timeout for server discovery in seconds
 const DEFAULT_DISCOVERY_TIMEOUT: u64 = 2;
@@ -322,6 +324,88 @@ fn extract_server_version(message: &str) -> Option<String> {
     }
     
     None
+}
+
+/// Get all MAC addresses from local network interfaces
+///
+/// # Returns
+/// A vector of MAC addresses for all network interfaces
+pub fn get_local_mac_addresses() -> io::Result<Vec<MacAddress>> {
+    let mut addresses = Vec::new();
+    
+    match get_if_addrs() {
+        Ok(if_addrs) => {
+            for interface in if_addrs {
+                // Try to get MAC address from interface name using the mac_address crate
+                if let Ok(Some(mac)) = mac_address::mac_address_by_name(&interface.name) {
+                    debug!("Found MAC address {} for interface {}", 
+                           mac, interface.name);
+                    addresses.push(mac);
+                } else {
+                    debug!("No MAC address found for interface {}", interface.name);
+                }
+            }
+            
+            if addresses.is_empty() {
+                // Fallback to getting all MAC addresses if the above method didn't work
+                if let Ok(all_macs) = mac_address::get_mac_address() {
+                    if let Some(mac) = all_macs {
+                        debug!("Found MAC address using fallback method: {}", mac);
+                        addresses.push(mac);
+                    }
+                }
+            }
+            
+            if addresses.is_empty() {
+                warn!("No MAC addresses found for local interfaces");
+            } else {
+                debug!("Found {} local MAC addresses", addresses.len());
+            }
+            
+            Ok(addresses)
+        },
+        Err(e) => {
+            Err(io::Error::new(io::ErrorKind::Other, 
+                               format!("Failed to get network interfaces: {}", e)))
+        }
+    }
+}
+
+/// Normalize MAC address string to MacAddress type
+/// 
+/// # Arguments
+/// * `mac_str` - MAC address string in various formats: 00:04:20:ab:cd:ef, 00-04-20-AB-CD-EF, etc.
+///
+/// # Returns
+/// A MacAddress instance
+pub fn normalize_mac_address(mac_str: &str) -> Result<MacAddress, String> {
+    // Remove any separators and spaces
+    let clean_mac = mac_str
+        .replace(':', "")
+        .replace('-', "")
+        .replace('.', "")
+        .replace(' ', "");
+    
+    if clean_mac.len() != 12 {
+        return Err(format!("Invalid MAC address length: {}", mac_str));
+    }
+    
+    // Parse as hex bytes
+    let bytes = match hex::decode(clean_mac) {
+        Ok(bytes) => bytes,
+        Err(e) => return Err(format!("Invalid hex in MAC address {}: {}", mac_str, e))
+    };
+    
+    if bytes.len() != 6 {
+        return Err(format!("MAC address didn't convert to 6 bytes: {}", mac_str));
+    }
+    
+    // Create MacAddress using a fixed-size array of 6 bytes
+    let mut mac_bytes = [0u8; 6];
+    mac_bytes.copy_from_slice(&bytes[0..6]);
+    
+    // MacAddress::new doesn't return a Result, it just returns MacAddress
+    Ok(MacAddress::new(mac_bytes))
 }
 
 #[cfg(test)]

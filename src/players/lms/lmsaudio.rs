@@ -193,6 +193,35 @@ impl LMSAudioController {
             }
         };
         
+        // First check if we already have an active client connection
+        if let Ok(client_guard) = self.client.read() {
+            if let Some(client) = client_guard.as_ref() {
+                // Attempt a simple operation to verify the connection is still alive
+                let mut client_clone = client.clone();
+                debug!("Testing existing LMS connection");
+                
+                // Simple ping test to check if server is reachable
+                match client_clone.get_players().await {
+                    Ok(_) => {
+                        debug!("Existing LMS connection is still active");
+                        
+                        // If we have a configured player and previously succeeded to connect,
+                        // we consider it still connected without checking the MAC addresses again
+                        if self.is_connected.load(Ordering::SeqCst) {
+                            return true;
+                        }
+                        
+                        // If we made it here, the server is reachable but we need to verify 
+                        // the player MAC address - fall through to the MAC check logic below
+                    },
+                    Err(e) => {
+                        debug!("Existing LMS connection failed: {}", e);
+                        // Connection failed, we'll need to try rediscovery
+                    }
+                }
+            }
+        }
+
         // If we have a server configured, try direct connection
         if let Some(server) = &config.server {
             debug!("Checking connection to configured LMS server: {}", server);
@@ -234,6 +263,12 @@ impl LMSAudioController {
                                     info!("Found matching player: {} ({:?})", 
                                          player.name, 
                                          player_mac);
+                                    
+                                    // Store the client for future use
+                                    if let Ok(mut client_lock) = self.client.write() {
+                                        *client_lock = Some(client.clone());
+                                    }
+                                    
                                     return true;
                                 }
                             },
@@ -303,6 +338,18 @@ impl LMSAudioController {
                                                      player.name,
                                                      player_mac,
                                                      server.name);
+                                                
+                                                // Store the client and update configuration with discovered server
+                                                if let Ok(mut client_lock) = self.client.write() {
+                                                    *client_lock = Some(client.clone());
+                                                }
+                                                
+                                                // Update configuration with discovered server
+                                                if let Ok(mut cfg_lock) = self.config.write() {
+                                                    cfg_lock.server = Some(server.ip.to_string());
+                                                    cfg_lock.port = server.port;
+                                                }
+                                                
                                                 return true;
                                             }
                                         },

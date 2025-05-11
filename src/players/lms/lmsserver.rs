@@ -9,7 +9,6 @@ use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
 use crate::players::lms::jsonrps::LmsRpcClient;
-use crate::helpers::macaddress::normalize_mac_address;
 
 /// Default timeout for server discovery in seconds
 const DEFAULT_DISCOVERY_TIMEOUT: u64 = 2;

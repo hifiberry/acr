@@ -1,5 +1,4 @@
 use mac_address::MacAddress;
-use log::debug;
 
 /// Normalize MAC address string to MacAddress type
 /// 

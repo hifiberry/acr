@@ -13,6 +13,8 @@ This document describes the REST API endpoints available in the Audio Control RE
 
 The ACR system uses an event-based architecture to communicate state changes between components. Events can be monitored via WebSockets or server-sent events (SSE).
 
+For detailed information about WebSocket communication, message formats, and event types, see the [WebSocket API documentation](websocket.md).
+
 ### Player Events
 
 These events are emitted when a player's state changes:

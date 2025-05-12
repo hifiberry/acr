@@ -11,7 +11,7 @@ use crate::data::{LoopMode, PlaybackState, PlayerCapabilitySet, PlayerCommand, S
 use crate::PlayerStateListener;
 use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
-use crate::players::lms::jsonrps::{LmsRpcClient, PlayerStatus};
+use crate::players::lms::jsonrps::LmsRpcClient;
 use crate::players::lms::lmsserver::{find_local_servers, get_local_mac_addresses, set_connected_server};
 use crate::players::lms::lmspplayer::LMSPlayer;
 use crate::helpers::macaddress::normalize_mac_address;
@@ -120,6 +120,9 @@ pub struct LMSAudioController {
     
     /// Current playback position
     current_position: Arc<RwLock<Option<f64>>>,
+    
+    /// Last connected server address
+    last_connected_server: Arc<RwLock<Option<String>>>,
 }
 
 impl LMSAudioController {
@@ -200,6 +203,7 @@ impl LMSAudioController {
         let polling = Arc::new(AtomicBool::new(true));
         let current_song = Arc::new(RwLock::new(None));
         let current_position = Arc::new(RwLock::new(None));
+        let last_connected_server = Arc::new(RwLock::new(None));
         
         // Create a new controller
         let controller = Self {
@@ -212,6 +216,7 @@ impl LMSAudioController {
             polling,
             current_song,
             current_position,
+            last_connected_server,
         };
         
         // Initialize the player with the default configuration
@@ -370,7 +375,7 @@ impl LMSAudioController {
                                             
                                             info!("Found matching player: {} with MAC {} matches configured MAC {}", 
                                                 player.name, player_mac_str, configured_mac);
-                                            
+                                                
                                             // Store the client for future use
                                             if let Ok(mut client_lock) = self.client.write() {
                                                 *client_lock = Some(client.clone());
@@ -389,6 +394,11 @@ impl LMSAudioController {
                                                 debug!("Unable to parse server address: {}", server);
                                             }
                                             
+                                            // Update last connected server
+                                            if let Ok(mut last_server) = self.last_connected_server.write() {
+                                                *last_server = Some(server.clone());
+                                            }
+                                            
                                             return true;
                                         }
                                     }
@@ -399,24 +409,6 @@ impl LMSAudioController {
                                 },
                                 Err(e) => {
                                     debug!("Failed to normalize player MAC {}: {}", player.playerid, e);
-                                }
-                            }
-                        }
-                        
-                        // Add virtual MAC detection information
-                        debug!("No player found with configured MACs: {:?}", mac_strings);
-                        debug!("Checking if configured MACs are virtual...");
-
-                        // Use our new function to detect virtual MACs
-                        for mac_str in &mac_strings {
-                            if let Ok(mac) = normalize_mac_address(mac_str) {
-                                match crate::helpers::macaddress::is_virtual_mac(&mac) {
-                                    Some(provider) => {
-                                        debug!("MAC {} is virtual: {:?}", mac_str, provider);
-                                    },
-                                    None => {
-                                        debug!("MAC {} appears to be physical", mac_str);
-                                    }
                                 }
                             }
                         }
@@ -488,6 +480,11 @@ impl LMSAudioController {
                                         set_connected_server(Some(&ip_addr));
                                     } else {
                                         debug!("Unable to parse server address: {}", server);
+                                    }
+                                    
+                                    // Update last connected server
+                                    if let Ok(mut last_server) = self.last_connected_server.write() {
+                                        *last_server = Some(server.clone());
                                     }
                                     
                                     return true;
@@ -587,6 +584,11 @@ impl LMSAudioController {
                                                     // Update the connected server registry
                                                     set_connected_server(Some(&server.ip));
                                                     
+                                                    // Update last connected server
+                                                    if let Ok(mut last_server) = self.last_connected_server.write() {
+                                                        *last_server = Some(server.ip.to_string());
+                                                    }
+                                                    
                                                     // Return immediately when a match is found
                                                     return true;
                                                 }
@@ -648,6 +650,11 @@ impl LMSAudioController {
                                                             
                                                             // Update the connected server registry
                                                             set_connected_server(Some(&server.ip));
+                                                            
+                                                            // Update last connected server
+                                                            if let Ok(mut last_server) = self.last_connected_server.write() {
+                                                                *last_server = Some(server.ip.to_string());
+                                                            }
                                                             
                                                             return true;
                                                         }
@@ -732,6 +739,7 @@ impl LMSAudioController {
                     polling: Arc::new(AtomicBool::new(true)),
                     current_song: Arc::new(RwLock::new(None)),
                     current_position: Arc::new(RwLock::new(None)),
+                    last_connected_server: Arc::new(RwLock::new(None)),
                 };
                 
                 // Check if connection state has changed

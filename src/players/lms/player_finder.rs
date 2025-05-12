@@ -44,7 +44,7 @@ pub fn is_player(server: &str, mac_addresses: Vec<String>) -> bool {
                 // Check against each provided MAC address
                 for mac in &mac_addresses {
                     if mac_equal_ignore_case(&player_mac_str, mac) {
-                        info!("Found matching player: {} with MAC {} on server {}", 
+                        debug!("Found matching player: {} with MAC {} on server {}", 
                             player.name, player_mac_str, server);
                         return true;
                     }

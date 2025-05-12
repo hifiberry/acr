@@ -74,6 +74,7 @@ impl UreqHttpClient {
 impl HttpClient for UreqHttpClient {
     fn post_json_value(&self, url: &str, payload: Value) -> Result<Value, HttpClientError> {
         debug!("POST request to {}", url);
+        debug!("POST payload: {}", payload);
         
         // First serialize the JSON value to a string
         let json_string = match serde_json::to_string(&payload) {
@@ -93,6 +94,7 @@ impl HttpClient for UreqHttpClient {
             Ok(resp) => resp,
             Err(e) => {
                 error!("POST request failed: {}", e);
+                error!("POST payload was: {}", json_string);
                 return Err(HttpClientError::RequestError(e.to_string()));
             }
         };

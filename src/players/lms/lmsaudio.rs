@@ -595,14 +595,49 @@ impl PlayerController for LMSAudioController {
     }
     
     fn get_playback_state(&self) -> PlaybackState {
-        // Use the cached connection state instead of checking each time
+        // First check if player is connected
         if !self.is_connected.load(Ordering::SeqCst) {
             return PlaybackState::Disconnected;
         }
         
-        // If connected but state is unknown, return Stopped as default
-        // This can be enhanced later to fetch the actual state from the LMS server
-        PlaybackState::Stopped
+        // Get a reference to the player if available
+        let player_guard = match self.player.read() {
+            Ok(guard) => guard,
+            Err(e) => {
+                warn!("Failed to acquire read lock on LMS player: {}", e);
+                return PlaybackState::Unknown;
+            }
+        };
+        
+        if player_guard.is_none() {
+            return PlaybackState::Unknown;
+        }
+        
+        // Get the player instance
+        let player = player_guard.as_ref().unwrap();
+        
+        // Use the global Tokio runtime to run the async get_mode() method
+        let rt = get_tokio_runtime();
+        
+        // Call the get_mode method to retrieve the current playback mode
+        match rt.block_on(player.get_mode()) {
+            Ok(mode) => {
+                // Convert the mode string to PlaybackState enum
+                match mode.as_str() {
+                    "play" => PlaybackState::Playing,
+                    "pause" => PlaybackState::Paused,
+                    "stop" => PlaybackState::Stopped,
+                    _ => {
+                        debug!("Unknown LMS mode: {}", mode);
+                        PlaybackState::Unknown
+                    }
+                }
+            },
+            Err(e) => {
+                debug!("Failed to get LMS player mode: {}", e);
+                PlaybackState::Unknown
+            }
+        }
     }
     
     fn get_position(&self) -> Option<f64> {

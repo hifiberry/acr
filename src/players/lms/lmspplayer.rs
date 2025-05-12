@@ -346,4 +346,22 @@ impl LMSPlayer {
             Err(e) => Err(format!("Failed to get current position: {}", e)),
         }
     }
+
+    /// Get the current mode (play, stop, or pause) of the player
+    /// 
+    /// # Returns
+    /// The current mode as a string if available, or an error
+    pub async fn get_mode(&self) -> Result<String, String> {
+        let mut client_clone = (*self.client).clone();
+        match client_clone.request(&self.player_id, "mode", 0, 1, vec![("?", "")]).await {
+            Ok(response) => {
+                // Extract the mode field from the response
+                match response.as_str() {
+                    Some(mode) => Ok(mode.to_string()),
+                    None => Err("Failed to parse mode response".to_string()),
+                }
+            },
+            Err(e) => Err(format!("Failed to get player mode: {}", e)),
+        }
+    }
 }

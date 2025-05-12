@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize, Deserializer};
 use serde_json::Value;
-use std::time::Duration;
 use log::{debug, error};
 use crate::helpers::macaddress::normalize_mac_address;
 use crate::helpers::http_client::{HttpClient, HttpClientError, new_http_client, post_json};
@@ -9,7 +8,7 @@ use crate::helpers::http_client::{HttpClient, HttpClientError, new_http_client, 
 const JSONRPC_PATH: &str = "/jsonrpc.js";
 
 /// Default timeout for HTTP requests in seconds
-const DEFAULT_TIMEOUT_SECS: u64 = 5;
+const DEFAULT_TIMEOUT_SECS: u64 = 15;
 
 /// Errors that can occur when interacting with the LMS JSON-RPC API
 #[derive(Debug, thiserror::Error)]
@@ -40,10 +39,12 @@ impl From<HttpClientError> for LmsRpcError {
 }
 
 /// Request structure for LMS JSON-RPC API
+/// LMS uses a non-standard JSON-RPC format
 #[derive(Debug, Serialize)]
 struct JsonRpcRequest {
     id: u32,
     method: String,
+    #[serde(rename = "params")]
     params: Vec<Value>,
 }
 
@@ -57,10 +58,6 @@ struct JsonRpcResponse {
     #[serde(default)]
     #[allow(dead_code)]
     error: Option<Value>,
-    #[allow(dead_code)]
-    method: String,
-    #[allow(dead_code)]
-    params: Vec<Value>,
 }
 
 /// LMS JSON-RPC client for communicating with a Lyrion Music Server
@@ -137,14 +134,26 @@ impl LmsRpcClient {
         // Build command with proper format: command start itemsPerResponse tag1:value1 tag2:value2...
         let mut command_values = vec![
             Value::String(command.to_string()),
-            Value::String(start.to_string()),
-            Value::String(items_per_response.to_string()),
+            Value::Number(start.into()),
+            Value::Number(items_per_response.into()),
         ];
         
         // Add tagged parameters
         for (tag, value) in params {
-            let tagged_param = format!("{}:{}", tag, value);
-            command_values.push(Value::String(tagged_param));
+            // Special case for query parameters denoted by "?"
+            if tag == "?" {
+                // Just add "?" directly without the colon and value
+                command_values.push(Value::String("?".to_string()));
+            } else {
+                // For normal parameters, format as "tag:value"
+                // But if the value is empty, just use the tag (for toggles)
+                let tagged_param = if value.is_empty() {
+                    tag.to_string()
+                } else {
+                    format!("{}:{}", tag, value)
+                };
+                command_values.push(Value::String(tagged_param));
+            }
         }
 
         self.request_raw(player_id, command_values)
@@ -156,10 +165,21 @@ impl LmsRpcClient {
     /// * `player_id` - MAC address of player or "0" for server-level commands
     /// * `command` - Command array as JSON Values for mixed types
     pub fn request_raw(&mut self, player_id: &str, command: Vec<Value>) -> Result<Value, LmsRpcError> {
-        // Create params array with player_id and command
+        // The LMS jsonrpc.js API expects params to be an array with:
+        // 1. The player_id as the first element
+        // 2. A nested array containing the command and parameters as the second element
+        
+        // Debug log the command before creating the request
+        let url = format!("{}{}", self.base_url, JSONRPC_PATH);
+        debug!("LMS command to {}: player_id={}, command={:?}", url, player_id, command);
+        
+        // Create the nested command array
+        let command_array = Value::Array(command.clone());
+        
+        // Create params array with player_id followed by the command array
         let params = vec![
             Value::String(player_id.to_string()),
-            Value::Array(command.clone()),
+            command_array
         ];
         
         let request = JsonRpcRequest {
@@ -168,23 +188,25 @@ impl LmsRpcClient {
             params,
         };
         
-        let url = format!("{}{}", self.base_url, JSONRPC_PATH);
-        
         debug!("Sending LMS request to {}: {:?}", url, request);
-        debug!("LMS command to {}: player_id={}, command={:?}", url, player_id, command);
-        
-        // Use our updated HTTP client via the helper function
-        let response = post_json(&*self.client, &url, &request)?;
-        
-        // Parse the response as a JsonRpcResponse
-        match serde_json::from_value::<JsonRpcResponse>(response) {
-            Ok(json_response) => {
-                debug!("LMS response: {:?}", json_response.result);
-                Ok(json_response.result)
+
+        match post_json(&*self.client, &url, &request) {
+            Ok(response) => {
+                // Parse the response as a JsonRpcResponse
+                match serde_json::from_value::<JsonRpcResponse>(response) {
+                    Ok(json_response) => {
+                        debug!("LMS response: {:?}", json_response.result);
+                        Ok(json_response.result)
+                    },
+                    Err(e) => {
+                        error!("Failed to parse LMS response: {}", e);
+                        Err(LmsRpcError::ParseError(e.to_string()))
+                    }
+                }
             },
             Err(e) => {
-                error!("Failed to parse LMS response: {}", e);
-                Err(LmsRpcError::ParseError(e.to_string()))
+                error!("Request failed: {}", e);
+                Err(LmsRpcError::RequestError(e.to_string()))
             }
         }
     }

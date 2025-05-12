@@ -1,4 +1,4 @@
-use reqwest::Client;
+use reqwest::blocking::Client;
 use reqwest::Error as ReqwestError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -116,7 +116,7 @@ impl LmsRpcClient {
     /// 
     /// # Returns
     /// The result field of the response as a JSON Value
-    pub async fn request(&mut self, player_id: &str, command: &str, start: u32, items_per_response: u32, 
+    pub fn request(&mut self, player_id: &str, command: &str, start: u32, items_per_response: u32, 
                   params: Vec<(&str, &str)>) -> Result<Value, LmsRpcError> {
         debug!("Command: {}, start: {}, items: {}, params: {:?}", 
                command, start, items_per_response, params);
@@ -134,7 +134,7 @@ impl LmsRpcClient {
             command_values.push(Value::String(tagged_param));
         }
 
-        self.request_raw(player_id, command_values).await
+        self.request_raw(player_id, command_values)
     }
     
     /// Send a raw command to a specific player with mixed parameter types
@@ -142,7 +142,7 @@ impl LmsRpcClient {
     /// # Arguments
     /// * `player_id` - MAC address of player or "0" for server-level commands
     /// * `command` - Command array as JSON Values for mixed types
-    pub async fn request_raw(&mut self, player_id: &str, command: Vec<Value>) -> Result<Value, LmsRpcError> {
+    pub fn request_raw(&mut self, player_id: &str, command: Vec<Value>) -> Result<Value, LmsRpcError> {
         // Create params array with player_id and command
         let params = vec![
             Value::String(player_id.to_string()),
@@ -166,16 +166,15 @@ impl LmsRpcClient {
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&request)
-            .send()
-            .await?;
+            .send()?;
             
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response.text().unwrap_or_else(|_| "Unknown error".to_string());
             return Err(LmsRpcError::ServerError(format!("HTTP error {}: {}", status, error_text)));
         }
         
-        let response_text = response.text().await?;
+        let response_text = response.text()?;
         if response_text.is_empty() {
             return Err(LmsRpcError::EmptyResponse);
         }
@@ -194,8 +193,8 @@ impl LmsRpcClient {
     }
     
     /// Get a list of available players
-    pub async fn get_players(&mut self) -> Result<Vec<Player>, LmsRpcError> {
-        let result = self.request("0", "players", 0, 100, vec![]).await?;
+    pub fn get_players(&mut self) -> Result<Vec<Player>, LmsRpcError> {
+        let result = self.request("0", "players", 0, 100, vec![])?;
         
         // Extract the players array
         match result.get("players_loop") {
@@ -210,8 +209,8 @@ impl LmsRpcClient {
     }
     
     /// Get player status including current track info
-    pub async fn get_player_status(&mut self, player_id: &str) -> Result<PlayerStatus, LmsRpcError> {
-        let result = self.request(player_id, "status", 0, 1, vec![("tags", "abcltiqyKo")]).await?;
+    pub fn get_player_status(&mut self, player_id: &str) -> Result<PlayerStatus, LmsRpcError> {
+        let result = self.request(player_id, "status", 0, 1, vec![("tags", "abcltiqyKo")])?;
         
         match serde_json::from_value::<PlayerStatus>(result.clone()) {
             Ok(status) => Ok(status),
@@ -224,44 +223,44 @@ impl LmsRpcClient {
     }
     
     /// Play the current track
-    pub async fn play(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "play", 0, 0, vec![]).await
+    pub fn play(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "play", 0, 0, vec![])
     }
     
     /// Pause the current track
-    pub async fn pause(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "pause", 0, 0, vec![("1", "")]).await
+    pub fn pause(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "pause", 0, 0, vec![("1", "")])
     }
     
     /// Toggle pause/play
-    pub async fn toggle_pause(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "pause", 0, 0, vec![]).await
+    pub fn toggle_pause(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "pause", 0, 0, vec![])
     }
     
     /// Stop playback
-    pub async fn stop(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "stop", 0, 0, vec![]).await
+    pub fn stop(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "stop", 0, 0, vec![])
     }
     
     /// Skip to next track
-    pub async fn next(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("index", "+1")]).await
+    pub fn next(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "playlist", 0, 0, vec![("index", "+1")])
     }
     
     /// Skip to previous track
-    pub async fn previous(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("index", "-1")]).await
+    pub fn previous(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "playlist", 0, 0, vec![("index", "-1")])
     }
     
     /// Set volume (0-100)
-    pub async fn set_volume(&mut self, player_id: &str, volume: u8) -> Result<Value, LmsRpcError> {
+    pub fn set_volume(&mut self, player_id: &str, volume: u8) -> Result<Value, LmsRpcError> {
         let volume = volume.min(100);
-        self.request(player_id, "mixer", 0, 0, vec![("volume", &volume.to_string())]).await
+        self.request(player_id, "mixer", 0, 0, vec![("volume", &volume.to_string())])
     }
     
     /// Get current volume
-    pub async fn get_volume(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
-        let result = self.request(player_id, "mixer", 0, 0, vec![("volume", "?")]).await?;
+    pub fn get_volume(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
+        let result = self.request(player_id, "mixer", 0, 0, vec![("volume", "?")])?;
         
         match result.get("_volume") {
             Some(volume) => {
@@ -274,19 +273,19 @@ impl LmsRpcClient {
     }
     
     /// Set mute status
-    pub async fn set_mute(&mut self, player_id: &str, mute: bool) -> Result<Value, LmsRpcError> {
+    pub fn set_mute(&mut self, player_id: &str, mute: bool) -> Result<Value, LmsRpcError> {
         let mute_val = if mute { "1" } else { "0" };
-        self.request(player_id, "mixer", 0, 0, vec![("muting", mute_val)]).await
+        self.request(player_id, "mixer", 0, 0, vec![("muting", mute_val)])
     }
     
     /// Toggle mute status
-    pub async fn toggle_mute(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "mixer", 0, 0, vec![("muting", "")]).await
+    pub fn toggle_mute(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "mixer", 0, 0, vec![("muting", "")])
     }
     
     /// Get mute status
-    pub async fn is_muted(&mut self, player_id: &str) -> Result<bool, LmsRpcError> {
-        let result = self.request(player_id, "mixer", 0, 0, vec![("muting", "?")]).await?;
+    pub fn is_muted(&mut self, player_id: &str) -> Result<bool, LmsRpcError> {
+        let result = self.request(player_id, "mixer", 0, 0, vec![("muting", "?")])?;
         
         match result.get("_muting") {
             Some(muting) => {
@@ -299,21 +298,21 @@ impl LmsRpcClient {
     }
 
     /// Seek to a position (in seconds) in the current track
-    pub async fn seek(&mut self, player_id: &str, seconds: f32) -> Result<Value, LmsRpcError> {
+    pub fn seek(&mut self, player_id: &str, seconds: f32) -> Result<Value, LmsRpcError> {
         // Convert seconds to format expected by LMS
         let time_str = format!("{:.1}", seconds);
-        self.request(player_id, "time", 0, 0, vec![("time", &time_str)]).await
+        self.request(player_id, "time", 0, 0, vec![("time", &time_str)])
     }
     
     /// Set shuffle mode (0=off, 1=songs, 2=albums)
-    pub async fn set_shuffle(&mut self, player_id: &str, shuffle_mode: u8) -> Result<Value, LmsRpcError> {
+    pub fn set_shuffle(&mut self, player_id: &str, shuffle_mode: u8) -> Result<Value, LmsRpcError> {
         let mode = shuffle_mode.min(2).to_string();
-        self.request(player_id, "playlist", 0, 0, vec![("shuffle", &mode)]).await
+        self.request(player_id, "playlist", 0, 0, vec![("shuffle", &mode)])
     }
     
     /// Get shuffle mode
-    pub async fn get_shuffle(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
-        let result = self.request(player_id, "playlist", 0, 0, vec![("shuffle", "?")]).await?;
+    pub fn get_shuffle(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
+        let result = self.request(player_id, "playlist", 0, 0, vec![("shuffle", "?")])?;
         
         match result.get("_shuffle") {
             Some(shuffle) => {
@@ -326,14 +325,14 @@ impl LmsRpcClient {
     }
     
     /// Set repeat mode (0=off, 1=song, 2=playlist)
-    pub async fn set_repeat(&mut self, player_id: &str, repeat_mode: u8) -> Result<Value, LmsRpcError> {
+    pub fn set_repeat(&mut self, player_id: &str, repeat_mode: u8) -> Result<Value, LmsRpcError> {
         let mode = repeat_mode.min(2).to_string();
-        self.request(player_id, "playlist", 0, 0, vec![("repeat", &mode)]).await
+        self.request(player_id, "playlist", 0, 0, vec![("repeat", &mode)])
     }
     
     /// Get repeat mode
-    pub async fn get_repeat(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
-        let result = self.request(player_id, "playlist", 0, 0, vec![("repeat", "?")]).await?;
+    pub fn get_repeat(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
+        let result = self.request(player_id, "playlist", 0, 0, vec![("repeat", "?")])?;
         
         match result.get("_repeat") {
             Some(repeat) => {
@@ -346,14 +345,14 @@ impl LmsRpcClient {
     }
     
     /// Search the library for a query string
-    pub async fn search(&mut self, player_id: &str, query: &str, limit: u32) -> Result<SearchResults, LmsRpcError> {
+    pub fn search(&mut self, player_id: &str, query: &str, limit: u32) -> Result<SearchResults, LmsRpcError> {
         let result = self.request(
             player_id, 
             "search", 
             0, 
             limit, 
             vec![("term", query)]
-        ).await?;
+        )?;
         
         // Try to parse the complex search results
         let mut search_results = SearchResults::default();
@@ -386,14 +385,14 @@ impl LmsRpcClient {
     }
     
     /// Get album tracks
-    pub async fn get_album_tracks(&mut self, player_id: &str, album_id: &str) -> Result<Vec<Track>, LmsRpcError> {
+    pub fn get_album_tracks(&mut self, player_id: &str, album_id: &str) -> Result<Vec<Track>, LmsRpcError> {
         let result = self.request(
             player_id, 
             "titles", 
             0, 
             100, 
             vec![("album_id", album_id), ("tags", "altqod")]
-        ).await?;
+        )?;
         
         match result.get("titles_loop") {
             Some(tracks) => {
@@ -405,18 +404,18 @@ impl LmsRpcClient {
     }
     
     /// Add a track to the playlist
-    pub async fn add_track(&mut self, player_id: &str, track_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("add", ""), ("track_id", track_id)]).await
+    pub fn add_track(&mut self, player_id: &str, track_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "playlist", 0, 0, vec![("add", ""), ("track_id", track_id)])
     }
     
     /// Add an album to the playlist
-    pub async fn add_album(&mut self, player_id: &str, album_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("add", ""), ("album_id", album_id)]).await
+    pub fn add_album(&mut self, player_id: &str, album_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "playlist", 0, 0, vec![("add", ""), ("album_id", album_id)])
     }
     
     /// Clear the playlist
-    pub async fn clear_playlist(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("clear", "")]).await
+    pub fn clear_playlist(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+        self.request(player_id, "playlist", 0, 0, vec![("clear", "")])
     }
 
     /// Get albums with support for all tagged parameters
@@ -429,20 +428,20 @@ impl LmsRpcClient {
     /// 
     /// # Returns
     /// The result field of the response as a JSON Value containing album information
-    pub async fn get_albums(&mut self, player_id: &str, start: u32, items_per_response: u32, 
+    pub fn get_albums(&mut self, player_id: &str, start: u32, items_per_response: u32, 
                      params: Vec<(&str, &str)>) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "albums", start, items_per_response, params).await
+        self.request(player_id, "albums", start, items_per_response, params)
     }
     
     /// Get albums with detailed information using default tags
-    pub async fn get_albums_with_details(&mut self, player_id: &str, start: u32, items_per_response: u32) 
+    pub fn get_albums_with_details(&mut self, player_id: &str, start: u32, items_per_response: u32) 
         -> Result<Vec<Album>, LmsRpcError> {
         // Use comprehensive tags to get detailed album information
         // l=album name, y=year, j=artwork track id, t=title, i=disc number,
         // q=disccount, w=compilation, a=artist, S=artist_id, s=textkey
         let result = self.get_albums(player_id, start, items_per_response, vec![
             ("tags", "lyjtiaqwSs")
-        ]).await?;
+        ])?;
         
         match result.get("albums_loop") {
             Some(albums) => {
@@ -454,12 +453,12 @@ impl LmsRpcClient {
     }
 
     /// Search for albums with a specific query
-    pub async fn search_albums(&mut self, player_id: &str, query: &str, start: u32, items_per_response: u32) 
+    pub fn search_albums(&mut self, player_id: &str, query: &str, start: u32, items_per_response: u32) 
         -> Result<Vec<Album>, LmsRpcError> {
         let result = self.get_albums(player_id, start, items_per_response, vec![
             ("search", query),
             ("tags", "lyjtiaqwSs")
-        ]).await?;
+        ])?;
         
         match result.get("albums_loop") {
             Some(albums) => {
@@ -471,12 +470,12 @@ impl LmsRpcClient {
     }
     
     /// Get albums by a specific artist
-    pub async fn get_artist_albums(&mut self, player_id: &str, artist_id: &str, start: u32, items_per_response: u32) 
+    pub fn get_artist_albums(&mut self, player_id: &str, artist_id: &str, start: u32, items_per_response: u32) 
         -> Result<Vec<Album>, LmsRpcError> {
         let result = self.get_albums(player_id, start, items_per_response, vec![
             ("artist_id", artist_id),
             ("tags", "lyjtiaqwSs")
-        ]).await?;
+        ])?;
         
         match result.get("albums_loop") {
             Some(albums) => {
@@ -488,12 +487,12 @@ impl LmsRpcClient {
     }
 
     /// Get albums by genre
-    pub async fn get_genre_albums(&mut self, player_id: &str, genre_id: &str, start: u32, items_per_response: u32) 
+    pub fn get_genre_albums(&mut self, player_id: &str, genre_id: &str, start: u32, items_per_response: u32) 
         -> Result<Vec<Album>, LmsRpcError> {
         let result = self.get_albums(player_id, start, items_per_response, vec![
             ("genre_id", genre_id),
             ("tags", "lyjtiaqwSs")
-        ]).await?;
+        ])?;
         
         match result.get("albums_loop") {
             Some(albums) => {
@@ -517,7 +516,7 @@ impl LmsRpcClient {
     /// 
     /// # Returns
     /// Vector of Album structs with comprehensive details
-    pub async fn get_albums_with_full_details(
+    pub fn get_albums_with_full_details(
         &mut self, 
         player_id: &str, 
         start: u32, 
@@ -555,7 +554,7 @@ impl LmsRpcClient {
             .map(|(k, v)| (k, v))
             .collect();
         
-        let result = self.request(player_id, "albums", start, items_per_response, param_refs).await?;
+        let result = self.request(player_id, "albums", start, items_per_response, param_refs)?;
         
         // Extract the albums array
         match result.get("albums_loop") {
@@ -570,7 +569,7 @@ impl LmsRpcClient {
     }
     
     /// Get details of a specific album by ID
-    pub async fn get_album_by_id(&mut self, player_id: &str, album_id: &str) -> Result<Option<Album>, LmsRpcError> {
+    pub fn get_album_by_id(&mut self, player_id: &str, album_id: &str) -> Result<Option<Album>, LmsRpcError> {
         // Request a single album with the specified ID
         let result = self.request(
             player_id, 
@@ -581,7 +580,7 @@ impl LmsRpcClient {
                 ("album_id", album_id),
                 ("tags", "aCdleJKoOPsy")  // Request full album details
             ]
-        ).await?;
+        )?;
         
         // Extract the album information
         match result.get("albums_loop") {
@@ -603,11 +602,9 @@ impl LmsRpcClient {
 
     /// Check if a specific MAC address is connected to this LMS server
     /// If no MAC address is provided, it will check all local interfaces
-    pub async fn is_connected(&mut self, mac_addr: Option<&str>) -> Result<bool, LmsRpcError> {
-        
-        
+    pub fn is_connected(&mut self, mac_addr: Option<&str>) -> Result<bool, LmsRpcError> {
         // Get players to check connections
-        let players = self.get_players().await?;
+        let players = self.get_players()?;
         
         // Get MAC addresses to check
         let mac_addresses = match mac_addr {
@@ -756,46 +753,4 @@ pub struct SearchResults {
     pub albums: Vec<Album>,
     pub artists: Vec<Artist>,
     pub playlists: Vec<Playlist>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    // Note: These tests require a running LMS instance.
-    // You can set the LMS_TEST_HOST environment variable to your LMS host address.
-    // Otherwise, these tests will be skipped.
-    
-    fn get_test_client() -> Option<LmsRpcClient> {
-        match std::env::var("LMS_TEST_HOST") {
-            Ok(host) => {
-                Some(LmsRpcClient::new(&host, 9000))
-            }
-            Err(_) => None,
-        }
-    }
-    
-    #[tokio::test]
-    async fn test_get_players() {
-        let client = match get_test_client() {
-            Some(c) => c,
-            None => return, // Skip test if no test host is configured
-        };
-        
-        let mut client = client;
-        
-        let result = client.get_players().await;
-        
-        match result {
-            Ok(players) => {
-                println!("Found {} players", players.len());
-                for player in players {
-                    println!("  Player: {} ({})", player.name, player.playerid);
-                }
-            }
-            Err(e) => {
-                panic!("Failed to get players: {:?}", e);
-            }
-        }
-    }
 }

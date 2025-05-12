@@ -5,8 +5,6 @@ use std::thread;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-// Remove the direct tokio runtime import since we'll use the global one
-// use tokio::runtime::Runtime;
 
 use crate::data::{LoopMode, PlaybackState, PlayerCapabilitySet, PlayerCommand, Song, Track};
 use crate::PlayerStateListener;
@@ -14,10 +12,8 @@ use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::players::lms::jsonrps::LmsRpcClient;
 use crate::players::lms::lmsserver::{find_local_servers, get_local_mac_addresses};
-use crate::players::lms::lmspplayer::LMSPlayer; // Updated import path
+use crate::players::lms::lmspplayer::LMSPlayer;
 use crate::helpers::macaddress::normalize_mac_address;
-// Import the global runtime accessor function
-use crate::get_tokio_runtime;
 
 /// Configuration for LMSAudioController
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +76,17 @@ impl Default for LMSAudioConfig {
             polling_interval: default_polling_interval(),
         }
     }
+}
+
+/// Helper function to check if a MAC address is valid (not all zeros)
+fn is_valid_mac(mac: &mac_address::MacAddress) -> bool {
+    // Convert MAC to string and check if it's all zeros
+    let mac_str = mac.to_string();
+    
+    // Check common representations of zero MAC addresses
+    !(mac_str == "00:00:00:00:00:00" || 
+      mac_str == "00-00-00-00-00-00" ||
+      mac_str == "000000000000")
 }
 
 /// Controller for Logitech Media Server (LMS) audio players
@@ -183,7 +190,7 @@ impl LMSAudioController {
     /// 
     /// # Returns
     /// `true` if connected, `false` otherwise
-    pub async fn check_connected(&self) -> bool {
+    pub fn check_connected(&self) -> bool {
         // Get configuration
         let config = match self.config.read() {
             Ok(cfg) => cfg.clone(),
@@ -201,7 +208,7 @@ impl LMSAudioController {
                 debug!("Testing existing LMS connection");
                 
                 // Simple ping test to check if server is reachable
-                match client_clone.get_players().await {
+                match client_clone.get_players() {
                     Ok(_) => {
                         debug!("Existing LMS connection is still active");
                         
@@ -247,7 +254,7 @@ impl LMSAudioController {
             debug!("Local MAC addresses: {:?}", normalized_local_macs);
             
             // Get the players from the server
-            match client.get_players().await {
+            match client.get_players() {
                 Ok(players) => {
                     debug!("Found {} players on LMS server", players.len());
                     
@@ -260,6 +267,12 @@ impl LMSAudioController {
                                 
                                 // Check if this player's MAC matches any of our local MACs
                                 if normalized_local_macs.contains(&player_mac) {
+                                    // Verify this isn't an all-zeros placeholder MAC address
+                                    if !is_valid_mac(&player_mac) {
+                                        debug!("Ignoring invalid (all zeros) MAC address: {:?}", player_mac);
+                                        continue;
+                                    }
+                                    
                                     info!("Found matching player: {} ({:?})", 
                                          player.name, 
                                          player_mac);
@@ -267,6 +280,12 @@ impl LMSAudioController {
                                     // Store the client for future use
                                     if let Ok(mut client_lock) = self.client.write() {
                                         *client_lock = Some(client.clone());
+                                    }
+                                    
+                                    // Create and store the player instance
+                                    let player_instance = LMSPlayer::new(client.clone(), &player.playerid);
+                                    if let Ok(mut player_lock) = self.player.write() {
+                                        *player_lock = Some(player_instance);
                                     }
                                     
                                     return true;
@@ -292,7 +311,7 @@ impl LMSAudioController {
             debug!("No server configured, attempting autodiscovery");
             
             // Try to discover LMS servers
-            match find_local_servers(Some(5)).await {
+            match find_local_servers(Some(5)) {
                 Ok(servers) => {
                     if servers.is_empty() {
                         debug!("No LMS servers found via autodiscovery");
@@ -321,10 +340,10 @@ impl LMSAudioController {
                         debug!("Checking server: {} at {}", server.name, server.ip);
                         
                         // Create a client for this server
-                        let mut client = server.create_client().await;
+                        let mut client = server.create_client();
                         
                         // Get the players from the server
-                        match client.get_players().await {
+                        match client.get_players() {
                             Ok(players) => {
                                 debug!("Found {} players on server {}", players.len(), server.name);
                                 
@@ -334,6 +353,12 @@ impl LMSAudioController {
                                         Ok(player_mac) => {
                                             // Check if this player's MAC matches any of our local MACs
                                             if normalized_local_macs.contains(&player_mac) {
+                                                // Verify this isn't an all-zeros placeholder MAC address
+                                                if !is_valid_mac(&player_mac) {
+                                                    debug!("Ignoring invalid (all zeros) MAC address: {:?}", player_mac);
+                                                    continue;
+                                                }
+                                                
                                                 info!("Found matching player: {} ({:?}) on server {}", 
                                                      player.name,
                                                      player_mac,
@@ -348,6 +373,12 @@ impl LMSAudioController {
                                                 if let Ok(mut cfg_lock) = self.config.write() {
                                                     cfg_lock.server = Some(server.ip.to_string());
                                                     cfg_lock.port = server.port;
+                                                }
+                                                
+                                                // Create and store the player instance
+                                                let player_instance = LMSPlayer::new(client.clone(), &player.playerid);
+                                                if let Ok(mut player_lock) = self.player.write() {
+                                                    *player_lock = Some(player_instance);
                                                 }
                                                 
                                                 return true;
@@ -405,9 +436,6 @@ impl LMSAudioController {
         thread::spawn(move || {
             info!("LMS reconnection thread started (interval: {} seconds)", config.reconnection_interval);
             
-            // Use the global Tokio runtime for this thread
-            let rt = get_tokio_runtime();
-            
             while running.load(Ordering::SeqCst) {
                 // Sleep for the configured interval
                 thread::sleep(interval);
@@ -419,26 +447,21 @@ impl LMSAudioController {
                 // If we're already connected, just check the connection
                 let was_connected = is_connected.load(Ordering::SeqCst);
                 
-                // Check if connection state has changed
-                let now_connected = match rt.block_on(async {
-                    // Create a temporary LMSAudioController for connection check
-                    let temp_controller = LMSAudioController {
-                        base: base.clone(),
-                        config: controller_config.clone(),
-                        client: Arc::new(RwLock::new(None)),
-                        player: Arc::new(RwLock::new(None)),
-                        is_connected: Arc::new(AtomicBool::new(was_connected)),
-                        running: Arc::new(AtomicBool::new(true)),
-                        polling: Arc::new(AtomicBool::new(true)),
-                        current_song: Arc::new(RwLock::new(None)),
-                        current_position: Arc::new(RwLock::new(None)),
-                    };
-                    
-                    temp_controller.check_connected().await
-                }) {
-                    true => true,
-                    false => false,
+                // Create a temporary LMSAudioController for connection check
+                let temp_controller = LMSAudioController {
+                    base: base.clone(),
+                    config: controller_config.clone(),
+                    client: Arc::new(RwLock::new(None)),
+                    player: Arc::new(RwLock::new(None)),
+                    is_connected: Arc::new(AtomicBool::new(was_connected)),
+                    running: Arc::new(AtomicBool::new(true)),
+                    polling: Arc::new(AtomicBool::new(true)),
+                    current_song: Arc::new(RwLock::new(None)),
+                    current_position: Arc::new(RwLock::new(None)),
                 };
+                
+                // Check if connection state has changed
+                let now_connected = temp_controller.check_connected();
                 
                 // Update connection state if it changed
                 if was_connected != now_connected {
@@ -490,9 +513,6 @@ impl LMSAudioController {
         thread::spawn(move || {
             info!("LMS now playing polling thread started (interval: {} seconds)", config.polling_interval);
             
-            // Use the global Tokio runtime for this thread
-            let rt = get_tokio_runtime();
-            
             // Keep track of last song to detect changes
             let mut last_song: Option<Song> = None;
             
@@ -503,7 +523,7 @@ impl LMSAudioController {
                     if let Ok(player_guard) = player.read() {
                         if let Some(player_instance) = player_guard.as_ref() {
                             // Poll for now playing info
-                            if let Some((song, position)) = rt.block_on(player_instance.now_playing()) {
+                            if let Some((song, position)) = player_instance.now_playing() {
                                 // Update stored current song and position
                                 if let Ok(mut song_guard) = current_song.write() {
                                     *song_guard = Some(song.clone());
@@ -600,41 +620,20 @@ impl PlayerController for LMSAudioController {
             return PlaybackState::Disconnected;
         }
         
-        // Get a reference to the player if available
-        let player_guard = match self.player.read() {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!("Failed to acquire read lock on LMS player: {}", e);
-                return PlaybackState::Unknown;
-            }
-        };
-        
-        if player_guard.is_none() {
-            return PlaybackState::Unknown;
-        }
-        
-        // Get the player instance
-        let player = player_guard.as_ref().unwrap();
-        
-        // Use the global Tokio runtime to run the async get_mode() method
-        let rt = get_tokio_runtime();
-        
-        // Call the get_mode method to retrieve the current playback mode
-        match rt.block_on(player.get_mode()) {
-            Ok(mode) => {
-                // Convert the mode string to PlaybackState enum
-                match mode.as_str() {
-                    "play" => PlaybackState::Playing,
-                    "pause" => PlaybackState::Paused,
-                    "stop" => PlaybackState::Stopped,
-                    _ => {
-                        debug!("Unknown LMS mode: {}", mode);
-                        PlaybackState::Unknown
-                    }
+        // Use the cached state from the polling thread instead of making an async call
+        // This makes the function fully synchronous and avoids runtime conflicts
+        match self.current_song.read() {
+            Ok(song_guard) => {
+                if song_guard.is_some() {
+                    // If we have a current song, we're playing
+                    PlaybackState::Playing
+                } else {
+                    // No current song, assume stopped
+                    PlaybackState::Stopped
                 }
             },
             Err(e) => {
-                debug!("Failed to get LMS player mode: {}", e);
+                warn!("Failed to acquire read lock on current song: {}", e);
                 PlaybackState::Unknown
             }
         }
@@ -697,11 +696,8 @@ impl PlayerController for LMSAudioController {
     }
     
     fn start(&self) -> bool {
-        // Use the global Tokio runtime for initial connection check
-        let rt = get_tokio_runtime();
-        
-        // When starting, attempt to connect and update initial connection state
-        let is_connected = rt.block_on(self.check_connected());
+        // Simply do a synchronous connection check instead of using tokio
+        let is_connected = self.check_connected();
         self.is_connected.store(is_connected, Ordering::SeqCst);
         
         if is_connected {

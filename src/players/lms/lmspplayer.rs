@@ -2,7 +2,6 @@
 use std::sync::Arc;
 use log::{debug, info, warn};
 use std::collections::HashMap;
-use tokio::join;
 
 use crate::players::lms::jsonrps::LmsRpcClient;
 use crate::players::lms::lmsserver::get_local_mac_addresses;
@@ -49,7 +48,7 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// `true` if connected, `false` otherwise
-    pub async fn is_connected(&self) -> bool {
+    pub fn is_connected(&self) -> bool {
         // Get the local MAC addresses
         let mac_addresses = match get_local_mac_addresses() {
             Ok(addresses) => addresses,
@@ -69,7 +68,7 @@ impl LMSPlayer {
         
         // Use the client (which is now cloneable) to get players
         let mut client_clone = (*self.client).clone();
-        match client_clone.get_players().await {
+        match client_clone.get_players() {
             Ok(players) => {
                 debug!("Found {} players on LMS server", players.len());
                 
@@ -108,9 +107,10 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// The current title as a String if available, or an error
-    async fn current_title(&self) -> Result<String, String> {
+    #[allow(dead_code)]
+    fn current_title(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "current_title", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "current_title", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Extract the current_title field from the response
                 match response.as_str() {
@@ -126,9 +126,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// true if remote stream, false if local, or an error
-    async fn remote(&self) -> Result<bool, String> {
+    fn remote(&self) -> Result<bool, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "remote", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "remote", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Get the remote value (0 = local, 1 = remote)
                 match response.as_i64() {
@@ -144,9 +144,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// The genre as a String if available, or an error
-    async fn genre(&self) -> Result<String, String> {
+    fn genre(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "genre", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "genre", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Extract the genre field from the response
                 match response.as_str() {
@@ -162,9 +162,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// The artist as a String if available, or an error
-    async fn artist(&self) -> Result<String, String> {
+    fn artist(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "artist", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "artist", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Extract the artist field from the response
                 match response.as_str() {
@@ -180,9 +180,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// The album as a String if available, or an error
-    async fn album(&self) -> Result<String, String> {
+    fn album(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "album", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "album", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Extract the album field from the response
                 match response.as_str() {
@@ -198,9 +198,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// The title as a String if available, or an error
-    async fn title(&self) -> Result<String, String> {
+    fn title(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "title", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "title", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Extract the title field from the response
                 match response.as_str() {
@@ -216,9 +216,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// The duration as a f32 if available, or an error
-    async fn duration(&self) -> Result<f32, String> {
+    fn duration(&self) -> Result<f32, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "duration", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "duration", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Extract the duration field from the response
                 match response.as_f64() {
@@ -234,9 +234,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// The file path as a String if available, or an error
-    async fn path(&self) -> Result<String, String> {
+    fn path(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "path", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "path", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Extract the path field from the response
                 match response.as_str() {
@@ -252,18 +252,15 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// An optional Song object with the currently playing song information
-    pub async fn get_current_song(&self) -> Option<Song> {
-        // Run all data retrieving functions in parallel
-        let (title_result, artist_result, album_result, genre_result, 
-             duration_result, path_result, remote_result) = join!(
-            self.title(),
-            self.artist(),
-            self.album(),
-            self.genre(),
-            self.duration(),
-            self.path(),
-            self.remote()
-        );
+    pub fn get_current_song(&self) -> Option<Song> {
+        // Instead of running in parallel with join(), get each piece of data sequentially
+        let title_result = self.title();
+        let artist_result = self.artist();
+        let album_result = self.album();
+        let genre_result = self.genre();
+        let duration_result = self.duration();
+        let path_result = self.path();
+        let remote_result = self.remote();
         
         // Check if we have at least a title or if we're playing a remote stream
         let title = title_result.ok();
@@ -310,12 +307,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// An optional tuple containing the Song information and the current position in seconds
-    pub async fn now_playing(&self) -> Option<(Song, f32)> {
-        // Fetch song and position in parallel
-        let (song, position_result) = join!(
-            self.get_current_song(),
-            self.get_current_position()
-        );
+    pub fn now_playing(&self) -> Option<(Song, f32)> {
+        // Get song and position sequentially
+        let song = self.get_current_song();
         
         // If there's no song playing, return None
         if song.is_none() {
@@ -323,7 +317,7 @@ impl LMSPlayer {
         }
         
         // Get the position, defaulting to 0.0 if there was an error
-        let position = position_result.unwrap_or(0.0);
+        let position = self.get_current_position().unwrap_or(0.0);
         
         // Return the tuple of song and position
         Some((song.unwrap(), position))
@@ -333,9 +327,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// The current playback position in seconds, or an error if it couldn't be retrieved
-    pub async fn get_current_position(&self) -> Result<f32, String> {
+    pub fn get_current_position(&self) -> Result<f32, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "time", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "time", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Extract the time value from the response
                 match response.as_f64() {
@@ -351,9 +345,9 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// The current mode as a string if available, or an error
-    pub async fn get_mode(&self) -> Result<String, String> {
+    pub fn get_mode(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "mode", 0, 1, vec![("?", "")]).await {
+        match client_clone.request(&self.player_id, "mode", 0, 1, vec![("?", "")]) {
             Ok(response) => {
                 // Extract the mode field from the response
                 match response.as_str() {

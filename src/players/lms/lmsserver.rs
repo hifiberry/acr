@@ -1,12 +1,11 @@
 use std::collections::HashMap;
-use std::net::{IpAddr};
+use std::net::{IpAddr, UdpSocket};
 use std::time::Duration;
 use log::{debug, info, warn};
 use std::io;
 use get_if_addrs::get_if_addrs;
 use mac_address::MacAddress;
-use tokio::net::UdpSocket;
-use tokio::time::timeout;
+use std::time::Instant;
 
 use crate::players::lms::jsonrps::LmsRpcClient;
 
@@ -40,7 +39,7 @@ pub struct LmsServer {
 
 impl LmsServer {
     /// Create a new RPC client for this server
-    pub async fn create_client(&self) -> LmsRpcClient {
+    pub fn create_client(&self) -> LmsRpcClient {
         LmsRpcClient::new(&self.ip.to_string(), self.port)
     }
 }
@@ -52,14 +51,17 @@ impl LmsServer {
 ///
 /// # Returns
 /// A vector of discovered LMS servers
-pub async fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer>> {
+pub fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer>> {
     let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_DISCOVERY_TIMEOUT));
     
     debug!("Starting LMS discovery with timeout of {}s", timeout_duration.as_secs());
     
     // Create a UDP socket for broadcast
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.set_broadcast(true)?;
+    
+    // Set socket timeout for receive operations
+    socket.set_read_timeout(Some(Duration::from_millis(500)))?;
     
     // Prepare the discovery message that matches the working client format
     // Based on the format: eIPAD\0NAME\0JSON\0VERS\0UUID\0JVID\x06\x12\x34\x56\x78\x12\x34
@@ -81,7 +83,6 @@ pub async fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<Lms
     discovery_msg.extend_from_slice(b"UUID\0");  // UUID field
     discovery_msg.extend_from_slice(uuid.as_bytes());
     discovery_msg.push(0);  // Null terminator
-
     
     // Add some identifying bytes (similar to the example)
     discovery_msg.extend_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x12, 0x34]);
@@ -91,28 +92,24 @@ pub async fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<Lms
     // Send broadcast to the standard LMS SlimProto port
     let broadcast_addr = format!("255.255.255.255:{}", LMS_SLIMPROTO_PORT);
     debug!("Sending discovery broadcast to {}", broadcast_addr);
-    socket.send_to(&discovery_msg, &broadcast_addr).await?;
+    socket.send_to(&discovery_msg, &broadcast_addr)?;
     
     // Also try more specific broadcast addresses
     // This covers common subnet broadcast addresses
     for subnet in &["192.168.1.255", "192.168.0.255", "10.0.0.255", "10.0.1.255"] {
         let addr = format!("{}:{}", subnet, LMS_SLIMPROTO_PORT);
-        let _ = socket.send_to(&discovery_msg, &addr).await;
+        let _ = socket.send_to(&discovery_msg, &addr);
     }
     
     let mut servers = HashMap::new();
     let mut buffer = [0u8; BUFFER_SIZE];
     
     // Keep receiving until timeout
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     
     while start_time.elapsed() < timeout_duration {
-        // Set a shorter timeout for each recv attempt to allow multiple attempts within the overall timeout
-        match timeout(
-            std::cmp::min(Duration::from_millis(500), timeout_duration.saturating_sub(start_time.elapsed())),
-            socket.recv_from(&mut buffer)
-        ).await {
-            Ok(Ok((bytes_read, src_addr))) => {
+        match socket.recv_from(&mut buffer) {
+            Ok((bytes_read, src_addr)) => {
                 debug!("Received {} bytes from {}", bytes_read, src_addr);
                 
                 // Try to parse the response
@@ -124,13 +121,13 @@ pub async fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<Lms
                     servers.insert(server.ip, server);
                 }
             },
-            Ok(Err(err)) => {
-                warn!("Error receiving response: {}", err);
-                // Continue trying to receive messages
-            },
-            Err(_) => {
-                // Timeout for this recv_from, but keep trying until overall timeout
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+                // Just a timeout on this recv attempt, continue
                 debug!("No response in recv_from after waiting {}ms", start_time.elapsed().as_millis());
+            },
+            Err(e) => {
+                warn!("Error receiving response: {}", e);
+                // Continue trying to receive messages
             }
         }
     }
@@ -379,25 +376,21 @@ pub fn get_local_mac_addresses() -> io::Result<Vec<MacAddress>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::runtime::Runtime;
     
     #[test]
     fn test_discover_lms_servers() {
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async {
-            // This test will actively try to discover LMS servers
-            match find_local_servers(Some(5)).await {
-                Ok(servers) => {
-                    println!("Discovered {} LMS servers:", servers.len());
-                    for (i, server) in servers.iter().enumerate() {
-                        println!("  {}. {} at {}:{} (version: {:?})", 
-                                 i+1, server.name, server.ip, server.port, server.version);
-                    }
-                },
-                Err(e) => {
-                    println!("Error discovering LMS servers: {}", e);
+        // This test will actively try to discover LMS servers
+        match find_local_servers(Some(5)) {
+            Ok(servers) => {
+                println!("Discovered {} LMS servers:", servers.len());
+                for (i, server) in servers.iter().enumerate() {
+                    println!("  {}. {} at {}:{} (version: {:?})", 
+                             i+1, server.name, server.ip, server.port, server.version);
                 }
+            },
+            Err(e) => {
+                println!("Error discovering LMS servers: {}", e);
             }
-        });
+        }
     }
 }

@@ -3,6 +3,8 @@ pub mod jsonrps;
 pub mod lmsserver;
 pub mod lmsaudio;
 pub mod lmspplayer;
+pub mod player_finder;
+pub mod cli_listener;
 
 // Re-export main components for easier access
 pub use jsonrps::{LmsRpcClient, LmsRpcError, Player, PlayerStatus, Track, Album, Artist, Playlist, SearchResults};

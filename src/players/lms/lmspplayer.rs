@@ -1,7 +1,6 @@
 // filepath: c:\Users\danie\devel\hifiberry-os\packages\acr\src\players\lms\lmspplayer.rs
 use std::sync::Arc;
 use log::{debug, info, warn};
-use std::collections::HashMap;
 
 use crate::players::lms::jsonrps::LmsRpcClient;
 use crate::players::lms::lmsserver::get_local_mac_addresses;

@@ -262,121 +262,127 @@
                 };
                 
                 socket.onmessage = (event) => {
-                    const data = JSON.parse(event.data);
-                    
-                    // Format message nicely for display
-                    let message = '';
-                    
-                    if (data.type === 'welcome') {
-                        message = `<b>Welcome:</b> ${data.message}`;
-                        logEvent(message);
-                        return;
-                    }
-                    
-                    if (data.type === 'subscription_updated') {
-                        message = `<span style="color: #28a745;"><b>✓</b> ${data.message}</span>`;
-                        logEvent(message);
-                        return;
-                    }
-                    
-                    // Handle new format where event type is a key at the top level
-                    const eventKey = Object.keys(data).find(key => 
-                        key !== 'source' && typeof data[key] === 'object');
-                    
-                    if (eventKey) {
-                        // This is the new format
-                        const eventType = eventKey; // e.g., "StateChanged"
-                        const eventData = data[eventKey]; // The event data
-                        const source = data.source || {}; // Source at the top level
-                        const playerName = source.player_name || 'unknown';
+                    try {
+                        const data = JSON.parse(event.data);
                         
-                        message = `<span class="log-event">${eventType}</span> from <b>${playerName}</b>: `;
+                        // Handle welcome message and subscription updates
+                        if (data.type === 'welcome' || data.type === 'subscription_updated') {
+                            const message = `<span style="color: #28a745;"><b>✓</b> ${data.message}</span>`;
+                            logEvent(message);
+                            return;
+                        }
                         
-                        // Format different event types appropriately
-                        switch(eventType) {
-                            case 'StateChanged':
-                                message += `<span style="font-weight: bold; color: ${getStateColor(eventData.state)}">
-                                    ${eventData.state || 'unknown'}</span>`;
-                                break;
-                                
-                            case 'SongChanged':
-                                if (eventData.song) {
-                                    const song = eventData.song;
-                                    message += `<div style="margin: 5px 0;">
-                                        <div><b>Title:</b> ${song.title || 'Unknown'}</div>
-                                        <div><b>Artist:</b> ${song.artist || 'Unknown'}</div>
-                                        ${song.album ? `<div><b>Album:</b> ${song.album}</div>` : ''}
-                                        ${song.duration ? `<div><b>Duration:</b> ${formatTime(song.duration)}</div>` : ''}
-                                    </div>`;
-                                } else {
-                                    message += 'No song information';
-                                }
-                                break;
-                                
-                            case 'LoopModeChanged':
-                                const mode = eventData.mode || 'unknown';
-                                message += `Loop mode: <b>${mode}</b>`;
-                                break;
-                                
-                            case 'CapabilitiesChanged':
-                                if (eventData.capabilities && Array.isArray(eventData.capabilities)) {
-                                    const caps = eventData.capabilities;
-                                    message += `<div style="margin: 5px 0;">
-                                        <div><b>Capabilities:</b></div>
-                                        <div>- Play: ${caps.includes('play') ? '✓' : '✗'}</div>
-                                        <div>- Pause: ${caps.includes('pause') ? '✓' : '✗'}</div>
-                                        <div>- Stop: ${caps.includes('stop') ? '✓' : '✗'}</div>
-                                        <div>- Next: ${caps.includes('next') ? '✓' : '✗'}</div>
-                                        <div>- Previous: ${caps.includes('previous') ? '✓' : '✗'}</div>
-                                        <div>- Seek: ${caps.includes('seek') ? '✓' : '✗'}</div>
-                                        <div>- Queue management: ${caps.includes('queue') ? '✓' : '✗'}</div>
-                                        <div>- Random/Shuffle: ${(caps.includes('random') || caps.includes('shuffle')) ? '✓' : '✗'}</div>
-                                        <div>- Loop: ${caps.includes('loop') ? '✓' : '✗'}</div>
-                                    </div>`;
-                                } else {
-                                    message += 'Capabilities: No capability information';
-                                }
-                                break;
-                                
-                            case 'PositionChanged':
-                                if (eventData.position !== undefined) {
-                                    const position = eventData.position;
-                                    const percentage = position.duration > 0 ? 
-                                        Math.round((position.position / position.duration) * 100) : 0;
+                        // Only handle the flat structure with snake_case event types
+                        // (e.g., type: 'state_changed')
+                        if (data.type) {
+                            const eventType = data.type;
+                            const playerName = data.player_name || (data.source ? data.source.player_name : 'unknown');
+                            
+                            // Map snake_case event type to display format (for consistency in UI)
+                            let displayEventType;
+                            switch(eventType) {
+                                case 'state_changed': displayEventType = 'State Changed'; break;
+                                case 'song_changed': displayEventType = 'Song Changed'; break;
+                                case 'loop_mode_changed': displayEventType = 'Loop Mode Changed'; break;
+                                case 'capabilities_changed': displayEventType = 'Capabilities Changed'; break;
+                                case 'position_changed': displayEventType = 'Position Changed'; break;
+                                case 'database_updating': displayEventType = 'Database Updating'; break;
+                                default: displayEventType = eventType; break;
+                            }
+                            
+                            let message = `<span class="log-event">${displayEventType}</span> from <b>${playerName}</b>: `;
+                            
+                            // Format different event types appropriately
+                            switch(eventType) {
+                                case 'state_changed':
+                                    message += `<span style="font-weight: bold; color: ${getStateColor(data.state)}">
+                                        ${data.state || 'unknown'}</span>`;
+                                    break;
                                     
+                                case 'song_changed':
+                                    const song = data.song;
+                                    if (song) {
+                                        message += `<div style="margin: 5px 0;">
+                                            <div><b>Title:</b> ${song.title || 'Unknown'}</div>
+                                            <div><b>Artist:</b> ${song.artist || 'Unknown'}</div>
+                                            ${song.album ? `<div><b>Album:</b> ${song.album}</div>` : ''}
+                                            ${song.duration ? `<div><b>Duration:</b> ${formatTime(song.duration)}</div>` : ''}
+                                        </div>`;
+                                    } else {
+                                        message += 'No song information';
+                                    }
+                                    break;
+                                    
+                                case 'loop_mode_changed':
+                                    const mode = data.mode || 'unknown';
+                                    message += `Loop mode: <b>${mode}</b>`;
+                                    break;
+                                    
+                                case 'capabilities_changed':
+                                    if (data.capabilities && Array.isArray(data.capabilities)) {
+                                        const caps = data.capabilities;
+                                        message += `<div style="margin: 5px 0;">
+                                            <div><b>Capabilities:</b></div>
+                                            <div>- Play: ${caps.includes('play') ? '✓' : '✗'}</div>
+                                            <div>- Pause: ${caps.includes('pause') ? '✓' : '✗'}</div>
+                                            <div>- Stop: ${caps.includes('stop') ? '✓' : '✗'}</div>
+                                            <div>- Next: ${caps.includes('next') ? '✓' : '✗'}</div>
+                                            <div>- Previous: ${caps.includes('previous') ? '✓' : '✗'}</div>
+                                            <div>- Seek: ${caps.includes('seek') ? '✓' : '✗'}</div>
+                                            <div>- Queue management: ${caps.includes('queue') ? '✓' : '✗'}</div>
+                                            <div>- Random/Shuffle: ${(caps.includes('random') || caps.includes('shuffle')) ? '✓' : '✗'}</div>
+                                            <div>- Loop: ${caps.includes('loop') ? '✓' : '✗'}</div>
+                                        </div>`;
+                                    } else {
+                                        message += 'Capabilities: No capability information';
+                                    }
+                                    break;
+                                    
+                                case 'position_changed':
+                                    if (data.position !== undefined) {
+                                        const position = data.position;
+                                        const percentage = position.duration > 0 ? 
+                                            Math.round((position.position / position.duration) * 100) : 0;
+                                        
+                                        message += `<div style="margin: 5px 0;">
+                                            <div>${formatTime(position.position)} / ${formatTime(position.duration)} (${percentage}%)</div>
+                                            <div style="width: 100%; background-color: #eee; height: 6px; border-radius: 3px; margin: 5px 0;">
+                                                <div style="width: ${percentage}%; background-color: #007bff; height: 6px; border-radius: 3px;"></div>
+                                            </div>
+                                        </div>`;
+                                    } else {
+                                        message += 'No position information';
+                                    }
+                                    break;
+                                    
+                                case 'database_updating':
+                                    const percentage = data.percentage !== undefined ? 
+                                        Math.round(data.percentage) : 0;
+                                        
                                     message += `<div style="margin: 5px 0;">
-                                        <div>${formatTime(position.position)} / ${formatTime(position.duration)} (${percentage}%)</div>
+                                        <div>Database update: ${percentage}% complete</div>
                                         <div style="width: 100%; background-color: #eee; height: 6px; border-radius: 3px; margin: 5px 0;">
-                                            <div style="width: ${percentage}%; background-color: #007bff; height: 6px; border-radius: 3px;"></div>
+                                            <div style="width: ${percentage}%; background-color: #28a745; height: 6px; border-radius: 3px;"></div>
                                         </div>
                                     </div>`;
-                                } else {
-                                    message += 'No position information';
-                                }
-                                break;
-                                
-                            case 'DatabaseUpdating':
-                                const percentage = eventData.percentage !== undefined ? 
-                                    Math.round(eventData.percentage * 100) : 0;
+                                    break;
                                     
-                                message += `<div style="margin: 5px 0;">
-                                    <div>Database update: ${percentage}% complete</div>
-                                    <div style="width: 100%; background-color: #eee; height: 6px; border-radius: 3px; margin: 5px 0;">
-                                        <div style="width: ${percentage}%; background-color: #28a745; height: 6px; border-radius: 3px;"></div>
-                                    </div>
-                                </div>`;
-                                break;
-                                
-                            default:
-                                message += JSON.stringify(eventData);
+                                default:
+                                    message += JSON.stringify(data);
+                            }
+                            
+                            logEvent(message);
+                            return;
                         }
-                    } else {
-                        // No need for backward compatibility as per your request
-                        // For unknown event format, dump the complete JSON for debugging
-                        message = `<span class="log-event">Unknown event format</span>: <pre style="margin: 5px 0; padding: 5px; background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; max-height: 200px; overflow: auto; white-space: pre-wrap;">${JSON.stringify(data, null, 2)}</pre>`;
+                        
+                        // If we get here, it's an unrecognized format
+                        const message = `<span class="log-event">Unknown event format</span>: <pre style="margin: 5px 0; padding: 5px; background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; max-height: 200px; overflow: auto; white-space: pre-wrap;">${JSON.stringify(data, null, 2)}</pre>`;
+                        logEvent(message);
+                        
+                    } catch (error) {
+                        console.error('Error parsing WebSocket message:', error);
+                        logEvent(`<span style="color: #dc3545;">Error parsing message: ${error.message}</span>`);
                     }
-                    
-                    logEvent(message);
                 };
                 
             } catch (error) {
@@ -425,17 +431,6 @@
             
             // Scroll to bottom
             logContainer.scrollTop = logContainer.scrollHeight;
-        }
-        
-        // Get event type as a string
-        function getEventType(data) {
-            if (data.state !== undefined) return 'StateChanged';
-            if (data.song !== undefined) return 'SongChanged';
-            if (data.mode !== undefined) return 'LoopModeChanged';
-            if (data.capabilities !== undefined) return 'CapabilitiesChanged';
-            if (data.position !== undefined) return 'PositionChanged';
-            if (data.percentage !== undefined) return 'DatabaseUpdating';
-            return 'Unknown';
         }
         
         // Update subscription

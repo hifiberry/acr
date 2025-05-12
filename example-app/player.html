@@ -1109,10 +1109,10 @@
             // Get the current player name to subscribe to
             const playerToSubscribe = currentPlayerName || 'active';
             
-            // Create subscription message
+            // Create subscription message - using proper format expected by the server
             const subscription = {
-                players: [playerToSubscribe],
-                event_types: [
+                "players": playerToSubscribe === 'active' ? null : [playerToSubscribe],
+                "event_types": [
                     "state_changed",
                     "song_changed",
                     "position_changed",
@@ -1123,7 +1123,7 @@
                 ]
             };
             
-            console.log(`Subscribing to events for player: ${playerToSubscribe}`);
+            console.log(`Subscribing to events for player: ${playerToSubscribe}`, subscription);
             socket.send(JSON.stringify(subscription));
         }
         
@@ -1145,125 +1145,189 @@
             
             console.log(`Processing event for player: ${playerName}`);
             
-            // Process different event types
-            if (data.StateChanged) {
-                const newState = data.StateChanged.state;
-                console.log(`Player state changed to: ${newState}`);
+            // Only process events with the type field (snake_case format)
+            if (data.type) {
+                switch(data.type) {
+                    case 'state_changed':
+                        processStateChange(data.state);
+                        break;
+                    case 'song_changed':
+                        processSongChange(data.song);
+                        break;
+                    case 'position_changed':
+                        processPositionChange(data.position);
+                        break;
+                    case 'loop_mode_changed':
+                        processLoopModeChange(data.mode);
+                        break;
+                    case 'shuffle_changed':
+                        processShuffleChange(data.shuffle);
+                        break;
+                    case 'capabilities_changed':
+                        processCapabilitiesChange(data);
+                        break;
+                    default:
+                        console.log(`Unhandled event type: ${data.type}`);
+                }
+                return;
+            }
+            
+            // If we get here, log the unrecognized format
+            console.log('Unknown event format:', data);
+        }
+        
+        // Process state change events
+        function processStateChange(newState) {
+            if (!newState) return;
+            
+            console.log(`Player state changed to: ${newState}`);
+            
+            // Update UI for state change
+            if (currentData) {
+                currentData.state = newState;
+                updatePlayerInfo(currentData);
+                updateControlButtons(currentData);
                 
-                // Update UI for state change
+                // Start or stop auto progress updates based on state
+                if (newState.toLowerCase() === 'playing') {
+                    lastProgressUpdate = Date.now(); // Reset timestamp on play
+                    startAutoProgress();
+                } else {
+                    stopAutoProgress();
+                }
+            } else {
+                // If we don't have current data, fetch everything
+                fetchCurrentPlayer();
+            }
+        }
+        
+        // Process song change events
+        function processSongChange(songData) {
+            if (!songData) return;
+            
+            console.log(`Song changed: ${songData.title || 'Unknown'} by ${songData.artist || 'Unknown'}`);
+            
+            // Update song information
+            if (currentData) {
+                currentData.song = songData;
+                // Reset position to 0 for new song if not provided
+                if (!songData.position) {
+                    currentData.position = 0;
+                }
+                updateNowPlaying(currentData);
+                
+                // Reset and restart auto progress for the new song if playing
+                if (currentData.state && currentData.state.toLowerCase() === 'playing') {
+                    lastProgressUpdate = Date.now();
+                    startAutoProgress();
+                }
+            } else {
+                fetchCurrentPlayer();
+            }
+        }
+        
+        // Process position change events
+        function processPositionChange(positionData) {
+            if (!positionData) return;
+            
+            let newPosition;
+            
+            // Handle the different possible formats of position data:
+            if (typeof positionData === 'object') {
+                // Format 1: {position: number, duration: number}
+                if (positionData.position !== undefined) {
+                    newPosition = positionData.position;
+                }
+                // Format 2: direct number value in the object (server oddity)
+                else {
+                    const positionValue = Object.values(positionData)[0];
+                    if (typeof positionValue === 'number') {
+                        newPosition = positionValue;
+                    }
+                }
+            }
+            // Format 3: direct number value
+            else if (typeof positionData === 'number') {
+                newPosition = positionData;
+            }
+            
+            // If we couldn't determine a valid position, return
+            if (newPosition === undefined || isNaN(newPosition)) {
+                console.warn('Could not determine valid position from event data:', positionData);
+                return;
+            }
+            
+            // Only log position changes every 5 seconds to reduce console spam
+            if (Math.floor(newPosition) % 5 === 0) {
+                console.log(`Position changed: ${formatTime(newPosition)}`);
+            }
+            
+            // Update position in UI
+            if (currentData) {
+                currentData.position = newPosition;
+                lastProgressUpdate = Date.now(); // Reset timestamp on position update
+                updateProgressBar(); // Just update the progress bar, not the whole UI
+            }
+        }
+        
+        // Process loop mode change events
+        function processLoopModeChange(newLoopMode) {
+            if (!newLoopMode) return;
+            
+            console.log(`Loop mode changed: ${newLoopMode}`);
+            
+            // Update loop mode in UI
+            if (currentData) {
+                currentData.loop_mode = newLoopMode;
+                updatePlayerInfo(currentData);
+                updateControlButtons(currentData);
+            } else {
+                fetchCurrentPlayer();
+            }
+        }
+        
+        // Process shuffle change events
+        function processShuffleChange(newShuffle) {
+            console.log(`Shuffle mode changed: ${newShuffle}`);
+            
+            // Update shuffle state in UI
+            if (currentData) {
+                currentData.shuffle = newShuffle;
+                updatePlayerInfo(currentData);
+                updateControlButtons(currentData);
+            } else {
+                fetchCurrentPlayer();
+            }
+        }
+        
+        // Process capabilities change events
+        function processCapabilitiesChange(data) {
+            console.log('Player capabilities changed:', data);
+            
+            // Handle capabilities directly if they are provided in the event
+            if (data.capabilities && Array.isArray(data.capabilities)) {
+                const caps = data.capabilities;
+                
+                // Update our capability object
+                playerCapabilities.canPlay = caps.includes('play');
+                playerCapabilities.canPause = caps.includes('pause');
+                playerCapabilities.canStop = caps.includes('stop');
+                playerCapabilities.canPrevious = caps.includes('previous');
+                playerCapabilities.canNext = caps.includes('next');
+                playerCapabilities.canSeek = caps.includes('seek');
+                playerCapabilities.hasQueue = caps.includes('queue');
+                playerCapabilities.canShuffle = caps.includes('shuffle') || caps.includes('random');
+                playerCapabilities.canLoop = caps.includes('loop');
+                
+                console.log('Updated capabilities from event:', playerCapabilities);
+                
+                // Update UI with new capabilities
                 if (currentData) {
-                    currentData.state = newState;
-                    updatePlayerInfo(currentData);
                     updateControlButtons(currentData);
-                    
-                    // Start or stop auto progress updates based on state
-                    if (newState.toLowerCase() === 'playing') {
-                        lastProgressUpdate = Date.now(); // Reset timestamp on play
-                        startAutoProgress();
-                    } else {
-                        stopAutoProgress();
-                    }
-                } else {
-                    // If we don't have current data, fetch everything
-                    fetchCurrentPlayer();
                 }
-            }
-            else if (data.SongChanged) {
-                console.log(`Song changed: ${data.SongChanged.title || 'Unknown'} by ${data.SongChanged.artist || 'Unknown'}`);
-                
-                // Update song information
-                if (currentData) {
-                    currentData.song = data.SongChanged;
-                    // Reset position to 0 for new song if not provided
-                    if (!data.SongChanged.position) {
-                        currentData.position = 0;
-                    }
-                    updateNowPlaying(currentData);
-                    
-                    // Reset and restart auto progress for the new song if playing
-                    if (currentData.state && currentData.state.toLowerCase() === 'playing') {
-                        lastProgressUpdate = Date.now();
-                        startAutoProgress();
-                    }
-                } else {
-                    fetchCurrentPlayer();
-                }
-            }
-            else if (data.PositionChanged) {
-                const newPosition = data.PositionChanged.position;
-                
-                // Only log position changes every 5 seconds to reduce console spam
-                if (Math.floor(newPosition) % 5 === 0) {
-                    console.log(`Position changed: ${formatTime(newPosition)}`);
-                }
-                
-                // Update position in UI
-                if (currentData) {
-                    currentData.position = newPosition;
-                    lastProgressUpdate = Date.now(); // Reset timestamp on position update
-                    updateProgressBar(); // Just update the progress bar, not the whole UI
-                }
-            }
-            else if (data.LoopModeChanged) {
-                const newLoopMode = data.LoopModeChanged.loop_mode;
-                console.log(`Loop mode changed: ${newLoopMode}`);
-                
-                // Update loop mode in UI
-                if (currentData) {
-                    currentData.loop_mode = newLoopMode;
-                    updatePlayerInfo(currentData);
-                    updateControlButtons(currentData);
-                } else {
-                    fetchCurrentPlayer();
-                }
-            }
-            else if (data.ShuffleChanged) {
-                const newShuffle = data.ShuffleChanged.shuffle;
-                console.log(`Shuffle mode changed: ${newShuffle}`);
-                
-                // Update shuffle state in UI
-                if (currentData) {
-                    currentData.shuffle = newShuffle;
-                    updatePlayerInfo(currentData);
-                    updateControlButtons(currentData);
-                } else {
-                    fetchCurrentPlayer();
-                }
-            }
-            else if (data.CapabilitiesChanged) {
-                console.log('Player capabilities changed:', data.CapabilitiesChanged);
-                
-                // Handle capabilities directly if they are provided in the event
-                if (data.CapabilitiesChanged.capabilities && Array.isArray(data.CapabilitiesChanged.capabilities)) {
-                    const caps = data.CapabilitiesChanged.capabilities;
-                    
-                    // Update our capability object
-                    playerCapabilities.canPlay = caps.includes('play');
-                    playerCapabilities.canPause = caps.includes('pause');
-                    playerCapabilities.canStop = caps.includes('stop');
-                    playerCapabilities.canPrevious = caps.includes('previous');
-                    playerCapabilities.canNext = caps.includes('next');
-                    playerCapabilities.canSeek = caps.includes('seek');
-                    playerCapabilities.hasQueue = caps.includes('queue');
-                    playerCapabilities.canShuffle = caps.includes('shuffle') || caps.includes('random');
-                    playerCapabilities.canLoop = caps.includes('loop');
-                    
-                    console.log('Updated capabilities from event:', playerCapabilities);
-                    
-                    // Update UI with new capabilities
-                    if (currentData) {
-                        updateControlButtons(currentData);
-                    }
-                } else {
-                    // If capabilities not directly provided, fetch from server
-                    console.log('Fetching updated capabilities from server');
-                    fetchCurrentPlayer();
-                }
-            }
-            else if (data.MetadataChanged) {
-                console.log('Player metadata changed');
-                
-                // If the metadata could contain capabilities info, update from server
+            } else {
+                // If capabilities not directly provided, fetch from server
+                console.log('Fetching updated capabilities from server');
                 fetchCurrentPlayer();
             }
         }

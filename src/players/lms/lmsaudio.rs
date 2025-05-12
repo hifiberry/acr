@@ -915,7 +915,17 @@ impl PlayerController for LMSAudioController {
             return None;
         }
         
-        // Use the cached song information from the polling thread
+        // Get direct access to the player instance
+        if let Ok(player_guard) = self.player.read() {
+            if let Some(player_instance) = player_guard.as_ref() {
+                // Get real-time song information directly from the server
+                debug!("Fetching real-time song information from LMS server");
+                return player_instance.get_current_song();
+            }
+        }
+        
+        // Fallback to cached information if we couldn't access the player
+        debug!("Falling back to cached song information");
         match self.current_song.read() {
             Ok(song_guard) => song_guard.clone(),
             Err(e) => {
@@ -1025,7 +1035,17 @@ impl PlayerController for LMSAudioController {
             return None;
         }
         
-        // Use the cached position information from the polling thread
+        // Get direct access to the player instance
+        if let Ok(player_guard) = self.player.read() {
+            if let Some(player_instance) = player_guard.as_ref() {
+                // Get real-time position information directly from the server
+                debug!("Fetching real-time position information from LMS server");
+                return player_instance.get_current_position().ok().map(|pos| pos as f64);
+            }
+        }
+        
+        // Fallback to cached information if we couldn't access the player
+        debug!("Falling back to cached position information");
         match self.current_position.read() {
             Ok(pos_guard) => *pos_guard,
             Err(e) => {

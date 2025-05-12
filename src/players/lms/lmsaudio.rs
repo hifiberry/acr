@@ -40,10 +40,6 @@ pub struct LMSAudioConfig {
     /// Reconnection interval in seconds (0 = disabled)
     #[serde(default = "default_reconnection_interval")]
     pub reconnection_interval: u64,
-    
-    /// Polling interval in seconds for now playing information (0 = disabled)
-    #[serde(default = "default_polling_interval")]
-    pub polling_interval: u64,
 }
 
 /// Default LMS server port
@@ -61,11 +57,6 @@ fn default_reconnection_interval() -> u64 {
     30
 }
 
-/// Default polling interval in seconds (30 seconds)
-fn default_polling_interval() -> u64 {
-    30
-}
-
 impl Default for LMSAudioConfig {
     fn default() -> Self {
         Self {
@@ -75,7 +66,6 @@ impl Default for LMSAudioConfig {
             player_name: None,
             player_macs: Vec::new(),
             reconnection_interval: default_reconnection_interval(),
-            polling_interval: default_polling_interval(),
         }
     }
 }
@@ -111,15 +101,6 @@ pub struct LMSAudioController {
     
     /// Flag to control the reconnection thread
     running: Arc<AtomicBool>,
-    
-    /// Flag to control the polling thread
-    polling: Arc<AtomicBool>,
-    
-    /// Currently playing song
-    current_song: Arc<RwLock<Option<Song>>>,
-    
-    /// Current playback position
-    current_position: Arc<RwLock<Option<f64>>>,
     
     /// Last connected server address
     last_connected_server: Arc<RwLock<Option<String>>>,
@@ -200,9 +181,6 @@ impl LMSAudioController {
         
         let is_connected = Arc::new(AtomicBool::new(false));
         let running = Arc::new(AtomicBool::new(true));
-        let polling = Arc::new(AtomicBool::new(true));
-        let current_song = Arc::new(RwLock::new(None));
-        let current_position = Arc::new(RwLock::new(None));
         let last_connected_server = Arc::new(RwLock::new(None));
         
         // Create a new controller
@@ -213,9 +191,6 @@ impl LMSAudioController {
             player: Arc::new(RwLock::new(None)),
             is_connected,
             running,
-            polling,
-            current_song,
-            current_position,
             last_connected_server,
         };
         
@@ -736,9 +711,6 @@ impl LMSAudioController {
                     player: Arc::new(RwLock::new(None)),
                     is_connected: Arc::new(AtomicBool::new(was_connected)),
                     running: Arc::new(AtomicBool::new(true)),
-                    polling: Arc::new(AtomicBool::new(true)),
-                    current_song: Arc::new(RwLock::new(None)),
-                    current_position: Arc::new(RwLock::new(None)),
                     last_connected_server: Arc::new(RwLock::new(None)),
                 };
                 
@@ -806,102 +778,6 @@ impl LMSAudioController {
             info!("LMS reconnection thread stopped");
         });
     }
-    
-    /// Start the polling thread for now playing information
-    fn start_polling_thread(&self) {
-        let config = match self.config.read() {
-            Ok(cfg) => cfg.clone(),
-            Err(_) => {
-                warn!("Failed to acquire read lock on LMS configuration");
-                return;
-            }
-        };
-        
-        // Don't start the polling thread if the interval is 0 (disabled)
-        if config.polling_interval == 0 {
-            info!("LMS now playing polling is disabled (interval = 0)");
-            return;
-        }
-        
-        let interval = Duration::from_secs(config.polling_interval);
-        let is_connected = self.is_connected.clone();
-        let polling = self.polling.clone();
-        let player = self.player.clone();
-        let current_song = self.current_song.clone();
-        let current_position = self.current_position.clone();
-        let base = self.base.clone();
-        
-        thread::spawn(move || {
-            info!("LMS now playing polling thread started (interval: {} seconds)", config.polling_interval);
-            
-            // Keep track of last song to detect changes
-            let mut last_song: Option<Song> = None;
-            
-            while polling.load(Ordering::SeqCst) {
-                // Only poll if connected
-                if is_connected.load(Ordering::SeqCst) {
-                    // Get a reference to the player if available
-                    if let Ok(player_guard) = player.read() {
-                        if let Some(player_instance) = player_guard.as_ref() {
-                            // Poll for now playing info
-                            if let Some((song, position)) = player_instance.now_playing() {
-                                // Update stored current song and position
-                                if let Ok(mut song_guard) = current_song.write() {
-                                    *song_guard = Some(song.clone());
-                                }
-                                
-                                if let Ok(mut pos_guard) = current_position.write() {
-                                    *pos_guard = Some(position as f64);
-                                }
-                                
-                                // If song changed, notify listeners
-                                let song_changed = match &last_song {
-                                    Some(prev_song) => prev_song != &song,
-                                    None => true, // First song detected
-                                };
-                                
-                                if song_changed {
-                                    debug!("Song changed: {:?}", song.title);
-                                    last_song = Some(song.clone());
-                                    
-                                    // Notify listeners about the song change
-                                    base.notify_song_changed(Some(&song));
-                                }
-                            } else {
-                                // No song is playing
-                                if last_song.is_some() {
-                                    debug!("Playback stopped");
-                                    last_song = None;
-                                    
-                                    // Clear stored song and position
-                                    if let Ok(mut song_guard) = current_song.write() {
-                                        *song_guard = None;
-                                    }
-                                    
-                                    if let Ok(mut pos_guard) = current_position.write() {
-                                        *pos_guard = None;
-                                    }
-                                    
-                                    // Notify listeners that no song is playing
-                                    base.notify_song_changed(None);
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Sleep for the configured interval
-                thread::sleep(interval);
-                
-                // Check if we should exit the loop
-                if !polling.load(Ordering::SeqCst) {
-                    break;
-                }
-            }
-            
-            info!("LMS now playing polling thread stopped");
-        });
-    }
 }
 
 impl PlayerController for LMSAudioController {
@@ -924,15 +800,7 @@ impl PlayerController for LMSAudioController {
             }
         }
         
-        // Fallback to cached information if we couldn't access the player
-        debug!("Falling back to cached song information");
-        match self.current_song.read() {
-            Ok(song_guard) => song_guard.clone(),
-            Err(e) => {
-                warn!("Failed to acquire read lock on current song: {}", e);
-                None
-            }
-        }
+        None
     }
 
     fn get_queue(&self) -> Vec<Track> {
@@ -1013,18 +881,7 @@ impl PlayerController for LMSAudioController {
             },
             Err(e) => {
                 debug!("Failed to get LMS player status: {}", e);
-                
-                // Fall back to cached state if HTTP request failed
-                match self.current_song.try_read() {
-                    Ok(song_guard) => {
-                        if song_guard.is_some() {
-                            PlaybackState::Playing
-                        } else {
-                            PlaybackState::Stopped
-                        }
-                    },
-                    Err(_) => PlaybackState::Unknown
-                }
+                PlaybackState::Unknown
             }
         }
     }
@@ -1044,15 +901,7 @@ impl PlayerController for LMSAudioController {
             }
         }
         
-        // Fallback to cached information if we couldn't access the player
-        debug!("Falling back to cached position information");
-        match self.current_position.read() {
-            Ok(pos_guard) => *pos_guard,
-            Err(e) => {
-                warn!("Failed to acquire read lock on current position: {}", e);
-                None
-            }
-        }
+        None
     }
     
     fn get_shuffle(&self) -> bool {
@@ -1156,9 +1005,6 @@ impl PlayerController for LMSAudioController {
         // Start the reconnection thread
         self.start_reconnection_thread();
         
-        // Start the now playing polling thread
-        self.start_polling_thread();
-        
         // Return true as the player controller started successfully,
         // even if the connection to LMS server failed
         true
@@ -1168,10 +1014,6 @@ impl PlayerController for LMSAudioController {
         // Stop the reconnection thread
         self.running.store(false, Ordering::SeqCst);
         info!("LMS player stopping, reconnection thread will terminate");
-        
-        // Stop the polling thread
-        self.polling.store(false, Ordering::SeqCst);
-        info!("LMS player stopping, polling thread will terminate");
         
         // Not yet implemented - would perform any necessary cleanup
         true

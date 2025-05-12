@@ -1,11 +1,9 @@
-use reqwest::blocking::Client;
-use reqwest::Error as ReqwestError;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Deserializer};
 use serde_json::Value;
-use std::sync::Arc;
 use std::time::Duration;
 use log::{debug, error};
 use crate::helpers::macaddress::normalize_mac_address;
+use crate::helpers::http_client::{HttpClient, HttpClientError, new_http_client, post_json};
 
 /// The standard JSON-RPC path for Lyrion Music Server
 const JSONRPC_PATH: &str = "/jsonrpc.js";
@@ -17,7 +15,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 5;
 #[derive(Debug, thiserror::Error)]
 pub enum LmsRpcError {
     #[error("HTTP request error: {0}")]
-    RequestError(#[from] ReqwestError),
+    RequestError(String),
 
     #[error("Failed to parse response: {0}")]
     ParseError(String),
@@ -27,6 +25,18 @@ pub enum LmsRpcError {
 
     #[error("Empty response from server")]
     EmptyResponse,
+}
+
+// Convert from HttpClientError to LmsRpcError
+impl From<HttpClientError> for LmsRpcError {
+    fn from(error: HttpClientError) -> Self {
+        match error {
+            HttpClientError::RequestError(msg) => LmsRpcError::RequestError(msg),
+            HttpClientError::ParseError(msg) => LmsRpcError::ParseError(msg),
+            HttpClientError::ServerError(msg) => LmsRpcError::ServerError(msg),
+            HttpClientError::EmptyResponse => LmsRpcError::EmptyResponse,
+        }
+    }
 }
 
 /// Request structure for LMS JSON-RPC API
@@ -60,7 +70,7 @@ pub struct LmsRpcClient {
     base_url: String,
     
     /// HTTP client for making requests
-    client: Arc<Client>,
+    client: Box<dyn HttpClient>,
     
     /// Request counter for unique IDs
     request_id: u32,
@@ -74,28 +84,31 @@ impl LmsRpcClient {
     /// * `port` - HTTP port of the LMS server (typically 9000)
     pub fn new(host: &str, port: u16) -> Self {
         let base_url = format!("http://{}:{}", host, port);
-        
-        let client = Client::builder()
-            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = new_http_client(DEFAULT_TIMEOUT_SECS);
             
         LmsRpcClient {
             base_url,
-            client: Arc::new(client),
+            client,
             request_id: 1,
         }
     }
     
     /// Set a custom timeout for the client
-    pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
-            .build()
-            .unwrap_or_else(|_| Client::new());
-            
-        self.client = Arc::new(client);
-        self
+    pub fn with_timeout(self, timeout_secs: u64) -> Self {
+        Self {
+            base_url: self.base_url,
+            client: new_http_client(timeout_secs),
+            request_id: self.request_id,
+        }
+    }
+    
+    /// Set a specific HTTP client implementation
+    pub fn with_client(self, client: Box<dyn HttpClient>) -> Self {
+        Self {
+            base_url: self.base_url,
+            client,
+            request_id: self.request_id,
+        }
     }
     
     /// Get the next request ID
@@ -158,35 +171,19 @@ impl LmsRpcClient {
         let url = format!("{}{}", self.base_url, JSONRPC_PATH);
         
         debug!("Sending LMS request to {}: {:?}", url, request);
-        // Add a warning log with the full command details
-        debug!("LMS command to {}: player_id={}, command={:?}", 
-              url, player_id, command);
+        debug!("LMS command to {}: player_id={}, command={:?}", url, player_id, command);
         
-        let response = self.client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()?;
-            
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(LmsRpcError::ServerError(format!("HTTP error {}: {}", status, error_text)));
-        }
+        // Use our updated HTTP client via the helper function
+        let response = post_json(&*self.client, &url, &request)?;
         
-        let response_text = response.text()?;
-        if response_text.is_empty() {
-            return Err(LmsRpcError::EmptyResponse);
-        }
-        
-        match serde_json::from_str::<JsonRpcResponse>(&response_text) {
+        // Parse the response as a JsonRpcResponse
+        match serde_json::from_value::<JsonRpcResponse>(response) {
             Ok(json_response) => {
                 debug!("LMS response: {:?}", json_response.result);
                 Ok(json_response.result)
             },
             Err(e) => {
                 error!("Failed to parse LMS response: {}", e);
-                error!("Response text: {}", response_text);
                 Err(LmsRpcError::ParseError(e.to_string()))
             }
         }
@@ -344,262 +341,6 @@ impl LmsRpcClient {
         }
     }
     
-    /// Search the library for a query string
-    pub fn search(&mut self, player_id: &str, query: &str, limit: u32) -> Result<SearchResults, LmsRpcError> {
-        let result = self.request(
-            player_id, 
-            "search", 
-            0, 
-            limit, 
-            vec![("term", query)]
-        )?;
-        
-        // Try to parse the complex search results
-        let mut search_results = SearchResults::default();
-        
-        // Parse tracks
-        if let Some(tracks) = result.get("tracks_loop") {
-            search_results.tracks = serde_json::from_value(tracks.clone())
-                .unwrap_or_default();
-        }
-        
-        // Parse albums
-        if let Some(albums) = result.get("albums_loop") {
-            search_results.albums = serde_json::from_value(albums.clone())
-                .unwrap_or_default();
-        }
-        
-        // Parse artists
-        if let Some(artists) = result.get("artists_loop") {
-            search_results.artists = serde_json::from_value(artists.clone())
-                .unwrap_or_default();
-        }
-        
-        // Parse playlists
-        if let Some(playlists) = result.get("playlists_loop") {
-            search_results.playlists = serde_json::from_value(playlists.clone())
-                .unwrap_or_default();
-        }
-        
-        Ok(search_results)
-    }
-    
-    /// Get album tracks
-    pub fn get_album_tracks(&mut self, player_id: &str, album_id: &str) -> Result<Vec<Track>, LmsRpcError> {
-        let result = self.request(
-            player_id, 
-            "titles", 
-            0, 
-            100, 
-            vec![("album_id", album_id), ("tags", "altqod")]
-        )?;
-        
-        match result.get("titles_loop") {
-            Some(tracks) => {
-                serde_json::from_value::<Vec<Track>>(tracks.clone())
-                    .map_err(|e| LmsRpcError::ParseError(format!("Failed to parse album tracks: {}", e)))
-            },
-            None => Ok(Vec::new()), // No tracks found
-        }
-    }
-    
-    /// Add a track to the playlist
-    pub fn add_track(&mut self, player_id: &str, track_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("add", ""), ("track_id", track_id)])
-    }
-    
-    /// Add an album to the playlist
-    pub fn add_album(&mut self, player_id: &str, album_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("add", ""), ("album_id", album_id)])
-    }
-    
-    /// Clear the playlist
-    pub fn clear_playlist(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("clear", "")])
-    }
-
-    /// Get albums with support for all tagged parameters
-    /// 
-    /// # Arguments
-    /// * `player_id` - MAC address of player or "0" for server-level commands
-    /// * `start` - Start index for pagination (0-based)
-    /// * `items_per_response` - Number of items to return per response
-    /// * `params` - Optional parameters to filter and customize the album response
-    /// 
-    /// # Returns
-    /// The result field of the response as a JSON Value containing album information
-    pub fn get_albums(&mut self, player_id: &str, start: u32, items_per_response: u32, 
-                     params: Vec<(&str, &str)>) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "albums", start, items_per_response, params)
-    }
-    
-    /// Get albums with detailed information using default tags
-    pub fn get_albums_with_details(&mut self, player_id: &str, start: u32, items_per_response: u32) 
-        -> Result<Vec<Album>, LmsRpcError> {
-        // Use comprehensive tags to get detailed album information
-        // l=album name, y=year, j=artwork track id, t=title, i=disc number,
-        // q=disccount, w=compilation, a=artist, S=artist_id, s=textkey
-        let result = self.get_albums(player_id, start, items_per_response, vec![
-            ("tags", "lyjtiaqwSs")
-        ])?;
-        
-        match result.get("albums_loop") {
-            Some(albums) => {
-                serde_json::from_value::<Vec<Album>>(albums.clone())
-                    .map_err(|e| LmsRpcError::ParseError(format!("Failed to parse albums: {}", e)))
-            },
-            None => Ok(Vec::new()), // No albums found
-        }
-    }
-
-    /// Search for albums with a specific query
-    pub fn search_albums(&mut self, player_id: &str, query: &str, start: u32, items_per_response: u32) 
-        -> Result<Vec<Album>, LmsRpcError> {
-        let result = self.get_albums(player_id, start, items_per_response, vec![
-            ("search", query),
-            ("tags", "lyjtiaqwSs")
-        ])?;
-        
-        match result.get("albums_loop") {
-            Some(albums) => {
-                serde_json::from_value::<Vec<Album>>(albums.clone())
-                    .map_err(|e| LmsRpcError::ParseError(format!("Failed to parse albums: {}", e)))
-            },
-            None => Ok(Vec::new()), // No albums found
-        }
-    }
-    
-    /// Get albums by a specific artist
-    pub fn get_artist_albums(&mut self, player_id: &str, artist_id: &str, start: u32, items_per_response: u32) 
-        -> Result<Vec<Album>, LmsRpcError> {
-        let result = self.get_albums(player_id, start, items_per_response, vec![
-            ("artist_id", artist_id),
-            ("tags", "lyjtiaqwSs")
-        ])?;
-        
-        match result.get("albums_loop") {
-            Some(albums) => {
-                serde_json::from_value::<Vec<Album>>(albums.clone())
-                    .map_err(|e| LmsRpcError::ParseError(format!("Failed to parse albums: {}", e)))
-            },
-            None => Ok(Vec::new()), // No albums found
-        }
-    }
-
-    /// Get albums by genre
-    pub fn get_genre_albums(&mut self, player_id: &str, genre_id: &str, start: u32, items_per_response: u32) 
-        -> Result<Vec<Album>, LmsRpcError> {
-        let result = self.get_albums(player_id, start, items_per_response, vec![
-            ("genre_id", genre_id),
-            ("tags", "lyjtiaqwSs")
-        ])?;
-        
-        match result.get("albums_loop") {
-            Some(albums) => {
-                serde_json::from_value::<Vec<Album>>(albums.clone())
-                    .map_err(|e| LmsRpcError::ParseError(format!("Failed to parse albums: {}", e)))
-            },
-            None => Ok(Vec::new()), // No albums found
-        }
-    }
-
-    /// Get albums with all available details using the complete set of tagged parameters
-    /// 
-    /// # Arguments
-    /// * `player_id` - MAC address of player or "0" for server-level commands
-    /// * `start` - Start index for pagination (0-based)
-    /// * `items_per_response` - Number of items to return per response
-    /// * `sort` - Optional sort method (album, new, random, etc.)
-    /// * `search` - Optional search query
-    /// * `artist_id` - Optional artist ID filter
-    /// * `genre_id` - Optional genre ID filter
-    /// 
-    /// # Returns
-    /// Vector of Album structs with comprehensive details
-    pub fn get_albums_with_full_details(
-        &mut self, 
-        player_id: &str, 
-        start: u32, 
-        items_per_response: u32,
-        sort: Option<&str>,
-        search: Option<&str>,
-        artist_id: Option<&str>,
-        genre_id: Option<&str>
-    ) -> Result<Vec<Album>, LmsRpcError> {
-        // Set up base parameters
-        let mut params = vec![
-            ("tags", "aCdleJKoOPy"), // Request album details including artwork, year, genre
-        ];
-        
-        // Add optional parameters
-        if let Some(sort_field) = sort {
-            params.push(("sort", sort_field));
-        }
-        
-        if let Some(search_query) = search {
-            params.push(("search", search_query));
-        }
-        
-        if let Some(artist) = artist_id {
-            params.push(("artist_id", artist));
-        }
-        
-        if let Some(genre) = genre_id {
-            params.push(("genre_id", genre));
-        }
-        
-        // Convert params to &str tuples using a different approach that avoids str_as_str
-        let param_refs: Vec<(&str, &str)> = params
-            .into_iter()
-            .map(|(k, v)| (k, v))
-            .collect();
-        
-        let result = self.request(player_id, "albums", start, items_per_response, param_refs)?;
-        
-        // Extract the albums array
-        match result.get("albums_loop") {
-            Some(albums_array) => {
-                match serde_json::from_value::<Vec<Album>>(albums_array.clone()) {
-                    Ok(albums) => Ok(albums),
-                    Err(e) => Err(LmsRpcError::ParseError(format!("Failed to parse albums: {}", e))),
-                }
-            },
-            None => Ok(Vec::new()), // No albums available
-        }
-    }
-    
-    /// Get details of a specific album by ID
-    pub fn get_album_by_id(&mut self, player_id: &str, album_id: &str) -> Result<Option<Album>, LmsRpcError> {
-        // Request a single album with the specified ID
-        let result = self.request(
-            player_id, 
-            "albums", 
-            0, 
-            1, 
-            vec![
-                ("album_id", album_id),
-                ("tags", "aCdleJKoOPsy")  // Request full album details
-            ]
-        )?;
-        
-        // Extract the album information
-        match result.get("albums_loop") {
-            Some(albums_array) => {
-                match serde_json::from_value::<Vec<Album>>(albums_array.clone()) {
-                    Ok(mut albums) => {
-                        if albums.is_empty() {
-                            Ok(None)
-                        } else {
-                            Ok(Some(albums.remove(0)))
-                        }
-                    },
-                    Err(e) => Err(LmsRpcError::ParseError(format!("Failed to parse album: {}", e))),
-                }
-            },
-            None => Ok(None), // Album not found
-        }
-    }
-
     /// Check if a specific MAC address is connected to this LMS server
     /// If no MAC address is provided, it will check all local interfaces
     pub fn is_connected(&mut self, mac_addr: Option<&str>) -> Result<bool, LmsRpcError> {
@@ -656,6 +397,78 @@ impl LmsRpcClient {
         // No matches found
         Ok(false)
     }
+
+    /// Search for content in the LMS library
+    /// 
+    /// # Arguments
+    /// * `player_id` - MAC address of player
+    /// * `query` - Search query string
+    /// * `limit` - Maximum number of results to return
+    /// 
+    /// # Returns
+    /// Search results containing tracks, albums, artists, and playlists
+    pub fn search(&mut self, player_id: &str, query: &str, limit: u32) -> Result<SearchResults, LmsRpcError> {
+        debug!("Searching for '{}' (limit {})", query, limit);
+        let mut results = SearchResults::default();
+        
+        // Search for tracks
+        let track_results = self.request(player_id, "search", 0, limit, 
+            vec![("term", query), ("type", "track"), ("tags", "aCdtl")])?;
+            
+        if let Some(tracks_array) = track_results.get("tracks_loop") {
+            if let Some(tracks) = tracks_array.as_array() {
+                for track_value in tracks {
+                    if let Ok(track) = serde_json::from_value::<Track>(track_value.clone()) {
+                        results.tracks.push(track);
+                    }
+                }
+            }
+        }
+        
+        // Search for albums
+        let album_results = self.request(player_id, "search", 0, limit, 
+            vec![("term", query), ("type", "album"), ("tags", "aCdtlyo")])?;
+            
+        if let Some(albums_array) = album_results.get("albums_loop") {
+            if let Some(albums) = albums_array.as_array() {
+                for album_value in albums {
+                    if let Ok(album) = serde_json::from_value::<Album>(album_value.clone()) {
+                        results.albums.push(album);
+                    }
+                }
+            }
+        }
+        
+        // Search for artists
+        let artist_results = self.request(player_id, "search", 0, limit, 
+            vec![("term", query), ("type", "artist"), ("tags", "a")])?;
+            
+        if let Some(artists_array) = artist_results.get("artists_loop") {
+            if let Some(artists) = artists_array.as_array() {
+                for artist_value in artists {
+                    if let Ok(artist) = serde_json::from_value::<Artist>(artist_value.clone()) {
+                        results.artists.push(artist);
+                    }
+                }
+            }
+        }
+        
+        // Search for playlists
+        let playlist_results = self.request(player_id, "search", 0, limit, 
+            vec![("term", query), ("type", "playlist"), ("tags", "p")])?;
+            
+        if let Some(playlists_array) = playlist_results.get("playlists_loop") {
+            if let Some(playlists) = playlists_array.as_array() {
+                for playlist_value in playlists {
+                    if let Ok(playlist) = serde_json::from_value::<Playlist>(playlist_value.clone()) {
+                        results.playlists.push(playlist);
+                    }
+                }
+            }
+        }
+        
+        Ok(results)
+    }
 }
 
 /// Player information
@@ -703,7 +516,7 @@ fn default_zero() -> u8 { 0 }
 /// Track information
 #[derive(Debug, Clone, Deserialize)]
 pub struct Track {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_id_to_string")]
     pub id: String,
     #[serde(default)]
     pub title: String,
@@ -717,6 +530,24 @@ pub struct Track {
     pub duration: Option<f32>,
     #[serde(default, rename = "playlist index")]
     pub playlist_index: Option<i32>,
+}
+
+/// Custom deserializer for track IDs that can be either strings or integers
+fn deserialize_id_to_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // First deserialize to a serde_json::Value which can represent any JSON value
+    let value = Value::deserialize(deserializer)?;
+    
+    // Convert the value to a string regardless of its type
+    Ok(match value {
+        Value::String(s) => s,
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => String::new(),
+        _ => String::new(), // Empty string for arrays and objects
+    })
 }
 
 /// Album information

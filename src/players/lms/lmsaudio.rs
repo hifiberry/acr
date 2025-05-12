@@ -11,7 +11,7 @@ use crate::data::{LoopMode, PlaybackState, PlayerCapabilitySet, PlayerCommand, S
 use crate::PlayerStateListener;
 use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
-use crate::players::lms::jsonrps::LmsRpcClient;
+use crate::players::lms::jsonrps::{LmsRpcClient, PlayerStatus};
 use crate::players::lms::lmsserver::{find_local_servers, get_local_mac_addresses, set_connected_server};
 use crate::players::lms::lmspplayer::LMSPlayer;
 use crate::helpers::macaddress::normalize_mac_address;
@@ -538,9 +538,6 @@ impl LMSAudioController {
                             Ok(players) => {
                                 debug!("Found {} players on server {}", players.len(), server.name);
                                 
-                                // First check if any of the configured MACs directly match a player
-                                let mut found_match = false;
-                                
                                 // Check for matches with configured MACs
                                 for player in &players {
                                     debug!("Checking autodiscovered player: {} (MAC: {})", player.name, player.playerid);
@@ -590,7 +587,7 @@ impl LMSAudioController {
                                                     // Update the connected server registry
                                                     set_connected_server(Some(&server.ip));
                                                     
-                                                    found_match = true;
+                                                    // Return immediately when a match is found
                                                     return true;
                                                 }
                                             }
@@ -601,9 +598,9 @@ impl LMSAudioController {
                                     }
                                 }
                                 
-                                // If we haven't found a match with configured MACs and "local" was in the config,
+                                // If we haven't found a match and "local" was in the config,
                                 // fall back to checking local MAC addresses
-                                if !found_match && config.player_macs.iter().any(|mac| mac.to_lowercase() == "local") {
+                                if config.player_macs.iter().any(|mac| mac.to_lowercase() == "local") {
                                     debug!("Checking local MAC addresses for matches");
                                     
                                     // Get the local MAC addresses
@@ -931,26 +928,85 @@ impl PlayerController for LMSAudioController {
     }
     
     fn get_playback_state(&self) -> PlaybackState {
-        // First check if player is connected
+        // First check if player is connected - this is just an atomic read, so it's safe
         if !self.is_connected.load(Ordering::SeqCst) {
             return PlaybackState::Disconnected;
         }
         
-        // Use the cached state from the polling thread instead of making an async call
-        // This makes the function fully synchronous and avoids runtime conflicts
-        match self.current_song.read() {
-            Ok(song_guard) => {
-                if song_guard.is_some() {
-                    // If we have a current song, we're playing
-                    PlaybackState::Playing
-                } else {
-                    // No current song, assume stopped
-                    PlaybackState::Stopped
+        // Get player and server configuration
+        let config = match self.config.try_read() {
+            Ok(cfg) => cfg.clone(),
+            Err(_) => {
+                warn!("Could not acquire non-blocking read lock on config");
+                return PlaybackState::Unknown;
+            }
+        };
+        
+        // Get server address from config
+        let server_address = match &config.server {
+            Some(address) => address.clone(),
+            None => {
+                warn!("No server address configured");
+                return PlaybackState::Unknown;
+            }
+        };
+        
+        // Get player ID without locks that could block
+        let player_id = match self.player.try_read() {
+            Ok(guard) => {
+                match guard.as_ref() {
+                    Some(player) => player.get_player_id().to_string(), // Clone the string
+                    None => {
+                        warn!("Player object is missing");
+                        return PlaybackState::Unknown;
+                    }
+                }
+            },
+            Err(_) => {
+                warn!("Could not acquire non-blocking read lock on player");
+                return PlaybackState::Unknown;
+            }
+        };
+
+        // Create a fresh LmsRpcClient for this specific request
+        // Uses our centralized HTTP client implementation that's fully synchronous
+        let mut temp_client = LmsRpcClient::new(&server_address, config.port)
+            .with_timeout(2); // short 2-second timeout
+        
+        // Make a direct synchronous request 
+        match temp_client.get_player_status(&player_id) {
+            Ok(status) => {
+                // Check if power is on first
+                if status.power == 0 {
+                    return PlaybackState::Disconnected;  // Use Disconnected for powered-off state
+                }
+                
+                // Check mode to determine playback state
+                match status.mode.as_str() {
+                    "play" => PlaybackState::Playing,
+                    "pause" => PlaybackState::Paused,
+                    "stop" => PlaybackState::Stopped,
+                    "" => PlaybackState::Stopped,
+                    _ => {
+                        debug!("Unknown LMS playback mode: {}", status.mode);
+                        PlaybackState::Unknown
+                    }
                 }
             },
             Err(e) => {
-                warn!("Failed to acquire read lock on current song: {}", e);
-                PlaybackState::Unknown
+                debug!("Failed to get LMS player status: {}", e);
+                
+                // Fall back to cached state if HTTP request failed
+                match self.current_song.try_read() {
+                    Ok(song_guard) => {
+                        if song_guard.is_some() {
+                            PlaybackState::Playing
+                        } else {
+                            PlaybackState::Stopped
+                        }
+                    },
+                    Err(_) => PlaybackState::Unknown
+                }
             }
         }
     }

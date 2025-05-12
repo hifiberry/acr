@@ -276,45 +276,8 @@ pub fn send_command_to_player_by_name(
 /// Get the currently playing song information
 #[get("/now-playing")]
 pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlayingResponse> {
-    let audio_controller = controller.inner();
-    let active_controller = audio_controller.get_active_controller();
-    
-    if let Some(active_ctrl) = active_controller {
-        if let Ok(player) = active_ctrl.read() {
-            let name = player.get_player_name();
-            let id = player.get_player_id();
-            let state = player.get_playback_state();
-            let song = player.get_song();
-            let shuffle = player.get_shuffle();
-            let loop_mode = player.get_loop_mode();
-            let position = player.get_position(); // Use the new get_position method
-            
-            // Format last_seen timestamp if available
-            let last_seen = player.get_last_seen()
-                .map(|time| {
-                    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
-                });
-            
-            return Json(NowPlayingResponse {
-                player: PlayerInfo {
-                    name,
-                    id,
-                    state,
-                    is_active: true,
-                    has_library: player.has_library(),
-                    last_seen,
-                },
-                song,
-                state,
-                shuffle,
-                loop_mode,
-                position,
-            });
-        }
-    }
-    
-    // Return a default response if no active player
-    Json(NowPlayingResponse {
+    // Create a default response in case of errors
+    let default_response = NowPlayingResponse {
         player: PlayerInfo {
             name: "none".to_string(),
             id: "none".to_string(),
@@ -328,6 +291,62 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
         shuffle: false,
         loop_mode: LoopMode::None,
         position: None,
+    };
+
+    // Get the audio controller safely
+    let audio_controller = controller.inner();
+    
+    // Get active controller with a match pattern to avoid extra method calls
+    let active_controller = match audio_controller.get_active_controller() {
+        Some(ctrl) => ctrl,
+        None => return Json(default_response),
+    };
+    
+    // Try to get a read lock without blocking
+    let player = match active_controller.try_read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            // If we can't get a lock, return default response
+            return Json(default_response);
+        }
+    };
+    
+    // Collect all data using safe operations that don't make HTTP requests
+    let name = player.get_player_name();
+    let id = player.get_player_id();
+    
+    // Get the state safely (the implementation now uses cached data)
+    let state = player.get_playback_state();
+    
+    // Get song data (should be cached data)
+    let song = player.get_song();
+    
+    // Get remaining data
+    let shuffle = player.get_shuffle();
+    let loop_mode = player.get_loop_mode();
+    let position = player.get_position();
+    
+    // Format last_seen timestamp if available
+    let last_seen = player.get_last_seen()
+        .map(|time| {
+            chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
+        });
+    
+    // Return the response
+    Json(NowPlayingResponse {
+        player: PlayerInfo {
+            name,
+            id,
+            state,
+            is_active: true,
+            has_library: player.has_library(),
+            last_seen,
+        },
+        song,
+        state,
+        shuffle,
+        loop_mode,
+        position,
     })
 }
 

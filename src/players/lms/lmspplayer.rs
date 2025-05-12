@@ -112,11 +112,15 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "current_title", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Extract the current_title field from the response
-                match response.as_str() {
-                    Some(title) => Ok(title.to_string()),
-                    None => Err("Failed to parse current_title response".to_string()),
+                // Extract the _title field from the response object
+                if let Some(obj) = response.as_object() {
+                    if let Some(title_value) = obj.get("_title") {
+                        if let Some(title) = title_value.as_str() {
+                            return Ok(title.to_string());
+                        }
+                    }
                 }
+                Err("Failed to parse current_title response".to_string())
             },
             Err(e) => Err(format!("Failed to get current_title: {}", e)),
         }
@@ -130,11 +134,15 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "remote", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Get the remote value (0 = local, 1 = remote)
-                match response.as_i64() {
-                    Some(value) => Ok(value == 1),
-                    None => Err("Failed to parse remote response".to_string()),
+                // Extract the _remote value from the response object
+                if let Some(obj) = response.as_object() {
+                    if let Some(remote_value) = obj.get("_remote") {
+                        if let Some(value) = remote_value.as_i64() {
+                            return Ok(value == 1);
+                        }
+                    }
                 }
+                Err("Failed to parse remote response".to_string())
             },
             Err(e) => Err(format!("Failed to get remote status: {}", e)),
         }
@@ -148,11 +156,15 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "genre", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Extract the genre field from the response
-                match response.as_str() {
-                    Some(genre) => Ok(genre.to_string()),
-                    None => Err("Failed to parse genre response".to_string()),
+                // Extract the _genre field from the response object
+                if let Some(obj) = response.as_object() {
+                    if let Some(genre_value) = obj.get("_genre") {
+                        if let Some(genre) = genre_value.as_str() {
+                            return Ok(genre.to_string());
+                        }
+                    }
                 }
+                Err("Failed to parse genre response".to_string())
             },
             Err(e) => Err(format!("Failed to get genre: {}", e)),
         }
@@ -166,11 +178,15 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "artist", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Extract the artist field from the response
-                match response.as_str() {
-                    Some(artist) => Ok(artist.to_string()),
-                    None => Err("Failed to parse artist response".to_string()),
+                // Extract the _artist field from the response object
+                if let Some(obj) = response.as_object() {
+                    if let Some(artist_value) = obj.get("_artist") {
+                        if let Some(artist) = artist_value.as_str() {
+                            return Ok(artist.to_string());
+                        }
+                    }
                 }
+                Err("Failed to parse artist response".to_string())
             },
             Err(e) => Err(format!("Failed to get artist: {}", e)),
         }
@@ -184,11 +200,15 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "album", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Extract the album field from the response
-                match response.as_str() {
-                    Some(album) => Ok(album.to_string()),
-                    None => Err("Failed to parse album response".to_string()),
+                // Extract the _album field from the response object
+                if let Some(obj) = response.as_object() {
+                    if let Some(album_value) = obj.get("_album") {
+                        if let Some(album) = album_value.as_str() {
+                            return Ok(album.to_string());
+                        }
+                    }
                 }
+                Err("Failed to parse album response".to_string())
             },
             Err(e) => Err(format!("Failed to get album: {}", e)),
         }
@@ -202,11 +222,15 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "title", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Extract the title field from the response
-                match response.as_str() {
-                    Some(title) => Ok(title.to_string()),
-                    None => Err("Failed to parse title response".to_string()),
+                // Extract the _title field from the response object
+                if let Some(obj) = response.as_object() {
+                    if let Some(title_value) = obj.get("_title") {
+                        if let Some(title) = title_value.as_str() {
+                            return Ok(title.to_string());
+                        }
+                    }
                 }
+                Err("Failed to parse title response".to_string())
             },
             Err(e) => Err(format!("Failed to get title: {}", e)),
         }
@@ -220,11 +244,15 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "duration", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Extract the duration field from the response
-                match response.as_f64() {
-                    Some(duration) => Ok(duration as f32),
-                    None => Err("Failed to parse duration response".to_string()),
+                // Extract the _duration field from the response object
+                if let Some(obj) = response.as_object() {
+                    if let Some(duration_value) = obj.get("_duration") {
+                        if let Some(duration) = duration_value.as_f64() {
+                            return Ok(duration as f32);
+                        }
+                    }
                 }
+                Err("Failed to parse duration response".to_string())
             },
             Err(e) => Err(format!("Failed to get duration: {}", e)),
         }
@@ -238,11 +266,15 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "path", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Extract the path field from the response
-                match response.as_str() {
-                    Some(path) => Ok(path.to_string()),
-                    None => Err("Failed to parse path response".to_string()),
+                // Extract the _path field from the response object
+                if let Some(obj) = response.as_object() {
+                    if let Some(path_value) = obj.get("_path") {
+                        if let Some(path) = path_value.as_str() {
+                            return Ok(path.to_string());
+                        }
+                    }
                 }
+                Err("Failed to parse path response".to_string())
             },
             Err(e) => Err(format!("Failed to get path: {}", e)),
         }
@@ -253,6 +285,7 @@ impl LMSPlayer {
     /// # Returns
     /// An optional Song object with the currently playing song information
     pub fn get_current_song(&self) -> Option<Song> {
+
         // Instead of running in parallel with join(), get each piece of data sequentially
         let title_result = self.title();
         let artist_result = self.artist();
@@ -261,7 +294,7 @@ impl LMSPlayer {
         let duration_result = self.duration();
         let path_result = self.path();
         let remote_result = self.remote();
-        
+
         // Check if we have at least a title or if we're playing a remote stream
         let title = title_result.ok();
         let remote = remote_result.ok().unwrap_or(false);
@@ -271,16 +304,8 @@ impl LMSPlayer {
             return None;
         }
         
-        // Create metadata hashmap with additional information
-        let mut metadata = HashMap::new();
-        
         // Store path for both metadata and potential stream URL
         let path_str = path_result.ok();
-        
-        // Add path to metadata if available
-        if let Some(path) = &path_str {
-            metadata.insert("path".to_string(), serde_json::Value::String(path.clone()));
-        }
         
         // Create Song struct with the available information
         let song = Song {
@@ -290,13 +315,8 @@ impl LMSPlayer {
             genre: genre_result.ok(),
             duration: duration_result.ok().map(|d| d as f64),
             // Add stream_url if it's a remote stream with an http URL
-            stream_url: if remote {
-                path_str.filter(|p| p.starts_with("http"))
-            } else {
-                None
-            },
+            stream_url:  path_str,
             source: Some(if remote { "remote".to_string() } else { "lms".to_string() }),
-            metadata,
             ..Default::default()
         };
         
@@ -331,11 +351,15 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "time", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Extract the time value from the response
-                match response.as_f64() {
-                    Some(time) => Ok(time as f32),
-                    None => Err("Failed to parse time response".to_string()),
+                // Extract the _time field from the response object
+                if let Some(obj) = response.as_object() {
+                    if let Some(time_value) = obj.get("_time") {
+                        if let Some(time) = time_value.as_f64() {
+                            return Ok(time as f32);
+                        }
+                    }
                 }
+                Err("Failed to parse time response".to_string())
             },
             Err(e) => Err(format!("Failed to get current position: {}", e)),
         }
@@ -349,11 +373,11 @@ impl LMSPlayer {
         let mut client_clone = (*self.client).clone();
         match client_clone.request(&self.player_id, "mode", 0, 1, vec![("?", "")]) {
             Ok(response) => {
-                // Extract the mode field from the response
-                match response.as_str() {
-                    Some(mode) => Ok(mode.to_string()),
-                    None => Err("Failed to parse mode response".to_string()),
+                // Fallback to old parsing method if the object format is not found
+                if let Some(mode) = response.as_str() {
+                    return Ok(mode.to_string());
                 }
+                Err("Failed to parse mode response".to_string())
             },
             Err(e) => Err(format!("Failed to get player mode: {}", e)),
         }

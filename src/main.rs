@@ -128,6 +128,18 @@ fn main() {
     ctrlc::set_handler(move || {
         info!("Received Ctrl+C, shutting down...");
         r.store(false, Ordering::SeqCst);
+        
+        // Set up a force shutdown after a timeout
+        let force_shutdown_delay = Duration::from_secs(5); // 5 seconds timeout
+        let r_clone = r.clone();  // Clone the Arc for the new thread
+        let _force_shutdown_thread = thread::spawn(move || {
+            thread::sleep(force_shutdown_delay);
+            // If we're still running after the timeout, force exit
+            if !r_clone.load(Ordering::SeqCst) {
+                info!("Graceful shutdown timed out after {} seconds, forcing exit...", force_shutdown_delay.as_secs());
+                std::process::exit(0);
+            }
+        });
     }).expect("Error setting Ctrl+C handler");
     
     // Create an AudioController from the JSON configuration and store it in the singleton

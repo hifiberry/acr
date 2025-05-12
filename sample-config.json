@@ -77,7 +77,7 @@
                 "port": 9000,
                 "autodiscovery": true,
                 "player_name": null,
-                "player_mac": null,
+                "player_mac": "00:15:5d:76:39:c2",
                 "reconnection_interval": 30,
                 "polling_interval": 30
             }

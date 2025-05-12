@@ -2,6 +2,7 @@ use std::any::Any;
 use std::sync::{Arc, RwLock, Weak, atomic::{AtomicBool, Ordering}};
 use std::time::{SystemTime, Duration};
 use std::thread;
+use std::net::IpAddr;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,7 +12,7 @@ use crate::PlayerStateListener;
 use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::players::lms::jsonrps::LmsRpcClient;
-use crate::players::lms::lmsserver::{find_local_servers, get_local_mac_addresses};
+use crate::players::lms::lmsserver::{find_local_servers, get_local_mac_addresses, set_connected_server};
 use crate::players::lms::lmspplayer::LMSPlayer;
 use crate::helpers::macaddress::normalize_mac_address;
 
@@ -32,8 +33,9 @@ pub struct LMSAudioConfig {
     /// Player name to connect to
     pub player_name: Option<String>,
     
-    /// Player MAC address to connect to
-    pub player_mac: Option<String>,
+    /// Player MAC addresses to connect to (multiple MACs)
+    #[serde(default)]
+    pub player_macs: Vec<String>,
     
     /// Reconnection interval in seconds (0 = disabled)
     #[serde(default = "default_reconnection_interval")]
@@ -71,7 +73,7 @@ impl Default for LMSAudioConfig {
             port: default_lms_port(),
             autodiscovery: true,
             player_name: None,
-            player_mac: None,
+            player_macs: Vec::new(),
             reconnection_interval: default_reconnection_interval(),
             polling_interval: default_polling_interval(),
         }
@@ -121,6 +123,56 @@ pub struct LMSAudioController {
 }
 
 impl LMSAudioController {
+    /// Helper method to process player_mac configuration values
+    /// 
+    /// # Arguments
+    /// * `mac_strings` - Configured MAC addresses to check
+    /// * `include_local` - If true, add local MAC addresses too
+    ///
+    /// # Returns
+    /// A vector of MAC addresses to check
+    fn prepare_mac_addresses(&self, mac_strings: &[String], include_local: bool) -> Vec<String> {
+        let mut result = Vec::new();
+        let mut should_include_local = include_local;
+        
+        // Check if "local" is in the list, which is a special value
+        for mac in mac_strings {
+            if mac.to_lowercase() == "local" {
+                should_include_local = true;
+            } else {
+                // Add any non-special MAC addresses to the result
+                result.push(mac.clone());
+            }
+        }
+        
+        // If we need to include local MACs, add them now
+        if should_include_local {
+            match get_local_mac_addresses() {
+                Ok(addresses) => {
+                    // Format local MAC addresses as strings
+                    let local_macs: Vec<String> = addresses.iter()
+                        .map(|mac| crate::helpers::macaddress::mac_to_lowercase_string(mac))
+                        .collect();
+                    
+                    // Add local MACs that aren't already in the list (case insensitive comparison)
+                    for local_mac in local_macs {
+                        let already_exists = result.iter().any(|existing_mac| 
+                            crate::helpers::macaddress::mac_equal_ignore_case(existing_mac, &local_mac));
+                        
+                        if !already_exists {
+                            result.push(local_mac);
+                        }
+                    }
+                },
+                Err(e) => {
+                    warn!("Failed to get local MAC addresses: {}", e);
+                }
+            }
+        }
+        
+        result
+    }
+
     /// Create a new LMS audio controller
     /// 
     /// # Arguments
@@ -137,6 +189,11 @@ impl LMSAudioController {
                 LMSAudioConfig::default()
             }
         };
+        
+        // Log the configured MAC addresses
+        if !config.player_macs.is_empty() {
+            info!("LMS controller configured with player MACs: {:?}", config.player_macs);
+        }
         
         let is_connected = Arc::new(AtomicBool::new(false));
         let running = Arc::new(AtomicBool::new(true));
@@ -164,10 +221,15 @@ impl LMSAudioController {
             let client = LmsRpcClient::new(server, config.port);
             
             // Get the player MAC address or use a default if not provided
-            let player_id = config.player_mac.as_deref().unwrap_or("00:00:00:00:00:00");
+            // For initial connection, use the first MAC in player_macs if available
+            let player_id = if !config.player_macs.is_empty() {
+                config.player_macs[0].clone()
+            } else {
+                "00:00:00:00:00:00".to_string()
+            };
             
             // Create the LMSPlayer instance
-            let player = LMSPlayer::new(client.clone(), player_id);
+            let player = LMSPlayer::new(client.clone(), &player_id);
             
             // Store the client and player
             if let Ok(mut client_lock) = controller.client.write() {
@@ -177,6 +239,20 @@ impl LMSAudioController {
             if let Ok(mut player_lock) = controller.player.write() {
                 *player_lock = Some(player);
             }
+            
+            // Check if this system is currently registered as a player on the LMS server
+            // This is an early check just during initialization, the full check happens in start()
+            if controller.check_connected() {
+                info!("System is registered as a player on LMS server at {}:{}", server, config.port);
+                controller.is_connected.store(true, Ordering::SeqCst);
+            } else {
+                info!("System is NOT registered as a player on LMS server at {}:{}", server, config.port);
+                info!("Will keep checking during reconnection attempts");
+            }
+        } else if config.autodiscovery {
+            info!("LMS server autodiscovery enabled - will search for servers during start");
+        } else {
+            info!("No LMS server configured and autodiscovery disabled - player will remain disconnected");
         }
         
         debug!("Created new LMS audio controller");
@@ -186,7 +262,7 @@ impl LMSAudioController {
     /// Check if the current system is connected to the configured LMS server
     /// 
     /// This method determines if the current device is registered as a player with
-    /// the configured LMS server.
+    /// the configured LMS server, or connects to a specified player by MAC address.
     /// 
     /// # Returns
     /// `true` if connected, `false` otherwise
@@ -236,7 +312,126 @@ impl LMSAudioController {
             // Create a client for the configured server
             let mut client = LmsRpcClient::new(server, config.port);
             
-            // Get the local MAC addresses
+            // Check if specific player MAC addresses are configured
+            let has_configured_macs = !config.player_macs.is_empty();
+            
+            if has_configured_macs {
+                // Collect all MAC addresses to check, handling special values like "local"
+                let mac_strings = self.prepare_mac_addresses(&config.player_macs, false);
+                
+                debug!("Looking for specific players with MACs: {:?}", mac_strings);
+                
+                // Normalize the configured MAC addresses
+                let configured_macs: Vec<mac_address::MacAddress> = mac_strings.iter()
+                    .filter_map(|mac_str| {
+                        match normalize_mac_address(mac_str) {
+                            Ok(mac) => Some(mac),
+                            Err(e) => {
+                                warn!("Failed to normalize MAC address {}: {}", mac_str, e);
+                                None
+                            }
+                        }
+                    })
+                    .collect();
+                
+                if configured_macs.is_empty() {
+                    warn!("No valid MAC addresses found in configuration");
+                    return false;
+                }
+                
+                // Get the players from the server
+                match client.get_players() {
+                    Ok(players) => {
+                        debug!("Found {} players on LMS server", players.len());
+                        
+                        // Check if any player matches the configured MACs
+                        for player in &players {
+                            // Log detailed player info to help diagnose connection issues
+                            debug!("Server player: {} (MAC: {})", player.name, player.playerid);
+                            
+                            // The playerid field contains the MAC address
+                            match normalize_mac_address(&player.playerid) {
+                                Ok(player_mac) => {
+                                    // Convert player MAC to a standardized string format for comparison
+                                    let player_mac_str = crate::helpers::macaddress::mac_to_lowercase_string(&player_mac);
+                                    debug!("Checking if player MAC {} matches any configured MAC", player_mac_str);
+                                    
+                                    // Check each configured MAC explicitly for better debugging
+                                    for configured_mac in &mac_strings {
+                                        let match_result = crate::helpers::macaddress::mac_equal_ignore_case(&player_mac_str, configured_mac);
+                                        debug!("  Comparing with configured MAC {}: {}", configured_mac, if match_result { "MATCH" } else { "no match" });
+                                        
+                                        if match_result {
+                                            // Verify this isn't an all-zeros placeholder MAC address
+                                            if !is_valid_mac(&player_mac) {
+                                                debug!("Ignoring invalid (all zeros) MAC address: {:?}", player_mac);
+                                                continue;
+                                            }
+                                            
+                                            info!("Found matching player: {} with MAC {} matches configured MAC {}", 
+                                                player.name, player_mac_str, configured_mac);
+                                            
+                                            // Store the client for future use
+                                            if let Ok(mut client_lock) = self.client.write() {
+                                                *client_lock = Some(client.clone());
+                                            }
+                                            
+                                            // Create and store the player instance
+                                            let player_instance = LMSPlayer::new(client.clone(), &player.playerid);
+                                            if let Ok(mut player_lock) = self.player.write() {
+                                                *player_lock = Some(player_instance);
+                                            }
+                                            
+                                            // Update the connected server registry
+                                            if let Ok(ip_addr) = server.parse::<IpAddr>() {
+                                                set_connected_server(Some(&ip_addr));
+                                            } else {
+                                                debug!("Unable to parse server address: {}", server);
+                                            }
+                                            
+                                            return true;
+                                        }
+                                    }
+                                    
+                                    // If we get here, none of the configured MACs matched this player
+                                    debug!("Player {} with MAC {} didn't match any configured MAC", 
+                                          player.name, player_mac_str);
+                                },
+                                Err(e) => {
+                                    debug!("Failed to normalize player MAC {}: {}", player.playerid, e);
+                                }
+                            }
+                        }
+                        
+                        // Add virtual MAC detection information
+                        debug!("No player found with configured MACs: {:?}", mac_strings);
+                        debug!("Checking if configured MACs are virtual...");
+
+                        // Use our new function to detect virtual MACs
+                        for mac_str in &mac_strings {
+                            if let Ok(mac) = normalize_mac_address(mac_str) {
+                                match crate::helpers::macaddress::is_virtual_mac(&mac) {
+                                    Some(provider) => {
+                                        debug!("MAC {} is virtual: {:?}", mac_str, provider);
+                                    },
+                                    None => {
+                                        debug!("MAC {} appears to be physical", mac_str);
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to get players from LMS server: {}", e);
+                    }
+                }
+                
+                // If we've reached here with configured MACs, we didn't find any matching players
+                debug!("Couldn't find players with configured MAC addresses, won't fall back to local MAC detection");
+                return false;
+            }
+            
+            // If no MACs were explicitly configured, try to find a player matching local MAC addresses
             let mac_addresses = match get_local_mac_addresses() {
                 Ok(addresses) => addresses,
                 Err(e) => {
@@ -288,6 +483,13 @@ impl LMSAudioController {
                                         *player_lock = Some(player_instance);
                                     }
                                     
+                                    // Update the connected server registry
+                                    if let Ok(ip_addr) = server.parse::<IpAddr>() {
+                                        set_connected_server(Some(&ip_addr));
+                                    } else {
+                                        debug!("Unable to parse server address: {}", server);
+                                    }
+                                    
                                     return true;
                                 }
                             },
@@ -320,21 +522,6 @@ impl LMSAudioController {
                     
                     debug!("Found {} LMS servers via autodiscovery", servers.len());
                     
-                    // Get the local MAC addresses
-                    let mac_addresses = match get_local_mac_addresses() {
-                        Ok(addresses) => addresses,
-                        Err(e) => {
-                            warn!("Failed to get local MAC addresses: {}", e);
-                            return false;
-                        }
-                    };
-                    
-                    // Normalize all local MAC addresses for comparison
-                    let normalized_local_macs: Vec<mac_address::MacAddress> = mac_addresses
-                        .iter()
-                        .map(|mac| mac.clone())
-                        .collect();
-                    
                     // Check each server for matching players
                     for server in servers {
                         debug!("Checking server: {} at {}", server.name, server.ip);
@@ -342,50 +529,140 @@ impl LMSAudioController {
                         // Create a client for this server
                         let mut client = server.create_client();
                         
+                        // Get all MAC addresses to check (both configured and local if needed)
+                        let mac_strings = self.prepare_mac_addresses(&config.player_macs, false);
+                        debug!("Looking for players with MACs: {:?} via autodiscovery", mac_strings);
+                        
                         // Get the players from the server
                         match client.get_players() {
                             Ok(players) => {
                                 debug!("Found {} players on server {}", players.len(), server.name);
                                 
-                                // Check if any player matches our MAC address
-                                for player in players {
+                                // First check if any of the configured MACs directly match a player
+                                let mut found_match = false;
+                                
+                                // Check for matches with configured MACs
+                                for player in &players {
+                                    debug!("Checking autodiscovered player: {} (MAC: {})", player.name, player.playerid);
+                                    
                                     match normalize_mac_address(&player.playerid) {
                                         Ok(player_mac) => {
-                                            // Check if this player's MAC matches any of our local MACs
-                                            if normalized_local_macs.contains(&player_mac) {
-                                                // Verify this isn't an all-zeros placeholder MAC address
-                                                if !is_valid_mac(&player_mac) {
-                                                    debug!("Ignoring invalid (all zeros) MAC address: {:?}", player_mac);
+                                            // Skip invalid MACs
+                                            if !is_valid_mac(&player_mac) {
+                                                debug!("Ignoring invalid (all zeros) MAC address: {:?}", player_mac);
+                                                continue;
+                                            }
+                                            
+                                            // Convert to lowercase string for comparison
+                                            let player_mac_str = crate::helpers::macaddress::mac_to_lowercase_string(&player_mac);
+                                            
+                                            // Try to match against configured MACs
+                                            for configured_mac in &mac_strings {
+                                                // Skip the special "local" value
+                                                if configured_mac.to_lowercase() == "local" {
                                                     continue;
                                                 }
                                                 
-                                                info!("Found matching player: {} ({:?}) on server {}", 
-                                                     player.name,
-                                                     player_mac,
-                                                     server.name);
+                                                let matches = crate::helpers::macaddress::mac_equal_ignore_case(&player_mac_str, configured_mac);
+                                                debug!("  Comparing with configured MAC {}: {}", configured_mac, if matches { "MATCH" } else { "no match" });
                                                 
-                                                // Store the client and update configuration with discovered server
-                                                if let Ok(mut client_lock) = self.client.write() {
-                                                    *client_lock = Some(client.clone());
+                                                if matches {
+                                                    info!("Found matching player: {} (MAC: {}) on server {}",
+                                                         player.name, player_mac_str, server.name);
+                                                         
+                                                    // Store the client and update configuration with discovered server
+                                                    if let Ok(mut client_lock) = self.client.write() {
+                                                        *client_lock = Some(client.clone());
+                                                    }
+                                                    
+                                                    // Update configuration with discovered server
+                                                    if let Ok(mut cfg_lock) = self.config.write() {
+                                                        cfg_lock.server = Some(server.ip.to_string());
+                                                        cfg_lock.port = server.port;
+                                                    }
+                                                    
+                                                    // Create and store the player instance
+                                                    let player_instance = LMSPlayer::new(client.clone(), &player.playerid);
+                                                    if let Ok(mut player_lock) = self.player.write() {
+                                                        *player_lock = Some(player_instance);
+                                                    }
+                                                    
+                                                    // Update the connected server registry
+                                                    set_connected_server(Some(&server.ip));
+                                                    
+                                                    found_match = true;
+                                                    return true;
                                                 }
-                                                
-                                                // Update configuration with discovered server
-                                                if let Ok(mut cfg_lock) = self.config.write() {
-                                                    cfg_lock.server = Some(server.ip.to_string());
-                                                    cfg_lock.port = server.port;
-                                                }
-                                                
-                                                // Create and store the player instance
-                                                let player_instance = LMSPlayer::new(client.clone(), &player.playerid);
-                                                if let Ok(mut player_lock) = self.player.write() {
-                                                    *player_lock = Some(player_instance);
-                                                }
-                                                
-                                                return true;
                                             }
                                         },
                                         Err(e) => {
-                                            debug!("Failed to normalize player MAC: {}", e);
+                                            debug!("Failed to normalize player MAC {}: {}", player.playerid, e);
+                                        }
+                                    }
+                                }
+                                
+                                // If we haven't found a match with configured MACs and "local" was in the config,
+                                // fall back to checking local MAC addresses
+                                if !found_match && config.player_macs.iter().any(|mac| mac.to_lowercase() == "local") {
+                                    debug!("Checking local MAC addresses for matches");
+                                    
+                                    // Get the local MAC addresses
+                                    match get_local_mac_addresses() {
+                                        Ok(addresses) => {
+                                            // Normalize all local MAC addresses for comparison
+                                            let normalized_local_macs: Vec<mac_address::MacAddress> = addresses
+                                                .iter()
+                                                .map(|mac| mac.clone())
+                                                .collect();
+                                            
+                                            // Check if any player matches our local MAC address
+                                            for player in &players {
+                                                match normalize_mac_address(&player.playerid) {
+                                                    Ok(player_mac) => {
+                                                        // Skip invalid MACs
+                                                        if !is_valid_mac(&player_mac) {
+                                                            debug!("Ignoring invalid (all zeros) MAC address: {:?}", player_mac);
+                                                            continue;
+                                                        }
+                                                        
+                                                        // Check if this player's MAC matches any of our local MACs
+                                                        if normalized_local_macs.contains(&player_mac) {
+                                                            info!("Found matching player: {} with local MAC {:?} on server {}", 
+                                                                 player.name,
+                                                                 player_mac,
+                                                                 server.name);
+                                                            
+                                                            // Store the client and update configuration with discovered server
+                                                            if let Ok(mut client_lock) = self.client.write() {
+                                                                *client_lock = Some(client.clone());
+                                                            }
+                                                            
+                                                            // Update configuration with discovered server
+                                                            if let Ok(mut cfg_lock) = self.config.write() {
+                                                                cfg_lock.server = Some(server.ip.to_string());
+                                                                cfg_lock.port = server.port;
+                                                            }
+                                                            
+                                                            // Create and store the player instance
+                                                            let player_instance = LMSPlayer::new(client.clone(), &player.playerid);
+                                                            if let Ok(mut player_lock) = self.player.write() {
+                                                                *player_lock = Some(player_instance);
+                                                            }
+                                                            
+                                                            // Update the connected server registry
+                                                            set_connected_server(Some(&server.ip));
+                                                            
+                                                            return true;
+                                                        }
+                                                    },
+                                                    Err(e) => {
+                                                        debug!("Failed to normalize player MAC: {}", e);
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        Err(e) => {
+                                            warn!("Failed to get local MAC addresses: {}", e);
                                         }
                                     }
                                 }
@@ -476,9 +753,48 @@ impl LMSAudioController {
                     }
                 }
                 
-                // If still disconnected, log an attempt
+                // If still disconnected, log an attempt with MAC addresses
                 if !now_connected {
-                    debug!("LMS player still disconnected, will retry in {} seconds", config.reconnection_interval);
+                    // Get the configured MAC addresses from the current config
+                    if let Ok(cfg) = controller_config.read() {
+                        // Get MAC addresses to test, including local ones if "local" is configured
+                        let macs_to_test = temp_controller.prepare_mac_addresses(&cfg.player_macs, false);
+                        
+                        if !macs_to_test.is_empty() {
+                            // Check if "local" was in the original configuration
+                            let has_local = cfg.player_macs.iter().any(|m| m.to_lowercase() == "local");
+                            if has_local {
+                                info!("LMS player still disconnected (tested configured and local MAC addresses) - will retry in {} seconds", 
+                                      config.reconnection_interval);
+                            } else {
+                                info!("LMS player still disconnected (tested configured MAC addresses: {}) - will retry in {} seconds", 
+                                      macs_to_test.join(", "), config.reconnection_interval);
+                            }
+                            continue;
+                        }
+                    }
+                    
+                    // Fallback to just showing local MAC addresses
+                    match get_local_mac_addresses() {
+                        Ok(addresses) if !addresses.is_empty() => {
+                            // Format MAC addresses as strings
+                            let mac_addrs = addresses.iter()
+                                .map(|mac| mac.to_string())
+                                .collect::<Vec<String>>()
+                                .join(", ");
+                            
+                            info!("LMS player still disconnected (tested local MACs: {}) - will retry in {} seconds", 
+                                  mac_addrs, config.reconnection_interval);
+                        },
+                        Ok(_) => {
+                            debug!("LMS player still disconnected, no MAC addresses found - will retry in {} seconds", 
+                                   config.reconnection_interval);
+                        },
+                        Err(e) => {
+                            debug!("LMS player still disconnected, error getting MAC addresses: {} - will retry in {} seconds", 
+                                   e, config.reconnection_interval);
+                        }
+                    }
                 }
             }
             
@@ -696,14 +1012,61 @@ impl PlayerController for LMSAudioController {
     }
     
     fn start(&self) -> bool {
-        // Simply do a synchronous connection check instead of using tokio
+        // Read the configuration to get access to configured MACs
+        let config = match self.config.read() {
+            Ok(cfg) => cfg.clone(),
+            Err(_) => {
+                warn!("Failed to acquire read lock on LMS configuration");
+                LMSAudioConfig::default()
+            }
+        };
+        
+        // Get all MAC addresses to test, including special values like "local"
+        let all_test_macs = self.prepare_mac_addresses(&config.player_macs, false);
+        
+        // Do a synchronous connection check
         let is_connected = self.check_connected();
         self.is_connected.store(is_connected, Ordering::SeqCst);
         
         if is_connected {
             info!("LMS player successfully connected");
         } else {
-            info!("LMS player is disconnected");
+            // Log all the MAC addresses that were tested
+            if all_test_macs.is_empty() {
+                info!("LMS player is disconnected - no MAC addresses available for testing");
+            } else {
+                // Check if "local" was in the original configuration
+                let has_local = config.player_macs.iter().any(|mac| mac.to_lowercase() == "local");
+                
+                // Get local MACs for logging if requested
+                let mut display_macs = all_test_macs.clone();
+                if has_local {
+                    // Add local MACs to the display list
+                    match get_local_mac_addresses() {
+                        Ok(addresses) => {
+                            // Format local MAC addresses as strings
+                            let local_macs: Vec<String> = addresses.iter()
+                                .map(|mac| mac.to_string())
+                                .collect();
+                                
+                            for mac in local_macs {
+                                if !display_macs.contains(&mac) {
+                                    display_macs.push(mac);
+                                }
+                            }
+                            info!("LMS player is disconnected - tested configured and local MAC addresses: {}", 
+                                display_macs.join(", "));
+                        },
+                        Err(_) => {
+                            info!("LMS player is disconnected - tested configured MAC addresses (local MACs unavailable): {}", 
+                                display_macs.join(", "));
+                        }
+                    }
+                } else {
+                    info!("LMS player is disconnected - tested configured MAC addresses: {}", 
+                        display_macs.join(", "));
+                }
+            }
         }
         
         // Start the reconnection thread

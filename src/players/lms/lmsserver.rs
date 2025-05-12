@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, UdpSocket};
 use std::time::Duration;
+use std::sync::Mutex;
 use log::{debug, info, warn};
 use std::io;
 use get_if_addrs::get_if_addrs;
 use mac_address::MacAddress;
 use std::time::Instant;
+use once_cell::sync::Lazy;
 
 use crate::players::lms::jsonrps::LmsRpcClient;
 
@@ -21,8 +23,172 @@ const LMS_HTTP_PORT: u16 = 9000;
 /// HELO message buffer size
 const BUFFER_SIZE: usize = 1024;
 
+/// Global server registry to track discovered servers
+static SERVER_REGISTRY: Lazy<Mutex<LmsServerRegistry>> = Lazy::new(|| {
+    Mutex::new(LmsServerRegistry::new())
+});
+
+/// Registry to track discovered LMS servers and current connection
+pub struct LmsServerRegistry {
+    /// Known LMS servers by IP address
+    servers: HashMap<IpAddr, LmsServer>,
+    
+    /// Currently connected server (if any)
+    connected_server: Option<IpAddr>,
+}
+
+impl LmsServerRegistry {
+    /// Create a new server registry
+    pub fn new() -> Self {
+        Self {
+            servers: HashMap::new(),
+            connected_server: None,
+        }
+    }
+    
+    /// Add a server to the registry
+    /// 
+    /// # Returns
+    /// `true` if this is a new server, `false` if the server was already known
+    pub fn add_server(&mut self, server: LmsServer) -> bool {
+        let ip = server.ip;
+        if !self.servers.contains_key(&ip) {
+            // New server discovered
+            info!("Found new LMS server: {} at {}:{}", server.name, ip, server.port);
+            self.servers.insert(ip, server);
+            true
+        } else {
+            // Server already known - update it if name or version changed
+            let existing = self.servers.get(&ip).unwrap();
+            if existing.name != server.name || existing.version != server.version {
+                info!("Updated LMS server: {} at {}:{}", server.name, ip, server.port);
+                self.servers.insert(ip, server);
+                true
+            } else {
+                debug!("LMS server already registered: {} at {}:{}", server.name, ip, server.port);
+                false
+            }
+        }
+    }
+    
+    /// Remove a server from the registry
+    /// 
+    /// # Returns
+    /// `true` if a server was removed, `false` otherwise
+    pub fn remove_server(&mut self, ip: &IpAddr) -> bool {
+        if let Some(server) = self.servers.remove(ip) {
+            info!("Removed LMS server: {} at {}:{}", server.name, ip, server.port);
+            
+            // If this was the connected server, clear the connection
+            if self.connected_server == Some(*ip) {
+                self.connected_server = None;
+                info!("Disconnected from LMS server at {}", ip);
+            }
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// Get a list of all known servers
+    pub fn get_servers(&self) -> Vec<LmsServer> {
+        self.servers.values().cloned().collect()
+    }
+    
+    /// Get a specific server by IP
+    pub fn get_server(&self, ip: &IpAddr) -> Option<&LmsServer> {
+        self.servers.get(ip)
+    }
+    
+    /// Set the current connected server
+    /// 
+    /// # Returns
+    /// `true` if connection status changed, `false` otherwise
+    pub fn set_connected(&mut self, ip: Option<&IpAddr>) -> bool {
+        let new_connection = match (ip, &self.connected_server) {
+            (Some(new_ip), Some(current_ip)) if new_ip == current_ip => false,
+            (None, None) => false,
+            _ => true,
+        };
+        
+        if new_connection {
+            if let Some(new_ip) = ip {
+                if let Some(server) = self.servers.get(new_ip) {
+                    info!("Connected to LMS server: {} at {}:{}", server.name, new_ip, server.port);
+                    self.connected_server = Some(*new_ip);
+                } else {
+                    // Server not in registry but we're connecting to it
+                    info!("Connected to unknown LMS server at {}", new_ip);
+                    self.connected_server = Some(*new_ip);
+                }
+            } else {
+                // Disconnecting from server
+                if let Some(old_ip) = &self.connected_server {
+                    if let Some(server) = self.servers.get(old_ip) {
+                        info!("Disconnected from LMS server: {} at {}:{}", server.name, old_ip, server.port);
+                    } else {
+                        info!("Disconnected from LMS server at {}", old_ip);
+                    }
+                }
+                self.connected_server = None;
+            }
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// Get the currently connected server
+    pub fn get_connected(&self) -> Option<&LmsServer> {
+        self.connected_server.as_ref().and_then(|ip| self.servers.get(ip))
+    }
+    
+    /// Clear all servers from the registry
+    pub fn clear(&mut self) {
+        if !self.servers.is_empty() {
+            info!("Cleared {} LMS servers from registry", self.servers.len());
+            self.servers.clear();
+            self.connected_server = None;
+        }
+    }
+    
+    /// Get the number of servers in the registry
+    pub fn count(&self) -> usize {
+        self.servers.len()
+    }
+}
+
+// Global functions to work with the registry
+
+/// Get all known LMS servers
+pub fn get_known_servers() -> Vec<LmsServer> {
+    if let Ok(registry) = SERVER_REGISTRY.lock() {
+        registry.get_servers()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Get the currently connected LMS server
+pub fn get_connected_server() -> Option<LmsServer> {
+    if let Ok(registry) = SERVER_REGISTRY.lock() {
+        registry.get_connected().cloned()
+    } else {
+        None
+    }
+}
+
+/// Set the currently connected LMS server
+pub fn set_connected_server(ip: Option<&IpAddr>) -> bool {
+    if let Ok(mut registry) = SERVER_REGISTRY.lock() {
+        registry.set_connected(ip)
+    } else {
+        false
+    }
+}
+
 /// Discovered LMS server information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LmsServer {
     /// IP address of the server
     pub ip: IpAddr,
@@ -101,7 +267,7 @@ pub fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer
         let _ = socket.send_to(&discovery_msg, &addr);
     }
     
-    let mut servers = HashMap::new();
+    let mut local_servers = HashMap::new();
     let mut buffer = [0u8; BUFFER_SIZE];
     
     // Keep receiving until timeout
@@ -114,11 +280,8 @@ pub fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer
                 
                 // Try to parse the response
                 if let Some(server) = parse_server_response(&buffer[..bytes_read], src_addr.ip()) {
-                    // Log before inserting into the HashMap
-                    info!("Found LMS server: {} at {}:{}", server.name, server.ip, server.port);
-                    
-                    // Use IP address as key to deduplicate servers
-                    servers.insert(server.ip, server);
+                    // Add to our local HashMap for later merging
+                    local_servers.insert(server.ip, server);
                 }
             },
             Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
@@ -132,11 +295,45 @@ pub fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer
         }
     }
     
+    // Update the global server registry with discovered servers
+    update_server_registry(&local_servers);
+    
     // Convert HashMap to Vec
-    let discovered_servers: Vec<LmsServer> = servers.values().cloned().collect();
-    info!("Discovered {} LMS servers", discovered_servers.len());
+    let discovered_servers: Vec<LmsServer> = local_servers.values().cloned().collect();
+    
+    // Only log once at the end with the total count
+    if !discovered_servers.is_empty() {
+        info!("Discovered {} LMS servers", discovered_servers.len());
+    } else {
+        debug!("No LMS servers discovered");
+    }
     
     Ok(discovered_servers)
+}
+
+/// Update the global server registry with newly discovered servers
+fn update_server_registry(new_servers: &HashMap<IpAddr, LmsServer>) {
+    if let Ok(mut registry) = SERVER_REGISTRY.lock() {
+        // Track servers to remove (not found in the current discovery)
+        let mut servers_to_remove = Vec::new();
+        
+        // Check for servers that have disappeared
+        for ip in registry.servers.keys() {
+            if !new_servers.contains_key(ip) {
+                servers_to_remove.push(*ip);
+            }
+        }
+        
+        // Remove servers that weren't found in this discovery
+        for ip in servers_to_remove {
+            registry.remove_server(&ip);
+        }
+        
+        // Add or update new servers
+        for (_, server) in new_servers {
+            registry.add_server(server.clone());
+        }
+    }
 }
 
 /// Parse a server response to extract LMS server information
@@ -340,9 +537,17 @@ pub fn get_local_mac_addresses() -> io::Result<Vec<MacAddress>> {
             for interface in if_addrs {
                 // Try to get MAC address from interface name using the mac_address crate
                 if let Ok(Some(mac)) = mac_address::mac_address_by_name(&interface.name) {
-                    debug!("Found MAC address {} for interface {}", 
-                           mac, interface.name);
-                    addresses.push(mac);
+                    // Check if the MAC is non-zero
+                    let mac_str = mac.to_string();
+                    if mac_str != "00:00:00:00:00:00" && 
+                       mac_str != "00-00-00-00-00-00" && 
+                       mac_str != "000000000000" {
+                        debug!("Found MAC address {} for interface {}", 
+                               mac, interface.name);
+                        addresses.push(mac);
+                    } else {
+                        debug!("Skipping zero MAC address for interface {}", interface.name);
+                    }
                 } else {
                     debug!("No MAC address found for interface {}", interface.name);
                 }
@@ -352,16 +557,24 @@ pub fn get_local_mac_addresses() -> io::Result<Vec<MacAddress>> {
                 // Fallback to getting all MAC addresses if the above method didn't work
                 if let Ok(all_macs) = mac_address::get_mac_address() {
                     if let Some(mac) = all_macs {
-                        debug!("Found MAC address using fallback method: {}", mac);
-                        addresses.push(mac);
+                        // Check if the MAC is non-zero
+                        let mac_str = mac.to_string();
+                        if mac_str != "00:00:00:00:00:00" && 
+                           mac_str != "00-00-00-00-00-00" && 
+                           mac_str != "000000000000" {
+                            debug!("Found MAC address using fallback method: {}", mac);
+                            addresses.push(mac);
+                        } else {
+                            debug!("Skipping zero MAC address from fallback method");
+                        }
                     }
                 }
             }
             
             if addresses.is_empty() {
-                warn!("No MAC addresses found for local interfaces");
+                warn!("No valid MAC addresses found for local interfaces");
             } else {
-                debug!("Found {} local MAC addresses", addresses.len());
+                debug!("Found {} valid local MAC addresses", addresses.len());
             }
             
             Ok(addresses)

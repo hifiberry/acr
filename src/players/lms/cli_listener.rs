@@ -1,8 +1,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}, Weak};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}, Weak, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use log::{warn, debug, error, trace};
 use urlencoding::decode;
 
@@ -18,12 +18,21 @@ pub trait AudioControllerRef: Send + Sync {
     
     /// Notify that player state has changed
     fn state_changed(&self, state: PlaybackState);
+    
+    /// Update song information and notify listeners
+    fn update_song(&self);
+    
+    /// Update position information and notify listeners
+    fn update_position(&self);
 }
 
 /// List of commands that should only be logged at debug level
 const IGNORED_COMMANDS: &[&str] = &[
     "playlist open",
     "playlist pause",
+    "playlist newsong",
+    "playlist jump",
+    "button",
     "menustatus",
 ];
 
@@ -57,6 +66,9 @@ pub struct LMSListener {
     
     /// Reference to the parent audio controller
     controller: WeakAudioController,
+    
+    /// Last time displaynotify was processed (to avoid duplicate events)
+    last_display_notify: Arc<RwLock<Option<SystemTime>>>,
 }
 
 impl LMSListener {
@@ -73,6 +85,7 @@ impl LMSListener {
             running: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
             controller,
+            last_display_notify: Arc::new(RwLock::new(None)),
         }
     }
     
@@ -89,11 +102,12 @@ impl LMSListener {
         let player_id = self.player_id.clone();
         let running = self.running.clone();
         let controller = self.controller.clone();
+        let last_display_notify = self.last_display_notify.clone();
         
         self.thread_handle = Some(thread::spawn(move || {
             // Main connection loop - try to reconnect if connection fails
             while running.load(Ordering::SeqCst) {
-                match Self::connect_and_listen(&server, &player_id, running.clone(), controller.clone()) {
+                match Self::connect_and_listen(&server, &player_id, running.clone(), controller.clone(), last_display_notify.clone()) {
                     Ok(_) => {
                         // Connection closed normally, try to reconnect after a delay
                         if running.load(Ordering::SeqCst) {
@@ -165,7 +179,7 @@ impl LMSListener {
     }
     
     /// Connect to the server and listen for messages
-    fn connect_and_listen(server: &str, player_id: &str, running: Arc<AtomicBool>, controller: WeakAudioController) -> Result<(), String> {
+    fn connect_and_listen(server: &str, player_id: &str, running: Arc<AtomicBool>, controller: WeakAudioController, last_display_notify: Arc<RwLock<Option<SystemTime>>>) -> Result<(), String> {
         // Connect to the LMS CLI on port 9090
         let address = format!("{}:9090", server);
         debug!("Connecting to LMS CLI at {}", address);
@@ -345,7 +359,42 @@ impl LMSListener {
                                     }
                                 },
                                 "displaynotify" => {
-                                    // Display notification event
+                                    // Display notification event - indicates updates to the player display
+                                    // This is a good opportunity to refresh song and position information
+                                    let now = SystemTime::now();
+                                    let mut last_notify = last_display_notify.write().unwrap_or_else(|_| {
+                                        error!("Failed to acquire write lock for last_display_notify");
+                                        panic!("Lock poisoned for last_display_notify");
+                                    });
+                                    
+                                    let should_skip = if let Some(last_time) = *last_notify {
+                                        match now.duration_since(last_time) {
+                                            Ok(duration) => duration < Duration::from_millis(200),
+                                            Err(_) => {
+                                                debug!("Clock skew detected, not skipping displaynotify");
+                                                false
+                                            }
+                                        }
+                                    } else {
+                                        false
+                                    };
+                                    
+                                    if should_skip {
+                                        debug!("Skipping duplicate displaynotify event");
+                                        continue;
+                                    }
+                                    
+                                    *last_notify = Some(now);
+                                    
+                                    debug!("LMS event: Display notification received, updating song and position");
+                                    
+                                    if let Some(ctrl) = controller.upgrade() {
+                                        // Update song and position information
+                                        ctrl.update_song();
+                                        ctrl.update_position();
+                                    } else {
+                                        error!("Failed to upgrade controller reference for display notification");
+                                    }
                                 },
                                 "power" => {
                                     let all_args = cmd_parts[1..].join(" ");

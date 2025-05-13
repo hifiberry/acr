@@ -506,6 +506,60 @@ impl LMSAudioController {
             *controller_ref_lock = None;
         }
     }
+
+    /// Get the current song and send a SongChanged event to listeners
+    /// 
+    /// This method fetches the current song from the LMS server and
+    /// sends a SongChanged event to all registered listeners.
+    /// 
+    /// # Returns
+    /// The current Song if available, or None if no song is playing
+    pub fn update_and_notify_song(&self) -> Option<Song> {
+        // Skip if not connected
+        if !self.is_connected.load(Ordering::SeqCst) {
+            return None;
+        }
+        
+        // Get the current song
+        let song = self.get_song();
+        
+        // Send the SongChanged event
+        debug!("Sending SongChanged event: {:?}", song);
+        if let Some(ref s) = song {
+            self.base.notify_song_changed(Some(s));
+        } else {
+            self.base.notify_song_changed(None);
+        }
+        
+        // Return the song for potential further use
+        song
+    }
+    
+    /// Get the current position and send a PositionChanged event to listeners
+    /// 
+    /// This method fetches the current playback position from the LMS server and
+    /// sends a PositionChanged event to all registered listeners.
+    /// 
+    /// # Returns
+    /// The current position in seconds if available, or None if position cannot be determined
+    pub fn update_and_notify_position(&self) -> Option<f64> {
+        // Skip if not connected
+        if !self.is_connected.load(Ordering::SeqCst) {
+            return None;
+        }
+        
+        // Get the current position
+        let position = self.get_position();
+        
+        if let Some(pos) = position {
+            // Send the PositionChanged event
+            debug!("Sending PositionChanged event: position={}", pos);
+            self.base.notify_position_changed(pos);
+        }
+        
+        // Return the position for potential further use
+        position
+    }
 }
 
 impl Clone for LMSAudioController {
@@ -767,5 +821,17 @@ impl AudioControllerRef for LMSAudioController {
         // Notify all registered listeners about the state change
         debug!("LMS state changed to: {:?}", state);
         self.base.notify_state_changed(state);
+    }
+    
+    /// Update song information and notify listeners
+    fn update_song(&self) {
+        debug!("CLI listener requested song update");
+        self.update_and_notify_song();
+    }
+    
+    /// Update position information and notify listeners
+    fn update_position(&self) {
+        debug!("CLI listener requested position update");
+        self.update_and_notify_position();
     }
 }

@@ -340,16 +340,26 @@
                                     
                                 case 'position_changed':
                                     if (data.position !== undefined) {
-                                        const position = data.position;
-                                        const percentage = position.duration > 0 ? 
-                                            Math.round((position.position / position.duration) * 100) : 0;
-                                        
-                                        message += `<div style="margin: 5px 0;">
-                                            <div>${formatTime(position.position)} / ${formatTime(position.duration)} (${percentage}%)</div>
-                                            <div style="width: 100%; background-color: #eee; height: 6px; border-radius: 3px; margin: 5px 0;">
-                                                <div style="width: ${percentage}%; background-color: #007bff; height: 6px; border-radius: 3px;"></div>
-                                            </div>
-                                        </div>`;
+                                        // Handle both object and direct numeric formats
+                                        if (typeof data.position === 'object') {
+                                            // Legacy format where position is an object with position and duration
+                                            const position = data.position;
+                                            const percentage = position.duration > 0 ? 
+                                                Math.round((position.position / position.duration) * 100) : 0;
+                                            
+                                            message += `<div style="margin: 5px 0;">
+                                                <div>${formatTime(position.position)} / ${formatTime(position.duration)} (${percentage}%)</div>
+                                                <div style="width: 100%; background-color: #eee; height: 6px; border-radius: 3px; margin: 5px 0;">
+                                                    <div style="width: ${percentage}%; background-color: #007bff; height: 6px; border-radius: 3px;"></div>
+                                                </div>
+                                            </div>`;
+                                        } else {
+                                            // New format where position is a direct numeric value (seconds)
+                                            const position = data.position;
+                                            message += `<div style="margin: 5px 0;">
+                                                <div>Position: ${formatTime(position)}</div>
+                                            </div>`;
+                                        }
                                     } else {
                                         message += 'No position information';
                                     }

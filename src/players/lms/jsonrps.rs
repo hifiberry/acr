@@ -162,13 +162,6 @@ impl LmsRpcClient {
         self.request_raw(player_id, command_values)
     }
     
-    // Alias for backward compatibility
-    #[deprecated(since = "2.0.0", note = "Use paginated_request instead")]
-    pub fn request(&mut self, player_id: &str, command: &str, start: u32, items_per_response: u32, 
-                  params: Vec<(&str, &str)>) -> Result<Value, LmsRpcError> {
-        self.paginated_request(player_id, command, start, items_per_response, params)
-    }
-    
     /// Send a raw command to a specific player with mixed parameter types
     /// 
     /// # Arguments
@@ -251,7 +244,7 @@ impl LmsRpcClient {
     
     /// Get a list of available players
     pub fn get_players(&mut self) -> Result<Vec<Player>, LmsRpcError> {
-        let result = self.request("0", "players", 0, 100, vec![])?;
+        let result = self.paginated_request("0", "players", 0, 100, vec![])?;
         
         // Extract the players array
         match result.get("players_loop") {
@@ -267,7 +260,7 @@ impl LmsRpcClient {
     
     /// Get player status including current track info
     pub fn get_player_status(&mut self, player_id: &str) -> Result<PlayerStatus, LmsRpcError> {
-        let result = self.request(player_id, "status", 0, 1, vec![("tags", "abcltiqyKo")])?;
+        let result = self.paginated_request(player_id, "status", 0, 1, vec![("tags", "abcltiqyKo")])?;
         
         match serde_json::from_value::<PlayerStatus>(result.clone()) {
             Ok(status) => Ok(status),
@@ -472,7 +465,7 @@ impl LmsRpcClient {
         let mut results = SearchResults::default();
         
         // Search for tracks
-        let track_results = self.request(player_id, "search", 0, limit, 
+        let track_results = self.paginated_request(player_id, "search", 0, limit, 
             vec![("term", query), ("type", "track"), ("tags", "aCdtl")])?;
             
         if let Some(tracks_array) = track_results.get("tracks_loop") {
@@ -486,7 +479,7 @@ impl LmsRpcClient {
         }
         
         // Search for albums
-        let album_results = self.request(player_id, "search", 0, limit, 
+        let album_results = self.paginated_request(player_id, "search", 0, limit, 
             vec![("term", query), ("type", "album"), ("tags", "aCdtlyo")])?;
             
         if let Some(albums_array) = album_results.get("albums_loop") {
@@ -500,7 +493,7 @@ impl LmsRpcClient {
         }
         
         // Search for artists
-        let artist_results = self.request(player_id, "search", 0, limit, 
+        let artist_results = self.paginated_request(player_id, "search", 0, limit, 
             vec![("term", query), ("type", "artist"), ("tags", "a")])?;
             
         if let Some(artists_array) = artist_results.get("artists_loop") {
@@ -514,7 +507,7 @@ impl LmsRpcClient {
         }
         
         // Search for playlists
-        let playlist_results = self.request(player_id, "search", 0, limit, 
+        let playlist_results = self.paginated_request(player_id, "search", 0, limit, 
             vec![("term", query), ("type", "playlist"), ("tags", "p")])?;
             
         if let Some(playlists_array) = playlist_results.get("playlists_loop") {

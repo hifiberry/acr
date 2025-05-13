@@ -109,10 +109,8 @@ impl LmsRpcClient {
     }
     
     /// Get the next request ID
-    fn next_id(&mut self) -> u32 {
-        let id = self.request_id;
-        self.request_id = self.request_id.wrapping_add(1);
-        id
+    fn next_id(&self) -> u32 {
+        0
     }
     
     /// Send a paginated command to a specific player
@@ -126,7 +124,7 @@ impl LmsRpcClient {
     /// 
     /// # Returns
     /// The result field of the response as a JSON Value
-    pub fn paginated_request(&mut self, player_id: &str, command: &str, start: u32, items_per_response: u32, 
+    pub fn paginated_request(&self, player_id: &str, command: &str, start: u32, items_per_response: u32, 
                   params: Vec<(&str, &str)>) -> Result<Value, LmsRpcError> {
         debug!("Command: {}, start: {}, items: {}, params: {:?}", 
                command, start, items_per_response, params);
@@ -167,7 +165,7 @@ impl LmsRpcClient {
     /// # Arguments
     /// * `player_id` - MAC address of player or "0" for server-level commands
     /// * `command` - Command array as JSON Values for mixed types
-    pub fn request_raw(&mut self, player_id: &str, command: Vec<Value>) -> Result<Value, LmsRpcError> {
+    pub fn request_raw(&self, player_id: &str, command: Vec<Value>) -> Result<Value, LmsRpcError> {
         // The LMS jsonrpc.js API expects params to be an array with:
         // 1. The player_id as the first element
         // 2. A nested array containing the command and parameters as the second element
@@ -223,7 +221,7 @@ impl LmsRpcClient {
     /// 
     /// # Returns
     /// The result field of the response as a JSON Value
-    pub fn control_request(&mut self, player_id: &str, command: &str, 
+    pub fn control_request(&self, player_id: &str, command: &str, 
                           args: Vec<&str>) -> Result<Value, LmsRpcError> {
         debug!("Control command: {}, args: {:?}", command, args);
         
@@ -243,7 +241,7 @@ impl LmsRpcClient {
     }
     
     /// Get a list of available players
-    pub fn get_players(&mut self) -> Result<Vec<Player>, LmsRpcError> {
+    pub fn get_players(&self) -> Result<Vec<Player>, LmsRpcError> {
         let result = self.paginated_request("0", "players", 0, 100, vec![])?;
         
         // Extract the players array
@@ -259,7 +257,7 @@ impl LmsRpcClient {
     }
     
     /// Get player status including current track info
-    pub fn get_player_status(&mut self, player_id: &str) -> Result<PlayerStatus, LmsRpcError> {
+    pub fn get_player_status(&self, player_id: &str) -> Result<PlayerStatus, LmsRpcError> {
         let result = self.paginated_request(player_id, "status", 0, 1, vec![("tags", "abcltiqyKo")])?;
         
         match serde_json::from_value::<PlayerStatus>(result.clone()) {
@@ -309,43 +307,43 @@ impl LmsRpcClient {
     }
     
     /// Play the current track
-    pub fn play(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+    pub fn play(&self, player_id: &str) -> Result<Value, LmsRpcError> {
         self.control_request(player_id, "play", vec![])
     }
     
     /// Pause the current track
-    pub fn pause(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+    pub fn pause(&self, player_id: &str) -> Result<Value, LmsRpcError> {
         self.control_request(player_id, "pause", vec!["1"])
     }
     
     /// Toggle pause/play
-    pub fn toggle_pause(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+    pub fn toggle_pause(&self, player_id: &str) -> Result<Value, LmsRpcError> {
         self.control_request(player_id, "pause", vec![])
     }
     
     /// Stop playback
-    pub fn stop(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+    pub fn stop(&self, player_id: &str) -> Result<Value, LmsRpcError> {
         self.control_request(player_id, "stop", vec![])
     }
     
     /// Skip to next track
-    pub fn next(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+    pub fn next(&self, player_id: &str) -> Result<Value, LmsRpcError> {
         self.control_request(player_id, "playlist", vec!["index", "+1"])
     }
     
     /// Skip to previous track
-    pub fn previous(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+    pub fn previous(&self, player_id: &str) -> Result<Value, LmsRpcError> {
         self.control_request(player_id, "playlist", vec!["index", "-1"])
     }
     
     /// Set volume (0-100)
-    pub fn set_volume(&mut self, player_id: &str, volume: u8) -> Result<Value, LmsRpcError> {
+    pub fn set_volume(&self, player_id: &str, volume: u8) -> Result<Value, LmsRpcError> {
         let volume = volume.min(100);
         self.control_request(player_id, "mixer", vec!["volume", &volume.to_string()])
     }
     
     /// Get current volume
-    pub fn get_volume(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
+    pub fn get_volume(&self, player_id: &str) -> Result<u8, LmsRpcError> {
         let result = self.control_request(player_id, "mixer", vec!["volume", "?"])?;
         
         match result.get("_volume") {
@@ -359,18 +357,18 @@ impl LmsRpcClient {
     }
     
     /// Set mute status
-    pub fn set_mute(&mut self, player_id: &str, mute: bool) -> Result<Value, LmsRpcError> {
+    pub fn set_mute(&self, player_id: &str, mute: bool) -> Result<Value, LmsRpcError> {
         let mute_val = if mute { "1" } else { "0" };
         self.control_request(player_id, "mixer", vec!["muting", mute_val])
     }
     
     /// Toggle mute status
-    pub fn toggle_mute(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
+    pub fn toggle_mute(&self, player_id: &str) -> Result<Value, LmsRpcError> {
         self.control_request(player_id, "mixer", vec!["muting"])
     }
     
     /// Get mute status
-    pub fn is_muted(&mut self, player_id: &str) -> Result<bool, LmsRpcError> {
+    pub fn is_muted(&self, player_id: &str) -> Result<bool, LmsRpcError> {
         let result = self.control_request(player_id, "mixer", vec!["muting", "?"])?;
         
         match result.get("_muting") {
@@ -384,20 +382,20 @@ impl LmsRpcClient {
     }
 
     /// Seek to a position (in seconds) in the current track
-    pub fn seek(&mut self, player_id: &str, seconds: f32) -> Result<Value, LmsRpcError> {
+    pub fn seek(&self, player_id: &str, seconds: f32) -> Result<Value, LmsRpcError> {
         // Convert seconds to format expected by LMS
         let time_str = format!("{:.1}", seconds);
         self.control_request(player_id, "time", vec![&time_str])
     }
     
     /// Set shuffle mode (0=off, 1=songs, 2=albums)
-    pub fn set_shuffle(&mut self, player_id: &str, shuffle_mode: u8) -> Result<Value, LmsRpcError> {
+    pub fn set_shuffle(&self, player_id: &str, shuffle_mode: u8) -> Result<Value, LmsRpcError> {
         let mode = shuffle_mode.min(2).to_string();
         self.control_request(player_id, "playlist", vec!["shuffle", &mode])
     }
     
     /// Get shuffle mode
-    pub fn get_shuffle(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
+    pub fn get_shuffle(&self, player_id: &str) -> Result<u8, LmsRpcError> {
         let result = self.control_request(player_id, "playlist", vec!["shuffle", "?"])?;
         
         match result.get("_shuffle") {
@@ -411,13 +409,13 @@ impl LmsRpcClient {
     }
     
     /// Set repeat mode (0=off, 1=song, 2=playlist)
-    pub fn set_repeat(&mut self, player_id: &str, repeat_mode: u8) -> Result<Value, LmsRpcError> {
+    pub fn set_repeat(&self, player_id: &str, repeat_mode: u8) -> Result<Value, LmsRpcError> {
         let mode = repeat_mode.min(2).to_string();
         self.control_request(player_id, "playlist", vec!["repeat", &mode])
     }
     
     /// Get repeat mode
-    pub fn get_repeat(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
+    pub fn get_repeat(&self, player_id: &str) -> Result<u8, LmsRpcError> {
         let result = self.control_request(player_id, "playlist", vec!["repeat", "?"])?;
         
         match result.get("_repeat") {
@@ -432,7 +430,7 @@ impl LmsRpcClient {
     
     /// Check if a specific MAC address is connected to this LMS server
     /// If no MAC address is provided, it will check all local interfaces
-    pub fn is_connected(&mut self, mac_addr: Option<&str>) -> Result<bool, LmsRpcError> {
+    pub fn is_connected(&self, mac_addr: Option<&str>) -> Result<bool, LmsRpcError> {
         // Get players to check connections
         let players = self.get_players()?;
         
@@ -496,7 +494,7 @@ impl LmsRpcClient {
     /// 
     /// # Returns
     /// Search results containing tracks, albums, artists, and playlists
-    pub fn search(&mut self, player_id: &str, query: &str, limit: u32) -> Result<SearchResults, LmsRpcError> {
+    pub fn search(&self, player_id: &str, query: &str, limit: u32) -> Result<SearchResults, LmsRpcError> {
         debug!("Searching for '{}' (limit {})", query, limit);
         let mut results = SearchResults::default();
         

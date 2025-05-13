@@ -65,9 +65,8 @@ impl LMSPlayer {
         
         debug!("Local MAC addresses: {:?}", normalized_local_macs);
         
-        // Use the client (which is now cloneable) to get players
-        let mut client_clone = (*self.client).clone();
-        match client_clone.get_players() {
+        // Use the client directly without cloning
+        match self.client.get_players() {
             Ok(players) => {
                 debug!("Found {} players on LMS server", players.len());
                 
@@ -107,8 +106,7 @@ impl LMSPlayer {
     /// # Returns
     /// true if remote stream, false if local, or an error
     fn remote(&self) -> Result<bool, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "remote", vec!["?"]) {
+        match self.client.control_request(&self.player_id, "remote", vec!["?"]) {
             Ok(response) => {
                 // Extract the _remote value from the response object
                 if let Some(obj) = response.as_object() {
@@ -129,8 +127,7 @@ impl LMSPlayer {
     /// # Returns
     /// The genre as a String if available, or an error
     fn genre(&self) -> Result<String, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "genre", vec!["?"]) {
+        match self.client.control_request(&self.player_id, "genre", vec!["?"]) {
             Ok(response) => {
                 // Extract the _genre field from the response object
                 if let Some(obj) = response.as_object() {
@@ -151,8 +148,7 @@ impl LMSPlayer {
     /// # Returns
     /// The artist as a String if available, or an error
     fn artist(&self) -> Result<String, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "artist", vec!["?"]) {
+        match self.client.control_request(&self.player_id, "artist", vec!["?"]) {
             Ok(response) => {
                 // Extract the _artist field from the response object
                 if let Some(obj) = response.as_object() {
@@ -173,8 +169,7 @@ impl LMSPlayer {
     /// # Returns
     /// The album as a String if available, or an error
     fn album(&self) -> Result<String, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "album", vec!["?"]) {
+        match self.client.control_request(&self.player_id, "album", vec!["?"]) {
             Ok(response) => {
                 // Extract the _album field from the response object
                 if let Some(obj) = response.as_object() {
@@ -195,8 +190,7 @@ impl LMSPlayer {
     /// # Returns
     /// The title as a String if available, or an error
     fn title(&self) -> Result<String, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "title", vec!["?"]) {
+        match self.client.control_request(&self.player_id, "title", vec!["?"]) {
             Ok(response) => {
                 // Extract the _title field from the response object
                 if let Some(obj) = response.as_object() {
@@ -217,8 +211,7 @@ impl LMSPlayer {
     /// # Returns
     /// The duration as a f32 if available, or an error
     fn duration(&self) -> Result<f32, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "duration", vec!["?"]) {
+        match self.client.control_request(&self.player_id, "duration", vec!["?"]) {
             Ok(response) => {
                 // Extract the _duration field from the response object
                 if let Some(obj) = response.as_object() {
@@ -239,8 +232,7 @@ impl LMSPlayer {
     /// # Returns
     /// The file path as a String if available, or an error
     fn path(&self) -> Result<String, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "path", vec!["?"]) {
+        match self.client.control_request(&self.player_id, "path", vec!["?"]) {
             Ok(response) => {
                 // Extract the _path field from the response object
                 if let Some(obj) = response.as_object() {
@@ -276,9 +268,8 @@ impl LMSPlayer {
         let mut cover_art_url = None;
         if let Some(id) = &track_id {
             // Create thumbnail URL from track ID using the server address and port
-            let mut client_clone = (*self.client).clone();
-            if let Ok(server_addr) = client_clone.get_server_address() {
-                let port = client_clone.get_server_port();
+            if let Ok(server_addr) = self.client.get_server_address() {
+                let port = self.client.get_server_port();
                 cover_art_url = Some(format!("http://{}:{}/music/{}/cover.jpg", server_addr, port, id));
                 debug!("Generated cover art URL from track ID: {:?}", cover_art_url);
             } else {
@@ -346,8 +337,7 @@ impl LMSPlayer {
     /// # Returns
     /// The current playback position in seconds, or an error if it couldn't be retrieved
     pub fn get_current_position(&self) -> Result<f32, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "time", vec!["?"]) {
+        match self.client.control_request(&self.player_id, "time", vec!["?"]) {
             Ok(response) => {
                 // Extract the _time field from the response object
                 if let Some(obj) = response.as_object() {
@@ -368,8 +358,7 @@ impl LMSPlayer {
     /// # Returns
     /// The current mode as a string if available, or an error
     pub fn get_mode(&self) -> Result<String, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "mode", vec!["?"]) {
+        match self.client.control_request(&self.player_id, "mode", vec!["?"]) {
             Ok(response) => {
                 // First try to extract from object format
                 if let Some(obj) = response.as_object() {
@@ -396,10 +385,8 @@ impl LMSPlayer {
     /// # Returns
     /// The current shuffle mode (0=off, 1=songs, 2=albums), or an error
     pub fn get_shuffle(&self) -> Result<u8, String> {
-        let mut client_clone = (*self.client).clone();
-        
         // Use the control_request method instead of the paginated request
-        match client_clone.control_request(&self.player_id, "playlist", vec!["shuffle", "?"]) {
+        match self.client.control_request(&self.player_id, "playlist", vec!["shuffle", "?"]) {
             Ok(result) => {
                 debug!("Shuffle response: {:?}", result);
                 
@@ -453,10 +440,8 @@ impl LMSPlayer {
     /// # Returns
     /// The current repeat mode (0=off, 1=song, 2=playlist), or an error
     pub fn get_repeat(&self) -> Result<u8, String> {
-        let mut client_clone = (*self.client).clone();
-        
         // Use the control_request method instead of the paginated request
-        match client_clone.control_request(&self.player_id, "playlist", vec!["repeat", "?"]) {
+        match self.client.control_request(&self.player_id, "playlist", vec!["repeat", "?"]) {
             Ok(result) => {
                 debug!("Repeat response: {:?}", result);
                 
@@ -532,8 +517,6 @@ impl LMSPlayer {
     /// # Returns
     /// `Ok(())` if the command was sent successfully, or an error message
     fn send_command_internal(&self, command: &str, args: Vec<(&str, &str)>) -> Result<(), String> {
-        let mut client_clone = (*self.client).clone();
-        
         // Extract values from tuples with empty tags to use with control_request
         let values: Vec<&str> = args.iter()
             .filter_map(|(tag, value)| {
@@ -546,7 +529,7 @@ impl LMSPlayer {
             .collect();
         
         // Use the control_request method that doesn't add pagination parameters
-        match client_clone.control_request(&self.player_id, command, values) {
+        match self.client.control_request(&self.player_id, command, values) {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("Failed to send {} command: {}", command, e)),
         }
@@ -646,10 +629,8 @@ impl LMSPlayer {
     /// # Returns
     /// `Ok(String)` with the track ID if available, or an error message
     pub fn get_current_track_id(&self) -> Result<String, String> {
-        let mut client_clone = (*self.client).clone();
-        
         // Step 1: Get the current playlist index
-        match client_clone.control_request(&self.player_id, "status", vec!["0", "0"]) {
+        match self.client.control_request(&self.player_id, "status", vec!["0", "0"]) {
             Ok(response) => {
                 // Extract the playlist_cur_index field
                 if let Some(obj) = response.as_object() {
@@ -666,7 +647,7 @@ impl LMSPlayer {
                         debug!("Current playlist index: {}", index_str);
                         
                         // Step 2: Get the track ID at the current index
-                        match client_clone.control_request(&self.player_id, "status", vec![&index_str, "1", "tags:uK"]) {
+                        match self.client.control_request(&self.player_id, "status", vec![&index_str, "1", "tags:uK"]) {
                             Ok(track_response) => {
                                 // The response contains a playlist_loop array with one item
                                 if let Some(obj) = track_response.as_object() {
@@ -740,10 +721,8 @@ impl LMSPlayer {
     /// # Returns
     /// `Ok(())` if the command was sent successfully, or an error message
     pub fn fetch_all_metadata(&self) -> Result<(), String> {
-        let mut client_clone = (*self.client).clone();
-        
         // Request status with extensive tags to get all available metadata
-        match client_clone.control_request(&self.player_id, "status", vec!["0", "1", "tags:adklue"]) {
+        match self.client.control_request(&self.player_id, "status", vec!["0", "1", "tags:adklue"]) {
             Ok(response) => {
                 // Log the entire response for inspection
                 warn!("All metadata from LMS: {:?}", response);

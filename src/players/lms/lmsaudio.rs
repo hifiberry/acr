@@ -6,7 +6,7 @@ use log::{debug, info, warn, error};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::data::{LoopMode, PlaybackState, PlayerCapabilitySet, PlayerCommand, Song, Track};
+use crate::data::{LoopMode, PlaybackState, PlayerCapabilitySet, PlayerCapability, PlayerCommand, Song, Track};
 use crate::PlayerStateListener;
 use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
@@ -182,9 +182,29 @@ impl LMSAudioController {
         let running = Arc::new(AtomicBool::new(true));
         let connected_server = Arc::new(RwLock::new(None));
         
+        // Create a new controller with base functionality
+        let base = BasePlayerController::with_player_info("lms", "lms");
+        
+        // Initialize the controller's capabilities
+        let capabilities = vec![
+            PlayerCapability::Play,
+            PlayerCapability::Pause,
+            PlayerCapability::PlayPause,
+            PlayerCapability::Stop,
+            PlayerCapability::Next,
+            PlayerCapability::Previous,
+            PlayerCapability::Seek,
+            PlayerCapability::Position,
+            PlayerCapability::Shuffle,
+            PlayerCapability::Loop,
+            PlayerCapability::Metadata,
+            PlayerCapability::Length
+        ];
+        base.set_capabilities(capabilities, false);
+        
         // Create a new controller
         let controller = Self {
-            base: BasePlayerController::with_player_info("lms", "lms"),
+            base,
             config: Arc::new(RwLock::new(config.clone())),
             client: Arc::new(RwLock::new(None)),
             player: Arc::new(RwLock::new(None)),

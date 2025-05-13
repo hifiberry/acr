@@ -309,6 +309,7 @@
                                             <div><b>Artist:</b> ${song.artist || 'Unknown'}</div>
                                             ${song.album ? `<div><b>Album:</b> ${song.album}</div>` : ''}
                                             ${song.duration ? `<div><b>Duration:</b> ${formatTime(song.duration)}</div>` : ''}
+                                            ${song.thumbnail ? `<div><b>Thumbnail:</b> <a href="${song.thumbnail}" target="_blank">${song.thumbnail}</a></div>` : ''}
                                         </div>`;
                                     } else {
                                         message += 'No song information';

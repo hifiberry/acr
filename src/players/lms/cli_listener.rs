@@ -41,6 +41,8 @@ const IGNORED_COMMANDS: &[&str] = &[
     "material-skin",
     "prefset plugin.fulltext",
     "prefset server currentSong",
+    "mixer",
+    "scanner notify progress"
 ];
 
 /// Helper function to check if a command matches any of the ignored commands

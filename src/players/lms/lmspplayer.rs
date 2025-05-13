@@ -271,6 +271,24 @@ impl LMSPlayer {
         let path_result = self.path();
         let remote_result = self.remote();
 
+        let track_id = self.get_current_track_id().ok();
+        warn!("Current track ID: {:?}", track_id);
+        
+        // Generate cover art URL from track ID if available
+        let mut cover_art_url = None;
+        if let Some(id) = &track_id {
+            // Create thumbnail URL from track ID using the server address and port
+            let mut client_clone = (*self.client).clone();
+            if let Ok(server_addr) = client_clone.get_server_address() {
+                let port = client_clone.get_server_port();
+                cover_art_url = Some(format!("http://{}:{}/music/{}/cover.jpg", server_addr, port, id));
+                debug!("Generated cover art URL from track ID: {:?}", cover_art_url);
+            } else {
+                warn!("Could not get server address for thumbnail URL");
+            }
+        }
+        
+ 
         // Check if we have at least a title or if we're playing a remote stream
         let title = title_result.ok();
         let remote = remote_result.ok().unwrap_or(false);
@@ -283,6 +301,11 @@ impl LMSPlayer {
         // Store path for both metadata and potential stream URL
         let path_str = path_result.ok();
         
+        // Log if we found a thumbnail URL
+        if let Some(thumb_url) = &cover_art_url {
+            debug!("Found thumbnail URL: {}", thumb_url);
+        }
+        
         // Create Song struct with the available information
         let song = Song {
             title,
@@ -291,8 +314,9 @@ impl LMSPlayer {
             genre: genre_result.ok(),
             duration: duration_result.ok().map(|d| d as f64),
             // Add stream_url if it's a remote stream with an http URL
-            stream_url:  path_str,
+            stream_url: path_str,
             source: Some(if remote { "remote".to_string() } else { "lms".to_string() }),
+            cover_art_url,
             ..Default::default()
         };
         
@@ -615,9 +639,82 @@ impl LMSPlayer {
         self.send_command_with_values("time", vec![pos_str.as_str()])
     }
     
+    /// Get the ID of the currently playing track
+    /// 
+    /// This is a two-step process:
+    /// 1. Get the current playlist index
+    /// 2. Get the track ID at that index
+    /// 
+    /// # Returns
+    /// `Ok(String)` with the track ID if available, or an error message
+    pub fn get_current_track_id(&self) -> Result<String, String> {
+        let mut client_clone = (*self.client).clone();
+        
+        // Step 1: Get the current playlist index
+        match client_clone.control_request(&self.player_id, "status", vec!["0", "0"]) {
+            Ok(response) => {
+                // Extract the playlist_cur_index field
+                if let Some(obj) = response.as_object() {
+                    if let Some(index_value) = obj.get("playlist_cur_index") {
+                        // The index can be either a string or a number
+                        let index_str = if let Some(index) = index_value.as_str() {
+                            index.to_string()
+                        } else if let Some(index) = index_value.as_u64() {
+                            index.to_string()
+                        } else {
+                            return Err("Failed to parse playlist index".to_string());
+                        };
+                        
+                        debug!("Current playlist index: {}", index_str);
+                        
+                        // Step 2: Get the track ID at the current index
+                        match client_clone.control_request(&self.player_id, "status", vec![&index_str, "1", "tags:uK"]) {
+                            Ok(track_response) => {
+                                // The response contains a playlist_loop array with one item
+                                if let Some(obj) = track_response.as_object() {
+                                    if let Some(playlist_loop) = obj.get("playlist_loop") {
+                                        if let Some(items) = playlist_loop.as_array() {
+                                            if !items.is_empty() {
+                                                // Get the first playlist item
+                                                if let Some(current_item) = items.get(0).and_then(|i| i.as_object()) {
+                                                    // Extract the ID from the item
+                                                    if let Some(id_value) = current_item.get("id") {
+                                                        // Handle the ID being either a number or string
+                                                        let track_id = if let Some(id) = id_value.as_str() {
+                                                            id.to_string()
+                                                        } else if let Some(id) = id_value.as_u64() {
+                                                            id.to_string()
+                                                        } else {
+                                                            return Err("Failed to parse track ID".to_string());
+                                                        };
+                                                        
+                                                        debug!("Current track ID: {}", track_id);
+                                                        return Ok(track_id);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                Err("Could not find track ID in playlist response".to_string())
+                            },
+                            Err(e) => Err(format!("Failed to get track at index {}: {}", index_str, e))
+                        }
+                    } else {
+                        Err("Playlist index not found in response".to_string())
+                    }
+                } else {
+                    Err("Invalid response format".to_string())
+                }
+            },
+            Err(e) => Err(format!("Failed to get player status: {}", e))
+        }
+    }
+    
     /// Skip to the previous song in the playlist
     /// 
-    /// Uses the 'button_jump_rew' command to go to the previous track.
+    /// Uses the 'button jump_rew' command to go to the previous track.
     /// 
     /// # Returns
     /// `Ok(())` if the command was sent successfully, or an error message

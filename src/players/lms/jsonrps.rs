@@ -272,6 +272,42 @@ impl LmsRpcClient {
         }
     }
     
+    /// Get the server address (hostname or IP) from the base URL
+    /// 
+    /// # Returns
+    /// The server address as a String if it can be extracted
+    pub fn get_server_address(&self) -> Result<String, LmsRpcError> {
+        // Parse the base URL to extract the server address
+        if let Some(stripped) = self.base_url.strip_prefix("http://") {
+            if let Some(index) = stripped.find(':') {
+                return Ok(stripped[..index].to_string());
+            }
+            return Ok(stripped.to_string());
+        }
+        
+        Err(LmsRpcError::ParseError("Could not extract server address from base URL".to_string()))
+    }
+    
+    /// Get the server port from the base URL
+    /// 
+    /// # Returns
+    /// The server port number
+    pub fn get_server_port(&self) -> u16 {
+        // Parse the base URL to extract the port
+        if let Some(stripped) = self.base_url.strip_prefix("http://") {
+            if let Some(index) = stripped.find(':') {
+                if let Some(port_str) = stripped.get((index + 1)..) {
+                    if let Ok(port) = port_str.parse::<u16>() {
+                        return port;
+                    }
+                }
+            }
+        }
+        
+        // Default LMS port if we couldn't extract it
+        9000
+    }
+    
     /// Play the current track
     pub fn play(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
         self.control_request(player_id, "play", vec![])

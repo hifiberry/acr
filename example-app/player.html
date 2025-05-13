@@ -886,12 +886,19 @@
                     <div><strong>Position:</strong> ${position} / ${duration}</div>
                 `;
 
-                // Update song thumbnail
-                if (song.thumbnail) {
+                // Update song thumbnail - prioritize cover_art_url over thumbnail
+                if (song.cover_art_url) {
+                    console.log("Using cover_art_url for album art:", song.cover_art_url);
+                    songThumbnail.src = song.cover_art_url;
+                    songThumbnail.style.display = 'inline-block';
+                    noThumbnail.style.display = 'none';
+                } else if (song.thumbnail) {
+                    console.log("Using thumbnail for album art:", song.thumbnail);
                     songThumbnail.src = song.thumbnail;
                     songThumbnail.style.display = 'inline-block';
                     noThumbnail.style.display = 'none';
                 } else {
+                    console.log("No album art available");
                     songThumbnail.style.display = 'none';
                     noThumbnail.style.display = 'inline-flex';
                 }

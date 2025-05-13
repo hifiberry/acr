@@ -381,4 +381,169 @@ impl LMSPlayer {
             Err(e) => Err(format!("Failed to get player mode: {}", e)),
         }
     }
+
+    /// Internal helper to send commands to the LMS player
+    /// 
+    /// # Arguments
+    /// * `command` - The command to send (play, pause, stop, etc.)
+    /// * `args` - Optional vector of arguments as (name, value) tuples
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    fn send_command(&self, command: &str, args: Vec<(&str, &str)>) -> Result<(), String> {
+        let mut client_clone = (*self.client).clone();
+        
+        // For logging, extract just the values when tag is empty
+        let log_args: Vec<String> = args.iter()
+            .map(|(tag, value)| {
+                if tag.is_empty() {
+                    (*value).to_string()
+                } else {
+                    // For named params, use tag:value format
+                    format!("{}:{}", tag, value)
+                }
+            })
+            .collect();
+        
+        match client_clone.request(&self.player_id, command, 0, 1, args) {
+            Ok(_) => {
+                debug!("{} command sent to player {} with args {:?}", command, self.player_id, log_args);
+                Ok(())
+            },
+            Err(e) => Err(format!("Failed to send {} command: {}", command, e)),
+        }
+    }
+    
+    /// Internal helper to send commands with simple string values (no named parameters)
+    /// 
+    /// # Arguments
+    /// * `command` - The command to send (play, pause, stop, etc.)
+    /// * `args` - Vector of argument values (without parameter names)
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    fn send_command_with_values(&self, command: &str, args: Vec<&str>) -> Result<(), String> {
+        // Log the simple values here before converting to tuples
+        warn!("{} command sent to player {} with args {:?}", command, self.player_id, args);
+        
+        // Convert each value to a tuple with empty tag name
+        let tuple_args = args.into_iter().map(|value| ("", value)).collect();
+        
+        // Call a modified version of the send_command method that doesn't log
+        self.send_command_internal(command, tuple_args)
+    }
+    
+    /// Internal version of send_command that doesn't log (used by send_command_with_values)
+    /// 
+    /// # Arguments
+    /// * `command` - The command to send (play, pause, stop, etc.)
+    /// * `args` - Optional vector of arguments as (name, value) tuples
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    fn send_command_internal(&self, command: &str, args: Vec<(&str, &str)>) -> Result<(), String> {
+        let mut client_clone = (*self.client).clone();
+        
+        // Extract values from tuples with empty tags to use with control_request
+        let values: Vec<&str> = args.iter()
+            .filter_map(|(tag, value)| {
+                if tag.is_empty() {
+                    Some(*value)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Use the control_request method that doesn't add pagination parameters
+        match client_clone.control_request(&self.player_id, command, values) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("Failed to send {} command: {}", command, e)),
+        }
+    }
+    
+    /// Send a play command to the player
+    /// 
+    /// The play command starts playing the current playlist.
+    /// 
+    /// # Arguments
+    /// * `fade_in_secs` - Optional fade-in period in seconds
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn play(&self, fade_in_secs: Option<f32>) -> Result<(), String> {
+        let mut args = vec![];
+        
+        // Add fade-in parameter if specified
+        if let Some(fade) = fade_in_secs {
+            args.push(fade.to_string());
+        }
+        
+        // Convert any owned Strings to &str for the function call
+        let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        
+        self.send_command_with_values("play", str_args)
+    }
+    
+    /// Send a stop command to the player
+    /// 
+    /// The stop command stops playing the current playlist.
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn stop(&self) -> Result<(), String> {
+        self.send_command_with_values("stop", vec![])
+    }
+    
+    /// Send a pause command to the player
+    /// 
+    /// The pause command toggles the pause state, or explicitly sets it based on parameters.
+    /// 
+    /// # Arguments
+    /// * `pause_state` - Optional pause state: Some(true) to force pause, Some(false) to force unpause, None to toggle
+    /// * `fade_in_secs` - Optional fade-in period in seconds when unpausing
+    /// * `suppress_show_briefly` - Optional flag to suppress display of pause icon on the player
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn pause(&self, pause_state: Option<bool>, fade_in_secs: Option<f32>, suppress_show_briefly: Option<bool>) -> Result<(), String> {
+        let mut args = vec![];
+        let mut owned_strings = vec![];
+        
+        // Add pause state parameter if specified
+        if let Some(state) = pause_state {
+            args.push(if state { "1" } else { "0" });
+        }
+        
+        // Add fade in parameter if specified
+        if let Some(fade) = fade_in_secs {
+            owned_strings.push(fade.to_string());
+            args.push(owned_strings.last().unwrap().as_str());
+        }
+        
+        // Add suppress show briefly parameter if specified
+        if let Some(suppress) = suppress_show_briefly {
+            args.push(if suppress { "1" } else { "0" });
+        }
+        
+        self.send_command_with_values("pause", args)
+    }
+
+    /// Send a seek command to the player
+    /// 
+    /// The seek command allows seeking to an absolute position in the current track.
+    /// 
+    /// # Arguments
+    /// * `position_secs` - Position in seconds to seek to
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn seek(&self, position_secs: f32) -> Result<(), String> {
+        // Convert the position to a string with one decimal place
+        let pos_str = format!("{:.1}", position_secs);
+        
+        // Use the control_request method (via send_command_with_values)
+        // to send the time command with the position parameter
+        self.send_command_with_values("time", vec![pos_str.as_str()])
+    }
 }

@@ -2,7 +2,7 @@ use std::any::Any;
 use std::sync::{Arc, RwLock, Weak, atomic::{AtomicBool, Ordering}};
 use std::time::{SystemTime, Duration};
 use std::thread;
-use log::{debug, info, warn};
+use log::{debug, info, warn, error};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -720,15 +720,105 @@ impl PlayerController for LMSAudioController {
         self.base.get_last_seen()
     }
     
-    fn send_command(&self, _command: PlayerCommand) -> bool {
+    fn send_command(&self, command: PlayerCommand) -> bool {
         // Use cached connection state
         if !self.is_connected.load(Ordering::SeqCst) {
             debug!("Cannot send command - LMS player is disconnected");
             return false;
         }
         
-        // Not yet implemented - would send the command to the LMS server
-        false
+        // Get player instance
+        let player = match self.player.read() {
+            Ok(player_guard) => {
+                match player_guard.as_ref() {
+                    Some(player) => player.clone(),
+                    None => {
+                        debug!("LMS player object is missing, cannot send command");
+                        return false;
+                    }
+                }
+            },
+            Err(_) => {
+                debug!("Failed to acquire read lock on LMS player");
+                return false;
+            }
+        };
+        
+        // Process different commands
+        match command {
+            PlayerCommand::Play => {
+                debug!("Sending play command to LMS player");
+                match player.play(None) {
+                    Ok(_) => {
+                        debug!("Play command sent successfully");
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send play command: {}", e);
+                        false
+                    }
+                }
+            },
+            PlayerCommand::Pause => {
+                debug!("Sending pause command to LMS player");
+                match player.pause(Some(true), None, None) {
+                    Ok(_) => {
+                        debug!("Pause command sent successfully");
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send pause command: {}", e);
+                        false
+                    }
+                }
+            },
+            PlayerCommand::PlayPause => {
+                debug!("Sending play/pause toggle command to LMS player");
+                match player.pause(None, None, None) {
+                    Ok(_) => {
+                        debug!("Play/pause toggle command sent successfully");
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send play/pause toggle command: {}", e);
+                        false
+                    }
+                }
+            },
+            PlayerCommand::Stop => {
+                debug!("Sending stop command to LMS player");
+                match player.stop() {
+                    Ok(_) => {
+                        debug!("Stop command sent successfully");
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send stop command: {}", e);
+                        false
+                    }
+                }
+            },
+            PlayerCommand::Seek(position) => {
+                debug!("Sending seek command to LMS player with position: {}", position);
+                match player.seek(position as f32) {
+                    Ok(_) => {
+                        debug!("Seek command sent successfully");
+                        // Update position after seek
+                        self.update_and_notify_position();
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send seek command: {}", e);
+                        false
+                    }
+                }
+            },
+            // Other commands are not yet implemented
+            _ => {
+                error!("Command {} not implemented for LMS player", command);
+                false
+            }
+        }
     }
     
     fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool {

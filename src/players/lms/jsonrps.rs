@@ -115,7 +115,7 @@ impl LmsRpcClient {
         id
     }
     
-    /// Send a command to a specific player
+    /// Send a paginated command to a specific player
     /// 
     /// # Arguments
     /// * `player_id` - MAC address of player (e.g., "00:04:20:ab:cd:ef") or "0" for server-level commands
@@ -126,7 +126,7 @@ impl LmsRpcClient {
     /// 
     /// # Returns
     /// The result field of the response as a JSON Value
-    pub fn request(&mut self, player_id: &str, command: &str, start: u32, items_per_response: u32, 
+    pub fn paginated_request(&mut self, player_id: &str, command: &str, start: u32, items_per_response: u32, 
                   params: Vec<(&str, &str)>) -> Result<Value, LmsRpcError> {
         debug!("Command: {}, start: {}, items: {}, params: {:?}", 
                command, start, items_per_response, params);
@@ -144,6 +144,9 @@ impl LmsRpcClient {
             if tag == "?" {
                 // Just add "?" directly without the colon and value
                 command_values.push(Value::String("?".to_string()));
+            } else if tag == "" {
+                // If the tag is empty, just add the value
+                command_values.push(Value::String(value.to_string()));
             } else {
                 // For normal parameters, format as "tag:value"
                 // But if the value is empty, just use the tag (for toggles)
@@ -157,6 +160,13 @@ impl LmsRpcClient {
         }
 
         self.request_raw(player_id, command_values)
+    }
+    
+    // Alias for backward compatibility
+    #[deprecated(since = "2.0.0", note = "Use paginated_request instead")]
+    pub fn request(&mut self, player_id: &str, command: &str, start: u32, items_per_response: u32, 
+                  params: Vec<(&str, &str)>) -> Result<Value, LmsRpcError> {
+        self.paginated_request(player_id, command, start, items_per_response, params)
     }
     
     /// Send a raw command to a specific player with mixed parameter types
@@ -209,6 +219,34 @@ impl LmsRpcClient {
                 Err(LmsRpcError::RequestError(e.to_string()))
             }
         }
+    }
+    
+    /// Send a control command to a specific player (without pagination parameters)
+    /// 
+    /// # Arguments
+    /// * `player_id` - MAC address of player (e.g., "00:04:20:ab:cd:ef")
+    /// * `command` - Command name (e.g., "pause", "play", "stop")
+    /// * `args` - Command arguments as simple values without tags
+    /// 
+    /// # Returns
+    /// The result field of the response as a JSON Value
+    pub fn control_request(&mut self, player_id: &str, command: &str, 
+                          args: Vec<&str>) -> Result<Value, LmsRpcError> {
+        debug!("Control command: {}, args: {:?}", command, args);
+        
+        // Build command with proper format: command arg1 arg2...
+        let mut command_values = vec![
+            Value::String(command.to_string()),
+        ];
+        
+        // Add arguments as simple values
+        for arg in args {
+            command_values.push(Value::String(arg.to_string()));
+        }
+
+        debug!("Control command values: {:?}", command_values);
+
+        self.request_raw(player_id, command_values)
     }
     
     /// Get a list of available players

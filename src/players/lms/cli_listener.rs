@@ -6,6 +6,8 @@ use std::time::Duration;
 use log::{warn, debug, error, trace};
 use urlencoding::decode;
 
+use crate::data::PlaybackState;
+
 // Forward declaration to avoid circular dependency
 type WeakAudioController = Weak<dyn AudioControllerRef>;
 
@@ -13,6 +15,9 @@ type WeakAudioController = Weak<dyn AudioControllerRef>;
 pub trait AudioControllerRef: Send + Sync {
     /// Notify that an event was seen from this player
     fn seen(&self);
+    
+    /// Notify that player state has changed
+    fn state_changed(&self, state: PlaybackState);
 }
 
 /// List of commands that should only be logged at debug level
@@ -267,10 +272,6 @@ impl LMSListener {
                                                 // is sent twice: as playlist pause (here) and as pause (below)
                                                 // only use the pause event
                                             },
-                                            "stop" => {
-                                                warn!("LMS event: Player {} stopped (full command: playlist {})", 
-                                                    mac_addr, all_args);
-                                            },
                                             _ => {
                                                 warn!("LMS event: Player {} {} {}", mac_addr, cmd, all_args);
                                             }
@@ -281,15 +282,52 @@ impl LMSListener {
                                 },
                                 "pause" => {
                                     let all_args = cmd_parts[1..].join(" ");
-                                    let state = if cmd_parts.len() > 1 && cmd_parts[1] == "1" { "paused" } else { "resumed" };
-                                    warn!("LMS event: Player {} {} (full command: pause {})", 
+                                    let is_paused = cmd_parts.len() > 1 && cmd_parts[1] == "1";
+                                    let state = if is_paused { "paused" } else { "resumed" };
+                                    debug!("LMS event: Player {} {} (full command: pause {})", 
                                         mac_addr, state, all_args);
+                                    
+                                    // Notify the audio controller about the state change
+                                    match controller.upgrade() {
+                                        Some(ctrl) => {
+                                            debug!("Sending state change to controller: {}", state);
+                                            if is_paused {
+                                                ctrl.state_changed(PlaybackState::Paused);
+                                            } else {
+                                                ctrl.state_changed(PlaybackState::Playing);
+                                            }
+                                        },
+                                        None => {
+                                            error!("Failed to upgrade controller reference - state change will not be sent!");
+                                        }
+                                    }
                                 },
                                 "client" => {
                                     let all_args = cmd_parts[1..].join(" ");
                                     if cmd_parts.len() > 1 {
                                         warn!("LMS event: Player {} client {} (full command: client {})", 
                                             mac_addr, cmd_parts[1], all_args);
+                                        
+                                        // Handle disconnect and reconnect events with state changes
+                                        match cmd_parts[1].as_str() {
+                                            "disconnect" => {
+                                                debug!("LMS player disconnected - updating state");
+                                                if let Some(ctrl) = controller.upgrade() {
+                                                    ctrl.state_changed(PlaybackState::Disconnected);
+                                                } else {
+                                                    error!("Failed to upgrade controller reference on disconnect");
+                                                }
+                                            },
+                                            "reconnect" => {
+                                                debug!("LMS player reconnected - updating state to Stopped");
+                                                if let Some(ctrl) = controller.upgrade() {
+                                                    ctrl.state_changed(PlaybackState::Stopped);
+                                                } else {
+                                                    error!("Failed to upgrade controller reference on reconnect");
+                                                }
+                                            },
+                                            _ => {} // Other client events, no state change needed
+                                        }
                                     } else {
                                         warn!("LMS event: Player {} client event", mac_addr);
                                     }
@@ -309,6 +347,28 @@ impl LMSListener {
                                     let all_args = cmd_parts[1..].join(" ");
                                     warn!("LMS event: Player {} UI update (full command: {} {})", 
                                         mac_addr, cmd, all_args);
+                                },
+                                "power" => {
+                                    let all_args = cmd_parts[1..].join(" ");
+                                    let is_powered = cmd_parts.len() > 1 && cmd_parts[1] == "1";
+                                    let power_state = if is_powered { "on" } else { "off" };
+                                    warn!("LMS event: Player {} power {} (full command: power {})", 
+                                        mac_addr, power_state, all_args);
+                                    
+                                    // Update player state based on power status
+                                    if let Some(ctrl) = controller.upgrade() {
+                                        if is_powered {
+                                            // When powered on, set to Stopped - actual playback state will follow
+                                            warn!("Player powered on - updating state to Stopped");
+                                            ctrl.state_changed(PlaybackState::Stopped);
+                                        } else {
+                                            // When powered off, set to Disconnected
+                                            warn!("Player powered off - updating state to Disconnected");
+                                            ctrl.state_changed(PlaybackState::Disconnected);
+                                        }
+                                    } else {
+                                        error!("Failed to upgrade controller reference for power event");
+                                    }
                                 },
                                 _ => {
                                     // Default formatting for other events

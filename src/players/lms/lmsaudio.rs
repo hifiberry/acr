@@ -97,6 +97,10 @@ pub struct LMSAudioController {
     /// CLI listener for receiving real-time events from the LMS server
     cli_listener: Arc<RwLock<Option<LMSListener>>>,
     
+    /// Strong reference to the AudioControllerRef trait object
+    /// This ensures the controller stays alive while the listener is active
+    controller_ref: Arc<RwLock<Option<Arc<dyn AudioControllerRef>>>>,
+    
     /// Last time an event was seen from this player
     last_seen: Arc<RwLock<Option<SystemTime>>>,
 }
@@ -188,6 +192,7 @@ impl LMSAudioController {
             running,
             connected_server,
             cli_listener: Arc::new(RwLock::new(None)),
+            controller_ref: Arc::new(RwLock::new(None)),
             last_seen: Arc::new(RwLock::new(None)),
         };
         
@@ -458,8 +463,11 @@ impl LMSAudioController {
         // First stop any existing listener
         self.stop_cli_listener();
         
-        // Create a controller reference for the listener
-        let controller_ref: Weak<dyn AudioControllerRef> = Arc::downgrade(&(Arc::new(self.clone()) as Arc<dyn AudioControllerRef>));
+        // Create a strong reference to self that will be stored alongside the listener
+        let controller_arc: Arc<dyn AudioControllerRef> = Arc::new(self.clone());
+        
+        // Create a weak reference from the strong reference
+        let controller_ref = Arc::downgrade(&controller_arc);
         
         // Create a new CLI listener
         let mut listener = LMSListener::new(server, player_id, controller_ref);
@@ -467,12 +475,20 @@ impl LMSAudioController {
         // Start the listener
         listener.start();
         
-        // Store the listener
+        // Store the listener and the strong reference to the controller
         if let Ok(mut cli_lock) = self.cli_listener.write() {
+            // Store both the listener and the strong reference to keep it alive
             *cli_lock = Some(listener);
             debug!("CLI listener started and stored");
         } else {
             warn!("Failed to acquire write lock for CLI listener");
+        }
+        
+        // Store the strong reference to the controller
+        if let Ok(mut controller_ref_lock) = self.controller_ref.write() {
+            *controller_ref_lock = Some(controller_arc);
+        } else {
+            warn!("Failed to acquire write lock for controller_ref");
         }
     }
     
@@ -483,6 +499,11 @@ impl LMSAudioController {
                 debug!("Stopping CLI listener");
                 listener.stop();
             }
+        }
+        
+        // Clear the strong reference to the controller
+        if let Ok(mut controller_ref_lock) = self.controller_ref.write() {
+            *controller_ref_lock = None;
         }
     }
 }
@@ -498,6 +519,7 @@ impl Clone for LMSAudioController {
             running: self.running.clone(),
             connected_server: self.connected_server.clone(),
             cli_listener: self.cli_listener.clone(),
+            controller_ref: self.controller_ref.clone(),
             last_seen: self.last_seen.clone(),
         }
     }
@@ -735,5 +757,15 @@ impl AudioControllerRef for LMSAudioController {
             *last_seen = Some(SystemTime::now());
             debug!("Updated last_seen timestamp for LMS player");
         }
+    }
+    
+    /// Handle state change notifications from CLI listener
+    fn state_changed(&self, state: PlaybackState) {
+        // First update the last seen timestamp
+        self.seen();
+        
+        // Notify all registered listeners about the state change
+        debug!("LMS state changed to: {:?}", state);
+        self.base.notify_state_changed(state);
     }
 }

@@ -113,18 +113,17 @@ impl LmsRpcClient {
         0
     }
     
-    /// Send a paginated command to a specific player
+    /// Send a database query command
     /// 
     /// # Arguments
-    /// * `player_id` - MAC address of player (e.g., "00:04:20:ab:cd:ef") or "0" for server-level commands
-    /// * `command` - Command name (e.g., "mixer")
+    /// * `command` - Command name (e.g., "artists", "albums", "titles")
     /// * `start` - Start index for pagination (0-based)
     /// * `items_per_response` - Number of items to return per response
-    /// * `params` - Tagged parameters as key-value pairs (e.g., ("volume", "50"))
+    /// * `params` - Tagged parameters as key-value pairs (e.g., ("tags", "a"))
     /// 
     /// # Returns
     /// The result field of the response as a JSON Value
-    pub fn paginated_request(&self, player_id: &str, command: &str, start: u32, items_per_response: u32, 
+    pub fn database_request(&self, command: &str, start: u32, items_per_response: u32, 
                   params: Vec<(&str, &str)>) -> Result<Value, LmsRpcError> {
         debug!("Command: {}, start: {}, items: {}, params: {:?}", 
                command, start, items_per_response, params);
@@ -157,31 +156,41 @@ impl LmsRpcClient {
             }
         }
 
-        self.request_raw(player_id, command_values)
+        // Pass None for player_id to use the default "0" for database commands
+        self.request_raw(None, command_values)
     }
     
     /// Send a raw command to a specific player with mixed parameter types
     /// 
     /// # Arguments
-    /// * `player_id` - MAC address of player or "0" for server-level commands
+    /// * `player_id` - Optional MAC address of player. If None, no player ID will be added to the request
     /// * `command` - Command array as JSON Values for mixed types
-    pub fn request_raw(&self, player_id: &str, command: Vec<Value>) -> Result<Value, LmsRpcError> {
+    pub fn request_raw(&self, player_id: Option<&str>, command: Vec<Value>) -> Result<Value, LmsRpcError> {
         // The LMS jsonrpc.js API expects params to be an array with:
-        // 1. The player_id as the first element
-        // 2. A nested array containing the command and parameters as the second element
+        // 1. For player commands: [player_id, command_array]
+        // 2. For database commands: [command_values...]
         
         // Debug log the command before creating the request
         let url = format!("{}{}", self.base_url, JSONRPC_PATH);
-        debug!("LMS command to {}: player_id={}, command={:?}", url, player_id, command);
+        debug!("LMS command to {}: player_id={:?}, command={:?}", url, player_id, command);
         
-        // Create the nested command array
-        let command_array = Value::Array(command.clone());
-        
-        // Create params array with player_id followed by the command array
-        let params = vec![
-            Value::String(player_id.to_string()),
-            command_array
-        ];
+        // Create params array based on whether this is a player-specific command or database command
+        let params = match player_id {
+            Some(id) => {
+                // Include player_id for player-specific commands
+                // Format: [player_id, [command, arg1, arg2, ...]]
+                let command_array = Value::Array(command.clone());
+                vec![
+                    Value::String(id.to_string()),
+                    command_array
+                ]
+            },
+            None => {
+                // For database commands, use command values directly without wrapping
+                // Format: [command, arg1, arg2, ...]
+                command
+            }
+        };
         
         let request = JsonRpcRequest {
             id: self.next_id(),
@@ -237,12 +246,12 @@ impl LmsRpcClient {
 
         debug!("Control command values: {:?}", command_values);
 
-        self.request_raw(player_id, command_values)
+        self.request_raw(Some(player_id), command_values)
     }
     
     /// Get a list of available players
     pub fn get_players(&self) -> Result<Vec<Player>, LmsRpcError> {
-        let result = self.paginated_request("0", "players", 0, 100, vec![])?;
+        let result = self.control_request("0:0:0:0:0:0:0:0", "players", vec!["0","100"])?;
         
         // Extract the players array
         match result.get("players_loop") {
@@ -258,7 +267,8 @@ impl LmsRpcClient {
     
     /// Get player status including current track info
     pub fn get_player_status(&self, player_id: &str) -> Result<PlayerStatus, LmsRpcError> {
-        let result = self.paginated_request(player_id, "status", 0, 1, vec![("tags", "abcltiqyKo")])?;
+        // Use control_request since we need to address a specific player
+        let result = self.control_request(player_id, "status", vec!["0", "1", "tags:abcltiqyKo"])?;
         
         match serde_json::from_value::<PlayerStatus>(result.clone()) {
             Ok(status) => Ok(status),
@@ -494,12 +504,12 @@ impl LmsRpcClient {
     /// 
     /// # Returns
     /// Search results containing tracks, albums, artists, and playlists
-    pub fn search(&self, player_id: &str, query: &str, limit: u32) -> Result<SearchResults, LmsRpcError> {
+    pub fn search(&self, query: &str, limit: u32) -> Result<SearchResults, LmsRpcError> {
         debug!("Searching for '{}' (limit {})", query, limit);
         let mut results = SearchResults::default();
         
         // Search for tracks
-        let track_results = self.paginated_request(player_id, "search", 0, limit, 
+        let track_results = self.database_request("search", 0, limit, 
             vec![("term", query), ("type", "track"), ("tags", "aCdtl")])?;
             
         if let Some(tracks_array) = track_results.get("tracks_loop") {
@@ -513,7 +523,7 @@ impl LmsRpcClient {
         }
         
         // Search for albums
-        let album_results = self.paginated_request(player_id, "search", 0, limit, 
+        let album_results = self.database_request("search", 0, limit, 
             vec![("term", query), ("type", "album"), ("tags", "aCdtlyo")])?;
             
         if let Some(albums_array) = album_results.get("albums_loop") {
@@ -527,7 +537,7 @@ impl LmsRpcClient {
         }
         
         // Search for artists
-        let artist_results = self.paginated_request(player_id, "search", 0, limit, 
+        let artist_results = self.database_request("search", 0, limit, 
             vec![("term", query), ("type", "artist"), ("tags", "a")])?;
             
         if let Some(artists_array) = artist_results.get("artists_loop") {
@@ -541,7 +551,7 @@ impl LmsRpcClient {
         }
         
         // Search for playlists
-        let playlist_results = self.paginated_request(player_id, "search", 0, limit, 
+        let playlist_results = self.database_request("search", 0, limit, 
             vec![("term", query), ("type", "playlist"), ("tags", "p")])?;
             
         if let Some(playlists_array) = playlist_results.get("playlists_loop") {

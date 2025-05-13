@@ -18,7 +18,7 @@ pub fn is_player(server: &str, mac_addresses: Vec<String>) -> bool {
     }
 
     // Create a client for the server with default port (9000)
-    let mut client = LmsRpcClient::new(server, 9000);
+    let client = LmsRpcClient::new(server, 9000);
 
     // Get all players connected to the server
     let players = match client.get_players() {

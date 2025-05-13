@@ -713,8 +713,7 @@ impl PlayerController for LMSAudioController {
         };
 
         // Create a fresh LmsRpcClient for this specific request
-        // Uses our centralized HTTP client implementation that's fully synchronous
-        let mut temp_client = LmsRpcClient::new(&server_address, config.port)
+        let temp_client = LmsRpcClient::new(&server_address, config.port)
             .with_timeout(2); // short 2-second timeout
         
         // Make a direct synchronous request 

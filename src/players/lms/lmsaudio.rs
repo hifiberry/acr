@@ -859,6 +859,40 @@ impl PlayerController for LMSAudioController {
                     }
                 }
             },
+            PlayerCommand::Previous => {
+                debug!("Sending previous command to LMS player");
+                match player.previous() {
+                    Ok(_) => {
+                        debug!("Previous command sent successfully");
+                        // Update song after changing tracks
+                        self.update_and_notify_song();
+                        // Update position after changing tracks
+                        self.update_and_notify_position();
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send previous command: {}", e);
+                        false
+                    }
+                }
+            },
+            PlayerCommand::Next => {
+                debug!("Sending next command to LMS player");
+                match player.next() {
+                    Ok(_) => {
+                        debug!("Next command sent successfully");
+                        // Update song after changing tracks
+                        self.update_and_notify_song();
+                        // Update position after changing tracks
+                        self.update_and_notify_position();
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send next command: {}", e);
+                        false
+                    }
+                }
+            },
             PlayerCommand::Seek(position) => {
                 debug!("Sending seek command to LMS player with position: {}", position);
                 match player.seek(position as f32) {

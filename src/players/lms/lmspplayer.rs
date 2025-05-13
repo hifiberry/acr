@@ -614,4 +614,26 @@ impl LMSPlayer {
         // to send the time command with the position parameter
         self.send_command_with_values("time", vec![pos_str.as_str()])
     }
+    
+    /// Skip to the previous song in the playlist
+    /// 
+    /// Uses the 'button_jump_rew' command to go to the previous track.
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn previous(&self) -> Result<(), String> {
+        debug!("Sending 'playlist index -' command to player {}", self.player_id);
+        self.send_command_with_values("button", vec!["jump_rew"])
+    }
+    
+    /// Skip to the next song in the playlist
+    /// 
+    /// Uses the 'button jump_fwd' command to go to the next track.
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn next(&self) -> Result<(), String> {
+        debug!("Sending 'playlist index +' command to player {}", self.player_id);
+        self.send_command_with_values("button", vec!["jump_fwd"])
+    }
 }

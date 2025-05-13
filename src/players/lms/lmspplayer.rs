@@ -102,29 +102,6 @@ impl LMSPlayer {
         }
     }
     
-    /// Get the current title for remote streams or the song title as formatted for the player
-    /// 
-    /// # Returns
-    /// The current title as a String if available, or an error
-    #[allow(dead_code)]
-    fn current_title(&self) -> Result<String, String> {
-        let mut client_clone = (*self.client).clone();
-        match client_clone.control_request(&self.player_id, "current_title", vec!["?"]) {
-            Ok(response) => {
-                // Extract the _title field from the response object
-                if let Some(obj) = response.as_object() {
-                    if let Some(title_value) = obj.get("_title") {
-                        if let Some(title) = title_value.as_str() {
-                            return Ok(title.to_string());
-                        }
-                    }
-                }
-                Err("Failed to parse current_title response".to_string())
-            },
-            Err(e) => Err(format!("Failed to get current_title: {}", e)),
-        }
-    }
-    
     /// Check if current song is a remote stream
     /// 
     /// # Returns

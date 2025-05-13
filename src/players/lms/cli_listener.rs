@@ -1,9 +1,24 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}, Weak};
 use std::thread;
 use std::time::Duration;
-use log::{warn, debug, error};
+use log::{warn, debug, error, trace};
+use urlencoding::decode;
+
+// Forward declaration to avoid circular dependency
+type WeakAudioController = Weak<dyn AudioControllerRef>;
+
+/// Interface for interacting with the Audio Controller
+pub trait AudioControllerRef: Send + Sync {
+    /// Notify that an event was seen from this player
+    fn seen(&self);
+}
+
+/// List of commands that should only be logged at debug level
+const IGNORED_COMMANDS: &[&str] = &[
+    "open",
+];
 
 /// LMSListener connects to the Logitech Media Server CLI interface on port 9090
 /// and logs all messages received from the server
@@ -19,6 +34,9 @@ pub struct LMSListener {
     
     /// Thread handle for the listener
     thread_handle: Option<thread::JoinHandle<()>>,
+    
+    /// Reference to the parent audio controller
+    controller: WeakAudioController,
 }
 
 impl LMSListener {
@@ -27,12 +45,14 @@ impl LMSListener {
     /// # Arguments
     /// * `server` - Server address (hostname or IP)
     /// * `player_id` - Player ID (MAC address)
-    pub fn new(server: &str, player_id: &str) -> Self {
+    /// * `controller` - Reference to the parent audio controller
+    pub fn new(server: &str, player_id: &str, controller: WeakAudioController) -> Self {
         Self {
             server_address: server.to_string(),
             player_id: player_id.to_string(),
             running: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
+            controller,
         }
     }
     
@@ -48,11 +68,12 @@ impl LMSListener {
         let server = self.server_address.clone();
         let player_id = self.player_id.clone();
         let running = self.running.clone();
+        let controller = self.controller.clone();
         
         self.thread_handle = Some(thread::spawn(move || {
             // Main connection loop - try to reconnect if connection fails
             while running.load(Ordering::SeqCst) {
-                match Self::connect_and_listen(&server, &player_id, running.clone()) {
+                match Self::connect_and_listen(&server, &player_id, running.clone(), controller.clone()) {
                     Ok(_) => {
                         // Connection closed normally, try to reconnect after a delay
                         if running.load(Ordering::SeqCst) {
@@ -78,8 +99,53 @@ impl LMSListener {
         debug!("LMSListener started for server {} and player {}", self.server_address, self.player_id);
     }
     
+    /// Parse an LMS event string into MAC address and command components
+    /// 
+    /// # Arguments
+    /// * `event` - Raw event string from LMS CLI
+    /// 
+    /// # Returns
+    /// A tuple containing:
+    /// - Optional MAC address if present in the event
+    /// - Vector of command components
+    fn parse_lms_event(event: &str) -> (Option<String>, Vec<String>) {
+        // Split the event into components
+        let components: Vec<&str> = event.split_whitespace().collect();
+        
+        if components.is_empty() {
+            return (None, Vec::new());
+        }
+        
+        // Check if the first component looks like a MAC address
+        // LMS encodes colons as %3A in the CLI
+        let first = components[0];
+        let is_mac_addr = first.contains("%3A") || first.contains(":");
+        
+        if is_mac_addr {
+            // Try to decode the URL-encoded MAC address
+            match decode(first) {
+                Ok(mac) => {
+                    // Return the MAC and the rest of the components
+                    let mac_str = mac.to_string();
+                    let cmd_parts: Vec<String> = components[1..].iter()
+                        .map(|&s| decode(s).unwrap_or_else(|_| s.to_string().into()).to_string())
+                        .collect();
+                    
+                    (Some(mac_str), cmd_parts)
+                },
+                Err(_) => {
+                    // If decoding failed, return as-is
+                    (Some(first.to_string()), components[1..].iter().map(|&s| s.to_string()).collect())
+                }
+            }
+        } else {
+            // No MAC address, return all components
+            (None, components.iter().map(|&s| s.to_string()).collect())
+        }
+    }
+    
     /// Connect to the server and listen for messages
-    fn connect_and_listen(server: &str, player_id: &str, running: Arc<AtomicBool>) -> Result<(), String> {
+    fn connect_and_listen(server: &str, player_id: &str, running: Arc<AtomicBool>, controller: WeakAudioController) -> Result<(), String> {
         // Connect to the LMS CLI on port 9090
         let address = format!("{}:9090", server);
         debug!("Connecting to LMS CLI at {}", address);
@@ -131,8 +197,123 @@ impl LMSListener {
             
             match line {
                 Ok(line) => {
-                    // Log the received line
-                    warn!("LMS event: {}", line);
+                    // Parse the event
+                    let (mac_opt, cmd_parts) = Self::parse_lms_event(&line);
+                    
+                    // Only update last_seen timestamp if the MAC address matches our player_id
+                    if let Some(mac_addr) = &mac_opt {
+                        // Use the MAC address helper to compare addresses case-insensitively
+                        if crate::helpers::macaddress::mac_equal_ignore_case(mac_addr, player_id) {
+                            // Notify the audio controller that we've seen activity for our player
+                            if let Some(controller) = controller.upgrade() {
+                                controller.seen();
+                                trace!("Updated last_seen timestamp for player {}", player_id);
+                            }
+                        }
+                    }
+                    
+                    // Log the event with structured information
+                    if let Some(mac_addr) = mac_opt {
+                        if cmd_parts.is_empty() {
+                            warn!("LMS event: MAC={}", mac_addr);
+                        } else {
+                            let cmd = &cmd_parts[0];
+                            if IGNORED_COMMANDS.contains(&cmd.as_str()) {
+                                debug!("Ignored LMS event: Player {} {}", mac_addr, cmd);
+                                continue;
+                            }
+                            let args = if cmd_parts.len() > 1 {
+                                cmd_parts[1..].join(" ")
+                            } else {
+                                String::new()
+                            };
+                            
+                            match cmd.as_str() {
+                                "playlist" => {
+                                    if cmd_parts.len() > 1 {
+                                        match cmd_parts[1].as_str() {
+                                            "newsong" => {
+                                                let song_title = if cmd_parts.len() > 2 { &cmd_parts[2] } else { "Unknown" };
+                                                warn!("LMS event: Player {} started new song: {}", mac_addr, song_title);
+                                            },
+                                            "pause" => {
+                                                let state = if cmd_parts.len() > 2 && cmd_parts[2] == "1" { "paused" } else { "resumed" };
+                                                warn!("LMS event: Player {} {}", mac_addr, state);
+                                            },
+                                            "stop" => {
+                                                warn!("LMS event: Player {} stopped", mac_addr);
+                                            },
+                                            _ => {
+                                                warn!("LMS event: Player {} {} {}", mac_addr, cmd, args);
+                                            }
+                                        }
+                                    } else {
+                                        warn!("LMS event: Player {} {}", mac_addr, cmd);
+                                    }
+                                },
+                                "pause" => {
+                                    let state = if cmd_parts.len() > 1 && cmd_parts[1] == "1" { "paused" } else { "resumed" };
+                                    warn!("LMS event: Player {} {}", mac_addr, state);
+                                },
+                                "client" => {
+                                    if cmd_parts.len() > 1 {
+                                        warn!("LMS event: Player {} client {}", mac_addr, cmd_parts[1]);
+                                    } else {
+                                        warn!("LMS event: Player {} client event", mac_addr);
+                                    }
+                                },
+                                "prefset" => {
+                                    if cmd_parts.len() > 2 {
+                                        warn!("LMS event: Player {} setting {} = {}", mac_addr, cmd_parts[1], 
+                                              if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" });
+                                    } else {
+                                        warn!("LMS event: Player {} {}", mac_addr, line);
+                                    }
+                                },
+                                "displaynotify" | "menustatus" => {
+                                    warn!("LMS event: Player {} UI update", mac_addr);
+                                },
+                                _ => {
+                                    // Default formatting for other events
+                                    warn!("Unknown LMS event: Player {} {} {}", mac_addr, cmd, args);
+                                }
+                            }
+                        }
+                    } else {
+                        // Server-wide events without a specific player
+                        if !cmd_parts.is_empty() {
+                            let cmd = &cmd_parts[0];
+                            if IGNORED_COMMANDS.contains(&cmd.as_str()) {
+                                debug!("Ignored LMS server event: {}", cmd);
+                                continue;
+                            }
+                            let args = if cmd_parts.len() > 1 {
+                                cmd_parts[1..].join(" ")
+                            } else {
+                                String::new()
+                            };
+                            
+                            match cmd.as_str() {
+                                "prefset" => {
+                                    if cmd_parts.len() > 2 {
+                                        warn!("LMS server event: Setting {} = {}", cmd_parts[1], 
+                                              if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" });
+                                    } else {
+                                        warn!("LMS server event: {}", line);
+                                    }
+                                },
+                                "artworkspec" => {
+                                    warn!("LMS server event: Artwork spec update");
+                                },
+                                _ => {
+                                    // Default formatting for other events
+                                    warn!("LMS server event: {} {}", cmd, args);
+                                }
+                            }
+                        } else {
+                            warn!("LMS event: Empty command");
+                        }
+                    }
                 },
                 Err(e) => {
                     // Check if it's a timeout (would be io::ErrorKind::TimedOut or WouldBlock)

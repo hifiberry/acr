@@ -13,7 +13,7 @@ use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::players::lms::jsonrps::LmsRpcClient;
 use crate::players::lms::lmsserver::{get_local_mac_addresses};
 use crate::players::lms::lmspplayer::LMSPlayer;
-use crate::players::lms::cli_listener::LMSListener;
+use crate::players::lms::cli_listener::{LMSListener, AudioControllerRef};
 use crate::helpers::macaddress::normalize_mac_address;
 
 /// Configuration for LMSAudioController
@@ -96,6 +96,9 @@ pub struct LMSAudioController {
     
     /// CLI listener for receiving real-time events from the LMS server
     cli_listener: Arc<RwLock<Option<LMSListener>>>,
+    
+    /// Last time an event was seen from this player
+    last_seen: Arc<RwLock<Option<SystemTime>>>,
 }
 
 impl LMSAudioController {
@@ -185,6 +188,7 @@ impl LMSAudioController {
             running,
             connected_server,
             cli_listener: Arc::new(RwLock::new(None)),
+            last_seen: Arc::new(RwLock::new(None)),
         };
         
         // Initialize the player using find_server_connection
@@ -454,8 +458,11 @@ impl LMSAudioController {
         // First stop any existing listener
         self.stop_cli_listener();
         
+        // Create a controller reference for the listener
+        let controller_ref: Weak<dyn AudioControllerRef> = Arc::downgrade(&(Arc::new(self.clone()) as Arc<dyn AudioControllerRef>));
+        
         // Create a new CLI listener
-        let mut listener = LMSListener::new(server, player_id);
+        let mut listener = LMSListener::new(server, player_id, controller_ref);
         
         // Start the listener
         listener.start();
@@ -491,6 +498,7 @@ impl Clone for LMSAudioController {
             running: self.running.clone(),
             connected_server: self.connected_server.clone(),
             cli_listener: self.cli_listener.clone(),
+            last_seen: self.last_seen.clone(),
         }
     }
 }
@@ -716,5 +724,16 @@ impl PlayerController for LMSAudioController {
     fn get_library(&self) -> Option<Box<dyn LibraryInterface>> {
         // Not yet implemented
         None
+    }
+}
+
+/// Implementation of the AudioControllerRef trait for LMSAudioController
+impl AudioControllerRef for LMSAudioController {
+    /// Update the last_seen timestamp to the current time
+    fn seen(&self) {
+        if let Ok(mut last_seen) = self.last_seen.write() {
+            *last_seen = Some(SystemTime::now());
+            debug!("Updated last_seen timestamp for LMS player");
+        }
     }
 }

@@ -382,36 +382,61 @@ impl LMSPlayer {
         }
     }
 
-    /// Internal helper to send commands to the LMS player
+    /// Get the current shuffle mode of the player
+    /// 
+    /// # Returns
+    /// The current shuffle mode (0=off, 1=songs, 2=albums), or an error
+    pub fn get_shuffle(&self) -> Result<u8, String> {
+        let mut client_clone = (*self.client).clone();
+        
+        // Use the control_request method instead of the paginated request
+        match client_clone.control_request(&self.player_id, "playlist", vec!["shuffle", "?"]) {
+            Ok(result) => {
+                debug!("Shuffle response: {:?}", result);
+                
+                // Try to extract the _shuffle field from the response object
+                if let Some(obj) = result.as_object() {
+                    if let Some(shuffle_value) = obj.get("_shuffle") {
+                        // Handle the case where _shuffle is a string
+                        if let Some(shuffle_str) = shuffle_value.as_str() {
+                            if let Ok(shuffle_int) = shuffle_str.parse::<u8>() {
+                                debug!("Current shuffle mode is {} (from string value)", shuffle_int);
+                                return Ok(shuffle_int);
+                            }
+                        }
+                        // Handle the case where _shuffle is an integer
+                        else if let Some(shuffle) = shuffle_value.as_u64() {
+                            debug!("Current shuffle mode is {}", shuffle);
+                            return Ok(shuffle as u8);
+                        }
+                    }
+                }
+                
+                // Log the full response for debugging
+                warn!("Failed to parse shuffle response: {:?}", result);
+                Err("Failed to parse shuffle response".to_string())
+            },
+            Err(e) => Err(format!("Failed to get shuffle mode: {}", e))
+        }
+    }
+
+    /// Set the shuffle mode of the player
     /// 
     /// # Arguments
-    /// * `command` - The command to send (play, pause, stop, etc.)
-    /// * `args` - Optional vector of arguments as (name, value) tuples
+    /// * `mode` - Shuffle mode (0=off, 1=songs, 2=albums)
     /// 
     /// # Returns
     /// `Ok(())` if the command was sent successfully, or an error message
-    fn send_command(&self, command: &str, args: Vec<(&str, &str)>) -> Result<(), String> {
-        let mut client_clone = (*self.client).clone();
+    pub fn set_shuffle(&self, mode: u8) -> Result<(), String> {
+        // Ensure mode is 0, 1, or 2
+        let valid_mode = mode.min(2);
         
-        // For logging, extract just the values when tag is empty
-        let log_args: Vec<String> = args.iter()
-            .map(|(tag, value)| {
-                if tag.is_empty() {
-                    (*value).to_string()
-                } else {
-                    // For named params, use tag:value format
-                    format!("{}:{}", tag, value)
-                }
-            })
-            .collect();
+        // Convert the mode to a string and use send_command_with_values
+        // instead of the paginated request approach
+        let mode_str = valid_mode.to_string();
         
-        match client_clone.request(&self.player_id, command, 0, 1, args) {
-            Ok(_) => {
-                debug!("{} command sent to player {} with args {:?}", command, self.player_id, log_args);
-                Ok(())
-            },
-            Err(e) => Err(format!("Failed to send {} command: {}", command, e)),
-        }
+        debug!("Setting shuffle mode to {}", valid_mode);
+        self.send_command_with_values("playlist", vec!["shuffle", &mode_str])
     }
     
     /// Internal helper to send commands with simple string values (no named parameters)

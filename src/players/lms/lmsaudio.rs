@@ -704,7 +704,29 @@ impl PlayerController for LMSAudioController {
     }
     
     fn get_shuffle(&self) -> bool {
-        // Not yet implemented
+        // Check if we're connected first
+        if !self.is_connected.load(Ordering::SeqCst) {
+            return false;
+        }
+        
+        // Get direct access to the player instance
+        if let Ok(player_guard) = self.player.read() {
+            if let Some(player_instance) = player_guard.as_ref() {
+                // Get shuffle status from the server
+                debug!("Fetching shuffle information from LMS server");
+                return match player_instance.get_shuffle() {
+                    Ok(shuffle_mode) => {
+                        // Per requirements, treat both mode 1 and 2 as "shuffle on"
+                        shuffle_mode > 0
+                    },
+                    Err(e) => {
+                        warn!("Failed to get shuffle status: {}", e);
+                        false
+                    }
+                };
+            }
+        }
+        
         false
     }
     
@@ -809,6 +831,23 @@ impl PlayerController for LMSAudioController {
                     },
                     Err(e) => {
                         warn!("Failed to send seek command: {}", e);
+                        false
+                    }
+                }
+            },
+            PlayerCommand::SetRandom(enabled) => {
+                debug!("Sending shuffle command to LMS player with state: {}", enabled);
+                // Convert boolean to u8 mode (0 = off, 1 = on)
+                let shuffle_mode = if enabled { 1 } else { 0 };
+                match player.set_shuffle(shuffle_mode) {
+                    Ok(_) => {
+                        debug!("Shuffle command sent successfully");
+                        // Make sure we notify clients about the change
+                        self.base.notify_state_changed(self.get_playback_state());
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send shuffle command: {}", e);
                         false
                     }
                 }

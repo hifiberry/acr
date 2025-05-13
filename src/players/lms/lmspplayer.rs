@@ -109,7 +109,7 @@ impl LMSPlayer {
     #[allow(dead_code)]
     fn current_title(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "current_title", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "current_title", vec!["?"]) {
             Ok(response) => {
                 // Extract the _title field from the response object
                 if let Some(obj) = response.as_object() {
@@ -131,7 +131,7 @@ impl LMSPlayer {
     /// true if remote stream, false if local, or an error
     fn remote(&self) -> Result<bool, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "remote", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "remote", vec!["?"]) {
             Ok(response) => {
                 // Extract the _remote value from the response object
                 if let Some(obj) = response.as_object() {
@@ -153,7 +153,7 @@ impl LMSPlayer {
     /// The genre as a String if available, or an error
     fn genre(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "genre", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "genre", vec!["?"]) {
             Ok(response) => {
                 // Extract the _genre field from the response object
                 if let Some(obj) = response.as_object() {
@@ -175,7 +175,7 @@ impl LMSPlayer {
     /// The artist as a String if available, or an error
     fn artist(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "artist", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "artist", vec!["?"]) {
             Ok(response) => {
                 // Extract the _artist field from the response object
                 if let Some(obj) = response.as_object() {
@@ -197,7 +197,7 @@ impl LMSPlayer {
     /// The album as a String if available, or an error
     fn album(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "album", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "album", vec!["?"]) {
             Ok(response) => {
                 // Extract the _album field from the response object
                 if let Some(obj) = response.as_object() {
@@ -219,7 +219,7 @@ impl LMSPlayer {
     /// The title as a String if available, or an error
     fn title(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "title", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "title", vec!["?"]) {
             Ok(response) => {
                 // Extract the _title field from the response object
                 if let Some(obj) = response.as_object() {
@@ -241,7 +241,7 @@ impl LMSPlayer {
     /// The duration as a f32 if available, or an error
     fn duration(&self) -> Result<f32, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "duration", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "duration", vec!["?"]) {
             Ok(response) => {
                 // Extract the _duration field from the response object
                 if let Some(obj) = response.as_object() {
@@ -263,7 +263,7 @@ impl LMSPlayer {
     /// The file path as a String if available, or an error
     fn path(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "path", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "path", vec!["?"]) {
             Ok(response) => {
                 // Extract the _path field from the response object
                 if let Some(obj) = response.as_object() {
@@ -348,7 +348,7 @@ impl LMSPlayer {
     /// The current playback position in seconds, or an error if it couldn't be retrieved
     pub fn get_current_position(&self) -> Result<f32, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "time", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "time", vec!["?"]) {
             Ok(response) => {
                 // Extract the _time field from the response object
                 if let Some(obj) = response.as_object() {
@@ -370,12 +370,22 @@ impl LMSPlayer {
     /// The current mode as a string if available, or an error
     pub fn get_mode(&self) -> Result<String, String> {
         let mut client_clone = (*self.client).clone();
-        match client_clone.request(&self.player_id, "mode", 0, 1, vec![("?", "")]) {
+        match client_clone.control_request(&self.player_id, "mode", vec!["?"]) {
             Ok(response) => {
+                // First try to extract from object format
+                if let Some(obj) = response.as_object() {
+                    if let Some(mode_value) = obj.get("_mode") {
+                        if let Some(mode) = mode_value.as_str() {
+                            return Ok(mode.to_string());
+                        }
+                    }
+                }
+                
                 // Fallback to old parsing method if the object format is not found
                 if let Some(mode) = response.as_str() {
                     return Ok(mode.to_string());
                 }
+                
                 Err("Failed to parse mode response".to_string())
             },
             Err(e) => Err(format!("Failed to get player mode: {}", e)),
@@ -439,6 +449,62 @@ impl LMSPlayer {
         self.send_command_with_values("playlist", vec!["shuffle", &mode_str])
     }
     
+    /// Get the current repeat mode of the player
+    /// 
+    /// # Returns
+    /// The current repeat mode (0=off, 1=song, 2=playlist), or an error
+    pub fn get_repeat(&self) -> Result<u8, String> {
+        let mut client_clone = (*self.client).clone();
+        
+        // Use the control_request method instead of the paginated request
+        match client_clone.control_request(&self.player_id, "playlist", vec!["repeat", "?"]) {
+            Ok(result) => {
+                debug!("Repeat response: {:?}", result);
+                
+                if let Some(obj) = result.as_object() {
+                    if let Some(repeat_value) = obj.get("_repeat") {
+                        // Handle the case where _repeat is a string
+                        if let Some(repeat_str) = repeat_value.as_str() {
+                            if let Ok(repeat_int) = repeat_str.parse::<u8>() {
+                                debug!("Current repeat mode is {} (from string value)", repeat_int);
+                                return Ok(repeat_int);
+                            }
+                        }
+                        // Handle the case where _repeat is an integer
+                        else if let Some(repeat) = repeat_value.as_u64() {
+                            debug!("Current repeat mode is {}", repeat);
+                            return Ok(repeat as u8);
+                        }
+                    }
+                }
+                
+                // Log the full response for debugging
+                warn!("Failed to parse repeat response: {:?}", result);
+                Err("Failed to parse repeat response".to_string())
+            },
+            Err(e) => Err(format!("Failed to get repeat mode: {}", e))
+        }
+    }
+
+    /// Set the repeat mode of the player
+    /// 
+    /// # Arguments
+    /// * `mode` - Repeat mode (0=off, 1=song, 2=playlist)
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn set_repeat(&self, mode: u8) -> Result<(), String> {
+        // Ensure mode is 0, 1, or 2
+        let valid_mode = mode.min(2);
+        
+        // Convert the mode to a string and use send_command_with_values
+        // instead of the paginated request approach
+        let mode_str = valid_mode.to_string();
+        
+        debug!("Setting repeat mode to {}", valid_mode);
+        self.send_command_with_values("playlist", vec!["repeat", &mode_str])
+    }
+    
     /// Internal helper to send commands with simple string values (no named parameters)
     /// 
     /// # Arguments
@@ -449,7 +515,7 @@ impl LMSPlayer {
     /// `Ok(())` if the command was sent successfully, or an error message
     fn send_command_with_values(&self, command: &str, args: Vec<&str>) -> Result<(), String> {
         // Log the simple values here before converting to tuples
-        warn!("{} command sent to player {} with args {:?}", command, self.player_id, args);
+        debug!("{} command sent to player {} with args {:?}", command, self.player_id, args);
         
         // Convert each value to a tuple with empty tag name
         let tuple_args = args.into_iter().map(|value| ("", value)).collect();

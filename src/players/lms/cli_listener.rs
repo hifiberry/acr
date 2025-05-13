@@ -24,6 +24,9 @@ pub trait AudioControllerRef: Send + Sync {
     
     /// Update position information and notify listeners
     fn update_position(&self);
+    
+    /// Convert to Any for dynamic casting
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// List of commands that should only be logged at debug level
@@ -288,6 +291,59 @@ impl LMSListener {
                                                 // is sent twice: as playlist pause (here) and as pause (below)
                                                 // only use the pause event
                                             },
+                                            "shuffle" => {
+                                                // Handle shuffle mode changes
+                                                if cmd_parts.len() > 2 {
+                                                    let mode = &cmd_parts[2];
+                                                    let shuffle_enabled = mode != "0";
+                                                    debug!("LMS event: Player {} shuffle mode changed to {} ({})",
+                                                          mac_addr, mode, if shuffle_enabled { "on" } else { "off" });
+                                                          
+                                                    // Notify the controller about the shuffle mode change
+                                                    if let Some(ctrl) = controller.upgrade() {
+                                                        // Use this AudioControllerRef trait object to access the BasePlayerController
+                                                        // and notify about shuffle mode changes
+                                                        if let Some(lms_controller) = ctrl.as_any().downcast_ref::<crate::players::lms::lmsaudio::LMSAudioController>() {
+                                                            // Use the public method instead of directly accessing the private base field
+                                                            lms_controller.notify_random_mode(shuffle_enabled);
+                                                            debug!("Notified random mode change: {}", shuffle_enabled);
+                                                        } else {
+                                                            error!("Failed to downcast controller to LMSAudioController");
+                                                        }
+                                                    } else {
+                                                        error!("Failed to upgrade controller reference for shuffle event");
+                                                    }
+                                                }
+                                            },
+                                            "repeat" => {
+                                                // Handle repeat mode changes
+                                                if cmd_parts.len() > 2 {
+                                                    let mode = &cmd_parts[2];
+                                                    debug!("LMS event: Player {} repeat mode changed to {}", mac_addr, mode);
+                                                    
+                                                    // Notify the controller about the loop mode change
+                                                    if let Some(ctrl) = controller.upgrade() {
+                                                        // Convert the mode to LoopMode enum and notify
+                                                        if let Some(lms_controller) = ctrl.as_any().downcast_ref::<crate::players::lms::lmsaudio::LMSAudioController>() {
+                                                            let loop_mode = match mode.as_str() {
+                                                                "0" => crate::data::LoopMode::None,
+                                                                "1" => crate::data::LoopMode::Track,
+                                                                "2" => crate::data::LoopMode::Playlist,
+                                                                _ => {
+                                                                    debug!("Unknown repeat mode: {}", mode);
+                                                                    crate::data::LoopMode::None
+                                                                }
+                                                            };
+                                                            lms_controller.notify_loop_mode(loop_mode);
+                                                            debug!("Notified loop mode change: {:?}", loop_mode);
+                                                        } else {
+                                                            error!("Failed to downcast controller to LMSAudioController");
+                                                        }
+                                                    } else {
+                                                        error!("Failed to upgrade controller reference for repeat event");
+                                                    }
+                                                }
+                                            },
                                             _ => {
                                                 warn!("LMS event: Player {} {} {}", mac_addr, cmd, all_args);
                                             }
@@ -351,12 +407,72 @@ impl LMSListener {
                                 "prefset" => {
                                     let all_args = cmd_parts[1..].join(" ");
                                     if cmd_parts.len() > 2 {
-                                        warn!("LMS event: Player {} setting {} = {} (full command: prefset {})", 
-                                            mac_addr, cmd_parts[1], 
-                                            if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" }, all_args);
+                                        // Handle server-level prefset commands
+                                        if cmd_parts[1] == "server" && cmd_parts.len() > 3 {
+                                            match cmd_parts[2].as_str() {
+                                                "repeat" => {
+                                                    // Parse the repeat mode (0=off, 1=song, 2=playlist)
+                                                    if let Ok(mode) = cmd_parts[3].parse::<u8>() {
+                                                        debug!("LMS server event: Setting repeat mode to {} (full command: prefset {})",
+                                                            mode, all_args);
+                                                        
+                                                        // Find the loop mode based on the numeric value
+                                                        let loop_mode = match mode {
+                                                            0 => crate::data::LoopMode::None,
+                                                            1 => crate::data::LoopMode::Track,
+                                                            2 => crate::data::LoopMode::Playlist,
+                                                            _ => {
+                                                                debug!("Unknown repeat mode: {}", mode);
+                                                                crate::data::LoopMode::None
+                                                            }
+                                                        };
+                                                        
+                                                        // Notify all controllers about this change,
+                                                        // as it's a server-wide setting
+                                                        if let Some(ctrl) = controller.upgrade() {
+                                                            if let Some(lms_controller) = ctrl.as_any().downcast_ref::<crate::players::lms::lmsaudio::LMSAudioController>() {
+                                                                lms_controller.notify_loop_mode(loop_mode);
+                                                                debug!("Notified server-wide loop mode change: {:?}", loop_mode);
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "shuffle" => {
+                                                    // Parse the shuffle mode (0=off, 1=on)
+                                                    if let Ok(mode) = cmd_parts[3].parse::<u8>() {
+                                                        debug!("LMS server event: Setting shuffle mode to {} (full command: prefset {})",
+                                                            mode, all_args);
+                                                        
+                                                        // Convert to boolean: anything non-zero is considered "on"
+                                                        let shuffle_enabled = mode != 0;
+                                                        
+                                                        // Notify all controllers about this change,
+                                                        // as it's a server-wide setting
+                                                        if let Some(ctrl) = controller.upgrade() {
+                                                            if let Some(lms_controller) = ctrl.as_any().downcast_ref::<crate::players::lms::lmsaudio::LMSAudioController>() {
+                                                                lms_controller.notify_random_mode(shuffle_enabled);
+                                                                debug!("Notified server-wide shuffle mode change: {}", shuffle_enabled);
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                _ => {
+                                                    // Other server settings
+                                                    warn!("LMS server event: Setting {} {} = {} (full command: prefset {})", 
+                                                        cmd_parts[1], cmd_parts[2],
+                                                        if cmd_parts.len() > 3 { &cmd_parts[3] } else { "" }, 
+                                                        all_args);
+                                                }
+                                            }
+                                        } else {
+                                            warn!("LMS server event: Setting {} = {} (full command: prefset {})", 
+                                                cmd_parts[1], 
+                                                if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" },
+                                                all_args);
+                                        }
                                     } else {
-                                        warn!("LMS event: Player {} {} (full args: {})", 
-                                            mac_addr, cmd, all_args);
+                                        warn!("LMS server event: prefset {} (full command: {})", 
+                                            all_args, line);
                                     }
                                 },
                                 "displaynotify" => {
@@ -454,10 +570,69 @@ impl LMSListener {
                                 "prefset" => {
                                     let all_args = cmd_parts[1..].join(" ");
                                     if cmd_parts.len() > 2 {
-                                        warn!("LMS server event: Setting {} = {} (full command: prefset {})", 
-                                            cmd_parts[1], 
-                                            if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" },
-                                            all_args);
+                                        // Handle server-level prefset commands
+                                        if cmd_parts[1] == "server" && cmd_parts.len() > 3 {
+                                            match cmd_parts[2].as_str() {
+                                                "repeat" => {
+                                                    // Parse the repeat mode (0=off, 1=song, 2=playlist)
+                                                    if let Ok(mode) = cmd_parts[3].parse::<u8>() {
+                                                        warn!("LMS server event: Setting repeat mode to {} (full command: prefset {})",
+                                                            mode, all_args);
+                                                        
+                                                        // Find the loop mode based on the numeric value
+                                                        let loop_mode = match mode {
+                                                            0 => crate::data::LoopMode::None,
+                                                            1 => crate::data::LoopMode::Track,
+                                                            2 => crate::data::LoopMode::Playlist,
+                                                            _ => {
+                                                                debug!("Unknown repeat mode: {}", mode);
+                                                                crate::data::LoopMode::None
+                                                            }
+                                                        };
+                                                        
+                                                        // Notify all controllers about this change,
+                                                        // as it's a server-wide setting
+                                                        if let Some(ctrl) = controller.upgrade() {
+                                                            if let Some(lms_controller) = ctrl.as_any().downcast_ref::<crate::players::lms::lmsaudio::LMSAudioController>() {
+                                                                lms_controller.notify_loop_mode(loop_mode);
+                                                                debug!("Notified server-wide loop mode change: {:?}", loop_mode);
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "shuffle" => {
+                                                    // Parse the shuffle mode (0=off, 1=on)
+                                                    if let Ok(mode) = cmd_parts[3].parse::<u8>() {
+                                                        warn!("LMS server event: Setting shuffle mode to {} (full command: prefset {})",
+                                                            mode, all_args);
+                                                        
+                                                        // Convert to boolean: anything non-zero is considered "on"
+                                                        let shuffle_enabled = mode != 0;
+                                                        
+                                                        // Notify all controllers about this change,
+                                                        // as it's a server-wide setting
+                                                        if let Some(ctrl) = controller.upgrade() {
+                                                            if let Some(lms_controller) = ctrl.as_any().downcast_ref::<crate::players::lms::lmsaudio::LMSAudioController>() {
+                                                                lms_controller.notify_random_mode(shuffle_enabled);
+                                                                debug!("Notified server-wide shuffle mode change: {}", shuffle_enabled);
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                _ => {
+                                                    // Other server settings
+                                                    warn!("LMS server event: Setting {} {} = {} (full command: prefset {})", 
+                                                        cmd_parts[1], cmd_parts[2],
+                                                        if cmd_parts.len() > 3 { &cmd_parts[3] } else { "" }, 
+                                                        all_args);
+                                                }
+                                            }
+                                        } else {
+                                            warn!("LMS server event: Setting {} = {} (full command: prefset {})", 
+                                                cmd_parts[1], 
+                                                if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" },
+                                                all_args);
+                                        }
                                     } else {
                                         warn!("LMS server event: prefset {} (full command: {})", 
                                             all_args, line);

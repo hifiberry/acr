@@ -475,6 +475,34 @@ impl BasePlayerController {
         }
     }
 
+    /// Notify all registered listeners that the random mode has changed
+    pub fn notify_random_changed(&self, enabled: bool) {
+        let player_name = self.get_player_name();
+        let player_id = self.get_player_id();
+        
+        debug!("Notifying listeners of random mode change: {}", enabled);
+        self.prune_dead_listeners();
+        
+        let source = PlayerSource::new(player_name, player_id);
+        
+        let event = PlayerEvent::RandomChanged {
+            source,
+            enabled,
+        };
+        
+        if let Ok(listeners) = self.listeners.read() {
+            debug!("Notifying {} listeners of random mode change", listeners.len());
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    trace!("Notifying listener of random mode change");
+                    listener.on_event(event.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when notifying random mode change");
+        }
+    }
+
     /// Notify all listeners that the capabilities have changed
     pub fn notify_capabilities_changed(&self, capabilities: &PlayerCapabilitySet) {
         let player_name = self.get_player_name();

@@ -226,20 +226,16 @@ impl PlayerStateListener for AudioController {
     fn on_event(&self, event: PlayerEvent) {
         // Determine if this event is from the active player
         let is_active = match &event {
-            PlayerEvent::StateChanged { source, .. } => 
-                self.is_active_player(&source.player_name, &source.player_id),
-            PlayerEvent::SongChanged { source, .. } => 
-                self.is_active_player(&source.player_name, &source.player_id),
-            PlayerEvent::LoopModeChanged { source, .. } => 
-                self.is_active_player(&source.player_name, &source.player_id),
-            PlayerEvent::CapabilitiesChanged { source, .. } => 
-                self.is_active_player(&source.player_name, &source.player_id),
-            PlayerEvent::PositionChanged { source, .. } => 
-                self.is_active_player(&source.player_name, &source.player_id),
-            PlayerEvent::DatabaseUpdating { source, .. } => 
-                self.is_active_player(&source.player_name, &source.player_id),
-            PlayerEvent::QueueChanged { source } => 
-                self.is_active_player(&source.player_name, &source.player_id),
+            PlayerEvent::SongChanged { source, .. } |
+            PlayerEvent::StateChanged { source, .. } |
+            PlayerEvent::LoopModeChanged { source, .. } |
+            PlayerEvent::RandomChanged { source, .. } |
+            PlayerEvent::CapabilitiesChanged { source, .. } |
+            PlayerEvent::PositionChanged { source, .. } |
+            PlayerEvent::DatabaseUpdating { source, .. } |
+            PlayerEvent::QueueChanged { source } => {
+                self.is_active_player(&source.player_name, &source.player_id)
+            }
         };
 
         // Pass the event through all filters
@@ -844,6 +840,30 @@ impl AudioController {
         }
     }
 
+    /// Forward random mode changed event to all registered listeners
+    fn forward_random_changed(&self, player_name: String, player_id: String, enabled: bool) {
+        // Prune dead listeners
+        self.prune_dead_listeners();
+
+        let source = PlayerSource::new(player_name, player_id);
+
+        let event = PlayerEvent::RandomChanged {
+            source,
+            enabled,
+        };
+
+        // Forward the event to all active listeners
+        if let Ok(listeners) = self.listeners.read() {
+            for listener_weak in listeners.iter() {
+                if let Some(listener) = listener_weak.upgrade() {
+                    listener.on_event(event.clone());
+                }
+            }
+        } else {
+            warn!("Failed to acquire read lock for listeners when forwarding random mode change");
+        }
+    }
+
     /// Remove any dead (dropped) listeners
     fn prune_dead_listeners(&self) {
         if let Ok(mut listeners) = self.listeners.write() {
@@ -1087,7 +1107,19 @@ impl AudioController {
                 } else {
                     debug!("AudioController ignoring queue change from inactive player {}", source.player_id);
                 }
-            }
+            },
+            PlayerEvent::RandomChanged { source, enabled } => {
+                // Check if the event is from the active player
+                if is_active {
+                    debug!("AudioController forwarding random mode change from active player {}: {}", 
+                           source.player_id, if enabled { "enabled" } else { "disabled" });
+                    
+                    // Forward the event to listeners
+                    self.forward_random_changed(source.player_name, source.player_id, enabled);
+                } else {
+                    debug!("AudioController ignoring random mode change from inactive player {}", source.player_id);
+                }
+            },
         }
     }
 

@@ -166,6 +166,7 @@
                 <div class="event-type selected" data-event="state_changed">State Changed</div>
                 <div class="event-type selected" data-event="song_changed">Song Changed</div>
                 <div class="event-type selected" data-event="loop_mode_changed">Loop Mode</div>
+                <div class="event-type selected" data-event="random_changed">Random/Shuffle</div>
                 <div class="event-type selected" data-event="capabilities_changed">Capabilities</div>
                 <div class="event-type selected" data-event="position_changed">Position</div>
                 <div class="event-type selected" data-event="database_updating">Database</div>
@@ -284,6 +285,7 @@
                                 case 'state_changed': displayEventType = 'State Changed'; break;
                                 case 'song_changed': displayEventType = 'Song Changed'; break;
                                 case 'loop_mode_changed': displayEventType = 'Loop Mode Changed'; break;
+                                case 'random_changed': displayEventType = 'Random/Shuffle Changed'; break;
                                 case 'capabilities_changed': displayEventType = 'Capabilities Changed'; break;
                                 case 'position_changed': displayEventType = 'Position Changed'; break;
                                 case 'database_updating': displayEventType = 'Database Updating'; break;
@@ -316,6 +318,13 @@
                                 case 'loop_mode_changed':
                                     const mode = data.mode || 'unknown';
                                     message += `Loop mode: <b>${mode}</b>`;
+                                    break;
+                                    
+                                case 'random_changed':
+                                    const enabled = data.enabled !== undefined ? data.enabled : false;
+                                    const status = enabled ? 'enabled' : 'disabled';
+                                    const color = enabled ? '#28a745' : '#6c757d';
+                                    message += `Shuffle/Random is <span style="font-weight: bold; color: ${color}">${status}</span>`;
                                     break;
                                     
                                 case 'capabilities_changed':

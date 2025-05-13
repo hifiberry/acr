@@ -92,6 +92,7 @@ impl EventLogger {
             PlayerEvent::StateChanged { .. } => "state",
             PlayerEvent::SongChanged { .. } => "song",
             PlayerEvent::LoopModeChanged { .. } => "loop",
+            PlayerEvent::RandomChanged { .. } => "random",
             PlayerEvent::CapabilitiesChanged { .. } => "capabilities",
             PlayerEvent::PositionChanged { .. } => "position",
             PlayerEvent::DatabaseUpdating { .. } => "database",
@@ -170,6 +171,17 @@ impl EventLogger {
                         source.player_name(),
                         source.player_id(),
                         mode
+                    ),
+                    is_active_player
+                );
+            },
+            PlayerEvent::RandomChanged { source, enabled } => {
+                logger.log(
+                    &format!(
+                        "Player {} (ID: {}) changed random/shuffle mode to {}",
+                        source.player_name(),
+                        source.player_id(),
+                        if *enabled { "enabled" } else { "disabled" }
                     ),
                     is_active_player
                 );

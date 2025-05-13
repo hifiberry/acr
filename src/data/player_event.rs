@@ -49,6 +49,12 @@ pub enum PlayerEvent {
         mode: LoopMode,
     },
     
+    /// Shuffle/random mode has changed
+    RandomChanged {
+        source: PlayerSource,
+        enabled: bool,
+    },
+    
     /// Player capabilities have changed
     CapabilitiesChanged {
         source: PlayerSource,
@@ -83,6 +89,7 @@ impl PlayerEvent {
             PlayerEvent::StateChanged { source, .. } => source,
             PlayerEvent::SongChanged { source, .. } => source,
             PlayerEvent::LoopModeChanged { source, .. } => source,
+            PlayerEvent::RandomChanged { source, .. } => source,
             PlayerEvent::CapabilitiesChanged { source, .. } => source,
             PlayerEvent::PositionChanged { source, .. } => source,
             PlayerEvent::DatabaseUpdating { source, .. } => source,

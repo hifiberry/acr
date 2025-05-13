@@ -281,43 +281,43 @@ impl LmsRpcClient {
     
     /// Play the current track
     pub fn play(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "play", 0, 0, vec![])
+        self.control_request(player_id, "play", vec![])
     }
     
     /// Pause the current track
     pub fn pause(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "pause", 0, 0, vec![("1", "")])
+        self.control_request(player_id, "pause", vec!["1"])
     }
     
     /// Toggle pause/play
     pub fn toggle_pause(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "pause", 0, 0, vec![])
+        self.control_request(player_id, "pause", vec![])
     }
     
     /// Stop playback
     pub fn stop(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "stop", 0, 0, vec![])
+        self.control_request(player_id, "stop", vec![])
     }
     
     /// Skip to next track
     pub fn next(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("index", "+1")])
+        self.control_request(player_id, "playlist", vec!["index", "+1"])
     }
     
     /// Skip to previous track
     pub fn previous(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "playlist", 0, 0, vec![("index", "-1")])
+        self.control_request(player_id, "playlist", vec!["index", "-1"])
     }
     
     /// Set volume (0-100)
     pub fn set_volume(&mut self, player_id: &str, volume: u8) -> Result<Value, LmsRpcError> {
         let volume = volume.min(100);
-        self.request(player_id, "mixer", 0, 0, vec![("volume", &volume.to_string())])
+        self.control_request(player_id, "mixer", vec!["volume", &volume.to_string()])
     }
     
     /// Get current volume
     pub fn get_volume(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
-        let result = self.request(player_id, "mixer", 0, 0, vec![("volume", "?")])?;
+        let result = self.control_request(player_id, "mixer", vec!["volume", "?"])?;
         
         match result.get("_volume") {
             Some(volume) => {
@@ -332,17 +332,17 @@ impl LmsRpcClient {
     /// Set mute status
     pub fn set_mute(&mut self, player_id: &str, mute: bool) -> Result<Value, LmsRpcError> {
         let mute_val = if mute { "1" } else { "0" };
-        self.request(player_id, "mixer", 0, 0, vec![("muting", mute_val)])
+        self.control_request(player_id, "mixer", vec!["muting", mute_val])
     }
     
     /// Toggle mute status
     pub fn toggle_mute(&mut self, player_id: &str) -> Result<Value, LmsRpcError> {
-        self.request(player_id, "mixer", 0, 0, vec![("muting", "")])
+        self.control_request(player_id, "mixer", vec!["muting"])
     }
     
     /// Get mute status
     pub fn is_muted(&mut self, player_id: &str) -> Result<bool, LmsRpcError> {
-        let result = self.request(player_id, "mixer", 0, 0, vec![("muting", "?")])?;
+        let result = self.control_request(player_id, "mixer", vec!["muting", "?"])?;
         
         match result.get("_muting") {
             Some(muting) => {
@@ -358,18 +358,18 @@ impl LmsRpcClient {
     pub fn seek(&mut self, player_id: &str, seconds: f32) -> Result<Value, LmsRpcError> {
         // Convert seconds to format expected by LMS
         let time_str = format!("{:.1}", seconds);
-        self.request(player_id, "time", 0, 0, vec![("time", &time_str)])
+        self.control_request(player_id, "time", vec![&time_str])
     }
     
     /// Set shuffle mode (0=off, 1=songs, 2=albums)
     pub fn set_shuffle(&mut self, player_id: &str, shuffle_mode: u8) -> Result<Value, LmsRpcError> {
         let mode = shuffle_mode.min(2).to_string();
-        self.request(player_id, "playlist", 0, 0, vec![("shuffle", &mode)])
+        self.control_request(player_id, "playlist", vec!["shuffle", &mode])
     }
     
     /// Get shuffle mode
     pub fn get_shuffle(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
-        let result = self.request(player_id, "playlist", 0, 0, vec![("shuffle", "?")])?;
+        let result = self.control_request(player_id, "playlist", vec!["shuffle", "?"])?;
         
         match result.get("_shuffle") {
             Some(shuffle) => {
@@ -384,12 +384,12 @@ impl LmsRpcClient {
     /// Set repeat mode (0=off, 1=song, 2=playlist)
     pub fn set_repeat(&mut self, player_id: &str, repeat_mode: u8) -> Result<Value, LmsRpcError> {
         let mode = repeat_mode.min(2).to_string();
-        self.request(player_id, "playlist", 0, 0, vec![("repeat", &mode)])
+        self.control_request(player_id, "playlist", vec!["repeat", &mode])
     }
     
     /// Get repeat mode
     pub fn get_repeat(&mut self, player_id: &str) -> Result<u8, LmsRpcError> {
-        let result = self.request(player_id, "playlist", 0, 0, vec![("repeat", "?")])?;
+        let result = self.control_request(player_id, "playlist", vec!["repeat", "?"])?;
         
         match result.get("_repeat") {
             Some(repeat) => {

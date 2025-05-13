@@ -328,6 +328,14 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
                 "mode": mode.to_string()
             })
         },
+        PlayerEvent::RandomChanged { source, enabled } => {
+            serde_json::json!({
+                "type": "random_changed",
+                "player_name": source.player_name(),
+                "player_id": source.player_id(),
+                "enabled": enabled
+            })
+        },
         PlayerEvent::CapabilitiesChanged { source, capabilities } => {
             serde_json::json!({
                 "type": "capabilities_changed",
@@ -376,6 +384,7 @@ fn event_type_name(event: &PlayerEvent) -> &'static str {
         PlayerEvent::StateChanged { .. } => "state_changed",
         PlayerEvent::SongChanged { .. } => "song_changed",
         PlayerEvent::LoopModeChanged { .. } => "loop_mode_changed",
+        PlayerEvent::RandomChanged { .. } => "random_changed",
         PlayerEvent::CapabilitiesChanged { .. } => "capabilities_changed",
         PlayerEvent::PositionChanged { .. } => "position_changed",
         PlayerEvent::DatabaseUpdating { .. } => "database_updating",

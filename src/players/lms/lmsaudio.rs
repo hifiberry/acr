@@ -560,6 +560,16 @@ impl LMSAudioController {
         // Return the position for potential further use
         position
     }
+
+    /// Notify listeners about a random/shuffle mode change
+    pub fn notify_random_mode(&self, enabled: bool) {
+        self.base.notify_random_changed(enabled);
+    }
+
+    /// Notify listeners about a loop mode change
+    pub fn notify_loop_mode(&self, mode: LoopMode) {
+        self.base.notify_loop_mode_changed(mode);
+    }
 }
 
 impl Clone for LMSAudioController {
@@ -608,7 +618,36 @@ impl PlayerController for LMSAudioController {
     }
     
     fn get_loop_mode(&self) -> LoopMode {
-        // Not yet implemented
+        // Check if we're connected first
+        if !self.is_connected.load(Ordering::SeqCst) {
+            return LoopMode::None;
+        }
+        
+        // Get direct access to the player instance
+        if let Ok(player_guard) = self.player.read() {
+            if let Some(player_instance) = player_guard.as_ref() {
+                // Get repeat status from the server
+                debug!("Fetching repeat information from LMS server");
+                return match player_instance.get_repeat() {
+                    Ok(repeat_mode) => {
+                        match repeat_mode {
+                            0 => LoopMode::None,    // 0 = no repeat
+                            1 => LoopMode::Track,   // 1 = repeat current song
+                            2 => LoopMode::Playlist, // 2 = repeat playlist
+                            _ => {
+                                warn!("Unknown repeat mode: {}, defaulting to None", repeat_mode);
+                                LoopMode::None
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to get repeat status: {}", e);
+                        LoopMode::None
+                    }
+                };
+            }
+        }
+        
         LoopMode::None
     }
     
@@ -842,12 +881,37 @@ impl PlayerController for LMSAudioController {
                 match player.set_shuffle(shuffle_mode) {
                     Ok(_) => {
                         debug!("Shuffle command sent successfully");
-                        // Make sure we notify clients about the change
+                        // Notify clients about the random mode change
+                        self.base.notify_random_changed(enabled);
+                        // Notify about state change as well
                         self.base.notify_state_changed(self.get_playback_state());
                         true
                     },
                     Err(e) => {
                         warn!("Failed to send shuffle command: {}", e);
+                        false
+                    }
+                }
+            },
+            PlayerCommand::SetLoopMode(mode) => {
+                debug!("Sending loop mode command to LMS player with mode: {:?}", mode);
+                
+                // Convert LoopMode to LMS repeat mode (0=off, 1=song, 2=playlist)
+                let repeat_mode = match mode {
+                    LoopMode::None => 0,
+                    LoopMode::Track => 1,
+                    LoopMode::Playlist => 2,
+                };
+                
+                match player.set_repeat(repeat_mode) {
+                    Ok(_) => {
+                        debug!("Loop mode command sent successfully");
+                        // Make sure we notify clients about the change
+                        self.base.notify_state_changed(self.get_playback_state());
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send loop mode command: {}", e);
                         false
                     }
                 }
@@ -962,5 +1026,10 @@ impl AudioControllerRef for LMSAudioController {
     fn update_position(&self) {
         debug!("CLI listener requested position update");
         self.update_and_notify_position();
+    }
+    
+    /// Get a reference to self for downcasting
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

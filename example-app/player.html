@@ -149,6 +149,35 @@
             color: #e6f0ff;
         }
         
+        /* Song thumbnail styles */
+        .song-thumbnail-container {
+            text-align: center;
+            margin: 15px 0;
+        }
+        
+        .song-thumbnail {
+            width: 200px;
+            height: 200px;
+            object-fit: contain;
+            border-radius: 5px;
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2);
+            background-color: #f1f1f1;
+            display: inline-block;
+        }
+        
+        .no-thumbnail {
+            width: 200px;
+            height: 200px;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            border-radius: 5px;
+            background-color: #e9ecef;
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.1);
+            color: #6c757d;
+            font-size: 40px;
+        }
+        
         .audio-settings {
             display: flex;
             flex-wrap: wrap;
@@ -441,6 +470,10 @@
                 <div class="now-playing">
                     <h3>Now Playing:</h3>
                     <div id="now-playing-info">Nothing playing</div>
+                    <div class="song-thumbnail-container">
+                        <img id="song-thumbnail" class="song-thumbnail" src="" alt="Song Thumbnail" style="display: none;">
+                        <div id="no-thumbnail" class="no-thumbnail">?</div>
+                    </div>
                     <div class="progress-container">
                         <div class="progress-bar" id="progress-bar"></div>
                     </div>
@@ -480,6 +513,8 @@
         const progressBar = document.getElementById('progress-bar');
         const websocketStatus = document.getElementById('websocket-status');
         const libraryBtn = document.getElementById('library-button');
+        const songThumbnail = document.getElementById('song-thumbnail');
+        const noThumbnail = document.getElementById('no-thumbnail');
         
         // Queue-related DOM elements
         const queuePanel = document.getElementById('queue-panel');
@@ -850,6 +885,16 @@
                     ${song.album ? `<div><strong>Album:</strong> ${song.album}</div>` : ''}
                     <div><strong>Position:</strong> ${position} / ${duration}</div>
                 `;
+
+                // Update song thumbnail
+                if (song.thumbnail) {
+                    songThumbnail.src = song.thumbnail;
+                    songThumbnail.style.display = 'inline-block';
+                    noThumbnail.style.display = 'none';
+                } else {
+                    songThumbnail.style.display = 'none';
+                    noThumbnail.style.display = 'inline-flex';
+                }
                 
                 // Start auto progress updates if the player is playing
                 if (data.state && data.state.toLowerCase() === 'playing') {
@@ -862,6 +907,8 @@
             } else {
                 nowPlayingInfo.textContent = 'Nothing playing';
                 progressBar.style.width = '0%';
+                songThumbnail.style.display = 'none';
+                noThumbnail.style.display = 'inline-flex';
                 stopAutoProgress();
             }
         }

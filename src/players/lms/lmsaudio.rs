@@ -91,8 +91,8 @@ pub struct LMSAudioController {
     /// Flag to control the reconnection thread
     running: Arc<AtomicBool>,
     
-    /// Last connected server address
-    last_connected_server: Arc<RwLock<Option<String>>>,
+    /// Currently connected server address
+    connected_server: Arc<RwLock<Option<String>>>,
     
     /// CLI listener for receiving real-time events from the LMS server
     cli_listener: Arc<RwLock<Option<LMSListener>>>,
@@ -173,7 +173,7 @@ impl LMSAudioController {
         
         let is_connected = Arc::new(AtomicBool::new(false));
         let running = Arc::new(AtomicBool::new(true));
-        let last_connected_server = Arc::new(RwLock::new(None));
+        let connected_server = Arc::new(RwLock::new(None));
         
         // Create a new controller
         let controller = Self {
@@ -183,7 +183,7 @@ impl LMSAudioController {
             player: Arc::new(RwLock::new(None)),
             is_connected,
             running,
-            last_connected_server,
+            connected_server,
             cli_listener: Arc::new(RwLock::new(None)),
         };
         
@@ -220,9 +220,9 @@ impl LMSAudioController {
                         cfg_lock.server = Some(found_server.clone());
                     }
                     
-                    // Update last connected server
-                    if let Ok(mut last_server) = controller.last_connected_server.write() {
-                        *last_server = Some(found_server.clone());
+                    // Update connected server
+                    if let Ok(mut connected_server) = controller.connected_server.write() {
+                        *connected_server = Some(found_server.clone());
                     }
                     
                     // Start the CLI listener
@@ -349,9 +349,9 @@ impl LMSAudioController {
     fn find_server_connection(&self, config: &LMSAudioConfig) -> (bool, Option<String>, Option<String>, Option<String>) {
         // First check if we are already connected to a server
         if self.is_connected.load(Ordering::SeqCst) {
-            // Get the last connected server
-            if let Ok(last_server_guard) = self.last_connected_server.read() {
-                if let Some(server) = last_server_guard.as_ref() {
+            // Get the connected server
+            if let Ok(connected_server_guard) = self.connected_server.read() {
+                if let Some(server) = connected_server_guard.as_ref() {
                     // Get player ID
                     if let Ok(player_guard) = self.player.read() {
                         if let Some(player) = player_guard.as_ref() {
@@ -489,7 +489,7 @@ impl Clone for LMSAudioController {
             player: self.player.clone(),
             is_connected: self.is_connected.clone(),
             running: self.running.clone(),
-            last_connected_server: self.last_connected_server.clone(),
+            connected_server: self.connected_server.clone(),
             cli_listener: self.cli_listener.clone(),
         }
     }

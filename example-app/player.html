@@ -1230,6 +1230,8 @@
         function processPositionChange(positionData) {
             if (!positionData) return;
             
+            console.log('Processing position update with data:', positionData);
+            
             let newPosition;
             
             // Handle the different possible formats of position data:
@@ -1267,6 +1269,16 @@
                 currentData.position = newPosition;
                 lastProgressUpdate = Date.now(); // Reset timestamp on position update
                 updateProgressBar(); // Just update the progress bar, not the whole UI
+                
+                // Check if player is playing and restart the progress interval if it is
+                const isPlaying = currentData.state && currentData.state.toLowerCase() === 'playing';
+                console.log(`Player state is: ${currentData.state} (isPlaying: ${isPlaying})`);
+                
+                if (isPlaying) {
+                    console.log(`Position update for playing track - resetting auto progress with position: ${formatTime(newPosition)}`);
+                    stopAutoProgress(); // Make sure any existing interval is cleared
+                    startAutoProgress(); // Start a new interval
+                }
             }
         }
         
@@ -1364,20 +1376,38 @@
             
             // Only start if we have current data and a song is playing
             if (!currentData || !currentData.song || !currentData.song.duration) {
+                console.log('Cannot start auto progress: missing song data or duration');
                 return;
             }
             
             const isPlaying = currentData.state && currentData.state.toLowerCase() === 'playing';
             if (!isPlaying) {
+                console.log('Cannot start auto progress: player is not in playing state');
                 return;
             }
             
-            console.log('Starting auto progress updates');
+            console.log(`Starting auto progress updates from position: ${formatTime(currentData.position || 0)}`);
+            
+            // Ensure position is initialized
+            if (currentData.position === undefined || currentData.position === null) {
+                console.log('Initializing position to 0 as it was undefined');
+                currentData.position = 0;
+            }
+            
+            // Reset the timestamp to now
             lastProgressUpdate = Date.now();
             
+            // Create a new interval
             progressInterval = setInterval(() => {
-                if (!currentData || !currentData.position || !currentData.song || !currentData.song.duration) {
+                if (!currentData || !currentData.song || !currentData.song.duration) {
+                    console.warn('Progress update: missing song data, stopping auto-updates');
+                    stopAutoProgress();
                     return;
+                }
+                
+                // Make sure position is defined
+                if (currentData.position === undefined || currentData.position === null) {
+                    currentData.position = 0;
                 }
                 
                 // Calculate how much time has passed since the last position update

@@ -23,7 +23,8 @@ pub trait AudioControllerRef: Send + Sync {
 /// List of commands that should only be logged at debug level
 const IGNORED_COMMANDS: &[&str] = &[
     "playlist open",
-    "playlist pause"
+    "playlist pause",
+    "menustatus",
 ];
 
 /// Helper function to check if a command matches any of the ignored commands
@@ -343,10 +344,8 @@ impl LMSListener {
                                             mac_addr, cmd, all_args);
                                     }
                                 },
-                                "displaynotify" | "menustatus" => {
-                                    let all_args = cmd_parts[1..].join(" ");
-                                    warn!("LMS event: Player {} UI update (full command: {} {})", 
-                                        mac_addr, cmd, all_args);
+                                "displaynotify" => {
+                                    // Display notification event
                                 },
                                 "power" => {
                                     let all_args = cmd_parts[1..].join(" ");

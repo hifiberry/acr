@@ -17,8 +17,22 @@ pub trait AudioControllerRef: Send + Sync {
 
 /// List of commands that should only be logged at debug level
 const IGNORED_COMMANDS: &[&str] = &[
-    "open",
+    "playlist open",
+    "playlist pause"
 ];
+
+/// Helper function to check if a command matches any of the ignored commands
+fn is_ignored_command(cmd_parts: &[String]) -> bool {
+    if cmd_parts.is_empty() {
+        return false;
+    }
+    
+    // Join the command parts to create the full command string
+    let full_command = cmd_parts.join(" ");
+    
+    // Check if the full command starts with any of the ignored commands
+    IGNORED_COMMANDS.iter().any(|ignored| full_command.starts_with(ignored))
+}
 
 /// LMSListener connects to the Logitech Media Server CLI interface on port 9090
 /// and logs all messages received from the server
@@ -209,7 +223,18 @@ impl LMSListener {
                                 controller.seen();
                                 trace!("Updated last_seen timestamp for player {}", player_id);
                             }
+                        } else {
+                            // Skip processing events for other players
+                            trace!("Skipping event for different player: {}", mac_addr);
+                            continue;
                         }
+                    } else if !cmd_parts.is_empty() {
+                        // For server-wide events without a specific player, continue processing
+                        trace!("Processing server-wide event");
+                    } else {
+                        // Skip empty events
+                        trace!("Skipping empty event");
+                        continue;
                     }
                     
                     // Log the event with structured information
@@ -217,11 +242,11 @@ impl LMSListener {
                         if cmd_parts.is_empty() {
                             warn!("LMS event: MAC={}", mac_addr);
                         } else {
-                            let cmd = &cmd_parts[0];
-                            if IGNORED_COMMANDS.contains(&cmd.as_str()) {
-                                debug!("Ignored LMS event: Player {} {}", mac_addr, cmd);
+                            if is_ignored_command(&cmd_parts) {
+                                debug!("Ignored LMS event: Player {} {}", mac_addr, cmd_parts.join(" "));
                                 continue;
                             }
+                            let cmd = &cmd_parts[0];
                             let args = if cmd_parts.len() > 1 {
                                 cmd_parts[1..].join(" ")
                             } else {
@@ -231,20 +256,23 @@ impl LMSListener {
                             match cmd.as_str() {
                                 "playlist" => {
                                     if cmd_parts.len() > 1 {
+                                        let all_args = cmd_parts[1..].join(" ");
                                         match cmd_parts[1].as_str() {
                                             "newsong" => {
                                                 let song_title = if cmd_parts.len() > 2 { &cmd_parts[2] } else { "Unknown" };
-                                                warn!("LMS event: Player {} started new song: {}", mac_addr, song_title);
+                                                warn!("LMS event: Player {} started new song: {} (full command: playlist {})", 
+                                                    mac_addr, song_title, all_args);
                                             },
                                             "pause" => {
-                                                let state = if cmd_parts.len() > 2 && cmd_parts[2] == "1" { "paused" } else { "resumed" };
-                                                warn!("LMS event: Player {} {}", mac_addr, state);
+                                                // is sent twice: as playlist pause (here) and as pause (below)
+                                                // only use the pause event
                                             },
                                             "stop" => {
-                                                warn!("LMS event: Player {} stopped", mac_addr);
+                                                warn!("LMS event: Player {} stopped (full command: playlist {})", 
+                                                    mac_addr, all_args);
                                             },
                                             _ => {
-                                                warn!("LMS event: Player {} {} {}", mac_addr, cmd, args);
+                                                warn!("LMS event: Player {} {} {}", mac_addr, cmd, all_args);
                                             }
                                         }
                                     } else {
@@ -252,26 +280,35 @@ impl LMSListener {
                                     }
                                 },
                                 "pause" => {
+                                    let all_args = cmd_parts[1..].join(" ");
                                     let state = if cmd_parts.len() > 1 && cmd_parts[1] == "1" { "paused" } else { "resumed" };
-                                    warn!("LMS event: Player {} {}", mac_addr, state);
+                                    warn!("LMS event: Player {} {} (full command: pause {})", 
+                                        mac_addr, state, all_args);
                                 },
                                 "client" => {
+                                    let all_args = cmd_parts[1..].join(" ");
                                     if cmd_parts.len() > 1 {
-                                        warn!("LMS event: Player {} client {}", mac_addr, cmd_parts[1]);
+                                        warn!("LMS event: Player {} client {} (full command: client {})", 
+                                            mac_addr, cmd_parts[1], all_args);
                                     } else {
                                         warn!("LMS event: Player {} client event", mac_addr);
                                     }
                                 },
                                 "prefset" => {
+                                    let all_args = cmd_parts[1..].join(" ");
                                     if cmd_parts.len() > 2 {
-                                        warn!("LMS event: Player {} setting {} = {}", mac_addr, cmd_parts[1], 
-                                              if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" });
+                                        warn!("LMS event: Player {} setting {} = {} (full command: prefset {})", 
+                                            mac_addr, cmd_parts[1], 
+                                            if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" }, all_args);
                                     } else {
-                                        warn!("LMS event: Player {} {}", mac_addr, line);
+                                        warn!("LMS event: Player {} {} (full args: {})", 
+                                            mac_addr, cmd, all_args);
                                     }
                                 },
                                 "displaynotify" | "menustatus" => {
-                                    warn!("LMS event: Player {} UI update", mac_addr);
+                                    let all_args = cmd_parts[1..].join(" ");
+                                    warn!("LMS event: Player {} UI update (full command: {} {})", 
+                                        mac_addr, cmd, all_args);
                                 },
                                 _ => {
                                     // Default formatting for other events
@@ -282,11 +319,11 @@ impl LMSListener {
                     } else {
                         // Server-wide events without a specific player
                         if !cmd_parts.is_empty() {
-                            let cmd = &cmd_parts[0];
-                            if IGNORED_COMMANDS.contains(&cmd.as_str()) {
-                                debug!("Ignored LMS server event: {}", cmd);
+                            if is_ignored_command(&cmd_parts) {
+                                debug!("Ignored LMS server event: {}", cmd_parts.join(" "));
                                 continue;
                             }
+                            let cmd = &cmd_parts[0];
                             let args = if cmd_parts.len() > 1 {
                                 cmd_parts[1..].join(" ")
                             } else {
@@ -295,19 +332,27 @@ impl LMSListener {
                             
                             match cmd.as_str() {
                                 "prefset" => {
+                                    let all_args = cmd_parts[1..].join(" ");
                                     if cmd_parts.len() > 2 {
-                                        warn!("LMS server event: Setting {} = {}", cmd_parts[1], 
-                                              if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" });
+                                        warn!("LMS server event: Setting {} = {} (full command: prefset {})", 
+                                            cmd_parts[1], 
+                                            if cmd_parts.len() > 2 { &cmd_parts[2] } else { "" },
+                                            all_args);
                                     } else {
-                                        warn!("LMS server event: {}", line);
+                                        warn!("LMS server event: prefset {} (full command: {})", 
+                                            all_args, line);
                                     }
                                 },
                                 "artworkspec" => {
-                                    warn!("LMS server event: Artwork spec update");
+                                    let all_args = cmd_parts[1..].join(" ");
+                                    warn!("LMS server event: Artwork spec update (full command: artworkspec {})",
+                                        all_args);
                                 },
                                 _ => {
                                     // Default formatting for other events
-                                    warn!("LMS server event: {} {}", cmd, args);
+                                    let all_args = cmd_parts[1..].join(" ");
+                                    warn!("LMS server event: {} {} (full command: {} {})", 
+                                        cmd, args, cmd, all_args);
                                 }
                             }
                         } else {

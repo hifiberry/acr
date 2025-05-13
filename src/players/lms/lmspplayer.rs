@@ -270,9 +270,7 @@ impl LMSPlayer {
         let duration_result = self.duration();
         let path_result = self.path();
         let remote_result = self.remote();
-
         let track_id = self.get_current_track_id().ok();
-        warn!("Current track ID: {:?}", track_id);
         
         // Generate cover art URL from track ID if available
         let mut cover_art_url = None;

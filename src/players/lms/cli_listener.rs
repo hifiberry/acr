@@ -39,7 +39,8 @@ const IGNORED_COMMANDS: &[&str] = &[
     "menustatus",
     "server currentSong",
     "material-skin",
-    "prefset plugin.fulltext"
+    "prefset plugin.fulltext",
+    "prefset server currentSong",
 ];
 
 /// Helper function to check if a command matches any of the ignored commands

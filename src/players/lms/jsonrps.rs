@@ -131,8 +131,8 @@ impl LmsRpcClient {
         // Build command with proper format: command start itemsPerResponse tag1:value1 tag2:value2...
         let mut command_values = vec![
             Value::String(command.to_string()),
-            Value::Number(start.into()),
-            Value::Number(items_per_response.into()),
+            Value::String(start.to_string()), // Encode as string instead of number
+            Value::String(items_per_response.to_string()), // Encode as string instead of number
         ];
         
         // Add tagged parameters
@@ -163,34 +163,25 @@ impl LmsRpcClient {
     /// Send a raw command to a specific player with mixed parameter types
     /// 
     /// # Arguments
-    /// * `player_id` - Optional MAC address of player. If None, no player ID will be added to the request
+    /// * `player_id` - Optional MAC address of player. If None, "0" will be used for database commands
     /// * `command` - Command array as JSON Values for mixed types
     pub fn request_raw(&self, player_id: Option<&str>, command: Vec<Value>) -> Result<Value, LmsRpcError> {
         // The LMS jsonrpc.js API expects params to be an array with:
-        // 1. For player commands: [player_id, command_array]
-        // 2. For database commands: [command_values...]
+        // 1. The player_id as the first element (or "0" for command that doesn't require a player)
+        // 2. A nested array containing the command and parameters as the second element
         
         // Debug log the command before creating the request
         let url = format!("{}{}", self.base_url, JSONRPC_PATH);
         debug!("LMS command to {}: player_id={:?}, command={:?}", url, player_id, command);
         
-        // Create params array based on whether this is a player-specific command or database command
-        let params = match player_id {
-            Some(id) => {
-                // Include player_id for player-specific commands
-                // Format: [player_id, [command, arg1, arg2, ...]]
-                let command_array = Value::Array(command.clone());
-                vec![
-                    Value::String(id.to_string()),
-                    command_array
-                ]
-            },
-            None => {
-                // For database commands, use command values directly without wrapping
-                // Format: [command, arg1, arg2, ...]
-                command
-            }
-        };
+        // Create the nested command array
+        let command_array = Value::Array(command.clone());
+        
+        // Create params array with player_id followed by the command array
+        let params = vec![
+            Value::String(player_id.unwrap_or("0").to_string()),
+            command_array
+        ];
         
         let request = JsonRpcRequest {
             id: self.next_id(),
@@ -251,7 +242,7 @@ impl LmsRpcClient {
     
     /// Get a list of available players
     pub fn get_players(&self) -> Result<Vec<Player>, LmsRpcError> {
-        let result = self.control_request("0:0:0:0:0:0:0:0", "players", vec!["0","100"])?;
+        let result = self.control_request("0:0:0:0:0:0:0:0", "players", vec!["0", "100"])?;
         
         // Extract the players array
         match result.get("players_loop") {

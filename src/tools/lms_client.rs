@@ -349,7 +349,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         
         Commands::Search { query } => {
             println!("Searching for: {}", query);
-            let results = client.search(&player_id, &query, cli.limit)?;
+            let results = client.search(&query, cli.limit)?;
             
             if results.tracks.is_empty() && 
                results.albums.is_empty() && 
@@ -392,7 +392,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::ListArtists => {
             println!("Listing artists (up to {})", cli.limit);
             
-            let results = client.request(&player_id, "artists", 0, cli.limit, vec![])?;
+            let results = client.database_request("artists", 0, cli.limit, vec![])?;
             
             if let Some(artists_array) = results.get("artists_loop") {
                 if let Some(artists) = artists_array.as_array() {
@@ -446,7 +446,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             
             // LMS uses artist_id parameter for listing albums by artist
-            let results = client.request(&player_id, "albums", 0, cli.limit, vec![("artist_id", &artist), ("tags", tags)])?;
+            let results = client.database_request("albums", 0, cli.limit, vec![("artist_id", artist.as_str()), ("tags", tags)])?;
             
             if let Some(albums_array) = results.get("albums_loop") {
                 if let Some(albums) = albums_array.as_array() {
@@ -481,7 +481,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         serde_json::Value::Bool(_) |
                                         serde_json::Value::Null => value.to_string(),
                                         serde_json::Value::Array(_) |
-                                        serde_json::Value::Object(_) => serde_json::to_string_pretty(value)
+                                        serde_json::Value::Object(_) => serde_json::to_string_pretty(&value)
                                             .unwrap_or_else(|_| value.to_string()),
                                     };
                                     
@@ -512,7 +512,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             
             // LMS uses album_id parameter for listing tracks by album
-            let results = client.request(&player_id, "titles", 0, cli.limit, vec![("album_id", &album), ("tags", tags)])?;
+            let results = client.database_request("titles", 0, cli.limit, vec![("album_id", album.as_str()), ("tags", tags)])?;
             
             if let Some(tracks_array) = results.get("titles_loop") {
                 if let Some(tracks) = tracks_array.as_array() {
@@ -549,7 +549,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         serde_json::Value::Bool(_) |
                                         serde_json::Value::Null => value.to_string(),
                                         serde_json::Value::Array(_) |
-                                        serde_json::Value::Object(_) => serde_json::to_string_pretty(value)
+                                        serde_json::Value::Object(_) => serde_json::to_string_pretty(&value)
                                             .unwrap_or_else(|_| value.to_string()),
                                     };
                                     

@@ -418,6 +418,17 @@ impl LMSListener {
                                         error!("Failed to upgrade controller reference for power event");
                                     }
                                 },
+                                "time" => {
+                                    let position = if cmd_parts.len() > 1 { &cmd_parts[1] } else { "unknown" };
+                                    debug!("LMS event: Player {} position update: {} seconds", mac_addr, position);
+                                    
+                                    // Update player position when time events are received
+                                    if let Some(ctrl) = controller.upgrade() {
+                                        ctrl.update_position();
+                                    } else {
+                                        error!("Failed to upgrade controller reference for time event");
+                                    }
+                                },
                                 _ => {
                                     // Default formatting for other events
                                     warn!("Unknown LMS event: Player {} {} {}", mac_addr, cmd, args);

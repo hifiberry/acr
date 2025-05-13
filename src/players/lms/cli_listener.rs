@@ -34,6 +34,7 @@ const IGNORED_COMMANDS: &[&str] = &[
     "playlist jump",
     "button",
     "menustatus",
+    "server currentSong",
 ];
 
 /// Helper function to check if a command matches any of the ignored commands

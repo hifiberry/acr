@@ -51,7 +51,11 @@ impl LMSLibraryLoader {
     }
 
     /// Create a Track object from an LMS track JSON object
-    fn track_from_lms_json(track: &serde_json::Value) -> Option<Track> {
+    fn track_from_lms_json(track: &serde_json::Value) -> Option<Track> {        // extract track id
+        let id = track["id"].as_u64();
+
+        debug!("Track ID: {:?}", id);
+
         // Extract track title (default to "Unknown Track" if not present)
         let title = track["title"].as_str()
             .unwrap_or("Unknown Track");
@@ -98,10 +102,14 @@ impl LMSLibraryLoader {
         } else {
             Track::new(Some(disc_number), Some(track_number), title.to_string())
         };
-        
-        // Add URI if available
+          // Add URI if available
         if let Some(uri_str) = uri {
             track_obj = track_obj.with_uri(uri_str);
+        }
+        
+        // Add track ID if available
+        if let Some(track_id) = id {
+            track_obj = track_obj.with_id(Identifier::Numeric(track_id));
         }
         
         // Return the created track
@@ -172,11 +180,6 @@ impl LMSLibraryLoader {
           // Extract release date
         let release_date = Self::parse_release_date(album_json.get("year"));
         
-        // Extract cover art URL if present
-        let cover_art = album_json["artwork_url"].as_str()
-            .or_else(|| album_json["artwork_track_id"].as_str())
-            .map(|s| s.to_string());
-        
         // Create empty tracks list to be populated later
         let tracks = Arc::new(Mutex::new(Vec::<Track>::new()));
         
@@ -196,7 +199,7 @@ impl LMSLibraryLoader {
             artists_flat: None,
             release_date,
             tracks,
-            cover_art,
+            cover_art: None,
             uri: None // LMS doesn't provide album URIs
         })
     }

@@ -120,7 +120,7 @@ pub fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
     
     // Make the request
     debug!("Making request to TheArtistDB API for MBID {}", mbid);
-    let response_text = match client.get(&url) {
+    let response_text = match client.get_text(&url) {
         Ok(text) => text,
         Err(e) => return Err(format!("Failed to send request to TheArtistDB: {}", e)),
     };

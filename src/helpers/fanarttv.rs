@@ -35,7 +35,7 @@ pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Ve
     let mut thumbnail_urls = Vec::new();
     
     let client = http_client();
-    match client.get(&url) {
+    match client.get_text(&url) {
         Ok(response_text) => {
             // Parse the JSON response
             match serde_json::from_str::<Value>(&response_text) {
@@ -88,7 +88,7 @@ pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
     let mut banner_urls = Vec::new();
     
     let client = http_client();
-    match client.get(&url) {
+    match client.get_text(&url) {
         Ok(response_text) => {
             // Parse the JSON response
             match serde_json::from_str::<Value>(&response_text) {
@@ -239,10 +239,10 @@ pub fn download_image(url: &str) -> Result<Vec<u8>, String> {
     let client = http_client();
     
     // Execute the request
-    match client.get(url) {
-        Ok(response_text) => {
-            // For binary data like images, we need to convert the response to bytes
-            Ok(response_text.as_bytes().to_vec())
+    match client.get_binary(url) {
+        Ok((binary_data, _)) => {
+            // Return the binary data directly
+            Ok(binary_data)
         },
         Err(e) => Err(format!("Request failed: {}", e))
     }

@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::io::Read;
 use log::{debug, error};
 use serde::Serialize;
 use serde_json::Value;
@@ -26,8 +27,11 @@ pub trait HttpClient: Send + Sync + std::fmt::Debug {
     /// Send a POST request with a JSON payload
     fn post_json_value(&self, url: &str, payload: Value) -> Result<Value, HttpClientError>;
     
-    /// Send a GET request
-    fn get(&self, url: &str) -> Result<String, HttpClientError>;
+    /// Send a GET request and return text response
+    fn get_text(&self, url: &str) -> Result<String, HttpClientError>;
+    
+    /// Send a GET request and return binary data with mimetype
+    fn get_binary(&self, url: &str) -> Result<(Vec<u8>, String), HttpClientError>;
     
     /// Clone the client as a boxed trait object
     fn clone_box(&self) -> Box<dyn HttpClient>;
@@ -121,8 +125,8 @@ impl HttpClient for UreqHttpClient {
         }
     }
     
-    fn get(&self, url: &str) -> Result<String, HttpClientError> {
-        debug!("GET request to {}", url);
+    fn get_text(&self, url: &str) -> Result<String, HttpClientError> {
+        debug!("GET text request to {}", url);
         
         let response = match ureq::get(url).timeout(self.timeout).call() {
             Ok(resp) => resp,
@@ -137,6 +141,34 @@ impl HttpClient for UreqHttpClient {
             Err(e) => {
                 debug!("Failed to read response body: {}", e);
                 Err(HttpClientError::ParseError(format!("Failed to read response body: {}", e)))
+            }
+        }
+    }
+    
+    fn get_binary(&self, url: &str) -> Result<(Vec<u8>, String), HttpClientError> {
+        debug!("GET binary request to {}", url);
+        
+        let response = match ureq::get(url).timeout(self.timeout).call() {
+            Ok(resp) => resp,
+            Err(e) => {
+                debug!("GET binary request failed: {}", e);
+                return Err(HttpClientError::RequestError(e.to_string()));
+            }
+        };
+        
+        // Get the content-type header or default to "application/octet-stream"
+        let content_type = response
+            .header("content-type")
+            .unwrap_or("application/octet-stream")
+            .to_string();
+            
+        // Get the response body as bytes
+        let mut bytes: Vec<u8> = Vec::new();
+        match response.into_reader().read_to_end(&mut bytes) {
+            Ok(_) => Ok((bytes, content_type)),
+            Err(e) => {
+                debug!("Failed to read binary response: {}", e);
+                Err(HttpClientError::ParseError(format!("Failed to read binary response: {}", e)))
             }
         }
     }

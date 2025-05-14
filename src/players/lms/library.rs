@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
-use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
+use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface};
+use crate::helpers::http_client;
 use crate::players::lms::jsonrps::LmsRpcClient;
-use crate::helpers::sanitize;
+use crate::players::lms::lmsaudio::lms_image_url;
 
 /// LMS library interface that provides access to albums and artists
 #[derive(Clone)]
@@ -53,8 +54,7 @@ impl LMSLibrary {
             enhance_metadata: true,
         }
     }
-    
-    /// Populate calculated fields in album objects
+      /// Populate calculated fields in album objects
     /// 
     /// This adds derived fields like cover_art URL for albums that don't have them yet
     /// these calculates fields are not stored, but only calculated on demand
@@ -62,13 +62,10 @@ impl LMSLibrary {
         // Add cover_art URL if not present
         if album.cover_art.is_none() {
             if let crate::data::Identifier::Numeric(album_id) = album.id {
-                // Generate cover art URL using the LMS server address
-                if let Ok(server_addr) = self.client.get_server_address() {
-                    let port = self.client.get_server_port();
-                    let cover_art_url = format!("http://{}:{}/music/{}/cover.jpg", 
-                                               server_addr, port, album_id);
-                    album.cover_art = Some(cover_art_url);
-                }
+                // Use the lms_image_url function from LMS audio controller
+                let image_url = format!("{}/album:{}",
+                    lms_image_url(), album_id);
+                album.cover_art = Some(image_url);
             }
         }
     }
@@ -91,8 +88,7 @@ impl LMSLibrary {
             warn!("Failed to acquire lock for setting artist separators");
         }
     }
-    
-    /// Get custom artist separators for artist name splitting
+      /// Get custom artist separators for artist name splitting
     pub fn get_artist_separators(&self) -> Option<Vec<String>> {
         // Return the stored separators if available
         if let Ok(sep_guard) = self.artist_separators.lock() {
@@ -102,63 +98,7 @@ impl LMSLibrary {
             None
         }
     }
-    
-    /// Retrieve album cover art for a specific album ID
-    /// 
-    /// Returns a tuple of (binary data, mime-type) of the cover art if found, None otherwise
-    pub fn cover_art(&self, album_id: &str) -> Option<(Vec<u8>, String)> {
-        debug!("Retrieving cover art for album ID: {}", album_id);
         
-        // Build the URL for the album cover art
-        let server_addr = match self.client.get_server_address() {
-            Ok(addr) => addr,
-            Err(e) => {
-                error!("Failed to get server address: {}", e);
-                return None;
-            }
-        };
-        
-        let port = self.client.get_server_port();
-        let cover_url = format!("http://{}:{}/music/{}/cover.jpg", server_addr, port, album_id);
-        
-        // Use reqwest to fetch the image
-        let client = reqwest::blocking::Client::new();
-        let response = match client.get(&cover_url).send() {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    error!("Failed to fetch cover art: HTTP {}", resp.status());
-                    return None;
-                }
-                resp
-            },
-            Err(e) => {
-                error!("Failed to fetch cover art: {}", e);
-                return None;
-            }
-        };
-        
-        // Get content type from response headers
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("image/jpeg")
-            .to_string();
-        
-        // Get the response body as bytes
-        match response.bytes() {
-            Ok(bytes) => {
-                let image_data = bytes.to_vec();
-                debug!("Successfully retrieved cover art: {} bytes", image_data.len());
-                Some((image_data, content_type))
-            },
-            Err(e) => {
-                error!("Failed to read cover art data: {}", e);
-                None
-            }
-        }
-    }
-
     /// Create artist objects from all album artist data
     ///
     /// This method scans all albums in the library, extracts all artist names
@@ -393,55 +333,38 @@ impl LMSLibrary {
             warn!("Failed to acquire read lock on artists");
             None
         }
-    }
-
-    /// Get album cover art using the album's identifier
+    }    /// Returns the URL for a track's cover artwork
     /// 
-    /// Returns a tuple of (binary data, mime-type) of the cover art if found, None otherwise
-    pub fn get_album_cover(&self, id: &crate::data::Identifier) -> Option<(Vec<u8>, String)> {
-        // First, look up the album by its ID
-        match id {
-            crate::data::Identifier::Numeric(album_id) => {
-                debug!("Getting cover art for album ID: {}", album_id);
-                
-                // Check if the album exists in our library
-                let album = self.get_album_by_id(id)?;
-                debug!("Found album with ID {}: {}", album_id, album.name);
-                
-                // Use the sanitize::key_from_album function to generate a path key
-                let album_key = sanitize::key_from_album(&album);
-                
-                // Check if the album has a cover in the cache
-                let cache_path = format!("albums/{}/cover", album_key);
-                if let Ok((image_data, mime_type)) = crate::helpers::imagecache::get_image_with_mime_type(&cache_path) {
-                    debug!("Found cached cover art for album {}", album.name);
-                    return Some((image_data, mime_type));
-                }
-                
-                // Get the cover art from the LMS server
-                let image_result = self.cover_art(&album_id.to_string());
-                
-                // If we got an image, store it in the imagecache
-                if let Some((image_data, mime_type)) = &image_result {
-                    // Create the path for storing in imagecache
-                    let file_path = format!("albums/{}/cover", album_key);
-                    
-                    // Store the image in the cache using store_image_from_data
-                    if let Err(e) = crate::helpers::imagecache::store_image_from_data(
-                        &file_path, image_data.clone(), mime_type.clone()) {
-                        warn!("Failed to cache album cover for '{}': {}", album.name, e);
-                    } else {
-                        debug!("Stored album cover in cache at {}", file_path);
-                    }
-                }
-                
-                image_result
-            },
-            _ => {
-                warn!("Album ID must be numeric for LMSLibrary");
-                None
+    /// # Arguments
+    /// * `track_id` - The ID of the track, which can be extracted from track URI
+    /// 
+    /// # Returns
+    /// A string containing the URL for the track's cover artwork in the format:
+    /// `http://<server>:<port>/music/<track_id>/cover.jpg`
+    pub fn track_cover_url(&self, track_id: &str) -> String {
+        // Get server address from the client
+        let server_addr = match self.client.get_server_address() {
+            Ok(addr) => addr,
+            Err(_) => "localhost".to_string(), // Default to localhost if we can't get the address
+        };
+        
+        // Get server port from the client
+        let port = self.client.get_server_port();
+        
+        // Extract the track ID from the URI if it's in a format like file:///path/to/track
+        let id = if track_id.contains("://") {
+            // For file URIs, extract just the file path part
+            if let Some(path) = track_id.split("://").nth(1) {
+                path
+            } else {
+                track_id
             }
-        }
+        } else {
+            track_id
+        };
+        
+        // Construct and return the URL
+        format!("http://{}:{}/music/{}/cover.jpg", server_addr, port, id)
     }
 }
 
@@ -450,11 +373,12 @@ impl LibraryInterface for LMSLibrary {
         debug!("Creating new LMSLibrary with default connection");
         Self::with_connection("localhost", 9000) // Default LMS port is 9000
     }
-    
-    fn is_loaded(&self) -> bool {
+      fn is_loaded(&self) -> bool {
         if let Ok(loaded) = self.library_loaded.lock() {
+            debug!("Library is_loaded check returning: {}", *loaded);
             *loaded
         } else {
+            warn!("Failed to acquire lock on library_loaded flag");
             false
         }
     }
@@ -494,7 +418,7 @@ impl LibraryInterface for LMSLibrary {
                             self_albums.insert(album.name.clone(), album);
                         }
                         
-                        info!("Updated library with {} albums", self_albums.len());
+                        warn!("Updated library with {} albums", self_albums.len());
                     } else {
                         error!("Failed to acquire write lock on albums");
                         return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));
@@ -505,11 +429,14 @@ impl LibraryInterface for LMSLibrary {
                 if let Err(e) = self.create_artists() {
                     error!("Error creating artists: {}", e);
                 }
-                
-                // Mark as loaded and update progress
+                  // Mark as loaded and update progress
                 if let Ok(mut loaded) = self.library_loaded.lock() {
                     *loaded = true;
+                    info!("Setting library_loaded flag to true");
+                } else {
+                    error!("Failed to acquire lock on library_loaded");
                 }
+                
                 if let Ok(mut progress) = self.loading_progress.lock() {
                     *progress = 1.0;
                 }
@@ -537,6 +464,13 @@ impl LibraryInterface for LMSLibrary {
     }
     
     fn get_albums(&self) -> Vec<Album> {
+        warn!("Retrieving all albums from LMSLibrary");
+        // log number of albums
+        if let Ok(albums) = self.albums.read() {
+            info!("LMSLibrary contains {} albums", albums.len());
+        } else {
+            warn!("Failed to acquire read lock on albums");
+        }
         if let Ok(albums) = self.albums.read() {
             albums.values().cloned().map(|mut album| {
                 self.populate_calculated_album_fields(&mut album);
@@ -547,9 +481,9 @@ impl LibraryInterface for LMSLibrary {
             Vec::new()
         }
     }
-    
-    fn get_artists(&self) -> Vec<Artist> {
+      fn get_artists(&self) -> Vec<Artist> {
         if let Ok(artists) = self.artists.read() {
+            info!("LMSLibrary returning {} artists from get_artists", artists.len());
             artists.values().cloned().collect()
         } else {
             warn!("Failed to acquire read lock on artists");
@@ -580,8 +514,7 @@ impl LibraryInterface for LMSLibrary {
     fn get_albums_by_artist_id(&self, artist_id: &crate::data::Identifier) -> Vec<Album> {
         self.get_albums_by_artist_id(artist_id)
     }
-    
-    fn get_image(&self, identifier: String) -> Option<(Vec<u8>, String)> {
+      fn get_image(&self, identifier: String) -> Option<(Vec<u8>, String)> {
         debug!("Retrieving image for identifier: {}", identifier);
         
         // Check if the identifier starts with "album:"
@@ -592,10 +525,47 @@ impl LibraryInterface for LMSLibrary {
             match album_id_str.parse::<u64>() {
                 Ok(album_id_num) => {
                     let album_id = crate::data::Identifier::Numeric(album_id_num);
-                    debug!("Parsed album ID: {}", album_id);
+                    warn!("Parsed album ID: {}", album_id);
+                      let album = self.get_album_by_id(&album_id);
                     
-                    // Use get_album_cover to retrieve the image
-                    return self.get_album_cover(&album_id);
+                    // Get the first track from the album (if any) with proper lifetime handling
+                    let track = album.and_then(|a| {
+                        if let Ok(tracks_guard) = a.tracks.lock() {
+                            if let Some(t) = tracks_guard.get(0) {
+                                Some(t.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+
+                    // Extract the track ID if available, otherwise fall back to URI
+                    let track_id = track.and_then(|t| {
+                        // First try the id field
+                        t.id.and_then(|id| match id {
+                            crate::data::Identifier::String(s) => Some(s),
+                            crate::data::Identifier::Numeric(n) => Some(n.to_string()),
+                        })
+                        // Fall back to URI if no ID is available
+                        .or_else(|| t.uri.clone())
+                    })
+                    .unwrap_or_else(|| "0".to_string());
+                    let track_cover_url = self.track_cover_url(&track_id);
+                    warn!("Track cover URL: {}", track_cover_url);
+                    // Fetch the image data from the URL using  http client
+                    match http_client::new_http_client(2).get_binary(&track_cover_url) {
+                        Ok((data, content_type)) => {
+                            debug!("Successfully retrieved image data");
+                            return Some((data, content_type));
+                        },
+                        Err(e) => {
+                            warn!("Failed to retrieve image data: {}", e);
+                            return None;
+                        }
+                    }
+                    
                 },
                 Err(e) => {
                     warn!("Failed to parse album ID '{}' as a number: {}", album_id_str, e);

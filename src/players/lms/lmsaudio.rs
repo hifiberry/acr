@@ -15,6 +15,12 @@ use crate::players::lms::lmsserver::{get_local_mac_addresses};
 use crate::players::lms::lmspplayer::LMSPlayer;
 use crate::players::lms::cli_listener::{LMSListener, AudioControllerRef};
 use crate::helpers::macaddress::normalize_mac_address;
+use crate::constants::API_PREFIX;
+
+/// Constant for LMS image API URL prefix including API prefix
+pub fn lms_image_url() -> String {
+    format!("{}/library/lms/image", API_PREFIX)
+}
 
 /// Configuration for LMSAudioController
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,7 +252,7 @@ impl LMSAudioController {
             // Initialize the library with the same connection as the player
             if let Ok(mut library_lock) = controller.library.write() {
                 let library = crate::players::lms::library::LMSLibrary::with_connection(&server, config.port);
-                debug!("Created LMS library for server: {}", server);
+                info!("Created LMS library instance for server: {}", server);
                 *library_lock = Some(library);
             }
             
@@ -1084,19 +1090,49 @@ impl PlayerController for LMSAudioController {
                         Err(_) => 9000 // Default LMS port
                     };
                     
-                    // Create a new LMSLibrary directly for the thread
-                    info!("Starting LMS library refresh...");
-                    let server_clone = server.clone();
-                    
-                    // Run the refresh in a separate thread to avoid blocking startup
-                    thread::spawn(move || {
-                        // Create a new library instance for the thread
-                        let library = crate::players::lms::library::LMSLibrary::with_connection(&server_clone, port);
-                        match library.refresh_library() {
-                            Ok(_) => info!("LMS library loaded successfully"),
-                            Err(e) => warn!("Failed to load LMS library: {}", e),
+                    // Make sure we have a library instance
+                    let mut need_to_create_library = false;
+                    {
+                        if let Ok(lib_lock) = self.library.read() {
+                            if lib_lock.is_none() {
+                                need_to_create_library = true;
+                            }
+                        } else {
+                            need_to_create_library = true;
                         }
-                    });
+                    }
+                    
+                    // Create the library if needed
+                    if need_to_create_library {
+                        let library = crate::players::lms::library::LMSLibrary::with_connection(server, port);
+                        
+                        // Store the library instance
+                        if let Ok(mut lib_lock) = self.library.write() {
+                            *lib_lock = Some(library.clone());
+                            info!("Created and stored LMS library instance for server: {}", server);
+                        }
+                    }
+                    
+                    // Get the library instance
+                    let library_clone = if let Ok(lib_lock) = self.library.read() {
+                        lib_lock.clone()
+                    } else {
+                        None
+                    };
+                    
+                    if let Some(library) = library_clone {
+                        // Run the refresh in a separate thread to avoid blocking startup
+                        let library_for_thread = library.clone();
+                        thread::spawn(move || {
+                            info!("Starting LMS library refresh...");
+                            match library_for_thread.refresh_library() {
+                                Ok(_) => info!("LMS library loaded successfully"),
+                                Err(e) => warn!("Failed to load LMS library: {}", e),
+                            }
+                        });
+                    } else {
+                        warn!("Failed to get library instance for refresh");
+                    }
                 } else {
                     debug!("Skipping LMS library loading (no server information available)");
                 }
@@ -1140,10 +1176,10 @@ impl PlayerController for LMSAudioController {
     }
     
     fn get_library(&self) -> Option<Box<dyn LibraryInterface>> {
-        // If we have a library, clone and return it
+        // First, check if we already have a loaded library stored
         if let Ok(lib_lock) = self.library.read() {
             if let Some(lib) = lib_lock.as_ref() {
-                debug!("Returning LMS library instance from controller");
+                debug!("Returning existing LMS library instance from controller with loaded={}", lib.is_loaded());
                 return Some(Box::new(lib.clone()));
             }
         }
@@ -1162,7 +1198,7 @@ impl PlayerController for LMSAudioController {
                     warn!("Creating new LMS library instance");
                     let library = crate::players::lms::library::LMSLibrary::with_connection(server, port);
                     
-                    debug!("Created new LMS library for server: {}", server);
+                    info!("Created new LMS library for server: {} (storing in controller)", server);
                     
                     // Store it for future use
                     if let Ok(mut lib_lock) = self.library.write() {

@@ -1,12 +1,10 @@
-use log::{debug, info, warn, error};
+use log::{debug, info, warn};
 use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 use crate::helpers::theartistdb;
 use crate::helpers::fanarttv;
-use std::sync::{Arc, RwLock, mpsc};
+use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 
 /// Trait for services that can update artist metadata
 pub trait ArtistUpdater {
@@ -179,10 +177,9 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
 pub fn update_library_artists_metadata_in_background(
     artists_collection: Arc<RwLock<HashMap<String, Artist>>>
 ) {
-    debug!("Starting background thread to update artist metadata");
-
-    // Spawn a new thread to handle the metadata updates
-    std::thread::spawn(move || {
+    debug!("Starting background thread to update artist metadata");    // Spawn a new thread to handle the metadata updates
+    use std::thread;
+    thread::spawn(move || {
         info!("Artist metadata update thread started");
 
         // Get all artists from the collection
@@ -248,10 +245,9 @@ pub fn update_library_artists_metadata_in_background(
             let count = index + 1;
             if count % 10 == 0 || count == total {
                 info!("Processed {}/{} artists for metadata", count, total);
-            }
-
-            // Sleep between updates to avoid overwhelming external services
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            }            // Sleep between updates to avoid overwhelming external services
+            use std::{thread, time::Duration};
+            thread::sleep(Duration::from_millis(500));
         }
 
         info!("Artist metadata update process completed");

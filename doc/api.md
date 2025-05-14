@@ -159,7 +159,11 @@ Sends a playback command to a specific player by name.
 - **Method**: POST
 - **Path Parameters**:
   - `player-name` (string): The name of the target player. You can use "active" to target the currently active player.
-  - `command` (string): The command to send (same options as above)
+  - `command` (string): The command to send (same options as above, plus the following):
+    - Queue management commands:
+      - `add_track:<identifier>` - Adds a track to the queue. The identifier can be either a track ID or a track URI.
+      - `remove_track:<position>` - Removes a track at the specified position from the queue.
+      - `clear_queue` - Clears the entire queue.
 - **Response**: Same as "Send Command to Active Player"
 - **Error Response** (400 Bad Request, 404 Not Found, 500 Internal Server Error): Same structure as above
 
@@ -173,6 +177,18 @@ curl -X POST http://<device-ip>:1080/api/player/raat/command/pause
 
 # Send a command to the currently active player (alternative to /api/player/active/send/)
 curl -X POST http://<device-ip>:1080/api/player/active/command/play
+
+# Add a track to the queue using track ID
+curl -X POST http://<device-ip>:1080/api/player/lms/command/add_track:12345
+
+# Add a track to the queue using track URI
+curl -X POST http://<device-ip>:1080/api/player/lms/command/add_track:file%3A%2F%2F%2Fpath%2Fto%2Fsong.mp3
+
+# Remove a track from the queue at position 2
+curl -X POST http://<device-ip>:1080/api/player/lms/command/remove_track:2
+
+# Clear the entire queue
+curl -X POST http://<device-ip>:1080/api/player/lms/command/clear_queue
 ```
 
 ### Get Now Playing Information
@@ -771,6 +787,7 @@ A Track represents a single song on an album.
 
 ```json
 {
+  "id": "12345",
   "disc_number": "1",
   "track_number": 5,
   "name": "Track Name",
@@ -781,6 +798,7 @@ A Track represents a single song on an album.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| id | string | Unique identifier for the track, may be null |
 | disc_number | string | Disc number as a string (to support formats like "1/2") |
 | track_number | number | Track number on the disc |
 | name | string | Track title |

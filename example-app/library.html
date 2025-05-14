@@ -769,35 +769,41 @@
                         artistHtml = `<span class="track-artist">by ${track.artist}</span>`;
                     }
                 }
-                
-                trackItem.innerHTML = `
+                  trackItem.innerHTML = `
                     <span class="track-number">${track.track_number || index + 1}.</span>
                     <span class="track-title">${track.name}</span>
                     ${artistHtml}
-                    <button class="track-add-button" data-track-uri="${track.uri}">+</button>
+                    <button class="track-add-button" data-track-uri="${track.uri}" data-track-id="${track.id || ''}">+</button>
                 `;
-                
-                const addButton = trackItem.querySelector('.track-add-button');
+                  const addButton = trackItem.querySelector('.track-add-button');
                 // Use fresh event listener to avoid duplication
                 const newAddButton = addButton.cloneNode(true);
                 addButton.parentNode.replaceChild(newAddButton, addButton);
                 newAddButton.addEventListener('click', () => {
-                    addTrackToQueue(track.uri);
+                    addTrackToQueue(track);
                 });
                 
                 tracksList.appendChild(trackItem);
             });
         }
-        
-        function addTrackToQueue(trackUri) {
+          function addTrackToQueue(track) {
             if (!activeLibrary) {
                 showError('No active library player selected');
                 return;
             }
             
-            console.log(`Adding track to queue: ${trackUri}`);
+            // Determine whether to use track ID or URI based on what's available
+            const trackIdentifier = typeof track === 'object' ? 
+                (track.id || track.uri) : track;
+                
+            if (!trackIdentifier) {
+                showError('No valid track identifier available');
+                return;
+            }
             
-            fetch(`${API_BASE_URL}/player/${activeLibrary}/command/add_track:${encodeURIComponent(trackUri)}`, {
+            console.log(`Adding track to queue: ${trackIdentifier}`);
+            
+            fetch(`${API_BASE_URL}/player/${activeLibrary}/command/add_track:${encodeURIComponent(trackIdentifier)}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -856,19 +862,21 @@
                         if (!albumData.album || !albumData.album.tracks) {
                             throw new Error('Album tracks not found');
                         }
-                        
-                        // Filter tracks to only include those with URIs
-                        const tracks = albumData.album.tracks.filter(track => track.uri);
+                          // Filter tracks to only include those with IDs or URIs
+                        const tracks = albumData.album.tracks.filter(track => track.id || track.uri);
                         
                         if (tracks.length === 0) {
-                            throw new Error('No valid track URIs found in album');
+                            throw new Error('No valid track identifiers found in album');
                         }
                         
                         // Add tracks one by one using sequential promises
                         return tracks.reduce((promise, track) => {
                             return promise.then(() => {
-                                // Use the add command with URI parameter
-                                return fetch(`${API_BASE_URL}/player/${activeLibrary}/command/add_track:${encodeURIComponent(track.uri)}`, {
+                                // Prefer track ID over URI if available
+                                const trackIdentifier = track.id || track.uri;
+                                
+                                // Use the add command with the chosen identifier parameter
+                                return fetch(`${API_BASE_URL}/player/${activeLibrary}/command/add_track:${encodeURIComponent(trackIdentifier)}`, {
                                     method: 'POST',
                                     headers: {
                                         'Content-Type': 'application/json'
@@ -878,7 +886,7 @@
                                     if (!response.ok) {
                                         console.warn(`Failed to add track ${track.name}: ${response.status}`);
                                     } else {
-                                        console.log(`Added track: ${track.name}`);
+                                        console.log(`Added track: ${track.name} using identifier: ${trackIdentifier}`);
                                     }
                                     // Continue with the chain even if individual tracks fail
                                     return Promise.resolve();

@@ -1,6 +1,6 @@
 use serde_json::Value;
 use log::{debug, warn, info};
-use reqwest;
+use crate::helpers::http_client;
 use crate::helpers::imagecache;
 use crate::data::artist::Artist;
 use crate::helpers::artistupdater::ArtistUpdater;
@@ -11,6 +11,11 @@ const APIKEY: &str = "749a8fca4f2d3b0462b287820ad6ab06";
 // Provider name for image naming
 const PROVIDER: &str = "fanarttv";
 
+/// Create a new HTTP client with a timeout of 10 seconds
+fn http_client() -> Box<dyn http_client::HttpClient> {
+    http_client::new_http_client(10)
+}
+
 /// Get artist thumbnail URLs from FanArt.tv
 /// 
 /// # Arguments
@@ -19,7 +24,7 @@ const PROVIDER: &str = "fanarttv";
 /// 
 /// # Returns
 /// * `Vec<String>` - URLs of all available thumbnails, empty if none found
-pub async fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Vec<String> {
+pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Vec<String> {
     let max = max_images.unwrap_or(10);
     let url = format!(
         "http://webservice.fanart.tv/v3/music/{}?api_key={}", 
@@ -29,15 +34,11 @@ pub async fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>)
 
     let mut thumbnail_urls = Vec::new();
     
-    let client = reqwest::Client::new();
-    match client.get(&url).send().await {
-        Ok(response) => {
-            if !response.status().is_success() {
-                debug!("Artist does not exist on fanart.tv (HTTP status: {})", response.status());
-                return thumbnail_urls;
-            }
-
-            match response.json::<Value>().await {
+    let client = http_client();
+    match client.get(&url) {
+        Ok(response_text) => {
+            // Parse the JSON response
+            match serde_json::from_str::<Value>(&response_text) {
                 Ok(data) => {
                     // Look for artist thumbnails
                     if let Some(artist_thumbs) = data.get("artistthumb").and_then(|t| t.as_array()) {
@@ -63,7 +64,7 @@ pub async fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>)
             }
         }
         Err(e) => {
-            warn!("Couldn't retrieve data from fanart.tv: {}", e);
+            debug!("Artist does not exist on fanart.tv or error occurred: {}", e);
         }
     }
 
@@ -77,7 +78,7 @@ pub async fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>)
 /// 
 /// # Returns
 /// * `Vec<String>` - URLs of all available banners, empty if none found
-pub async fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
+pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
     let url = format!(
         "http://webservice.fanart.tv/v3/music/{}?api_key={}", 
         artist_mbid,
@@ -86,15 +87,11 @@ pub async fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
 
     let mut banner_urls = Vec::new();
     
-    let client = reqwest::Client::new();
-    match client.get(&url).send().await {
-        Ok(response) => {
-            if !response.status().is_success() {
-                debug!("Artist does not exist on fanart.tv (HTTP status: {})", response.status());
-                return banner_urls;
-            }
-
-            match response.json::<Value>().await {
+    let client = http_client();
+    match client.get(&url) {
+        Ok(response_text) => {
+            // Parse the JSON response
+            match serde_json::from_str::<Value>(&response_text) {
                 Ok(data) => {
                     // Look for artist banners
                     if let Some(artist_banners) = data.get("musicbanner").and_then(|b| b.as_array()) {
@@ -117,7 +114,7 @@ pub async fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
             }
         }
         Err(e) => {
-            warn!("Couldn't retrieve data from fanart.tv: {}", e);
+            debug!("Artist does not exist on fanart.tv or error occurred: {}", e);
         }
     }
 
@@ -138,7 +135,7 @@ pub async fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
 /// 
 /// # Returns
 /// * `bool` - true if the API call was successful (even if no images were found), false only on API error
-pub async fn download_artist_images(artist_mbid: &str, artist_name: &str) -> bool {
+pub fn download_artist_images(artist_mbid: &str, artist_name: &str) -> bool {
     let artist_basename = filename_from_string(artist_name);
     let mut _thumb_downloaded = false;
     let mut _banner_downloaded = false;
@@ -150,7 +147,7 @@ pub async fn download_artist_images(artist_mbid: &str, artist_name: &str) -> boo
     
     if existing_thumbs == 0 {
         // Download all thumbnails
-        let thumbnail_urls = get_artist_thumbnails(artist_mbid, None).await;
+        let thumbnail_urls = get_artist_thumbnails(artist_mbid, None);
         if thumbnail_urls.is_empty() {
             debug!("No thumbnails found on fanart.tv for '{}'", artist_name);
             // This is still considered a success since the API call succeeded
@@ -163,7 +160,7 @@ pub async fn download_artist_images(artist_mbid: &str, artist_name: &str) -> boo
                                i,
                                extract_extension_from_url(url));
             
-            match download_image(url).await {
+            match download_image(url) {
                 Ok(image_data) => {
                     if let Err(e) = imagecache::store_image(&path, &image_data) {
                         warn!("Failed to store artist thumbnail: {}", e);
@@ -189,7 +186,7 @@ pub async fn download_artist_images(artist_mbid: &str, artist_name: &str) -> boo
     
     if existing_banners == 0 {
         // Download all banners
-        let banner_urls = get_artist_banners(artist_mbid).await;
+        let banner_urls = get_artist_banners(artist_mbid);
         if banner_urls.is_empty() {
             debug!("No banners found on fanart.tv for '{}'", artist_name);
             // This is still considered a success since the API call succeeded
@@ -202,7 +199,7 @@ pub async fn download_artist_images(artist_mbid: &str, artist_name: &str) -> boo
                                i,
                                extract_extension_from_url(url));
             
-            match download_image(url).await {
+            match download_image(url) {
                 Ok(image_data) => {
                     if let Err(e) = imagecache::store_image(&path, &image_data) {
                         warn!("Failed to store artist banner: {}", e);
@@ -235,32 +232,19 @@ pub async fn download_artist_images(artist_mbid: &str, artist_name: &str) -> boo
 /// 
 /// # Returns
 /// * `Result<Vec<u8>, String>` - The image data if successful, otherwise an error message
-pub async fn download_image(url: &str) -> Result<Vec<u8>, String> {
+pub fn download_image(url: &str) -> Result<Vec<u8>, String> {
     debug!("Downloading image from URL: {}", url);
     
     // Create a client with appropriate timeout
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build() {
-        Ok(client) => client,
-        Err(e) => return Err(format!("Failed to create HTTP client: {}", e))
-    };
+    let client = http_client();
     
     // Execute the request
-    let response = match client.get(url).send().await {
-        Ok(response) => {
-            if !response.status().is_success() {
-                return Err(format!("HTTP error: {}", response.status()));
-            }
-            response
+    match client.get(url) {
+        Ok(response_text) => {
+            // For binary data like images, we need to convert the response to bytes
+            Ok(response_text.as_bytes().to_vec())
         },
-        Err(e) => return Err(format!("Request failed: {}", e))
-    };
-    
-    // Read the response body
-    match response.bytes().await {
-        Ok(bytes) => Ok(bytes.to_vec()),
-        Err(e) => Err(format!("Failed to read response body: {}", e))
+        Err(e) => Err(format!("Request failed: {}", e))
     }
 }
 
@@ -295,7 +279,6 @@ impl FanarttvUpdater {
     }
 }
 
-#[async_trait::async_trait]
 impl ArtistUpdater for FanarttvUpdater {
     /// Updates artist information using FanArt.tv service
     /// 
@@ -307,7 +290,7 @@ impl ArtistUpdater for FanarttvUpdater {
     /// 
     /// # Returns
     /// The updated artist with thumbnail URLs
-    async fn update_artist(&self, mut artist: Artist) -> Artist {
+    fn update_artist(&self, mut artist: Artist) -> Artist {
         // Extract and clone the MusicBrainz ID to avoid borrowing issues
         let mbid_opt = artist.metadata.as_ref()
             .and_then(|meta| meta.mbid.first())
@@ -332,7 +315,7 @@ impl ArtistUpdater for FanarttvUpdater {
             debug!("Fetching thumbnail URLs for artist {} with MBID {}", artist.name, mbid);
             
             // Get thumbnail URLs from FanArt.tv
-            let thumbnail_urls = get_artist_thumbnails(&mbid, Some(5)).await;
+            let thumbnail_urls = get_artist_thumbnails(&mbid, Some(5));
             
             // Check if we have any thumbnails before trying to add them
             let has_thumbnails = !thumbnail_urls.is_empty();
@@ -348,7 +331,7 @@ impl ArtistUpdater for FanarttvUpdater {
             // If thumbnails were found, also try to download them for caching
             if has_thumbnails {
                 debug!("Downloading artist images for {}", artist.name);
-                let download_result = download_artist_images(&mbid, &artist.name).await;
+                let download_result = download_artist_images(&mbid, &artist.name);
                 if download_result {
                     debug!("Successfully downloaded images for artist {}", artist.name);
                 } else {

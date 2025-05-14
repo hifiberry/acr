@@ -11,7 +11,6 @@ use futures::future::join_all;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Trait for services that can update artist metadata
-#[async_trait::async_trait]
 pub trait ArtistUpdater {
     /// Update an artist with additional metadata from a service
     /// 
@@ -20,7 +19,7 @@ pub trait ArtistUpdater {
     /// 
     /// # Returns
     /// The updated artist with additional metadata
-    async fn update_artist(&self, artist: Artist) -> Artist;
+    fn update_artist(&self, artist: Artist) -> Artist;
 }
 
 /// Looks up MusicBrainz IDs for an artist and returns them if found
@@ -73,7 +72,7 @@ pub async fn lookup_artist_mbids(artist_name: &str) -> (Vec<String>, bool) {
 /// 
 /// # Returns
 /// The updated artist
-pub async fn update_data_for_artist(mut artist: Artist) -> Artist {
+pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     debug!("Updating data for artist: {}", artist.name);
     
     // Check if the artist already has MusicBrainz IDs set
@@ -86,7 +85,9 @@ pub async fn update_data_for_artist(mut artist: Artist) -> Artist {
         debug!("No MusicBrainz ID set for artist {}, attempting to retrieve it", artist.name);
         
         // Use the extracted function to look up MusicBrainz IDs
-        let (mbids, partial_match) = lookup_artist_mbids(&artist.name).await;
+        // Create a runtime for this blocking call
+        let rt = Runtime::new().expect("Failed to create Tokio runtime");
+        let (mbids, partial_match) = rt.block_on(lookup_artist_mbids(&artist.name));
         let mbid_count = mbids.len();
         
         // Add each MusicBrainz ID to the artist if any were found
@@ -118,12 +119,11 @@ pub async fn update_data_for_artist(mut artist: Artist) -> Artist {
     if artist.metadata.as_ref().map_or(false, |meta| !meta.mbid.is_empty()) {
         // Get the first MusicBrainz ID for the artist
         let mbid_opt = artist.metadata.as_ref().and_then(|meta| meta.mbid.first().cloned());
-        
-        if mbid_opt.is_some() {
+          if mbid_opt.is_some() {
             // Create a TheArtistDbUpdater and use it to update the artist
             debug!("Updating artist {} with TheArtistDB", artist.name);
             let artist_db_updater = theartistdb::TheArtistDbUpdater::new();
-            artist = artist_db_updater.update_artist(artist).await;
+            artist = artist_db_updater.update_artist(artist);
             
             // Check if there's only a single MusicBrainz ID
             let mbid_count = artist.metadata.as_ref().map_or(0, |meta| meta.mbid.len());
@@ -134,7 +134,7 @@ pub async fn update_data_for_artist(mut artist: Artist) -> Artist {
                 // Create a FanarttvUpdater and use it to update the artist
                 debug!("Updating artist {} with FanArt.tv", artist.name);
                 let fanarttv_updater = fanarttv::FanarttvUpdater::new();
-                artist = fanarttv_updater.update_artist(artist).await;
+                artist = fanarttv_updater.update_artist(artist);
             }
         }
     } else {
@@ -238,9 +238,8 @@ pub fn update_library_artists_metadata_in_background(
                     // Spawn a task for each artist in the batch
                     let task = task::spawn(async move {
                         debug!("Updating metadata for artist: {}", artist_name);
-                        
-                        // Use the async version of update_data_for_artist
-                        let updated_artist = update_data_for_artist(artist).await;
+                          // Use the synchronous version of update_data_for_artist
+                        let updated_artist = update_data_for_artist(artist);
                         
                         // Check if we found new metadata to log appropriately
                         let has_new_metadata = {

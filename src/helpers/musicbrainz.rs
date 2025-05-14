@@ -4,11 +4,8 @@ use std::time::Duration;
 use std::thread;
 use std::sync::atomic::{AtomicBool, Ordering};
 use deunicode::deunicode;
-// Imports for musicbrainz_rs
-use musicbrainz_rs::entity::artist::{Artist, ArtistSearchQuery};
-use musicbrainz_rs::prelude::*;
-// Import tokio for async runtime
-use tokio::runtime::Runtime;
+use serde::Deserialize;
+use urlencoding::encode;
 // Import moka for negative caching (using the sync module)
 use moka::sync::Cache;
 use lazy_static::lazy_static;
@@ -26,6 +23,50 @@ lazy_static! {
             .max_capacity(1000) 
             .build()
     };
+}
+
+// MusicBrainz API Constants
+const MUSICBRAINZ_API_BASE: &str = "https://musicbrainz.org/ws/2";
+const MUSICBRAINZ_USER_AGENT: &str = "HifiBerry-ACR/1.0 (https://www.hifiberry.com/)";
+const MUSICBRAINZ_SEARCH_LIMIT: u32 = 3; // Limit search results to save bandwidth
+
+/// Structs for deserializing MusicBrainz API responses
+#[derive(Debug, Deserialize)]
+struct MusicBrainzArtistSearchResponse {
+    #[serde(rename = "artist-count")]
+    #[allow(dead_code)]
+    count: u32,
+    #[serde(rename = "artist-offset")]
+    #[allow(dead_code)]
+    offset: u32,
+    #[serde(rename = "artist-list")]
+    artists: Vec<MusicBrainzArtist>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicBrainzArtist {
+    id: String,
+    name: String,
+    #[serde(default)]
+    aliases: Vec<MusicBrainzAlias>,
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    artist_type: Option<String>,
+    #[allow(dead_code)]
+    score: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicBrainzAlias {
+    name: String,
+    #[serde(rename = "sort-name")]
+    #[allow(dead_code)]
+    sort_name: Option<String>,
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    alias_type: Option<String>,
+    #[allow(dead_code)]
+    locale: Option<String>,
 }
 
 /// Initialize the MusicBrainz module from configuration
@@ -289,6 +330,38 @@ fn artist_names_match(query_name: &str, response_name: &str, response_aliases: O
     false
 }
 
+/// Make a GET request to the MusicBrainz API with proper headers and rate limiting
+/// 
+/// # Arguments
+/// * `url` - The URL to request
+/// 
+/// # Returns
+/// * `Result<String, String>` - API response or error message
+fn musicbrainz_api_get(url: &str) -> Result<String, String> {
+    debug!("Making MusicBrainz API request: {}", url);
+    
+    // Add proper User-Agent header using ureq's raw API
+    let response = match ureq::get(url)
+        .set("User-Agent", MUSICBRAINZ_USER_AGENT)
+        .set("Accept", "application/json")
+        .call() {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("MusicBrainz API request failed: {}", e);
+            return Err(format!("Request error: {}", e));
+        }
+    };
+    
+    // Get response body
+    match response.into_string() {
+        Ok(body) => Ok(body),
+        Err(e) => {
+            error!("Failed to read MusicBrainz API response: {}", e);
+            Err(format!("Response error: {}", e))
+        }
+    }
+}
+
 /// Search MusicBrainz API for an artist and return their MBID if found
 /// 
 /// # Arguments
@@ -338,51 +411,49 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
     // Add a 1-second delay between artists to limit API requests (respecting MusicBrainz rate limits)
     thread::sleep(Duration::from_secs(1));
     
-    // Create a Tokio runtime to handle async API calls
-    let rt = match Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            error!("Failed to create Tokio runtime: {}", e);
-            // Add to negative cache before returning
-            FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
-            return MusicBrainzSearchResult::Error(format!("Failed to create Tokio runtime: {}", e));
-        }
-    };
-    
     // Sanitize artist name for the API query
     let sanitized_artist_name = sanitize_artist_name_for_search(artist_name);
     debug!("Searching MusicBrainz for artist: '{}' (sanitized from '{}')", sanitized_artist_name, artist_name);
     
-    // Using musicbrainz_rs correctly with async handling:
-    // 1. Create the search query with the sanitized name
-    let search_query = ArtistSearchQuery::query_builder()
-        .artist(&sanitized_artist_name)
-        .build();
+    // Construct the API URL
+    let encoded_name = encode(&sanitized_artist_name);
+    let url = format!(
+        "{}/artist?query=artist:{}&fmt=json&limit={}",
+        MUSICBRAINZ_API_BASE, 
+        encoded_name,
+        MUSICBRAINZ_SEARCH_LIMIT
+    );
+    debug!("MusicBrainz API request URL: {}", url);
+      // Execute the HTTP GET request with proper headers
+    let response = match musicbrainz_api_get(&url) {
+        Ok(response_text) => response_text,
+        Err(e) => {
+            error!("Failed to execute MusicBrainz API request: {}", e);
+            // Add to negative cache before returning
+            FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
+            return MusicBrainzSearchResult::Error(format!("API request error: {}", e));
+        }
+    };
     
-    // 2. Execute the async query in the runtime
-    let result = rt.block_on(async {
-        Artist::search(search_query).execute().await
-    });
-    
-    // 3. Process the result
-    match result {
+    // Parse the JSON response
+    let search_result: Result<MusicBrainzArtistSearchResponse, _> = serde_json::from_str(&response);
+    match search_result {
         Ok(results) => {
             // Check if we have any results
-            if !results.entities.is_empty() {
+            if !results.artists.is_empty() {
                 // Get the first artist from results
-                let artist = &results.entities[0];
-                let mbid = artist.id.to_string();
+                let artist = &results.artists[0];
+                let mbid = artist.id.clone();
                 let response_name = &artist.name;
                 
                 // Extract aliases if available
-                let aliases = artist.aliases.as_ref().map(|aliases| {
-                    aliases.iter()
-                        .filter_map(|alias| Some(alias.name.clone()))
-                        .collect::<Vec<String>>()
-                });
+                let aliases: Vec<String> = artist.aliases
+                    .iter()
+                    .map(|alias| alias.name.clone())
+                    .collect();
                 
                 // Use our dedicated function to compare artist names
-                if artist_names_match(artist_name, response_name, aliases.as_ref()) {
+                if artist_names_match(artist_name, response_name, if aliases.is_empty() { None } else { Some(&aliases) }) {
                     debug!("Found matching artist: '{}' with MBID: {}", response_name, mbid);
                     
                     // Store the MBID in the attribute cache
@@ -415,10 +486,11 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
             MusicBrainzSearchResult::NotFound
         },
         Err(e) => {
-            error!("Failed to execute MusicBrainz API request: {}", e);
+            error!("Failed to parse MusicBrainz API response: {}", e);
+            error!("Response text: {}", &response[..std::cmp::min(200, response.len())]);
             // Add to negative cache before returning
             FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
-            MusicBrainzSearchResult::Error(format!("API request error: {}", e))
+            MusicBrainzSearchResult::Error(format!("Response parse error: {}", e))
         }
     }
 }

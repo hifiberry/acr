@@ -1,10 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use log::{info, debug, warn, error};
 use lazy_static::lazy_static;
-use reqwest;
 use std::sync::Mutex;
 use serde_json::{Value};
-use std::time::Duration;
+use crate::helpers::http_client;
 use crate::helpers::imagecache;
 use crate::data::artist::Artist;
 use crate::helpers::artistupdater::ArtistUpdater;
@@ -15,6 +14,11 @@ static THEARTISTDB_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // Provider name for image naming
 const PROVIDER: &str = "artistdb";
+
+/// Create a new HTTP client with a timeout of 10 seconds
+fn new_client() -> Box<dyn http_client::HttpClient> {
+    http_client::new_http_client(10)
+}
 
 /// API key storage for TheArtistDB
 #[derive(Default)]
@@ -87,7 +91,7 @@ pub fn get_api_key() -> Option<String> {
 /// 
 /// # Returns
 /// * `Result<serde_json::Value, String>` - Artist information or error message
-pub async fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
+pub fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
     if !is_enabled() {
         return Err("TheArtistDB lookups are disabled".to_string());
     }
@@ -111,31 +115,18 @@ pub async fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
         mbid
     );
     
-    // Create a client with a reasonable timeout
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Failed to create HTTP client: {}", e)),
-        };
+    // Create a client with our http_client
+    let client = new_client();
     
     // Make the request
     debug!("Making request to TheArtistDB API for MBID {}", mbid);
-    let response = match client.get(&url).send().await {
-        Ok(resp) => resp,
+    let response_text = match client.get(&url) {
+        Ok(text) => text,
         Err(e) => return Err(format!("Failed to send request to TheArtistDB: {}", e)),
     };
     
-    // Check if the request was successful
-    if !response.status().is_success() {
-        return Err(format!(
-            "TheArtistDB API returned error code: {}", 
-            response.status()
-        ));
-    }
-    
     // Parse the response as JSON
-    match response.json::<Value>().await {
+    match serde_json::from_str::<Value>(&response_text) {
         Ok(json_data) => {
             // Check if the artists array exists, is not empty, and contains exactly one artist
             if let Some(artists) = json_data.get("artists") {
@@ -185,7 +176,7 @@ pub async fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
 /// 
 /// # Returns
 /// * `bool` - true if the download was successful, false otherwise
-pub async fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
+pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
     if !is_enabled() {
         debug!("TheArtistDB lookups are disabled, skipping thumbnail download");
         return false;
@@ -205,15 +196,15 @@ pub async fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
     debug!("Attempting to download TheArtistDB thumbnail for artist '{}'", artist_name);
 
     // Lookup the artist by MBID to get the thumbnail URL
-    match lookup_mbid(mbid).await {
+    match lookup_mbid(mbid) {
         Ok(artist_data) => {
             // Extract the thumbnail URL from the response
             if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
                 if !thumb_url.is_empty() {
                     debug!("Found thumbnail URL for artist {}: {}", artist_name, thumb_url);
                     
-                    // Download the thumbnail using the async version
-                    match crate::helpers::fanarttv::download_image(thumb_url).await {
+                    // Download the thumbnail using our helper function
+                    match crate::helpers::fanarttv::download_image(thumb_url) {
                         Ok(image_data) => {
                             // Determine the file extension
                             let extension = crate::helpers::fanarttv::extract_extension_from_url(thumb_url);
@@ -264,7 +255,6 @@ impl TheArtistDbUpdater {
     }
 }
 
-#[async_trait::async_trait]
 impl ArtistUpdater for TheArtistDbUpdater {
     /// Updates artist information using TheArtistDB service
     /// 
@@ -277,7 +267,7 @@ impl ArtistUpdater for TheArtistDbUpdater {
     /// 
     /// # Returns
     /// The updated artist with information from TheArtistDB
-    async fn update_artist(&self, mut artist: Artist) -> Artist {
+    fn update_artist(&self, mut artist: Artist) -> Artist {
         // Check if TheArtistDB lookups are enabled
         if !is_enabled() {
             debug!("TheArtistDB lookups are disabled, skipping artist {}", artist.name);
@@ -294,7 +284,7 @@ impl ArtistUpdater for TheArtistDbUpdater {
             debug!("Looking up artist information in TheArtistDB for {} with MBID {}", artist.name, mbid);
             
             // Lookup artist by MBID
-            match lookup_mbid(&mbid).await {
+            match lookup_mbid(&mbid) {
                 Ok(artist_data) => {
                     debug!("Successfully retrieved artist data from TheArtistDB for {}", artist.name);
                     
@@ -315,7 +305,7 @@ impl ArtistUpdater for TheArtistDbUpdater {
                             }
                             
                             // Download and cache the thumbnail
-                            if download_artist_thumbnail(&mbid, &artist.name).await {
+                            if download_artist_thumbnail(&mbid, &artist.name) {
                                 debug!("Successfully downloaded and cached thumbnail for artist {}", artist.name);
                             } else {
                                 debug!("Failed to download thumbnail for artist {}", artist.name);

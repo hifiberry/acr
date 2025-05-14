@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use serde_json::Value;
 use chrono::NaiveDate;
 use crate::data::{Album, Track, Identifier, LibraryError};
@@ -146,7 +146,7 @@ impl LMSLibraryLoader {
         // Extract album title
         let title = album_json["album"].as_str();
         if title.is_none() || title.unwrap().trim().is_empty() {
-            warn!("Skipping album with missing title");
+            error!("Skipping album with missing title, might be a bug");
             return None;
         }
         let title = title.unwrap();
@@ -154,7 +154,7 @@ impl LMSLibraryLoader {
         // Extract album artist
         let album_artist = album_json["artist"].as_str();
         if album_artist.is_none() || album_artist.unwrap().trim().is_empty() {
-            warn!("Skipping album '{}' with missing artist", title);
+            error!("Skipping album '{}' with missing artist, might be a bug", title);
             return None;
         }
         let album_artist = album_artist.unwrap();

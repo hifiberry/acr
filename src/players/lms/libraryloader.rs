@@ -137,20 +137,27 @@ impl LMSLibraryLoader {
         debug!("Could not parse release date from: {:?}", date_str);
         None
     }
-    
-    /// Create an Album object from an LMS album JSON object
+      /// Create an Album object from an LMS album JSON object
     fn album_from_lms_json(&self, album_json: &serde_json::Value, custom_separators: Option<&[String]>) -> Option<Album> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         use std::sync::{Arc, Mutex};
         
-        // Extract album title (default to "Unknown Album" if not present)
-        let title = album_json["title"].as_str()
-            .unwrap_or("Unknown Album");
+        // Extract album title
+        let title = album_json["album"].as_str();
+        if title.is_none() || title.unwrap().trim().is_empty() {
+            warn!("Skipping album with missing title");
+            return None;
+        }
+        let title = title.unwrap();
         
-        // Extract album artist (default to "Unknown Artist" if not present)
-        let album_artist = album_json["artist"].as_str()
-            .unwrap_or("Unknown Artist");
+        // Extract album artist
+        let album_artist = album_json["artist"].as_str();
+        if album_artist.is_none() || album_artist.unwrap().trim().is_empty() {
+            warn!("Skipping album '{}' with missing artist", title);
+            return None;
+        }
+        let album_artist = album_artist.unwrap();
         
         // Extract album ID
         let album_id = album_json["id"].as_u64()
@@ -162,8 +169,7 @@ impl LMSLibraryLoader {
                 Some(hasher.finish())
             })
             .unwrap_or(0);
-        
-        // Extract release date
+          // Extract release date
         let release_date = Self::parse_release_date(album_json.get("year"));
         
         // Extract cover art URL if present
@@ -179,8 +185,7 @@ impl LMSLibraryLoader {
             Some(split_artists) => Arc::new(Mutex::new(split_artists)),
             None => Arc::new(Mutex::new(vec![album_artist.to_string()]))
         };
-        
-        warn!("Created album: {} (ID: {}) by {:?}", 
+          debug!("Created album: {} (ID: {}) by {:?}", 
                title, album_id, artists.lock().unwrap());
         
         // Create and return the Album object
@@ -221,7 +226,7 @@ impl LMSLibraryLoader {
                     "Failed to fetch albums from LMS: {}", e)))
             };
 
-            warn!("Fetched albums starting at index {}", start);
+            debug!("Fetched albums starting at index {}", start);
 
             // Extract albums from the response
             let albums_array = match result.get("albums_loop") {
@@ -306,7 +311,7 @@ impl LMSLibraryLoader {
                 }
             }
 
-            warn!("Tracks in DB: {}", track_count);
+            debug!("Tracks in DB: {}", track_count);
             
             // Update start index for next batch
             start += BATCH_SIZE;
@@ -317,7 +322,7 @@ impl LMSLibraryLoader {
             }
         }
 
-        warn!("Loaded {} albums with {} tracks", albums_map.len(), track_count);
+        info!("Loaded {} albums with {} tracks", albums_map.len(), track_count);
         thread::sleep(Duration::from_secs(10));
             
 

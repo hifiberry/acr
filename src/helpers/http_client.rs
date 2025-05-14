@@ -80,7 +80,7 @@ impl HttpClient for UreqHttpClient {
         let json_string = match serde_json::to_string(&payload) {
             Ok(str) => str,
             Err(e) => {
-                error!("Failed to serialize JSON payload: {}", e);
+                debug!("Failed to serialize JSON payload: {}", e);
                 return Err(HttpClientError::ParseError(format!("Failed to serialize JSON payload: {}", e)));
             }
         };
@@ -93,8 +93,8 @@ impl HttpClient for UreqHttpClient {
         {
             Ok(resp) => resp,
             Err(e) => {
-                error!("POST request failed: {}", e);
-                error!("POST payload was: {}", json_string);
+                debug!("POST request failed: {}", e);
+                debug!("POST payload was: {}", json_string);
                 return Err(HttpClientError::RequestError(e.to_string()));
             }
         };
@@ -102,7 +102,7 @@ impl HttpClient for UreqHttpClient {
         let response_text = match response.into_string() {
             Ok(text) => text,
             Err(e) => {
-                error!("Failed to read response body: {}", e);
+                debug!("Failed to read response body: {}", e);
                 return Err(HttpClientError::ParseError(format!("Failed to read response body: {}", e)));
             }
         };
@@ -114,8 +114,8 @@ impl HttpClient for UreqHttpClient {
         match serde_json::from_str::<Value>(&response_text) {
             Ok(json_value) => Ok(json_value),
             Err(e) => {
-                error!("Failed to parse JSON response: {}", e);
-                error!("Response text: {}", response_text);
+                debug!("Failed to parse JSON response: {}", e);
+                debug!("Response text: {}", response_text);
                 Err(HttpClientError::ParseError(e.to_string()))
             }
         }
@@ -127,7 +127,7 @@ impl HttpClient for UreqHttpClient {
         let response = match ureq::get(url).timeout(self.timeout).call() {
             Ok(resp) => resp,
             Err(e) => {
-                error!("GET request failed: {}", e);
+                debug!("GET request failed: {}", e);
                 return Err(HttpClientError::RequestError(e.to_string()));
             }
         };
@@ -135,7 +135,7 @@ impl HttpClient for UreqHttpClient {
         match response.into_string() {
             Ok(text) => Ok(text),
             Err(e) => {
-                error!("Failed to read response body: {}", e);
+                debug!("Failed to read response body: {}", e);
                 Err(HttpClientError::ParseError(format!("Failed to read response body: {}", e)))
             }
         }

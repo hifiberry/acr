@@ -45,7 +45,7 @@ pub fn lookup_artist_mbids(artist_name: &str) -> (Vec<String>, bool) {
             (mbids, false) // Complete match
         },
         MusicBrainzSearchResult::FoundPartial(mbids, _) => {
-            warn!("Found {} partial MusicBrainz ID(s) for multi-artist {}: {:?}", 
+            info!("Found {} partial MusicBrainz ID(s) for multi-artist {}: {:?}", 
                   mbids.len(), artist_name, mbids);
             (mbids, true) // Partial match
         },
@@ -102,7 +102,7 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         
         // Record if this is a partial match in the artist metadata
         if partial_match {
-            warn!("Partial match found for multi-artist name: {}", artist.name);
+            debug!("Partial match found for multi-artist name: {}", artist.name);
             if let Some(meta) = &mut artist.metadata {
                 meta.is_partial_match = true;
             }

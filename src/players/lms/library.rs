@@ -54,7 +54,7 @@ impl LMSLibrary {
             enhance_metadata: true,
         }
     }
-      /// Populate calculated fields in album objects
+    /// Populate calculated fields in album objects
     /// 
     /// This adds derived fields like cover_art URL for albums that don't have them yet
     /// these calculates fields are not stored, but only calculated on demand
@@ -88,7 +88,7 @@ impl LMSLibrary {
             warn!("Failed to acquire lock for setting artist separators");
         }
     }
-      /// Get custom artist separators for artist name splitting
+    /// Get custom artist separators for artist name splitting
     pub fn get_artist_separators(&self) -> Option<Vec<String>> {
         // Return the stored separators if available
         if let Ok(sep_guard) = self.artist_separators.lock() {
@@ -373,7 +373,7 @@ impl LibraryInterface for LMSLibrary {
         debug!("Creating new LMSLibrary with default connection");
         Self::with_connection("localhost", 9000) // Default LMS port is 9000
     }
-      fn is_loaded(&self) -> bool {
+    fn is_loaded(&self) -> bool {
         if let Ok(loaded) = self.library_loaded.lock() {
             debug!("Library is_loaded check returning: {}", *loaded);
             *loaded
@@ -429,7 +429,7 @@ impl LibraryInterface for LMSLibrary {
                 if let Err(e) = self.create_artists() {
                     error!("Error creating artists: {}", e);
                 }
-                  // Mark as loaded and update progress
+                // Mark as loaded and update progress
                 if let Ok(mut loaded) = self.library_loaded.lock() {
                     *loaded = true;
                     info!("Setting library_loaded flag to true");
@@ -481,7 +481,7 @@ impl LibraryInterface for LMSLibrary {
             Vec::new()
         }
     }
-      fn get_artists(&self) -> Vec<Artist> {
+    fn get_artists(&self) -> Vec<Artist> {
         if let Ok(artists) = self.artists.read() {
             info!("LMSLibrary returning {} artists from get_artists", artists.len());
             artists.values().cloned().collect()
@@ -514,7 +514,7 @@ impl LibraryInterface for LMSLibrary {
     fn get_albums_by_artist_id(&self, artist_id: &crate::data::Identifier) -> Vec<Album> {
         self.get_albums_by_artist_id(artist_id)
     }
-      fn get_image(&self, identifier: String) -> Option<(Vec<u8>, String)> {
+    fn get_image(&self, identifier: String) -> Option<(Vec<u8>, String)> {
         debug!("Retrieving image for identifier: {}", identifier);
         
         // Check if the identifier starts with "album:"
@@ -526,7 +526,7 @@ impl LibraryInterface for LMSLibrary {
                 Ok(album_id_num) => {
                     let album_id = crate::data::Identifier::Numeric(album_id_num);
                     warn!("Parsed album ID: {}", album_id);
-                      let album = self.get_album_by_id(&album_id);
+                    let album = self.get_album_by_id(&album_id);
                     
                     // Get the first track from the album (if any) with proper lifetime handling
                     let track = album.and_then(|a| {

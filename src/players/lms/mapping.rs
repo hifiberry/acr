@@ -89,7 +89,7 @@ pub fn map_track(lms_track: &LmsTrack, album_artist: Option<&str>) -> AcrTrack {
     }
     
     // Set duration if available
-    if let Some(duration_secs) = lms_track.duration {
+    if let Some(_duration_secs) = lms_track.duration {
         // We don't need to modify the duration, as both use seconds
     }
     

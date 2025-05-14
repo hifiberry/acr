@@ -3,7 +3,7 @@ use std::net::TcpStream;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}, Weak, RwLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
-use log::{warn, debug, error, trace};
+use log::{warn, debug, error, trace, info};
 use urlencoding::decode;
 
 use crate::data::PlaybackState;
@@ -42,7 +42,8 @@ const IGNORED_COMMANDS: &[&str] = &[
     "prefset plugin.fulltext",
     "prefset server currentSong",
     "mixer",
-    "scanner notify progress"
+    "scanner notify progress",
+    "listen 1"
 ];
 
 /// Helper function to check if a command matches any of the ignored commands
@@ -213,7 +214,7 @@ impl LMSListener {
         #[cfg(target_os = "windows")]
         {
             // On Windows, the keep-alive API is different
-            warn!("TCP keepalive not implemented for Windows");
+            debug!("TCP keepalive not implemented for Windows");
             // Non-fatal, continue anyway
         }
         
@@ -230,7 +231,7 @@ impl LMSListener {
         let reader = BufReader::new(stream);
         
         // Read lines until the connection is closed or the running flag is set to false
-        warn!("Connected to LMS CLI, receiving events...");
+        info!("Connected to LMS CLI, receiving events...");
         
         for line in reader.lines() {
             if !running.load(Ordering::SeqCst) {

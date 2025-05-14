@@ -79,7 +79,6 @@ pub struct LMSAudioController {
     config: Arc<RwLock<LMSAudioConfig>>,
     
     /// LMS RPC client for API calls
-    #[allow(dead_code)]
     client: Arc<RwLock<Option<LmsRpcClient>>>,
     
     /// Player object for interacting with the LMS server
@@ -103,6 +102,9 @@ pub struct LMSAudioController {
     
     /// Last time an event was seen from this player
     last_seen: Arc<RwLock<Option<SystemTime>>>,
+    
+    /// Library interface for accessing the LMS music library
+    library: Arc<RwLock<Option<crate::players::lms::library::LMSLibrary>>>,
 }
 
 impl LMSAudioController {
@@ -214,52 +216,52 @@ impl LMSAudioController {
             cli_listener: Arc::new(RwLock::new(None)),
             controller_ref: Arc::new(RwLock::new(None)),
             last_seen: Arc::new(RwLock::new(None)),
+            library: Arc::new(RwLock::new(None)),
         };
         
         // Initialize the player using find_server_connection
-        let (connected, found_server, matched_mac, player_name) = controller.find_server_connection(&config);
+        let (connected, server_opt, player_mac_opt, _) = controller.find_server_connection(&config);
         
-        if connected {
-            if let Some(found_server) = found_server {
-                info!("Found a matching LMS server: {}", found_server);
-                
-                // Create a client for the found server
-                let client = LmsRpcClient::new(&found_server, config.port);
-                
-                if let Some(matched_mac) = matched_mac {
-                    info!("Found matching player: {} (MAC: {})", player_name.unwrap_or_default(), matched_mac);
-                    
-                    // Create the LMSPlayer instance
-                    let player = LMSPlayer::new(client.clone(), &matched_mac);
-                    
-                    // Store the client and player
-                    if let Ok(mut client_lock) = controller.client.write() {
-                        *client_lock = Some(client);
-                    }
-                    
-                    if let Ok(mut player_lock) = controller.player.write() {
-                        *player_lock = Some(player);
-                    }
-                    
-                    // Update connection state
-                    controller.is_connected.store(true, Ordering::SeqCst);
-                    
-                    // Update the config with the discovered server
-                    if let Ok(mut cfg_lock) = controller.config.write() {
-                        cfg_lock.server = Some(found_server.clone());
-                    }
-                    
-                    // Update connected server
-                    if let Ok(mut connected_server) = controller.connected_server.write() {
-                        *connected_server = Some(found_server.clone());
-                    }
-                    
-                    // Start the CLI listener
-                    controller.start_cli_listener(&found_server, &matched_mac);
-                }
+        if connected && server_opt.is_some() && player_mac_opt.is_some() {
+            let server = server_opt.unwrap();
+            let player_mac = player_mac_opt.unwrap();
+            
+            info!("Found a matching LMS server: {} with player MAC: {}", server, player_mac);
+            
+            // Create a client for the found server
+            let client = LmsRpcClient::new(&server, config.port);
+            
+            // Create the LMSPlayer instance
+            let player = LMSPlayer::new(client.clone(), &player_mac);
+            
+            // Store the client and player
+            if let Ok(mut client_lock) = controller.client.write() {
+                *client_lock = Some(client.clone());
             }
+            
+            if let Ok(mut player_lock) = controller.player.write() {
+                *player_lock = Some(player);
+            }
+            
+            // Initialize the library with the same connection as the player
+            if let Ok(mut library_lock) = controller.library.write() {
+                let library = crate::players::lms::library::LMSLibrary::with_connection(&server, config.port);
+                debug!("Created LMS library for server: {}", server);
+                *library_lock = Some(library);
+            }
+            
+            // Update connection state
+            controller.is_connected.store(true, Ordering::SeqCst);
+            
+            // Store the connected server
+            if let Ok(mut connected_server) = controller.connected_server.write() {
+                *connected_server = Some(server.clone());
+            }
+            
+            // Start the CLI listener
+            controller.start_cli_listener(&server, &player_mac);
         } else {
-            info!("No LMS server found with our MAC addresses connected");
+            warn!("No LMS server found with our MAC addresses connected, will retry in background");
         }
         
         debug!("Created new LMS audio controller");
@@ -394,82 +396,146 @@ impl LMSAudioController {
                                 return (true, Some(server.clone()), Some(player_id.to_string()), None);
                             } else {
                                 debug!("No longer connected to server {}", server);
+                                // Still return the server address even if player isn't connected
+                                // This prevents switching to different servers
+                                return (false, Some(server.clone()), None, None);
                             }
                         }
                     }
+                    
+                    // We have a server but no player information
+                    // Return the server address so we don't try a different one
+                    return (false, Some(server.clone()), None, None);
                 }
             }
         }
         
-        // If not already connected or no longer connected, proceed with normal server discovery
+        // If not already connected and no server stored, proceed with server discovery
         
-        // Gather servers to check
-        let mut servers_to_check = Vec::new();
-        let mac_addresses = config.player_macs.clone();
-        
-        // Add explicitly configured server if available
-        if let Some(server) = &config.server {
-            servers_to_check.push(server.clone());
-        }
-        
-        // Use autodiscovery if enabled
-        if config.autodiscovery {
-            match crate::players::lms::lmsserver::find_local_servers(Some(5)) {
-                Ok(discovered_servers) => {
-                    for server in discovered_servers {
-                        if !servers_to_check.contains(&server.ip.to_string()) {
-                            servers_to_check.push(server.ip.to_string());
-                        }
-                    }
-                },
-                Err(e) => {
-                    warn!("Failed to discover LMS servers: {}", e);
-                }
-            }
-        }
-        
-        // Process MAC addresses including "local" keyword
-        let all_mac_addresses = self.prepare_mac_addresses(&mac_addresses, true);
-        
-        // Try to find a server with any of our MAC addresses connected
-        if all_mac_addresses.is_empty() || servers_to_check.is_empty() {
-            debug!("No MAC addresses or servers available to check");
-            return (false, None, None, None);
-        }
-        
-        // Use find_my_server to locate a matching server
-        if let Some(found_server) = crate::players::lms::player_finder::find_my_server(servers_to_check, all_mac_addresses.clone()) {
-            debug!("Found matching server: {}", found_server);
+        // Check if we already have a server address stored in config
+        if let Some(saved_server) = &config.server {
+            // Try with the configured server first
+            let saved_server_str = saved_server.clone();
+            debug!("Using configured server address: {}", saved_server_str);
             
-            // Create a client for the found server
-            let client = LmsRpcClient::new(&found_server, config.port);
+            // Process MAC addresses including "local" keyword
+            let all_mac_addresses = self.prepare_mac_addresses(&config.player_macs, true);
             
-            // Find the specific matched player
-            if let Ok(players) = client.clone().get_players() {
-                for player in &players {
-                    match normalize_mac_address(&player.playerid) {
-                        Ok(player_mac) => {
-                            let player_mac_str = crate::helpers::macaddress::mac_to_lowercase_string(&player_mac);
-                            
-                            // Check if this player matches any of our MAC addresses
-                            for mac in &all_mac_addresses {
-                                if crate::helpers::macaddress::mac_equal_ignore_case(&player_mac_str, mac) {
-                                    return (
-                                        true,
-                                        Some(found_server),
-                                        Some(player.playerid.clone()),
-                                        Some(player.name.clone())
-                                    );
+            // Skip if no MAC addresses to check
+            if !all_mac_addresses.is_empty() {
+                // Create a client for the configured server
+                let client = LmsRpcClient::new(&saved_server_str, config.port);
+                
+                // Find any matching player
+                if let Ok(players) = client.clone().get_players() {
+                    for player in &players {
+                        match normalize_mac_address(&player.playerid) {
+                            Ok(player_mac) => {
+                                let player_mac_str = crate::helpers::macaddress::mac_to_lowercase_string(&player_mac);
+                                
+                                // Check if this player matches any of our MAC addresses
+                                for mac in &all_mac_addresses {
+                                    if crate::helpers::macaddress::mac_equal_ignore_case(&player_mac_str, mac) {
+                                        info!("Connecting to previously configured server: {}", saved_server_str);
+                                        return (
+                                            true,
+                                            Some(saved_server_str),
+                                            Some(player.playerid.clone()),
+                                            Some(player.name.clone())
+                                        );
+                                    }
                                 }
+                            },
+                            Err(_) => continue
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Only perform discovery if we've never connected before
+        // Check if we've never found a server by checking both connected_server and config.server
+        let never_connected = {
+            let no_connected_server = if let Ok(connected_server_guard) = self.connected_server.read() {
+                connected_server_guard.is_none()
+            } else {
+                true
+            };
+            
+            let no_config_server = config.server.is_none();
+            
+            no_connected_server && no_config_server
+        };
+        
+        if never_connected {
+            // Only do full server discovery if we've never connected before
+            
+            // Gather servers to check
+            let mut servers_to_check = Vec::new();
+            let mac_addresses = config.player_macs.clone();
+            
+            // Use autodiscovery if enabled
+            if config.autodiscovery {
+                match crate::players::lms::lmsserver::find_local_servers(Some(2)) {
+                    Ok(discovered_servers) => {
+                        for server in discovered_servers {
+                            if !servers_to_check.contains(&server.ip.to_string()) {
+                                servers_to_check.push(server.ip.to_string());
                             }
-                        },
-                        Err(_) => continue
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to discover LMS servers: {}", e);
                     }
                 }
             }
             
-            // Found a server but couldn't determine the specific player
-            return (true, Some(found_server), None, None);
+            // Process MAC addresses including "local" keyword
+            let all_mac_addresses = self.prepare_mac_addresses(&mac_addresses, true);
+            
+            // Try to find a server with any of our MAC addresses connected
+            if !all_mac_addresses.is_empty() && !servers_to_check.is_empty() {
+                // Use find_my_server to locate a matching server
+                if let Some(found_server) = crate::players::lms::player_finder::find_my_server(servers_to_check, all_mac_addresses.clone()) {
+                    debug!("Found matching server: {}", found_server);
+                    
+                    // Create a client for the found server
+                    let client = LmsRpcClient::new(&found_server, config.port);
+                    
+                    // Find the specific matched player
+                    if let Ok(players) = client.clone().get_players() {
+                        for player in &players {
+                            match normalize_mac_address(&player.playerid) {
+                                Ok(player_mac) => {
+                                    let player_mac_str = crate::helpers::macaddress::mac_to_lowercase_string(&player_mac);
+                                    
+                                    // Check if this player matches any of our MAC addresses
+                                    for mac in &all_mac_addresses {
+                                        if crate::helpers::macaddress::mac_equal_ignore_case(&player_mac_str, mac) {
+                                            // Update the config with this server for future reconnections
+                                            if let Ok(mut config_write) = self.config.write() {
+                                                info!("Storing discovered server {} for future reconnections", found_server);
+                                                config_write.server = Some(found_server.clone());
+                                            }
+                                            
+                                            return (
+                                                true,
+                                                Some(found_server),
+                                                Some(player.playerid.clone()),
+                                                Some(player.name.clone())
+                                            );
+                                        }
+                                    }
+                                },
+                                Err(_) => continue
+                            }
+                        }
+                    }
+                    
+                    // Found a server but couldn't determine the specific player
+                    return (true, Some(found_server), None, None);
+                }
+            }
         }
         
         // No matching server found
@@ -605,6 +671,7 @@ impl Clone for LMSAudioController {
             cli_listener: self.cli_listener.clone(),
             controller_ref: self.controller_ref.clone(),
             last_seen: self.last_seen.clone(),
+            library: self.library.clone(),
         }
     }
 }
@@ -1007,6 +1074,35 @@ impl PlayerController for LMSAudioController {
         
         if is_connected {
             info!("LMS player successfully connected");
+            
+            // Refresh the library if we're connected
+            if let Ok(connected_server_guard) = self.connected_server.read() {
+                if let Some(server) = connected_server_guard.as_ref() {
+                    // Get port from config
+                    let port = match self.config.read() {
+                        Ok(config) => config.port,
+                        Err(_) => 9000 // Default LMS port
+                    };
+                    
+                    // Create a new LMSLibrary directly for the thread
+                    info!("Starting LMS library refresh...");
+                    let server_clone = server.clone();
+                    
+                    // Run the refresh in a separate thread to avoid blocking startup
+                    thread::spawn(move || {
+                        // Create a new library instance for the thread
+                        let library = crate::players::lms::library::LMSLibrary::with_connection(&server_clone, port);
+                        match library.refresh_library() {
+                            Ok(_) => info!("LMS library loaded successfully"),
+                            Err(e) => warn!("Failed to load LMS library: {}", e),
+                        }
+                    });
+                } else {
+                    debug!("Skipping LMS library loading (no server information available)");
+                }
+            } else {
+                debug!("Skipping LMS library loading (cannot access server information)");
+            }
         } else {
             // Log all the MAC addresses that were tested
             let all_test_macs = self.prepare_mac_addresses(&config.player_macs, true);
@@ -1044,7 +1140,41 @@ impl PlayerController for LMSAudioController {
     }
     
     fn get_library(&self) -> Option<Box<dyn LibraryInterface>> {
-        // Not yet implemented
+        // If we have a library, clone and return it
+        if let Ok(lib_lock) = self.library.read() {
+            if let Some(lib) = lib_lock.as_ref() {
+                debug!("Returning LMS library instance from controller");
+                return Some(Box::new(lib.clone()));
+            }
+        }
+        
+        // If we're connected but don't have a library yet, try to create one
+        if self.is_connected.load(Ordering::SeqCst) {
+            if let Ok(connected_server_guard) = self.connected_server.read() {
+                if let Some(server) = connected_server_guard.as_ref() {
+                    // Get port from config
+                    let port = match self.config.read() {
+                        Ok(config) => config.port,
+                        Err(_) => 9000 // Default LMS port
+                    };
+                    
+                    // Create a new LMSLibrary
+                    warn!("Creating new LMS library instance");
+                    let library = crate::players::lms::library::LMSLibrary::with_connection(server, port);
+                    
+                    debug!("Created new LMS library for server: {}", server);
+                    
+                    // Store it for future use
+                    if let Ok(mut lib_lock) = self.library.write() {
+                        *lib_lock = Some(library.clone());
+                    }
+                    
+                    return Some(Box::new(library));
+                }
+            }
+        }
+        
+        debug!("No LMS library available");
         None
     }
 }

@@ -33,13 +33,13 @@ const MUSICBRAINZ_SEARCH_LIMIT: u32 = 3; // Limit search results to save bandwid
 /// Structs for deserializing MusicBrainz API responses
 #[derive(Debug, Deserialize)]
 struct MusicBrainzArtistSearchResponse {
-    #[serde(rename = "artist-count")]
+    #[serde(rename = "count")]
     #[allow(dead_code)]
     count: u32,
-    #[serde(rename = "artist-offset")]
+    #[serde(rename = "offset")]
     #[allow(dead_code)]
     offset: u32,
-    #[serde(rename = "artist-list")]
+    #[serde(rename = "artists")]
     artists: Vec<MusicBrainzArtist>,
 }
 
@@ -340,8 +340,10 @@ fn artist_names_match(query_name: &str, response_name: &str, response_aliases: O
 fn musicbrainz_api_get(url: &str) -> Result<String, String> {
     debug!("Making MusicBrainz API request: {}", url);
     
-    // Add proper User-Agent header using ureq's raw API
+    // Add proper User-Agent header and timeout using ureq's raw API
+    // Use a longer timeout (10s) for MusicBrainz API as it can be slow
     let response = match ureq::get(url)
+        .timeout(std::time::Duration::from_secs(10))
         .set("User-Agent", MUSICBRAINZ_USER_AGENT)
         .set("Accept", "application/json")
         .call() {
@@ -352,9 +354,23 @@ fn musicbrainz_api_get(url: &str) -> Result<String, String> {
         }
     };
     
+    // Log response status and content-length if available
+    debug!("MusicBrainz API response status: {}", response.status());
+    if let Some(content_length) = response.header("Content-Length") {
+        debug!("MusicBrainz API response content length: {}", content_length);
+    }
+    
     // Get response body
     match response.into_string() {
-        Ok(body) => Ok(body),
+        Ok(body) => {
+            if body.is_empty() {
+                error!("Empty response from MusicBrainz API");
+                Err("Empty response from MusicBrainz API".to_string())
+            } else {
+                debug!("Successfully received MusicBrainz API response ({} bytes)", body.len());
+                Ok(body)
+            }
+        },
         Err(e) => {
             error!("Failed to read MusicBrainz API response: {}", e);
             Err(format!("Response error: {}", e))
@@ -434,8 +450,11 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
             return MusicBrainzSearchResult::Error(format!("API request error: {}", e));
         }
     };
+      // Parse the JSON response
+    debug!("Received MusicBrainz API response: {} chars", response.len());
+    // Print the first 200 chars of the response for debugging
+    debug!("Response starts with: {}", &response[..std::cmp::min(200, response.len())]);
     
-    // Parse the JSON response
     let search_result: Result<MusicBrainzArtistSearchResponse, _> = serde_json::from_str(&response);
     match search_result {
         Ok(results) => {
@@ -484,13 +503,14 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
             
             debug!("No matching MusicBrainz ID found for artist '{}'", artist_name);
             MusicBrainzSearchResult::NotFound
-        },
-        Err(e) => {
+        },        Err(e) => {
             error!("Failed to parse MusicBrainz API response: {}", e);
-            error!("Response text: {}", &response[..std::cmp::min(200, response.len())]);
+            error!("Response text: {}", &response[..std::cmp::min(500, response.len())]);
+            debug!("Full response JSON: {}", response);
             // Add to negative cache before returning
             FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
-            MusicBrainzSearchResult::Error(format!("Response parse error: {}", e))
+            MusicBrainzSearchResult::Error(format!("Response parse error: {} ({})", e, 
+                                                 if response.len() < 50 { "possibly truncated response" } else { "check response format" }))
         }
     }
 }

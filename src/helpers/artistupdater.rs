@@ -3,12 +3,10 @@ use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 use crate::helpers::theartistdb;
 use crate::helpers::fanarttv;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, mpsc};
 use std::collections::HashMap;
-use tokio::runtime::Runtime;
-use tokio::task;
-use futures::future::join_all;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 /// Trait for services that can update artist metadata
 pub trait ArtistUpdater {
@@ -33,11 +31,11 @@ pub trait ArtistUpdater {
 /// A tuple containing:
 /// * `Vec<String>` - Vector of MusicBrainz IDs if found, empty vector otherwise
 /// * `bool` - true if this is a partial match (only some artists in a multi-artist name found)
-pub async fn lookup_artist_mbids(artist_name: &str) -> (Vec<String>, bool) {
+pub fn lookup_artist_mbids(artist_name: &str) -> (Vec<String>, bool) {
     debug!("Looking up MusicBrainz IDs for artist: {}", artist_name);
     
     // Try to retrieve MusicBrainz ID using search_mbids_for_artist function
-    // Note: If musicbrainz function needs async, convert it separately
+    // This is now a fully synchronous call since we replaced musicbrainz_rs with direct HTTP
     let search_result = search_mbids_for_artist(artist_name, true, false, true);
     
     match search_result {
@@ -80,14 +78,12 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         Some(meta) => !meta.mbid.is_empty(),
         None => false,
     };
-    
-    if !has_mbid {
+      if !has_mbid {
         debug!("No MusicBrainz ID set for artist {}, attempting to retrieve it", artist.name);
         
-        // Use the extracted function to look up MusicBrainz IDs
-        // Create a runtime for this blocking call
-        let rt = Runtime::new().expect("Failed to create Tokio runtime");
-        let (mbids, partial_match) = rt.block_on(lookup_artist_mbids(&artist.name));
+        // Use the synchronous function to look up MusicBrainz IDs directly
+        // No more need for Tokio runtime since our function is now synchronous
+        let (mbids, partial_match) = lookup_artist_mbids(&artist.name);
         let mbid_count = mbids.len();
         
         // Add each MusicBrainz ID to the artist if any were found
@@ -173,7 +169,7 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     artist
 }
 
-/// Start a background thread to update metadata for all artists in the library using async tasks
+/// Start a background thread to update metadata for all artists in the library sequentially
 ///
 /// This function updates artist metadata using the update_data_for_artist method in a background process.
 /// It takes an Arc to the artists collection for direct updating and reading.
@@ -184,126 +180,82 @@ pub fn update_library_artists_metadata_in_background(
     artists_collection: Arc<RwLock<HashMap<String, Artist>>>
 ) {
     debug!("Starting background thread to update artist metadata");
-    
+
     // Spawn a new thread to handle the metadata updates
     std::thread::spawn(move || {
         info!("Artist metadata update thread started");
-        
-        // Create a tokio runtime for async operations
-        let runtime = match Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                error!("Failed to create Tokio runtime: {}", e);
-                return;
+
+        // Get all artists from the collection
+        let artists = {
+            if let Ok(artists_map) = artists_collection.read() {
+                // Clone all artists for processing
+                artists_map.values().cloned().collect::<Vec<_>>()
+            } else {
+                warn!("Failed to acquire read lock on artists collection");
+                Vec::new()
             }
         };
-        
-        // Run the async update process in the runtime
-        runtime.block_on(async {
-            // Get all artists from the collection
-            let artists = {
-                if let Ok(artists_map) = artists_collection.read() {
-                    // Clone all artists for processing
-                    artists_map.values().cloned().collect::<Vec<_>>()
+
+        let total = artists.len();
+        info!("Processing metadata for {} artists", total);
+
+        for (index, artist) in artists.into_iter().enumerate() {
+            let artist_name = artist.name.clone();
+            debug!("Updating metadata for artist: {}", artist_name);
+
+            // Use the synchronous version of update_data_for_artist
+            let updated_artist = update_data_for_artist(artist);
+
+            // Check if we found new metadata to log appropriately
+            let has_new_metadata = {
+                let original_metadata = {
+                    if let Ok(artists_map) = artists_collection.read() {
+                        artists_map.get(&artist_name).and_then(|a| a.metadata.clone())
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(new_metadata) = &updated_artist.metadata {
+                    if !new_metadata.mbid.is_empty() {
+                        match original_metadata {
+                            Some(old_meta) if !old_meta.mbid.is_empty() => false,
+                            _ => {
+                                info!("Adding MusicBrainz ID(s) to artist {}", artist_name);
+                                true
+                            }
+                        }
+                    } else {
+                        false
+                    }
                 } else {
-                    warn!("Failed to acquire read lock on artists collection");
-                    Vec::new()
+                    false
                 }
             };
-            
-            let total = artists.len();
-            info!("Processing metadata for {} artists", total);
-            
-            // Counter for processed artists
-            let processed_count = Arc::new(AtomicUsize::new(0));
-            
-            // Process artists concurrently but with controlled parallelism
-            // Process in batches to avoid overwhelming external APIs
-            let batch_size = 5;
-            
-            // Clone the artists into a vector of batches to avoid lifetime issues
-            let batched_artists: Vec<Vec<Artist>> = artists
-                .chunks(batch_size)
-                .map(|chunk| chunk.to_vec())
-                .collect();
-                
-            for batch in batched_artists {
-                let mut tasks = Vec::new();
-                
-                for artist in batch {
-                    let artist_name = artist.name.clone();
-                    let artists_collection_clone = Arc::clone(&artists_collection);
-                    let processed_count_clone = Arc::clone(&processed_count);
-                    
-                    // Spawn a task for each artist in the batch
-                    let task = task::spawn(async move {
-                        debug!("Updating metadata for artist: {}", artist_name);
-                          // Use the synchronous version of update_data_for_artist
-                        let updated_artist = update_data_for_artist(artist);
-                        
-                        // Check if we found new metadata to log appropriately
-                        let has_new_metadata = {
-                            let original_metadata = {
-                                if let Ok(artists_map) = artists_collection_clone.read() {
-                                    artists_map.get(&artist_name).and_then(|a| a.metadata.clone())
-                                } else {
-                                    None
-                                }
-                            };
-                            
-                            if let Some(new_metadata) = &updated_artist.metadata {
-                                if !new_metadata.mbid.is_empty() {
-                                    match original_metadata {
-                                        Some(old_meta) if !old_meta.mbid.is_empty() => false,
-                                        _ => {
-                                            // Only print when we're actually adding new metadata
-                                            info!("Adding MusicBrainz ID(s) to artist {}", artist_name);
-                                            true
-                                        }
-                                    }
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            }
-                        };
-                        
-                        // Update the artist in the collection
-                        if let Ok(mut artists_map) = artists_collection_clone.write() {
-                            // Update the artist in the HashMap
-                            artists_map.insert(artist_name.clone(), updated_artist);
-                            
-                            if has_new_metadata {
-                                debug!("Successfully updated artist {} in library collection", artist_name);
-                            }
-                        } else {
-                            warn!("Failed to acquire write lock on artists collection for {}", artist_name);
-                        }
-                        
-                        // Increment processed count and log progress periodically
-                        let count = processed_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
-                        if count % 10 == 0 || count == total {
-                            info!("Processed {}/{} artists for metadata", count, total);
-                        }
-                        
-                        // Return the artist name for potential logging
-                        artist_name
-                    });
-                    
-                    tasks.push(task);
+
+            // Update the artist in the collection
+            if let Ok(mut artists_map) = artists_collection.write() {
+                artists_map.insert(artist_name.clone(), updated_artist);
+
+                if has_new_metadata {
+                    debug!("Successfully updated artist {} in library collection", artist_name);
                 }
-                
-                // Wait for all artists in this batch to be processed before starting the next batch
-                let _results = join_all(tasks).await;
-                
-                // Add a small delay between batches to avoid overwhelming external services
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            } else {
+                warn!("Failed to acquire write lock on artists collection for {}", artist_name);
             }
-            
-            info!("Artist metadata update process completed");
-        });
+
+            // Log progress periodically
+            let count = index + 1;
+            if count % 10 == 0 || count == total {
+                info!("Processed {}/{} artists for metadata", count, total);
+            }
+
+            // Sleep between updates to avoid overwhelming external services
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        info!("Artist metadata update process completed");
     });
-    
+
     info!("Background artist metadata update initiated");
 }

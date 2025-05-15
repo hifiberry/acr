@@ -489,7 +489,7 @@ impl LMSPlayer {
         self.send_command_with_values("playlist", vec!["repeat", &mode_str])
     }
     
-    /// Internal helper to send commands with simple string values (no named parameters)
+    /// Send commands with simple string values (no named parameters)
     /// 
     /// # Arguments
     /// * `command` - The command to send (play, pause, stop, etc.)
@@ -751,9 +751,7 @@ impl LMSPlayer {
             },
             Err(e) => Err(format!("Failed to fetch metadata: {}", e))
         }
-    }
-
-    /// Clear the entire playlist/queue
+    }    /// Clear the entire playlist/queue
     /// 
     /// The playlist clear command removes any song that is on the playlist.
     /// The player is stopped as a side effect of this command.
@@ -763,5 +761,162 @@ impl LMSPlayer {
     pub fn clear_queue(&self) -> Result<(), String> {
         debug!("Clearing playlist for player {}", self.player_id);
         self.send_command_with_values("playlist", vec!["clear"])
+    }    /// Add a track to the current playlist at the beginning or end
+    /// 
+    /// Uses the playlistcontrol command with cmd:add (to add at the end) or 
+    /// cmd:insert (to insert at the beginning - plays next) with a track_id parameter.
+    /// 
+    /// # Arguments
+    /// * `track_id` - The ID of the track to add to the playlist
+    /// * `at_beginning` - If true, inserts the track to play next (after current song).
+    ///                   If false, adds the track to the end of the playlist.
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn add_to_queue(&self, track_id: &str, at_beginning: bool) -> Result<(), String> {
+        // Choose the appropriate command based on at_beginning parameter
+        let cmd = if at_beginning { "insert" } else { "add" };
+        
+        debug!("Adding track {} to {} of playlist for player {}", 
+               track_id, 
+               if at_beginning { "beginning" } else { "end" }, 
+               self.player_id);
+        
+        // Format command parameters according to the API
+        let cmd_param = format!("cmd:{}", cmd);
+        let track_param = format!("track_id:{}", track_id);
+        
+        // Use playlistcontrol with cmd:add/insert and track_id parameters
+        match self.client.control_request(
+            &self.player_id, 
+            "playlistcontrol", 
+            vec![&cmd_param, &track_param]
+        ) {
+            Ok(_) => {
+                debug!("Track added successfully to playlist");
+                Ok(())
+            },
+            Err(e) => Err(format!("Failed to add track to playlist: {}", e)),
+        }
+    }
+
+    /// Get the current playlist/queue as a collection of Track objects
+    /// 
+    /// Fetches the current playlist from the LMS server and returns it as a vector
+    /// of Track objects with ID, track number, name, and artist fields populated.
+    /// 
+    /// # Returns
+    /// A vector of Track objects representing the current queue, or an error message
+    pub fn get_queue(&self) -> Result<Vec<crate::data::track::Track>, String> {
+        debug!("Fetching playlist for player {}", self.player_id);
+        
+        // Request status with playlist info and required tags for track information
+        // Use tags:adlK to get:
+        // - a: artist information
+        // - d: track duration
+        // - l: title (for track name)
+        // - K: track ID
+        match self.client.control_request(
+            &self.player_id, 
+            "status", 
+            vec!["0", "100", "tags:adlKitN"]
+        ) {
+            Ok(response) => {
+                debug!("Received playlist response");
+                
+                // Create a vector to hold the track objects
+                let mut tracks = Vec::new();
+                
+                // Extract the playlist_loop from the response if it exists
+                if let Some(obj) = response.as_object() {
+                    if let Some(playlist_loop) = obj.get("playlist_loop") {
+                        if let Some(items) = playlist_loop.as_array() {
+                            debug!("Found {} items in playlist", items.len());
+                            
+                            // Process each track in the playlist
+                            for (index, track_value) in items.iter().enumerate() {
+                                if let Some(track_obj) = track_value.as_object() {
+                                    // Extract required fields
+                                    let title = track_obj.get("title").and_then(|v| v.as_str())
+                                        .unwrap_or("Unknown Title").to_string();
+                                    
+                                    // Create track object with name
+                                    let mut track = crate::data::track::Track::with_name(title);
+                                    
+                                    // Set track ID if available
+                                    if let Some(id) = track_obj.get("id").and_then(|v| v.as_str()) {
+                                        track = track.with_id(crate::data::Identifier::String(id.to_string()));
+                                    } else if let Some(id) = track_obj.get("track_id").and_then(|v| v.as_str()) {
+                                        track = track.with_id(crate::data::Identifier::String(id.to_string()));
+                                    }
+                                    
+                                    // Set track number if available
+                                    if let Some(track_num) = track_obj.get("tracknum").and_then(|v| v.as_u64()) {
+                                        track.track_number = Some(track_num as u16);
+                                    } else if let Some(track_num) = track_obj.get("track").and_then(|v| v.as_u64()) {
+                                        track.track_number = Some(track_num as u16);
+                                    } else {
+                                        // Fall back to playlist position if no track number is available
+                                        track.track_number = Some((index + 1) as u16);
+                                    }
+                                    
+                                    // Set artist if available
+                                    if let Some(artist) = track_obj.get("artist").and_then(|v| v.as_str()) {
+                                        track.artist = Some(artist.to_string());
+                                    }
+                                    
+                                    // Set URI if available
+                                    if let Some(url) = track_obj.get("url").and_then(|v| v.as_str()) {
+                                        track = track.with_uri(url.to_string());
+                                    }
+                                    
+                                    tracks.push(track);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Log the number of tracks found
+                debug!("Returning {} tracks from playlist", tracks.len());
+                
+                Ok(tracks)
+            },
+            Err(e) => {
+                warn!("Failed to fetch playlist: {}", e);
+                Err(format!("Failed to fetch playlist: {}", e))
+            }
+        }
+    }
+
+    /// Delete a track from the playlist at the specified index
+    /// 
+    /// Uses the playlistcontrol command with cmd:delete and index parameter
+    /// to remove a track at a specific position in the playlist.
+    /// 
+    /// # Arguments
+    /// * `index` - The zero-based index of the track to remove from the playlist
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn delete_from_playlist(&self, index: usize) -> Result<(), String> {
+        debug!("Deleting track at index {} from playlist for player {}", index, self.player_id);
+        
+        // Format command parameters according to the API
+        let cmd_param = "delete";
+        let index_param = format!("index:{}", index);
+        
+        // Use playlistcontrol with cmd:delete and index parameters
+        match self.client.control_request(
+            &self.player_id, 
+            "playlist", 
+            vec![cmd_param, &index_param]
+        ) {
+            Ok(_) => {
+                debug!("Track at index {} successfully deleted from playlist", index);
+                Ok(())
+            },
+            Err(e) => Err(format!("Failed to delete track from playlist: {}", e)),
+        }
     }
 }

@@ -703,10 +703,31 @@ impl PlayerController for LMSAudioController {
         }
         
         None
-    }
-
-    fn get_queue(&self) -> Vec<Track> {
-        // Not yet implemented
+    }    fn get_queue(&self) -> Vec<Track> {
+        // Check if we're connected first
+        if !self.is_connected.load(Ordering::SeqCst) {
+            debug!("Cannot get queue - LMS player is disconnected");
+            return Vec::new();
+        }
+        
+        // Get direct access to the player instance
+        if let Ok(player_guard) = self.player.read() {
+            if let Some(player_instance) = player_guard.as_ref() {
+                // Get the queue from the player
+                debug!("Fetching queue information from LMS server");
+                match player_instance.get_queue() {
+                    Ok(tracks) => {
+                        debug!("Retrieved {} tracks from LMS queue", tracks.len());
+                        return tracks;
+                    },
+                    Err(e) => {
+                        warn!("Failed to get queue from LMS server: {}", e);
+                    }
+                }
+            }
+        }
+        
+        // Return empty queue if we couldn't get the queue from the player
         Vec::new()
     }
     
@@ -1040,7 +1061,8 @@ impl PlayerController for LMSAudioController {
                         warn!("Failed to send loop mode command: {}", e);
                         false
                     }
-                }            },
+                }            
+            },            
             PlayerCommand::ClearQueue => {
                 debug!("Sending clear queue command to LMS player");
                 match player.clear_queue() {
@@ -1053,8 +1075,64 @@ impl PlayerController for LMSAudioController {
                     Err(e) => {
                         warn!("Failed to send clear queue command: {}", e);
                         false
+                    }                }
+            },
+            PlayerCommand::RemoveTrack(index) => {
+                debug!("Removing track at index {} from LMS player queue", index);
+                match player.delete_from_playlist(index) {
+                    Ok(_) => {
+                        debug!("Remove track command sent successfully");
+                        // Notify listeners that the queue has been modified
+                        self.base.notify_queue_changed();
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to remove track at index {}: {}", index, e);
+                        false
                     }
                 }
+            },
+            PlayerCommand::QueueTracks { uris, insert_at_beginning } => {
+                debug!("Adding {} tracks to LMS player queue at {}", 
+                      uris.len(), 
+                      if insert_at_beginning { "beginning" } else { "end" });
+                if uris.is_empty() {
+                    debug!("No URIs provided to queue");
+                    // Nothing to do, but not an error
+                    return true;
+                }
+                
+                let mut all_success = true;
+                
+                // Process each URI
+                for uri in &uris {
+                    // For LMS, we need to handle this differently based on URI format:
+                    // If it looks like a track ID (numeric), use our add_to_queue method
+                    // Otherwise, it might be a file path or URL
+                      if uri.trim().parse::<u64>().is_ok() {
+                        // Looks like a numeric track ID, use add_to_queue method with track_id
+                        match player.add_to_queue(uri, insert_at_beginning) {
+                            Ok(_) => {
+                                debug!("Successfully added track ID {} to queue", uri);
+                            },
+                            Err(e) => {
+                                warn!("Failed to add track ID {} to queue: {}", uri, e);
+                                all_success = false;
+                            }
+                        }                    } else {
+                        // URI-based track additions are not supported
+                        warn!("URI-based track addition is not supported for LMS player: {}", uri);
+                        warn!("Only numeric track IDs are supported for adding to LMS queue");
+                        all_success = false;
+                    }
+                }
+                
+                // If any track was successfully added, notify listeners
+                if all_success || !all_success {
+                    self.base.notify_queue_changed();
+                }
+                
+                all_success
             },
             // Other commands are not yet implemented
             _ => {

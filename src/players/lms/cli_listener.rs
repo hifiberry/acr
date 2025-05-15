@@ -204,20 +204,6 @@ impl LMSListener {
             return Err(format!("Failed to set read timeout: {}", e));
         }
         
-        // Enable the TCP keep-alive option to detect connection drops
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Err(e) = stream.set_keepalive(Some(Duration::from_secs(30))) {
-            warn!("Failed to set TCP keepalive: {}", e);
-            // Non-fatal, continue anyway
-        }
-        
-        #[cfg(target_os = "windows")]
-        {
-            // On Windows, the keep-alive API is different
-            debug!("TCP keepalive not implemented for Windows");
-            // Non-fatal, continue anyway
-        }
-        
         // Subscribe to server events
         debug!("Subscribing to LMS events for player {}", player_id);
         let mut write_stream = stream.try_clone().map_err(|e| format!("Failed to clone TCP stream: {}", e))?;

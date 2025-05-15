@@ -1,0 +1,3 @@
+acr usr/bin
+debian/tmp/etc/acr/hifiberryos.json.default etc/acr
+debian/tmp/lib/systemd/system/acr.service lib/systemd/system

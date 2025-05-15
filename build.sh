@@ -50,6 +50,8 @@ fi
 
 # Create directory structure for the package
 mkdir -p debian/tmp/usr/bin
+mkdir -p debian/tmp/etc/acr
+mkdir -p debian/tmp/lib/systemd/system
 
 # Make sure dependencies are installed
 command -v cargo >/dev/null 2>&1 || { echo "Cargo is required but not installed. Aborting."; exit 1; }
@@ -59,6 +61,73 @@ echo "===== Building Debian package ====="
 # Update version in control file from Cargo.toml
 VERSION=$(grep -m 1 '^version' Cargo.toml | cut -d'"' -f2)
 sed -i "s/^Version:.*/Version: $VERSION/" debian/control
+
+# Copy configuration file and systemd service file
+echo "Preparing configuration and service files..."
+cp hifiberryos.json debian/tmp/etc/acr/hifiberryos.json.default
+cp debian/acr.service debian/tmp/lib/systemd/system/
+
+# Create postinst script to handle configuration file
+cat > debian/postinst << 'EOF'
+#!/bin/sh
+set -e
+
+# Function to safely copy default config if none exists
+setup_config() {
+    if [ ! -f /acr/hifiberryos.json ]; then
+        echo "No configuration file found, copying default..."
+        cp /etc/acr/hifiberryos.json.default /acr/hifiberryos.json
+        # Set proper ownership
+        chown acr:acr /acr/hifiberryos.json
+    else
+        echo "Existing configuration file found, keeping it."
+    fi
+}
+
+# Function to create user, group and directory
+setup_user_and_dirs() {
+    # Create acr group if it doesn't exist
+    if ! getent group acr > /dev/null; then
+        echo "Creating acr group..."
+        groupadd --system acr
+    fi
+    
+    # Create acr user if it doesn't exist
+    if ! getent passwd acr > /dev/null; then
+        echo "Creating acr user..."
+        useradd --system --gid acr --shell /usr/sbin/nologin --home-dir /acr acr
+    fi
+    
+    # Create /acr directory if it doesn't exist
+    if [ ! -d /acr ]; then
+        echo "Creating /acr directory..."
+        mkdir -p /acr
+    fi
+    
+    # Set ownership of /acr directory
+    echo "Setting ownership of /acr directory..."
+    chown -R acr:acr /acr
+    chmod 755 /acr
+}
+
+case "$1" in
+    configure)
+        setup_user_and_dirs
+        setup_config
+        # Enable and start the service
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            systemctl enable acr.service >/dev/null 2>&1 || true
+            systemctl restart acr.service >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+exit 0
+EOF
+
+# Make the postinst script executable
+chmod +x debian/postinst
 
 # Create the Debian package
 dpkg-buildpackage -us -uc -B

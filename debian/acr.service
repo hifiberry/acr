@@ -1,0 +1,15 @@
+[Unit]
+Description=AudioControl Rust (ACR) - Audio Player Management Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/acr
+Restart=on-failure
+RestartSec=5
+User=acr
+Group=acr
+WorkingDirectory=/acr
+
+[Install]
+WantedBy=multi-user.target

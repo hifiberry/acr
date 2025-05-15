@@ -1,0 +1,86 @@
+{
+  "action_plugins": [
+    {
+      "active-monitor": {
+        "enabled": true
+      }
+    }
+  ],
+  "event_filters": [
+    {
+      "event-logger": {
+        "enabled": true,
+        "event_types": [
+          "state",
+          "song",
+          "loop",
+          "capabilities",
+          "position",
+          "database"
+        ],
+        "log_level": "info",
+        "only_active": false
+      }
+    }
+  ],
+  "webserver": {
+    "enable": true,
+    "host": "0.0.0.0",
+    "port": 1080,
+    "static_routes": [
+
+      {
+        "url_path": "/example",
+        "directory": "example-app"
+      }
+    ]
+  },
+  "cache": {
+    "attribute_cache_path": "C:/temp/cache/attributes",
+    "image_cache_path": "C:/temp/cache/images"
+  },
+  "musicbrainz": {
+    "enable": true
+  },
+  "theartistdb": {
+    "api_key": "xxxxxx"
+  },
+  "players": [
+    {
+      "mpd": {
+        "enable": true,
+        "host": "localhost",
+        "port": 6600,
+        "load_on_startup": true,
+        "artist_separator": [",", "feat. "],
+        "enhance_metadata": false
+      }
+    },
+    {
+      "raat": {
+        "enable": true,
+        "metadata_pipe": "tcp://headphone:12100",
+        "control_pipe": "tcp://headphone:12101",
+        "reopen_metadata_pipe": true
+      }
+    },
+    {
+      "librespot": {
+        "enable": true,
+        "event_pipe": "tcp://headphone:12102",
+        "reopen_event_pipe": true
+      }
+    },
+    {
+      "lms": {
+        "enable": true,
+        "server": null,
+        "port": 9000,
+        "autodiscovery": true,
+        "reconnection_interval": 30,
+        "polling_interval": 30,
+        "player_macs": [ "local", "00:15:5d:76:39:c2", "00:15:5d:7b:11:cd" ]
+      }
+    }
+  ]
+}

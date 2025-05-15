@@ -18,6 +18,13 @@ devtools/
 Cargo.lock
 acr.json
 
+# Debian package auto-generated files
+debian/.debhelper/
+debian/acr.substvars
+debian/acr/
+debian/debhelper-build-stamp
+debian/files
+
 # Sample cache files
 # These are generated during debuggiong and are not needed in the repository
 attributecache.sled/*

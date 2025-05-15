@@ -205,8 +205,7 @@ impl LMSPlayer {
             Err(e) => Err(format!("Failed to get title: {}", e)),
         }
     }
-    
-    /// Get the duration of the current song in seconds
+      /// Get the duration of the current song in seconds
     /// 
     /// # Returns
     /// The duration as a f32 if available, or an error
@@ -216,8 +215,17 @@ impl LMSPlayer {
                 // Extract the _duration field from the response object
                 if let Some(obj) = response.as_object() {
                     if let Some(duration_value) = obj.get("_duration") {
+                        // Try to parse as a float directly
                         if let Some(duration) = duration_value.as_f64() {
                             return Ok(duration as f32);
+                        }
+                        
+                        // If not a float, try parsing as a string
+                        if let Some(duration_str) = duration_value.as_str() {
+                            // Try to parse the string as a float
+                            if let Ok(duration) = duration_str.parse::<f32>() {
+                                return Ok(duration);
+                            }
                         }
                     }
                 }
@@ -293,6 +301,11 @@ impl LMSPlayer {
         // Log if we found a thumbnail URL
         if let Some(thumb_url) = &cover_art_url {
             debug!("Found thumbnail URL: {}", thumb_url);
+        }        // log duration
+        if let Some(duration) = duration_result.as_ref().ok() {
+            warn!("Current song duration: {}", duration);
+        } else {
+            warn!("No duration available for current song");
         }
         
         // Create Song struct with the available information
@@ -713,45 +726,7 @@ impl LMSPlayer {
         self.send_command_with_values("button", vec!["jump_fwd"])
     }
     
-    /// Fetch all available metadata for the current track and log it
-    /// 
-    /// This method is primarily used for debugging to see all metadata fields
-    /// available for a track from the LMS server
-    /// 
-    /// # Returns
-    /// `Ok(())` if the command was sent successfully, or an error message
-    pub fn fetch_all_metadata(&self) -> Result<(), String> {
-        // Request status with extensive tags to get all available metadata
-        match self.client.control_request(&self.player_id, "status", vec!["0", "1", "tags:adklue"]) {
-            Ok(response) => {
-                // Log the entire response for inspection
-                warn!("All metadata from LMS: {:?}", response);
-                
-                // Try to extract and log individual fields from the playlist_loop if it exists
-                if let Some(obj) = response.as_object() {
-                    if let Some(playlist_loop) = obj.get("playlist_loop") {
-                        if let Some(items) = playlist_loop.as_array() {
-                            if !items.is_empty() {
-                                if let Some(track) = items.get(0) {
-                                    warn!("Track metadata fields: {:?}", track);
-                                    
-                                    // Log some specific fields of interest if they exist
-                                    if let Some(track_obj) = track.as_object() {
-                                        for (key, value) in track_obj.iter() {
-                                            warn!("Field '{}': {:?}", key, value);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                Ok(())
-            },
-            Err(e) => Err(format!("Failed to fetch metadata: {}", e))
-        }
-    }    /// Clear the entire playlist/queue
+    /// Clear the entire playlist/queue
     /// 
     /// The playlist clear command removes any song that is on the playlist.
     /// The player is stopped as a side effect of this command.

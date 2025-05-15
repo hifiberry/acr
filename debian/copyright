@@ -1,9 +1,0 @@
-Files: /rust-debian-package/rust-debian-package/debian/copyright
-
-Format: 
-Copyright (C) [year] [name]
-License: [license]
-
-Content:
-Copyright (C) 2025 Modul 9 GmbH
-License: MIT

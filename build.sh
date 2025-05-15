@@ -55,16 +55,13 @@ mkdir -p debian/tmp/usr/bin
 command -v cargo >/dev/null 2>&1 || { echo "Cargo is required but not installed. Aborting."; exit 1; }
 command -v dpkg-buildpackage >/dev/null 2>&1 || { echo "dpkg-buildpackage is required but not installed. Aborting."; exit 1; }
 
-echo "===== Compiling Rust project ====="
-cargo build --release
-
 echo "===== Building Debian package ====="
 # Update version in control file from Cargo.toml
 VERSION=$(grep -m 1 '^version' Cargo.toml | cut -d'"' -f2)
 sed -i "s/^Version:.*/Version: $VERSION/" debian/control
 
 # Create the Debian package
-dpkg-buildpackage -us -uc -b
+dpkg-buildpackage -us -uc -B
 
 echo "===== Moving package files to out directory ====="
 # Move the .deb package file to the out directory
@@ -73,6 +70,7 @@ mv ../acr_${VERSION}_*.deb out/
 mv ../acr_${VERSION}* out/ 2>/dev/null || true
 
 echo "===== Cleaning up ====="
+rm ../acr-dbgsym*.deb
 # The package will be created in the out directory
 echo "Debian package created at: out/acr_${VERSION}_*.deb"
 

@@ -752,4 +752,16 @@ impl LMSPlayer {
             Err(e) => Err(format!("Failed to fetch metadata: {}", e))
         }
     }
+
+    /// Clear the entire playlist/queue
+    /// 
+    /// The playlist clear command removes any song that is on the playlist.
+    /// The player is stopped as a side effect of this command.
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn clear_queue(&self) -> Result<(), String> {
+        debug!("Clearing playlist for player {}", self.player_id);
+        self.send_command_with_values("playlist", vec!["clear"])
+    }
 }

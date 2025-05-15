@@ -1040,6 +1040,20 @@ impl PlayerController for LMSAudioController {
                         warn!("Failed to send loop mode command: {}", e);
                         false
                     }
+                }            },
+            PlayerCommand::ClearQueue => {
+                debug!("Sending clear queue command to LMS player");
+                match player.clear_queue() {
+                    Ok(_) => {
+                        debug!("Clear queue command sent successfully");
+                        // Notify listeners that the queue has been cleared
+                        self.base.notify_queue_changed();
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to send clear queue command: {}", e);
+                        false
+                    }
                 }
             },
             // Other commands are not yet implemented

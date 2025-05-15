@@ -608,12 +608,19 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
                     uris: vec![uri],
                     insert_at_beginning: false
                 });
-            },
+            },            
             "remove_track" => {
                 // Parse position as usize for track removal
                 match param.parse::<usize>() {
                     Ok(position) => return Ok(PlayerCommand::RemoveTrack(position)),
                     Err(_) => return Err(format!("Invalid track position: {}", param))
+                }
+            },
+            "play_queue_index" => {
+                // Parse index as usize for playing track at specified index in queue
+                match param.parse::<usize>() {
+                    Ok(index) => return Ok(PlayerCommand::PlayQueueIndex(index)),
+                    Err(_) => return Err(format!("Invalid queue index: {}", param))
                 }
             },
             _ => {}

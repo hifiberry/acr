@@ -418,7 +418,7 @@ impl LibraryInterface for LMSLibrary {
                             self_albums.insert(album.name.clone(), album);
                         }
                         
-                        warn!("Updated library with {} albums", self_albums.len());
+                        info!("Updated library with {} albums", self_albums.len());
                     } else {
                         error!("Failed to acquire write lock on albums");
                         return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));

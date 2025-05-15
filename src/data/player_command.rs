@@ -47,12 +47,14 @@ pub enum PlayerCommand {
         /// Whether to insert at beginning (true) or append at end (false)
         insert_at_beginning: bool,
     },
-    
-    #[serde(rename = "remove_track")]
+      #[serde(rename = "remove_track")]
     RemoveTrack(usize), // Changed from String to usize for position-based removal
     
     #[serde(rename = "clear_queue")]
     ClearQueue,
+    
+    #[serde(rename = "play_queue_index")]
+    PlayQueueIndex(usize), // Play specific track in the queue by its index
 }
 
 impl Default for PlayerCommand {
@@ -80,9 +82,9 @@ impl std::fmt::Display for PlayerCommand {
                 } else {
                     write!(f, "queue_tracks_end")
                 }
-            },
-            PlayerCommand::RemoveTrack(position) => write!(f, "remove_track:{}", position),
+            },            PlayerCommand::RemoveTrack(position) => write!(f, "remove_track:{}", position),
             PlayerCommand::ClearQueue => write!(f, "clear_queue"),
+            PlayerCommand::PlayQueueIndex(index) => write!(f, "play_queue_index:{}", index),
         }
     }
 }

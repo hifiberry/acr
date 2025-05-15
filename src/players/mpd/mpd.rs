@@ -1106,8 +1106,7 @@ impl PlayerController for MPDPlayerController {
                         self.base.notify_queue_changed();
                     }
                 },
-                
-                PlayerCommand::ClearQueue => {
+                  PlayerCommand::ClearQueue => {
                     debug!("Clearing MPD queue");
                     
                     success = client.clear().is_ok();
@@ -1119,6 +1118,13 @@ impl PlayerController for MPDPlayerController {
                     } else {
                         warn!("Failed to clear MPD queue");
                     }
+                },
+                
+                PlayerCommand::PlayQueueIndex(index) => {
+                    debug!("Playing track at index {} in MPD queue", index);
+                    
+                    // TODO: Implement play_queue_index command
+                    // This would typically involve seeking to the specified index
                 },
             }
             

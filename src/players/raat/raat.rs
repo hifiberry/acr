@@ -536,9 +536,12 @@ impl PlayerController for RAATPlayerController {
             PlayerCommand::RemoveTrack(_) => {
                 warn!("Remove track not supported by RAAT player");
                 return false;
-            },
-            PlayerCommand::ClearQueue => {
+            },            PlayerCommand::ClearQueue => {
                 warn!("Clear queue not supported by RAAT player");
+                return false;
+            },
+            PlayerCommand::PlayQueueIndex(_) => {
+                warn!("Play queue by index not supported by RAAT player");
                 return false;
             },
         };

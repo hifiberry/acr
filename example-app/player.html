@@ -355,12 +355,17 @@
             max-height: 300px;
             overflow-y: auto;
         }
-        
-        .queue-item {
+          .queue-item {
             display: flex;
             padding: 10px;
             border-bottom: 1px solid #e9ecef;
             align-items: center;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .queue-item:hover {
+            background-color: #f8f9fa;
         }
         
         .queue-item:last-child {
@@ -1584,8 +1589,7 @@
                 queueContainer.innerHTML = '<div class="queue-message">Queue is empty</div>';
                 return;
             }
-            
-            // Build queue items
+              // Build queue items
             let queueHtml = '';
             
             data.queue.forEach((track, index) => {
@@ -1597,7 +1601,7 @@
                 const trackArtist = track.artist || 'Unknown Artist';
                 
                 queueHtml += `
-                    <div class="queue-item ${isCurrent ? 'current' : ''}" data-uri="${track.uri || ''}" data-position="${index}">
+                    <div class="queue-item ${isCurrent ? 'current' : ''}" data-uri="${track.uri || ''}" data-position="${index}" data-index="${index}">
                         <div class="queue-item-info">
                             <div class="queue-item-title">${isCurrent ? '▶ ' : ''}${trackTitle}</div>
                             <div class="queue-item-artist">${trackArtist}</div>
@@ -1620,13 +1624,12 @@
             // Add event listeners to the queue action buttons
             const playButtons = queueContainer.querySelectorAll('.play-track-btn');
             const removeButtons = queueContainer.querySelectorAll('.remove-track-btn');
-            
-            // Play track buttons
+              // Play track buttons
             playButtons.forEach(button => {
                 button.addEventListener('click', function() {
-                    const trackUri = this.closest('.queue-item').getAttribute('data-uri');
-                    if (trackUri) {
-                        playTrackByUri(trackUri);
+                    const index = parseInt(this.getAttribute('data-index'), 10);
+                    if (!isNaN(index)) {
+                        playQueueIndex(index);
                     }
                 });
             });
@@ -1641,8 +1644,7 @@
                 });
             });
         }
-        
-        // Play a track from the queue by URI
+          // Play a track from the queue by URI
         function playTrackByUri(uri) {
             if (!uri) return;
             
@@ -1650,6 +1652,13 @@
             sendCommand(`play_uri:${uri}`);
         }
         
+        // Play a track from the queue by its index
+        function playQueueIndex(index) {
+            if (index === undefined || index === null) return;
+            
+            console.log(`Playing track at index: ${index} in queue`);
+            sendCommand(`play_queue_index:${index}`);
+        }
         // Remove a track from the queue
         async function removeTrackFromQueue(position) {
             if (position === undefined || position === null) return;
@@ -1692,7 +1701,7 @@
             } else {
                 queuePanel.style.display = 'none';
             }
-        }
-    </script>
+        }    </script>
+    <script src="queue-event-listeners.js"></script>
 </body>
 </html>

@@ -1076,8 +1076,7 @@ impl PlayerController for LMSAudioController {
                         warn!("Failed to send clear queue command: {}", e);
                         false
                     }                }
-            },
-            PlayerCommand::RemoveTrack(index) => {
+            },            PlayerCommand::RemoveTrack(index) => {
                 debug!("Removing track at index {} from LMS player queue", index);
                 match player.delete_from_playlist(index) {
                     Ok(_) => {
@@ -1088,6 +1087,22 @@ impl PlayerController for LMSAudioController {
                     },
                     Err(e) => {
                         warn!("Failed to remove track at index {}: {}", index, e);
+                        false
+                    }
+                }
+            },
+            PlayerCommand::PlayQueueIndex(index) => {
+                warn!("Playing track at index {} from LMS player queue", index);
+                match player.play_queue_index(index) {
+                    Ok(_) => {
+                        debug!("Play queue index command sent successfully");
+                        // Update song and position after changing tracks
+                        self.update_and_notify_song();
+                        self.update_and_notify_position();
+                        true
+                    },
+                    Err(e) => {
+                        warn!("Failed to play track at index {}: {}", index, e);
                         false
                     }
                 }

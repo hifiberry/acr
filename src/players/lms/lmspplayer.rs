@@ -301,12 +301,7 @@ impl LMSPlayer {
         // Log if we found a thumbnail URL
         if let Some(thumb_url) = &cover_art_url {
             debug!("Found thumbnail URL: {}", thumb_url);
-        }        // log duration
-        if let Some(duration) = duration_result.as_ref().ok() {
-            warn!("Current song duration: {}", duration);
-        } else {
-            warn!("No duration available for current song");
-        }
+        }        
         
         // Create Song struct with the available information
         let song = Song {
@@ -893,5 +888,22 @@ impl LMSPlayer {
             },
             Err(e) => Err(format!("Failed to delete track from playlist: {}", e)),
         }
+    }
+
+    /// Play a specific song in the queue by its index
+    /// 
+    /// Uses the playlist index command to jump to a specific track in the playlist.
+    /// 
+    /// # Arguments
+    /// * `index` - The zero-based index of the track to play
+    /// 
+    /// # Returns
+    /// `Ok(())` if the command was sent successfully, or an error message
+    pub fn play_queue_index(&self, index: usize) -> Result<(), String> {
+        debug!("Playing track at index {} in playlist for player {}", index, self.player_id);
+        
+        // Use the playlist index command to jump to the specified track
+        let index_str = index.to_string();
+        self.send_command_with_values("playlist", vec!["index", &index_str])
     }
 }

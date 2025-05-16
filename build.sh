@@ -62,10 +62,10 @@ VERSION=$(grep -m 1 '^version' Cargo.toml | cut -d'"' -f2)
 sed -i "s/^Version:.*/Version: $VERSION/" debian/control
 
 # Check if we want to skip rebuilding the binary
-SKIP_BUILD=${SKIP_BUILD:-0}
+export SKIP_BUILD=${SKIP_BUILD:-0}
 if [ "$1" = "--skip-build" ] || [ "$SKIP_BUILD" = "1" ]; then
     echo "===== Skipping build stage and reusing existing binary ====="
-    SKIP_BUILD=1
+    export SKIP_BUILD=1
     
     # Check if the binary exists
     if [ ! -f "target/release/acr" ]; then
@@ -76,7 +76,8 @@ if [ "$1" = "--skip-build" ] || [ "$SKIP_BUILD" = "1" ]; then
 else
     echo "===== Building binary ====="
     # Tip: You can use SKIP_BUILD=1 or --skip-build to skip this step next time
-    cargo build --release
+    # We'll let dpkg-buildpackage handle the actual build to avoid building twice
+    # So we don't run cargo build here anymore
 fi
 
 echo "===== Preparing Debian package ====="
@@ -149,7 +150,8 @@ EOF
 chmod +x debian/postinst
 
 # Create the Debian package
-SKIP_BUILD=$SKIP_BUILD dpkg-buildpackage -us -uc -B
+# The environment variable SKIP_BUILD is already exported above
+dpkg-buildpackage -us -uc -B
 
 echo "===== Moving package files to out directory ====="
 # Move the .deb package file to the out directory

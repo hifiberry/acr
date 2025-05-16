@@ -58,15 +58,15 @@
         {
             "raat": {
                 "enable": false,
-                "metadata_pipe": "tcp://headphone:12100",
-                "control_pipe": "tcp://headphone:12101",
+                "metadata_pipe": "/var/run/raat/metadata_pipe",
+                "control_pipe": "/var/run/raat/control_pipe",
                 "reopen_metadata_pipe": true
             }
         },
         {
             "librespot": {
                 "enable": false,
-                "event_pipe": "tcp://headphone:12102",
+                "event_pipe": "/var/run/librespot/event_pipe",
                 "reopen_event_pipe": true
             }
         },
@@ -77,7 +77,7 @@
                 "port": 9000,
                 "autodiscovery": true,
                 "player_name": null,
-                "player_mac": "00:15:5d:76:39:c2",
+                "player_mac": [],
                 "reconnection_interval": 30,
                 "polling_interval": 30
             }

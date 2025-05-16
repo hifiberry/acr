@@ -324,9 +324,8 @@
         </div>
     </div>
     
-    <script>
-        // Configuration
-        const API_BASE_URL = 'http://127.0.0.1:1080/api';
+    <script>        // Configuration
+        const API_BASE_URL = `http://${window.location.hostname}:1080/api`;
         let activeLibrary = null;
         
         // State management
@@ -1027,9 +1026,8 @@
                 clearInterval(window.reconnectInterval);
                 window.reconnectInterval = null;
             }
-            
-            // Create WebSocket connection
-            const wsUrl = `ws://127.0.0.1:1080/api/events`;
+              // Create WebSocket connection
+            const wsUrl = `ws://${window.location.hostname}:1080/api/events`;
             let socket = new WebSocket(wsUrl);
             
             socket.onopen = () => {

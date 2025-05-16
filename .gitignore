@@ -24,6 +24,8 @@ debian/acr.substvars
 debian/acr/
 debian/debhelper-build-stamp
 debian/files
+debian/acr.postrm.debhelper
+debian/postinst
 
 # Sample cache files
 # These are generated during debuggiong and are not needed in the repository

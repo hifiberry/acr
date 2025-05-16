@@ -57,10 +57,29 @@ mkdir -p debian/tmp/lib/systemd/system
 command -v cargo >/dev/null 2>&1 || { echo "Cargo is required but not installed. Aborting."; exit 1; }
 command -v dpkg-buildpackage >/dev/null 2>&1 || { echo "dpkg-buildpackage is required but not installed. Aborting."; exit 1; }
 
-echo "===== Building Debian package ====="
 # Update version in control file from Cargo.toml
 VERSION=$(grep -m 1 '^version' Cargo.toml | cut -d'"' -f2)
 sed -i "s/^Version:.*/Version: $VERSION/" debian/control
+
+# Check if we want to skip rebuilding the binary
+SKIP_BUILD=${SKIP_BUILD:-0}
+if [ "$1" = "--skip-build" ] || [ "$SKIP_BUILD" = "1" ]; then
+    echo "===== Skipping build stage and reusing existing binary ====="
+    SKIP_BUILD=1
+    
+    # Check if the binary exists
+    if [ ! -f "target/release/acr" ]; then
+        echo "ERROR: Cannot skip build, binary not found at target/release/acr"
+        echo "       Please run the build without --skip-build first"
+        exit 1
+    fi
+else
+    echo "===== Building binary ====="
+    # Tip: You can use SKIP_BUILD=1 or --skip-build to skip this step next time
+    cargo build --release
+fi
+
+echo "===== Preparing Debian package ====="
 
 # Copy configuration file and systemd service file
 echo "Preparing configuration and service files..."
@@ -130,7 +149,7 @@ EOF
 chmod +x debian/postinst
 
 # Create the Debian package
-dpkg-buildpackage -us -uc -B
+SKIP_BUILD=$SKIP_BUILD dpkg-buildpackage -us -uc -B
 
 echo "===== Moving package files to out directory ====="
 # Move the .deb package file to the out directory

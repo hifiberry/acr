@@ -11,8 +11,7 @@ override_dh_auto_build:
 	fi
 
 override_dh_auto_install:
-	mkdir -p debian/acr/usr/bin
-	install -m 755 target/release/acr debian/acr/usr/bin/
+	# Let dh_install handle the file copying based on debian/acr.install
 
 override_dh_auto_clean:
 	dh_auto_clean

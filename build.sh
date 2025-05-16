@@ -48,10 +48,7 @@ if [ -f debian/compat ]; then
     rm debian/compat
 fi
 
-# Create directory structure for the package
-mkdir -p debian/tmp/usr/bin
-mkdir -p debian/tmp/etc/acr
-mkdir -p debian/tmp/lib/systemd/system
+# We'll let dh_install handle the directory creation
 
 # Make sure dependencies are installed
 command -v cargo >/dev/null 2>&1 || { echo "Cargo is required but not installed. Aborting."; exit 1; }
@@ -82,10 +79,8 @@ fi
 
 echo "===== Preparing Debian package ====="
 
-# Copy configuration file and systemd service file
-echo "Preparing configuration and service files..."
-cp hifiberryos.json debian/tmp/etc/acr/hifiberryos.json.default
-cp debian/acr.service debian/tmp/lib/systemd/system/
+# We'll let dh_install handle the file copying
+echo "Configuration files will be handled by dh_install..."
 
 # Create postinst script to handle configuration file
 cat > debian/postinst << 'EOF'

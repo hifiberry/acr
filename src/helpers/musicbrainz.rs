@@ -78,10 +78,10 @@ pub fn initialize_from_config(config: &serde_json::Value) {
             info!("MusicBrainz lookup {}", if enabled { "enabled" } else { "disabled" });
         }
         
-        // Register rate limit - default to 1000ms (1 request per second)
+        // Register rate limit - default to 1000ms (2 requests per second)
         let rate_limit_ms = mb_config.get("rate_limit_ms")
             .and_then(|v| v.as_u64())
-            .unwrap_or(1000);
+            .unwrap_or(500);
             
         ratelimit::register_service("musicbrainz", rate_limit_ms);
         info!("MusicBrainz rate limit set to {} ms", rate_limit_ms);

@@ -6,7 +6,6 @@ use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
 use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
 use crate::helpers::sanitize;
 
-
 /// MPD library interface that provides access to albums and artists
 #[derive(Clone)]
 pub struct MPDLibrary {
@@ -364,6 +363,44 @@ impl MPDLibrary {
         "application/octet-stream".to_string()
     }
 
+    /// Get cover art for a specific track URL
+    /// 
+    /// This function fetches the cover art for a given track URL and optionally caches it.
+    /// 
+    /// # Arguments
+    /// * `track_url` - The URL/path of the track to get cover art for
+    /// * `cache_path` - Optional path to store the image in the cache
+    /// 
+    /// # Returns
+    /// A tuple of (binary data, mime-type) of the cover art if found, None otherwise
+    pub fn get_track_cover(&self, track_url: &str, cache_path: Option<&str>) -> Option<(Vec<u8>, String)> {
+        // Check if we should look in the cache first
+        if let Some(path) = cache_path {
+            // Check if the track has a cover in the cache
+            if let Ok((image_data, mime_type)) = crate::helpers::imagecache::get_image_with_mime_type(path) {
+                debug!("Found cached cover art for track at {}", path);
+                return Some((image_data, mime_type));
+            }
+        }
+        
+        debug!("Retrieving cover art for track URL: {}", track_url);
+        
+        // Use the existing cover_art function to get the image data
+        let image_result = self.cover_art(track_url);
+        
+        // If we got an image and have a cache path, store it in the imagecache
+        if let (Some((image_data, mime_type)), Some(path)) = (&image_result, cache_path) {
+            // Store the image in the cache using store_image_from_data
+            if let Err(e) = crate::helpers::imagecache::store_image_from_data(path, image_data.clone(), mime_type.clone()) {
+                warn!("Failed to cache track cover art at '{}': {}", path, e);
+            } else {
+                debug!("Stored track cover art in cache at {}", path);
+            }
+        }
+        
+        image_result
+    }
+
     /// Create artist objects from all album artist data
     ///
     /// This method scans all albums in the library, extracts all artist names
@@ -600,9 +637,7 @@ impl MPDLibrary {
             warn!("Failed to acquire read lock on artists");
             None
         }
-    }
-
-    /// Get album cover art using the album's identifier
+    }    /// Get album cover art using the album's identifier
     /// 
     /// This function looks up the album in the library, extracts the URI of the first song,
     /// and uses that to fetch the cover art. The cover art is also stored in the
@@ -617,12 +652,8 @@ impl MPDLibrary {
         // Use the sanitize::key_from_album function to generate a path key
         let album_key = sanitize::key_from_album(&album);
 
-        // Check if the album has a cover in the cache
+        // Create the path for storing in imagecache
         let cache_path = format!("albums/{}/cover", album_key);
-        if let Ok((image_data, mime_type)) = crate::helpers::imagecache::get_image_with_mime_type(&cache_path) {
-            debug!("Found cached cover art for album {}", album.name);
-            return Some((image_data, mime_type));
-        }
         
         // Get the URI of the first song in the album
         let uri = match album.tracks.lock() {
@@ -646,25 +677,8 @@ impl MPDLibrary {
 
         debug!("Retrieving cover art for album {} using URI: {}", album.name, uri.as_deref().unwrap());
         
-        // Use the existing cover_art function to get the image data
-        let image_result = self.cover_art(uri.as_deref().unwrap());
-        
-        // If we got an image, store it in the imagecache
-        if let Some((image_data, mime_type)) = &image_result {
-            
-            
-            // Create the path for storing in imagecache
-            let file_path = format!("albums/{}/cover", album_key);
-            
-            // Store the image in the cache using store_image_from_data
-            if let Err(e) = crate::helpers::imagecache::store_image_from_data(&file_path, image_data.clone(), mime_type.clone()) {
-                warn!("Failed to cache album cover for '{}': {}", album.name, e);
-            } else {
-                debug!("Stored album cover in cache at {}", file_path);
-            }
-        }
-        
-        image_result
+        // Use the get_track_cover method to retrieve and cache the image
+        self.get_track_cover(uri.as_deref().unwrap(), Some(&cache_path))
     }
 }
 
@@ -827,9 +841,20 @@ impl LibraryInterface for MPDLibrary {
             }
         }
         
-        // If we reach here, the identifier is not supported
-        warn!("Unsupported image identifier format: {}", identifier);
-        None
+        // If we've reached here, the identifier format wasn't recognized
+        // As a fallback, assume the identifier is a track URL
+        debug!("Treating identifier as track URL: {}", identifier);
+        
+        // Use get_track_cover with the identifier as a URL
+        let result = self.get_track_cover(&identifier, None);
+        
+        if result.is_some() {
+            debug!("Successfully retrieved image for track URL: {}", identifier);
+        } else {
+            debug!("No image found for track URL: {}", identifier);
+        }
+        
+        result
     }
 
     fn force_update(&self) -> bool {

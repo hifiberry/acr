@@ -2,7 +2,6 @@ use crate::helpers::attributecache;
 use crate::helpers::ratelimit;
 use log::{info, error, debug};
 use std::time::Duration;
-use std::thread;
 use std::sync::atomic::{AtomicBool, Ordering};
 use deunicode::deunicode;
 use serde::Deserialize;

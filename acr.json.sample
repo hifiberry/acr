@@ -58,7 +58,7 @@
         },
         {
             "raat": {
-                "enable": false,
+                "enable": true,
                 "metadata_pipe": "/var/run/raat/metadata_pipe",
                 "control_pipe": "/var/run/raat/control_pipe",
                 "reopen_metadata_pipe": true
@@ -66,14 +66,14 @@
         },
         {
             "librespot": {
-                "enable": false,
+                "enable": true,
                 "event_pipe": "/var/run/librespot/event_pipe",
                 "reopen_event_pipe": true
             }
         },
         {
             "lms": {
-                "enable": false,
+                "enable": true,
                 "server": null,
                 "port": 9000,
                 "autodiscovery": true,

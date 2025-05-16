@@ -53,9 +53,11 @@ The attribute cache uses specific key formats for various types of data:
 | `artist::mbid::<artist>` | Musicbrainz ID(s) for this artist or this list of artists |
 | `artist::mbid_partial::<artistlist>` | Musicbrainz IDs could not be found for all artists in the list |
 | `artist::fanart::<mbid>` | URLs to artist images from FanartTV |
-| `artist::tadb::<mbid>` | Artist data from TheArtistDB |
 | `artist::metadata::<artist>` | Full artist metadata collected from multiple 3rd party sources |
 | `album::mbid::<album>::<artist>` | Musicbrainz ID for this album |
+| `theartistdb::mbid::<mbid>` | Artist data retrieved from TheArtistDB API |
+| `theartistdb::not_found::<mbid>` | Records that an artist was not found in TheArtistDB (negative cache) |
+| `theartistdb::no_thumbnail::<mbid>` | Records that an artist has no thumbnail in TheArtistDB (negative cache) |
 
 ## Implementation Details
 
@@ -68,6 +70,16 @@ The attribute cache is implemented using the [Sled](https://github.com/spacejam/
 - **Thread Safety**: The global cache instance is protected by a mutex for thread-safe access
 - **Configurable Max Age**: Can be configured to automatically expire entries after a specified number of days
 
+### TheArtistDB Caching Implementation
+
+The TheArtistDB integration uses the attribute cache to improve performance:
+
+- **`lookup_artistdb_by_mbid`**: Checks for cached artist data before making API calls and stores both successful and failed results
+- **`download_artist_thumbnail`**: Checks whether an artist has been previously identified as having no thumbnail before attempting a download
+- **`update_artist`**: Uses cached data to avoid redundant processing when a previous attempt found no thumbnail
+
+This multi-level caching approach significantly reduces API calls, particularly for artists that don't have thumbnails available in TheArtistDB.
+
 ### Image Cache
 
 The image cache is a simple file-based cache that:
@@ -75,6 +87,15 @@ The image cache is a simple file-based cache that:
 - Stores images as files in the configured directory
 - Creates subdirectories as needed based on the path structure
 - Uses the filesystem's native caching to optimize read performance
+
+### TheArtistDB Caching
+
+The caching for TheArtistDB API implements these specific strategies:
+
+- **Positive Result Caching**: Artist data retrieved from TheArtistDB is stored with the key `theartistdb::mbid::<mbid>` to avoid redundant API calls
+- **Negative Result Caching**: When an artist is not found in TheArtistDB, this fact is cached with the key `theartistdb::not_found::<mbid>` to avoid attempting to look up the same non-existent artist repeatedly
+- **No Thumbnail Caching**: When an artist exists in TheArtistDB but has no thumbnail, this is cached with the key `theartistdb::no_thumbnail::<mbid>` to avoid redundant processing
+- **Cache-First Approach**: Each API function first checks the cache before making any network requests
 
 ## Configuration
 

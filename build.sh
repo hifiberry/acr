@@ -87,13 +87,23 @@ cat > debian/postinst << 'EOF'
 #!/bin/sh
 set -e
 
+# Ensure the script runs with proper error handling
+set -euo pipefail
+
 # Function to safely copy default config if none exists
 setup_config() {
-    if [ ! -f /acr/hifiberryos.json ]; then
-        echo "No configuration file found, copying default..."
-        cp /etc/acr/hifiberryos.json.default /acr/hifiberryos.json
-        # Set proper ownership
-        chown acr:acr /acr/hifiberryos.json
+    if [ ! -f /etc/acr/acr.json ]; then
+        echo "No configuration file found, copying from sample..."
+        if [ -f /etc/acr/acr.json.sample ]; then
+            cp /etc/acr/acr.json.sample /etc/acr/acr.json
+            # Set proper ownership
+            chown acr:acr /etc/acr/acr.json
+            echo "Sample config copied to acr.json successfully"
+        else
+            echo "ERROR: Sample config file not found at /etc/acr/acr.json.sample"
+            echo "Cannot continue without a valid configuration file"
+            exit 1
+        fi
     else
         echo "Existing configuration file found, keeping it."
     fi
@@ -106,23 +116,40 @@ setup_user_and_dirs() {
         echo "Creating acr group..."
         groupadd --system acr
     fi
-    
-    # Create acr user if it doesn't exist
+      # Create acr user if it doesn't exist
     if ! getent passwd acr > /dev/null; then
         echo "Creating acr user..."
-        useradd --system --gid acr --shell /usr/sbin/nologin --home-dir /acr acr
+        useradd --system --gid acr --shell /usr/sbin/nologin --home-dir /etc/acr acr
+    fi    # Create /etc/acr directory and cache directories if they don't exist
+    if [ ! -d /etc/acr ]; then
+        echo "Creating /etc/acr directory..."
+        mkdir -p /etc/acr
     fi
     
-    # Create /acr directory if it doesn't exist
-    if [ ! -d /acr ]; then
-        echo "Creating /acr directory..."
-        mkdir -p /acr
+    # Create /var/acr directory if it doesn't exist
+    if [ ! -d /var/acr ]; then
+        echo "Creating /var/acr directory..."
+        mkdir -p /var/acr
     fi
     
-    # Set ownership of /acr directory
-    echo "Setting ownership of /acr directory..."
-    chown -R acr:acr /acr
-    chmod 755 /acr
+    # Create cache directories
+    if [ ! -d /etc/acr/cache ]; then
+        echo "Creating cache directories..."
+        mkdir -p /etc/acr/cache/attributes
+        mkdir -p /etc/acr/cache/images
+    fi
+    
+    # Set ownership of /etc/acr and /var/acr directories and all subdirectories
+    echo "Setting ownership of /etc/acr directory..."
+    chown -R acr:acr /etc/acr
+    chmod 755 /etc/acr
+    
+    echo "Setting ownership of /var/acr directory..."
+    chown -R acr:acr /var/acr
+    chmod 755 /var/acr
+    chmod 755 /etc/acr/cache
+    chmod 755 /etc/acr/cache/attributes
+    chmod 755 /etc/acr/cache/images
 }
 
 case "$1" in

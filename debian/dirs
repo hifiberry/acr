@@ -1,0 +1,5 @@
+var/acr
+etc/acr
+etc/acr/cache
+etc/acr/cache/attributes
+etc/acr/cache/images

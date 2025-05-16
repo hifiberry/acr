@@ -36,8 +36,7 @@
                 "directory": "doc"
             }
         ]
-    },
-    "cache": {
+    },    "cache": {
         "attribute_cache_path": "cache/attributes",
         "image_cache_path": "cache/images"
     },

@@ -1,3 +1,4 @@
 target/release/acr usr/bin/
-hifiberryos.json etc/acr/hifiberryos.json.default
+sample-config.json usr/share/acr/acr-default.json
+sample-config.json etc/acr/acr.json.sample
 debian/acr.service lib/systemd/system/

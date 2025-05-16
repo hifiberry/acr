@@ -24,8 +24,7 @@ use acr::{initialize_tokio_runtime, get_tokio_runtime};
 fn main() {
     // Initialize the Tokio runtime early
     initialize_tokio_runtime();
-    
-    // Parse command line arguments
+      // Parse command line arguments
     let args: Vec<String> = env::args().collect();
     let debug_mode = args.iter().any(|arg| arg == "--debug");
     
@@ -43,37 +42,44 @@ fn main() {
 
     info!("AudioControl3 (ACR) Player Controller starting");
     
-    // Check if acr.json exists in the current directory
-    let config_path = Path::new("acr.json");
+    // Check for config file path in command line arguments (-c option)
+    let mut config_path_str = String::from("acr.json");
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "-c" && i + 1 < args.len() {
+            config_path_str = args[i + 1].clone();
+            info!("Using configuration file specified by -c: {}", config_path_str);
+            break;
+        }
+        i += 1;
+    }
+    
+    // Check if the specified config file exists    let config_path = Path::new(&config_path_str);
     let controllers_config: serde_json::Value = if config_path.exists() {
-        // Read the configuration from acr.json
-        info!("Found acr.json configuration file, using it");
+        // Read the configuration from the specified file
+        info!("Found configuration file at {}, using it", config_path_str);
         match fs::read_to_string(config_path) {
             Ok(config_str) => {
                 match serde_json::from_str(&config_str) {
                     Ok(config) => {
-                        info!("Successfully loaded configuration from acr.json");
+                        info!("Successfully loaded configuration from {}", config_path_str);
                         config
                     },
                     Err(e) => {
-                        error!("Failed to parse acr.json: {}", e);
-                        info!("Falling back to sample configuration");
-                        // Fall back to sample config if parsing fails
-                        parse_sample_config()
+                        error!("Failed to parse {}: {}", config_path_str, e);
+                        panic!("Cannot continue without a valid configuration file");
                     }
                 }
             },
             Err(e) => {
-                error!("Failed to read acr.json: {}", e);
-                info!("Falling back to sample configuration");
-                // Fall back to sample config if reading fails
-                parse_sample_config()
+                error!("Failed to read {}: {}", config_path_str, e);
+                panic!("Cannot continue without a valid configuration file");
             }
         }
     } else {
-        // Use sample configuration
-        info!("No acr.json found, using sample configuration");
-        parse_sample_config()
+        // No config file found
+        error!("Configuration file not found at {}", config_path_str);
+        panic!("Cannot continue without a valid configuration file");
     };
 
     // Get the attribute cache path from configuration
@@ -81,8 +87,7 @@ fn main() {
         if let Some(cache_path) = cache_config.get("attribute_cache_path").and_then(|p| p.as_str()) {
             info!("Using attribute cache path from config: {}", cache_path);
             cache_path.to_string()
-        } else {
-            let default_path = "cache/attributes".to_string();
+        } else {            let default_path = "cache/attributes".to_string();
             info!("No attribute_cache_path specified in cache configuration, using default path: {}", default_path);
             default_path
         }
@@ -97,8 +102,7 @@ fn main() {
         if let Some(cache_path) = cache_config.get("image_cache_path").and_then(|p| p.as_str()) {
             info!("Using image cache path from config: {}", cache_path);
             cache_path.to_string()
-        } else {
-            let default_path = "cache/images".to_string();
+        } else {            let default_path = "cache/images".to_string();
             info!("No image_cache_path specified in cache configuration, using default path: {}", default_path);
             default_path
         }
@@ -217,24 +221,7 @@ fn main() {
     info!("Exiting application");
 }
 
-// Helper function to parse the sample configuration
-fn parse_sample_config() -> serde_json::Value {
-    // Use the sample JSON configuration from AudioController
-    let sample_config = AudioController::sample_json_config();
-    info!("Using sample configuration: {}", sample_config);
-    
-    // Parse the sample configuration string into a JSON Value
-    match serde_json::from_str(&sample_config) {
-        Ok(config) => {
-            info!("Successfully parsed sample JSON configuration");
-            config
-        },
-        Err(e) => {
-            error!("Failed to parse sample JSON configuration: {}", e);
-            panic!("Cannot continue with invalid sample configuration");
-        }
-    }
-}
+
 
 // Helper function to initialize the global attribute cache
 fn initialize_attribute_cache(attribute_cache_path: &str) {

@@ -28,14 +28,14 @@
         "port": 1080,
         "static_routes": [
             {
-                "url_path": "/usr/share/acr/web",
-                "directory": "web"
+                "url_path": "/web",
+                "directory": "/usr/share/acr/web"
             }
         ]
     },
     "cache": {
-        "attribute_cache_path": "/etc/acr/cache/attributes",
-        "image_cache_path": "/etc/acr/cache/images"
+        "attribute_cache_path": "/var/acr/cache/attributes",
+        "image_cache_path": "/var/acr/cache/images"
     },
     "musicbrainz": {
         "enable": true

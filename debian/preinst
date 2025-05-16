@@ -6,44 +6,6 @@ if [ -n "$BASH_VERSION" ]; then
     set -euo pipefail
 fi
 
-# Clean up old directories from previous versions that cause problems
-if [ -d /etc/acr/hifiberryos.json.default ]; then
-    echo "Removing old directory /etc/acr/hifiberryos.json.default..."
-    rm -rf /etc/acr/hifiberryos.json.default
-fi
-
-# Clean up incorrectly created sample config directory
-if [ -d /etc/acr/acr.json.sample ]; then
-    echo "Removing incorrectly created directory /etc/acr/acr.json.sample..."
-    rm -rf /etc/acr/acr.json.sample
-fi
-
-# Check if the ACR config itself was incorrectly created as a directory
-if [ -d /etc/acr/acr.json ]; then
-    echo "ERROR: Found /etc/acr/acr.json as a directory when it should be a file!"
-    echo "Removing incorrect directory structure..."
-    rm -rf /etc/acr/acr.json
-fi
-
-# Clean up incorrectly created directories in /usr/share/acr
-if [ -d /usr/share/acr/acr-default.json ]; then
-    echo "Removing incorrectly created directory /usr/share/acr/acr-default.json..."
-    rm -rf /usr/share/acr/acr-default.json
-fi
-
-# Clean up other possible incorrect paths
-if [ -d /usr/share/acr/sample-config.json ]; then
-    echo "Removing incorrectly created directory /usr/share/acr/sample-config.json..."
-    rm -rf /usr/share/acr/sample-config.json
-fi
-
-# Clean up legacy directories in /etc/acr
-if [ -d /etc/acr ]; then
-    echo "Checking for invalid files in /etc/acr..."
-    # Find and remove any directories with .json in the name (which should be files, not directories)
-    find /etc/acr -maxdepth 1 -type d -name "*.json*" -exec rm -rf {} \; 2>/dev/null || true
-fi
-
 # Ensure base directories exist and have correct permissions
 if [ ! -d /etc/acr ]; then
     echo "Creating /etc/acr directory..."
@@ -57,13 +19,10 @@ if [ ! -d /usr/share/acr ]; then
     chmod 755 /usr/share/acr
 fi
 
-exit 0
-
-# Clean up legacy directories in /acr
-if [ -d /acr ]; then
-    echo "Checking for invalid files in /acr..."
-    # Find and remove any directories with .json in the name (which should be files, not directories)
-    find /acr -maxdepth 1 -type d -name "*.json*" -exec rm -rf {} \; 2>/dev/null || true
+if [ ! -d /usr/share/acr/web ]; then
+    echo "Creating /usr/share/acr/web directory..."
+    mkdir -p /usr/share/acr/web
+    chmod 755 /usr/share/acr/web
 fi
 
 exit 0

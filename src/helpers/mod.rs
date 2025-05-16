@@ -9,6 +9,7 @@ pub mod theartistdb;
 pub mod sanitize;
 pub mod macaddress;
 pub mod http_client;
+pub mod ratelimit;
 
 use crate::data::artist::Artist;
 

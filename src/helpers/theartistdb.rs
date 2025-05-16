@@ -6,6 +6,7 @@ use serde_json::{Value};
 use crate::helpers::http_client;
 use crate::helpers::imagecache;
 use crate::helpers::attributecache;
+use crate::helpers::ratelimit;
 use crate::data::artist::Artist;
 use crate::helpers::artistupdater::ArtistUpdater;
 use crate::helpers::sanitize::filename_from_string;
@@ -57,6 +58,13 @@ pub fn initialize_from_config(config: &serde_json::Value) {
         } else {
             warn!("No API key found for TheArtistDB in configuration");
         }
+          // Register rate limit - default to 2 requests per second (500ms)
+        let rate_limit_ms = artistdb_config.get("rate_limit_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(500);
+            
+        ratelimit::register_service("theartistdb", rate_limit_ms);
+        info!("TheArtistDB rate limit set to {} ms", rate_limit_ms);
         
         let status = if enabled { "enabled" } else { "disabled" };
         info!("TheArtistDB lookup {}", status);
@@ -64,6 +72,9 @@ pub fn initialize_from_config(config: &serde_json::Value) {
         // Default to disabled if not in config
         THEARTISTDB_ENABLED.store(false, Ordering::SeqCst);
         debug!("TheArtistDB configuration not found, lookups disabled");
+        
+        // Register default rate limit even if disabled
+        ratelimit::register_service("theartistdb", 500);
     }
 }
 
@@ -134,9 +145,10 @@ pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> 
             key
         },
         None => return Err("No API key configured for TheArtistDB".to_string()),
-    };
-
-    debug!("Looking up artist with MBID {}", mbid);
+    };    debug!("Looking up artist with MBID {}", mbid);
+    
+    // Apply rate limiting before making the request
+    ratelimit::rate_limit("theartistdb");
     
     // Construct the API URL
     let url = format!(

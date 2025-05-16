@@ -246,8 +246,6 @@ pub fn update_library_artists_metadata_in_background(
             if count % 10 == 0 || count == total {
                 info!("Processed {}/{} artists for metadata", count, total);
             }            // Sleep between updates to avoid overwhelming external services
-            use std::{thread, time::Duration};
-            thread::sleep(Duration::from_millis(500));
         }
 
         info!("Artist metadata update process completed");

@@ -1,4 +1,5 @@
 use crate::helpers::attributecache;
+use crate::helpers::ratelimit;
 use log::{info, error, debug};
 use std::time::Duration;
 use std::thread;
@@ -76,10 +77,21 @@ pub fn initialize_from_config(config: &serde_json::Value) {
             MUSICBRAINZ_ENABLED.store(enabled, Ordering::SeqCst);
             info!("MusicBrainz lookup {}", if enabled { "enabled" } else { "disabled" });
         }
+        
+        // Register rate limit - default to 1000ms (1 request per second)
+        let rate_limit_ms = mb_config.get("rate_limit_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1000);
+            
+        ratelimit::register_service("musicbrainz", rate_limit_ms);
+        info!("MusicBrainz rate limit set to {} ms", rate_limit_ms);
     } else {
         // Default to disabled if not in config
         MUSICBRAINZ_ENABLED.store(false, Ordering::SeqCst);
         debug!("MusicBrainz configuration not found, lookups disabled");
+        
+        // Register default rate limit even if disabled
+        ratelimit::register_service("musicbrainz", 500);
     }
 }
 
@@ -423,9 +435,8 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         debug!("Artist '{}' not found in cache and cache_only=true", artist_name);
         return MusicBrainzSearchResult::NotFound;
     }
-    
-    // Add a 1-second delay between artists to limit API requests (respecting MusicBrainz rate limits)
-    thread::sleep(Duration::from_secs(1));
+      // Apply rate limiting before making the API request
+    ratelimit::rate_limit("musicbrainz");
     
     // Sanitize artist name for the API query
     let sanitized_artist_name = sanitize_artist_name_for_search(artist_name);

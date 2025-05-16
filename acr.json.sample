@@ -36,9 +36,14 @@
     "cache": {
         "attribute_cache_path": "/var/acr/cache/attributes",
         "image_cache_path": "/var/acr/cache/images"
+    },    "musicbrainz": {
+        "enable": true,
+        "rate_limit_ms": 1000
     },
-    "musicbrainz": {
-        "enable": true
+    "theartistdb": {
+        "enable": true,
+        "api_key": "YOUR_API_KEY_HERE",
+        "rate_limit_ms": 500
     },
     "players": [
         {

@@ -8,28 +8,15 @@ fi
 
 # Function to safely copy default config if none exists
 setup_config() {
-    # First, ensure we have a sample config available in /etc/acr
-    if [ ! -f /etc/acr/acr.json.sample ] && [ -f /usr/share/acr/sample-config.json ]; then
-        echo "Creating sample config in /etc/acr..."
-        cp /usr/share/acr/sample-config.json /etc/acr/acr.json.sample
-        chmod 644 /etc/acr/acr.json.sample
-    fi
-
     # Check if we need to copy the sample config to the actual config file
     if [ ! -f /etc/acr/acr.json ]; then
         echo "No configuration file found, creating from sample..."
-        if [ -f /etc/acr/acr.json.sample ]; then
-            cp /etc/acr/acr.json.sample /etc/acr/acr.json
+        if [ -f /usr/share/acr/acr.json.sample ]; then
+            cp /usr/share/acr/acr.json.sample /etc/acr/acr.json
             # Set proper ownership
             chown acr:acr /etc/acr/acr.json
             chmod 644 /etc/acr/acr.json
             echo "Sample config copied to acr.json successfully"
-        elif [ -f /usr/share/acr/sample-config.json ]; then
-            echo "Using default configuration from /usr/share/acr..."
-            cp /usr/share/acr/sample-config.json /etc/acr/acr.json
-            chown acr:acr /etc/acr/acr.json
-            chmod 644 /etc/acr/acr.json
-            echo "Default config copied to acr.json successfully"
         else
             echo "ERROR: No sample configuration file found"
             echo "Cannot continue without a valid configuration file"
@@ -42,19 +29,6 @@ setup_config() {
 
 # Function to create user, group and directory
 setup_user_and_dirs() {
-    # Handle legacy installations at /acr
-    if [ -d /acr ]; then
-        echo "Found legacy directory at /acr, migrating to /etc/acr..."
-        
-        # Copy config files from /acr to /etc/acr if they exist
-        if [ -f /acr/acr.json ] && [ ! -f /etc/acr/acr.json ]; then
-            echo "Migrating configuration from /acr/acr.json to /etc/acr/acr.json..."
-            cp /acr/acr.json /etc/acr/acr.json
-        fi
-        
-        # No need to remove /acr as it might be used by other components
-    fi
-
     # Create acr group if it doesn't exist
     if ! getent group acr > /dev/null; then
         echo "Creating acr group..."

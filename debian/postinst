@@ -39,7 +39,13 @@ setup_user_and_dirs() {
     if ! getent passwd acr > /dev/null; then
         echo "Creating acr user..."
         useradd --system --gid acr --shell /usr/sbin/nologin --home-dir /etc/acr acr
-    fi    
+    fi
+    
+    # Add acr user to the audio group for audio device access
+    if getent group audio > /dev/null; then
+        echo "Adding acr user to audio group..."
+        usermod -a -G audio acr
+    fi
     
     # Create directory structure
     echo "Setting up directory structure..."

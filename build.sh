@@ -84,11 +84,13 @@ echo "Configuration files will be handled by dh_install..."
 
 # Create postinst script to handle configuration file
 cat > debian/postinst << 'EOF'
-#!/bin/sh
+#!/bin/bash
 set -e
 
-# Ensure the script runs with proper error handling
-set -euo pipefail
+# Ensure the script runs with proper error handling (bash specific)
+if [ -n "$BASH_VERSION" ]; then
+    set -euo pipefail
+fi
 
 # Function to safely copy default config if none exists
 setup_config() {
@@ -111,6 +113,12 @@ setup_config() {
 
 # Function to create user, group and directory
 setup_user_and_dirs() {
+    # Clean up old directory if it exists (from previous versions)
+    if [ -d /etc/acr/hifiberryos.json.default ]; then
+        echo "Removing old directory /etc/acr/hifiberryos.json.default..."
+        rm -rf /etc/acr/hifiberryos.json.default
+    fi
+
     # Create acr group if it doesn't exist
     if ! getent group acr > /dev/null; then
         echo "Creating acr group..."
@@ -170,6 +178,11 @@ EOF
 
 # Make the postinst script executable
 chmod +x debian/postinst
+
+# Make the preinst script executable (if it exists)
+if [ -f debian/preinst ]; then
+    chmod +x debian/preinst
+fi
 
 # Create the Debian package
 # The environment variable SKIP_BUILD is already exported above

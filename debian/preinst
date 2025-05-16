@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+
+# Clean up old directory from previous versions that causes problems
+if [ -d /etc/acr/hifiberryos.json.default ]; then
+    echo "Removing old directory /etc/acr/hifiberryos.json.default..."
+    rm -rf /etc/acr/hifiberryos.json.default
+fi
+
+# Clean up any other potential legacy issues
+if [ -d /etc/acr ]; then
+    echo "Checking for any other invalid files..."
+    # Find and remove any directories with .json in the name (which should be files, not directories)
+    find /etc/acr -maxdepth 1 -type d -name "*.json*" -exec rm -rf {} \; 2>/dev/null || true
+fi
+
+exit 0

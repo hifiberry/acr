@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
+use urlencoding;
 
 /// Constant for MPD image API URL prefix including API prefix
 pub fn mpd_image_url() -> String {
@@ -700,22 +701,43 @@ impl MPDPlayerController {
                 }
             }
         }
-    }
-    
-    /// Convert an MPD song to our Song format
+    }    /// Convert an MPD song to our Song format
     fn convert_mpd_song(mpd_song: mpd::Song) -> Song {
+        // Generate cover art URL using the file path/URI from MPD song
+        let cover_url = if !mpd_song.file.is_empty() {
+            // Use the API endpoint for MPD images with the song URI
+            Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))
+        } else {
+            None
+        };
+        
+        // Extract album from tags
+        let album = mpd_song.tags.iter()
+            .find(|(tag, _)| tag == "Album")
+            .map(|(_, value)| value.clone());
+            
+        // Extract album artist from tags
+        let album_artist = mpd_song.tags.iter()
+            .find(|(tag, _)| tag == "AlbumArtist")
+            .map(|(_, value)| value.clone());
+            
+        // Extract genre from tags
+        let genre = mpd_song.tags.iter()
+            .find(|(tag, _)| tag == "Genre")
+            .map(|(_, value)| value.clone());
+            
         Song {
             title: mpd_song.title,
             artist: mpd_song.artist,
-            album: None,
-            album_artist: None,
+            album,
+            album_artist,
             track_number: mpd_song.place.as_ref().map(|p| p.pos as i32),
             total_tracks: None,
             duration: mpd_song.duration.map(|d| d.as_secs_f32() as f64),
-            genre: None,
+            genre,
             year: None,
-            cover_art_url: None,
-            stream_url: Some(mpd_song.file),
+            cover_art_url: cover_url,
+            stream_url: Some(mpd_song.file.clone()),
             source: Some("mpd".to_string()),
             metadata: HashMap::new(),
         }

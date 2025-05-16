@@ -1,3 +1,4 @@
 target/release/acr usr/bin/
 acr.json.sample usr/share/acr/
+example-app/* usr/share/acr/sample-web/
 debian/acr.service lib/systemd/system/

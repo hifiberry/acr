@@ -54,11 +54,12 @@ fn main() {
         i += 1;
     }
     
-    // Check if the specified config file exists    let config_path = Path::new(&config_path_str);
-    let controllers_config: serde_json::Value = if config_path.exists() {
+    // Check if the specified config file exists
+    let config_path_obj = Path::new(&config_path_str);
+    let controllers_config: serde_json::Value = if config_path_obj.exists() {
         // Read the configuration from the specified file
         info!("Found configuration file at {}, using it", config_path_str);
-        match fs::read_to_string(config_path) {
+        match fs::read_to_string(&config_path_str) {
             Ok(config_str) => {
                 match serde_json::from_str(&config_str) {
                     Ok(config) => {

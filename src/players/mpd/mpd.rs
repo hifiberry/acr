@@ -1140,13 +1140,17 @@ impl PlayerController for MPDPlayerController {
                     } else {
                         warn!("Failed to clear MPD queue");
                     }
-                },
-                
-                PlayerCommand::PlayQueueIndex(index) => {
+                },                  PlayerCommand::PlayQueueIndex(index) => {
                     debug!("Playing track at index {} in MPD queue", index);
                     
-                    // TODO: Implement play_queue_index command
-                    // This would typically involve seeking to the specified index
+                    // Use MPD's switch function to start playback from a specific position
+                    // This plays the song at the specified position in the playlist (0-based)
+                    success = client.switch(index as u32).is_ok();
+                    if success {
+                        debug!("Started playback of track at position {} in MPD queue", index);
+                    } else {
+                        warn!("Failed to play track at position {} in MPD queue", index);
+                    }
                 },
             }
             

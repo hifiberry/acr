@@ -159,11 +159,11 @@ Sends a playback command to a specific player by name.
 - **Method**: POST
 - **Path Parameters**:
   - `player-name` (string): The name of the target player. You can use "active" to target the currently active player.
-  - `command` (string): The command to send (same options as above, plus the following):
-    - Queue management commands:
+  - `command` (string): The command to send (same options as above, plus the following):    - Queue management commands:
       - `add_track:<identifier>` - Adds a track to the queue. The identifier can be either a track ID or a track URI.
       - `remove_track:<position>` - Removes a track at the specified position from the queue.
       - `clear_queue` - Clears the entire queue.
+      - `play_queue_index:<index>` - Plays the track at the specified index position in the queue.
 - **Response**: Same as "Send Command to Active Player"
 - **Error Response** (400 Bad Request, 404 Not Found, 500 Internal Server Error): Same structure as above
 
@@ -189,6 +189,9 @@ curl -X POST http://<device-ip>:1080/api/player/lms/command/remove_track:2
 
 # Clear the entire queue
 curl -X POST http://<device-ip>:1080/api/player/lms/command/clear_queue
+
+# Play the track at index 3 in the queue
+curl -X POST http://<device-ip>:1080/api/player/lms/command/play_queue_index:3
 ```
 
 ### Get Now Playing Information

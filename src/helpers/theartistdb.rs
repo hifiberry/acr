@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use serde_json::{Value};
 use crate::helpers::http_client;
 use crate::helpers::imagecache;
+use crate::helpers::attributecache;
 use crate::data::artist::Artist;
 use crate::helpers::artistupdater::ArtistUpdater;
 use crate::helpers::sanitize::filename_from_string;
@@ -91,9 +92,38 @@ pub fn get_api_key() -> Option<String> {
 /// 
 /// # Returns
 /// * `Result<serde_json::Value, String>` - Artist information or error message
-pub fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
+pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> {
     if !is_enabled() {
         return Err("TheArtistDB lookups are disabled".to_string());
+    }
+    
+    // Create cache keys for both positive and negative results
+    let cache_key = format!("theartistdb::mbid::{}", mbid);
+    let not_found_cache_key = format!("theartistdb::not_found::{}", mbid);
+    
+    // Check if we have a positive result cached
+    match attributecache::get::<Value>(&cache_key) {
+        Ok(Some(artist_data)) => {
+            debug!("Found cached TheArtistDB data for MBID {}", mbid);
+            return Ok(artist_data);
+        },
+        Ok(None) => {
+            debug!("No cached TheArtistDB data found for MBID {}", mbid);
+        },
+        Err(e) => {
+            debug!("Error reading from cache for MBID {}: {}", mbid, e);
+        }
+    }
+    
+    // Check if we have a negative result cached
+    match attributecache::get::<bool>(&not_found_cache_key) {
+        Ok(Some(true)) => {
+            debug!("MBID {} previously marked as not found in cache", mbid);
+            return Err(format!("No artist found with MBID {} (from cache)", mbid));
+        },
+        _ => {
+            // Continue with lookup if not marked as not found or error reading cache
+        }
     }
     
     let api_key = match get_api_key() {
@@ -124,14 +154,20 @@ pub fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
         Ok(text) => text,
         Err(e) => return Err(format!("Failed to send request to TheArtistDB: {}", e)),
     };
-    
-    // Parse the response as JSON
+      // Parse the response as JSON
     match serde_json::from_str::<Value>(&response_text) {
         Ok(json_data) => {
             // Check if the artists array exists, is not empty, and contains exactly one artist
             if let Some(artists) = json_data.get("artists") {
                 if artists.is_null() {
                     debug!("No artist data found for MBID {}", mbid);
+                    // Cache negative result
+                    let not_found_cache_key = format!("theartistdb::not_found::{}", mbid);
+                    if let Err(e) = attributecache::set(&not_found_cache_key, &true) {
+                        debug!("Failed to cache negative result for MBID {}: {}", mbid, e);
+                    } else {
+                        debug!("Cached negative result for MBID {}", mbid);
+                    }
                     return Err(format!("No artist found with MBID {}", mbid));
                 }
                 
@@ -139,12 +175,29 @@ pub fn lookup_mbid(mbid: &str) -> Result<serde_json::Value, String> {
                     match artists_array.len() {
                         0 => {
                             debug!("Empty artists array for MBID {}", mbid);
+                            // Cache negative result
+                            let not_found_cache_key = format!("theartistdb::not_found::{}", mbid);
+                            if let Err(e) = attributecache::set(&not_found_cache_key, &true) {
+                                debug!("Failed to cache negative result for MBID {}: {}", mbid, e);
+                            } else {
+                                debug!("Cached negative result for MBID {}", mbid);
+                            }
                             return Err(format!("No artist found with MBID {}", mbid));
                         },
                         1 => {
                             debug!("Successfully retrieved artist data for MBID {}", mbid);
+                            let artist_data = artists_array[0].clone();
+                            
+                            // Cache the positive result
+                            let cache_key = format!("theartistdb::mbid::{}", mbid);
+                            if let Err(e) = attributecache::set(&cache_key, &artist_data) {
+                                debug!("Failed to cache artist data for MBID {}: {}", mbid, e);
+                            } else {
+                                debug!("Cached positive result for MBID {}", mbid);
+                            }
+                            
                             // Return just the artist object, not the whole array
-                            return Ok(artists_array[0].clone());
+                            return Ok(artist_data);
                         },
                         n => {
                             debug!("Found {} artists for MBID {}, expected exactly 1", n, mbid);
@@ -181,6 +234,20 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
         debug!("TheArtistDB lookups are disabled, skipping thumbnail download");
         return false;
     }
+    
+    // Create a cache key for tracking artists with no thumbnails
+    let no_thumbnail_cache_key = format!("theartistdb::no_thumbnail::{}", mbid);
+    
+    // Check if we previously determined this artist has no thumbnail
+    match attributecache::get::<bool>(&no_thumbnail_cache_key) {
+        Ok(Some(true)) => {
+            debug!("Artist '{}' previously marked as having no thumbnail in cache", artist_name);
+            return false;
+        },
+        _ => {
+            // Continue with lookup if not marked as no thumbnail or error reading cache
+        }
+    }
 
     let artist_basename = filename_from_string(artist_name);
 
@@ -196,7 +263,7 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
     debug!("Attempting to download TheArtistDB thumbnail for artist '{}'", artist_name);
 
     // Lookup the artist by MBID to get the thumbnail URL
-    match lookup_mbid(mbid) {
+    match lookup_artistdb_by_mbid(mbid) {
         Ok(artist_data) => {
             // Extract the thumbnail URL from the response
             if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
@@ -224,23 +291,38 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
                                 info!("Stored TheArtistDB thumbnail for '{}'", artist_name);
                                 return true;
                             }
-                        },
-                        Err(e) => {
+                        },                        Err(e) => {
                             warn!("Failed to download TheArtistDB thumbnail for '{}': {}", artist_name, e);
+                            // Don't cache this as a negative result since it might be a temporary network issue
                             return false;
                         }
                     }
                 } else {
                     debug!("Empty thumbnail URL for artist '{}' in TheArtistDB", artist_name);
+                    // Cache this as a negative result
+                    let no_thumbnail_cache_key = format!("theartistdb::no_thumbnail::{}", mbid);
+                    if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
+                        debug!("Failed to cache no thumbnail result for artist '{}': {}", artist_name, e);
+                    } else {
+                        debug!("Cached no thumbnail result for artist '{}'", artist_name);
+                    }
                     return false;
                 }
             } else {
                 debug!("No thumbnail URL found for artist '{}' in TheArtistDB", artist_name);
+                // Cache this as a negative result
+                let no_thumbnail_cache_key = format!("theartistdb::no_thumbnail::{}", mbid);
+                if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
+                    debug!("Failed to cache no thumbnail result for artist '{}': {}", artist_name, e);
+                } else {
+                    debug!("Cached no thumbnail result for artist '{}'", artist_name);
+                }
                 return false;
             }
         },
         Err(e) => {
             debug!("Failed to retrieve artist data from TheArtistDB for '{}': {}", artist_name, e);
+            // This error is likely already cached as a negative result in lookup_artistdb_by_mbid
             return false;
         }
     }
@@ -283,8 +365,20 @@ impl ArtistUpdater for TheArtistDbUpdater {
         if let Some(mbid) = mbid_opt {
             debug!("Looking up artist information in TheArtistDB for {} with MBID {}", artist.name, mbid);
             
+            // Check if we already know this artist has no thumbnail
+            let no_thumbnail_cache_key = format!("theartistdb::no_thumbnail::{}", mbid);
+            match attributecache::get::<bool>(&no_thumbnail_cache_key) {
+                Ok(Some(true)) => {
+                    debug!("Artist '{}' previously marked as having no thumbnail in cache, skipping", artist.name);
+                    return artist;
+                },
+                _ => {
+                    // Continue with lookup if not marked as no thumbnail or error reading cache
+                }
+            }
+            
             // Lookup artist by MBID
-            match lookup_mbid(&mbid) {
+            match lookup_artistdb_by_mbid(&mbid) {
                 Ok(artist_data) => {
                     debug!("Successfully retrieved artist data from TheArtistDB for {}", artist.name);
                     
@@ -312,9 +406,21 @@ impl ArtistUpdater for TheArtistDbUpdater {
                             }
                         } else {
                             debug!("Empty thumbnail URL from TheArtistDB for artist {}", artist.name);
+                            // Cache that this artist has no thumbnail
+                            if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
+                                debug!("Failed to cache no thumbnail result for artist '{}': {}", artist.name, e);
+                            } else {
+                                debug!("Cached no thumbnail result for artist '{}'", artist.name);
+                            }
                         }
                     } else {
                         debug!("No thumbnail available from TheArtistDB for artist {}", artist.name);
+                        // Cache that this artist has no thumbnail
+                        if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
+                            debug!("Failed to cache no thumbnail result for artist '{}': {}", artist.name, e);
+                        } else {
+                            debug!("Cached no thumbnail result for artist '{}'", artist.name);
+                        }
                     }
                     
                     // Extract additional artist metadata that could be useful
@@ -339,6 +445,7 @@ impl ArtistUpdater for TheArtistDbUpdater {
                 },
                 Err(e) => {
                     info!("Failed to retrieve artist data from TheArtistDB for {} with MBID {}: {}", artist.name, mbid, e);
+                    // This error is likely already cached as a negative result in lookup_artistdb_by_mbid
                 }
             }
         } else {

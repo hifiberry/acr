@@ -7,11 +7,18 @@ if [ -d /etc/acr/hifiberryos.json.default ]; then
     rm -rf /etc/acr/hifiberryos.json.default
 fi
 
-# Clean up any other potential legacy issues
+# Clean up legacy directories in /etc/acr
 if [ -d /etc/acr ]; then
-    echo "Checking for any other invalid files..."
+    echo "Checking for invalid files in /etc/acr..."
     # Find and remove any directories with .json in the name (which should be files, not directories)
     find /etc/acr -maxdepth 1 -type d -name "*.json*" -exec rm -rf {} \; 2>/dev/null || true
+fi
+
+# Clean up legacy directories in /acr
+if [ -d /acr ]; then
+    echo "Checking for invalid files in /acr..."
+    # Find and remove any directories with .json in the name (which should be files, not directories)
+    find /acr -maxdepth 1 -type d -name "*.json*" -exec rm -rf {} \; 2>/dev/null || true
 fi
 
 exit 0

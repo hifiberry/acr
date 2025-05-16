@@ -82,104 +82,11 @@ echo "===== Preparing Debian package ====="
 # We'll let dh_install handle the file copying
 echo "Configuration files will be handled by dh_install..."
 
-# Create postinst script to handle configuration file
-cat > debian/postinst << 'EOF'
-#!/bin/bash
-set -e
-
-# Ensure the script runs with proper error handling (bash specific)
-if [ -n "$BASH_VERSION" ]; then
-    set -euo pipefail
+# Ensure the debian/postinst and debian/preinst scripts are executable
+if [ -f debian/postinst ]; then
+    chmod +x debian/postinst
 fi
 
-# Function to safely copy default config if none exists
-setup_config() {
-    if [ ! -f /etc/acr/acr.json ]; then
-        echo "No configuration file found, copying from sample..."
-        if [ -f /etc/acr/acr.json.sample ]; then
-            cp /etc/acr/acr.json.sample /etc/acr/acr.json
-            # Set proper ownership
-            chown acr:acr /etc/acr/acr.json
-            echo "Sample config copied to acr.json successfully"
-        else
-            echo "ERROR: Sample config file not found at /etc/acr/acr.json.sample"
-            echo "Cannot continue without a valid configuration file"
-            exit 1
-        fi
-    else
-        echo "Existing configuration file found, keeping it."
-    fi
-}
-
-# Function to create user, group and directory
-setup_user_and_dirs() {
-    # Clean up old directory if it exists (from previous versions)
-    if [ -d /etc/acr/hifiberryos.json.default ]; then
-        echo "Removing old directory /etc/acr/hifiberryos.json.default..."
-        rm -rf /etc/acr/hifiberryos.json.default
-    fi
-
-    # Create acr group if it doesn't exist
-    if ! getent group acr > /dev/null; then
-        echo "Creating acr group..."
-        groupadd --system acr
-    fi
-      # Create acr user if it doesn't exist
-    if ! getent passwd acr > /dev/null; then
-        echo "Creating acr user..."
-        useradd --system --gid acr --shell /usr/sbin/nologin --home-dir /etc/acr acr
-    fi    # Create /etc/acr directory and cache directories if they don't exist
-    if [ ! -d /etc/acr ]; then
-        echo "Creating /etc/acr directory..."
-        mkdir -p /etc/acr
-    fi
-    
-    # Create /var/acr directory if it doesn't exist
-    if [ ! -d /var/acr ]; then
-        echo "Creating /var/acr directory..."
-        mkdir -p /var/acr
-    fi
-    
-    # Create cache directories
-    if [ ! -d /etc/acr/cache ]; then
-        echo "Creating cache directories..."
-        mkdir -p /etc/acr/cache/attributes
-        mkdir -p /etc/acr/cache/images
-    fi
-    
-    # Set ownership of /etc/acr and /var/acr directories and all subdirectories
-    echo "Setting ownership of /etc/acr directory..."
-    chown -R acr:acr /etc/acr
-    chmod 755 /etc/acr
-    
-    echo "Setting ownership of /var/acr directory..."
-    chown -R acr:acr /var/acr
-    chmod 755 /var/acr
-    chmod 755 /etc/acr/cache
-    chmod 755 /etc/acr/cache/attributes
-    chmod 755 /etc/acr/cache/images
-}
-
-case "$1" in
-    configure)
-        setup_user_and_dirs
-        setup_config
-        # Enable and start the service
-        if [ -d /run/systemd/system ]; then
-            systemctl daemon-reload >/dev/null 2>&1 || true
-            systemctl enable acr.service >/dev/null 2>&1 || true
-            systemctl restart acr.service >/dev/null 2>&1 || true
-        fi
-        ;;
-esac
-
-exit 0
-EOF
-
-# Make the postinst script executable
-chmod +x debian/postinst
-
-# Make the preinst script executable (if it exists)
 if [ -f debian/preinst ]; then
     chmod +x debian/preinst
 fi

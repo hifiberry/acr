@@ -1,5 +1,12 @@
 #!/bin/bash
-set -e
+# Ensure we're running in bash
+if [ -z "$BASH_VERSION" ]; then
+    echo "Error: This script requires bash to run properly."
+    echo "Please run as: bash $0"
+    exit 1
+fi
+
+set -eo pipefail
 
 echo "===== Building ACR Debian Package ====="
 
@@ -83,12 +90,17 @@ echo "===== Preparing Debian package ====="
 echo "Configuration files will be handled by dh_install..."
 
 # Ensure the debian/postinst and debian/preinst scripts are executable
-if [ -f debian/postinst ]; then
-    chmod +x debian/postinst
+echo "Making scripts executable..."
+chmod +x debian/postinst
+chmod +x debian/preinst
+
+# Verify that scripts were made executable
+if [ ! -x debian/postinst ]; then
+    echo "WARNING: Failed to make postinst script executable!"
 fi
 
-if [ -f debian/preinst ]; then
-    chmod +x debian/preinst
+if [ ! -x debian/preinst ]; then
+    echo "WARNING: Failed to make preinst script executable!"
 fi
 
 # Create the Debian package

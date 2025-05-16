@@ -35,10 +35,9 @@
                 "url_path": "/docs",
                 "directory": "doc"
             }
-        ]
-    },    "cache": {
-        "attribute_cache_path": "cache/attributes",
-        "image_cache_path": "cache/images"
+        ]    },    "cache": {
+        "attribute_cache_path": "/var/acr/cache/attributes",
+        "image_cache_path": "/var/acr/cache/images"
     },
     "musicbrainz": {
         "enable": true

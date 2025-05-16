@@ -37,33 +37,41 @@ ACR uses a JSON configuration file to define its behavior. The configuration fil
 
 ### Configuration File Locations
 
-ACR requires a valid configuration file to run. By default, it looks for:
+ACR requires a valid configuration file to run. The configuration file is looked up in this order:
 
 1. Path specified with the `-c` command line argument
 2. `acr.json` in the current directory
 
-When installed as a system service, ACR uses `/etc/acr/acr.json` as its configuration file. 
-If this file doesn't exist, the installation script will copy the sample configuration 
-from `/etc/acr/acr.json.sample` automatically.
+When installed as a system service:
+
+- The configuration file is located at `/etc/acr/acr.json`
+- If this file doesn't exist during installation, it's automatically created from `/etc/acr/acr.json.sample`
+- A default configuration is also available at `/usr/share/acr/acr-default.json`
 
 ### Cache Directories
 
-By default, ACR uses these relative paths for cache directories:
-- `cache/attributes` - For metadata and other attributes
-- `cache/images` - For image files like album covers
+ACR uses these paths for caching data:
 
-If absolute paths are specified in the configuration file (starting with `/`), those exact paths will be used. Otherwise, paths are relative to the current working directory.
+- `/etc/acr/cache/attributes` - For metadata and other attributes
+- `/etc/acr/cache/images` - For image files like album covers
 
-When running as a system service, the working directory is `/etc/acr`, so cache directories will be created there if relative paths are used.
+These paths are automatically created during installation with the correct permissions.
+
+> **Note:** If you're manually editing the configuration file, always use absolute paths starting with `/` to avoid any path resolution issues.
 
 ### Directory Structure
 
 When installed as a system service, ACR uses the following directory structure:
-- `/etc/acr` - Configuration files and default cache location
+
+- `/etc/acr` - Configuration files and cache location
+  - `/etc/acr/acr.json` - Main configuration file
+  - `/etc/acr/acr.json.sample` - Sample configuration file
+  - `/etc/acr/cache/` - Cache directories
 - `/var/acr` - Variable data directory for runtime files
 - `/usr/bin/acr` - The executable binary
+- `/usr/share/acr/acr-default.json` - Default configuration (backup)
 
-Both `/etc/acr` and `/var/acr` directories are owned by the `acr` user and group.
+Both `/etc/acr` and `/var/acr` directories are owned by the `acr` user and group, which is automatically created during installation.
 
 ### Command Line Options
 

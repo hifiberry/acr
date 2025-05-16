@@ -8,6 +8,7 @@ fi
 
 # Function to safely copy default config if none exists
 setup_config() {
+    # Check if we need to copy the sample config to the actual config file
     if [ ! -f /etc/acr/acr.json ]; then
         echo "No configuration file found, copying from sample..."
         if [ -f /etc/acr/acr.json.sample ]; then
@@ -16,9 +17,17 @@ setup_config() {
             chown acr:acr /etc/acr/acr.json
             echo "Sample config copied to acr.json successfully"
         else
-            echo "ERROR: Sample config file not found at /etc/acr/acr.json.sample"
-            echo "Cannot continue without a valid configuration file"
-            exit 1
+            # Try to find the sample config elsewhere if it's not in /etc/acr
+            if [ -f /usr/share/acr/acr-default.json ]; then
+                echo "Using default configuration from /usr/share/acr..."
+                cp /usr/share/acr/acr-default.json /etc/acr/acr.json
+                chown acr:acr /etc/acr/acr.json
+                echo "Default config copied to acr.json successfully"
+            else
+                echo "ERROR: No sample configuration file found"
+                echo "Cannot continue without a valid configuration file"
+                exit 1
+            fi
         fi
     else
         echo "Existing configuration file found, keeping it."
@@ -27,31 +36,14 @@ setup_config() {
 
 # Function to create user, group and directory
 setup_user_and_dirs() {
-    # Clean up old directory if it exists (from previous versions)
-    if [ -d /etc/acr/hifiberryos.json.default ]; then
-        echo "Removing old directory /etc/acr/hifiberryos.json.default..."
-        rm -rf /etc/acr/hifiberryos.json.default
-    fi
-
     # Handle legacy installations at /acr
     if [ -d /acr ]; then
         echo "Found legacy directory at /acr, migrating to /etc/acr..."
-        
-        # Create /etc/acr if it doesn't exist yet
-        if [ ! -d /etc/acr ]; then
-            echo "Creating /etc/acr directory..."
-            mkdir -p /etc/acr
-        fi
         
         # Copy config files from /acr to /etc/acr if they exist
         if [ -f /acr/acr.json ] && [ ! -f /etc/acr/acr.json ]; then
             echo "Migrating configuration from /acr/acr.json to /etc/acr/acr.json..."
             cp /acr/acr.json /etc/acr/acr.json
-        fi
-        
-        if [ -f /acr/acr.json.sample ] && [ ! -f /etc/acr/acr.json.sample ]; then
-            echo "Migrating sample configuration..."
-            cp /acr/acr.json.sample /etc/acr/acr.json.sample
         fi
         
         # No need to remove /acr as it might be used by other components
@@ -69,36 +61,19 @@ setup_user_and_dirs() {
         useradd --system --gid acr --shell /usr/sbin/nologin --home-dir /etc/acr acr
     fi    
     
-    # Create /etc/acr directory and cache directories if they don't exist
-    if [ ! -d /etc/acr ]; then
-        echo "Creating /etc/acr directory..."
-        mkdir -p /etc/acr
-    fi
+    # Create directory structure
+    echo "Setting up directory structure..."
+    mkdir -p /etc/acr/cache/attributes
+    mkdir -p /etc/acr/cache/images
+    mkdir -p /var/acr
     
-    # Create /var/acr directory if it doesn't exist
-    if [ ! -d /var/acr ]; then
-        echo "Creating /var/acr directory..."
-        mkdir -p /var/acr
-    fi
-    
-    # Create cache directories
-    if [ ! -d /etc/acr/cache ]; then
-        echo "Creating cache directories..."
-        mkdir -p /etc/acr/cache/attributes
-        mkdir -p /etc/acr/cache/images
-    fi
-    
-    # Set ownership of /etc/acr and /var/acr directories and all subdirectories
-    echo "Setting ownership of /etc/acr directory..."
+    # Fix permissions for all directories
+    echo "Setting proper permissions..."
     chown -R acr:acr /etc/acr
     chmod 755 /etc/acr
     
-    echo "Setting ownership of /var/acr directory..."
     chown -R acr:acr /var/acr
     chmod 755 /var/acr
-    chmod 755 /etc/acr/cache
-    chmod 755 /etc/acr/cache/attributes
-    chmod 755 /etc/acr/cache/images
 }
 
 case "$1" in

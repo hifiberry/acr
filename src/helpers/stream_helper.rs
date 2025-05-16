@@ -2,7 +2,10 @@ use std::io::{self, Read, Write};
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::net::TcpStream;
+use std::thread;
+use std::time::Duration;
 use url::Url;
+use log::{debug, warn};
 
 #[cfg(windows)]
 use std::os::windows::prelude::*;

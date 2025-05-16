@@ -8,26 +8,32 @@ fi
 
 # Function to safely copy default config if none exists
 setup_config() {
+    # First, ensure we have a sample config available in /etc/acr
+    if [ ! -f /etc/acr/acr.json.sample ] && [ -f /usr/share/acr/sample-config.json ]; then
+        echo "Creating sample config in /etc/acr..."
+        cp /usr/share/acr/sample-config.json /etc/acr/acr.json.sample
+        chmod 644 /etc/acr/acr.json.sample
+    fi
+
     # Check if we need to copy the sample config to the actual config file
     if [ ! -f /etc/acr/acr.json ]; then
-        echo "No configuration file found, copying from sample..."
+        echo "No configuration file found, creating from sample..."
         if [ -f /etc/acr/acr.json.sample ]; then
             cp /etc/acr/acr.json.sample /etc/acr/acr.json
             # Set proper ownership
             chown acr:acr /etc/acr/acr.json
+            chmod 644 /etc/acr/acr.json
             echo "Sample config copied to acr.json successfully"
+        elif [ -f /usr/share/acr/sample-config.json ]; then
+            echo "Using default configuration from /usr/share/acr..."
+            cp /usr/share/acr/sample-config.json /etc/acr/acr.json
+            chown acr:acr /etc/acr/acr.json
+            chmod 644 /etc/acr/acr.json
+            echo "Default config copied to acr.json successfully"
         else
-            # Try to find the sample config elsewhere if it's not in /etc/acr
-            if [ -f /usr/share/acr/acr-default.json ]; then
-                echo "Using default configuration from /usr/share/acr..."
-                cp /usr/share/acr/acr-default.json /etc/acr/acr.json
-                chown acr:acr /etc/acr/acr.json
-                echo "Default config copied to acr.json successfully"
-            else
-                echo "ERROR: No sample configuration file found"
-                echo "Cannot continue without a valid configuration file"
-                exit 1
-            fi
+            echo "ERROR: No sample configuration file found"
+            echo "Cannot continue without a valid configuration file"
+            exit 1
         fi
     else
         echo "Existing configuration file found, keeping it."

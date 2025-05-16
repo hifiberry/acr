@@ -1,4 +1,3 @@
 target/release/acr usr/bin/
-sample-config.json usr/share/acr/acr-default.json
-sample-config.json etc/acr/acr.json.sample
+sample-config.json usr/share/acr/
 debian/acr.service lib/systemd/system/

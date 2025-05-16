@@ -31,6 +31,12 @@ if [ -d /usr/share/acr/acr-default.json ]; then
     rm -rf /usr/share/acr/acr-default.json
 fi
 
+# Clean up other possible incorrect paths
+if [ -d /usr/share/acr/sample-config.json ]; then
+    echo "Removing incorrectly created directory /usr/share/acr/sample-config.json..."
+    rm -rf /usr/share/acr/sample-config.json
+fi
+
 # Clean up legacy directories in /etc/acr
 if [ -d /etc/acr ]; then
     echo "Checking for invalid files in /etc/acr..."

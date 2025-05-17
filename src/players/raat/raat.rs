@@ -1,5 +1,5 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
-use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track, PlayerUpdate}; // Added PlayerUpdate
 use crate::players::raat::metadata_pipe_reader::MetadataPipeReader;
 use crate::data::stream_details::StreamDetails;
 use delegate::delegate;
@@ -150,6 +150,7 @@ impl RAATPlayerController {
             PlayerCapability::Play,
             PlayerCapability::Pause,
             PlayerCapability::Stop,
+            PlayerCapability::ReceivesUpdates, // Added ReceivesUpdates capability
         ], false); // Don't notify on initialization
     }
     
@@ -431,6 +432,46 @@ impl PlayerController for RAATPlayerController {
             fn get_capabilities(&self) -> PlayerCapabilitySet;
             fn get_last_seen(&self) -> Option<std::time::SystemTime>;
         }
+    }
+
+    fn receive_update(&self, update: PlayerUpdate) -> bool {
+        debug!("RAATPlayerController received update: {:?}", update); // It's good practice to log the received update for debugging.
+        match update {
+            PlayerUpdate::SongChanged(new_song) => {
+                let mut current_song_locked = self.current_song.write().unwrap();
+                *current_song_locked = new_song.clone();
+                drop(current_song_locked); // Release lock before notifying
+                self.base.notify_song_changed(new_song.as_ref());
+            }
+            PlayerUpdate::PositionChanged(new_position) => {
+                if let Some(pos) = new_position {
+                    let mut current_state_locked = self.current_state.write().unwrap();
+                    current_state_locked.position = Some(pos);
+                    drop(current_state_locked); // Release lock before notifying
+                    self.base.notify_position_changed(pos);
+                }
+            }
+            PlayerUpdate::StateChanged(new_state) => {
+                let mut current_state_locked = self.current_state.write().unwrap();
+                current_state_locked.state = new_state;
+                drop(current_state_locked); // Release lock before notifying
+                self.base.notify_state_changed(new_state);
+            }
+            PlayerUpdate::LoopModeChanged(new_loop_mode) => {
+                let mut current_state_locked = self.current_state.write().unwrap();
+                current_state_locked.loop_mode = new_loop_mode;
+                drop(current_state_locked); // Release lock before notifying
+                self.base.notify_loop_mode_changed(new_loop_mode);
+            }
+            PlayerUpdate::ShuffleChanged(new_shuffle) => {
+                let mut current_state_locked = self.current_state.write().unwrap();
+                current_state_locked.shuffle = new_shuffle;
+                // No specific notify_shuffle_changed method in BasePlayerController, so just update state.
+                // If shuffle changes should trigger a general state update or capabilities update,
+                // that logic could be added here.
+            }
+        }
+        true // Indicate that the update was processed
     }
     
     fn get_song(&self) -> Option<Song> {

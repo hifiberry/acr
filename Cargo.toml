@@ -64,3 +64,7 @@ path = "src/tools/dumpcache.rs"
 [[bin]]
 name = "lms_client"
 path = "src/tools/lms_client.rs"
+
+[[bin]]
+name = "acr_send_update"
+path = "src/tools/acr_send_update.rs"

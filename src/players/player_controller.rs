@@ -1,11 +1,11 @@
-use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, Track, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource, PlayerState};
+use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, Track, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource, PlayerState, PlayerUpdate};
 use crate::data::library::LibraryInterface;
 use std::sync::{Arc, Weak, RwLock};
 use std::any::Any;
 use std::time::SystemTime;
 use log::{debug, trace, warn};
 
-/// Trait for objects that listen to PlayerController state changes
+/// Trait for objects that listener to PlayerController state changes
 pub trait PlayerStateListener: Send + Sync {
     /// Called when any player event occurs
     /// 
@@ -123,7 +123,24 @@ pub trait PlayerController: Send + Sync {
     /// This cleans up any resources used by the player, including stopping background threads
     /// and closing connections. Returns true if the player was successfully stopped, false otherwise.
     fn stop(&self) -> bool;
-    
+
+    /// Receive an update. This could be a song change,
+    /// position change, random/loop mode change, etc.
+    ///
+    /// # Arguments
+    ///
+    /// * `update` - The player update
+    ///
+    /// # Returns
+    ///
+    /// `true` if the update was successfully processed, `false` otherwise
+    fn receive_update(&self, update: PlayerUpdate) -> bool {
+        // Default implementation does nothing and returns true
+        // Player implementations should override this if they support receiving updates
+        debug!("Player {} received update {:?}, but does not implement receive_update", self.get_player_name(), update);
+        true
+    }
+
     /// Get the library interface for this player, if available
     /// 
     /// Returns a library interface that can be used to query albums, artists, and tracks,

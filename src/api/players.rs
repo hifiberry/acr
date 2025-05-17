@@ -1,5 +1,5 @@
 use crate::AudioController;
-use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track};
+use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track, PlayerUpdate}; // Added PlayerUpdate
 use crate::players::PlayerController; // Fixed: Using the public re-export
 use rocket::serde::json::Json;
 use rocket::{get, post, State};
@@ -72,6 +72,13 @@ pub struct MetadataKeyResponse {
     player_name: String,
     key: String,
     value: Option<serde_json::Value>,
+}
+
+/// Response for player update operation
+#[derive(serde::Serialize)]
+pub struct PlayerUpdateResponse {
+    success: bool,
+    message: String,
 }
 
 /// Get the current active player
@@ -547,6 +554,87 @@ pub fn get_player_metadata_key(
         Status::NotFound,
         format!("Player '{}' not found", effective_player_name),
     ))
+}
+
+/// API endpoint to push an update to a player
+#[post("/player/<player_name>/update", data = "<update>")]
+pub fn update_player_state(
+    player_name: &str,
+    update: Json<PlayerUpdate>,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<PlayerUpdateResponse>, Custom<Json<PlayerUpdateResponse>>> {
+    let audio_controller = controller.inner();
+    let effective_player_name = if player_name.to_lowercase() == "active" {
+        let active_controller = audio_controller.get_active_controller();
+        if let Some(active_ctrl) = active_controller {
+            if let Ok(ctrl) = active_ctrl.read() {
+                ctrl.get_player_name()
+            } else {
+                return Err(Custom(
+                    Status::InternalServerError,
+                    Json(PlayerUpdateResponse {
+                        success: false,
+                        message: "Failed to access active player".to_string(),
+                    }),
+                ));
+            }
+        } else {
+            return Err(Custom(
+                Status::NotFound,
+                Json(PlayerUpdateResponse {
+                    success: false,
+                    message: "No active player found".to_string(),
+                }),
+            ));
+        }
+    } else {
+        player_name.to_string()
+    };
+
+    let controllers = audio_controller.list_controllers();
+    let mut found_controller = None;
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            if ctrl.get_player_name() == effective_player_name {
+                found_controller = Some(ctrl_lock.clone());
+                break;
+            }
+        }
+    }
+
+    let target_controller = match found_controller {
+        Some(ctrl) => ctrl,
+        None => {
+            return Err(Custom(
+                Status::NotFound,
+                Json(PlayerUpdateResponse {
+                    success: false,
+                    message: format!("No player found with name: {}", effective_player_name),
+                }),
+            ));
+        }
+    };
+
+    let success = if let Ok(ctrl) = target_controller.read() {
+        ctrl.receive_update(update.into_inner())
+    } else {
+        false
+    };
+
+    if success {
+        Ok(Json(PlayerUpdateResponse {
+            success: true,
+            message: format!("Update sent successfully to player: {}", effective_player_name),
+        }))
+    } else {
+        Err(Custom(
+            Status::InternalServerError,
+            Json(PlayerUpdateResponse {
+                success: false,
+                message: format!("Failed to send update to player: {}", effective_player_name),
+            }),
+        ))
+    }
 }
 
 /// Helper function to parse player commands

@@ -54,6 +54,8 @@ pub enum PlayerCapability {
     DatabaseUpdate = 0x100000,
     /// Can be killed (terminated forcefully)
     Killable = 0x200000,
+    /// Player controller supports receiving updates (song change, position, etc.)
+    ReceivesUpdates = 0x400000,
 }
 
 impl PlayerCapability {
@@ -82,6 +84,7 @@ impl PlayerCapability {
             Self::Favorites => "favorites",
             Self::DatabaseUpdate => "db_update",
             Self::Killable => "killable",
+            Self::ReceivesUpdates => "receives_updates",
         }
     }
 
@@ -108,7 +111,8 @@ impl PlayerCapability {
         BitFlags::from_flag(Self::Browse) |
         BitFlags::from_flag(Self::Favorites) |
         BitFlags::from_flag(Self::DatabaseUpdate) |
-        BitFlags::from_flag(Self::Killable)
+        BitFlags::from_flag(Self::Killable) |
+        BitFlags::from_flag(Self::ReceivesUpdates)
     }
 
     /// Convert a Vec of capabilities to BitFlags

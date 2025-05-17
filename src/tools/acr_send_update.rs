@@ -1,4 +1,3 @@
-\
 use clap::Parser;
 use acr::data::{PlayerUpdate, Song, PlaybackState, LoopMode};
 use std::error::Error;
@@ -94,7 +93,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let response = client.post(&url)
         .set("Content-Type", "application/json")
-        .send_json(serde_json::json!(updates));
+        .send_string(&serde_json::to_string(&updates)?);
 
     match response {
         Ok(resp) => {

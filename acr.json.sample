@@ -18,6 +18,13 @@
                 "log_level": "info",
                 "only_active": false
             }
+        },
+        {
+            "lastfm": {
+                "enabled": true,
+                "api_key": "YOUR_LASTFM_API_KEY",
+                "api_secret": "YOUR_LASTFM_API_SECRET"
+            }
         }
     ],
     "event_filters": [

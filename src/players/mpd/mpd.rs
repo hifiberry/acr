@@ -739,6 +739,7 @@ impl MPDPlayerController {
             cover_art_url: cover_url,
             stream_url: Some(mpd_song.file.clone()),
             source: Some("mpd".to_string()),
+            liked: None,
             metadata: HashMap::new(),
         }
     }

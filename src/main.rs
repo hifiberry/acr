@@ -5,6 +5,7 @@ use acr::helpers::attributecache::AttributeCache;
 use acr::helpers::imagecache::ImageCache;
 use acr::helpers::musicbrainz;
 use acr::helpers::theartistdb;
+use acr::helpers::lastfm;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
 use acr::players::lms::lmsaudio::LMSAudioController;
@@ -118,12 +119,14 @@ fn main() {
     
     // Initialize the global image cache with the configured path from JSON
     initialize_image_cache(&image_cache_path);
-    
-    // Initialize MusicBrainz with the configuration
+      // Initialize MusicBrainz with the configuration
     initialize_musicbrainz(&controllers_config);
 
     // Initialize TheArtistDB with the configuration
     initialize_theartistdb(&controllers_config);
+    
+    // Initialize Last.fm with the configuration
+    initialize_lastfm(&controllers_config);
     
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));

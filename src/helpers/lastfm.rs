@@ -12,6 +12,19 @@ use std::sync::Mutex;
 const LASTFM_API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 const LASTFM_AUTH_URL: &str = "https://www.last.fm/api/auth/";
 
+// Default Last.fm API credentials compiled from secrets.txt if available
+// These are used as fallbacks if no credentials are provided
+#[cfg(not(test))]
+pub fn default_lastfm_api_key() -> &'static str {
+    option_env!("LASTFM_APIKEY").unwrap_or("YOUR_API_KEY_HERE")
+}
+
+#[cfg(not(test))]
+pub fn default_lastfm_api_secret() -> &'static str {
+    option_env!("LASTFM_APISECRET").unwrap_or("YOUR_API_SECRET_HERE")
+}
+
+
 // Error types for Last.fm API
 #[derive(Debug)]
 pub enum LastfmError {
@@ -105,6 +118,18 @@ impl LastfmClient {
 
         info!("Last.fm client initialized");
         Ok(())
+    }    /// Initialize the Last.fm client with default API credentials from secrets.txt
+    /// 
+    /// This will use the credentials compiled in from the secrets.txt file at build time.
+    /// If no secrets.txt file was available, placeholder values will be used.
+    /// 
+    /// # Returns
+    /// Result indicating success or failure
+    pub fn initialize_with_defaults() -> Result<(), LastfmError> {
+        Self::initialize(
+            default_lastfm_api_key().to_string(),
+            default_lastfm_api_secret().to_string()
+        )
     }
 
     /// Get the singleton instance of LastfmClient
@@ -234,10 +259,8 @@ impl LastfmClient {
             self.generate_signature(&param_map)
         } else {
             String::new()
-        };
-
-        // Build the request URL
-        let mut request = self.client.post(LASTFM_API_ROOT);
+        };        // Build the request URL
+        let mut request = self.client.get(LASTFM_API_ROOT);
 
         // Add all parameters
         for (key, value) in &param_map {

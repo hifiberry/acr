@@ -22,8 +22,9 @@
         {
             "lastfm": {
                 "enabled": true,
-                "api_key": "YOUR_LASTFM_API_KEY",
-                "api_secret": "YOUR_LASTFM_API_SECRET"
+                "api_key": "",
+                "api_secret": "",
+                "scrobble": true
             }
         }
     ],
@@ -63,8 +64,9 @@
         "enable": true,
         "api_key": "",
         "api_secret": "",
-        "scrobble_enabled": true,
-        "now_playing_enabled": true
+        "scrobble_enabled": true, // This seems to be a duplicate or alternative, will use "scrobble" as per previous request for consistency
+        "now_playing_enabled": true,
+        "scrobble": true 
     },
     "general": {
         "security_store": "/var/run/acr/security_store.json",

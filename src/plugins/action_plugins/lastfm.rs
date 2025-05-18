@@ -21,6 +21,12 @@ pub struct LastfmConfig {
     pub enabled: bool,
     pub api_key: String,
     pub api_secret: String,
+    #[serde(default = "default_scrobble_config")]
+    pub scrobble: bool,
+}
+
+fn default_scrobble_config() -> bool {
+    true
 }
 
 pub struct Lastfm {
@@ -66,11 +72,13 @@ fn lastfm_worker(
     plugin_name: String,
     client: LastfmClient,
     worker_running: Arc<AtomicBool>, // Added
+    scrobble_enabled: bool, // Added
 ) {
     info!(
-        "Lastfm background worker started for plugin: {}. Client available: {}",
+        "Lastfm background worker started for plugin: {}. Client available: {}. Scrobbling enabled: {}",
         plugin_name,
-        client.is_authenticated()
+        client.is_authenticated(),
+        scrobble_enabled
     );
     let mut loop_count: u32 = 0; // Counter for periodic checks
 
@@ -139,7 +147,7 @@ fn lastfm_worker(
 
             // Only attempt to scrobble if the player is currently playing this song
             if track_data.current_playback_state == PlaybackState::Playing {
-                if !track_data.scrobbled_song {
+                if !track_data.scrobbled_song && scrobble_enabled { // Added scrobble_enabled check
                     // let scrobble_point_duration_secs = *length_val / 2; // length_val is &u32
                     let scrobble_point_time_secs = 240; // 4 minutes in seconds, Last.fm recommendation
                     
@@ -240,7 +248,7 @@ impl Plugin for Lastfm {
             return true;
         }
 
-        info!("Initializing Lastfm...");
+        info!("Initializing Lastfm... Scrobbling enabled: {}", self.config.scrobble);
 
         let init_result = if self.config.api_key.is_empty() || self.config.api_secret.is_empty() {
             info!("Lastfm: API key or secret is empty in plugin configuration. Attempting to use default credentials.");
@@ -264,9 +272,10 @@ impl Plugin for Lastfm {
                         let plugin_name_for_thread = self.name().to_string();
                         let client_for_thread = client_instance; 
                         let worker_running_for_thread = Arc::clone(&self.worker_running); // Clone for thread
+                        let scrobble_config_for_thread = self.config.scrobble; // Added
 
                         let handle = thread::spawn(move || {
-                            lastfm_worker(track_data_for_thread, plugin_name_for_thread, client_for_thread, worker_running_for_thread); // Pass worker_running
+                            lastfm_worker(track_data_for_thread, plugin_name_for_thread, client_for_thread, worker_running_for_thread, scrobble_config_for_thread); // Pass worker_running and scrobble_config
                         });
                         self.worker_thread = Some(handle);
 
@@ -323,7 +332,7 @@ impl ActionPlugin for Lastfm {
         }
 
         match event {
-            PlayerEvent::SongChanged { song: song_event_opt, source } => { // Added source
+            PlayerEvent::SongChanged { song: song_event_opt, .. } => { // Changed source to ..
                 let mut track_data = self.current_track_data.lock().unwrap();
                 
                 if let Some(song_event) = song_event_opt { 
@@ -376,7 +385,7 @@ impl ActionPlugin for Lastfm {
                         );
 
                         // Update Now Playing if the song changed and is now considered playing
-                        if track_data.current_playback_state == PlaybackState::Playing || was_playing_before_change {
+                        if (track_data.current_playback_state == PlaybackState::Playing || was_playing_before_change) && self.config.scrobble { // Added self.config.scrobble check
                              if let (Some(client), Some(name_str), Some(artists_vec)) =
                                 (&self.lastfm_client, &track_data.name, &track_data.artists) {
                                 if let Some(primary_artist) = artists_vec.first() {
@@ -403,7 +412,7 @@ impl ActionPlugin for Lastfm {
                     }
                 }
             }
-            PlayerEvent::StateChanged { state: new_player_state, source } => { // Added source
+            PlayerEvent::StateChanged { state: new_player_state, .. } => { // Changed source to ..
                 let mut track_data = self.current_track_data.lock().unwrap();
 
                 if track_data.name.is_none() {
@@ -442,8 +451,10 @@ impl ActionPlugin for Lastfm {
                         (&self.lastfm_client, &track_data.name, &track_data.artists) {
                         if let Some(primary_artist) = artists_vec.first() {
                              info!("Lastfm: Updating Now Playing for \'{}\' by \'{}\' due to StateChanged to Playing.", name_str, primary_artist);
-                            if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
-                                warn!("Lastfm: Failed to update Now Playing: {}", e);
+                            if self.config.scrobble { // Added self.config.scrobble check
+                                if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
+                                    warn!("Lastfm: Failed to update Now Playing: {}", e);
+                                }
                             }
                         }
                     }

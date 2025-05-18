@@ -31,3 +31,4 @@ debian/acr.postrm.debhelper
 attributecache.sled/*
 cache/*
 src/devtest.rs
+secrets.txt

@@ -21,9 +21,9 @@ The `acr_send_update` tool allows you to send player state updates to the AudioC
 acr_send_update my-player --artist "Pink Floyd" --title "Comfortably Numb" --state Playing
 ```
 
-### dumpcache
+### acr_dumpcache
 
-The `dumpcache` tool allows you to inspect and manage the ACR caching system.
+The `acr_dumpcache` tool allows you to inspect and manage the ACR caching system.
 
 **Key Features:**
 - List cached items
@@ -33,12 +33,12 @@ The `dumpcache` tool allows you to inspect and manage the ACR caching system.
 
 **Example:**
 ```bash
-dumpcache --list-keys
+acr_dumpcache --list-keys
 ```
 
-### lms_client
+### acr_lms_client
 
-The `lms_client` tool provides a command-line interface for interacting with Logitech Media Server instances that are connected to ACR. It is mostly used to debug the connection to and database of the media server.
+The `acr_lms_client` tool provides a command-line interface for interacting with Logitech Media Server instances that are connected to ACR. It is mostly used to debug the connection to and database of the media server.
 
 **Key Features:**
 - Query player status
@@ -48,7 +48,7 @@ The `lms_client` tool provides a command-line interface for interacting with Log
 
 **Example:**
 ```bash
-lms_client --server 192.168.1.100 --list-players
+acr_lms_client --server 192.168.1.100 --list-players
 ```
 
 ## Building the Tools
@@ -59,7 +59,7 @@ All tools are built automatically when you build the ACR project:
 cargo build
 ```
 
-The compiled binaries will be available in the `target/debug/` or `target/release/` directory, depending on your build configuration.
+The compiled binaries will be available in the `target/debug/` or `target/release/` directory, depending on your build configuration. All tools follow the naming pattern `acr_*` for consistent identification.
 
 ## Integration Examples
 

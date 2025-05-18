@@ -58,13 +58,13 @@ named_pipe = "0.4"
 
 # Binary targets
 [[bin]]
-name = "dumpcache"
+name = "acr_dumpcache"
 path = "src/tools/dumpcache.rs"
 
 [[bin]]
-name = "lms_client"
+name = "acr_lms_client"
 path = "src/tools/lms_client.rs"
 
 [[bin]]
 name = "acr_send_update"
-path = "src/tools/acr_send_update.rs"
+path = "src/tools/send_update.rs"

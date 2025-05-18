@@ -4,6 +4,7 @@ use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use std::sync::atomic::{AtomicBool, Ordering}; // Added
 
 use crate::audiocontrol::AudioController;
 use crate::data::PlayerEvent;
@@ -12,7 +13,8 @@ use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
 use crate::plugins::plugin::Plugin;
 use log::{debug, error, info, warn};
 use serde::Deserialize;
-use crate::data::PlaybackState; // Added import
+use crate::data::PlaybackState;
+use crate::players::PlayerController; // Added for get_playback_state
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct LastfmConfig {
@@ -26,7 +28,8 @@ pub struct Lastfm {
     config: LastfmConfig,
     worker_thread: Option<thread::JoinHandle<()>>,
     current_track_data: Arc<Mutex<CurrentScrobbleTrack>>,
-    lastfm_client: Option<LastfmClient>, // Added field
+    lastfm_client: Option<LastfmClient>,
+    worker_running: Arc<AtomicBool>, // Added for graceful shutdown
 }
 
 #[derive(Clone, Debug)]
@@ -61,19 +64,54 @@ impl Default for CurrentScrobbleTrack {
 fn lastfm_worker(
     track_data_arc: Arc<Mutex<CurrentScrobbleTrack>>,
     plugin_name: String,
-    client: LastfmClient, // Added LastfmClient
+    client: LastfmClient,
+    worker_running: Arc<AtomicBool>, // Added
 ) {
     info!(
         "Lastfm background worker started for plugin: {}. Client available: {}",
         plugin_name,
-        client.is_authenticated() // Example usage, replace as needed
+        client.is_authenticated()
     );
-    loop {
-        thread::sleep(Duration::from_secs(1)); 
+    let mut loop_count: u32 = 0; // Counter for periodic checks
+
+    while worker_running.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_secs(1));
+        loop_count += 1;
 
         let mut track_data = track_data_arc.lock().unwrap();
 
-        if let (Some(name), Some(artists), Some(length_val), Some(actual_started_time)) = // Renamed _started_time to actual_started_time for clarity
+        // Periodic state check (e.g., every 30 seconds)
+        if loop_count % 30 == 0 {
+            info!("LastFMWorker: Performing periodic state check.");
+            let audio_controller = AudioController::instance(); // Get global instance
+            let actual_player_state = audio_controller.get_playback_state(); // Get state of active player
+
+            if actual_player_state != track_data.current_playback_state {
+                info!(
+                    "LastFMWorker: Discrepancy detected! Worker state: {:?}, Actual player state: {:?}. Updating worker state.",
+                    track_data.current_playback_state, actual_player_state
+                );
+
+                // Logic similar to StateChanged event
+                if track_data.current_playback_state == PlaybackState::Playing && actual_player_state != PlaybackState::Playing {
+                    // Was playing, now not
+                    if let Some(lpt) = track_data.last_play_timestamp {
+                        let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
+                        track_data.accumulated_play_duration_ms += played_ms;
+                        info!("LastFMWorker (Periodic): Playback now '{:?}'. Added {}ms. Total accumulated: {}ms", actual_player_state, played_ms, track_data.accumulated_play_duration_ms);
+                    }
+                    track_data.last_play_timestamp = None;
+                } else if track_data.current_playback_state != PlaybackState::Playing && actual_player_state == PlaybackState::Playing {
+                    // Was not playing, now playing
+                    info!("LasFMWorker (Periodic): Playback now 'Playing'. Setting last_play_timestamp.");
+                    track_data.last_play_timestamp = Some(SystemTime::now());
+                }
+                track_data.current_playback_state = actual_player_state;
+            }
+        }
+
+
+        if let (Some(name), Some(artists), Some(length_val), Some(actual_started_time)) =
             (&track_data.name, &track_data.artists, &track_data.length, &track_data.started_timestamp) {
             
             let artists_str = artists.join(", ");
@@ -87,8 +125,8 @@ fn lastfm_worker(
             let effective_elapsed_ms = track_data.accumulated_play_duration_ms + current_segment_ms;
             let effective_elapsed_seconds = effective_elapsed_ms / 1000;
 
-            info!(
-                "LastfmWorker: Song: '{}' by {}. State: {:?}. Length: {}s. Played: {}s (Accum: {}ms, CurrentSeg: {}ms). Scrobbled: {}",
+            debug!(
+                "LastFMWorker: Song: '{}' by {}. State: {:?}. Length: {}s. Played: {}s (Accum: {}ms, CurrentSeg: {}ms). Scrobbled: {}",
                 name,
                 artists_str,
                 track_data.current_playback_state,
@@ -113,15 +151,15 @@ fn lastfm_worker(
                                 Ok(duration) => duration.as_secs(),
                                 Err(e) => {
                                     error!(
-                                        "LastfmWorker: Failed to calculate timestamp for scrobbling (SystemTime error: {}). Using current time as fallback.",
+                                        "LastFMWorker: Failed to calculate timestamp for scrobbling (SystemTime error: {}). Using current time as fallback.",
                                         e
                                     );
                                     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
                                 }
                             };
 
-                            info!(
-                                "LastfmWorker: Attempting to scrobble '{}' by '{}'. Played: {}s. Timestamp: {}",
+                            debug!(
+                                "LastFMWorker: Attempting to scrobble '{}' by '{}'. Played: {}s. Timestamp: {}",
                                 name,
                                 primary_artist,
                                 effective_elapsed_seconds,
@@ -139,7 +177,7 @@ fn lastfm_worker(
                             ) {
                                 Ok(_) => {
                                     info!(
-                                        "LastfmWorker: Successfully scrobbled '{}' by '{}'",
+                                        "LastFMWorker: Successfully scrobbled '{}' by '{}'",
                                         name,
                                         primary_artist
                                     );
@@ -147,7 +185,7 @@ fn lastfm_worker(
                                 }
                                 Err(e) => {
                                     error!(
-                                        "LastfmWorker: Failed to scrobble '{}' by '{}': {}",
+                                        "LastFMWorker: Failed to scrobble '{}' by '{}': {}",
                                         name,
                                         primary_artist,
                                         e
@@ -156,7 +194,7 @@ fn lastfm_worker(
                                 }
                             }
                         } else {
-                            warn!("LastfmWorker: Cannot scrobble '{}', artist information is missing or empty.", name);
+                            warn!("LastFMWorker: Cannot scrobble '{}', artist information is missing or empty.", name);
                             // Potentially mark as scrobbled to avoid retries if artist will never be available for this track
                             // track_data.scrobbled_song = true; // Or handle differently
                         }
@@ -165,9 +203,9 @@ fn lastfm_worker(
             }
         } else {
             if track_data.name.is_none() {
-                 info!("LastfmWorker: No song actively tracked.");
+                 debug!("LastFMWorker: No song actively tracked.");
             } else {
-                 info!("LastfmWorker: Track data incomplete. Name: {:?}, Artists: {:?}, Length: {:?}, Started: {:?}",
+                 info!("LastFMWorker: Track data incomplete. Name: {:?}, Artists: {:?}, Length: {:?}, Started: {:?}",
                     track_data.name.is_some(), track_data.artists.is_some(), track_data.length.is_some(), track_data.started_timestamp.is_some());
             }
         }
@@ -180,8 +218,9 @@ impl Lastfm {
             base: BaseActionPlugin::new("Lastfm"),
             config,
             worker_thread: None,
-            current_track_data: Arc::new(Mutex::new(CurrentScrobbleTrack::default())), // Initialize shared data
-            lastfm_client: None, // Initialize as None
+            current_track_data: Arc::new(Mutex::new(CurrentScrobbleTrack::default())),
+            lastfm_client: None,
+            worker_running: Arc::new(AtomicBool::new(true)), // Initialize worker_running
         }
     }
 }
@@ -197,14 +236,14 @@ impl Plugin for Lastfm {
 
     fn init(&mut self) -> bool {
         if !self.config.enabled {
-            info!("Lastfm is disabled by configuration. Skipping initialization."); // Updated log
+            info!("Lastfm is disabled by configuration. Skipping initialization.");
             return true;
         }
 
-        info!("Initializing Lastfm..."); // Updated log
+        info!("Initializing Lastfm...");
 
         let init_result = if self.config.api_key.is_empty() || self.config.api_secret.is_empty() {
-            info!("Lastfm: API key or secret is empty in plugin configuration. Attempting to use default credentials."); // Updated log
+            info!("Lastfm: API key or secret is empty in plugin configuration. Attempting to use default credentials.");
             LastfmClient::initialize_with_defaults()
         } else {
             LastfmClient::initialize(
@@ -215,20 +254,19 @@ impl Plugin for Lastfm {
 
         match init_result {
             Ok(_) => {
-                info!("Lastfm: Last.fm client connection initialized/verified successfully."); // Updated log
+                info!("Lastfm: Last.fm client connection initialized/verified successfully.");
                 
-                // Get and store the client instance
                 match LastfmClient::get_instance() {
                     Ok(client_instance) => {
-                        self.lastfm_client = Some(client_instance.clone()); // Store the cloned client
+                        self.lastfm_client = Some(client_instance.clone()); 
 
-                        // Prepare data for the worker thread
                         let track_data_for_thread = Arc::clone(&self.current_track_data);
                         let plugin_name_for_thread = self.name().to_string();
-                        let client_for_thread = client_instance; // Pass the original client_instance to the thread
+                        let client_for_thread = client_instance; 
+                        let worker_running_for_thread = Arc::clone(&self.worker_running); // Clone for thread
 
                         let handle = thread::spawn(move || {
-                            lastfm_worker(track_data_for_thread, plugin_name_for_thread, client_for_thread);
+                            lastfm_worker(track_data_for_thread, plugin_name_for_thread, client_for_thread, worker_running_for_thread); // Pass worker_running
                         });
                         self.worker_thread = Some(handle);
 
@@ -248,7 +286,23 @@ impl Plugin for Lastfm {
     }
 
     fn shutdown(&mut self) -> bool {
-        info!("Lastfm shutdown."); // Updated log
+        info!("Lastfm shutdown initiated."); // Updated log
+        
+        // Signal the worker thread to stop
+        self.worker_running.store(false, Ordering::SeqCst);
+
+        // Wait for the worker thread to finish
+        if let Some(handle) = self.worker_thread.take() {
+            info!("Lastfm: Waiting for worker thread to join...");
+            match handle.join() {
+                Ok(_) => info!("Lastfm: Worker thread joined successfully."),
+                Err(e) => error!("Lastfm: Failed to join worker thread: {:?}", e),
+            }
+        } else {
+            info!("Lastfm: No worker thread to join.");
+        }
+        
+        // Perform other shutdown tasks from BaseActionPlugin
         self.base.shutdown()
     }
 
@@ -269,7 +323,7 @@ impl ActionPlugin for Lastfm {
         }
 
         match event {
-            PlayerEvent::SongChanged { song: song_event_opt, .. } => { 
+            PlayerEvent::SongChanged { song: song_event_opt, source } => { // Added source
                 let mut track_data = self.current_track_data.lock().unwrap();
                 
                 if let Some(song_event) = song_event_opt { 
@@ -285,7 +339,6 @@ impl ActionPlugin for Lastfm {
                         let mut was_playing_before_change = false;
                         if track_data.current_playback_state == PlaybackState::Playing {
                             if let Some(lpt) = track_data.last_play_timestamp {
-                                // Add remaining duration of the old song before switching
                                 let old_song_final_segment_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
                                 track_data.accumulated_play_duration_ms += old_song_final_segment_ms;
                                 debug!("Lastfm: Old song ('{:?}') final segment {}ms. Total for old song: {}ms", track_data.name.as_deref(), old_song_final_segment_ms, track_data.accumulated_play_duration_ms);
@@ -298,16 +351,17 @@ impl ActionPlugin for Lastfm {
                         track_data.length = new_length;
                         track_data.started_timestamp = Some(SystemTime::now());
                         track_data.scrobbled_song = false; 
-                        track_data.accumulated_play_duration_ms = 0; // Reset for the new song
+                        track_data.accumulated_play_duration_ms = 0;
 
                         if was_playing_before_change {
-                            // If the player was playing, assume the new song starts playing immediately.
                             track_data.last_play_timestamp = Some(SystemTime::now());
-                            // current_playback_state remains PlaybackState::Playing
+                            // track_data.current_playback_state remains PlaybackState::Playing
                         } else {
-                            // If player wasn't playing, new song starts in a non-playing state regarding its own counters.
                             track_data.last_play_timestamp = None;
-                            // current_playback_state will be updated by a subsequent StateChanged event if it changes.
+                            // If not playing before, state will be updated by a subsequent StateChanged if it starts.
+                            // For "Now Playing", we need to know the *actual* current player state.
+                            // We can get it from AudioController, but on_event might be too frequent.
+                            // Let's assume if was_playing_before_change is false, we wait for a StateChanged to Playing.
                         }
                         
                         info!(
@@ -320,16 +374,27 @@ impl ActionPlugin for Lastfm {
                             track_data.length.map_or_else(|| "N/A".to_string(), |l| l.to_string()),
                             was_playing_before_change
                         );
+
+                        // Update Now Playing if the song changed and is now considered playing
+                        if track_data.current_playback_state == PlaybackState::Playing || was_playing_before_change {
+                             if let (Some(client), Some(name_str), Some(artists_vec)) =
+                                (&self.lastfm_client, &track_data.name, &track_data.artists) {
+                                if let Some(primary_artist) = artists_vec.first() {
+                                    info!("Lastfm: Updating Now Playing for \'{}\' by \'{}\' due to SongChanged.", name_str, primary_artist);
+                                    if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
+                                        warn!("Lastfm: Failed to update Now Playing: {}", e);
+                                    }
+                                }
+                            }
+                        }
+
                     }
                 } else {
-                    // Current song is None, meaning playback stopped or track is unknown
-                    if track_data.name.is_some() { // Check if there was a song before
+                    if track_data.name.is_some() { 
                         info!("Lastfm: Song changed to None (playback stopped), clearing track data.");
                         if track_data.current_playback_state == PlaybackState::Playing {
                             if let Some(lpt) = track_data.last_play_timestamp {
                                 let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
-                                // This accumulation is for the song that just ended.
-                                // It's logged here but will be wiped by default() next.
                                 debug!("Lastfm: Added {}ms from final segment of '{:?}'. Total for song: {}ms", 
                                        played_ms, track_data.name.as_deref(), track_data.accumulated_play_duration_ms + played_ms);
                             }
@@ -338,18 +403,14 @@ impl ActionPlugin for Lastfm {
                     }
                 }
             }
-            PlayerEvent::StateChanged { state: new_player_state, .. } => {
+            PlayerEvent::StateChanged { state: new_player_state, source } => { // Added source
                 let mut track_data = self.current_track_data.lock().unwrap();
 
                 if track_data.name.is_none() {
-                    // If no song is active, we might still want to update the global state if it's, for example, stopped.
-                    // However, CurrentScrobbleTrack is per-song. If it's default(), its state is Stopped.
-                    // If a stop event comes, and track_data is already default, this is fine.
                     debug!("Lastfm: StateChanged event ({:?}) but no active song. Current internal state: {:?}", new_player_state, track_data.current_playback_state);
-                    // Ensure the default state reflects this if it's a stop.
                     if *new_player_state == PlaybackState::Stopped || *new_player_state == PlaybackState::Killed || *new_player_state == PlaybackState::Disconnected {
                         track_data.current_playback_state = *new_player_state;
-                        track_data.last_play_timestamp = None; // Ensure no dangling play timestamp
+                        track_data.last_play_timestamp = None; 
                     }
                     return;
                 }
@@ -366,7 +427,6 @@ impl ActionPlugin for Lastfm {
                     new_player_state);
 
                 if old_player_state == PlaybackState::Playing && *new_player_state != PlaybackState::Playing {
-                    // Transitioning from Playing to Paused/Stopped/Other non-Playing state
                     if let Some(lpt) = track_data.last_play_timestamp {
                         let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
                         track_data.accumulated_play_duration_ms += played_ms;
@@ -374,9 +434,19 @@ impl ActionPlugin for Lastfm {
                     }
                     track_data.last_play_timestamp = None;
                 } else if old_player_state != PlaybackState::Playing && *new_player_state == PlaybackState::Playing {
-                    // Transitioning to Playing from Paused/Stopped/Other non-Playing state
                     info!("Lastfm: Playback now 'Playing'. Setting last_play_timestamp.");
                     track_data.last_play_timestamp = Some(SystemTime::now());
+                    
+                    // Update Now Playing as state changed to Playing for the current song
+                    if let (Some(client), Some(name_str), Some(artists_vec)) =
+                        (&self.lastfm_client, &track_data.name, &track_data.artists) {
+                        if let Some(primary_artist) = artists_vec.first() {
+                             info!("Lastfm: Updating Now Playing for \'{}\' by \'{}\' due to StateChanged to Playing.", name_str, primary_artist);
+                            if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
+                                warn!("Lastfm: Failed to update Now Playing: {}", e);
+                            }
+                        }
+                    }
                 }
                 
                 track_data.current_playback_state = *new_player_state;

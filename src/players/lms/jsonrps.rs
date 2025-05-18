@@ -3,6 +3,8 @@ use serde_json::Value;
 use log::{debug, error};
 use crate::helpers::macaddress::normalize_mac_address;
 use crate::helpers::http_client::{HttpClient, HttpClientError, new_http_client, post_json};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The standard JSON-RPC path for Lyrion Music Server
 const JSONRPC_PATH: &str = "/jsonrpc.js";
@@ -67,10 +69,13 @@ pub struct LmsRpcClient {
     base_url: String,
     
     /// HTTP client for making requests
-    client: Box<dyn HttpClient>,
+    client: Arc<dyn HttpClient>, // Changed from Box<dyn HttpClient>
     
     /// Request counter for unique IDs
-    request_id: u32,
+    request_id: Arc<AtomicU32>, // Changed from u32
+    
+    /// Lock to serialize requests
+    request_lock: Arc<Mutex<()>>, // New field
 }
 
 impl LmsRpcClient {
@@ -81,12 +86,13 @@ impl LmsRpcClient {
     /// * `port` - HTTP port of the LMS server (typically 9000)
     pub fn new(host: &str, port: u16) -> Self {
         let base_url = format!("http://{}:{}", host, port);
-        let client = new_http_client(DEFAULT_TIMEOUT_SECS);
+        let client = Arc::from(new_http_client(DEFAULT_TIMEOUT_SECS)); // Wrapped in Arc
             
         LmsRpcClient {
             base_url,
             client,
-            request_id: 1,
+            request_id: Arc::new(AtomicU32::new(1)), // Initialize shared counter
+            request_lock: Arc::new(Mutex::new(())), // Initialize shared lock
         }
     }
     
@@ -94,8 +100,9 @@ impl LmsRpcClient {
     pub fn with_timeout(self, timeout_secs: u64) -> Self {
         Self {
             base_url: self.base_url,
-            client: new_http_client(timeout_secs),
-            request_id: self.request_id,
+            client: Arc::from(new_http_client(timeout_secs)), // Create new client, wrap in Arc
+            request_id: self.request_id, // Clone Arc, shares counter
+            request_lock: self.request_lock, // Clone Arc, shares lock
         }
     }
     
@@ -103,14 +110,15 @@ impl LmsRpcClient {
     pub fn with_client(self, client: Box<dyn HttpClient>) -> Self {
         Self {
             base_url: self.base_url,
-            client,
-            request_id: self.request_id,
+            client: Arc::from(client), // Convert Box to Arc
+            request_id: self.request_id, // Clone Arc, shares counter
+            request_lock: self.request_lock, // Clone Arc, shares lock
         }
     }
     
     /// Get the next request ID
     fn next_id(&self) -> u32 {
-        0
+        self.request_id.fetch_add(1, Ordering::SeqCst) // Use atomic counter
     }
     
     /// Send a database query command
@@ -166,6 +174,10 @@ impl LmsRpcClient {
     /// * `player_id` - Optional MAC address of player. If None, "0" will be used for database commands
     /// * `command` - Command array as JSON Values for mixed types
     pub fn request_raw(&self, player_id: Option<&str>, command: Vec<Value>) -> Result<Value, LmsRpcError> {
+        // Acquire the lock before proceeding with the request.
+        // The lock is released when `_guard` goes out of scope.
+        let _guard = self.request_lock.lock().unwrap();
+
         // The LMS jsonrpc.js API expects params to be an array with:
         // 1. The player_id as the first element (or "0" for command that doesn't require a player)
         // 2. A nested array containing the command and parameters as the second element
@@ -191,7 +203,7 @@ impl LmsRpcClient {
         
         debug!("Sending LMS request to {}: {:?}", url, request);
 
-        match post_json(&*self.client, &url, &request) {
+        match post_json(self.client.as_ref(), &url, &request) {
             Ok(response) => {
                 // Parse the response as a JsonRpcResponse
                 match serde_json::from_value::<JsonRpcResponse>(response) {

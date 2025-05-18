@@ -22,6 +22,7 @@ This Rust implementation addresses these issues through strong static typing, a 
 - Event-based notification system for player state changes
 - Clean separation between audio player control and user interfaces
 - Last.fm integration for scrobbling and "now playing" updates
+- Secure credential storage with AES-GCM encryption
 
 ## TODO
 
@@ -84,6 +85,14 @@ ACR supports the following command line options:
 
 - `-c <path>`: Specifies the path to the configuration file
 - `--debug`: Enables debug-level logging
+
+## Additional Documentation
+
+- [Last.fm Integration](doc/lastfm.md)
+- [API Documentation](doc/api.md)
+- [Caching](doc/caching.md)
+- [Library Management](doc/library.md)
+- [WebSocket Support](doc/websocket.md)
 
 ## License
 

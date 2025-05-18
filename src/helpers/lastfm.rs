@@ -1,5 +1,5 @@
 use crate::helpers::ratelimit;
-use log::{debug, info};
+use log::{debug, info, error};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use crate::helpers::security_store::{SecurityStore, SecurityStoreError};
 
 const LASTFM_API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
-const LASTFM_AUTH_URL: &str = "https://www.last.fm/api/auth/";
+const LASTFM_AUTH_URL: &str = "http://www.last.fm/api/auth/";
 
 const LASTFM_SESSION_KEY_STORE: &str = "lastfm_session_key";
 const LASTFM_USERNAME_STORE: &str = "lastfm_username";
@@ -44,7 +44,7 @@ pub fn default_lastfm_api_secret() -> &'static str {
 // Error types for Last.fm API
 #[derive(Debug)]
 pub enum LastfmError {
-    ApiError(String, i32),
+    ApiError(String, i32), // message, code
     NetworkError(String),
     ParsingError(String),
     AuthError(String),
@@ -71,6 +71,13 @@ struct TokenResponse {
     token: String,
 }
 
+// Added to parse Last.fm's own error responses
+#[derive(Debug, Deserialize)]
+struct LastfmErrorResponse {
+    error: i32,
+    message: String,
+}
+
 // Session response
 #[derive(Debug, Deserialize)]
 struct SessionResponse {
@@ -81,6 +88,7 @@ struct SessionResponse {
 struct Session {
     name: String,
     key: String,
+    #[allow(dead_code)] // Field from Last.fm API, not currently used
     subscriber: i32, // Last.fm returns 0 or 1
 }
 
@@ -96,8 +104,10 @@ pub struct LastfmCredentials {
 }
 
 // Singleton instance of LastfmClient
-static LASTFM_CLIENT: Lazy<Mutex<Option<LastfmClient>>> = Lazy::new(|| Mutex::new(None));
+// Make it pub(crate) to be accessible within the crate (e.g., by api module)
+pub(crate) static LASTFM_CLIENT: Lazy<Mutex<Option<LastfmClient>>> = Lazy::new(|| Mutex::new(None));
 
+#[derive(Clone)] // Added derive(Clone)
 pub struct LastfmClient {
     credentials: LastfmCredentials,
     client: ureq::Agent,
@@ -171,56 +181,67 @@ impl LastfmClient {
                 "Last.fm client has not been initialized".to_string(),
             )),
         }
-    }
-
-    /// Get authentication URL for user to authorize application
-    pub fn get_auth_url(&mut self) -> Result<String, LastfmError> {
+    }    /// Get authentication URL for user to authorize application
+    pub fn get_auth_url(&mut self) -> Result<(String, String), LastfmError> { // Ensure return type is (String, String)
         // Get an auth token first
-        let token = self.get_auth_token()?;
+        let token = self.get_auth_token()?; // Removed .await
         
-        // Build the auth URL
-        let auth_url = format!("{}?api_key={}&token={}", 
+        let auth_url = format!(
+            "{}?api_key={}&token={}", 
             LASTFM_AUTH_URL, 
             self.credentials.api_key,
-            token
+            &token // token is already a String here
         );
         
-        Ok(auth_url)
+        Ok((auth_url, token)) // Return the auth_url and the token itself
+    }
+
+    pub fn disconnect(&mut self) -> Result<(), String> { // Made synchronous
+        debug!("Disconnecting Last.fm client: clearing session key and username.");
+        self.credentials.session_key = None;
+        self.credentials.username = None;
+        
+        // store_credentials_to_store logs its own errors and does not return a Result.
+        // It attempts to save the cleared session/username.
+        self.store_credentials_to_store(); 
+        
+        // Assuming the primary goal of disconnect (clearing in-memory credentials) is achieved.
+        // The success/failure of persisting this cleared state is handled by store_credentials_to_store logging.
+        debug!("In-memory Last.fm credentials cleared. Persistence of this state attempted.");
+        Ok(())
     }
 
     /// Get an authentication token from Last.fm
-    pub fn get_auth_token(&mut self) -> Result<String, LastfmError> {
-        // Check if we already have a valid token
-        if let Some(token) = &self.credentials.auth_token {
-            if let Some(created) = self.credentials.token_created {
-                let now = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                
-                // Tokens are valid for 60 minutes
-                if now - created < 3600 {
-                    debug!("Reusing existing auth token");
-                    return Ok(token.clone());
-                }
-            }
-        }
+    pub fn get_auth_token(&mut self) -> Result<String, LastfmError> { // Made synchronous
+        // REMOVED: Caching logic for auth_token.
+        // Always fetch a new token when this method is called to start an auth flow.
+        // The old logic was:
+        // if let Some(token) = &self.credentials.auth_token {
+        //     if let Some(created) = self.credentials.token_created {
+        //         let now = SystemTime::now()
+        //             .duration_since(SystemTime::UNIX_EPOCH)
+        //             .unwrap()
+        //             .as_secs();
+        //         // Tokens are valid for 60 minutes
+        //         if now - created < 3600 {
+        //             debug!("(get_auth_token) Reusing existing auth token: {:?}", token);
+        //             return Ok(token.clone());
+        //         }
+        //     }
+        // }
 
         ratelimit::rate_limit("lastfm");
 
-        let params = [
-            ("method", "auth.getToken"),
-            ("api_key", &self.credentials.api_key),
-            ("format", "json"),
-        ];
+        let params = [("method", "auth.getToken")];
 
-        debug!("Requesting Last.fm auth token");
-        let response = self.make_api_request(params, false)?;
+        debug!("(get_auth_token) Requesting new Last.fm auth token");
+        let response_body = self.make_api_request(params.iter().copied(), false)?;
         
-        let token_response: TokenResponse = serde_json::from_str(&response)
-            .map_err(|e| LastfmError::ParsingError(format!("Failed to parse token response: {}", e)))?;
+        let token_response: TokenResponse = serde_json::from_str(&response_body)
+            .map_err(|e| LastfmError::ParsingError(format!("Failed to parse token response: {}, body: {}", e, response_body)))?;
         
-        // Store the token
+        // Store the newly fetched token
+        debug!("(get_auth_token) Received new token: {}. Storing it.", token_response.token);
         self.credentials.auth_token = Some(token_response.token.clone());
         self.credentials.token_created = Some(
             SystemTime::now()
@@ -229,37 +250,61 @@ impl LastfmClient {
                 .as_secs(),
         );
         
-        debug!("Received new Last.fm auth token");
+        debug!("(get_auth_token) Stored new auth token: {:?}, created: {:?}", self.credentials.auth_token, self.credentials.token_created);
         Ok(token_response.token)
-    }
-
+    }    
+    
     /// Get a session key after user has authorized the application
     pub fn get_session(&mut self) -> Result<(String, String), LastfmError> {
-        // Check if we have a token
+        debug!("(get_session) Attempting to get session. Current auth_token: {:?}", self.credentials.auth_token);
+        // Check if we have an auth_token (this should be the initial request token)
         let token = match &self.credentials.auth_token {
             Some(t) => t.clone(),
-            None => return Err(LastfmError::AuthError("No auth token available".to_string())),
+            None => {
+                // If there's no auth_token, it means either get_auth_token was never called,
+                // or the token was already successfully used and cleared.
+                // Check if we are already authenticated.
+                // Check if we are already authenticated.
+                if self.is_authenticated() {
+                    if let Some(username) = self.get_username() {
+                         if let Some(session_key) = self.credentials.session_key.clone() {
+                            info!("Already authenticated as {}. Re-confirming session.", username);
+                            return Ok((session_key, username));
+                         }
+                    }
+                }
+                return Err(LastfmError::AuthError(
+                    "No auth token available to attempt session retrieval. Please initiate authentication first.".to_string(),
+                ));
+            }
         };
 
         ratelimit::rate_limit("lastfm");
 
         let params = [
             ("method", "auth.getSession"),
-            ("api_key", &self.credentials.api_key),
             ("token", &token),
         ];
 
-        // This request needs to be signed
-        let response = self.make_api_request(params, true)?;
+        debug!("Attempting to get Last.fm session with token: {}", token);
+        // Pass the array directly, or a slice of it.
+        let response_body = self.make_api_request(params.iter().copied(), true)?;
         
-        let session_response: SessionResponse = serde_json::from_str(&response)
-            .map_err(|e| LastfmError::ParsingError(format!("Failed to parse session response: {}", e)))?;
+        // make_api_request now directly returns ApiError if Last.fm sends one.
+        // If we reach here, it means Last.fm didn't return a JSON error object at the top level.
+        // We can attempt to parse SessionResponse.
+
+        let session_response: SessionResponse = serde_json::from_str(&response_body)
+            .map_err(|e| {
+                error!("Failed to parse session response: {}, body: {}", e, response_body);
+                LastfmError::ParsingError(format!("Failed to parse session response: {}", e))
+            })?;
         
         // Store the session
         self.credentials.session_key = Some(session_response.session.key.clone());
         self.credentials.username = Some(session_response.session.name.clone());
         
-        // Clear the token since it's been used
+        // Clear the auth_token as it has been successfully used
         self.credentials.auth_token = None;
         self.credentials.token_created = None;
         
@@ -268,6 +313,23 @@ impl LastfmClient {
 
         info!("Successfully authenticated with Last.fm as user: {}", session_response.session.name);
         Ok((session_response.session.key, session_response.session.name))
+    }
+    
+    /// Set authentication token for Last.fm
+    /// Used in the auth callback to set the token received from Last.fm
+    pub fn set_auth_token(&mut self, token: String) -> Result<(), LastfmError> {
+        debug!("(set_auth_token) Attempting to set token. Current auth_token: {:?}. New token: {}", self.credentials.auth_token, token);
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+            
+        self.credentials.auth_token = Some(token.clone()); // Clone token for logging too
+        self.credentials.token_created = Some(now);
+        
+        debug!("(set_auth_token) Successfully set Last.fm auth token to: {}, created: {}. Current state: {:?}", 
+               token, now, self.credentials.auth_token);
+        Ok(())
     }
 
     /// Check if user is authenticated
@@ -281,82 +343,111 @@ impl LastfmClient {
     }
 
     /// Make an API request to Last.fm
-    fn make_api_request<'a>(&self, params: impl IntoIterator<Item = (&'a str, &'a str)>, sign: bool) -> Result<String, LastfmError> {
-        let param_map: HashMap<String, String> = params
+    fn make_api_request<'a>(
+        &self, 
+        params: impl IntoIterator<Item = (&'a str, &'a str)> + Clone, 
+        sign: bool
+    ) -> Result<String, LastfmError> {
+        let mut param_map: HashMap<String, String> = params
+            .clone() // Clone params here if needed for logging before modification
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
 
-        // We need to sign the API call if required
-        let api_sig = if sign {
-            self.generate_signature(&param_map)
-        } else {
-            String::new()
-        };        // Build the request URL
-        let mut request = self.client.get(LASTFM_API_ROOT);
+        // Always add api_key and format, make_api_request is internal
+        param_map.insert("api_key".to_string(), self.credentials.api_key.clone());
+        param_map.insert("format".to_string(), "json".to_string());
 
-        // Add all parameters
-        for (key, value) in &param_map {
-            request = request.query(key, value);
-        }
 
-        // Add the signature if needed
         if sign {
-            request = request.query("api_sig", &api_sig);
-        }
+            // Create signature string
+            // Sort params alphabetically by key
+            let mut sorted_params: Vec<(&String, &String)> = param_map.iter().collect();
+            sorted_params.sort_by_key(|&(k, _)| k);
 
-        // Always add format=json
-        request = request.query("format", "json");
-
-        // Send the request
-        let response = request.call()
-            .map_err(|e| LastfmError::NetworkError(e.to_string()))?;
-
-        let response_text = response.into_string()
-            .map_err(|e| LastfmError::NetworkError(format!("Failed to read response: {}", e)))?;
-
-        // Check for error in response
-        if response_text.contains("\"error\":") {
-            if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                if let (Some(code), Some(message)) = (
-                    error_response.get("error").and_then(|e| e.as_i64()),
-                    error_response.get("message").and_then(|m| m.as_str()),
-                ) {
-                    return Err(LastfmError::ApiError(
-                        message.to_string(),
-                        code as i32,
-                    ));
+            let mut sig_string = String::new();
+            for (k, v) in sorted_params {
+                if k != "format" { // format is not included in signature base string
+                    sig_string.push_str(k);
+                    sig_string.push_str(v);
                 }
             }
-            
-            // Generic error if we couldn't parse the specifics
-            return Err(LastfmError::ApiError(
-                format!("Unknown API error: {}", response_text),
-                -1,
-            ));
-        }
+            sig_string.push_str(&self.credentials.api_secret);
 
-        Ok(response_text)
+            let digest = md5::compute(sig_string.as_bytes());
+            param_map.insert("api_sig".to_string(), format!("{:x}", digest));
+        }
+        
+        let method_for_log = param_map.get("method").cloned().unwrap_or_else(|| "unknown_method".to_string());
+        // Log params, excluding api_secret if it were ever in param_map (it's not, but good practice)
+        let log_params: HashMap<String, String> = param_map.iter()
+            .filter(|(k, _)| k.as_str() != "api_secret" && k.as_str() != "api_key" && k.as_str() != "token") // also hide api_key and token from general logs
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        debug!("Last.fm API call: method={}, params={:?}", method_for_log, log_params);
+
+
+        let request_url = LASTFM_API_ROOT;
+        
+        // Use POST for all requests, Last.fm API generally accepts this
+        let request = self.client.post(request_url);
+        let form_params: Vec<(&str, &str)> = param_map.iter().map(|(k,v)| (k.as_str(), v.as_str())).collect();
+
+        let response = request.send_form(&form_params);
+
+        match response {
+            Ok(res) => {
+                let _status = res.status(); // Mark as unused if not needed
+                let body = res.into_string().map_err(|e| LastfmError::NetworkError(format!("Failed to read response body: {}", e)))?;
+                
+                // Log raw body for debugging if necessary, be careful with sensitive data in production logs
+                // debug!("Last.fm API response: status={}, body={}", status, body);
+
+                // Try to parse as Last.fm error first, even on 200 OK
+                if let Ok(error_response) = serde_json::from_str::<LastfmErrorResponse>(&body) {
+                    // It's a Last.fm API error (e.g. token not authorized, invalid params)
+                    debug!("Last.fm API returned an error: code={}, message='{}'", error_response.error, error_response.message);
+                    return Err(LastfmError::ApiError(error_response.message, error_response.error));
+                }
+
+                // If not a Last.fm error response, assume it's a success payload
+                // The caller will then try to parse it into its expected struct (e.g., TokenResponse, SessionResponse)
+                Ok(body)
+            }
+            Err(ureq::Error::Status(code, response)) => {
+                let error_body = response.into_string().unwrap_or_else(|_| "<empty response body>".to_string());
+                error!("Last.fm API HTTP error: {} - Body: {}", code, error_body);
+                // Try to parse error_body as LastfmErrorResponse as well, as Last.fm might return structured errors on HTTP error codes
+                if let Ok(error_response) = serde_json::from_str::<LastfmErrorResponse>(&error_body) {
+                     Err(LastfmError::ApiError(error_response.message, error_response.error))
+                } else {
+                     Err(LastfmError::NetworkError(format!("HTTP error {} with unparseable body: {}", code, error_body)))
+                }
+            }
+            Err(e) => { // Other errors like transport errors
+                error!("Last.fm API request failed (ureq error): {}", e.to_string());
+                Err(LastfmError::NetworkError(e.to_string()))
+            }
+        }
     }
 
-    /// Generate a signature for API call as per Last.fm requirements
-    fn generate_signature(&self, params: &HashMap<String, String>) -> String {
-        // Sort params alphabetically and concatenate
-        let mut keys: Vec<&String> = params.keys().collect();
-        keys.sort();
-
-        let mut signature_base = String::new();
-        for key in keys {
-            signature_base.push_str(key);
-            signature_base.push_str(params.get(key).unwrap());
+    /// Store credentials to security store
+    fn store_credentials_to_store(&self) {
+        if let Some(session_key) = &self.credentials.session_key {
+            if let Err(e) = SecurityStore::set(LASTFM_SESSION_KEY_STORE, session_key) {
+                log::warn!("Failed to store Last.fm session key: {}", e);
+            } else {
+                debug!("Stored Last.fm session key in security store");
+            }
         }
         
-        // Append the secret
-        signature_base.push_str(&self.credentials.api_secret);
-        
-        // Calculate MD5 hash
-        let digest = md5::compute(signature_base);
-        format!("{:x}", digest)
+        if let Some(username) = &self.credentials.username {
+            if let Err(e) = SecurityStore::set(LASTFM_USERNAME_STORE, username) {
+                log::warn!("Failed to store Last.fm username: {}", e);
+            } else {
+                debug!("Stored Last.fm username in security store");
+            }
+        }
     }
 
     // Clone implementation for the client
@@ -376,7 +467,7 @@ impl LastfmClient {
                 if let SecurityStoreError::KeyNotFound(_) = e {
                     debug!("No Last.fm session key found in security store");
                 } else {
-                    debug!("Error loading Last.fm session key from store: {}", e);
+                    debug!("Error loading Last.fm session key from security store: {}", e);
                 }
             }
         }
@@ -391,31 +482,14 @@ impl LastfmClient {
                 if let SecurityStoreError::KeyNotFound(_) = e {
                     debug!("No Last.fm username found in security store");
                 } else {
-                    debug!("Error loading Last.fm username from store: {}", e);
+                    debug!("Error loading Last.fm username from security store: {}", e);
                 }
             }
         }
     }
 
-    fn store_credentials_to_store(&self) {
-        if let Some(session_key) = &self.credentials.session_key {
-            if let Err(e) = SecurityStore::set(LASTFM_SESSION_KEY_STORE, session_key) {
-                log::warn!("Failed to store Last.fm session key: {}", e);
-            } else {
-                debug!("Stored Last.fm session key in security store");
-            }
-        }
-        
-        if let Some(username) = &self.credentials.username {
-            if let Err(e) = SecurityStore::set(LASTFM_USERNAME_STORE, username) {
-                log::warn!("Failed to store Last.fm username: {}", e);
-            } else {
-                debug!("Stored Last.fm username in security store");
-            }
-        }
-    }
-
     // Create an instance from credentials
+    #[allow(dead_code)] // Function not currently used
     fn with_credentials(credentials: LastfmCredentials) -> Self {
         // Register with rate limiter
         ratelimit::register_service("lastfm", 1000);

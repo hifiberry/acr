@@ -16,5 +16,8 @@ pub mod imagecache;
 // Export the event module
 pub mod events;
 
+// Export the lastfm module
+pub mod lastfm;
+
 // Export the server module
 pub mod server;

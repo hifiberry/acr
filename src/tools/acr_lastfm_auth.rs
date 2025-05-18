@@ -30,7 +30,8 @@ struct Args {
     use_defaults: bool,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     // Check if we're loading saved credentials
@@ -93,10 +94,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut client = LastfmClient::get_instance()?;
         
         // Start authentication flow
-        let auth_url = client.get_auth_url()?;
+        let auth_url_tuple = client.get_auth_url().await?;
         
         println!("\nTo authenticate with Last.fm, please:");
-        println!("1. Visit this URL in your browser: {}", auth_url);
+        println!("1. Visit this URL in your browser: {}", auth_url_tuple.0);
         println!("2. Log in to your Last.fm account if necessary");
         println!("3. Authorize this application");
         println!("4. Return here and press Enter when completed");
@@ -157,10 +158,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut client = LastfmClient::get_instance()?;
 
         // Start authentication flow
-        let auth_url = client.get_auth_url()?;
+        let auth_url_tuple = client.get_auth_url().await?;
 
         println!("\nTo authenticate with Last.fm, please:");
-        println!("1. Visit this URL in your browser: {}", auth_url);
+        println!("1. Visit this URL in your browser: {}", auth_url_tuple.0);
         println!("2. Log in to your Last.fm account if necessary");
         println!("3. Authorize this application");
         println!("4. Return here and press Enter when completed");

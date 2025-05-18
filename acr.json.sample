@@ -4,9 +4,7 @@
             "active-monitor": {
                 "enabled": true
             }
-        }
-    ],
-    "event_filters": [
+        },
         {
             "event-logger": {
                 "enabled": true,
@@ -21,6 +19,15 @@
                 "only_active": false
             }
         }
+    ],
+    "event_filters": [
+        // Example: if you had a specific event filter to configure
+        // {
+        //   "your-event-filter-name": {
+        //     "enabled": true,
+        //     "some_config": "value"
+        //   }
+        // }
     ],
     "webserver": {
         "enable": true,

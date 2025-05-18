@@ -949,7 +949,8 @@ impl AudioController {
         if let Ok(self_ref) = self.self_ref.read() {
             if let Some(weak_ref) = self_ref.as_ref() {
                 plugin.initialize(weak_ref.clone());
-                
+                plugin.init(); // Call the plugin's init method
+
                 if let Ok(mut plugins) = self.action_plugins.write() {
                     plugins.push(plugin);
                     debug!("Added action plugin at index {}", plugins.len() - 1);

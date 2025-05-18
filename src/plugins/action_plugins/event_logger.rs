@@ -1,9 +1,11 @@
 use crate::data::PlayerEvent;
 use crate::plugins::plugin::Plugin;
-use crate::plugins::event_filters::event_filter::{EventFilter, BaseEventFilter};
+use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
 use std::any::Any;
 use std::collections::HashSet;
 use delegate::delegate;
+use crate::audiocontrol::AudioController;
+use std::sync::Weak;
 
 /// Log level for the EventLogger
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,15 +36,15 @@ impl From<&str> for LogLevel {
 
 /// A simple plugin that logs player events
 pub struct EventLogger {
-    /// Base filter implementation that handles common functionality
-    base: BaseEventFilter,
-    
+    /// Base action plugin implementation
+    base: BaseActionPlugin,
+
     /// Whether to only log events from the active player
     only_active: bool,
-    
+
     /// Log level to use for output
     log_level: LogLevel,
-    
+
     /// Set of event types to log (if empty, log all events)
     event_types: Option<HashSet<String>>,
 }
@@ -51,33 +53,33 @@ impl EventLogger {
     /// Create a new EventLogger
     pub fn new(only_active: bool) -> Self {
         Self {
-            base: BaseEventFilter::new("EventLogger", Self::filter_event_impl),
+            base: BaseActionPlugin::new("EventLogger"),
             only_active,
             log_level: LogLevel::default(),
             event_types: None,
         }
     }
-    
+
     /// Create a new EventLogger with custom configuration
     pub fn with_config(only_active: bool, log_level: LogLevel, event_types: Option<HashSet<String>>) -> Self {
         Self {
-            base: BaseEventFilter::new("EventLogger", Self::filter_event_impl),
+            base: BaseActionPlugin::new("EventLogger"),
             only_active,
             log_level,
             event_types,
         }
     }
-    
+
     /// Set the log level
     pub fn set_log_level(&mut self, level: LogLevel) {
         self.log_level = level;
     }
-    
+
     /// Set the event types to log
     pub fn set_event_types(&mut self, event_types: Option<HashSet<String>>) {
         self.event_types = event_types;
     }
-    
+
     /// Check if an event type should be logged
     fn should_log_event_type(&self, event_type: &str) -> bool {
         match &self.event_types {
@@ -85,7 +87,7 @@ impl EventLogger {
             None => true, // Log all event types if none are specified
         }
     }
-    
+
     /// Get the event type name from a PlayerEvent
     fn get_event_type(event: &PlayerEvent) -> &'static str {
         match event {
@@ -99,12 +101,12 @@ impl EventLogger {
             PlayerEvent::QueueChanged { .. } => "queue",
         }
     }
-    
+
     /// Log a message with the appropriate log level
-    fn log(&self, msg: &str, is_active_player: bool) {
+    fn log_message(&self, msg: &str, is_active_player: bool) {
         let active_suffix = if is_active_player { " [ACTIVE]" } else { "" };
         let full_msg = format!("{}{}", msg, active_suffix);
-        
+
         match self.log_level {
             LogLevel::Debug => log::debug!("{}", full_msg),
             LogLevel::Info => log::info!("{}", full_msg),
@@ -112,26 +114,23 @@ impl EventLogger {
             LogLevel::Error => log::error!("{}", full_msg),
         }
     }
-    
-    /// Implementation of the event filtering logic
-    fn filter_event_impl(plugin: &dyn Plugin, event: PlayerEvent, is_active_player: bool) -> Option<PlayerEvent> {
-        // We know this is an EventLogger because we control where this function is passed
-        let logger = plugin.as_any().downcast_ref::<EventLogger>().unwrap();
-        
+
+    /// Implementation of the event logging logic
+    fn log_event(&self, event: &PlayerEvent, is_active_player: bool) {
         // Only log events from the active player if only_active is true
-        if logger.only_active && !is_active_player {
-            return Some(event); // Pass through without logging
+        if self.only_active && !is_active_player {
+            return;
         }
-        
+
         // Check if we should log this event type
         let event_type = Self::get_event_type(&event);
-        if !logger.should_log_event_type(event_type) {
-            return Some(event); // Pass through without logging
+        if !self.should_log_event_type(event_type) {
+            return;
         }
-        
+
         match &event {
             PlayerEvent::StateChanged { source, state } => {
-                logger.log(
+                self.log_message(
                     &format!(
                         "Player {} (ID: {}) state changed to {:?}",
                         source.player_name(),
@@ -143,9 +142,9 @@ impl EventLogger {
             },
             PlayerEvent::SongChanged { source, song } => {
                 if let Some(song) = song {
-                    logger.log(
+                    self.log_message(
                         &format!(
-                            "Player {} (ID: {}) changed song to '{}' by '{}'",
+                            "Player {} (ID: {}) changed song to \'{}\' by \'{}\'",
                             source.player_name(),
                             source.player_id(),
                             song.title.as_deref().unwrap_or("Unknown"),
@@ -154,7 +153,7 @@ impl EventLogger {
                         is_active_player
                     );
                 } else {
-                    logger.log(
+                    self.log_message(
                         &format!(
                             "Player {} (ID: {}) cleared current song",
                             source.player_name(),
@@ -165,7 +164,7 @@ impl EventLogger {
                 }
             },
             PlayerEvent::LoopModeChanged { source, mode } => {
-                logger.log(
+                self.log_message(
                     &format!(
                         "Player {} (ID: {}) changed loop mode to {:?}",
                         source.player_name(),
@@ -176,7 +175,7 @@ impl EventLogger {
                 );
             },
             PlayerEvent::RandomChanged { source, enabled } => {
-                logger.log(
+                self.log_message(
                     &format!(
                         "Player {} (ID: {}) changed random/shuffle mode to {}",
                         source.player_name(),
@@ -187,7 +186,7 @@ impl EventLogger {
                 );
             },
             PlayerEvent::CapabilitiesChanged { source, capabilities } => {
-                logger.log(
+                self.log_message(
                     &format!(
                         "Player {} (ID: {}) capabilities changed: {:?}",
                         source.player_name(),
@@ -198,7 +197,7 @@ impl EventLogger {
                 );
             },
             PlayerEvent::PositionChanged { source, position } => {
-                logger.log(
+                self.log_message(
                     &format!(
                         "Player {} (ID: {}) position changed to {:.1}s",
                         source.player_name(),
@@ -214,7 +213,7 @@ impl EventLogger {
                 } else {
                     String::new()
                 };
-                
+
                 let item_str = match (artist, album, song) {
                     (Some(a), Some(b), Some(s)) => format!("artist: {}, album: {}, song: {}", a, b, s),
                     (Some(a), Some(b), None) => format!("artist: {}, album: {}", a, b),
@@ -225,8 +224,8 @@ impl EventLogger {
                     (Some(a), None, Some(s)) => format!("artist: {}, song: {}", a, s),
                     _ => "database".to_string(),
                 };
-                
-                logger.log(
+
+                self.log_message(
                     &format!(
                         "Player {} (ID: {}) updating {}{}",
                         source.player_name(),
@@ -238,7 +237,7 @@ impl EventLogger {
                 );
             },
             PlayerEvent::QueueChanged { source } => {
-                logger.log(
+                self.log_message(
                     &format!(
                         "Player {} (ID: {}) queue changed",
                         source.player_name(),
@@ -248,9 +247,6 @@ impl EventLogger {
                 );
             },
         }
-        
-        // Return the event unchanged so it can be processed by other components
-        Some(event)
     }
 }
 
@@ -269,12 +265,12 @@ impl Plugin for EventLogger {
             self.log_level,
             self.event_types
         );
-        true
+        self.base.init()
     }
 
     fn shutdown(&mut self) -> bool {
         log::info!("EventLogger shutdown");
-        true
+        self.base.shutdown()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -282,8 +278,12 @@ impl Plugin for EventLogger {
     }
 }
 
-impl EventFilter for EventLogger {
-    fn filter_event(&self, event: PlayerEvent, is_active_player: bool) -> Option<PlayerEvent> {
-        Self::filter_event_impl(self, event, is_active_player)
+impl ActionPlugin for EventLogger {
+    fn initialize(&mut self, controller: Weak<AudioController>) {
+        self.base.set_controller(controller);
+    }
+
+    fn on_event(&mut self, event: &PlayerEvent, is_active_player: bool) {
+        self.log_event(event, is_active_player);
     }
 }

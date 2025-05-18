@@ -60,7 +60,7 @@ impl Plugin for BaseActionPlugin {
     }
     
     fn init(&mut self) -> bool {
-        // Default implementation does nothing
+        log::info!("Plugin '{}' initialized", self.name);
         true
     }
     

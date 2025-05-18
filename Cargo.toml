@@ -78,5 +78,5 @@ name = "acr_send_update"
 path = "src/tools/send_update.rs"
 
 [[bin]]
-name = "acr_lastfm_auth"
-path = "src/tools/acr_lastfm_auth.rs"
+name = "acr_dump_store"
+path = "src/tools/acr_dump_store.rs"

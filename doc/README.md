@@ -6,6 +6,7 @@ This directory contains documentation for various aspects of the HiFiBerry Audio
 
 - [API Documentation](api.md) - REST API and WebSocket endpoints
 - [Caching](caching.md) - Information about the caching mechanisms used in ACR
+- [CLI Tools](cli_tools.md) - Command-line tools for interacting with ACR
 - [Library Management](library.md) - How ACR manages music libraries
 - [External Links](links.md) - Links to external tools and documentation
 - [MPD Integration](mpd.md) - Details about the Music Player Daemon integration

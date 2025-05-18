@@ -22,6 +22,10 @@ This Rust implementation addresses these issues through strong static typing, a 
 - Event-based notification system for player state changes
 - Clean separation between audio player control and user interfaces
 
+## TODO
+
+- Lyrics support
+
 ## Architecture
 
 AudioControl/Rust uses a player controller abstraction to handle different audio player backends uniformly. The AudioController acts as a manager for multiple PlayerController instances and provides a unified interface for client applications.

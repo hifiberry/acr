@@ -8,7 +8,7 @@ use crate::plugins::event_filters::event_filter::{EventFilter};
 use crate::plugins::action_plugin::ActionPlugin;
 use crate::plugins::action_plugins::ActiveMonitor;
 use crate::plugins::action_plugins::event_logger::{EventLogger, LogLevel};
-use crate::plugins::action_plugins::lastfm_plugin::{LastfmPlugin, LastfmPluginConfig};
+use crate::plugins::action_plugins::lastfm::{Lastfm, LastfmConfig};
 
 /// Factory for creating and registering plugins
 pub struct PluginFactory {
@@ -73,17 +73,17 @@ impl PluginFactory {
             Some(Box::new(ActiveMonitor::new()) as Box<dyn Plugin>)
         });
 
-        self.register("lastfm", |config_value| { // Renamed from "lastfm-plugin" to "lastfm"
+        self.register("lastfm", |config_value| {
             if let Some(value) = config_value {
-                match serde_json::from_value::<LastfmPluginConfig>(value.clone()) {
-                    Ok(config) => Some(Box::new(LastfmPlugin::new(config)) as Box<dyn Plugin>),
+                match serde_json::from_value::<LastfmConfig>(value.clone()) {
+                    Ok(config) => Some(Box::new(Lastfm::new(config)) as Box<dyn Plugin>),
                     Err(e) => {
-                        error!("Failed to parse LastfmPluginConfig for 'lastfm' plugin: {}. Plugin will not be loaded.", e);
+                        error!("Failed to parse LastfmConfig for \'lastfm\' plugin: {}. Plugin will not be loaded.", e);
                         None
                     }
                 }
             } else {
-                error!("'lastfm' plugin requires configuration (api_key, api_secret). Plugin will not be loaded.");
+                error!("\'lastfm\' plugin requires configuration (api_key, api_secret). Plugin will not be loaded.");
                 None
             }
         });
@@ -334,26 +334,24 @@ impl PluginFactory {
                 // Use default values
                 Some(Box::new(EventLogger::new(false)) as Box<dyn ActionPlugin + Send + Sync>)
             }
-        } else if plugin.as_any().downcast_ref::<LastfmPlugin>().is_some() {
-            // For LastfmPlugin, create a new instance with its configuration
+        } else if plugin.as_any().downcast_ref::<Lastfm>().is_some() {
+            // For Lastfm, create a new instance with its configuration
             if let Some(config_val) = config {
-                match serde_json::from_value::<LastfmPluginConfig>(config_val.clone()) {
+                match serde_json::from_value::<LastfmConfig>(config_val.clone()) {
                     Ok(lastfm_config) => {
-                        Some(Box::new(LastfmPlugin::new(lastfm_config)) as Box<dyn ActionPlugin + Send + Sync>)
+                        Some(Box::new(Lastfm::new(lastfm_config)) as Box<dyn ActionPlugin + Send + Sync>)
                     }
                     Err(e) => {
-                        error!("Failed to parse LastfmPluginConfig for '{}' in create_action_plugin_with_config: {}. Plugin will not be loaded.", name, e);
+                        error!("Failed to parse LastfmConfig for \'{}\' in create_action_plugin_with_config: {}. Plugin will not be loaded.", name, e);
                         None
                     }
                 }
             } else {
-                // This case should ideally not be reached if create_with_config for "lastfm" succeeded,
-                // as its registration requires configuration.
-                error!("'{}' plugin (LastfmPlugin) requires configuration, but none was provided to create_action_plugin_with_config. This indicates an issue.", name);
+                error!("\'{}\' plugin (Lastfm) requires configuration, but none was provided to create_action_plugin_with_config. This indicates an issue.", name);
                 None
             }
         } else {
-            error!("Plugin '{}' is not a compatible ActionPlugin or is not specifically handled in create_action_plugin_with_config.", name);
+            error!("Plugin \'{}\' is not a compatible ActionPlugin or is not specifically handled in create_action_plugin_with_config.", name);
             None
         }
     }

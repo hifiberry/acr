@@ -254,3 +254,27 @@ fn initialize_theartistdb(config: &serde_json::Value) {
     theartistdb::initialize_from_config(config);
     info!("TheArtistDB initialized successfully");
 }
+
+// Helper function to initialize Last.fm
+fn initialize_lastfm(config: &serde_json::Value) {
+    if let Some(lastfm_config) = config.get("lastfm") {
+        // Check if enabled flag exists and is set to true
+        let enabled = lastfm_config.get("enable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false); // Default to disabled if not specified
+        
+        if enabled {
+            // Initialize with default API credentials
+            if let Err(e) = lastfm::LastfmClient::initialize_with_defaults() {
+                warn!("Failed to initialize Last.fm client: {}", e);
+                return;
+            }
+            
+            info!("Last.fm initialized successfully");
+        } else {
+            debug!("Last.fm integration is disabled");
+        }
+    } else {
+        debug!("No Last.fm configuration found, using defaults");
+    }
+}

@@ -39,16 +39,16 @@
     },    "musicbrainz": {
         "enable": true,
         "rate_limit_ms": 1000
-    },
+    },    
     "theartistdb": {
         "enable": true,
-        "api_key": "YOUR_API_KEY_HERE",
+        "api_key": "", 
         "rate_limit_ms": 500
     },
     "lastfm": {
         "enable": false,
-        "api_key": "YOUR_API_KEY_HERE",
-        "api_secret": "YOUR_API_SECRET_HERE",
+        "api_key": "",
+        "api_secret": "",
         "credentials_file": "/etc/acr/lastfm_credentials.json",
         "scrobble_enabled": true,
         "now_playing_enabled": true

@@ -24,6 +24,17 @@ pub fn default_lastfm_api_secret() -> &'static str {
     option_env!("LASTFM_APISECRET").unwrap_or("YOUR_API_SECRET_HERE")
 }
 
+// Test credentials (placeholders for tests)
+#[cfg(test)]
+pub fn default_lastfm_api_key() -> &'static str {
+    "test_api_key"
+}
+
+#[cfg(test)]
+pub fn default_lastfm_api_secret() -> &'static str {
+    "test_api_secret"
+}
+
 
 // Error types for Last.fm API
 #[derive(Debug)]
@@ -117,18 +128,26 @@ impl LastfmClient {
         });
 
         info!("Last.fm client initialized");
-        Ok(())
-    }    /// Initialize the Last.fm client with default API credentials from secrets.txt
+        Ok(())    }    
+    
+    /// Initialize the Last.fm client with default API credentials from secrets.txt
     /// 
     /// This will use the credentials compiled in from the secrets.txt file at build time.
     /// If no secrets.txt file was available, placeholder values will be used.
     /// 
     /// # Returns
-    /// Result indicating success or failure
+    /// Result indicating success or failure    
     pub fn initialize_with_defaults() -> Result<(), LastfmError> {
+        let api_key = default_lastfm_api_key();
+        let api_secret = default_lastfm_api_secret();
+        
+        if api_key != "YOUR_API_KEY_HERE" && api_secret != "YOUR_API_SECRET_HERE" {
+            info!("Using default secrets for Last.fm");
+        }
+        
         Self::initialize(
-            default_lastfm_api_key().to_string(),
-            default_lastfm_api_secret().to_string()
+            api_key.to_string(),
+            api_secret.to_string()
         )
     }
 

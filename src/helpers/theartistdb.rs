@@ -28,6 +28,17 @@ struct TheArtistDBConfig {
     api_key: String,
 }
 
+// Default API key from secrets.txt
+#[cfg(not(test))]
+pub fn default_artistdb_api_key() -> &'static str {
+    option_env!("ARTISTDB_APIKEY").unwrap_or("YOUR_API_KEY_HERE")
+}
+
+#[cfg(test)]
+pub fn default_artistdb_api_key() -> &'static str {
+    "test_api_key"
+}
+
 // Global singleton for TheArtistDB configuration
 lazy_static! {
     static ref THEARTISTDB_CONFIG: Mutex<TheArtistDBConfig> = Mutex::new(TheArtistDBConfig::default());
@@ -46,11 +57,31 @@ pub fn initialize_from_config(config: &serde_json::Value) {
         // Get API key if provided
         if let Some(api_key) = artistdb_config.get("api_key").and_then(|v| v.as_str()) {
             if let Ok(mut config) = THEARTISTDB_CONFIG.lock() {
+                debug!("Found TheArtistDB API key in config: {}", 
+                       if !api_key.is_empty() && api_key.len() > 4 { 
+                           format!("{}...", &api_key[0..4]) 
+                       } else { 
+                           "Empty".to_string() 
+                       });
+                
                 config.api_key = api_key.to_string();
                 if !api_key.is_empty() {
                     info!("TheArtistDB API key configured");
                 } else {
-                    warn!("Empty TheArtistDB API key provided");
+                    // Try to load from the default key (secrets.txt)
+                    let default_key = default_artistdb_api_key();
+                    debug!("Trying default TheArtistDB API key: {}", 
+                            if default_key != "YOUR_API_KEY_HERE" && default_key.len() > 4 { 
+                                format!("{}...", &default_key[0..4]) 
+                            } else { 
+                                "Not available".to_string() 
+                            });
+                    
+                    if default_key != "YOUR_API_KEY_HERE" {
+                        info!("Using TheArtistDB API key from secrets.txt");
+                    } else {
+                        warn!("Empty TheArtistDB API key provided");
+                    }
                 }
             } else {
                 error!("Failed to acquire lock on TheArtistDB configuration");
@@ -86,13 +117,25 @@ pub fn is_enabled() -> bool {
 /// Get the configured API key
 pub fn get_api_key() -> Option<String> {
     if let Ok(config) = THEARTISTDB_CONFIG.lock() {
-        if config.api_key.is_empty() {
+        if config.api_key.is_empty() {            // If no API key is configured in acr.json, use the default from secrets.txt
+            let default_key = default_artistdb_api_key();
+            
+            if default_key != "YOUR_API_KEY_HERE" {
+                info!("Using default secret for TheArtistDB");
+                return Some(default_key.to_string());
+            }
             None
         } else {
             Some(config.api_key.clone())
         }
-    } else {
-        None
+    } else {        // Fallback to default key if we can't acquire the lock
+        let default_key = default_artistdb_api_key();
+        if default_key != "YOUR_API_KEY_HERE" {
+            info!("Using default secret for TheArtistDB (fallback)");
+            Some(default_key.to_string())
+        } else {
+            None
+        }
     }
 }
 

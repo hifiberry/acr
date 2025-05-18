@@ -38,13 +38,15 @@ fn read_lastfm_secrets() {
                     if let Some((key, value)) = line.split_once('=') {
                         let key = key.trim();
                         let value = value.trim();
-                        
-                        match key {
+                          match key {
                             "LASTFM_APIKEY" => {
                                 println!("cargo:rustc-env=LASTFM_APIKEY={}", value);
                             },
                             "LASTFM_APISECRET" => {
                                 println!("cargo:rustc-env=LASTFM_APISECRET={}", value);
+                            },
+                            "ARTISTDB_APIKEY" => {
+                                println!("cargo:rustc-env=ARTISTDB_APIKEY={}", value);
                             },
                             _ => {} // Ignore other keys
                         }

@@ -1,12 +1,13 @@
 use crate::helpers::ratelimit;
-use log::{debug, info, error};
-use serde::{Deserialize, Serialize};
+use log::{debug, info, error}; // Removed warn
+use md5;
+use once_cell::sync::Lazy;
+use serde::{de::{self, Deserializer, Unexpected}, Deserialize, Serialize}; // Ensure full serde de import
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::time::SystemTime;
 use ureq;
-use once_cell::sync::Lazy;
 use std::sync::Mutex;
 // Import SecurityStore and its error type
 use crate::helpers::security_store::{SecurityStore, SecurityStoreError};
@@ -90,6 +91,87 @@ struct Session {
     key: String,
     #[allow(dead_code)] // Field from Last.fm API, not currently used
     subscriber: i32, // Last.fm returns 0 or 1
+}
+
+// Helper function to deserialize "0" or "1" string to bool
+fn deserialize_string_to_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    match s.as_str() {
+        "1" => Ok(true),
+        "0" => Ok(false),
+        _ => Err(de::Error::invalid_value(Unexpected::Str(&s), &"a string '0' or '1'")),
+    }
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmTrackInfoArtist {
+    pub name: String,
+    pub mbid: Option<String>,
+    pub url: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmTrackInfoAlbumImage {
+    #[serde(rename = "#text")]
+    pub url: String,
+    pub size: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmTrackInfoAlbum {
+    pub artist: String,
+    pub title: String,
+    pub mbid: Option<String>,
+    pub url: String,
+    #[serde(default)] // image array can be missing
+    pub image: Vec<LastfmTrackInfoAlbumImage>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmTag {
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmTopTags {
+    #[serde(default, rename = "tag")] // tag array can be missing or not an array if empty
+    pub tags: Vec<LastfmTag>,
+}
+
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmWiki {
+    pub published: String,
+    pub summary: String,
+    pub content: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmTrackInfoDetails {
+    pub name: String,
+    pub mbid: Option<String>,
+    pub url: String,
+    pub duration: String, // Duration in milliseconds, or "0"
+    pub listeners: String,
+    pub playcount: String,
+    pub artist: LastfmTrackInfoArtist,
+    pub album: Option<LastfmTrackInfoAlbum>,
+    #[serde(rename = "toptags")]
+    pub tags: Option<LastfmTopTags>, // Changed from TopTags to Option<LastfmTopTags>
+    pub wiki: Option<LastfmWiki>,
+    #[serde(deserialize_with = "deserialize_string_to_bool", default)] // userloved might be missing if not authenticated for the call
+    pub userloved: bool,
+    #[serde(rename = "userplaycount")]
+    pub user_playcount: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct LastfmTrackInfoResponse {
+    track: LastfmTrackInfoDetails,
 }
 
 // Credentials storage
@@ -526,6 +608,68 @@ impl LastfmClient {
 
         info!("Last.fm client initialized from stored credentials");
         Ok(())
+    }
+
+    /// Get detailed information for a track, including user-specific data like playcount and loved status.
+    ///
+    /// # Arguments
+    /// * `artist` - The artist name.
+    /// * `title` - The track title.
+    ///
+    /// # Returns
+    /// Result containing `LastfmTrackInfoDetails` or an error.
+    pub fn get_track_info(&self, artist: &str, title: &str) -> Result<LastfmTrackInfoDetails, LastfmError> {
+        if !self.is_authenticated() {
+            // While track.getInfo can be called without auth, user specific fields won't be present.
+            // The request implies wanting user-specific data.
+            return Err(LastfmError::AuthError(
+                "Authentication required to fetch user-specific track information (e.g., loved status).".to_string(),
+            ));
+        }
+
+        let session_key = self.credentials.session_key.as_ref().ok_or_else(|| {
+            error!("Session key not found for authenticated user while calling get_track_info.");
+            LastfmError::AuthError("Session key not found despite being authenticated.".to_string())
+        })?;
+        
+        // username is not strictly needed if sk is provided, Last.fm infers user from sk.
+        // let username = self.credentials.username.as_ref().ok_or_else(|| {
+        //     error!("Username not found for authenticated user while calling get_track_info.");
+        //     LastfmError::AuthError("Username not found despite being authenticated.".to_string())
+        // })?;
+
+        ratelimit::rate_limit("lastfm");
+
+        let mut params = vec![
+            ("method", "track.getInfo"),
+            ("artist", artist),
+            ("track", title),
+            ("sk", session_key.as_str()), // Session key for user-specific data
+            ("autocorrect", "1"),       // Enable autocorrection
+            // api_key is added by make_api_request
+        ];
+        
+        // If username is available and you want to explicitly pass it (though sk should be enough)
+        // if let Some(uname) = self.credentials.username.as_ref() {
+        //    params.push(("username", uname.as_str()));
+        // }
+
+
+        // This request should be signed because it uses 'sk'
+        let response_body = self.make_api_request(params.into_iter(), true)?;
+
+        match serde_json::from_str::<LastfmTrackInfoResponse>(&response_body) {
+            Ok(parsed_response) => Ok(parsed_response.track),
+            Err(e) => {
+                error!(
+                    "Failed to parse track.getInfo response for artist '{}', title '{}'. Error: {}, Body: {}",
+                    artist, title, e, response_body
+                );
+                Err(LastfmError::ParsingError(format!(
+                    "Failed to parse track.getInfo response: {}. Body: {}", e, response_body
+                )))
+            }
+        }
     }
 
     /// Submit a track scrobble to Last.fm

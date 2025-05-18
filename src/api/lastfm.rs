@@ -1,4 +1,4 @@
-use crate::helpers::lastfm::{LASTFM_CLIENT, LastfmError};
+use crate::helpers::lastfm::{LASTFM_CLIENT, LastfmError, LovedTrack}; // Added LovedTrack
 use log::{debug, error, info}; // Removed warn
 use rocket::serde::json::Json;
 use rocket::{get, post};
@@ -206,6 +206,57 @@ pub fn disconnect_handler() -> Json<AuthStatus> { // Made synchronous
                 username: None,
                 error: Some("ClientNotInitialized".to_string()),
                 error_description: Some("Last.fm client not initialized. Cannot disconnect.".to_string()),
+            })
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct LovedTracksResponse {
+    tracks: Option<Vec<LovedTrack>>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// Get Last.fm loved tracks for the authenticated user
+#[get("/loved_tracks")]
+pub fn get_loved_tracks_handler() -> Json<LovedTracksResponse> {
+    let client_guard = LASTFM_CLIENT.lock().unwrap();
+    match client_guard.as_ref() {
+        Some(client) => {
+            if !client.is_authenticated() {
+                error!("[get_loved_tracks_handler] User not authenticated with Last.fm");
+                return Json(LovedTracksResponse {
+                    tracks: None,
+                    error: Some("NotAuthenticated".to_string()),
+                    error_description: Some("User is not authenticated with Last.fm.".to_string()),
+                });
+            }
+            match client.get_loved_tracks() {
+                Ok(tracks) => {
+                    debug!("[get_loved_tracks_handler] Successfully retrieved {} loved tracks.", tracks.len());
+                    Json(LovedTracksResponse {
+                        tracks: Some(tracks),
+                        error: None,
+                        error_description: None,
+                    })
+                }
+                Err(e) => {
+                    error!("[get_loved_tracks_handler] Error getting loved tracks: {:?}", e);
+                    Json(LovedTracksResponse {
+                        tracks: None,
+                        error: Some("ApiError".to_string()),
+                        error_description: Some(format!("Failed to retrieve loved tracks: {}", e)),
+                    })
+                }
+            }
+        }
+        None => {
+            error!("[get_loved_tracks_handler] Last.fm client not initialized");
+            Json(LovedTracksResponse {
+                tracks: None,
+                error: Some("ClientNotInitialized".to_string()),
+                error_description: Some("Last.fm client has not been initialized.".to_string()),
             })
         }
     }

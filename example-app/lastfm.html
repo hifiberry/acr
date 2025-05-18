@@ -137,7 +137,7 @@
             </div>
             
             <div id="authSection" class="hidden">
-                <p>Connect your Last.fm account to scrobble tracks and share what you're listening to.</p>
+                <p>Connect your Last.fm account to scrobble tracks and share what you\'re listening to.</p>
                 <button id="connectBtn">
                     <i class="fab fa-lastfm"></i>
                     Connect to Last.fm
@@ -148,6 +148,21 @@
                 <i class="fas fa-unlink"></i>
                 Disconnect from Last.fm
             </button>
+        </div>
+
+        <div id="lovedTracksPanel" class="panel hidden">
+            <h2>
+                <i class="fas fa-heart" style="color: #d51007;"></i>
+                Your Loved Tracks on Last.fm
+            </h2>
+            <button id="fetchLovedTracksBtn">
+                <i class="fas fa-sync-alt"></i>
+                Fetch Loved Tracks
+            </button>
+            <div id="lovedTracksList" style="margin-top: 15px;">
+                <!-- Loved tracks will be listed here -->
+            </div>
+            <div id="lovedTracksError" class="error hidden"></div>
         </div>
     </div>
     
@@ -161,6 +176,10 @@
         let disconnectButtonElement = null;
         let authSectionElement = null;
         let authInProgressMessageElement = null;
+        let lovedTracksPanelElement = null;
+        let fetchLovedTracksBtnElement = null;
+        let lovedTracksListElement = null;
+        let lovedTracksErrorElement = null;
 
         document.addEventListener('DOMContentLoaded', initializePage);
 
@@ -172,9 +191,14 @@
             disconnectButtonElement = document.getElementById('disconnectButton');
             authSectionElement = document.getElementById('authSection');
             authInProgressMessageElement = document.getElementById('authInProgressMessage');
+            lovedTracksPanelElement = document.getElementById('lovedTracksPanel');
+            fetchLovedTracksBtnElement = document.getElementById('fetchLovedTracksBtn');
+            lovedTracksListElement = document.getElementById('lovedTracksList');
+            lovedTracksErrorElement = document.getElementById('lovedTracksError');
 
-            if (!statusElement || !connectButtonElement || !disconnectButtonElement || !authSectionElement || !authInProgressMessageElement) {
-                console.error("CRITICAL ERROR: One or more essential UI elements (status, connectButton, disconnectButton, authSection, authInProgressMessage) are missing from the HTML.");
+
+            if (!statusElement || !connectButtonElement || !disconnectButtonElement || !authSectionElement || !authInProgressMessageElement || !lovedTracksPanelElement || !fetchLovedTracksBtnElement || !lovedTracksListElement || !lovedTracksErrorElement) {
+                console.error("CRITICAL ERROR: One or more essential UI elements are missing from the HTML.");
                 if (statusElement) {
                     statusElement.textContent = "Page Error: Required UI elements are missing. Cannot initialize.";
                 }
@@ -186,6 +210,9 @@
             }
             if (disconnectButtonElement) {
                 disconnectButtonElement.onclick = disconnectFromLastfm;
+            }
+            if (fetchLovedTracksBtnElement) {
+                fetchLovedTracksBtnElement.onclick = fetchAndDisplayLovedTracks;
             }
 
             updateStatus('Initializing page...'); 
@@ -223,6 +250,7 @@
                     if (disconnectButtonElement) disconnectButtonElement.style.display = 'inline-block';
                     if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
                     stopAuthPolling();
+                    updateUIForAuthenticated(data.username); // Ensure loved tracks panel is shown
                 } else if (
                     data.error === 'TokenNotAuthorized' || 
                     (data.error === 'ApiError' && data.error_description && data.error_description.startsWith('Unauthorized Token'))
@@ -446,6 +474,7 @@
                     }
                     if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
                     localStorage.removeItem('lastfm_request_token');
+                    updateUIForAuthenticated(data.username); // Show loved tracks panel
                 } else {
                     updateStatus('Not connected to Last.fm. You can connect using the button below.');
                     if (connectButtonElement) connectButtonElement.style.display = 'inline-block';
@@ -516,6 +545,7 @@
                     disconnectButton.style.display = 'none';
                     localStorage.removeItem('lastfm_request_token'); // Clear token on successful disconnect
                     console.log("Successfully disconnected from Last.fm.");
+                    updateUIForDisconnected(); // Hide loved tracks panel
                 } else {
                     const errorMessage = data.error_description || data.error || "Unknown error during disconnect.";
                     statusDiv.textContent = `Error disconnecting: ${errorMessage}`;
@@ -544,6 +574,7 @@
                 disconnectButtonElement.disabled = false; // Ensure it's enabled
             }
             if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+            if (lovedTracksPanelElement) lovedTracksPanelElement.classList.remove('hidden'); // Show loved tracks
         }
 
         function updateUIForDisconnected() {
@@ -555,6 +586,52 @@
             if (authSectionElement) authSectionElement.classList.remove('hidden');
             if (disconnectButtonElement) disconnectButtonElement.style.display = 'none';
             if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+            if (lovedTracksPanelElement) lovedTracksPanelElement.classList.add('hidden'); // Hide loved tracks
+            if (lovedTracksListElement) lovedTracksListElement.innerHTML = ''; // Clear list
+            if (lovedTracksErrorElement) lovedTracksErrorElement.classList.add('hidden'); // Hide error
+        }
+
+        async function fetchAndDisplayLovedTracks() {
+            if (!fetchLovedTracksBtnElement || !lovedTracksListElement || !lovedTracksErrorElement) {
+                console.error("fetchAndDisplayLovedTracks: UI elements for loved tracks are missing.");
+                return;
+            }
+
+            fetchLovedTracksBtnElement.disabled = true;
+            lovedTracksListElement.innerHTML = '<p>Fetching loved tracks...</p>';
+            lovedTracksErrorElement.classList.add('hidden');
+            lovedTracksErrorElement.textContent = '';
+
+            try {
+                const response = await fetch('/api/lastfm/loved_tracks');
+                const data = await response.json();
+
+                if (response.ok && data.tracks) {
+                    if (data.tracks.length > 0) {
+                        let html = '<ul>';
+                        data.tracks.forEach(track => {
+                            html += `<li>${track.name} by ${track.artist.name} (Loved on: ${new Date(track.date.uts * 1000).toLocaleDateString()})</li>`;
+                        });
+                        html += '</ul>';
+                        lovedTracksListElement.innerHTML = html;
+                    } else {
+                        lovedTracksListElement.innerHTML = '<p>No loved tracks found.</p>';
+                    }
+                } else {
+                    const errorMsg = data.error_description || data.error || 'Failed to fetch loved tracks.';
+                    lovedTracksErrorElement.textContent = `Error: ${errorMsg}`;
+                    lovedTracksErrorElement.classList.remove('hidden');
+                    lovedTracksListElement.innerHTML = ''; // Clear loading message
+                    console.error("Error fetching loved tracks:", data);
+                }
+            } catch (error) {
+                console.error('Error in fetchAndDisplayLovedTracks:', error);
+                lovedTracksErrorElement.textContent = `Error: ${error.message}`;
+                lovedTracksErrorElement.classList.remove('hidden');
+                lovedTracksListElement.innerHTML = ''; // Clear loading message
+            } finally {
+                fetchLovedTracksBtnElement.disabled = false;
+            }
         }
     </script>
 </body>

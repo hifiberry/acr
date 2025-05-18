@@ -681,4 +681,146 @@ impl LastfmClient {
         debug!("Now playing updated for track: {} - {}", artist, track);
         Ok(())
     }
+
+    /// Retrieve all loved tracks for the authenticated user.
+    /// Handles pagination to fetch all tracks.
+    pub fn get_loved_tracks(&self) -> Result<Vec<LovedTrack>, LastfmError> {
+        if !self.is_authenticated() {
+            return Err(LastfmError::AuthError("Not authenticated with Last.fm".to_string()));
+        }
+
+        let username = self.credentials.username.as_ref().ok_or_else(|| {
+            LastfmError::AuthError("Username not found, cannot fetch loved tracks.".to_string())
+        })?;
+
+        let mut all_loved_tracks: Vec<LovedTrack> = Vec::new();
+        let mut current_page = 1;
+        let limit = 50; // Last.fm default and max is often 50-200, let's stick to a reasonable default
+
+        debug!("Fetching loved tracks for user: {}", username);
+
+        loop {
+            ratelimit::rate_limit("lastfm");
+            let page_str = current_page.to_string();
+            let limit_str = limit.to_string();
+
+            let params = [
+                ("method", "user.getLovedTracks"),
+                ("user", username.as_str()),
+                ("api_key", self.credentials.api_key.as_str()), // Needs api_key, not signed
+                ("page", page_str.as_str()),
+                ("limit", limit_str.as_str()),
+            ];
+
+            // This request is not typically signed according to docs, but uses GET.
+            // make_api_request uses POST. We might need a GET variant or adjust make_api_request.
+            // For now, let's assume make_api_request can handle it or we'll adjust later.
+            // Signing GET requests is also possible if api_sig is added.
+            // Let's try sending it as a signed request as it contains user data.
+            let response_body = self.make_api_request(params.iter().copied(), true)?;
+
+            let response: LovedTracksResponse = serde_json::from_str(&response_body).map_err(|e| {
+                error!("Failed to parse loved tracks response (page {}): {}, body: {}", current_page, e, response_body);
+                LastfmError::ParsingError(format!("Failed to parse loved tracks response: {}", e))
+            })?;
+
+            let page_data = response.lovedtracks;
+            all_loved_tracks.extend(page_data.track);
+
+            let total_pages = page_data.attr.total_pages.parse::<u32>().unwrap_or(0);
+            debug!("Fetched page {} of {} for loved tracks. Got {} tracks in this page.", current_page, total_pages, all_loved_tracks.len());
+
+
+            if current_page >= total_pages || total_pages == 0 {
+                break; // Exit if we've fetched all pages or if there are no pages
+            }
+            current_page += 1;
+        }
+        info!("Successfully fetched {} loved tracks for user {}", all_loved_tracks.len(), username);
+        Ok(all_loved_tracks)
+    }
+
+    /// Check if a specific track is loved by the authenticated user.
+    /// 
+    /// # Arguments
+    /// * `artist` - The track artist name
+    /// * `track` - The track title
+    /// 
+    /// # Returns
+    /// Result indicating success or failure
+    pub fn is_track_loved(&self, artist: &str, track: &str) -> Result<bool, LastfmError> {
+        if !self.is_authenticated() {
+            return Err(LastfmError::AuthError("Not authenticated with Last.fm".to_string()));
+        }
+
+        let loved_tracks = self.get_loved_tracks()?;
+
+        for loved_track in loved_tracks {
+            if loved_track.artist.name.eq_ignore_ascii_case(artist) && loved_track.name.eq_ignore_ascii_case(track) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistInfo {
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct LovedTrackDate {
+    pub uts: String,
+    #[serde(rename = "#text")]
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct LovedTrackArtist {
+    pub name: String,
+    pub mbid: Option<String>,
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct LastfmImage {
+    pub size: String,
+    #[serde(rename = "#text")]
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct LovedTrack {
+    pub name: String,
+    pub mbid: Option<String>,
+    pub url: String,
+    pub date: LovedTrackDate,
+    pub artist: LovedTrackArtist,
+    pub image: Option<Vec<LastfmImage>>,
+    // streamable can be complex, omitting for now unless needed
+}
+
+#[derive(Debug, Deserialize)]
+struct LovedTracksPage {
+    track: Vec<LovedTrack>,
+    #[serde(rename = "@attr")]
+    attr: LovedTracksAttributes,
+}
+
+#[derive(Debug, Deserialize)]
+struct LovedTracksAttributes {
+    user: String,
+    page: String,
+    #[serde(rename = "perPage")]
+    per_page: String,
+    #[serde(rename = "totalPages")]
+    total_pages: String,
+    total: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LovedTracksResponse {
+    lovedtracks: LovedTracksPage,
 }

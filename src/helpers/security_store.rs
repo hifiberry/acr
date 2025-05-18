@@ -102,7 +102,7 @@ pub struct SecurityStore {
 }
 
 // Global singleton instance
-static SECURITY_STORE: Lazy<Arc<SecurityStore>> = Lazy::new(|| {
+pub static SECURITY_STORE: Lazy<Arc<SecurityStore>> = Lazy::new(|| {
     // Create with default path
     let default_path = PathBuf::from("secrets/security_store.json");
     Arc::new(SecurityStore::new(default_path))

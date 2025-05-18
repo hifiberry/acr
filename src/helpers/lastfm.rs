@@ -8,9 +8,14 @@ use std::time::SystemTime;
 use ureq;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
+// Import SecurityStore and its error type
+use crate::helpers::security_store::{SecurityStore, SecurityStoreError};
 
 const LASTFM_API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 const LASTFM_AUTH_URL: &str = "https://www.last.fm/api/auth/";
+
+const LASTFM_SESSION_KEY_STORE: &str = "lastfm_session_key";
+const LASTFM_USERNAME_STORE: &str = "lastfm_username";
 
 // Default Last.fm API credentials compiled from secrets.txt if available
 // These are used as fallbacks if no credentials are provided
@@ -127,8 +132,14 @@ impl LastfmClient {
             client,
         });
 
+        // Attempt to load credentials from security store
+        if let Some(client_ref) = lastfm_guard.as_mut() {
+            client_ref.load_credentials_from_store();
+        }
+
         info!("Last.fm client initialized");
-        Ok(())    }    
+        Ok(())
+    }    
     
     /// Initialize the Last.fm client with default API credentials from secrets.txt
     /// 
@@ -252,6 +263,9 @@ impl LastfmClient {
         self.credentials.auth_token = None;
         self.credentials.token_created = None;
         
+        // Store the session in security store
+        self.store_credentials_to_store();
+
         info!("Successfully authenticated with Last.fm as user: {}", session_response.session.name);
         Ok((session_response.session.key, session_response.session.name))
     }
@@ -350,6 +364,54 @@ impl LastfmClient {
         LastfmClient {
             credentials: self.credentials.clone(),
             client: ureq::agent(),
+        }
+    }    fn load_credentials_from_store(&mut self) {
+        // Try to get session key from security store
+        match SecurityStore::get(LASTFM_SESSION_KEY_STORE) {
+            Ok(session_key) => {
+                self.credentials.session_key = Some(session_key);
+                debug!("Loaded Last.fm session key from store");
+            }
+            Err(e) => {
+                if let SecurityStoreError::KeyNotFound(_) = e {
+                    debug!("No Last.fm session key found in security store");
+                } else {
+                    debug!("Error loading Last.fm session key from store: {}", e);
+                }
+            }
+        }
+        
+        // Try to get username from security store
+        match SecurityStore::get(LASTFM_USERNAME_STORE) {
+            Ok(username) => {
+                self.credentials.username = Some(username);
+                debug!("Loaded Last.fm username from store");
+            }
+            Err(e) => {
+                if let SecurityStoreError::KeyNotFound(_) = e {
+                    debug!("No Last.fm username found in security store");
+                } else {
+                    debug!("Error loading Last.fm username from store: {}", e);
+                }
+            }
+        }
+    }
+
+    fn store_credentials_to_store(&self) {
+        if let Some(session_key) = &self.credentials.session_key {
+            if let Err(e) = SecurityStore::set(LASTFM_SESSION_KEY_STORE, session_key) {
+                log::warn!("Failed to store Last.fm session key: {}", e);
+            } else {
+                debug!("Stored Last.fm session key in security store");
+            }
+        }
+        
+        if let Some(username) = &self.credentials.username {
+            if let Err(e) = SecurityStore::set(LASTFM_USERNAME_STORE, username) {
+                log::warn!("Failed to store Last.fm username: {}", e);
+            } else {
+                debug!("Stored Last.fm username in security store");
+            }
         }
     }
 

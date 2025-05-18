@@ -10,6 +10,7 @@ pub mod sanitize;
 pub mod macaddress;
 pub mod http_client;
 pub mod ratelimit;
+pub mod lastfm;
 
 use crate::data::artist::Artist;
 

@@ -39,6 +39,8 @@ moka = { version = "0.12", features = ["sync"] }
 rocket_ws = "0.1.0"
 # For command line argument parsing
 clap = { version = "4.5", features = ["derive"] }
+# For calculating MD5 hashes (Last.fm API signing)
+md5 = "0.7.0"
 thiserror = "1.0"
 mac_address = "1.1.8"
 get_if_addrs = "0.5.3"
@@ -68,3 +70,7 @@ path = "src/tools/lms_client.rs"
 [[bin]]
 name = "acr_send_update"
 path = "src/tools/send_update.rs"
+
+[[bin]]
+name = "acr_lastfm_auth"
+path = "src/tools/acr_lastfm_auth.rs"

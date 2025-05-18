@@ -21,6 +21,7 @@ This Rust implementation addresses these issues through strong static typing, a 
 - Unified interface for controlling different player backends (MPD, etc.)
 - Event-based notification system for player state changes
 - Clean separation between audio player control and user interfaces
+- Last.fm integration for scrobbling and "now playing" updates
 
 ## TODO
 

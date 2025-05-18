@@ -45,6 +45,14 @@
         "api_key": "YOUR_API_KEY_HERE",
         "rate_limit_ms": 500
     },
+    "lastfm": {
+        "enable": false,
+        "api_key": "YOUR_API_KEY_HERE",
+        "api_secret": "YOUR_API_SECRET_HERE",
+        "credentials_file": "/etc/acr/lastfm_credentials.json",
+        "scrobble_enabled": true,
+        "now_playing_enabled": true
+    },
     "players": [
         {
             "mpd": {

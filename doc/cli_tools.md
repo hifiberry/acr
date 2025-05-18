@@ -51,6 +51,26 @@ The `acr_lms_client` tool provides a command-line interface for interacting with
 acr_lms_client --server 192.168.1.100 --list-players
 ```
 
+### acr_lastfm_auth
+
+The `acr_lastfm_auth` tool provides a command-line interface for authenticating with Last.fm using their desktop authentication flow. This tool helps set up Last.fm integration for scrobbling and other Last.fm features.
+
+[Detailed Documentation](acr_lastfm_auth.md)
+
+**Key Features:**
+- Desktop authentication flow
+- Credential storage and management
+- Reuse of stored credentials
+
+**Example:**
+```bash
+# Initial authentication
+acr_lastfm_auth --api-key YOUR_API_KEY --api-secret YOUR_API_SECRET
+
+# Using saved credentials
+acr_lastfm_auth --use-saved
+```
+
 ## Building the Tools
 
 All tools are built automatically when you build the ACR project:

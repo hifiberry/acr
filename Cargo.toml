@@ -55,6 +55,8 @@ tempfile = "3.8.1"
 async-trait = "0.1.77"
 # Simple synchronous HTTP client without tokio dependency
 ureq = "2.9"
+# For event bus messaging
+event-bus = "0.1.0" # Corrected version
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]

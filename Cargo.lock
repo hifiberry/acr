@@ -17,6 +17,7 @@ dependencies = [
  "deunicode",
  "enumflags2",
  "env_logger",
+ "event-bus",
  "futures",
  "get_if_addrs",
  "hex",
@@ -669,6 +670,16 @@ checksum = "976dd42dc7e85965fe702eb8164f21f450704bdde31faefd6471dba214cb594e"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "event-bus"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80005818abf5c14142414adc8fab8b536f7c0c86a9799543544ad939f5cc1250"
+dependencies = [
+ "lazy_static",
+ "log",
 ]
 
 [[package]]

@@ -32,6 +32,9 @@ pub struct PrepareAuthResponse {
 }
 
 /// Get Last.fm authentication status
+///
+/// Returns the current authentication state, including whether a user is authenticated,
+/// their username if available, and any potential error information.
 #[get("/status")] // Changed path to be consistent
 pub fn get_status() -> Json<AuthStatus> {
     let client_guard = LASTFM_CLIENT.lock().unwrap();
@@ -57,6 +60,12 @@ pub fn get_status() -> Json<AuthStatus> {
 }
 
 /// Get Last.fm authentication URL
+///
+/// Initiates the authentication flow. The backend requests a temporary request token
+/// from Last.fm and constructs a Last.fm authorization URL.
+/// This URL is for the user to visit to authorize the application.
+/// The temporary request token is also returned and should be stored by the frontend
+/// to be sent back later in the `/prepare_complete_auth` step.
 #[get("/auth")] // Changed path to be consistent
 pub fn get_auth_url_handler() -> Json<AuthUrlResponse> { // Made synchronous
     let mut client_guard = LASTFM_CLIENT.lock().unwrap(); // Lock and get guard
@@ -89,6 +98,17 @@ pub fn get_auth_url_handler() -> Json<AuthUrlResponse> { // Made synchronous
 }
 
 /// New endpoint to allow the frontend to set the request token on the backend
+///
+/// Prepare to complete Last.fm authentication by setting the request token.
+///
+/// After the user authorizes the application on Last.fm, the frontend
+/// should call this endpoint, providing the temporary request token that was
+/// initially obtained from the `/auth` endpoint.
+/// This step stores the request token on the backend, making it ready to be
+/// exchanged for a permanent session key in the `/complete_auth` step.
+///
+/// # Arguments
+/// * `request_data`: JSON payload containing the `token` (the temporary request token).
 #[post("/prepare_complete_auth", data = "<request_data>")] // Changed path
 pub fn prepare_complete_auth(request_data: Json<PrepareAuthRequest>) -> Json<PrepareAuthResponse> {
     info!("[prepare_complete_auth] Received token from frontend: {}", request_data.token);
@@ -122,7 +142,13 @@ pub fn prepare_complete_auth(request_data: Json<PrepareAuthRequest>) -> Json<Pre
     }
 }
 
-/// Attempt to complete Last.fm authentication
+/// Attempt to complete Last.fm authentication.
+///
+/// This endpoint finalizes the authentication process. It should be called after
+/// `/prepare_complete_auth`.
+/// The backend uses the previously stored temporary request token to request a
+/// permanent session key from Last.fm. If successful, the session key and
+/// username are stored securely, and the user is considered authenticated.
 #[get("/complete_auth")] // Changed path
 pub async fn complete_auth() -> Json<AuthStatus> { // Remains async for Rocket, but internal calls are sync
     let mut client_guard = LASTFM_CLIENT.lock().unwrap(); // Lock and get guard
@@ -171,6 +197,11 @@ pub async fn complete_auth() -> Json<AuthStatus> { // Remains async for Rocket, 
     }
 }
 
+/// Disconnect the current user from Last.fm.
+///
+/// Clears the stored Last.fm session key and username from both memory and
+/// the persistent security store. This effectively logs the user out of Last.fm
+/// within the ACR application.
 #[post("/disconnect")]
 pub fn disconnect_handler() -> Json<AuthStatus> { // Made synchronous
     let mut client_guard = LASTFM_CLIENT.lock().unwrap(); // Lock and get guard
@@ -218,7 +249,10 @@ pub struct LovedTracksResponse {
     error_description: Option<String>,
 }
 
-/// Get Last.fm loved tracks for the authenticated user
+/// Get Last.fm loved tracks for the authenticated user.
+///
+/// Retrieves a list of tracks that the currently authenticated user has marked
+/// as "loved" on Last.fm. If the user is not authenticated, an error is returned.
 #[get("/loved_tracks")]
 pub fn get_loved_tracks_handler() -> Json<LovedTracksResponse> {
     let client_guard = LASTFM_CLIENT.lock().unwrap();

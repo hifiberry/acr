@@ -153,11 +153,7 @@
     
     <script>
         const API_PREFIX = '/api';  // Match our API prefix constant
-        let checkingStatus = false;
-        // let authInProgress = false; // Will be replaced
         let isAttemptingAuthCompletion = false; // Renamed from authInProgress
-        let authCheckInterval = null;
-        let statusCheckInterval = null; // Added for clarity, was implicitly global
         let authPollInterval = null; // New interval for polling auth status
 
         let statusElement = null;
@@ -298,7 +294,6 @@
             }
 
             isAttemptingAuthCompletion = false; 
-            // if (authCheckInterval) clearInterval(authCheckInterval); // authCheckInterval seems unused
             if (authPollInterval) clearInterval(authPollInterval); // Clear any existing polling from previous attempts
             localStorage.removeItem('lastfm_request_token'); 
 
@@ -496,7 +491,6 @@
             const connectBtn = document.getElementById('connectBtn');
             const statusDiv = document.getElementById('status');
             const authSection = document.getElementById('authSection');
-            const authInProgressMessage = document.getElementById('authInProgressMessage');
 
             disconnectButton.disabled = true;
 
@@ -520,7 +514,6 @@
                     authSection.style.display = 'block';
                     connectBtn.style.display = 'inline-block';
                     disconnectButton.style.display = 'none';
-                    authInProgressMessage.style.display = 'none';
                     localStorage.removeItem('lastfm_request_token'); // Clear token on successful disconnect
                     console.log("Successfully disconnected from Last.fm.");
                 } else {

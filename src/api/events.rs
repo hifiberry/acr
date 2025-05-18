@@ -30,6 +30,13 @@ pub struct EventSubscription {
     pub event_types: Option<Vec<String>>,
 }
 
+/// Command from client (could be subscription or song update)
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)] // Allows trying to deserialize into one variant then the other
+enum ClientMessage {
+    Subscription(EventSubscription),
+}
+
 /// WebSocket client connection manager
 pub struct WebSocketManager {
     /// Active subscriptions
@@ -430,10 +437,10 @@ impl PlayerStateListener for WebSocketManager {
 
 // WebSocket handler for the event messages endpoint
 #[rocket::get("/events")]
-pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketManager>>) -> Channel<'static> {
+pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketManager>>) -> Channel<'static> { // Removed audio_controller
     // Clone the manager to avoid lifetime issues
     let manager = ws_manager.inner().clone();
-    
+
     // Create a WebSocket channel
     ws.channel(move |mut stream| {
         Box::pin(async move {
@@ -493,31 +500,35 @@ pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketMan
                                 
                                 match msg {
                                     Message::Text(text) => {
+                                        // Record activity to prevent timeout
+                                        manager.record_activity(client_id);
                                         debug!("Received message: Client: {}, Text: {}", client_id, text);
-                                        
-                                        // Try to parse as subscription update
-                                        match serde_json::from_str::<EventSubscription>(&text) {
-                                            Ok(subscription) => {
-                                                debug!("Subscription update: Client: {}, Players: {:?}, Event types: {:?}", 
+
+                                        // Try to parse as ClientMessage (EventSubscription)
+                                        match serde_json::from_str::<ClientMessage>(&text) {
+                                            Ok(ClientMessage::Subscription(subscription)) => {
+                                                debug!("Subscription update: Client: {}, Players: {:?}, Event types: {:?}",
                                                       client_id, subscription.players, subscription.event_types);
-                                                
+
                                                 if manager.update_subscription(client_id, subscription) {
                                                     let response = serde_json::json!({
                                                         "type": "subscription_updated",
                                                         "message": "Subscription updated successfully"
                                                     }).to_string();
-                                                    
-                                                    stream.send(Message::Text(response)).await?;
+                                                    if let Err(e) = stream.send(Message::Text(response)).await {
+                                                        debug!("Error sending subscription update confirmation to client {}: {}", client_id, e);
+                                                    }
                                                 }
                                             },
                                             Err(e) => {
                                                 // Send error back to client
                                                 let error_msg = serde_json::json!({
                                                     "type": "error",
-                                                    "message": format!("Invalid subscription format: {}", e)
+                                                    "message": format!("Invalid message format: {}. Expected EventSubscription.", e)
                                                 }).to_string();
-                                                
-                                                stream.send(Message::Text(error_msg)).await?;
+                                                if let Err(e_send) = stream.send(Message::Text(error_msg)).await {
+                                                    debug!("Error sending error message to client {}: {}", client_id, e_send);
+                                                }
                                             }
                                         }
                                     },
@@ -554,7 +565,7 @@ pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketMan
 
 // WebSocket handler for the player-specific event messages endpoint
 #[rocket::get("/events/<player_name>")]
-pub fn player_event_messages(ws: WebSocket, player_name: &str, ws_manager: &rocket::State<Arc<WebSocketManager>>) -> Channel<'static> {
+pub fn player_event_messages(ws: WebSocket, player_name: &str, ws_manager: &rocket::State<Arc<WebSocketManager>>) -> Channel<'static> { // Removed audio_controller
     // Clone the manager and player name to avoid lifetime issues
     let manager = ws_manager.inner().clone();
     let player_filter = player_name.to_string();
@@ -618,31 +629,33 @@ pub fn player_event_messages(ws: WebSocket, player_name: &str, ws_manager: &rock
                                 
                                 match msg {
                                     Message::Text(text) => {
-                                        debug!("Received message: Client: {}, Text: {}", client_id, text);
+                                        debug!("Received message: Client: {}, Player: {}, Text: {}", client_id, player_filter, text);
                                         
-                                        // Try to parse as subscription update
-                                        match serde_json::from_str::<EventSubscription>(&text) {
-                                            Ok(subscription) => {
-                                                debug!("Subscription update: Client: {}, Players: {:?}, Event types: {:?}", 
-                                                      client_id, subscription.players, subscription.event_types);
+                                        // Try to parse as ClientMessage (EventSubscription only)
+                                        match serde_json::from_str::<ClientMessage>(&text) {
+                                            Ok(ClientMessage::Subscription(subscription)) => {
+                                                debug!("Subscription update: Client: {}, Player: {}, Players: {:?}, Event types: {:?}", 
+                                                      client_id, player_filter, subscription.players, subscription.event_types);
                                                 
                                                 if manager.update_subscription(client_id, subscription) {
                                                     let response = serde_json::json!({
                                                         "type": "subscription_updated",
                                                         "message": "Subscription updated successfully"
                                                     }).to_string();
-                                                    
-                                                    stream.send(Message::Text(response)).await?;
+                                                    if let Err(e) = stream.send(Message::Text(response)).await {
+                                                        debug!("Error sending subscription update confirmation to client {}: {}", client_id, e);
+                                                    }
                                                 }
                                             },
                                             Err(e) => {
                                                 // Send error back to client
                                                 let error_msg = serde_json::json!({
                                                     "type": "error",
-                                                    "message": format!("Invalid subscription format: {}", e)
+                                                    "message": format!("Invalid message format: {}. Expected EventSubscription.", e)
                                                 }).to_string();
-                                                
-                                                stream.send(Message::Text(error_msg)).await?;
+                                                if let Err(e_send) = stream.send(Message::Text(error_msg)).await {
+                                                    debug!("Error sending error message to client {}: {}", client_id, e_send);
+                                                }
                                             }
                                         }
                                     },

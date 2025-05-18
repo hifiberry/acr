@@ -482,6 +482,12 @@
                     <div class="progress-container">
                         <div class="progress-bar" id="progress-bar"></div>
                     </div>
+                    <!-- Display additional song information -->
+                    <div id="song-details" style="font-size: 0.9em; color: #555; margin-top: 10px;">
+                        <div>Album: <span id="song-album">N/A</span></div>
+                        <div>Track: <span id="song-track-number">N/A</span></div>
+                        <div>Liked: <button id="song-liked-button" style="border: none; background: none; font-size: 1.2em; cursor: pointer; padding: 0; vertical-align: middle;">?</button></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -922,6 +928,76 @@
                 songThumbnail.style.display = 'none';
                 noThumbnail.style.display = 'inline-flex';
                 stopAutoProgress();
+            }
+        }
+        
+        // Update UI with current song information
+        function updateSongInfo(song) {
+            const nowPlayingInfo = document.getElementById('now-playing-info');
+            const songThumbnail = document.getElementById('song-thumbnail');
+            const noThumbnail = document.getElementById('no-thumbnail');
+            const progressBar = document.getElementById('progress-bar');
+            // New elements for additional song details
+            const songAlbumEl = document.getElementById('song-album');
+            const songTrackNumberEl = document.getElementById('song-track-number');
+            // const songLikedEl = document.getElementById('song-liked'); // Old element
+            const songLikedButton = document.getElementById('song-liked-button');
+            const songArtEl = document.getElementById('song-art');
+
+            if (song && song.title) {
+                let displayText = `<strong>${song.title}</strong>`;
+                if (song.artist) {
+                    displayText += ` by ${song.artist}`;
+                }
+                nowPlayingInfo.innerHTML = displayText;
+
+                // Update additional details
+                songAlbumEl.textContent = song.album || 'N/A';
+                songTrackNumberEl.textContent = song.track_number || 'N/A';
+
+                // Update liked status button
+                if (song.liked === true) {
+                    songLikedButton.textContent = '♥'; // Filled heart
+                    songLikedButton.title = 'Liked';
+                } else if (song.liked === false) {
+                    songLikedButton.textContent = '♡'; // Empty heart
+                    songLikedButton.title = 'Not Liked';
+                } else {
+                    songLikedButton.textContent = '?'; // Unknown, or could be an empty heart too
+                    songLikedButton.title = 'Liked status unknown';
+                }
+                songLikedButton.onclick = () => { /* do nothing */ };
+
+                // Update album art
+                if (song.cover_art_url) {
+                    songThumbnail.src = song.cover_art_url;
+                    songThumbnail.style.display = 'inline-block';
+                    noThumbnail.style.display = 'none';
+                } else if (song.thumbnail) { // Fallback to thumbnail if cover_art_url is not available
+                    songThumbnail.src = song.thumbnail;
+                    songThumbnail.style.display = 'inline-block';
+                    noThumbnail.style.display = 'none';
+                } else {
+                    songThumbnail.style.display = 'none';
+                    noThumbnail.style.display = 'inline-flex';
+                }
+                
+                // Update progress bar if duration and position are available
+                if (song.duration && song.position !== undefined) {
+                    const percentage = song.duration > 0 ? (song.position / song.duration) * 100 : 0;
+                    progressBar.style.width = `${percentage}%`;
+                } else {
+                    progressBar.style.width = '0%';
+                }
+
+            } else {
+                nowPlayingInfo.textContent = 'Nothing playing';
+                songThumbnail.style.display = 'none';
+                noThumbnail.style.display = 'inline-flex';
+                progressBar.style.width = '0%';
+                // Reset additional details
+                songAlbumEl.textContent = 'N/A';
+                songTrackNumberEl.textContent = 'N/A';
             }
         }
         

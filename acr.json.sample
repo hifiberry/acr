@@ -46,10 +46,9 @@
         "rate_limit_ms": 500
     },
     "lastfm": {
-        "enable": false,
+        "enable": true,
         "api_key": "",
         "api_secret": "",
-        "credentials_file": "/etc/acr/lastfm_credentials.json",
         "scrobble_enabled": true,
         "now_playing_enabled": true
     },

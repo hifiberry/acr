@@ -304,11 +304,30 @@ fn initialize_lastfm(config: &serde_json::Value) {
                 return;
             }
             
-            info!("Last.fm initialized successfully");
+            // Log Last.fm connection status
+            match lastfm::LastfmClient::get_instance() {
+                Ok(client) => {
+                    if client.is_authenticated() {
+                        if let Some(username) = client.get_username() {
+                            info!("Last.fm connected as user: {}", username);
+                        } else {
+                            // This case should ideally not happen if is_authenticated is true
+                            warn!("Last.fm is authenticated but username is not available.");
+                        }
+                    } else {
+                        info!("Last.fm is not connected. User needs to authenticate.");
+                    }
+                }
+                Err(e) => {
+                    // This might happen if initialization failed silently or was never called
+                    warn!("Could not get Last.fm client instance to check status: {}", e);
+                }
+            }
+            info!("Last.fm initialized successfully"); // This message might be redundant now or could be rephrased
         } else {
-            debug!("Last.fm integration is disabled");
+            info!("Last.fm integration is disabled");
         }
     } else {
-        debug!("No Last.fm configuration found, using defaults");
+        debug!("No Last.fm configuration found, Last.fm features will be unavailable.");
     }
 }

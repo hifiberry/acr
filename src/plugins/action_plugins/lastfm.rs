@@ -26,6 +26,7 @@ pub struct Lastfm {
     config: LastfmConfig,
     worker_thread: Option<thread::JoinHandle<()>>,
     current_track_data: Arc<Mutex<CurrentScrobbleTrack>>,
+    lastfm_client: Option<LastfmClient>, // Added field
 }
 
 #[derive(Clone, Debug)]
@@ -57,14 +58,22 @@ impl Default for CurrentScrobbleTrack {
 }
 
 // Background worker function
-fn lastfm_worker(track_data_arc: Arc<Mutex<CurrentScrobbleTrack>>, plugin_name: String) {
-    info!("Lastfm background worker started for plugin: {}", plugin_name);
+fn lastfm_worker(
+    track_data_arc: Arc<Mutex<CurrentScrobbleTrack>>,
+    plugin_name: String,
+    client: LastfmClient, // Added LastfmClient
+) {
+    info!(
+        "Lastfm background worker started for plugin: {}. Client available: {}",
+        plugin_name,
+        client.is_authenticated() // Example usage, replace as needed
+    );
     loop {
         thread::sleep(Duration::from_secs(1)); 
 
         let mut track_data = track_data_arc.lock().unwrap();
 
-        if let (Some(name), Some(artists), Some(length_val), Some(_started_time)) =
+        if let (Some(name), Some(artists), Some(length_val), Some(actual_started_time)) = // Renamed _started_time to actual_started_time for clarity
             (&track_data.name, &track_data.artists, &track_data.length, &track_data.started_timestamp) {
             
             let artists_str = artists.join(", ");
@@ -93,12 +102,64 @@ fn lastfm_worker(track_data_arc: Arc<Mutex<CurrentScrobbleTrack>>, plugin_name: 
             // Only attempt to scrobble if the player is currently playing this song
             if track_data.current_playback_state == PlaybackState::Playing {
                 if !track_data.scrobbled_song {
-                    let scrobble_point_duration_secs = *length_val / 2; // length_val is &u32
-                    let scrobble_point_time_secs = 120; // 2 minutes in seconds
+                    // let scrobble_point_duration_secs = *length_val / 2; // length_val is &u32
+                    let scrobble_point_time_secs = 240; // 4 minutes in seconds, Last.fm recommendation
+                    
 
-                    if effective_elapsed_seconds > scrobble_point_duration_secs as u64 || effective_elapsed_seconds > scrobble_point_time_secs as u64 {
-                        warn!("LastfmWorker: Scrobble '{}' by {}! (Played {}s)", name, artists_str, effective_elapsed_seconds);
-                        track_data.scrobbled_song = true;
+                    if effective_elapsed_seconds >= u64::from(*length_val).saturating_mul(50) / 100 || effective_elapsed_seconds >= scrobble_point_time_secs {
+                        
+                        if let Some(primary_artist) = artists.first() {
+                            let scrobble_timestamp = match actual_started_time.duration_since(SystemTime::UNIX_EPOCH) { // Used actual_started_time
+                                Ok(duration) => duration.as_secs(),
+                                Err(e) => {
+                                    error!(
+                                        "LastfmWorker: Failed to calculate timestamp for scrobbling (SystemTime error: {}). Using current time as fallback.",
+                                        e
+                                    );
+                                    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
+                                }
+                            };
+
+                            info!(
+                                "LastfmWorker: Attempting to scrobble '{}' by '{}'. Played: {}s. Timestamp: {}",
+                                name,
+                                primary_artist,
+                                effective_elapsed_seconds,
+                                scrobble_timestamp
+                            );
+
+                            match client.scrobble(
+                                primary_artist.as_str(),
+                                name.as_str(),      // name is &String
+                                None,               // Album not tracked yet
+                                None,               // Album artist not tracked yet
+                                scrobble_timestamp,
+                                None,               // Track number not tracked
+                                Some(*length_val),  // length_val is &u32
+                            ) {
+                                Ok(_) => {
+                                    info!(
+                                        "LastfmWorker: Successfully scrobbled '{}' by '{}'",
+                                        name,
+                                        primary_artist
+                                    );
+                                    track_data.scrobbled_song = true;
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "LastfmWorker: Failed to scrobble '{}' by '{}': {}",
+                                        name,
+                                        primary_artist,
+                                        e
+                                    );
+                                    // Keep scrobbled_song = false to allow retry on next tick
+                                }
+                            }
+                        } else {
+                            warn!("LastfmWorker: Cannot scrobble '{}', artist information is missing or empty.", name);
+                            // Potentially mark as scrobbled to avoid retries if artist will never be available for this track
+                            // track_data.scrobbled_song = true; // Or handle differently
+                        }
                     }
                 }
             }
@@ -120,6 +181,7 @@ impl Lastfm {
             config,
             worker_thread: None,
             current_track_data: Arc::new(Mutex::new(CurrentScrobbleTrack::default())), // Initialize shared data
+            lastfm_client: None, // Initialize as None
         }
     }
 }
@@ -154,17 +216,29 @@ impl Plugin for Lastfm {
         match init_result {
             Ok(_) => {
                 info!("Lastfm: Last.fm client connection initialized/verified successfully."); // Updated log
-
-                // Prepare data for the worker thread
-                let track_data_for_thread = Arc::clone(&self.current_track_data);
-                let plugin_name_for_thread = self.name().to_string();
                 
-                let handle = thread::spawn(move || {
-                    lastfm_worker(track_data_for_thread, plugin_name_for_thread);
-                });
-                self.worker_thread = Some(handle);
+                // Get and store the client instance
+                match LastfmClient::get_instance() {
+                    Ok(client_instance) => {
+                        self.lastfm_client = Some(client_instance.clone()); // Store the cloned client
 
-                self.base.init()
+                        // Prepare data for the worker thread
+                        let track_data_for_thread = Arc::clone(&self.current_track_data);
+                        let plugin_name_for_thread = self.name().to_string();
+                        let client_for_thread = client_instance; // Pass the original client_instance to the thread
+
+                        let handle = thread::spawn(move || {
+                            lastfm_worker(track_data_for_thread, plugin_name_for_thread, client_for_thread);
+                        });
+                        self.worker_thread = Some(handle);
+
+                        self.base.init()
+                    }
+                    Err(e) => {
+                        error!("Lastfm: Failed to get Last.fm client instance: {}", e);
+                        false
+                    }
+                }
             }
             Err(e) => {
                 error!("Lastfm: Failed to initialize Last.fm client: {}", e); // Updated log

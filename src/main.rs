@@ -86,6 +86,38 @@ fn main() {
         panic!("Cannot continue without a valid configuration file");
     };
 
+    // Initialize the Security Store (Moved Up)
+    let security_store_path_str = controllers_config
+        .get("general")
+        .and_then(|g| g.get("security_store"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            info!("No security_store path specified in configuration, using default 'secrets/security_store.json'");
+            "secrets/security_store.json".to_string() // Ensure this default path is appropriate
+        });
+
+    let security_store_path = PathBuf::from(&security_store_path_str);
+    // Ensure the directory for the security store exists, especially if it's not in the root
+    if let Some(parent_dir) = security_store_path.parent() {
+        if !parent_dir.exists() {
+            if let Err(e) = fs::create_dir_all(parent_dir) {
+                error!("Failed to create directory for security store at {}: {}. Please check permissions.", parent_dir.display(), e);
+                // Depending on how critical this is, you might panic or try a default fallback.
+                // For now, we'll log an error and proceed, initialize_with_defaults might handle it or fail.
+            } else {
+                info!("Created directory for security store: {}", parent_dir.display());
+            }
+        }
+    }
+    
+    if let Err(e) = SecurityStore::initialize_with_defaults(Some(security_store_path.clone())) {
+        error!("Failed to initialize security store at {}: {}. Please check permissions and configuration.", security_store_path.display(), e);
+        panic!("Critical component: Security store initialization failed. Application cannot continue. Error: {}", e);
+    } else {
+        info!("Security store initialized successfully at {}", security_store_path.display());
+    }
+
     // Get the attribute cache path from configuration
     let attribute_cache_path = if let Some(cache_config) = controllers_config.get("cache") {
         if let Some(cache_path) = cache_config.get("attribute_cache_path").and_then(|p| p.as_str()) {
@@ -130,25 +162,6 @@ fn main() {
     // Initialize Last.fm with the configuration
     initialize_lastfm(&controllers_config);
     
-    // Initialize the Security Store
-    let security_store_path_str = controllers_config
-        .get("general")
-        .and_then(|g| g.get("security_store"))
-        .and_then(|s| s.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            info!("No security_store path specified in configuration, using default 'security_store.json'");
-            "security_store.json".to_string()
-        });
-
-    let security_store_path = PathBuf::from(&security_store_path_str);
-    if let Err(e) = SecurityStore::initialize_with_defaults(Some(security_store_path.clone())) {
-        error!("Failed to initialize security store at {}: {}. Please check permissions and configuration.", security_store_path.display(), e);
-        panic!("Critical component: Security store initialization failed. Application cannot continue. Error: {}", e);
-    } else {
-        info!("Security store initialized successfully at {}", security_store_path.display());
-    }
-
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();

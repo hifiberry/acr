@@ -53,6 +53,9 @@
         "scrobble_enabled": true,
         "now_playing_enabled": true
     },
+    "general": {
+        "security_store": "/var/run/acr/security_store.json",
+    },
     "players": [
         {
             "mpd": {

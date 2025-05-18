@@ -6,6 +6,7 @@ use acr::helpers::imagecache::ImageCache;
 use acr::helpers::musicbrainz;
 use acr::helpers::theartistdb;
 use acr::helpers::lastfm;
+use acr::helpers::security_store::SecurityStore;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
 use acr::players::lms::lmsaudio::LMSAudioController;
@@ -19,6 +20,7 @@ use ctrlc;
 use std::fs;
 use std::path::Path;
 use std::env;
+use std::path::PathBuf;
 // Import global Tokio runtime functions from lib.rs
 use acr::{initialize_tokio_runtime, get_tokio_runtime};
 
@@ -128,6 +130,25 @@ fn main() {
     // Initialize Last.fm with the configuration
     initialize_lastfm(&controllers_config);
     
+    // Initialize the Security Store
+    let security_store_path_str = controllers_config
+        .get("general")
+        .and_then(|g| g.get("security_store"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            info!("No security_store path specified in configuration, using default 'security_store.json'");
+            "security_store.json".to_string()
+        });
+
+    let security_store_path = PathBuf::from(&security_store_path_str);
+    if let Err(e) = SecurityStore::initialize_with_defaults(Some(security_store_path.clone())) {
+        error!("Failed to initialize security store at {}: {}. Please check permissions and configuration.", security_store_path.display(), e);
+        panic!("Critical component: Security store initialization failed. Application cannot continue. Error: {}", e);
+    } else {
+        info!("Security store initialized successfully at {}", security_store_path.display());
+    }
+
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();

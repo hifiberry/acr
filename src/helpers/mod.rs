@@ -11,6 +11,7 @@ pub mod macaddress;
 pub mod http_client;
 pub mod ratelimit;
 pub mod lastfm;
+pub mod security_store;
 
 use crate::data::artist::Artist;
 

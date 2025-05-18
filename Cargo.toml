@@ -45,6 +45,12 @@ thiserror = "1.0"
 mac_address = "1.1.8"
 get_if_addrs = "0.5.3"
 hex = "0.4.3"
+# For secure storage encryption
+aes-gcm = "0.10.2"
+rand = "0.8.5"
+base64 = "0.21.0"
+# For testing
+tempfile = "3.8.1"
 # For async trait implementations
 async-trait = "0.1.77"
 # Simple synchronous HTTP client without tokio dependency

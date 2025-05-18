@@ -41,12 +41,14 @@ fn read_lastfm_secrets() {
                           match key {
                             "LASTFM_APIKEY" => {
                                 println!("cargo:rustc-env=LASTFM_APIKEY={}", value);
-                            },
-                            "LASTFM_APISECRET" => {
+                            },                            "LASTFM_APISECRET" => {
                                 println!("cargo:rustc-env=LASTFM_APISECRET={}", value);
                             },
                             "ARTISTDB_APIKEY" => {
                                 println!("cargo:rustc-env=ARTISTDB_APIKEY={}", value);
+                            },
+                            "SECRETS_ENCRYPTION_KEY" => {
+                                println!("cargo:rustc-env=SECRETS_ENCRYPTION_KEY={}", value);
                             },
                             _ => {} // Ignore other keys
                         }

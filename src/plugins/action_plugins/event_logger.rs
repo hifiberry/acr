@@ -4,8 +4,11 @@ use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
 use std::any::Any;
 use std::collections::HashSet;
 use delegate::delegate;
+use log::{trace,debug,warn};
 use crate::audiocontrol::AudioController;
-use std::sync::Weak;
+use crate::audiocontrol::eventbus::EventBus;
+use crate::players::PlayerController;
+use std::sync::{Arc, Weak, Mutex};
 
 /// Log level for the EventLogger
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +50,12 @@ pub struct EventLogger {
 
     /// Set of event types to log (if empty, log all events)
     event_types: Option<HashSet<String>>,
+    
+    /// Subscription to the global event bus
+    event_bus_subscription: Arc<Mutex<Option<(u64, crossbeam::channel::Receiver<PlayerEvent>)>>>,
+    
+    /// Handle to the event listener thread
+    event_listener_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 impl EventLogger {
@@ -57,6 +66,8 @@ impl EventLogger {
             only_active,
             log_level: LogLevel::default(),
             event_types: None,
+            event_bus_subscription: Arc::new(Mutex::new(None)),
+            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -67,6 +78,8 @@ impl EventLogger {
             only_active,
             log_level,
             event_types,
+            event_bus_subscription: Arc::new(Mutex::new(None)),
+            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -100,6 +113,27 @@ impl EventLogger {
             PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
             PlayerEvent::ActivePlayerChanged { .. } => "active_player_changed",
         }
+    }    
+    
+    /// Create a handler for events coming from the event bus
+    fn handle_event_bus_events(&self, event: PlayerEvent) {
+        trace!("Received event");
+        // Determine if this is from the active player
+        let is_active_player = if let Some(controller) = self.base.get_controller() {
+            // Get player ID from the event
+            let event_player_id = event.source().player_id();
+            
+            // Get ID of the active player from AudioController
+            let active_player_id = controller.get_player_id();
+            
+            // Event is from active player if IDs match
+            event_player_id == active_player_id
+        } else {
+            false
+        };
+
+        // Log the event the same way as before
+        self.log_event(&event, is_active_player);
     }
 
     /// Log a message with the appropriate log level
@@ -119,14 +153,18 @@ impl EventLogger {
     fn log_event(&self, event: &PlayerEvent, is_active_player: bool) {
         // Only log events from the active player if only_active is true
         if self.only_active && !is_active_player {
+            warn!("Should only log events from the active player, but this event is from a different player");
             return;
         }
 
         // Check if we should log this event type
         let event_type = Self::get_event_type(&event);
         if !self.should_log_event_type(event_type) {
+            warn!("Should not log this event type: {}", event_type);
             return;
-        }        match &event {
+        }        
+        
+        match &event {
             PlayerEvent::StateChanged { source, state } => {
                 self.log_message(
                     &format!(
@@ -355,11 +393,62 @@ impl Plugin for EventLogger {
             self.log_level,
             self.event_types
         );
+        
+        // Set up subscription to the global event bus
+        let event_bus = EventBus::instance();
+        let (id, receiver) = event_bus.subscribe_all();
+        
+        // Store our subscription ID (we'll need it to unsubscribe later)
+        if let Ok(mut sub) = self.event_bus_subscription.lock() {
+            *sub = Some((id, receiver.clone()));
+        }
+
+        // Create a thread-safe reference to self for the worker thread
+        let event_logger = Arc::new(Mutex::new(self.clone()));
+        
+        // Start a thread to listen for events from the event bus
+        let thread_handle = std::thread::spawn(move || {
+            log::debug!("EventLogger event bus listener thread started");
+            
+            // Process events until the channel is closed
+            while let Ok(event) = receiver.recv() {
+                // Get a lock on the event logger
+                if let Ok(logger) = event_logger.lock() {
+                    // Handle the event
+                    logger.handle_event_bus_events(event);
+                }
+            }
+            
+            log::debug!("EventLogger event bus listener thread exiting");
+        });
+
+        // Store the thread handle
+        if let Ok(mut handle) = self.event_listener_thread.lock() {
+            *handle = Some(thread_handle);
+        }
+        
         self.base.init()
     }
 
     fn shutdown(&mut self) -> bool {
-        log::info!("EventLogger shutdown");
+        log::info!("EventLogger shutting down");
+        
+        // Unsubscribe from the event bus
+        if let Ok(mut sub_guard) = self.event_bus_subscription.lock() {
+            if let Some((id, _)) = sub_guard.take() {
+                EventBus::instance().unsubscribe(id);
+                log::debug!("EventLogger unsubscribed from event bus");
+            }
+        }
+          // Wait for the event listener thread to exit
+        if let Ok(mut thread_guard) = self.event_listener_thread.lock() {
+            if thread_guard.is_some() {
+                // Just take the handle and drop it, which detaches the thread
+                let _ = thread_guard.take();
+                log::debug!("EventLogger detaching event bus listener thread");
+            }
+        }
+        
         self.base.shutdown()
     }
 
@@ -373,7 +462,32 @@ impl ActionPlugin for EventLogger {
         self.base.set_controller(controller);
     }
 
-    fn on_event(&mut self, event: &PlayerEvent, is_active_player: bool) {
-        self.log_event(event, is_active_player);
+    fn on_event(&mut self, _event: &PlayerEvent, _is_active_player: bool) {
+        // This method is kept for compatibility with the ActionPlugin trait
+        // But we're not using it anymore since we're receiving events from the event bus
+        // log::trace!("on_event called, but EventLogger is using event bus directly now");
+    }
+}
+
+// Clone implementation for EventLogger to allow for passing to thread
+impl Clone for EventLogger {
+    fn clone(&self) -> Self {
+        let mut new_base = BaseActionPlugin::new(self.base.name());
+        
+        // Get the controller reference from the original object
+        if let Some(controller) = self.base.get_controller() {
+            // The controller is already an Arc, we need to downgrade it to a Weak
+            let controller_weak = Arc::downgrade(&controller);
+            new_base.set_controller(controller_weak);
+        }
+        
+        Self {
+            base: new_base,
+            only_active: self.only_active,
+            log_level: self.log_level,
+            event_types: self.event_types.clone(),
+            event_bus_subscription: Arc::new(Mutex::new(None)),
+            event_listener_thread: Arc::new(Mutex::new(None)),
+        }
     }
 }

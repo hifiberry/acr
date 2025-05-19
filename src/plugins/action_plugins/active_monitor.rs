@@ -1,10 +1,11 @@
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Weak, Mutex};
 use std::any::Any;
 use crate::data::{PlayerEvent, PlaybackState};
 use crate::plugins::plugin::Plugin;
 use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
 use crate::audiocontrol::AudioController;
-use log::{debug, info, warn};
+use crate::audiocontrol::eventbus::EventBus;
+use log::{debug, info, warn, trace};
 use delegate::delegate;
 
 /// A plugin that monitors player state changes and sets the active player
@@ -12,6 +13,12 @@ use delegate::delegate;
 pub struct ActiveMonitor {
     /// Base implementation for common functionality
     base: BaseActionPlugin,
+    
+    /// Subscription to the global event bus
+    event_bus_subscription: Arc<Mutex<Option<(u64, crossbeam::channel::Receiver<PlayerEvent>)>>>,
+    
+    /// Handle to the event listener thread
+    event_listener_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 impl ActiveMonitor {
@@ -19,6 +26,8 @@ impl ActiveMonitor {
     pub fn new() -> Self {
         Self {
             base: BaseActionPlugin::new("ActiveMonitor"),
+            event_bus_subscription: Arc::new(Mutex::new(None)),
+            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
     
@@ -72,6 +81,21 @@ impl ActiveMonitor {
             warn!("ActiveMonitor: No valid AudioController reference available");
         }
     }
+    
+    /// Handle events coming from the event bus
+    fn handle_event_bus_events(&self, event: PlayerEvent) {
+        trace!("Received event from event bus");
+        
+        // We only care about state changed events
+        if let PlayerEvent::StateChanged { source, state } = event {
+            // If a player state changes to Playing, make it the active player
+            if state == PlaybackState::Playing {
+                debug!("ActiveMonitor: Detected player {}:{} state changed to Playing", 
+                       source.player_name(), source.player_id());
+                self.set_active_player(source.player_name(), source.player_id());
+            }
+        }
+    }
 }
 
 impl Plugin for ActiveMonitor {
@@ -79,9 +103,69 @@ impl Plugin for ActiveMonitor {
         to self.base {
             fn name(&self) -> &str;
             fn version(&self) -> &str;
-            fn init(&mut self) -> bool;
-            fn shutdown(&mut self) -> bool;
         }
+    }
+    
+    fn init(&mut self) -> bool {
+        log::info!("ActiveMonitor initializing with event bus subscription");
+        
+        // Set up subscription to the global event bus
+        let event_bus = EventBus::instance();
+        let (id, receiver) = event_bus.subscribe_all();
+        
+        // Store our subscription ID (we'll need it to unsubscribe later)
+        if let Ok(mut sub) = self.event_bus_subscription.lock() {
+            *sub = Some((id, receiver.clone()));
+        }
+
+        // Create a thread-safe reference to self for the worker thread
+        let monitor = Arc::new(Mutex::new(self.clone()));
+        
+        // Start a thread to listen for events from the event bus
+        let thread_handle = std::thread::spawn(move || {
+            log::debug!("ActiveMonitor event bus listener thread started");
+            
+            // Process events until the channel is closed
+            while let Ok(event) = receiver.recv() {
+                // Get a lock on the monitor
+                if let Ok(monitor_guard) = monitor.lock() {
+                    // Handle the event
+                    monitor_guard.handle_event_bus_events(event);
+                }
+            }
+            
+            log::debug!("ActiveMonitor event bus listener thread exiting");
+        });
+
+        // Store the thread handle
+        if let Ok(mut handle) = self.event_listener_thread.lock() {
+            *handle = Some(thread_handle);
+        }
+        
+        self.base.init()
+    }
+
+    fn shutdown(&mut self) -> bool {
+        log::info!("ActiveMonitor shutting down");
+        
+        // Unsubscribe from the event bus
+        if let Ok(mut sub_guard) = self.event_bus_subscription.lock() {
+            if let Some((id, _)) = sub_guard.take() {
+                EventBus::instance().unsubscribe(id);
+                log::debug!("ActiveMonitor unsubscribed from event bus");
+            }
+        }
+        
+        // Wait for the event listener thread to exit
+        if let Ok(mut thread_guard) = self.event_listener_thread.lock() {
+            if thread_guard.is_some() {
+                // Just take the handle and drop it, which detaches the thread
+                let _ = thread_guard.take();
+                log::debug!("ActiveMonitor detaching event bus listener thread");
+            }
+        }
+        
+        self.base.shutdown()
     }
     
     fn as_any(&self) -> &dyn Any {
@@ -95,16 +179,29 @@ impl ActionPlugin for ActiveMonitor {
         debug!("ActiveMonitor initialized with AudioController reference");
     }
     
-    fn on_event(&mut self, event: &PlayerEvent, _is_active_player: bool) {
-        // We only care about state changed events
-        // log events for debugging
-        if let PlayerEvent::StateChanged { source, state } = event {
-            // If a player state changes to Playing, make it the active player
-            if *state == PlaybackState::Playing {
-                debug!("ActiveMonitor: Detected player {}:{} state changed to Playing", 
-                       source.player_name(), source.player_id());
-                self.set_active_player(source.player_name(), source.player_id());
-            }
+    fn on_event(&mut self, _event: &PlayerEvent, _is_active_player: bool) {
+        // This method is kept empty for compatibility with the ActionPlugin trait
+        // We're now using the event bus directly instead of this callback
+        // trace!("on_event called, but ActiveMonitor is using event bus directly now");
+    }
+}
+
+// Clone implementation for ActiveMonitor to allow for passing to thread
+impl Clone for ActiveMonitor {
+    fn clone(&self) -> Self {
+        let mut new_base = BaseActionPlugin::new(self.base.name());
+        
+        // Get the controller reference from the original object
+        if let Some(controller) = self.base.get_controller() {
+            // The controller is already an Arc, we need to downgrade it to a Weak
+            let controller_weak = Arc::downgrade(&controller);
+            new_base.set_controller(controller_weak);
+        }
+        
+        Self {
+            base: new_base,
+            event_bus_subscription: Arc::new(Mutex::new(None)),
+            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
 }

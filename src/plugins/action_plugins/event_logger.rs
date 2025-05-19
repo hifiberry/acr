@@ -86,9 +86,7 @@ impl EventLogger {
             Some(types) => types.contains(event_type),
             None => true, // Log all event types if none are specified
         }
-    }
-
-    /// Get the event type name from a PlayerEvent
+    }    /// Get the event type name from a PlayerEvent
     fn get_event_type(event: &PlayerEvent) -> &'static str {
         match event {
             PlayerEvent::StateChanged { .. } => "state_changed",
@@ -100,6 +98,7 @@ impl EventLogger {
             PlayerEvent::DatabaseUpdating { .. } => "database_updating",
             PlayerEvent::QueueChanged { .. } => "queue_changed",
             PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
+            PlayerEvent::ActivePlayerChanged { .. } => "active_player_changed",
         }
     }
 
@@ -127,9 +126,7 @@ impl EventLogger {
         let event_type = Self::get_event_type(&event);
         if !self.should_log_event_type(event_type) {
             return;
-        }
-
-        match &event {
+        }        match &event {
             PlayerEvent::StateChanged { source, state } => {
                 self.log_message(
                     &format!(
@@ -260,10 +257,19 @@ impl EventLogger {
                     is_active_player
                 );
             },
+            PlayerEvent::ActivePlayerChanged { source, player_id } => {
+                self.log_message(
+                    &format!(
+                        "Active player changed from {} (ID: {}) to player ID: {}",
+                        source.player_name(),
+                        source.player_id(),
+                        player_id
+                    ),
+                    is_active_player
+                );
+            },
         }
-    }
-
-    fn get_event_json_payload(&self, event: &PlayerEvent) -> Option<serde_json::Value> {
+    }    fn get_event_json_payload(&self, event: &PlayerEvent) -> Option<serde_json::Value> {
         match event {
             PlayerEvent::SongChanged { song, .. } => {
                 song.as_ref().map(|s| serde_json::json!({
@@ -329,6 +335,7 @@ impl EventLogger {
                 Some(payload)
             },
             PlayerEvent::QueueChanged { .. } => Some(serde_json::json!({})),
+            PlayerEvent::ActivePlayerChanged { player_id, .. } => Some(serde_json::json!({ "player_id": player_id })),
         }
     }
 }

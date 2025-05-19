@@ -339,8 +339,7 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
         "player_name": event.player_name(),
         "player_id": format!("{}:{}", event.player_name(), "6600") // Default port for MPD
     });
-    
-    // Create event-specific data
+      // Create event-specific data
     let event_data = match event {
         PlayerEvent::StateChanged { source, state } => {
             serde_json::json!({
@@ -415,6 +414,14 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
                 "player_id": source.player_id()
             })
         },
+        PlayerEvent::ActivePlayerChanged { source, player_id } => {
+            serde_json::json!({
+                "type": "active_player_changed",
+                "player_name": source.player_name(),
+                "player_id": source.player_id(),
+                "new_player_id": player_id
+            })
+        },
     };
     
     WebSocketMessage {
@@ -435,6 +442,7 @@ fn event_type_name(event: &PlayerEvent) -> &'static str {
         PlayerEvent::DatabaseUpdating { .. } => "database_updating",
         PlayerEvent::QueueChanged { .. } => "queue_changed",
         PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
+        PlayerEvent::ActivePlayerChanged { .. } => "active_player_changed",
     }
 }
 

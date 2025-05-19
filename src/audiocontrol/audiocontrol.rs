@@ -220,8 +220,7 @@ impl PlayerController for AudioController {
 
 // Implement PlayerStateListener for AudioController
 impl PlayerStateListener for AudioController {
-    fn on_event(&self, event: PlayerEvent) {
-        // Determine if this event is from the active player
+    fn on_event(&self, event: PlayerEvent) {        // Determine if this event is from the active player
         let is_active = match &event {
             PlayerEvent::SongChanged { source, .. } |
             PlayerEvent::StateChanged { source, .. } |
@@ -231,9 +230,11 @@ impl PlayerStateListener for AudioController {
             PlayerEvent::PositionChanged { source, .. } |
             PlayerEvent::DatabaseUpdating { source, .. } |
             PlayerEvent::QueueChanged { source, .. } |
-            PlayerEvent::SongInformationUpdate { source, .. } => {
+            PlayerEvent::SongInformationUpdate { source, .. } |
+            PlayerEvent::ActivePlayerChanged { source, .. } => {
                 self.is_active_player(&source.player_name, &source.player_id)
-            }        };
+            }
+        };
 
         // Process the event directly (without filtering)
         self.process_event(event, is_active);
@@ -919,8 +920,7 @@ impl AudioController {
     fn process_event(&self, event: PlayerEvent, is_active: bool) {
         // First pass the event to all action plugins
         self.process_event_with_action_plugins(&event, is_active);
-        
-        // Then handle the event as before
+          // Then handle the event as before
         match event {
             PlayerEvent::StateChanged { source, state } => {
                 // Check if the event is from the active player
@@ -1012,16 +1012,11 @@ impl AudioController {
             PlayerEvent::SongInformationUpdate { source, song } => {
                 warn!("SongInformationUpdate should not be handled by old system anymore")
             },
-             PlayerEvent::QueueChanged { source } => {
-                // Check if the event is from the active player
-                if is_active {
-                    debug!("AudioController forwarding queue change from active player {}", source.player_id);
-                    // Forward the queue changed event
-                    self.forward_queue_changed(source.player_name, source.player_id);
-                } else {
-                    debug!("AudioController ignoring queue change from inactive player {}", source.player_id);
-                }
-            },
+            PlayerEvent::ActivePlayerChanged { source, player_id } => {
+                debug!("AudioController received active player changed event: {} -> {}", source, player_id);
+                // Handle the active player changed event
+                // No specific action needed for now as this is already handled by the event bus
+            }
         }
     }    // sample_json_config method removed as it's no longer used
 

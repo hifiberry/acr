@@ -37,6 +37,9 @@ pub enum EventSubscription {
 
     /// Subscribe to song information update events only
     SongInformationUpdate,
+    
+    /// Subscribe to active player changed events only
+    ActivePlayerChanged,
 }
 
 impl From<&PlayerEvent> for EventSubscription {
@@ -51,6 +54,7 @@ impl From<&PlayerEvent> for EventSubscription {
             PlayerEvent::DatabaseUpdating { .. } => EventSubscription::DatabaseUpdating,
             PlayerEvent::QueueChanged { .. } => EventSubscription::QueueChanged,
             PlayerEvent::SongInformationUpdate { .. } => EventSubscription::SongInformationUpdate,
+            PlayerEvent::ActivePlayerChanged { .. } => EventSubscription::ActivePlayerChanged,
         }
     }
 }

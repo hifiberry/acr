@@ -403,9 +403,7 @@ impl BasePlayerController {
         }
         
         changed
-    }
-
-    /// Notify all registered listeners that the player state has changed
+    }    /// Notify all registered listeners that the player state has changed
     pub fn notify_state_changed(&self, state: PlaybackState) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
@@ -420,6 +418,10 @@ impl BasePlayerController {
             state,
         };
         
+        // Publish to the global event bus
+        debug!("Publishing state change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of state change", listeners.len());
             for listener_weak in listeners.iter() {
@@ -431,9 +433,7 @@ impl BasePlayerController {
         } else {
             warn!("Failed to acquire read lock for listeners when notifying state change");
         }
-    }
-
-    /// Notify all listeners that the song has changed
+    }    /// Notify all listeners that the song has changed
     pub fn notify_song_changed(&self, song: Option<&Song>) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
@@ -451,6 +451,10 @@ impl BasePlayerController {
             song: song_copy,
         };
         
+        // Publish to the global event bus
+        debug!("Publishing song change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of song change", listeners.len());
             for listener_weak in listeners.iter() {
@@ -462,9 +466,7 @@ impl BasePlayerController {
         } else {
             warn!("Failed to acquire read lock for listeners when notifying song change");
         }
-    }
-
-    /// Notify all registered listeners that the loop mode has changed
+    }    /// Notify all registered listeners that the loop mode has changed
     pub fn notify_loop_mode_changed(&self, mode: LoopMode) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
@@ -479,6 +481,10 @@ impl BasePlayerController {
             mode,
         };
         
+        // Publish to the global event bus
+        debug!("Publishing loop mode change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of loop mode change", listeners.len());
             for listener_weak in listeners.iter() {
@@ -490,9 +496,7 @@ impl BasePlayerController {
         } else {
             warn!("Failed to acquire read lock for listeners when notifying loop mode change");
         }
-    }
-
-    /// Notify all registered listeners that the random mode has changed
+    }    /// Notify all registered listeners that the random mode has changed
     pub fn notify_random_changed(&self, enabled: bool) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
@@ -507,6 +511,10 @@ impl BasePlayerController {
             enabled,
         };
         
+        // Publish to the global event bus
+        debug!("Publishing random mode change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of random mode change", listeners.len());
             for listener_weak in listeners.iter() {
@@ -518,9 +526,7 @@ impl BasePlayerController {
         } else {
             warn!("Failed to acquire read lock for listeners when notifying random mode change");
         }
-    }
-
-    /// Notify all listeners that the capabilities have changed
+    }    /// Notify all listeners that the capabilities have changed
     pub fn notify_capabilities_changed(&self, capabilities: &PlayerCapabilitySet) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
@@ -543,6 +549,10 @@ impl BasePlayerController {
             capabilities: *capabilities,
         };
         
+        // Publish to the global event bus
+        debug!("Publishing capabilities change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of capabilities change", listeners.len());
             for listener_weak in listeners.iter() {
@@ -554,9 +564,7 @@ impl BasePlayerController {
         } else {
             warn!("Failed to acquire read lock for listeners when notifying capabilities change");
         }
-    }
-
-    /// Notify all registered listeners that the player position has changed
+    }    /// Notify all registered listeners that the player position has changed
     pub fn notify_position_changed(&self, position: f64) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
@@ -570,6 +578,10 @@ impl BasePlayerController {
             source,
             position,
         };
+        
+        // Publish to the global event bus
+        debug!("Publishing position change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
         
         if let Ok(listeners) = self.listeners.read() {
             debug!("Notifying {} listeners of position change", listeners.len());
@@ -587,11 +599,14 @@ impl BasePlayerController {
     /// Create a PlayerSource object for the current player
     pub fn create_player_source(&self) -> PlayerSource {
         PlayerSource::new(self.get_player_name(), self.get_player_id())
-    }
-
-    /// Broadcast an event to all registered listeners
+    }    /// Broadcast an event to all registered listeners
     pub fn broadcast_event(&self, event: PlayerEvent) {
         self.prune_dead_listeners();
+        
+        // Note: We're intentionally not publishing to the event bus here
+        // since this method is called by other notify_ methods that already publish to the event bus.
+        // If broadcast_event is called directly (outside of a notify_ method), the caller should
+        // handle publishing to the event bus if needed.
         
         if let Ok(listeners) = self.listeners.read() {
             debug!("Broadcasting event to {} listeners: {:?}", listeners.len(), event);
@@ -604,9 +619,7 @@ impl BasePlayerController {
         } else {
             warn!("Failed to acquire read lock for listeners when broadcasting event");
         }
-    }
-
-    /// Notify listeners that the database is being updated
+    }/// Notify listeners that the database is being updated
     pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>,
                                 song: Option<String>, percentage: Option<f32>) {
         let event = PlayerEvent::DatabaseUpdating {
@@ -616,14 +629,39 @@ impl BasePlayerController {
             song,
             percentage,
         };
+        
+        // Publish to the global event bus
+        debug!("Publishing database update event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+        // Broadcast to registered listeners
         self.broadcast_event(event);
-    }
-    
-    /// Notify listeners that the player's queue has changed
+    }    /// Notify listeners that the player's queue has changed
     pub fn notify_queue_changed(&self) {
         let event = PlayerEvent::QueueChanged {
             source: self.create_player_source(),
         };
+        
+        // Publish to the global event bus
+        debug!("Publishing queue changed event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+        // Broadcast to registered listeners
+        self.broadcast_event(event);
+    }
+    
+    /// Notify listeners that the active player has changed
+    pub fn notify_active_player_changed(&self, player_id: String) {
+        let event = PlayerEvent::ActivePlayerChanged {
+            source: self.create_player_source(),
+            player_id,
+        };
+        
+        // Publish to the global event bus
+        debug!("Publishing active player changed event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+        // Broadcast to registered listeners
         self.broadcast_event(event);
     }
 

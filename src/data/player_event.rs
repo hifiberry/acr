@@ -50,6 +50,12 @@ pub enum PlayerEvent {
         song: Option<Song>,
     },
     
+    /// Song information has been updated (e.g., cover art, metadata)
+    SongInformationUpdate {
+        source: PlayerSource,
+        song: Song,
+    },
+    
     /// Loop mode has changed
     LoopModeChanged {
         source: PlayerSource,
@@ -88,15 +94,15 @@ pub enum PlayerEvent {
         source: PlayerSource,
     },
 
-    /// Song information has been updated (e.g., cover art, metadata)
-    SongInformationUpdate {
+    /// Active player has changed
+    ActivePlayerChanged {
         source: PlayerSource,
-        song: Song,
+        player_id: String,
     },
+
 }
 
-impl PlayerEvent {
-    /// Get the player source associated with this event
+impl PlayerEvent {    /// Get the player source associated with this event
     pub fn source(&self) -> &PlayerSource {
         match self {
             PlayerEvent::StateChanged { source, .. } => source,
@@ -108,6 +114,7 @@ impl PlayerEvent {
             PlayerEvent::DatabaseUpdating { source, .. } => source,
             PlayerEvent::QueueChanged { source } => source,
             PlayerEvent::SongInformationUpdate { source, .. } => source,
+            PlayerEvent::ActivePlayerChanged { source, .. } => source,
         }
     }
     
@@ -162,12 +169,14 @@ impl fmt::Display for PlayerEvent {
                     details.push_str(&format!("Song: {} ", s_song));
                 }
                 write!(f, "Player {} database updating {}", source, details.trim())
-            }
-            PlayerEvent::QueueChanged { source } => {
+            }            PlayerEvent::QueueChanged { source } => {
                 write!(f, "Player {} queue changed", source)
             }
             PlayerEvent::SongInformationUpdate { source, song } => {
                 write!(f, "Player {} song information updated for '{}'", source, song)
+            }
+            PlayerEvent::ActivePlayerChanged { source, player_id } => {
+                write!(f, "Active player changed to {} (ID: {})", source, player_id)
             }
         }
     }

@@ -115,7 +115,8 @@ fn lastfm_worker(
                             if let (Some(current_song_details), Some(current_player_source)) = 
                                 (&track_data.song_details, &track_data.player_source) {
                                 
-                                let updated_song = calculate_updates(current_song_details, &track_info_details);                                let event = PlayerEvent::SongInformationUpdate { 
+                                let updated_song = calculate_updates(current_song_details, &track_info_details);                                
+                                let event = PlayerEvent::SongInformationUpdate { 
                                     source: current_player_source.clone(), 
                                     song: updated_song.clone() 
                                 };
@@ -667,47 +668,64 @@ impl Clone for Lastfm {
 // It should be outside any impl blocks, typically as a free function in the module.
 
 fn calculate_updates(original_song: &Song, lastfm_data: &LastfmTrackInfoDetails) -> Song {
-    let mut updated_song = original_song.clone();
+    let mut updated_song = Song::default(); // Start with a default Song
 
-    // 1. Update cover_art_url
-    if updated_song.cover_art_url.is_none() {
-        if let Some(album_info) = &lastfm_data.album {
-            if let Some(extralarge_image) = album_info.image.iter().find(|img| img.size == "extralarge") {
-                if !extralarge_image.url.is_empty() {
-                    updated_song.cover_art_url = Some(extralarge_image.url.clone());
-                    info!("calculate_updates: Updated cover_art_url to {}", extralarge_image.url);
-                }
+    // Always include title and artist for identification purposes in the event
+    updated_song.title = original_song.title.clone();
+    updated_song.artist = original_song.artist.clone();
+
+    // --- 1. Handle cover_art_url ---
+    let mut lastfm_provided_cover_art_url: Option<String> = None;
+    if let Some(album_info) = &lastfm_data.album {
+        if let Some(extralarge_image) = album_info.image.iter().find(|img| img.size == "extralarge") {
+            if !extralarge_image.url.is_empty() {
+                lastfm_provided_cover_art_url = Some(extralarge_image.url.clone());
             }
         }
     }
 
-    // 2. Update liked field
-    if updated_song.liked.is_none() {
-        // lastfm_data.userloved is a bool. We can directly assign it.
-        // Assuming if userloved is true, it's liked. If false, it's not necessarily "disliked" but "not loved".
-        // For simplicity, we'll map true to Some(true). If it's false, we might leave it as None or set to Some(false).
-        // The task asks to set it based on userloved. So if userloved is true, liked = Some(true).
-        // If userloved is false, should liked be Some(false) or remain None?
-        // Let's assume if userloved is true, it's a positive signal. If false, it's neutral from Last.fm's perspective for "liked".
-        // The user prompt says "set it based on lastfm_data.userloved".
-        // If lastfm_data.userloved is true, song.liked becomes Some(true).
-        // If lastfm_data.userloved is false, song.liked could become Some(false) or stay None.
-        // Let's set it to Some(lastfm_data.userloved) to directly reflect the Last.fm data.
-        updated_song.liked = Some(lastfm_data.userloved);
-        info!("calculate_updates: Updated liked to {:?}", updated_song.liked);
+    // Only update cover_art_url if the original song does not have one,
+    // and Last.fm provides one. This signifies a change from None to Some.
+    // If the original song already has a cover_art_url, updated_song.cover_art_url
+    // will remain None (from Song::default()), indicating no change for this field
+    // in the partial update event.
+    if original_song.cover_art_url.is_none() {
+        if let Some(ref url) = lastfm_provided_cover_art_url {
+            updated_song.cover_art_url = Some(url.clone());
+            debug!("calculate_updates: cover_art_url (original was None) updated to Some(\\"{}\\")", url);
+        }
     }
 
-    // 3. Add lastfm_playcount metadata
-    if let Some(user_playcount_val) = &lastfm_data.user_playcount {
-        if !user_playcount_val.is_empty() {
-            // updated_song.metadata is already a HashMap (cloned from original_song or default)
-            updated_song.metadata.insert("lastfm_playcount".to_string(), serde_json::Value::String(user_playcount_val.clone()));
-            info!("calculate_updates: Added/Updated lastfm_playcount to {}", user_playcount_val);
-        } else {
-            info!("calculate_updates: user_playcount from Last.fm is present but empty, not adding metadata.");
+    // --- 2. Handle liked status ---
+    let lastfm_liked_value = Some(lastfm_data.userloved); // lastfm_data.userloved is bool
+
+    // Check if the liked status from Last.fm is different from the original song's liked status.
+    if lastfm_liked_value != original_song.liked {
+        updated_song.liked = lastfm_liked_value;
+        debug!("calculate_updates: liked status updated to {:?}.", updated_song.liked);
+    }
+
+    // --- 3. Handle metadata: lastfm_playcount ---
+    let mut lastfm_provided_playcount_json: Option<serde_json::Value> = None;
+    if let Some(user_playcount_str) = &lastfm_data.user_playcount {
+        if !user_playcount_str.is_empty() {
+            lastfm_provided_playcount_json = Some(serde_json::Value::String(user_playcount_str.clone()));
         }
-    } else {
-        info!("calculate_updates: user_playcount from Last.fm is None, not adding metadata.");
+    }
+    let original_playcount_json = original_song.metadata.get("lastfm_playcount").cloned();
+
+    // Check if the playcount from Last.fm (or its absence) is different from the original.
+    if lastfm_provided_playcount_json != original_playcount_json {
+        if let Some(pc_json) = lastfm_provided_playcount_json {
+            updated_song.metadata.insert("lastfm_playcount".to_string(), pc_json.clone());
+            debug!("calculate_updates: metadata 'lastfm_playcount' updated to {:?}.", pc_json);
+        } else {
+            // lastfm_provided_playcount_json is None. If original_song had this metadata, it's a change.
+            // updated_song.metadata will not contain "lastfm_playcount" by default.
+            if original_playcount_json.is_some() {
+                debug!("calculate_updates: metadata 'lastfm_playcount' changed from Some to None.");
+            }
+        }
     }
     
     updated_song

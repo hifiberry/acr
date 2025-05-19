@@ -292,31 +292,7 @@ impl PluginFactory {
             // Add other built-in action plugins here with their default configuration
         ];
         
-        serde_json::to_string_pretty(&plugins).unwrap_or_else(|_| "[]".to_string())
-    }
+        serde_json::to_string_pretty(&plugins).unwrap_or_else(|_| "[]".to_string())    }
     
-    /// Returns a default JSON configuration for all available event filters
-    ///
-    /// This function provides a complete configuration for all event filters 
-    /// in the system with default settings. Each filter includes an "enabled" attribute
-    /// that can be used to selectively enable/disable filters.
-    ///
-    /// # Returns
-    ///
-    /// A JSON string containing the complete event filter configuration array
-    pub fn sample_json_config() -> String {
-        let filters = vec![
-            serde_json::json!({
-                "event-logger": {
-                    "only_active": false,
-                    "log_level": "info",
-                    "event_types": ["state", "song", "loop", "capabilities"],
-                    "enabled": true
-                }
-            }),
-            // Add other built-in filters here with their default configuration
-        ];
-        
-        serde_json::to_string_pretty(&filters).unwrap_or_else(|_| "[]".to_string())
-    }
+    // sample_json_config method for event filters removed as it's no longer used
 }

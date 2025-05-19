@@ -268,12 +268,13 @@ impl AudioController {    /// Create a new AudioController with no controllers
     pub fn instance() -> Arc<AudioController> {
         // Initialize once with mutex protection for thread safety
         let _guard = AUDIO_CONTROLLER_MUTEX.lock().unwrap();
-        
-        unsafe {
+          unsafe {
             AUDIO_CONTROLLER_INIT.call_once(|| {
-                // Create a default instance if none exists
-                let default_config = serde_json::from_str(&Self::sample_json_config())
-                    .expect("Failed to parse default AudioController config");
+                // Create a default instance with empty configuration
+                let default_config = serde_json::json!({
+                    "players": [],
+                    "action_plugins": []
+                });
                 
                 let controller = Self::from_json(&default_config)
                     .expect("Failed to create default AudioController");
@@ -998,36 +999,7 @@ impl AudioController {    /// Create a new AudioController with no controllers
                 }
             },
         }
-    }    /// Returns a default JSON configuration for AudioController with all available players and plugins
-    ///
-    /// This function uses the default player configuration and adds action plugins,
-    /// providing a complete configuration for initializing a new project.
-    ///
-    /// # Returns
-    ///
-    /// A JSON string containing the complete AudioController configuration
-    pub fn sample_json_config() -> String {
-        use crate::players::sample_json_config;
-        use crate::plugins::plugin_factory::PluginFactory;
-        
-        // Get the default players configuration as a JSON Value
-        let players_str = sample_json_config();
-        let players_value: serde_json::Value = serde_json::from_str(&players_str)
-            .unwrap_or_else(|_| serde_json::json!([]));
-            
-        // Get the default action plugins configuration as a JSON Value
-        let plugins_str = PluginFactory::sample_action_plugins_config();
-        let plugins_value: serde_json::Value = serde_json::from_str(&plugins_str)
-            .unwrap_or_else(|_| serde_json::json!([]));
-            
-        // Create the complete AudioController configuration
-        let config = serde_json::json!({
-            "players": players_value,
-            "action_plugins": plugins_value
-        });
-        
-        serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string())
-    }
+    }    // sample_json_config method removed as it's no longer used
 
     /// Display the state of all players to the console
     pub fn display_all_player_states(&self) {

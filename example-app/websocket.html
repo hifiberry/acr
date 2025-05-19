@@ -139,10 +139,9 @@
         <div class="panel">
             <h2>Connection</h2>
             <div class="status disconnected" id="connection-status">Disconnected</div>
-            
-            <div class="form-group">
+              <div class="form-group">
                 <label for="ws-url">WebSocket URL</label>
-                <input type="text" id="ws-url" value="ws://'+window.location.hostname+':1080/api/events" />
+                <input type="text" id="ws-url" value="ws://localhost:1080/api/events" />
             </div>
             
             <div class="controls">
@@ -181,7 +180,9 @@
         </div>
     </div>
     
-    <script>
+    <script>        // Set default WebSocket URL based on current hostname
+        document.getElementById('ws-url').value = `ws://${window.location.hostname}:1080/api/events`;
+
         // DOM Elements
         const connectBtn = document.getElementById('connect-btn');
         const disconnectBtn = document.getElementById('disconnect-btn');

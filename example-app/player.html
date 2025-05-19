@@ -1270,45 +1270,135 @@
             
             // Check if this event is for our current player
             const isForCurrentPlayer = 
-                !currentPlayerName || // We're using the active player
-                playerName === currentPlayerName || // Event is for our selected player
-                (source.is_active && !currentPlayerName); // Event is for the active player and we're using the active player
-                
-            if (!isForCurrentPlayer) {
-                return; // Ignore events for other players
-            }
-            
-            console.log(`Processing event for player: ${playerName}`);
-            
-            // Only process events with the type field (snake_case format)
-            if (data.type) {
-                switch(data.type) {
-                    case 'state_changed':
-                        processStateChange(data.state);
+                (!currentPlayerName && source.is_active_player) || // Event for active player, and we are on "Default (Active Player)"
+                (currentPlayerName && playerName === currentPlayerName); // Event for a specific player we are viewing
+
+            if (isForCurrentPlayer) {
+                console.log(`Event ${data.event_type} is for the current player (${playerName || 'active'}). Event data:`, data);
+
+                // Update UI based on event type
+                switch (data.event_type) {
+                    case 'PlayerChanged':
+                    case 'PlayerAdded':
+                    case 'PlayerRemoved':
+                        // Player list might have changed, or active player changed
+                        fetchPlayers(); // Refresh player dropdown
+                        // If the active player changed, or our selected player was removed, we might need to refresh now-playing
+                        fetchCurrentPlayer(); 
                         break;
-                    case 'song_changed':
-                        processSongChange(data.song);
+                    case 'StateChanged':
+                        // Update playback state and related UI elements
+                        if (currentData) {
+                            currentData.state = data.state;
+                            // Potentially update position if included, though full fetch might be better
+                            if (data.position !== undefined) currentData.position = data.position;
+                            updateControlButtons(currentData);
+                            updatePlayerInfo(currentData); // Update state display in player info
+                            updateNowPlaying(currentData); // Update progress bar and play/pause icon
+                        } else {
+                            fetchCurrentPlayer(); // Fetch if no current data
+                        }
                         break;
-                    case 'position_changed':
-                        processPositionChange(data.position);
+                    case 'SongChanged':
+                        // Update with new song information
+                        if (currentData) {
+                            currentData.song = data.song;
+                            currentData.position = data.position !== undefined ? data.position : 0;
+                            // If loop/shuffle status is part of this event, update them too
+                            if (data.loop_mode !== undefined) currentData.loop_mode = data.loop_mode;
+                            if (data.shuffle !== undefined) currentData.shuffle = data.shuffle;
+                            
+                            updateNowPlaying(currentData);
+                            updateSongInfo(currentData.song); // Make sure this function exists and is comprehensive
+                            updateControlButtons(currentData); // Controls might change based on new song/state
+                            if (playerCapabilities.hasQueue) fetchQueue(); // Refresh queue if song changes
+                        } else {
+                            fetchCurrentPlayer(); // Fetch if no current data
+                        }
                         break;
-                    case 'loop_mode_changed':
-                        processLoopModeChange(data.mode);
+                    case 'PlaybackPosition':
+                        // Update playback position
+                        if (currentData && currentData.song) {
+                            currentData.position = data.position;
+                            updateNowPlaying(currentData); // This updates the progress bar
+                        }
                         break;
-                    case 'shuffle_changed':
-                        processShuffleChange(data.shuffle);
+                    case 'LoopModeChanged':
+                        if (currentData) {
+                            currentData.loop_mode = data.loop_mode;
+                            updateControlButtons(currentData); // Updates loop button
+                        }
                         break;
-                    case 'capabilities_changed':
-                        processCapabilitiesChange(data);
+                    case 'ShuffleChanged':
+                        if (currentData) {
+                            currentData.shuffle = data.shuffle;
+                            updateControlButtons(currentData); // Updates shuffle button
+                        }
+                        break;
+                    case 'QueueChanged':
+                        // Queue has changed, refresh it
+                        if (playerCapabilities.hasQueue) {
+                            fetchQueue();
+                        }
+                        break;
+                    case 'SongInformationUpdate':
+                        console.log('Received SongInformationUpdate:', data.song);
+                        if (currentData && currentData.song && data.song) {
+                            // Check if artist and title match the current song
+                            if (data.song.title === currentData.song.title && data.song.artist === currentData.song.artist) {
+                                console.log('SongInformationUpdate matches current song. Applying partial updates.');
+
+                                // Update liked status if present in the event
+                                if (data.song.liked !== undefined) {
+                                    currentData.song.liked = data.song.liked; // Update local state
+                                    const songLikedButton = document.getElementById('song-liked-button');
+                                    if (songLikedButton) {
+                                        if (currentData.song.liked === true) {
+                                            songLikedButton.textContent = '♥'; // Filled heart
+                                            songLikedButton.title = 'Liked';
+                                        } else if (currentData.song.liked === false) {
+                                            songLikedButton.textContent = '♡'; // Empty heart
+                                            songLikedButton.title = 'Not Liked';
+                                        } else {
+                                            songLikedButton.textContent = '?'; 
+                                            songLikedButton.title = 'Liked status unknown';
+                                        }
+                                        console.log('Updated liked status UI to:', currentData.song.liked);
+                                    }
+                                }
+
+                                // Update cover art URL if the property is present in the event's song data
+                                if (data.song.hasOwnProperty('cover_art_url')) {
+                                    currentData.song.cover_art_url = data.song.cover_art_url; // Update local state
+
+                                    const songThumbnail = document.getElementById('song-thumbnail');
+                                    const noThumbnail = document.getElementById('no-thumbnail');
+
+                                    if (currentData.song.cover_art_url && currentData.song.cover_art_url !== '') {
+                                        songThumbnail.src = currentData.song.cover_art_url;
+                                        songThumbnail.style.display = 'inline-block';
+                                        noThumbnail.style.display = 'none';
+                                        console.log('Updated cover art UI to:', currentData.song.cover_art_url);
+                                    } else {
+                                        // Cover art URL is null or empty, so hide thumbnail
+                                        songThumbnail.style.display = 'none';
+                                        noThumbnail.style.display = 'inline-flex';
+                                        console.log('Cover art removed or not available. Updated UI.');
+                                    }
+                                }
+                            } else {
+                                console.log('SongInformationUpdate is for a different song (title/artist mismatch). Ignoring partial updates for liked/cover.');
+                            }
+                        } else {
+                            console.log('No current song data or event song data available to compare/update for SongInformationUpdate. Ignoring.');
+                        }
                         break;
                     default:
-                        console.log(`Unhandled event type: ${data.type}`);
+                        console.log('Unhandled event type:', data.event_type);
                 }
-                return;
+            } else {
+                console.log(`Event ${data.event_type} is for player ${playerName}, but current player is ${currentPlayerName || 'active'}. Ignoring.`);
             }
-            
-            // If we get here, log the unrecognized format
-            console.log('Unknown event format:', data);
         }
         
         // Process state change events

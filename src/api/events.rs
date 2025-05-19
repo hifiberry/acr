@@ -410,7 +410,8 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
             serde_json::json!({
                 "type": "song_information_update",
                 "player_name": source.player_name(),
-                "player_id": source.player_id()
+                "player_id": source.player_id(),
+                "song": song
             })
         },
         PlayerEvent::ActivePlayerChanged { source, player_id } => {

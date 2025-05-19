@@ -82,6 +82,32 @@ impl Default for CurrentScrobbleTrack {
     }
 }
 
+fn merge_song_updates(original_song: &mut Song, partial_update: &Song) {
+    // Title and artist in partial_update are for identification, not merging.
+    // original_song.title and original_song.artist should remain as they are.
+
+    if partial_update.cover_art_url.is_some() {
+        original_song.cover_art_url = partial_update.cover_art_url.clone();
+        debug!("merge_song_updates: Merged cover_art_url: {:?}", original_song.cover_art_url);
+    }
+
+    if partial_update.liked.is_some() {
+        original_song.liked = partial_update.liked;
+        debug!("merge_song_updates: Merged liked status: {:?}", original_song.liked);
+    }
+
+    if !partial_update.metadata.is_empty() {
+        for (key, value) in &partial_update.metadata {
+            original_song.metadata.insert(key.clone(), value.clone());
+            debug!("merge_song_updates: Merged metadata key \'{}\': {:?}", key, value);
+        }
+    }
+    // Note: This merge logic assumes that if a field is None/empty in partial_update,
+    // it means "no change for this field", not "clear this field".
+    // calculate_updates is designed to only populate fields in partial_update if they represent
+    // a change or a new piece of information (like cover art if previously None).
+}
+
 // Background worker function
 fn lastfm_worker(
     track_data_arc: Arc<Mutex<CurrentScrobbleTrack>>,
@@ -106,27 +132,33 @@ fn lastfm_worker(
         let mut track_data = track_data_arc.lock().unwrap();
 
         // Fetch track info if new song and not yet fetched
-        if let Some(song_details_ref) = &track_data.song_details {
-            if !track_data.track_info_fetched && client.is_authenticated() {
-                if let (Some(title), Some(artist)) = (&song_details_ref.title, &song_details_ref.artist) {
+        if !track_data.track_info_fetched && client.is_authenticated() {
+            // Separate the immutable borrow for player_source
+            let player_source_clone = track_data.player_source.clone();
+            let song_title_clone = track_data.song_details.as_ref().and_then(|sd| sd.title.clone());
+            let song_artist_clone = track_data.song_details.as_ref().and_then(|sd| sd.artist.clone());
+
+            if let (Some(title), Some(artist)) = (song_title_clone, song_artist_clone) {
+                if let Some(current_player_source) = player_source_clone {
                     info!("LastFMWorker: Attempting to get track info for '{}' by '{}'", title, artist);
-                    match client.get_track_info(artist, title) {
+                    match client.get_track_info(&artist, &title) {
                         Ok(track_info_details) => {
-                            if let (Some(current_song_details), Some(current_player_source)) = 
-                                (&track_data.song_details, &track_data.player_source) {
+                            // Now, we need to re-access song_details mutably.
+                            // It's important that the immutable borrows above are out of scope.
+                            if let Some(original_song_details_ref) = &mut track_data.song_details {
+                                let updated_song_partial = calculate_updates(original_song_details_ref, &track_info_details);
                                 
-                                let updated_song = calculate_updates(current_song_details, &track_info_details);                                
-                                let event = PlayerEvent::SongInformationUpdate { 
-                                    source: current_player_source.clone(), 
-                                    song: updated_song.clone() 
+                                let event = PlayerEvent::SongInformationUpdate {
+                                    source: current_player_source.clone(), // Use the cloned source
+                                    song: updated_song_partial.clone()
                                 };
-                                debug!("LastFMWorker: Publishing SongInformationUpdate to event bus");
+                                debug!("LastFMWorker: Publishing SongInformationUpdate to event bus with partial data: {:?}", updated_song_partial);
                                 crate::audiocontrol::eventbus::EventBus::instance().publish(event);
-                                
-                                // Update the stored song details with the enriched version
-                                track_data.song_details = Some(updated_song);
+
+                                merge_song_updates(original_song_details_ref, &updated_song_partial);
+                                debug!("LastFMWorker: Merged partial song info. New song_details: {:?}", track_data.song_details);
                             } else {
-                                warn!("LastFMWorker: song_details or player_source became None unexpectedly before update.");
+                                 warn!("LastFMWorker: song_details became None unexpectedly before mutable access for update.");
                             }
                         }
                         Err(e) => {
@@ -135,9 +167,13 @@ fn lastfm_worker(
                     }
                     track_data.track_info_fetched = true;
                 } else {
-                    warn!("LastFMWorker: Cannot get track info, title or artist missing from stored song details. Title: {:?}, Artist: {:?}, Fetched Flag: {}", song_details_ref.title, song_details_ref.artist, track_data.track_info_fetched);
-                    track_data.track_info_fetched = true; 
+                    warn!("LastFMWorker: player_source was None when attempting to fetch track info. Title: {:?}, Artist: {:?}, Fetched Flag: {}", track_data.song_details.as_ref().and_then(|s| s.title.as_ref()), track_data.song_details.as_ref().and_then(|s| s.artist.as_ref()), track_data.track_info_fetched);
+                    // Potentially set track_info_fetched to true here as well if we don't want to retry without a source
+                     track_data.track_info_fetched = true; 
                 }
+            } else {
+                warn!("LastFMWorker: Cannot get track info, title or artist missing from stored song details. Title: {:?}, Artist: {:?}, Fetched Flag: {}", track_data.song_details.as_ref().and_then(|s| s.title.as_ref()), track_data.song_details.as_ref().and_then(|s| s.artist.as_ref()), track_data.track_info_fetched);
+                track_data.track_info_fetched = true; 
             }
         }
 
@@ -692,7 +728,7 @@ fn calculate_updates(original_song: &Song, lastfm_data: &LastfmTrackInfoDetails)
     if original_song.cover_art_url.is_none() {
         if let Some(ref url) = lastfm_provided_cover_art_url {
             updated_song.cover_art_url = Some(url.clone());
-            debug!("calculate_updates: cover_art_url (original was None) updated to Some(\\"{}\\")", url);
+            debug!("calculate_updates: cover_art_url updated to {}", url);
         }
     }
 

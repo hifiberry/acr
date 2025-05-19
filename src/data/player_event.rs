@@ -51,6 +51,12 @@ pub enum PlayerEvent {
     },
     
     /// Song information has been updated (e.g., cover art, metadata)
+    // in this event, song title and artist are not updated, they
+    // are only present to check in the UI if the song is the same
+    // as the one currently playing
+    // all other fields are optional. if a field is None, it means
+    // that the field is not updated
+    // only updated fields are populated
     SongInformationUpdate {
         source: PlayerSource,
         song: Song,

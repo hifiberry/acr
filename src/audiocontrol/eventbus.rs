@@ -1,5 +1,6 @@
 use crate::data::player_event::PlayerEvent;
 use crossbeam::channel::{unbounded, Receiver, Sender};
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -53,6 +54,11 @@ impl From<&PlayerEvent> for EventSubscription {
 /// Type alias for a subscriber ID
 pub type SubscriberId = u64;
 
+lazy_static! {
+    /// Global singleton instance of the EventBus.
+    static ref GLOBAL_EVENT_BUS: EventBus = EventBus::new();
+}
+
 /// EventBus for distributing PlayerEvents to subscribers
 #[derive(Clone)]
 pub struct EventBus {
@@ -62,11 +68,17 @@ pub struct EventBus {
 
 impl EventBus {
     /// Create a new EventBus instance
+    /// Note: For a global singleton, use EventBus::instance()
     pub fn new() -> Self {
         EventBus {
             subscribers: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(Mutex::new(0)),
         }
+    }
+    
+    /// Get a clone of the global EventBus singleton instance.
+    pub fn instance() -> Self {
+        GLOBAL_EVENT_BUS.clone()
     }
     
     /// Subscribe to receive all events

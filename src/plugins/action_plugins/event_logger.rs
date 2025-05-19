@@ -160,7 +160,7 @@ impl EventLogger {
         // Check if we should log this event type
         let event_type = Self::get_event_type(&event);
         if !self.should_log_event_type(event_type) {
-            warn!("Should not log this event type: {}", event_type);
+            trace!("Should not log this event type: {}", event_type);
             return;
         }        
         

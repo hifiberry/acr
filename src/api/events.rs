@@ -95,9 +95,8 @@ impl WebSocketManager {    /// Create a new WebSocket manager
             
             // This thread will continuously receive events from the event bus
             while let Ok(event) = receiver.recv() {
-                warn!("WebSocketManager received event from global event bus: {}", event_type_name(&event));
+                debug!("WebSocketManager received event from global event bus: {}", event_type_name(&event));
                 manager_clone.queue_event(event);
-                warn!("WebSocketManager queued event");
             }
             
             debug!("WebSocketManager event bus listener thread exiting");

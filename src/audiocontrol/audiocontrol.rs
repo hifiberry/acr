@@ -230,7 +230,8 @@ impl PlayerStateListener for AudioController {
             PlayerEvent::CapabilitiesChanged { source, .. } |
             PlayerEvent::PositionChanged { source, .. } |
             PlayerEvent::DatabaseUpdating { source, .. } |
-            PlayerEvent::QueueChanged { source } => {
+            PlayerEvent::QueueChanged { source, .. } |
+            PlayerEvent::SongInformationUpdate { source, .. } => {
                 self.is_active_player(&source.player_name, &source.player_id)
             }        };
 
@@ -1006,6 +1007,19 @@ impl AudioController {
                     self.forward_random_changed(source.player_name, source.player_id, enabled);
                 } else {
                     debug!("AudioController ignoring random mode change from inactive player {}", source.player_id);
+                }
+            },
+            PlayerEvent::SongInformationUpdate { source, song } => {
+                warn!("SongInformationUpdate should not be handled by old system anymore")
+            },
+             PlayerEvent::QueueChanged { source } => {
+                // Check if the event is from the active player
+                if is_active {
+                    debug!("AudioController forwarding queue change from active player {}", source.player_id);
+                    // Forward the queue changed event
+                    self.forward_queue_changed(source.player_name, source.player_id);
+                } else {
+                    debug!("AudioController ignoring queue change from inactive player {}", source.player_id);
                 }
             },
         }

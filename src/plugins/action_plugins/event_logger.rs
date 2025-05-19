@@ -91,14 +91,15 @@ impl EventLogger {
     /// Get the event type name from a PlayerEvent
     fn get_event_type(event: &PlayerEvent) -> &'static str {
         match event {
-            PlayerEvent::StateChanged { .. } => "state",
-            PlayerEvent::SongChanged { .. } => "song",
-            PlayerEvent::LoopModeChanged { .. } => "loop",
-            PlayerEvent::RandomChanged { .. } => "random",
-            PlayerEvent::CapabilitiesChanged { .. } => "capabilities",
-            PlayerEvent::PositionChanged { .. } => "position",
-            PlayerEvent::DatabaseUpdating { .. } => "database",
-            PlayerEvent::QueueChanged { .. } => "queue",
+            PlayerEvent::StateChanged { .. } => "state_changed",
+            PlayerEvent::SongChanged { .. } => "song_changed",
+            PlayerEvent::LoopModeChanged { .. } => "loop_mode_changed",
+            PlayerEvent::RandomChanged { .. } => "random_mode_changed",
+            PlayerEvent::CapabilitiesChanged { .. } => "capabilities_changed",
+            PlayerEvent::PositionChanged { .. } => "position_changed",
+            PlayerEvent::DatabaseUpdating { .. } => "database_updating",
+            PlayerEvent::QueueChanged { .. } => "queue_changed",
+            PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
         }
     }
 
@@ -246,6 +247,88 @@ impl EventLogger {
                     is_active_player
                 );
             },
+            PlayerEvent::SongInformationUpdate { source, song } => {
+                // song is type Song, not Option<Song>
+                self.log_message(
+                    &format!(
+                        "Player {} (ID: {}) song information updated: \\'{}\\' by \\'{}\\'",
+                        source.player_name(),
+                        source.player_id(),
+                        song.title.as_deref().unwrap_or("Unknown Title"), // Added unwrap_or
+                        song.artist.as_deref().unwrap_or("Unknown Artist") // Added unwrap_or
+                    ),
+                    is_active_player
+                );
+            },
+        }
+    }
+
+    fn get_event_json_payload(&self, event: &PlayerEvent) -> Option<serde_json::Value> {
+        match event {
+            PlayerEvent::SongChanged { song, .. } => {
+                song.as_ref().map(|s| serde_json::json!({
+                    "title": s.title,
+                    "artist": s.artist,
+                    "album": s.album,
+                    "stream_url": s.stream_url, // Corrected field name
+                    "source": s.source, // Corrected field name
+                }))
+            }
+            PlayerEvent::SongInformationUpdate { song, .. } => {
+                // song is type Song
+                Some(serde_json::json!({
+                    "title": song.title,
+                    "artist": song.artist,
+                    "album": song.album,
+                    "stream_url": song.stream_url, // Corrected field name
+                    "source": song.source, // Corrected field name
+                }))
+            }
+            PlayerEvent::StateChanged { state, .. } => Some(serde_json::json!({ "state": state })),
+            PlayerEvent::LoopModeChanged { mode, .. } => Some(serde_json::json!({ "loop_mode": mode })),
+            PlayerEvent::RandomChanged { enabled, .. } => Some(serde_json::json!({ "random_enabled": enabled })),
+            PlayerEvent::CapabilitiesChanged { capabilities, .. } => Some(serde_json::json!({ "capabilities": capabilities })),
+            PlayerEvent::PositionChanged { position, .. } => Some(serde_json::json!({ "position": position })),
+            PlayerEvent::DatabaseUpdating { artist, album, song, percentage, .. } => {
+                let mut payload = serde_json::json!({});
+
+                if let Some(percentage) = percentage {
+                    payload["percentage"] = serde_json::json!(percentage);
+                }
+
+                match (artist, album, song) {
+                    (Some(a), Some(b), Some(s)) => {
+                        payload["artist"] = serde_json::json!(a);
+                        payload["album"] = serde_json::json!(b);
+                        payload["song"] = serde_json::json!(s);
+                    },
+                    (Some(a), Some(b), None) => {
+                        payload["artist"] = serde_json::json!(a);
+                        payload["album"] = serde_json::json!(b);
+                    },
+                    (Some(a), None, None) => {
+                        payload["artist"] = serde_json::json!(a);
+                    },
+                    (None, Some(b), None) => {
+                        payload["album"] = serde_json::json!(b);
+                    },
+                    (None, None, Some(s)) => {
+                        payload["song"] = serde_json::json!(s);
+                    },
+                    (None, Some(b), Some(s)) => {
+                        payload["album"] = serde_json::json!(b);
+                        payload["song"] = serde_json::json!(s);
+                    },
+                    (Some(a), None, Some(s)) => {
+                        payload["artist"] = serde_json::json!(a);
+                        payload["song"] = serde_json::json!(s);
+                    },
+                    _ => {} // Do nothing for None values
+                }
+
+                Some(payload)
+            },
+            PlayerEvent::QueueChanged { .. } => Some(serde_json::json!({})),
         }
     }
 }

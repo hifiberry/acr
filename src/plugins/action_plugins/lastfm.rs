@@ -369,6 +369,71 @@ impl Lastfm {
             }
         }
     }
+
+    /// Handle a state changed event
+    fn handle_state_changed(&mut self, new_player_state: &PlaybackState, event_source: &PlayerSource) {
+        let mut track_data = self.current_track_data.lock().unwrap();
+
+        // If state changes, ensure player_source is consistent if a song is active
+        if track_data.song_details.is_some() && track_data.player_source.as_ref() != Some(event_source) {
+            // This might happen if events are interleaved, or if a player changes its source ID
+            // For now, let's update it if different and a song is active.
+            // Or, we might decide that the source from SongChanged is authoritative for the current song.
+            // For now, let's prioritize the source from SongChanged.
+            // If track_data.player_source is None but song_details is Some, it's an inconsistent state.
+            if track_data.player_source.is_none() {
+                 warn!("Lastfm: StateChanged for source {:?} while song {:?} is active but player_source was None. Updating to event_source.", event_source, track_data.name.as_deref());
+                 track_data.player_source = Some(event_source.clone());
+            }
+        }
+
+        if track_data.name.is_none() {
+            debug!("Lastfm: StateChanged event ({:?}) but no active song. Current internal state: {:?}", new_player_state, track_data.current_playback_state);
+            if *new_player_state == PlaybackState::Stopped || *new_player_state == PlaybackState::Killed || *new_player_state == PlaybackState::Disconnected {
+                track_data.current_playback_state = *new_player_state;
+                track_data.last_play_timestamp = None; 
+            }
+            return;
+        }
+
+        let old_player_state = track_data.current_playback_state;
+        if old_player_state == *new_player_state {
+            debug!("Lastfm: StateChanged event but state is the same ({:?}). No action.", new_player_state);
+            return;
+        }
+
+        info!("Lastfm: StateChanged. Song: {:?}. Old state: {:?}, New state: {:?}.",
+            track_data.name.as_deref().unwrap_or("N/A"),
+            old_player_state,
+            new_player_state);
+
+        if old_player_state == PlaybackState::Playing && *new_player_state != PlaybackState::Playing {
+            if let Some(lpt) = track_data.last_play_timestamp {
+                let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
+                track_data.accumulated_play_duration_ms += played_ms;
+                info!("Lastfm: Playback now '{:?}'. Added {}ms. Total accumulated: {}ms", new_player_state, played_ms, track_data.accumulated_play_duration_ms);
+            }
+            track_data.last_play_timestamp = None;
+        } else if old_player_state != PlaybackState::Playing && *new_player_state == PlaybackState::Playing {
+            info!("Lastfm: Playback now 'Playing'. Setting last_play_timestamp.");
+            track_data.last_play_timestamp = Some(SystemTime::now());
+            
+            // Update Now Playing as state changed to Playing for the current song
+            if let (Some(client), Some(name_str), Some(artists_vec)) =
+                (&self.lastfm_client, &track_data.name, &track_data.artists) {
+                if let Some(primary_artist) = artists_vec.first() {
+                     info!("Lastfm: Updating Now Playing for '{}' by '{}' due to StateChanged to Playing.", name_str, primary_artist);
+                    if self.config.scrobble { // Added self.config.scrobble check
+                        if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
+                            warn!("Lastfm: Failed to update Now Playing: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        
+        track_data.current_playback_state = *new_player_state;
+    }
 }
 
 impl Plugin for Lastfm {
@@ -462,9 +527,7 @@ impl ActionPlugin for Lastfm {
     fn initialize(&mut self, controller: Weak<AudioController>) {
         self.base.set_controller(controller);
         info!("Lastfm received controller reference."); // Updated log
-    }
-
-    fn on_event(&mut self, event: &PlayerEvent, _is_active_player: bool) {
+    }    fn on_event(&mut self, event: &PlayerEvent, _is_active_player: bool) {
         if !self.config.enabled {
             return;
         }
@@ -474,68 +537,7 @@ impl ActionPlugin for Lastfm {
                 self.handle_song_changed(song_event_opt, source);
             }
             PlayerEvent::StateChanged { state: new_player_state, source: event_source, .. } => { 
-                let mut track_data = self.current_track_data.lock().unwrap();
-
-                // If state changes, ensure player_source is consistent if a song is active
-                if track_data.song_details.is_some() && track_data.player_source.as_ref() != Some(event_source) {
-                    // This might happen if events are interleaved, or if a player changes its source ID
-                    // For now, let's update it if different and a song is active.
-                    // Or, we might decide that the source from SongChanged is authoritative for the current song.
-                    // For now, let's prioritize the source from SongChanged.
-                    // If track_data.player_source is None but song_details is Some, it's an inconsistent state.
-                    if track_data.player_source.is_none() {
-                         warn!("Lastfm: StateChanged for source {:?} while song {:?} is active but player_source was None. Updating to event_source.", event_source, track_data.name.as_deref());
-                         track_data.player_source = Some(event_source.clone());
-                    }
-                }
-
-
-                if track_data.name.is_none() {
-                    debug!("Lastfm: StateChanged event ({:?}) but no active song. Current internal state: {:?}", new_player_state, track_data.current_playback_state);
-                    if *new_player_state == PlaybackState::Stopped || *new_player_state == PlaybackState::Killed || *new_player_state == PlaybackState::Disconnected {
-                        track_data.current_playback_state = *new_player_state;
-                        track_data.last_play_timestamp = None; 
-                    }
-                    return;
-                }
-
-                let old_player_state = track_data.current_playback_state;
-                if old_player_state == *new_player_state {
-                    debug!("Lastfm: StateChanged event but state is the same ({:?}). No action.", new_player_state);
-                    return;
-                }
-
-                info!("Lastfm: StateChanged. Song: {:?}. Old state: {:?}, New state: {:?}.",
-                    track_data.name.as_deref().unwrap_or("N/A"),
-                    old_player_state,
-                    new_player_state);
-
-                if old_player_state == PlaybackState::Playing && *new_player_state != PlaybackState::Playing {
-                    if let Some(lpt) = track_data.last_play_timestamp {
-                        let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
-                        track_data.accumulated_play_duration_ms += played_ms;
-                        info!("Lastfm: Playback now '{:?}'. Added {}ms. Total accumulated: {}ms", new_player_state, played_ms, track_data.accumulated_play_duration_ms);
-                    }
-                    track_data.last_play_timestamp = None;
-                } else if old_player_state != PlaybackState::Playing && *new_player_state == PlaybackState::Playing {
-                    info!("Lastfm: Playback now 'Playing'. Setting last_play_timestamp.");
-                    track_data.last_play_timestamp = Some(SystemTime::now());
-                    
-                    // Update Now Playing as state changed to Playing for the current song
-                    if let (Some(client), Some(name_str), Some(artists_vec)) =
-                        (&self.lastfm_client, &track_data.name, &track_data.artists) {
-                        if let Some(primary_artist) = artists_vec.first() {
-                             info!("Lastfm: Updating Now Playing for '{}' by '{}' due to StateChanged to Playing.", name_str, primary_artist);
-                            if self.config.scrobble { // Added self.config.scrobble check
-                                if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
-                                    warn!("Lastfm: Failed to update Now Playing: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                track_data.current_playback_state = *new_player_state;
+                self.handle_state_changed(new_player_state, event_source);
             }
             _ => {
                 // Other events are ignored for now

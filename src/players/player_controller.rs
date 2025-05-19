@@ -485,17 +485,8 @@ impl BasePlayerController {
         debug!("Publishing loop mode change event to the global event bus");
         crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
         
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of loop mode change", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of loop mode change");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying loop mode change");
-        }
+        // do not notify listeners anymore
+        
     }    /// Notify all registered listeners that the random mode has changed
     pub fn notify_random_changed(&self, enabled: bool) {
         let player_name = self.get_player_name();
@@ -553,17 +544,8 @@ impl BasePlayerController {
         debug!("Publishing capabilities change event to the global event bus");
         crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
         
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of capabilities change", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of capabilities change");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying capabilities change");
-        }
+        // do not notify listeners anymore
+
     }    /// Notify all registered listeners that the player position has changed
     pub fn notify_position_changed(&self, position: f64) {
         let player_name = self.get_player_name();
@@ -583,17 +565,7 @@ impl BasePlayerController {
         debug!("Publishing position change event to the global event bus");
         crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
         
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of position change", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of position change");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying position change");
-        }
+        // do not notifiy listeners anymore
     }
 
     /// Create a PlayerSource object for the current player

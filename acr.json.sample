@@ -46,7 +46,7 @@
         "enable": true,
         "rate_limit_ms": 1000
     },    
-    "theartistdb": {
+    "theaudiodb": {
         "enable": true,
         "api_key": "", 
         "rate_limit_ms": 500

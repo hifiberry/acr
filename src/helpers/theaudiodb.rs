@@ -1,3 +1,4 @@
+// filepath: c:\Users\matuschd\devel\hifiberry-os\packages\acr\src\helpers\theaudiodb.rs
 use std::sync::atomic::{AtomicBool, Ordering};
 use log::{info, debug, warn, error};
 use lazy_static::lazy_static;
@@ -11,53 +12,53 @@ use crate::data::artist::Artist;
 use crate::helpers::artistupdater::ArtistUpdater;
 use crate::helpers::sanitize::filename_from_string;
 
-/// Global flag to indicate if TheArtistDB lookups are enabled
-static THEARTISTDB_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Global flag to indicate if TheAudioDB lookups are enabled
+static THEAUDIODB_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // Provider name for image naming
-const PROVIDER: &str = "artistdb";
+const PROVIDER: &str = "theaudiodb";
 
 /// Create a new HTTP client with a timeout of 10 seconds
 fn new_client() -> Box<dyn http_client::HttpClient> {
     http_client::new_http_client(10)
 }
 
-/// API key storage for TheArtistDB
+/// API key storage for TheAudioDB
 #[derive(Default)]
-struct TheArtistDBConfig {
+struct TheAudioDBConfig {
     api_key: String,
 }
 
 // Default API key from secrets.txt
 #[cfg(not(test))]
-pub fn default_artistdb_api_key() -> &'static str {
-    option_env!("ARTISTDB_APIKEY").unwrap_or("YOUR_API_KEY_HERE")
+pub fn default_theaudiodb_api_key() -> &'static str {
+    option_env!("THEAUDIODB_APIKEY").unwrap_or("YOUR_API_KEY_HERE")
 }
 
 #[cfg(test)]
-pub fn default_artistdb_api_key() -> &'static str {
+pub fn default_theaudiodb_api_key() -> &'static str {
     "test_api_key"
 }
 
-// Global singleton for TheArtistDB configuration
+// Global singleton for TheAudioDB configuration
 lazy_static! {
-    static ref THEARTISTDB_CONFIG: Mutex<TheArtistDBConfig> = Mutex::new(TheArtistDBConfig::default());
+    static ref THEAUDIODB_CONFIG: Mutex<TheAudioDBConfig> = Mutex::new(TheAudioDBConfig::default());
 }
 
-/// Initialize TheArtistDB module from configuration
+/// Initialize TheAudioDB module from configuration
 pub fn initialize_from_config(config: &serde_json::Value) {
-    if let Some(artistdb_config) = config.get("theartistdb") {
+    if let Some(audiodb_config) = config.get("theaudiodb") {
         // Check if enabled flag exists and is set to true
-        let enabled = artistdb_config.get("enable")
+        let enabled = audiodb_config.get("enable")
             .and_then(|v| v.as_bool())
             .unwrap_or(true); // Default to enabled if not specified
         
-        THEARTISTDB_ENABLED.store(enabled, Ordering::SeqCst);
+        THEAUDIODB_ENABLED.store(enabled, Ordering::SeqCst);
         
         // Get API key if provided
-        if let Some(api_key) = artistdb_config.get("api_key").and_then(|v| v.as_str()) {
-            if let Ok(mut config) = THEARTISTDB_CONFIG.lock() {
-                debug!("Found TheArtistDB API key in config: {}", 
+        if let Some(api_key) = audiodb_config.get("api_key").and_then(|v| v.as_str()) {
+            if let Ok(mut config) = THEAUDIODB_CONFIG.lock() {
+                debug!("Found TheAudioDB API key in config: {}", 
                        if !api_key.is_empty() && api_key.len() > 4 { 
                            format!("{}...", &api_key[0..4]) 
                        } else { 
@@ -66,11 +67,11 @@ pub fn initialize_from_config(config: &serde_json::Value) {
                 
                 config.api_key = api_key.to_string();
                 if !api_key.is_empty() {
-                    info!("TheArtistDB API key configured");
+                    info!("TheAudioDB API key configured");
                 } else {
                     // Try to load from the default key (secrets.txt)
-                    let default_key = default_artistdb_api_key();
-                    debug!("Trying default TheArtistDB API key: {}", 
+                    let default_key = default_theaudiodb_api_key();
+                    debug!("Trying default TheAudioDB API key: {}", 
                             if default_key != "YOUR_API_KEY_HERE" && default_key.len() > 4 { 
                                 format!("{}...", &default_key[0..4]) 
                             } else { 
@@ -78,50 +79,50 @@ pub fn initialize_from_config(config: &serde_json::Value) {
                             });
                     
                     if default_key != "YOUR_API_KEY_HERE" {
-                        info!("Using TheArtistDB API key from secrets.txt");
+                        info!("Using default TheAudioDB API key");
                     } else {
-                        warn!("Empty TheArtistDB API key provided");
+                        warn!("Empty TheAudioDB API key provided");
                     }
                 }
             } else {
-                error!("Failed to acquire lock on TheArtistDB configuration");
+                error!("Failed to acquire lock on TheAudioDB configuration");
             }
         } else {
-            warn!("No API key found for TheArtistDB in configuration");
+            warn!("No API key found for TheAudioDB in configuration");
         }
           // Register rate limit - default to 2 requests per second (500ms)
-        let rate_limit_ms = artistdb_config.get("rate_limit_ms")
+        let rate_limit_ms = audiodb_config.get("rate_limit_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(500);
             
-        ratelimit::register_service("theartistdb", rate_limit_ms);
-        info!("TheArtistDB rate limit set to {} ms", rate_limit_ms);
+        ratelimit::register_service("theaudiodb", rate_limit_ms);
+        info!("TheAudioDB rate limit set to {} ms", rate_limit_ms);
         
         let status = if enabled { "enabled" } else { "disabled" };
-        info!("TheArtistDB lookup {}", status);
+        info!("TheAudioDB lookup {}", status);
     } else {
         // Default to disabled if not in config
-        THEARTISTDB_ENABLED.store(false, Ordering::SeqCst);
-        debug!("TheArtistDB configuration not found, lookups disabled");
+        THEAUDIODB_ENABLED.store(false, Ordering::SeqCst);
+        debug!("TheAudioDB configuration not found, lookups disabled");
         
         // Register default rate limit even if disabled
-        ratelimit::register_service("theartistdb", 500);
+        ratelimit::register_service("theaudiodb", 500);
     }
 }
 
-/// Check if TheArtistDB lookups are enabled
+/// Check if TheAudioDB lookups are enabled
 pub fn is_enabled() -> bool {
-    THEARTISTDB_ENABLED.load(Ordering::SeqCst)
+    THEAUDIODB_ENABLED.load(Ordering::SeqCst)
 }
 
 /// Get the configured API key
 pub fn get_api_key() -> Option<String> {
-    if let Ok(config) = THEARTISTDB_CONFIG.lock() {
+    if let Ok(config) = THEAUDIODB_CONFIG.lock() {
         if config.api_key.is_empty() {            // If no API key is configured in acr.json, use the default from secrets.txt
-            let default_key = default_artistdb_api_key();
+            let default_key = default_theaudiodb_api_key();
             
             if default_key != "YOUR_API_KEY_HERE" {
-                info!("Using default secret for TheArtistDB");
+                info!("Using default secret for TheAudioDB");
                 return Some(default_key.to_string());
             }
             None
@@ -129,9 +130,9 @@ pub fn get_api_key() -> Option<String> {
             Some(config.api_key.clone())
         }
     } else {        // Fallback to default key if we can't acquire the lock
-        let default_key = default_artistdb_api_key();
+        let default_key = default_theaudiodb_api_key();
         if default_key != "YOUR_API_KEY_HERE" {
-            info!("Using default secret for TheArtistDB (fallback)");
+            info!("Using default secret for TheAudioDB (fallback)");
             Some(default_key.to_string())
         } else {
             None
@@ -139,30 +140,30 @@ pub fn get_api_key() -> Option<String> {
     }
 }
 
-/// Look up artist information from TheArtistDB by MusicBrainz ID
+/// Look up artist information from TheAudioDB by MusicBrainz ID
 /// 
 /// # Arguments
 /// * `mbid` - MusicBrainz ID of the artist to look up
 /// 
 /// # Returns
 /// * `Result<serde_json::Value, String>` - Artist information or error message
-pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> {
+pub fn lookup_theaudiodb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> {
     if !is_enabled() {
-        return Err("TheArtistDB lookups are disabled".to_string());
+        return Err("TheAudioDB lookups are disabled".to_string());
     }
     
     // Create cache keys for both positive and negative results
-    let cache_key = format!("theartistdb::mbid::{}", mbid);
-    let not_found_cache_key = format!("theartistdb::not_found::{}", mbid);
+    let cache_key = format!("theaudiodb::mbid::{}", mbid);
+    let not_found_cache_key = format!("theaudiodb::not_found::{}", mbid);
     
     // Check if we have a positive result cached
     match attributecache::get::<Value>(&cache_key) {
         Ok(Some(artist_data)) => {
-            debug!("Found cached TheArtistDB data for MBID {}", mbid);
+            debug!("Found cached TheAudioDB data for MBID {}", mbid);
             return Ok(artist_data);
         },
         Ok(None) => {
-            debug!("No cached TheArtistDB data found for MBID {}", mbid);
+            debug!("No cached TheAudioDB data found for MBID {}", mbid);
         },
         Err(e) => {
             debug!("Error reading from cache for MBID {}: {}", mbid, e);
@@ -183,15 +184,15 @@ pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> 
     let api_key = match get_api_key() {
         Some(key) => {
             if key.is_empty() {
-                return Err("No API key configured for TheArtistDB".to_string());
+                return Err("No API key configured for TheAudioDB".to_string());
             }
             key
         },
-        None => return Err("No API key configured for TheArtistDB".to_string()),
+        None => return Err("No API key configured for TheAudioDB".to_string()),
     };    debug!("Looking up artist with MBID {}", mbid);
     
     // Apply rate limiting before making the request
-    ratelimit::rate_limit("theartistdb");
+    ratelimit::rate_limit("theaudiodb");
     
     // Construct the API URL
     let url = format!(
@@ -204,10 +205,10 @@ pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> 
     let client = new_client();
     
     // Make the request
-    debug!("Making request to TheArtistDB API for MBID {}", mbid);
+    debug!("Making request to TheAudioDB API for MBID {}", mbid);
     let response_text = match client.get_text(&url) {
         Ok(text) => text,
-        Err(e) => return Err(format!("Failed to send request to TheArtistDB: {}", e)),
+        Err(e) => return Err(format!("Failed to send request to TheAudioDB: {}", e)),
     };
       // Parse the response as JSON
     match serde_json::from_str::<Value>(&response_text) {
@@ -217,7 +218,7 @@ pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> 
                 if artists.is_null() {
                     debug!("No artist data found for MBID {}", mbid);
                     // Cache negative result
-                    let not_found_cache_key = format!("theartistdb::not_found::{}", mbid);
+                    let not_found_cache_key = format!("theaudiodb::not_found::{}", mbid);
                     if let Err(e) = attributecache::set(&not_found_cache_key, &true) {
                         debug!("Failed to cache negative result for MBID {}: {}", mbid, e);
                     } else {
@@ -231,7 +232,7 @@ pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> 
                         0 => {
                             debug!("Empty artists array for MBID {}", mbid);
                             // Cache negative result
-                            let not_found_cache_key = format!("theartistdb::not_found::{}", mbid);
+                            let not_found_cache_key = format!("theaudiodb::not_found::{}", mbid);
                             if let Err(e) = attributecache::set(&not_found_cache_key, &true) {
                                 debug!("Failed to cache negative result for MBID {}: {}", mbid, e);
                             } else {
@@ -244,7 +245,7 @@ pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> 
                             let artist_data = artists_array[0].clone();
                             
                             // Cache the positive result
-                            let cache_key = format!("theartistdb::mbid::{}", mbid);
+                            let cache_key = format!("theaudiodb::mbid::{}", mbid);
                             if let Err(e) = attributecache::set(&cache_key, &artist_data) {
                                 debug!("Failed to cache artist data for MBID {}: {}", mbid, e);
                             } else {
@@ -260,23 +261,23 @@ pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> 
                         }
                     }
                 } else {
-                    debug!("Invalid artists field format from TheArtistDB");
-                    return Err("Invalid response format from TheArtistDB (artists is not an array)".to_string());
+                    debug!("Invalid artists field format from TheAudioDB");
+                    return Err("Invalid response format from TheAudioDB (artists is not an array)".to_string());
                 }
             } else {
-                debug!("Invalid response format from TheArtistDB (no artists field)");
-                return Err("Invalid response format from TheArtistDB (no artists field)".to_string());
+                debug!("Invalid response format from TheAudioDB (no artists field)");
+                return Err("Invalid response format from TheAudioDB (no artists field)".to_string());
             }
         },
-        Err(e) => Err(format!("Failed to parse TheArtistDB response: {}", e))
+        Err(e) => Err(format!("Failed to parse TheAudioDB response: {}", e))
     }
 }
 
-/// Download artist thumbnail from TheArtistDB
+/// Download artist thumbnail from TheAudioDB
 /// 
-/// This function downloads the artist thumbnail from TheArtistDB if available
+/// This function downloads the artist thumbnail from TheAudioDB if available
 /// and stores it in the image cache following the naming convention:
-/// - artist.artistdb.0.xxx for the main thumbnail
+/// - artist.theaudiodb.0.xxx for the main thumbnail
 /// 
 /// # Arguments
 /// * `mbid` - MusicBrainz ID of the artist
@@ -284,14 +285,14 @@ pub fn lookup_artistdb_by_mbid(mbid: &str) -> Result<serde_json::Value, String> 
 /// 
 /// # Returns
 /// * `bool` - true if the download was successful, false otherwise
-pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
+pub fn download_theaudiodb_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
     if !is_enabled() {
-        debug!("TheArtistDB lookups are disabled, skipping thumbnail download");
+        debug!("TheAudioDB lookups are disabled, skipping thumbnail download");
         return false;
     }
     
     // Create a cache key for tracking artists with no thumbnails
-    let no_thumbnail_cache_key = format!("theartistdb::no_thumbnail::{}", mbid);
+    let no_thumbnail_cache_key = format!("theaudiodb::no_thumbnail::{}", mbid);
     
     // Check if we previously determined this artist has no thumbnail
     match attributecache::get::<bool>(&no_thumbnail_cache_key) {
@@ -315,10 +316,10 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
         return true;
     }
 
-    debug!("Attempting to download TheArtistDB thumbnail for artist '{}'", artist_name);
+    debug!("Attempting to download TheAudioDB thumbnail for artist '{}'", artist_name);
 
     // Lookup the artist by MBID to get the thumbnail URL
-    match lookup_artistdb_by_mbid(mbid) {
+    match lookup_theaudiodb_by_mbid(mbid) {
         Ok(artist_data) => {
             // Extract the thumbnail URL from the response
             if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
@@ -340,22 +341,22 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
                             
                             // Store the image in the cache
                             if let Err(e) = imagecache::store_image(&full_path, &image_data) {
-                                warn!("Failed to store TheArtistDB thumbnail for '{}': {}", artist_name, e);
+                                warn!("Failed to store TheAudioDB thumbnail for '{}': {}", artist_name, e);
                                 return false;
                             } else {
-                                info!("Stored TheArtistDB thumbnail for '{}'", artist_name);
+                                info!("Stored TheAudioDB thumbnail for '{}'", artist_name);
                                 return true;
                             }
                         },                        Err(e) => {
-                            warn!("Failed to download TheArtistDB thumbnail for '{}': {}", artist_name, e);
+                            warn!("Failed to download TheAudioDB thumbnail for '{}': {}", artist_name, e);
                             // Don't cache this as a negative result since it might be a temporary network issue
                             return false;
                         }
                     }
                 } else {
-                    debug!("Empty thumbnail URL for artist '{}' in TheArtistDB", artist_name);
+                    debug!("Empty thumbnail URL for artist '{}' in TheAudioDB", artist_name);
                     // Cache this as a negative result
-                    let no_thumbnail_cache_key = format!("theartistdb::no_thumbnail::{}", mbid);
+                    let no_thumbnail_cache_key = format!("theaudiodb::no_thumbnail::{}", mbid);
                     if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
                         debug!("Failed to cache no thumbnail result for artist '{}': {}", artist_name, e);
                     } else {
@@ -364,9 +365,9 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
                     return false;
                 }
             } else {
-                debug!("No thumbnail URL found for artist '{}' in TheArtistDB", artist_name);
+                debug!("No thumbnail URL found for artist '{}' in TheAudioDB", artist_name);
                 // Cache this as a negative result
-                let no_thumbnail_cache_key = format!("theartistdb::no_thumbnail::{}", mbid);
+                let no_thumbnail_cache_key = format!("theaudiodb::no_thumbnail::{}", mbid);
                 if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
                     debug!("Failed to cache no thumbnail result for artist '{}': {}", artist_name, e);
                 } else {
@@ -376,26 +377,26 @@ pub fn download_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
             }
         },
         Err(e) => {
-            debug!("Failed to retrieve artist data from TheArtistDB for '{}': {}", artist_name, e);
-            // This error is likely already cached as a negative result in lookup_artistdb_by_mbid
+            debug!("Failed to retrieve artist data from TheAudioDB for '{}': {}", artist_name, e);
+            // This error is likely already cached as a negative result in lookup_theaudiodb_by_mbid
             return false;
         }
     }
 }
 
-/// Implement the ArtistUpdater trait for TheArtistDB
-pub struct TheArtistDbUpdater;
+/// Implement the ArtistUpdater trait for TheAudioDB
+pub struct TheAudioDbUpdater;
 
-impl TheArtistDbUpdater {
+impl TheAudioDbUpdater {
     pub fn new() -> Self {
-        TheArtistDbUpdater
+        TheAudioDbUpdater
     }
 }
 
-impl ArtistUpdater for TheArtistDbUpdater {
-    /// Updates artist information using TheArtistDB service
+impl ArtistUpdater for TheAudioDbUpdater {
+    /// Updates artist information using TheAudioDB service
     /// 
-    /// This function fetches artist information from TheArtistDB using the MusicBrainz ID
+    /// This function fetches artist information from TheAudioDB using the MusicBrainz ID
     /// from the artist's metadata and updates the artist with thumbnail URLs and other
     /// available metadata.
     /// 
@@ -403,11 +404,11 @@ impl ArtistUpdater for TheArtistDbUpdater {
     /// * `artist` - The artist to update
     /// 
     /// # Returns
-    /// The updated artist with information from TheArtistDB
+    /// The updated artist with information from TheAudioDB
     fn update_artist(&self, mut artist: Artist) -> Artist {
-        // Check if TheArtistDB lookups are enabled
+        // Check if TheAudioDB lookups are enabled
         if !is_enabled() {
-            debug!("TheArtistDB lookups are disabled, skipping artist {}", artist.name);
+            debug!("TheAudioDB lookups are disabled, skipping artist {}", artist.name);
             return artist;
         }
         
@@ -418,10 +419,10 @@ impl ArtistUpdater for TheArtistDbUpdater {
         
         // Proceed only if a MusicBrainz ID is available
         if let Some(mbid) = mbid_opt {
-            debug!("Looking up artist information in TheArtistDB for {} with MBID {}", artist.name, mbid);
+            debug!("Looking up artist information in TheAudioDB for {} with MBID {}", artist.name, mbid);
             
             // Check if we already know this artist has no thumbnail
-            let no_thumbnail_cache_key = format!("theartistdb::no_thumbnail::{}", mbid);
+            let no_thumbnail_cache_key = format!("theaudiodb::no_thumbnail::{}", mbid);
             match attributecache::get::<bool>(&no_thumbnail_cache_key) {
                 Ok(Some(true)) => {
                     debug!("Artist '{}' previously marked as having no thumbnail in cache, skipping", artist.name);
@@ -433,9 +434,9 @@ impl ArtistUpdater for TheArtistDbUpdater {
             }
             
             // Lookup artist by MBID
-            match lookup_artistdb_by_mbid(&mbid) {
+            match lookup_theaudiodb_by_mbid(&mbid) {
                 Ok(artist_data) => {
-                    debug!("Successfully retrieved artist data from TheArtistDB for {}", artist.name);
+                    debug!("Successfully retrieved artist data from TheAudioDB for {}", artist.name);
                     
                     // Extract the artist thumbnail URL
                     if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
@@ -450,17 +451,17 @@ impl ArtistUpdater for TheArtistDbUpdater {
                             // Add the thumbnail URL to the artist metadata
                             if let Some(meta) = &mut artist.metadata {
                                 meta.thumb_url.push(thumb_url.to_string());
-                                info!("Added TheArtistDB thumbnail URL for artist {}", artist.name);
+                                info!("Added TheAudioDB thumbnail URL for artist {}", artist.name);
                             }
                             
                             // Download and cache the thumbnail
-                            if download_artist_thumbnail(&mbid, &artist.name) {
+                            if download_theaudiodb_artist_thumbnail(&mbid, &artist.name) {
                                 debug!("Successfully downloaded and cached thumbnail for artist {}", artist.name);
                             } else {
                                 debug!("Failed to download thumbnail for artist {}", artist.name);
                             }
                         } else {
-                            debug!("Empty thumbnail URL from TheArtistDB for artist {}", artist.name);
+                            debug!("Empty thumbnail URL from TheAudioDB for artist {}", artist.name);
                             // Cache that this artist has no thumbnail
                             if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
                                 debug!("Failed to cache no thumbnail result for artist '{}': {}", artist.name, e);
@@ -469,7 +470,7 @@ impl ArtistUpdater for TheArtistDbUpdater {
                             }
                         }
                     } else {
-                        debug!("No thumbnail available from TheArtistDB for artist {}", artist.name);
+                        debug!("No thumbnail available from TheAudioDB for artist {}", artist.name);
                         // Cache that this artist has no thumbnail
                         if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
                             debug!("Failed to cache no thumbnail result for artist '{}': {}", artist.name, e);
@@ -483,7 +484,7 @@ impl ArtistUpdater for TheArtistDbUpdater {
                         if !biography.is_empty() {
                             if let Some(meta) = &mut artist.metadata {
                                 meta.biography = Some(biography.to_string());
-                                debug!("Added biography from TheArtistDB for artist {}", artist.name);
+                                debug!("Added biography from TheAudioDB for artist {}", artist.name);
                             }
                         }
                     }
@@ -493,21 +494,20 @@ impl ArtistUpdater for TheArtistDbUpdater {
                         if !genre.is_empty() {
                             if let Some(meta) = &mut artist.metadata {
                                 meta.genres.push(genre.to_string());
-                                debug!("Added genre '{}' from TheArtistDB for artist {}", genre, artist.name);
+                                debug!("Added genre '{}' from TheAudioDB for artist {}", genre, artist.name);
                             }
                         }
                     }
                 },
                 Err(e) => {
-                    info!("Failed to retrieve artist data from TheArtistDB for {} with MBID {}: {}", artist.name, mbid, e);
-                    // This error is likely already cached as a negative result in lookup_artistdb_by_mbid
+                    info!("Failed to retrieve artist data from TheAudioDB for {} with MBID {}: {}", artist.name, mbid, e);
+                    // This error is likely already cached as a negative result in lookup_theaudiodb_by_mbid
                 }
             }
         } else {
-            debug!("No MusicBrainz ID available for artist {}, skipping TheArtistDB lookup", artist.name);
+            debug!("No MusicBrainz ID available for artist {}, skipping TheAudioDB lookup", artist.name);
         }
         
         artist
     }
 }
-

@@ -4,7 +4,7 @@ use acr::api::server;
 use acr::helpers::attributecache::AttributeCache;
 use acr::helpers::imagecache::ImageCache;
 use acr::helpers::musicbrainz;
-use acr::helpers::theartistdb;
+use acr::helpers::theaudiodb;
 use acr::helpers::lastfm;
 use acr::helpers::security_store::SecurityStore;
 // Import LMS modules to ensure they're included in the build
@@ -156,8 +156,8 @@ fn main() {
       // Initialize MusicBrainz with the configuration
     initialize_musicbrainz(&controllers_config);
 
-    // Initialize TheArtistDB with the configuration
-    initialize_theartistdb(&controllers_config);
+    // Initialize TheAudioDB with the configuration
+    initialize_theaudiodb(&controllers_config);
     
     // Initialize Last.fm with the configuration
     initialize_lastfm(&controllers_config);
@@ -283,10 +283,10 @@ fn initialize_musicbrainz(config: &serde_json::Value) {
     info!("MusicBrainz initialized successfully");
 }
 
-// Helper function to initialize TheArtistDB
-fn initialize_theartistdb(config: &serde_json::Value) {
-    theartistdb::initialize_from_config(config);
-    info!("TheArtistDB initialized successfully");
+// Helper function to initialize TheAudioDB
+fn initialize_theaudiodb(config: &serde_json::Value) {
+    theaudiodb::initialize_from_config(config);
+    info!("TheAudioDB initialized successfully");
 }
 
 // Helper function to initialize Last.fm

@@ -276,20 +276,31 @@ impl LastfmClient {
         );
         
         Ok((auth_url, token)) // Return the auth_url and the token itself
-    }
-
-    pub fn disconnect(&mut self) -> Result<(), String> { // Made synchronous
-        debug!("Disconnecting Last.fm client: clearing session key and username.");
+    }    pub fn disconnect(&mut self) -> Result<(), String> {
+        debug!("Disconnecting Last.fm client: clearing session key and username from memory and secure store.");
+        
+        // Clear in-memory credentials
         self.credentials.session_key = None;
         self.credentials.username = None;
+        self.credentials.auth_token = None;
+        self.credentials.token_created = None;
         
-        // store_credentials_to_store logs its own errors and does not return a Result.
-        // It attempts to save the cleared session/username.
-        self.store_credentials_to_store(); 
+        // Remove credentials from secure store
+        if let Err(e) = SecurityStore::remove(LASTFM_SESSION_KEY_STORE) {
+            debug!("Error removing Last.fm session key from security store: {}", e);
+            // Continue with disconnect even if removal fails
+        } else {
+            debug!("Successfully removed Last.fm session key from security store");
+        }
         
-        // Assuming the primary goal of disconnect (clearing in-memory credentials) is achieved.
-        // The success/failure of persisting this cleared state is handled by store_credentials_to_store logging.
-        debug!("In-memory Last.fm credentials cleared. Persistence of this state attempted.");
+        if let Err(e) = SecurityStore::remove(LASTFM_USERNAME_STORE) {
+            debug!("Error removing Last.fm username from security store: {}", e);
+            // Continue with disconnect even if removal fails
+        } else {
+            debug!("Successfully removed Last.fm username from security store");
+        }
+        
+        debug!("Last.fm credentials cleared from memory and secure store.");
         Ok(())
     }
 

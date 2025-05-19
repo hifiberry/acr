@@ -105,12 +105,6 @@ fn lastfm_worker(
                     info!("LastFMWorker: Attempting to get track info for '{}' by '{}'", title, artist);
                     match client.get_track_info(artist, title) {
                         Ok(track_info_details) => {
-                            warn!("LastFMWorker: Track Info Details: {:?}", track_info_details);
-                            // song_details_ref is an immutable reference here.
-                            // We need to apply updates to track_data.song_details which is mutable after re-locking or by passing it.
-                            // For now, let's assume calculate_updates will be called with a clone or reference
-                            // and the result will update track_data.song_details.
-
                             if let (Some(current_song_details), Some(current_player_source)) = 
                                 (&track_data.song_details, &track_data.player_source) {
                                 

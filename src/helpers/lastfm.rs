@@ -276,7 +276,9 @@ impl LastfmClient {
         );
         
         Ok((auth_url, token)) // Return the auth_url and the token itself
-    }    pub fn disconnect(&mut self) -> Result<(), String> {
+    }    
+    
+    pub fn disconnect(&mut self) -> Result<(), String> {
         debug!("Disconnecting Last.fm client: clearing session key and username from memory and secure store.");
         
         // Clear in-memory credentials

@@ -2,7 +2,6 @@ use crate::players::PlayerController;
 use crate::players::PlayerStateListener;
 use crate::data::{PlayerCommand, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerEvent, PlayerSource, Track};
 use crate::players::{create_player_from_json, PlayerCreationError};
-use crate::plugins::EventFilter;
 use crate::plugins::ActionPlugin;
 use serde_json::Value;
 use std::sync::{Arc, RwLock, Weak, Mutex, Once};
@@ -25,9 +24,6 @@ pub struct AudioController {
     
     /// List of state listeners registered with this controller
     listeners: Arc<RwLock<Vec<Weak<dyn PlayerStateListener>>>>,
-    
-    /// List of event filters for incoming events
-    event_filters: Arc<RwLock<Vec<Box<dyn EventFilter + Send + Sync>>>>,
     
     /// List of action plugins that respond to events
     action_plugins: Arc<RwLock<Vec<Box<dyn ActionPlugin + Send + Sync>>>>,
@@ -235,27 +231,10 @@ impl PlayerStateListener for AudioController {
             PlayerEvent::DatabaseUpdating { source, .. } |
             PlayerEvent::QueueChanged { source } => {
                 self.is_active_player(&source.player_name, &source.player_id)
-            }
-        };
+            }        };
 
-        // Pass the event through all filters
-        let mut filtered_event = Some(event);
-        if let Ok(filters) = self.event_filters.read() {
-            for filter in filters.iter() {
-                if let Some(current_event) = filtered_event {
-                    filtered_event = filter.filter_event(current_event, is_active);
-                    if filtered_event.is_none() {
-                        debug!("Event was filtered out by {}", filter.name());
-                        break;  // Event was filtered out, stop processing
-                    }
-                }
-            }
-        }
-
-        // Process the filtered event
-        if let Some(filtered_event) = filtered_event {
-            self.process_filtered_event(filtered_event, is_active);
-        }
+        // Process the event directly (without filtering)
+        self.process_event(event, is_active);
     }
     
     fn as_any(&self) -> &dyn Any {
@@ -263,14 +242,12 @@ impl PlayerStateListener for AudioController {
     }
 }
 
-impl AudioController {
-    /// Create a new AudioController with no controllers
+impl AudioController {    /// Create a new AudioController with no controllers
     pub fn new() -> Self {
         Self {
             controllers: Vec::new(),
             active_index: Arc::new(RwLock::new(0)),
             listeners: Arc::new(RwLock::new(Vec::new())),
-            event_filters: Arc::new(RwLock::new(Vec::new())),
             action_plugins: Arc::new(RwLock::new(Vec::new())),
             self_ref: Arc::new(RwLock::new(None)),
         }
@@ -510,13 +487,10 @@ impl AudioController {
         }
         
         success_count
-    }
-
-    /// Create a new AudioController from a JSON array of player configurations
+    }    /// Create a new AudioController from a JSON array of player configurations
     /// 
     /// The JSON configuration can include:
     /// - "players": Array of player configurations
-    /// - "event_filters": Array of event filter configurations
     /// - "action_plugins": Array of action plugin configurations
     /// 
     /// Player configurations can include an "enable" flag which, if set to false,
@@ -586,38 +560,6 @@ impl AudioController {
                         error!("Failed to create player {}: {}", idx, e);
                         return Err(e);
                     }
-                }
-            }
-        }
-        
-        // Process event filter configurations if present
-        if let Some(filters_config) = config.get("event_filters").and_then(|v| v.as_array()) {
-            debug!("Creating event filters from JSON array with {} elements", filters_config.len());
-            
-            let factory = crate::plugins::plugin_factory::PluginFactory::new();
-            
-            for (idx, filter_config) in filters_config.iter().enumerate() {
-                // Check if this filter is enabled
-                if let Some(enabled) = filter_config.get("enabled").and_then(Value::as_bool) {
-                    if !enabled {
-                        debug!("Skipping disabled event filter at index {}", idx);
-                        continue;
-                    }
-                }
-                
-                // Convert the filter config to a string for the factory
-                if let Ok(json_str) = serde_json::to_string(filter_config) {
-                    match factory.create_event_filter_from_json(&json_str) {
-                        Some(filter) => {
-                            debug!("Successfully created event filter {} from JSON configuration", idx);
-                            controller_ref.add_event_filter(filter);
-                        },
-                        None => {
-                            warn!("Failed to create event filter {} from JSON, skipping", idx);
-                        }
-                    }
-                } else {
-                    warn!("Failed to serialize filter configuration to JSON string, skipping filter {}", idx);
                 }
             }
         }
@@ -876,71 +818,7 @@ impl AudioController {
         } else {
             warn!("Failed to acquire write lock when pruning dead listeners");
         }
-    }
-
-    /// Add an event filter to the controller
-    /// Returns the index of the added filter
-    pub fn add_event_filter(&mut self, filter: Box<dyn EventFilter + Send + Sync>) -> usize {
-        if let Ok(mut filters) = self.event_filters.write() {
-            filters.push(filter);
-            debug!("Added event filter at index {}", filters.len() - 1);
-            return filters.len() - 1;
-        } else {
-            error!("Failed to acquire write lock for event_filters");
-            0
-        }
-    }
-
-    /// Remove an event filter by index
-    /// Returns true if the filter was successfully removed
-    pub fn remove_event_filter(&mut self, index: usize) -> bool {
-        if let Ok(mut filters) = self.event_filters.write() {
-            if index < filters.len() {
-                filters.remove(index);
-                debug!("Removed event filter at index {}", index);
-                return true;
-            }
-            false
-        } else {
-            error!("Failed to acquire write lock for event_filters");
-            false
-        }
-    }
-
-    /// Get the number of event filters
-    pub fn event_filter_count(&self) -> usize {
-        if let Ok(filters) = self.event_filters.read() {
-            filters.len()
-        } else {
-            0
-        }
-    }
-
-    /// Clear all event filters
-    pub fn clear_event_filters(&mut self) -> usize {
-        if let Ok(mut filters) = self.event_filters.write() {
-            let count = filters.len();
-            filters.clear();
-            debug!("Cleared {} event filters", count);
-            count
-        } else {
-            error!("Failed to acquire write lock for event_filters");
-            0
-        }
-    }
-
-    /// Add multiple event filters from a vector
-    pub fn add_event_filters(&mut self, mut filters: Vec<Box<dyn EventFilter + Send + Sync>>) -> usize {
-        if let Ok(mut existing_filters) = self.event_filters.write() {
-            let count = filters.len();
-            existing_filters.append(&mut filters);
-            debug!("Added {} event filters", count);
-            count
-        } else {
-            error!("Failed to acquire write lock for event_filters");
-            0
-        }
-    }
+    }    // Event filter methods removed as part of EventBus migration
 
     /// Add an action plugin to the controller
     /// Returns the index of the added plugin
@@ -1025,10 +903,8 @@ impl AudioController {
                 plugin.on_event(event, is_active_player);
             }
         }
-    }
-
-    /// Process a filtered event
-    fn process_filtered_event(&self, event: PlayerEvent, is_active: bool) {
+    }    /// Process an event
+    fn process_event(&self, event: PlayerEvent, is_active: bool) {
         // First pass the event to all action plugins
         self.process_event_with_action_plugins(&event, is_active);
         
@@ -1122,11 +998,9 @@ impl AudioController {
                 }
             },
         }
-    }
-
-    /// Returns a default JSON configuration for AudioController with all available players and plugins
+    }    /// Returns a default JSON configuration for AudioController with all available players and plugins
     ///
-    /// This function uses the default player configuration and adds event filters and action plugins,
+    /// This function uses the default player configuration and adds action plugins,
     /// providing a complete configuration for initializing a new project.
     ///
     /// # Returns
@@ -1141,11 +1015,6 @@ impl AudioController {
         let players_value: serde_json::Value = serde_json::from_str(&players_str)
             .unwrap_or_else(|_| serde_json::json!([]));
             
-        // Get the default event filters configuration as a JSON Value
-        let filters_str = PluginFactory::sample_json_config();
-        let filters_value: serde_json::Value = serde_json::from_str(&filters_str)
-            .unwrap_or_else(|_| serde_json::json!([]));
-            
         // Get the default action plugins configuration as a JSON Value
         let plugins_str = PluginFactory::sample_action_plugins_config();
         let plugins_value: serde_json::Value = serde_json::from_str(&plugins_str)
@@ -1154,7 +1023,6 @@ impl AudioController {
         // Create the complete AudioController configuration
         let config = serde_json::json!({
             "players": players_value,
-            "event_filters": filters_value,
             "action_plugins": plugins_value
         });
         
@@ -1212,18 +1080,10 @@ impl AudioController {
         }
         
         println!("===================");
-    }
-
-    /// Get information about all registered event filters
+    }    /// Get information about all registered event filters
     pub fn get_event_filter_info(&self) -> Vec<(String, String)> {
-        if let Ok(filters) = self.event_filters.read() {
-            filters.iter()
-                .map(|filter| (filter.name().to_string(), filter.version().to_string()))
-                .collect()
-        } else {
-            error!("Failed to acquire read lock for event_filters");
-            Vec::new()
-        }
+        // Event filters have been removed, return empty vector
+        Vec::new()
     }
 
     /// Get information about all registered action plugins

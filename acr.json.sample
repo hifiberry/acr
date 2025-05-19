@@ -28,15 +28,6 @@
             }
         }
     ],
-    "event_filters": [
-        // Example: if you had a specific event filter to configure
-        // {
-        //   "your-event-filter-name": {
-        //     "enabled": true,
-        //     "some_config": "value"
-        //   }
-        // }
-    ],
     "webserver": {
         "enable": true,
         "host": "0.0.0.0",

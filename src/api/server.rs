@@ -79,11 +79,9 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         players::get_now_playing,
         players::get_player_queue,
         players::get_player_metadata,      
-        players::get_player_metadata_key,   
-        
+        players::get_player_metadata_key,        
         // Plugin routes
         plugins::list_action_plugins,
-        plugins::list_event_filters,
         
         // Library routes
         library::list_libraries,

@@ -1,5 +1,4 @@
 use crate::players::PlayerController;
-use crate::players::PlayerStateListener;
 use crate::data::{PlayerCommand, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerEvent, PlayerSource, Track};
 use crate::players::{create_player_from_json, PlayerCreationError};
 use crate::plugins::ActionPlugin;
@@ -23,10 +22,7 @@ pub struct AudioController {
     /// Index of the active player controller in the list
     active_index: Arc<RwLock<usize>>,
     
-    /// List of state listeners registered with this controller
-    listeners: Arc<RwLock<Vec<Weak<dyn PlayerStateListener>>>>,
-    
-    /// List of action plugins that respond to events
+    /// List of action plugins
     action_plugins: Arc<RwLock<Vec<Box<dyn ActionPlugin + Send + Sync>>>>,
     
     /// Self-reference for registering with players
@@ -147,25 +143,6 @@ impl PlayerController for AudioController {
         false // Return false if no active controller
     }
     
-    fn register_state_listener(&mut self, listener: Weak<dyn crate::players::PlayerStateListener>) -> bool {
-        if let Ok(mut listeners) = self.listeners.write() {
-            listeners.push(listener);
-            true
-        } else {
-            false
-        }
-    }
-    
-    fn unregister_state_listener(&mut self, listener: &Arc<dyn crate::players::PlayerStateListener>) -> bool {
-        if let Ok(mut listeners) = self.listeners.write() {
-            let original_len = listeners.len();
-            listeners.retain(|weak_ref| weak_ref.upgrade().map_or(false, |l| !Arc::ptr_eq(&l, listener)));
-            original_len != listeners.len()
-        } else {
-            false
-        }
-    }
-    
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -218,40 +195,12 @@ impl PlayerController for AudioController {
     }
 }
 
-// Implement PlayerStateListener for AudioController
-impl PlayerStateListener for AudioController {
-    fn on_event(&self, event: PlayerEvent) {        // Determine if this event is from the active player
-        let is_active = match &event {
-            PlayerEvent::SongChanged { source, .. } |
-            PlayerEvent::StateChanged { source, .. } |
-            PlayerEvent::LoopModeChanged { source, .. } |
-            PlayerEvent::RandomChanged { source, .. } |
-            PlayerEvent::CapabilitiesChanged { source, .. } |
-            PlayerEvent::PositionChanged { source, .. } |
-            PlayerEvent::DatabaseUpdating { source, .. } |
-            PlayerEvent::QueueChanged { source, .. } |
-            PlayerEvent::SongInformationUpdate { source, .. } |
-            PlayerEvent::ActivePlayerChanged { source, .. } => {
-                self.is_active_player(&source.player_name, &source.player_id)
-            }
-        };
-
-        // Process the event directly (without filtering)
-        self.process_event(event, is_active);
-    }
-    
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl AudioController {
     /// Create a new AudioController with no controllers
     pub fn new() -> Self {
         Self {
             controllers: Vec::new(),
             active_index: Arc::new(RwLock::new(0)),
-            listeners: Arc::new(RwLock::new(Vec::new())),
             action_plugins: Arc::new(RwLock::new(Vec::new())),
             self_ref: Arc::new(RwLock::new(None)),
         }
@@ -333,7 +282,7 @@ impl AudioController {
         // Check if we have a self reference for listener registration
         let self_weak = if let Ok(self_ref) = self.self_ref.read() {
             if let Some(weak_ref) = self_ref.as_ref() {
-                weak_ref.clone() as Weak<dyn PlayerStateListener>
+                weak_ref.clone() as Weak<dyn PlayerController + Send + Sync>
             } else {
                 // Continue without registering as listener
                 let controller = controller;
@@ -366,14 +315,6 @@ impl AudioController {
             
             return self.controllers.len() - 1;
         };
-        
-        // Register self as listener
-        let mut controller = controller;
-        if controller.register_state_listener(self_weak) {
-            debug!("AudioController registered as listener to player");
-        } else {
-            warn!("Failed to register AudioController as listener to player");
-        }
         
         // Wrap in Arc+RwLock and store
         let controller = Arc::new(RwLock::new(controller));
@@ -625,214 +566,6 @@ impl AudioController {
         false
     }
     
-    /// Forward state changed event to all registered listeners
-    fn forward_state_changed(&self, player_name: String, player_id: String, state: PlaybackState) {
-        // Prune dead listeners
-        self.prune_dead_listeners();
-        
-        let source = PlayerSource::new(player_name, player_id);
-        
-        let event = PlayerEvent::StateChanged {
-            source,
-            state,
-        };
-        
-        // Forward the event to all active listeners
-        if let Ok(listeners) = self.listeners.read() {
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when forwarding state change");
-        }
-    }
-    
-    /// Forward song changed event to all registered listeners
-    fn forward_song_changed(&self, player_name: String, player_id: String, song: Option<Song>) {
-        // Prune dead listeners
-        self.prune_dead_listeners();
-        
-        let source = PlayerSource::new(player_name, player_id);
-        
-        let event = PlayerEvent::SongChanged {
-            source,
-            song,
-        };
-        
-        // Forward the event to all active listeners
-        if let Ok(listeners) = self.listeners.read() {
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when forwarding song change");
-        }
-    }
-    
-    /// Forward loop mode changed event to all registered listeners
-    fn forward_loop_mode_changed(&self, player_name: String, player_id: String, mode: LoopMode) {
-        // Prune dead listeners
-        self.prune_dead_listeners();
-        
-        let source = PlayerSource::new(player_name, player_id);
-        
-        let event = PlayerEvent::LoopModeChanged {
-            source,
-            mode,
-        };
-        
-        // Forward the event to all active listeners
-        if let Ok(listeners) = self.listeners.read() {
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when forwarding loop mode change");
-        }
-    }
-    
-    /// Forward capabilities changed event to all registered listeners
-    fn forward_capabilities_changed(&self, player_name: String, player_id: String, capabilities: PlayerCapabilitySet) {
-        // Prune dead listeners
-        self.prune_dead_listeners();
-        
-        let source = PlayerSource::new(player_name, player_id);
-        
-        let event = PlayerEvent::CapabilitiesChanged {
-            source,
-            capabilities,
-        };
-        
-        // Forward the event to all active listeners
-        if let Ok(listeners) = self.listeners.read() {
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when forwarding capabilities change");
-        }
-    }
-    
-    /// Forward position changed event to all registered listeners
-    fn forward_position_changed(&self, player_name: String, player_id: String, position: f64) {
-        // Prune dead listeners
-        self.prune_dead_listeners();
-        
-        let source = PlayerSource::new(player_name, player_id);
-        
-        let event = PlayerEvent::PositionChanged {
-            source,
-            position,
-        };
-        
-        // Forward the event to all active listeners
-        if let Ok(listeners) = self.listeners.read() {
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when forwarding position change");
-        }
-    }
-    
-    /// Forward database update event to all registered listeners
-    fn forward_database_update(&self, player_name: String, player_id: String, 
-                             artist: Option<String>, album: Option<String>, 
-                             song: Option<String>, percentage: Option<f32>) {
-        // Prune dead listeners
-        self.prune_dead_listeners();
-        
-        let source = PlayerSource::new(player_name, player_id);
-        
-        let event = PlayerEvent::DatabaseUpdating {
-            source,
-            artist,
-            album,
-            song,
-            percentage,
-        };
-        
-        // Forward the event to all active listeners
-        if let Ok(listeners) = self.listeners.read() {
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when forwarding database update");
-        }
-    }
-
-    /// Forward queue changed event to all registered listeners
-    fn forward_queue_changed(&self, player_name: String, player_id: String) {
-        // Prune dead listeners
-        self.prune_dead_listeners();
-
-        let source = PlayerSource::new(player_name, player_id);
-
-        let event = PlayerEvent::QueueChanged { source };
-
-        // Forward the event to all active listeners
-        if let Ok(listeners) = self.listeners.read() {
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when forwarding queue change");
-        }
-    }
-
-    /// Forward random mode changed event to all registered listeners
-    fn forward_random_changed(&self, player_name: String, player_id: String, enabled: bool) {
-        // Prune dead listeners
-        self.prune_dead_listeners();
-
-        let source = PlayerSource::new(player_name, player_id);
-
-        let event = PlayerEvent::RandomChanged {
-            source,
-            enabled,
-        };
-
-        // Forward the event to all active listeners
-        if let Ok(listeners) = self.listeners.read() {
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when forwarding random mode change");
-        }
-    }
-
-    /// Remove any dead (dropped) listeners
-    fn prune_dead_listeners(&self) {
-        if let Ok(mut listeners) = self.listeners.write() {
-            let original_len = listeners.len();
-            listeners.retain(|weak_ref| weak_ref.upgrade().is_some());
-            let removed = original_len - listeners.len();
-            if removed > 0 {
-                debug!("Pruned {} dead listeners, remaining: {}", removed, listeners.len());
-            }
-        } else {
-            warn!("Failed to acquire write lock when pruning dead listeners");
-        }
-    }    
-
     /// Add an action plugin to the controller
     /// Returns the index of the added plugin
     pub fn add_action_plugin(&mut self, mut plugin: Box<dyn ActionPlugin + Send + Sync>) -> usize {
@@ -907,170 +640,12 @@ impl AudioController {
         
         debug!("Added {} action plugins", count);
         count
-    }
-
-    /// Process an event with all registered action plugins
-    fn process_event_with_action_plugins(&self, event: &PlayerEvent, is_active_player: bool) {
-        if let Ok(mut plugins) = self.action_plugins.write() {
-            for plugin in plugins.iter_mut() {
-                plugin.on_event(event, is_active_player);
-            }
-        }
-    }    /// Process an event
+    }    
+    
+    /// Process an event
     fn process_event(&self, event: PlayerEvent, is_active: bool) {
-        // First pass the event to all action plugins
-        self.process_event_with_action_plugins(&event, is_active);
-          // Then handle the event as before
-        match event {
-            PlayerEvent::StateChanged { source, state } => {
-                // Check if the event is from the active player
-                if is_active {
-                    debug!("AudioController forwarding state change from active player {}: {}", source.player_id, state);
-                    self.forward_state_changed(source.player_name, source.player_id, state);
-                } else {
-                    debug!("AudioController ignoring state change from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::SongChanged { source, song } => {
-                // Check if the event is from the active player
-                if is_active {
-                    let song_title = song.as_ref().map_or("None".to_string(), |s| s.title.as_deref().unwrap_or("Unknown").to_string());
-                    debug!("AudioController forwarding song change from active player {}: {}", source.player_id, song_title);
-                    self.forward_song_changed(source.player_name, source.player_id, song);
-                } else {
-                    debug!("AudioController ignoring song change from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::LoopModeChanged { source, mode } => {
-                // Check if the event is from the active player
-                if is_active {
-                    debug!("AudioController forwarding loop mode change from active player {}: {}", source.player_id, mode);
-                    self.forward_loop_mode_changed(source.player_name, source.player_id, mode);
-                } else {
-                    debug!("AudioController ignoring loop mode change from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::CapabilitiesChanged { source, capabilities } => {
-                // Check if the event is from the active player
-                if is_active {
-                    debug!("AudioController forwarding capabilities change from active player {}", source.player_id);
-                    self.forward_capabilities_changed(source.player_name, source.player_id, capabilities);
-                } else {
-                    debug!("AudioController ignoring capabilities change from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::PositionChanged { source, position } => {
-                // Check if the event is from the active player
-                if is_active {
-                    debug!("AudioController forwarding position change from active player {}: {:.1}s", source.player_id, position);
-                    self.forward_position_changed(source.player_name, source.player_id, position);
-                } else {
-                    debug!("AudioController ignoring position change from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::DatabaseUpdating { source, artist, album, song, percentage } => {
-                // Forward database update events to listeners if they're from the active player
-                if is_active {
-                    let progress_str = percentage.map_or(String::new(), |p| format!(" ({:.1}%)", p));
-                    let details = match (artist.as_deref(), album.as_deref(), song.as_deref()) {
-                        (Some(a), Some(b), Some(s)) => format!("artist: {}, album: {}, song: {}", a, b, s),
-                        (Some(a), Some(b), None) => format!("artist: {}, album: {}", a, b),
-                        (Some(a), None, None) => format!("artist: {}", a),
-                        (None, Some(b), None) => format!("album: {}", b),
-                        (None, None, Some(s)) => format!("song: {}", s),
-                        _ => "database".to_string(),
-                    };
-                    debug!("AudioController forwarding database update from active player {}: {}{}", 
-                           source.player_id, details, progress_str);
-                    self.forward_database_update(source.player_name, source.player_id, artist, album, song, percentage);
-                } else {
-                    debug!("AudioController ignoring database update from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::QueueChanged { source } => {
-                // Check if the event is from the active player
-                if is_active {
-                    debug!("AudioController forwarding queue change from active player {}", source.player_id);
-                    // Forward the queue changed event
-                    self.forward_queue_changed(source.player_name, source.player_id);
-                } else {
-                    debug!("AudioController ignoring queue change from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::RandomChanged { source, enabled } => {
-                // Check if the event is from the active player
-                if is_active {
-                    debug!("AudioController forwarding random mode change from active player {}: {}", 
-                           source.player_id, if enabled { "enabled" } else { "disabled" });
-                    
-                    // Forward the event to listeners
-                    self.forward_random_changed(source.player_name, source.player_id, enabled);
-                } else {
-                    debug!("AudioController ignoring random mode change from inactive player {}", source.player_id);
-                }
-            },
-            PlayerEvent::SongInformationUpdate { source, song } => {
-                warn!("SongInformationUpdate should not be handled by old system anymore")
-            },
-            PlayerEvent::ActivePlayerChanged { source, player_id } => {
-                debug!("AudioController received active player changed event: {} -> {}", source, player_id);
-                // Handle the active player changed event
-                // No specific action needed for now as this is already handled by the event bus
-            }
-        }
-    }    // sample_json_config method removed as it's no longer used
-
-    /// Display the state of all players to the console
-    pub fn display_all_player_states(&self) {
-        println!("\n=== Player States ===");
-        
-        if self.controllers.is_empty() {
-            println!("No players registered.");
-            return;
-        }
-        
-        let active_idx_value = if let Ok(active_idx) = self.active_index.read() {
-            *active_idx
-        } else {
-            0
-        };
-        
-        for (idx, controller) in self.controllers.iter().enumerate() {
-            if let Ok(player) = controller.read() {
-                let is_active = idx == active_idx_value;
-                let active_marker = if is_active { "* " } else { "  " };
-                
-                println!("{}[{}] {}: {}", 
-                    active_marker,
-                    idx,
-                    player.get_player_name(),
-                    player.get_player_id());
-                
-                println!("    State: {}", player.get_playback_state());
-                
-                if let Some(song) = player.get_song() {
-                    let title = song.title.unwrap_or_else(|| "Unknown".to_string());
-                    let artist = song.artist.unwrap_or_else(|| "Unknown".to_string());
-                    let album = song.album.unwrap_or_else(|| "Unknown".to_string());
-                    
-                    println!("    Now playing: {} by {} ({})", title, artist, album);
-                } else {
-                    println!("    No song currently playing");
-                }
-                
-                println!("    Loop mode: {}", player.get_loop_mode());
-                println!("    Shuffle: {}", if player.get_shuffle() { "On" } else { "Off" });
-                
-                let capabilities = player.get_capabilities();
-                println!("    Capabilities: {}", capabilities);
-                
-                println!();
-            } else {
-                println!("  [{}] <Unable to access player>", idx);
-            }
-        }
-        
-        println!("===================");
+        // Then handle the event as before
+        // TODO: handle state changes to find active player
     }    
 
     /// Get information about all registered action plugins

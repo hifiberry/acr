@@ -1,4 +1,4 @@
-use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
+use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::players::librespot::event_pipe_reader::EventPipeReader;
 use crate::data::stream_details::StreamDetails;
@@ -15,7 +15,7 @@ use lazy_static::lazy_static;
 /// Librespot player controller implementation
 /// This controller interfaces with Spotify/librespot event pipes
 pub struct LibrespotPlayerController {
-    /// Base controller for managing state listeners
+    /// Base controller
     base: BasePlayerController,
     
     /// Event pipe source path/URL
@@ -317,8 +317,6 @@ impl LibrespotPlayerController {
 impl PlayerController for LibrespotPlayerController {
     delegate! {
         to self.base {
-            fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
-            fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
             fn get_capabilities(&self) -> PlayerCapabilitySet;
             fn get_last_seen(&self) -> Option<std::time::SystemTime>;
         }

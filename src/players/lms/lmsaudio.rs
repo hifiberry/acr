@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::data::{LoopMode, PlaybackState, PlayerCapabilitySet, PlayerCapability, PlayerCommand, Song, Track};
-use crate::PlayerStateListener;
 use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::players::lms::jsonrps::LmsRpcClient;
@@ -1165,14 +1164,6 @@ impl PlayerController for LMSAudioController {
                 false
             }
         }
-    }
-    
-    fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool {
-        self.base.register_state_listener(listener)
-    }
-    
-    fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool {
-        self.base.unregister_state_listener(listener)
     }
     
     fn as_any(&self) -> &dyn Any {

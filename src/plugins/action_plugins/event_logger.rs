@@ -462,10 +462,14 @@ impl ActionPlugin for EventLogger {
         self.base.set_controller(controller);
     }
 
-    fn on_event(&mut self, _event: &PlayerEvent, _is_active_player: bool) {
-        // This method is kept for compatibility with the ActionPlugin trait
-        // But we're not using it anymore since we're receiving events from the event bus
-        // log::trace!("on_event called, but EventLogger is using event bus directly now");
+    fn start(&mut self) -> bool {
+        log::debug!("EventLogger starting");
+        true
+    }
+    
+    fn stop(&mut self) -> bool {
+        log::debug!("EventLogger stopping");
+        true
     }
 }
 

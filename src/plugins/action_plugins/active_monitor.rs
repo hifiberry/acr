@@ -179,10 +179,14 @@ impl ActionPlugin for ActiveMonitor {
         debug!("ActiveMonitor initialized with AudioController reference");
     }
     
-    fn on_event(&mut self, _event: &PlayerEvent, _is_active_player: bool) {
-        // This method is kept empty for compatibility with the ActionPlugin trait
-        // We're now using the event bus directly instead of this callback
-        // trace!("on_event called, but ActiveMonitor is using event bus directly now");
+    fn start(&mut self) -> bool {
+        debug!("ActiveMonitor starting");
+        true
+    }
+    
+    fn stop(&mut self) -> bool {
+        debug!("ActiveMonitor stopping");
+        true
     }
 }
 

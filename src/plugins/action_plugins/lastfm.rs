@@ -626,10 +626,15 @@ impl ActionPlugin for Lastfm {
         self.base.set_controller(controller);
         info!("Lastfm received controller reference."); // Updated log
     }    
-      fn on_event(&mut self, _event: &PlayerEvent, _is_active_player: bool) {
-        // This method is kept empty for compatibility with the ActionPlugin trait
-        // We're now using the event bus directly instead of this callback
-        // trace!("on_event called, but Lastfm is using event bus directly now");
+    
+    fn start(&mut self) -> bool {
+        info!("Lastfm starting");
+        true
+    }
+    
+    fn stop(&mut self) -> bool {
+        info!("Lastfm stopping");
+        true
     }
 }
 

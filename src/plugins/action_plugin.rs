@@ -11,10 +11,14 @@ pub trait ActionPlugin: Plugin {
     /// Initialize the plugin with a reference to the AudioController
     /// This allows the plugin to interact with the AudioController
     fn initialize(&mut self, controller: Weak<AudioController>);
-
-    /// Called when a player event is received
-    /// Unlike EventFilter, this cannot filter events - it just receives them
-    fn on_event(&mut self, event: &PlayerEvent, is_active_player: bool);
+    
+    /// Start the plugin functionality
+    /// This is called after initialization and should set up any event listeners or workers
+    fn start(&mut self) -> bool;
+    
+    /// Stop the plugin functionality
+    /// This is called before shutdown and should clean up any event listeners or workers
+    fn stop(&mut self) -> bool;
 }
 
 /// Base implementation for ActionPlugin
@@ -71,5 +75,22 @@ impl Plugin for BaseActionPlugin {
     
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+impl ActionPlugin for BaseActionPlugin {
+    fn initialize(&mut self, controller: Weak<AudioController>) {
+        self.controller = Some(controller);
+        log::debug!("BaseActionPlugin '{}' initialized with controller", self.name);
+    }
+    
+    fn start(&mut self) -> bool {
+        log::debug!("BaseActionPlugin '{}' started", self.name);
+        true
+    }
+    
+    fn stop(&mut self) -> bool {
+        log::debug!("BaseActionPlugin '{}' stopped", self.name);
+        true
     }
 }

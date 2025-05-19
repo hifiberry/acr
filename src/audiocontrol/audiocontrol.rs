@@ -505,7 +505,7 @@ impl AudioController {    /// Create a new AudioController with no controllers
         // Initialize the self-reference
         AudioController::initialize(&controller);
         
-        // Get a mutable reference to add players and filters
+        // Get a mutable reference to add players
         let controller_ref = unsafe { &mut *(Arc::as_ptr(&controller) as *mut AudioController) };
         
         // Process player configurations if present
@@ -819,7 +819,7 @@ impl AudioController {    /// Create a new AudioController with no controllers
         } else {
             warn!("Failed to acquire write lock when pruning dead listeners");
         }
-    }    // Event filter methods removed as part of EventBus migration
+    }    
 
     /// Add an action plugin to the controller
     /// Returns the index of the added plugin
@@ -1052,11 +1052,7 @@ impl AudioController {    /// Create a new AudioController with no controllers
         }
         
         println!("===================");
-    }    /// Get information about all registered event filters
-    pub fn get_event_filter_info(&self) -> Vec<(String, String)> {
-        // Event filters have been removed, return empty vector
-        Vec::new()
-    }
+    }    
 
     /// Get information about all registered action plugins
     pub fn get_action_plugin_info(&self) -> Vec<(String, String)> {

@@ -57,6 +57,8 @@ async-trait = "0.1.77"
 ureq = "2.9"
 # For event bus messaging
 event-bus = "0.1.0" # Corrected version
+# For concurrent data structures and channels
+crossbeam = "0.8.2"
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]

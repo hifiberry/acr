@@ -60,6 +60,10 @@ event-bus = "0.1.0" # Corrected version
 # For concurrent data structures and channels
 crossbeam = "0.8.2"
 
+[features]
+default = []
+theaudiodb = []
+
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
 named_pipe = "0.4"

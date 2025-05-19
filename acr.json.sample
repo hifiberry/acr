@@ -14,7 +14,8 @@
                     "loop",
                     "capabilities",
                     "position",
-                    "song_information_update"
+                    "song_information_update",
+                    "state_changed"
                 ],
                 "log_level": "info",
                 "only_active": false

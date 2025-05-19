@@ -182,57 +182,66 @@ fn lastfm_worker(
 
                     if effective_elapsed_seconds >= u64::from(*length_val).saturating_mul(50) / 100 || effective_elapsed_seconds >= scrobble_point_time_secs {
                         
-                        if let Some(primary_artist) = artists.first() {
-                            let scrobble_timestamp = match actual_started_time.duration_since(SystemTime::UNIX_EPOCH) { // Used actual_started_time
-                                Ok(duration) => duration.as_secs(),
-                                Err(e) => {
-                                    error!(
-                                        "LastFMWorker: Failed to calculate timestamp for scrobbling (SystemTime error: {}). Using current time as fallback.",
-                                        e
-                                    );
-                                    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
-                                }
-                            };
+                        if client.is_authenticated() { // Check if client is authenticated before scrobbling
+                            if let Some(primary_artist) = artists.first() {
+                                let scrobble_timestamp = match actual_started_time.duration_since(SystemTime::UNIX_EPOCH) { // Used actual_started_time
+                                    Ok(duration) => duration.as_secs(),
+                                    Err(e) => {
+                                        error!(
+                                            "LastFMWorker: Failed to calculate timestamp for scrobbling (SystemTime error: {}). Using current time as fallback.",
+                                            e
+                                        );
+                                        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
+                                    }
+                                };
 
-                            debug!(
-                                "LastFMWorker: Attempting to scrobble '{}' by '{}'. Played: {}s. Timestamp: {}",
-                                name,
-                                primary_artist,
-                                effective_elapsed_seconds,
-                                scrobble_timestamp
-                            );
+                                debug!(
+                                    "LastFMWorker: Attempting to scrobble '{}' by '{}'. Played: {}s. Timestamp: {}",
+                                    name,
+                                    primary_artist,
+                                    effective_elapsed_seconds,
+                                    scrobble_timestamp
+                                );
 
-                            match client.scrobble(
-                                primary_artist.as_str(),
-                                name.as_str(),      // name is &String
-                                None,               // Album not tracked yet
-                                None,               // Album artist not tracked yet
-                                scrobble_timestamp,
-                                None,               // Track number not tracked
-                                Some(*length_val),  // length_val is &u32
-                            ) {
-                                Ok(_) => {
-                                    info!(
-                                        "LastFMWorker: Successfully scrobbled '{}' by '{}'",
-                                        name,
-                                        primary_artist
-                                    );
-                                    track_data.scrobbled_song = true;
+                                match client.scrobble(
+                                    primary_artist.as_str(),
+                                    name.as_str(),      // name is &String
+                                    None,               // Album not tracked yet
+                                    None,               // Album artist not tracked yet
+                                    scrobble_timestamp,
+                                    None,               // Track number not tracked
+                                    Some(*length_val),  // length_val is &u32
+                                ) {
+                                    Ok(_) => {
+                                        info!(
+                                            "LastFMWorker: Successfully scrobbled '{}' by '{}'",
+                                            name,
+                                            primary_artist
+                                        );
+                                        track_data.scrobbled_song = true;
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "LastFMWorker: Failed to scrobble '{}' by '{}': {}",
+                                            name,
+                                            primary_artist,
+                                            e
+                                        );
+                                        // Keep scrobbled_song = false to allow retry on next tick
+                                    }
                                 }
-                                Err(e) => {
-                                    error!(
-                                        "LastFMWorker: Failed to scrobble '{}' by '{}': {}",
-                                        name,
-                                        primary_artist,
-                                        e
-                                    );
-                                    // Keep scrobbled_song = false to allow retry on next tick
-                                }
+                            } else {
+                                warn!("LastFMWorker: Cannot scrobble '{}', artist information is missing or empty.", name);
+                                // Mark as scrobbled to avoid retries if artist will never be available for this track
+                                track_data.scrobbled_song = true; // Or handle differently
                             }
                         } else {
-                            warn!("LastFMWorker: Cannot scrobble '{}', artist information is missing or empty.", name);
-                            // Potentially mark as scrobbled to avoid retries if artist will never be available for this track
-                            // track_data.scrobbled_song = true; // Or handle differently
+                            debug!(
+                                "LastFMWorker: Scrobble attempt for '{}' by '{}' skipped: Last.fm client not authenticated.",
+                                name,
+                                artists_str
+                            );
+                            track_data.scrobbled_song = true; // Mark as scrobbled to avoid retries
                         }
                     }
                 }
@@ -414,7 +423,7 @@ impl ActionPlugin for Lastfm {
                              if let (Some(client), Some(name_str), Some(artists_vec)) =
                                 (&self.lastfm_client, &track_data.name, &track_data.artists) {
                                 if let Some(primary_artist) = artists_vec.first() {
-                                    info!("Lastfm: Updating Now Playing for \\'{}\\' by \\'{}\\' due to SongChanged.", name_str, primary_artist);
+                                    info!("Lastfm: Updating Now Playing for '{}' by '{}' due to SongChanged.", name_str, primary_artist);
                                     if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
                                         warn!("Lastfm: Failed to update Now Playing: {}", e);
                                     }
@@ -429,7 +438,7 @@ impl ActionPlugin for Lastfm {
                         if track_data.current_playback_state == PlaybackState::Playing {
                             if let Some(lpt) = track_data.last_play_timestamp {
                                 let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
-                                debug!("Lastfm: Added {}ms from final segment of \'{:?}\'. Total for song: {}ms", 
+                                debug!("Lastfm: Added {}ms from final segment of '{:?}'. Total for song: {}ms", 
                                        played_ms, track_data.name.as_deref(), track_data.accumulated_play_duration_ms + played_ms);
                             }
                         }
@@ -475,7 +484,7 @@ impl ActionPlugin for Lastfm {
                     if let (Some(client), Some(name_str), Some(artists_vec)) =
                         (&self.lastfm_client, &track_data.name, &track_data.artists) {
                         if let Some(primary_artist) = artists_vec.first() {
-                             info!("Lastfm: Updating Now Playing for \'{}\' by \'{}\' due to StateChanged to Playing.", name_str, primary_artist);
+                             info!("Lastfm: Updating Now Playing for '{}' by '{}' due to StateChanged to Playing.", name_str, primary_artist);
                             if self.config.scrobble { // Added self.config.scrobble check
                                 if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
                                     warn!("Lastfm: Failed to update Now Playing: {}", e);

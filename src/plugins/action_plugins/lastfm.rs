@@ -9,13 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering}; // Added
 use crate::audiocontrol::AudioController;
 use crate::data::PlayerEvent;
 use crate::data::Song; // Added import for Song struct
-use crate::helpers::lastfm::LastfmClient;
+use crate::helpers::lastfm::{LastfmClient, LastfmTrackInfoDetails}; // Added LastfmTrackInfoDetails
 use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
 use crate::plugins::plugin::Plugin;
 use log::{debug, error, info, warn};
 use serde::Deserialize;
 use crate::data::PlaybackState;
 use crate::players::PlayerController; // Added for get_playback_state
+use crate::data::PlayerSource; // Added PlayerSource
+use std::collections::HashMap; // For song metadata in calculate_updates
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct LastfmConfig {
@@ -52,6 +54,7 @@ struct CurrentScrobbleTrack {
     accumulated_play_duration_ms: u64, // Total milliseconds played for this song
     song_details: Option<Song>, // Added to store the full Song object
     track_info_fetched: bool, // Added to track if get_track_info has been called
+    player_source: Option<PlayerSource>, // Added to store the source of the song
 }
 
 impl Default for CurrentScrobbleTrack {
@@ -67,6 +70,7 @@ impl Default for CurrentScrobbleTrack {
             accumulated_play_duration_ms: 0,
             song_details: None, // Initialize new field
             track_info_fetched: false, // Initialize new field
+            player_source: None, // Initialize new field
         }
     }
 }
@@ -78,6 +82,7 @@ fn lastfm_worker(
     client: LastfmClient,
     worker_running: Arc<AtomicBool>, // Added
     scrobble_enabled: bool, // Added
+    // TODO: Consider passing audiocontrol_tx here if needed for sending events
 ) {
     info!(
         "Lastfm background worker started for plugin: {}. Client available: {}. Scrobbling enabled: {}",
@@ -94,13 +99,33 @@ fn lastfm_worker(
         let mut track_data = track_data_arc.lock().unwrap();
 
         // Fetch track info if new song and not yet fetched
-        if let Some(song) = &track_data.song_details {
+        if let Some(song_details_ref) = &track_data.song_details {
             if !track_data.track_info_fetched && client.is_authenticated() {
-                if let (Some(title), Some(artist)) = (&song.title, &song.artist) {
+                if let (Some(title), Some(artist)) = (&song_details_ref.title, &song_details_ref.artist) {
                     info!("LastFMWorker: Attempting to get track info for '{}' by '{}'", title, artist);
                     match client.get_track_info(artist, title) {
                         Ok(track_info_details) => {
                             warn!("LastFMWorker: Track Info Details: {:?}", track_info_details);
+                            // song_details_ref is an immutable reference here.
+                            // We need to apply updates to track_data.song_details which is mutable after re-locking or by passing it.
+                            // For now, let's assume calculate_updates will be called with a clone or reference
+                            // and the result will update track_data.song_details.
+
+                            if let (Some(current_song_details), Some(current_player_source)) = 
+                                (&track_data.song_details, &track_data.player_source) {
+                                
+                                let updated_song = calculate_updates(current_song_details, &track_info_details);                                let event = PlayerEvent::SongInformationUpdate { 
+                                    source: current_player_source.clone(), 
+                                    song: updated_song.clone() 
+                                };
+                                debug!("LastFMWorker: Publishing SongInformationUpdate to event bus");
+                                crate::audiocontrol::eventbus::EventBus::instance().publish(event);
+                                
+                                // Update the stored song details with the enriched version
+                                track_data.song_details = Some(updated_song);
+                            } else {
+                                warn!("LastFMWorker: song_details or player_source became None unexpectedly before update.");
+                            }
                         }
                         Err(e) => {
                             warn!("LastFMWorker: Failed to get track info for '{} - {}': {:?}", title, artist, e);
@@ -108,9 +133,7 @@ fn lastfm_worker(
                     }
                     track_data.track_info_fetched = true;
                 } else {
-                    // This case should ideally not happen if song_details is Some and populated correctly
-                    warn!("LastFMWorker: Cannot get track info, title or artist missing from stored song details. Title: {:?}, Artist: {:?}, Fetched Flag: {}", song.title, song.artist, track_data.track_info_fetched);
-                    // Mark as fetched to avoid retrying if data is persistently missing for this song object
+                    warn!("LastFMWorker: Cannot get track info, title or artist missing from stored song details. Title: {:?}, Artist: {:?}, Fetched Flag: {}", song_details_ref.title, song_details_ref.artist, track_data.track_info_fetched);
                     track_data.track_info_fetched = true; 
                 }
             }
@@ -369,7 +392,7 @@ impl ActionPlugin for Lastfm {
         }
 
         match event {
-            PlayerEvent::SongChanged { song: song_event_opt, .. } => { 
+            PlayerEvent::SongChanged { song: song_event_opt, source, .. } => { 
                 let mut track_data = self.current_track_data.lock().unwrap();
                 
                 if let Some(song_event) = song_event_opt { 
@@ -399,6 +422,7 @@ impl ActionPlugin for Lastfm {
                         track_data.scrobbled_song = false; 
                         track_data.accumulated_play_duration_ms = 0;
                         track_data.song_details = Some(song_event.clone()); // Store the full Song object
+                        track_data.player_source = Some(source.clone()); // Store the PlayerSource
                         track_data.track_info_fetched = false; // Reset flag for new song
 
                         if was_playing_before_change {
@@ -408,13 +432,14 @@ impl ActionPlugin for Lastfm {
                         }
                         
                         info!(
-                            "Lastfm: Song changed. New: {:?}-{:?} ({:?})s. Play counters reset. Assumed playing: {}. Stored song details.",
+                            "Lastfm: Song changed. New: {:?}-{:?} ({:?})s. Source: {:?}. Play counters reset. Assumed playing: {}. Stored song details.",
                             track_data.name.as_deref().unwrap_or("N/A"), 
                             track_data.artists.as_ref().map_or_else(
                                 || "N/A".to_string(), 
                                 |a_vec| a_vec.join(", ")
                             ), 
                             track_data.length.map_or_else(|| "N/A".to_string(), |l| l.to_string()),
+                            track_data.player_source, // Log the source
                             was_playing_before_change
                         );
 
@@ -442,12 +467,30 @@ impl ActionPlugin for Lastfm {
                                        played_ms, track_data.name.as_deref(), track_data.accumulated_play_duration_ms + played_ms);
                             }
                         }
-                        *track_data = CurrentScrobbleTrack::default(); // This will also clear song_details
+                        let current_state = track_data.current_playback_state; // Preserve current playback state
+                        *track_data = CurrentScrobbleTrack::default(); 
+                        track_data.current_playback_state = current_state; // Restore playback state
+                        // player_source is now None due to default()
+                        info!("Lastfm: Track data cleared. Player source is now None.");
                     }
                 }
             }
-            PlayerEvent::StateChanged { state: new_player_state, .. } => { 
+            PlayerEvent::StateChanged { state: new_player_state, source: event_source, .. } => { 
                 let mut track_data = self.current_track_data.lock().unwrap();
+
+                // If state changes, ensure player_source is consistent if a song is active
+                if track_data.song_details.is_some() && track_data.player_source.as_ref() != Some(event_source) {
+                    // This might happen if events are interleaved, or if a player changes its source ID
+                    // For now, let's update it if different and a song is active.
+                    // Or, we might decide that the source from SongChanged is authoritative for the current song.
+                    // For now, let's prioritize the source from SongChanged.
+                    // If track_data.player_source is None but song_details is Some, it's an inconsistent state.
+                    if track_data.player_source.is_none() {
+                         warn!("Lastfm: StateChanged for source {:?} while song {:?} is active but player_source was None. Updating to event_source.", event_source, track_data.name.as_deref());
+                         track_data.player_source = Some(event_source.clone());
+                    }
+                }
+
 
                 if track_data.name.is_none() {
                     debug!("Lastfm: StateChanged event ({:?}) but no active song. Current internal state: {:?}", new_player_state, track_data.current_playback_state);
@@ -501,4 +544,54 @@ impl ActionPlugin for Lastfm {
             }
         }
     }
+}
+
+// Add the calculate_updates function definition here
+// It should be outside any impl blocks, typically as a free function in the module.
+
+fn calculate_updates(original_song: &Song, lastfm_data: &LastfmTrackInfoDetails) -> Song {
+    let mut updated_song = original_song.clone();
+
+    // 1. Update cover_art_url
+    if updated_song.cover_art_url.is_none() {
+        if let Some(album_info) = &lastfm_data.album {
+            if let Some(extralarge_image) = album_info.image.iter().find(|img| img.size == "extralarge") {
+                if !extralarge_image.url.is_empty() {
+                    updated_song.cover_art_url = Some(extralarge_image.url.clone());
+                    info!("calculate_updates: Updated cover_art_url to {}", extralarge_image.url);
+                }
+            }
+        }
+    }
+
+    // 2. Update liked field
+    if updated_song.liked.is_none() {
+        // lastfm_data.userloved is a bool. We can directly assign it.
+        // Assuming if userloved is true, it's liked. If false, it's not necessarily "disliked" but "not loved".
+        // For simplicity, we'll map true to Some(true). If it's false, we might leave it as None or set to Some(false).
+        // The task asks to set it based on userloved. So if userloved is true, liked = Some(true).
+        // If userloved is false, should liked be Some(false) or remain None?
+        // Let's assume if userloved is true, it's a positive signal. If false, it's neutral from Last.fm's perspective for "liked".
+        // The user prompt says "set it based on lastfm_data.userloved".
+        // If lastfm_data.userloved is true, song.liked becomes Some(true).
+        // If lastfm_data.userloved is false, song.liked could become Some(false) or stay None.
+        // Let's set it to Some(lastfm_data.userloved) to directly reflect the Last.fm data.
+        updated_song.liked = Some(lastfm_data.userloved);
+        info!("calculate_updates: Updated liked to {:?}", updated_song.liked);
+    }
+
+    // 3. Add lastfm_playcount metadata
+    if let Some(user_playcount_val) = &lastfm_data.user_playcount {
+        if !user_playcount_val.is_empty() {
+            // updated_song.metadata is already a HashMap (cloned from original_song or default)
+            updated_song.metadata.insert("lastfm_playcount".to_string(), serde_json::Value::String(user_playcount_val.clone()));
+            info!("calculate_updates: Added/Updated lastfm_playcount to {}", user_playcount_val);
+        } else {
+            info!("calculate_updates: user_playcount from Last.fm is present but empty, not adding metadata.");
+        }
+    } else {
+        info!("calculate_updates: user_playcount from Last.fm is None, not adding metadata.");
+    }
+    
+    updated_song
 }

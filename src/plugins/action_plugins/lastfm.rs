@@ -285,6 +285,90 @@ impl Lastfm {
             worker_running: Arc::new(AtomicBool::new(true)), // Initialize worker_running
         }
     }
+    
+    /// Handle a song changed event
+    fn handle_song_changed(&mut self, song_event_opt: &Option<Song>, source: &PlayerSource) {
+        let mut track_data = self.current_track_data.lock().unwrap();
+        
+        if let Some(song_event) = song_event_opt { 
+            let new_name = song_event.title.clone(); 
+            let new_artists_vec = song_event.artist.clone().map(|a| vec![a]); 
+            let new_length = song_event.duration.map(|d| d.round() as u32);
+
+            let is_different_song = track_data.name != new_name ||
+                                    track_data.artists != new_artists_vec ||
+                                    track_data.length != new_length;
+
+            if is_different_song {
+                let mut was_playing_before_change = false;
+                if track_data.current_playback_state == PlaybackState::Playing {
+                    if let Some(lpt) = track_data.last_play_timestamp {
+                        let old_song_final_segment_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
+                        track_data.accumulated_play_duration_ms += old_song_final_segment_ms;
+                        debug!("Lastfm: Old song ('{:?}') final segment {}ms. Total for old song: {}ms", track_data.name.as_deref(), old_song_final_segment_ms, track_data.accumulated_play_duration_ms);
+                    }
+                    was_playing_before_change = true;
+                }
+                
+                track_data.name = new_name;
+                track_data.artists = new_artists_vec;
+                track_data.length = new_length;
+                track_data.started_timestamp = Some(SystemTime::now());
+                track_data.scrobbled_song = false; 
+                track_data.accumulated_play_duration_ms = 0;
+                track_data.song_details = Some(song_event.clone()); // Store the full Song object
+                track_data.player_source = Some(source.clone()); // Store the PlayerSource
+                track_data.track_info_fetched = false; // Reset flag for new song
+
+                if was_playing_before_change {
+                    track_data.last_play_timestamp = Some(SystemTime::now());
+                } else {
+                    track_data.last_play_timestamp = None;
+                }
+                
+                info!(
+                    "Lastfm: Song changed. New: {:?}-{:?} ({:?})s. Source: {:?}. Play counters reset. Assumed playing: {}. Stored song details.",
+                    track_data.name.as_deref().unwrap_or("N/A"), 
+                    track_data.artists.as_ref().map_or_else(
+                        || "N/A".to_string(), 
+                        |a_vec| a_vec.join(", ")
+                    ), 
+                    track_data.length.map_or_else(|| "N/A".to_string(), |l| l.to_string()),
+                    track_data.player_source, // Log the source
+                    was_playing_before_change
+                );
+
+                // Update Now Playing if the song changed and is now considered playing
+                if (track_data.current_playback_state == PlaybackState::Playing || was_playing_before_change) && self.config.scrobble {
+                     if let (Some(client), Some(name_str), Some(artists_vec)) =
+                        (&self.lastfm_client, &track_data.name, &track_data.artists) {
+                        if let Some(primary_artist) = artists_vec.first() {
+                            info!("Lastfm: Updating Now Playing for '{}' by '{}' due to SongChanged.", name_str, primary_artist);
+                            if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
+                                warn!("Lastfm: Failed to update Now Playing: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+        } else { // song_event_opt is None
+            if track_data.name.is_some() { 
+                info!("Lastfm: Song changed to None (playback stopped), clearing track data.");
+                if track_data.current_playback_state == PlaybackState::Playing {
+                    if let Some(lpt) = track_data.last_play_timestamp {
+                        let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
+                        debug!("Lastfm: Added {}ms from final segment of '{:?}'. Total for song: {}ms", 
+                               played_ms, track_data.name.as_deref(), track_data.accumulated_play_duration_ms + played_ms);
+                    }
+                }
+                let current_state = track_data.current_playback_state; // Preserve current playback state
+                *track_data = CurrentScrobbleTrack::default(); 
+                track_data.current_playback_state = current_state; // Restore playback state
+                // player_source is now None due to default()
+                info!("Lastfm: Track data cleared. Player source is now None.");
+            }
+        }
+    }
 }
 
 impl Plugin for Lastfm {
@@ -387,87 +471,7 @@ impl ActionPlugin for Lastfm {
 
         match event {
             PlayerEvent::SongChanged { song: song_event_opt, source, .. } => { 
-                let mut track_data = self.current_track_data.lock().unwrap();
-                
-                if let Some(song_event) = song_event_opt { 
-                    let new_name = song_event.title.clone(); 
-                    let new_artists_vec = song_event.artist.clone().map(|a| vec![a]); 
-                    let new_length = song_event.duration.map(|d| d.round() as u32);
-
-                    let is_different_song = track_data.name != new_name ||
-                                            track_data.artists != new_artists_vec ||
-                                            track_data.length != new_length;
-
-                    if is_different_song {
-                        let mut was_playing_before_change = false;
-                        if track_data.current_playback_state == PlaybackState::Playing {
-                            if let Some(lpt) = track_data.last_play_timestamp {
-                                let old_song_final_segment_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
-                                track_data.accumulated_play_duration_ms += old_song_final_segment_ms;
-                                debug!("Lastfm: Old song ('{:?}') final segment {}ms. Total for old song: {}ms", track_data.name.as_deref(), old_song_final_segment_ms, track_data.accumulated_play_duration_ms);
-                            }
-                            was_playing_before_change = true;
-                        }
-                        
-                        track_data.name = new_name;
-                        track_data.artists = new_artists_vec;
-                        track_data.length = new_length;
-                        track_data.started_timestamp = Some(SystemTime::now());
-                        track_data.scrobbled_song = false; 
-                        track_data.accumulated_play_duration_ms = 0;
-                        track_data.song_details = Some(song_event.clone()); // Store the full Song object
-                        track_data.player_source = Some(source.clone()); // Store the PlayerSource
-                        track_data.track_info_fetched = false; // Reset flag for new song
-
-                        if was_playing_before_change {
-                            track_data.last_play_timestamp = Some(SystemTime::now());
-                        } else {
-                            track_data.last_play_timestamp = None;
-                        }
-                        
-                        info!(
-                            "Lastfm: Song changed. New: {:?}-{:?} ({:?})s. Source: {:?}. Play counters reset. Assumed playing: {}. Stored song details.",
-                            track_data.name.as_deref().unwrap_or("N/A"), 
-                            track_data.artists.as_ref().map_or_else(
-                                || "N/A".to_string(), 
-                                |a_vec| a_vec.join(", ")
-                            ), 
-                            track_data.length.map_or_else(|| "N/A".to_string(), |l| l.to_string()),
-                            track_data.player_source, // Log the source
-                            was_playing_before_change
-                        );
-
-                        // Update Now Playing if the song changed and is now considered playing
-                        if (track_data.current_playback_state == PlaybackState::Playing || was_playing_before_change) && self.config.scrobble {
-                             if let (Some(client), Some(name_str), Some(artists_vec)) =
-                                (&self.lastfm_client, &track_data.name, &track_data.artists) {
-                                if let Some(primary_artist) = artists_vec.first() {
-                                    info!("Lastfm: Updating Now Playing for '{}' by '{}' due to SongChanged.", name_str, primary_artist);
-                                    if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
-                                        warn!("Lastfm: Failed to update Now Playing: {}", e);
-                                    }
-                                }
-                            }
-                        }
-
-                    }
-                } else { // song_event_opt is None
-                    if track_data.name.is_some() { 
-                        info!("Lastfm: Song changed to None (playback stopped), clearing track data.");
-                        if track_data.current_playback_state == PlaybackState::Playing {
-                            if let Some(lpt) = track_data.last_play_timestamp {
-                                let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
-                                debug!("Lastfm: Added {}ms from final segment of '{:?}'. Total for song: {}ms", 
-                                       played_ms, track_data.name.as_deref(), track_data.accumulated_play_duration_ms + played_ms);
-                            }
-                        }
-                        let current_state = track_data.current_playback_state; // Preserve current playback state
-                        *track_data = CurrentScrobbleTrack::default(); 
-                        track_data.current_playback_state = current_state; // Restore playback state
-                        // player_source is now None due to default()
-                        info!("Lastfm: Track data cleared. Player source is now None.");
-                    }
-                }
+                self.handle_song_changed(song_event_opt, source);
             }
             PlayerEvent::StateChanged { state: new_player_state, source: event_source, .. } => { 
                 let mut track_data = self.current_track_data.lock().unwrap();

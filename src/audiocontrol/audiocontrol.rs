@@ -6,7 +6,8 @@ use crate::plugins::ActionPlugin;
 use serde_json::Value;
 use std::sync::{Arc, RwLock, Weak, Mutex, Once};
 use std::any::Any;
-use log::{debug, warn, error};
+use log::{debug, warn, error}; // Ensure warn is imported
+use crate::audiocontrol::eventbus::EventBus; // Added for EventBus
 
 // Static singleton instance
 static mut AUDIO_CONTROLLER_INSTANCE: Option<Arc<AudioController>> = None;
@@ -242,7 +243,8 @@ impl PlayerStateListener for AudioController {
     }
 }
 
-impl AudioController {    /// Create a new AudioController with no controllers
+impl AudioController {
+    /// Create a new AudioController with no controllers
     pub fn new() -> Self {
         Self {
             controllers: Vec::new(),
@@ -262,6 +264,14 @@ impl AudioController {    /// Create a new AudioController with no controllers
         } else {
             warn!("Failed to initialize AudioController self-reference");
         }
+
+        // Add listener to the global event bus
+        let bus = EventBus::instance();
+        let (id, receiver) = bus.subscribe_all();
+        debug!("AudioController subscribed to global EventBus for logging with ID: {:?}", id);
+        bus.spawn_worker(id, receiver, move |event| {
+            warn!("[EventBus GLOBAL] Received event: {:?}", event);
+        });
     }
 
     /// Get the singleton instance of AudioController

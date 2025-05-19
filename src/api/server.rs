@@ -58,17 +58,6 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     let ws_manager = Arc::new(WebSocketManager::new());
     events::start_prune_task(ws_manager.clone());
     
-    // Register the WebSocket manager as a listener for all player events
-    info!("Registering WebSocketManager as a player event listener");
-    
-    // Get a mutable reference to register the WebSocketManager as a listener
-    let mut_controller = unsafe { &mut *(Arc::as_ptr(&controller) as *mut AudioController) };
-    if mut_controller.register_state_listener(Arc::downgrade(&(ws_manager.clone() as Arc<dyn PlayerStateListener>))) {
-        info!("WebSocketManager successfully registered as listener");
-    } else {
-        warn!("Failed to register WebSocketManager as listener");
-    }
-    
     let api_routes = routes![
         get_version,
         

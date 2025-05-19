@@ -3,14 +3,14 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::any::Any;
 use std::time::{Duration, Instant};
 use serde::{Serialize, Deserialize};
-use log::{debug, info, error};
+use log::{debug, info, warn, error};
 
 // Use the correct rocket_ws imports
 use rocket_ws::{WebSocket, Channel, Message};
 use rocket::futures::{SinkExt, StreamExt};
 
 use crate::data::PlayerEvent;
-use crate::players::PlayerStateListener;
+use crate::audiocontrol::eventbus::{EventBus, EventSubscription as BusSubscription};
 
 /// New format for WebSocket messages with source at top level
 #[derive(Debug, Clone, Serialize)]
@@ -38,18 +38,22 @@ enum ClientMessage {
 }
 
 /// WebSocket client connection manager
+#[derive(Clone)]
 pub struct WebSocketManager {
     /// Active subscriptions
-    subscriptions: Mutex<HashMap<usize, ClientSubscription>>,
+    subscriptions: Arc<Mutex<HashMap<usize, ClientSubscription>>>,
     
     /// Last activity timestamp for pruning stale connections
-    last_activity: Mutex<HashMap<usize, Instant>>,
+    last_activity: Arc<Mutex<HashMap<usize, Instant>>>,
     
     /// Counter for generating unique IDs for clients
-    next_id: Mutex<usize>,
+    next_id: Arc<Mutex<usize>>,
 
     /// Recent events that need to be sent to clients
-    recent_events: Mutex<VecDeque<(PlayerEvent, Instant)>>,
+    recent_events: Arc<Mutex<VecDeque<(PlayerEvent, Instant)>>>,
+
+    /// Our subscription ID to the global event bus
+    event_bus_subscription: Arc<Mutex<Option<(u64, crossbeam::channel::Receiver<PlayerEvent>)>>>,
 }
 
 /// Client subscription details
@@ -65,15 +69,42 @@ struct ClientSubscription {
     last_event_time: Instant,
 }
 
-impl WebSocketManager {
-    /// Create a new WebSocket manager
+impl WebSocketManager {    /// Create a new WebSocket manager
     pub fn new() -> Self {
-        WebSocketManager {
-            subscriptions: Mutex::new(HashMap::new()),
-            last_activity: Mutex::new(HashMap::new()),
-            next_id: Mutex::new(0),
-            recent_events: Mutex::new(VecDeque::with_capacity(100)),
+        let manager = WebSocketManager {
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            last_activity: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(Mutex::new(0)),
+            recent_events: Arc::new(Mutex::new(VecDeque::with_capacity(100))),
+            event_bus_subscription: Arc::new(Mutex::new(None)),
+        };
+
+        // Subscribe to all events from the global event bus
+        let event_bus = EventBus::instance();
+        let (id, receiver) = event_bus.subscribe_all();
+        
+        // Store our subscription ID (we'll need it to unsubscribe later)
+        if let Ok(mut sub) = manager.event_bus_subscription.lock() {
+            *sub = Some((id, receiver.clone()));
         }
+
+        // Start a thread to listen for events from the event bus
+        let manager_clone = manager.clone();
+        std::thread::spawn(move || {
+            debug!("Started WebSocketManager event bus listener thread");
+            
+            // This thread will continuously receive events from the event bus
+            while let Ok(event) = receiver.recv() {
+                warn!("WebSocketManager received event from global event bus: {}", event_type_name(&event));
+                manager_clone.queue_event(event);
+                warn!("WebSocketManager queued event");
+            }
+            
+            debug!("WebSocketManager event bus listener thread exiting");
+        });
+
+        // Return the manager
+        manager
     }
     
     /// Generate a new unique ID for a client
@@ -377,6 +408,13 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
                 "player_id": source.player_id()
             })
         },
+        PlayerEvent::SongInformationUpdate { source , song} => {
+            serde_json::json!({
+                "type": "song_information_update",
+                "player_name": source.player_name(),
+                "player_id": source.player_id()
+            })
+        },
     };
     
     WebSocketMessage {
@@ -396,6 +434,7 @@ fn event_type_name(event: &PlayerEvent) -> &'static str {
         PlayerEvent::PositionChanged { .. } => "position_changed",
         PlayerEvent::DatabaseUpdating { .. } => "database_updating",
         PlayerEvent::QueueChanged { .. } => "queue_changed",
+        PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
     }
 }
 
@@ -417,23 +456,19 @@ pub fn start_prune_task(ws_manager: Arc<WebSocketManager>) {
     });
 }
 
-/// Implement PlayerStateListener for WebSocketManager
-impl PlayerStateListener for WebSocketManager {
-    // Main event handler - required by the trait
-    fn on_event(&self, event: PlayerEvent) {
-        // Log the event
-        debug!("event received: Player: {}, Type: {:?}", 
-              event.player_name(), event_type_name(&event));
-        
-        // Store the event for clients to retrieve
-        self.queue_event(event);
-    }
-    
-    // Required by the trait for dynamic casting
-    fn as_any(&self) -> &dyn Any {
-        self
+/// Drop implementation to clean up event bus subscription
+impl Drop for WebSocketManager {
+    fn drop(&mut self) {
+        if let Ok(sub_guard) = self.event_bus_subscription.lock() {
+            if let Some((id, _)) = &*sub_guard {
+                EventBus::instance().unsubscribe(*id);
+            }
+        }
     }
 }
+
+// WebSocketManager implements Clone via #[derive(Clone)] above
+// since all fields are already Arc<Mutex<>>
 
 // WebSocket handler for the event messages endpoint
 #[rocket::get("/events")]

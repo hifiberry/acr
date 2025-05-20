@@ -21,7 +21,7 @@ use rand::{rngs::OsRng, RngCore};
 // Compiled from secrets.txt at build time
 #[cfg(not(test))]
 pub fn default_encryption_key() -> &'static str {
-    option_env!("SECRETS_ENCRYPTION_KEY").unwrap_or("YOUR_ENCRYPTION_KEY_HERE")
+    crate::secrets::SECRETS_ENCRYPTION_KEY
 }
 
 #[cfg(test)]
@@ -220,17 +220,16 @@ impl SecurityStore {
         Ok(())
     }
     
-    // Initialize the security store with the default encryption key from secrets.txt
     pub fn initialize_with_defaults(file_path: Option<PathBuf>) -> Result<()> {
         let encryption_key = default_encryption_key();
         
-        if encryption_key == "YOUR_ENCRYPTION_KEY_HERE" {
+        if encryption_key == "unknown" {
             return Err(SecurityStoreError::InvalidKeyError(
-                "No valid encryption key found in secrets.txt".to_string(),
+                "No valid encryption key configured now or during compile time".to_string(),
             ));
         }
         
-        info!("Using default encryption key from secrets.txt");
+        info!("Using default encryption key now or during compile time");
         Self::initialize(encryption_key, file_path)
     }
     

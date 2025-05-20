@@ -441,7 +441,9 @@ impl AudioController {
         }
         
         success_count
-    }    /// Create a new AudioController from a JSON array of player configurations
+    }    
+    
+    /// Create a new AudioController from a JSON array of player configurations
     /// 
     /// The JSON configuration can include:
     /// - "players": Array of player configurations

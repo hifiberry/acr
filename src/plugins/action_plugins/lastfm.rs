@@ -322,6 +322,59 @@ impl Lastfm {
         }
     }
     
+    /// Start the worker thread for Last.fm scrobbling
+    fn start_worker_thread(&mut self) {
+        if self.lastfm_client.is_none() {
+            if let Ok(client_instance) = LastfmClient::get_instance() {
+                self.lastfm_client = Some(client_instance.clone());
+                
+                // Set up the worker thread
+                let track_data_for_thread = Arc::clone(&self.current_track_data);
+                let plugin_name_for_thread = self.name().to_string();
+                let client_for_thread = client_instance; 
+                let worker_running_for_thread = Arc::clone(&self.worker_running);
+                let scrobble_config_for_thread = self.config.scrobble;
+
+                let handle = thread::spawn(move || {
+                    lastfm_worker(
+                        track_data_for_thread,
+                        plugin_name_for_thread,
+                        client_for_thread,
+                        worker_running_for_thread,
+                        scrobble_config_for_thread
+                    );
+                });
+                
+                self.worker_thread = Some(handle);
+                log::info!("Lastfm: Worker thread started");
+            } else {
+                log::error!("Lastfm: Failed to get Last.fm client instance, cannot start worker thread");
+            }
+        } else {
+            // We already have a client, but need to start the worker
+            if let Some(client_instance) = &self.lastfm_client {
+                let track_data_for_thread = Arc::clone(&self.current_track_data);
+                let plugin_name_for_thread = self.name().to_string();
+                let client_for_thread = client_instance.clone();
+                let worker_running_for_thread = Arc::clone(&self.worker_running);
+                let scrobble_config_for_thread = self.config.scrobble;
+
+                let handle = thread::spawn(move || {
+                    lastfm_worker(
+                        track_data_for_thread,
+                        plugin_name_for_thread,
+                        client_for_thread,
+                        worker_running_for_thread,
+                        scrobble_config_for_thread
+                    );
+                });
+                
+                self.worker_thread = Some(handle);
+                log::info!("Lastfm: Worker thread started");
+            }
+        }
+    }
+    
     /// Handle a song changed event
     fn handle_song_changed(&mut self, song_event_opt: &Option<Song>, source: &PlayerSource) {
         let mut track_data = self.current_track_data.lock().unwrap();
@@ -590,6 +643,10 @@ impl Plugin for Lastfm {
             info!("Lastfm: No worker thread to join.");
         }
         
+        // Unsubscribe from event bus
+        self.base.unsubscribe_from_event_bus();
+        log::debug!("Lastfm: Unsubscribed from event bus");
+        
         // Perform shutdown tasks from BaseActionPlugin
         self.base.shutdown()
     }
@@ -602,38 +659,26 @@ impl Plugin for Lastfm {
 impl ActionPlugin for Lastfm {
     fn initialize(&mut self, controller: Weak<AudioController>) {
         self.base.set_controller(controller);
-    }
-
-    fn start(&mut self) -> bool {
-        log::debug!("Lastfm starting");
         
-        // If not enabled, don't start
+        // Only subscribe if enabled
         if !self.config.enabled {
-            log::info!("Lastfm plugin is disabled, not starting");
-            return true;
+            log::info!("Lastfm plugin is disabled, not subscribing to events");
+            return;
         }
         
-        // Use the base plugin's subscribe_to_event_bus method
+        // Subscribe to event bus in the initialize method
+        log::debug!("Lastfm initializing and subscribing to event bus");
         let self_clone = self.clone();
         self.base.subscribe_to_event_bus(move |event| {
             self_clone.handle_event(event);
         });
         
-        true
-    }
-    
-    fn stop(&mut self) -> bool {
-        log::debug!("Lastfm stopping");
-        
-        // Stop worker thread if running
-        if self.worker_running.load(Ordering::SeqCst) {
-            self.worker_running.store(false, Ordering::SeqCst);
+        // Initialize worker thread
+        if self.config.enabled && self.worker_thread.is_none() {
+            // Start the worker thread
+            log::debug!("Starting lastfm worker thread");
+            self.start_worker_thread();
         }
-        
-        // Use the base plugin's unsubscribe_from_event_bus method
-        self.base.unsubscribe_from_event_bus();
-        
-        true
     }
     
     fn handle_event(&self, event: PlayerEvent) {

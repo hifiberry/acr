@@ -115,23 +115,13 @@ impl Plugin for ActiveMonitor {
 impl ActionPlugin for ActiveMonitor {
     fn initialize(&mut self, controller: Weak<AudioController>) {
         self.base.set_controller(controller);
-    }
-
-    fn start(&mut self) -> bool {
-        log::debug!("ActiveMonitor starting");
-        // Use the base plugin's subscribe_to_event_bus method with a closure
+        
+        // Subscribe to event bus in the initialize method
+        log::debug!("ActiveMonitor initializing and subscribing to event bus");
         let self_clone = self.clone();
         self.base.subscribe_to_event_bus(move |event| {
             self_clone.handle_event(event);
         });
-        true
-    }
-    
-    fn stop(&mut self) -> bool {
-        log::debug!("ActiveMonitor stopping");
-        // Use the base plugin's unsubscribe_from_event_bus method
-        self.base.unsubscribe_from_event_bus();
-        true
     }
     
     fn handle_event(&self, event: PlayerEvent) {

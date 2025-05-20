@@ -4,11 +4,10 @@ use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
 use std::any::Any;
 use std::collections::HashSet;
 use delegate::delegate;
-use log::{trace,debug,warn};
+use log::{trace, warn};
 use crate::audiocontrol::AudioController;
-use crate::audiocontrol::eventbus::EventBus;
 use crate::players::PlayerController;
-use std::sync::{Arc, Weak, Mutex};
+use std::sync::{Arc, Weak};
 
 /// Log level for the EventLogger
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,12 +49,6 @@ pub struct EventLogger {
 
     /// Set of event types to log (if empty, log all events)
     event_types: Option<HashSet<String>>,
-    
-    /// Subscription to the global event bus
-    event_bus_subscription: Arc<Mutex<Option<(u64, crossbeam::channel::Receiver<PlayerEvent>)>>>,
-    
-    /// Handle to the event listener thread
-    event_listener_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 impl EventLogger {
@@ -66,8 +59,6 @@ impl EventLogger {
             only_active,
             log_level: LogLevel::default(),
             event_types: None,
-            event_bus_subscription: Arc::new(Mutex::new(None)),
-            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -78,8 +69,6 @@ impl EventLogger {
             only_active,
             log_level,
             event_types,
-            event_bus_subscription: Arc::new(Mutex::new(None)),
-            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -393,62 +382,11 @@ impl Plugin for EventLogger {
             self.log_level,
             self.event_types
         );
-        
-        // Set up subscription to the global event bus
-        let event_bus = EventBus::instance();
-        let (id, receiver) = event_bus.subscribe_all();
-        
-        // Store our subscription ID (we'll need it to unsubscribe later)
-        if let Ok(mut sub) = self.event_bus_subscription.lock() {
-            *sub = Some((id, receiver.clone()));
-        }
-
-        // Create a thread-safe reference to self for the worker thread
-        let event_logger = Arc::new(Mutex::new(self.clone()));
-        
-        // Start a thread to listen for events from the event bus
-        let thread_handle = std::thread::spawn(move || {
-            log::debug!("EventLogger event bus listener thread started");
-            
-            // Process events until the channel is closed
-            while let Ok(event) = receiver.recv() {
-                // Get a lock on the event logger
-                if let Ok(logger) = event_logger.lock() {
-                    // Handle the event
-                    logger.handle_event_bus_events(event);
-                }
-            }
-            
-            log::debug!("EventLogger event bus listener thread exiting");
-        });
-
-        // Store the thread handle
-        if let Ok(mut handle) = self.event_listener_thread.lock() {
-            *handle = Some(thread_handle);
-        }
-        
         self.base.init()
     }
 
     fn shutdown(&mut self) -> bool {
         log::info!("EventLogger shutting down");
-        
-        // Unsubscribe from the event bus
-        if let Ok(mut sub_guard) = self.event_bus_subscription.lock() {
-            if let Some((id, _)) = sub_guard.take() {
-                EventBus::instance().unsubscribe(id);
-                log::debug!("EventLogger unsubscribed from event bus");
-            }
-        }
-          // Wait for the event listener thread to exit
-        if let Ok(mut thread_guard) = self.event_listener_thread.lock() {
-            if thread_guard.is_some() {
-                // Just take the handle and drop it, which detaches the thread
-                let _ = thread_guard.take();
-                log::debug!("EventLogger detaching event bus listener thread");
-            }
-        }
-        
         self.base.shutdown()
     }
 
@@ -464,12 +402,23 @@ impl ActionPlugin for EventLogger {
 
     fn start(&mut self) -> bool {
         log::debug!("EventLogger starting");
+        // Use the base plugin's subscribe_to_event_bus method
+        let self_clone = self.clone();
+        self.base.subscribe_to_event_bus(move |event| {
+            self_clone.handle_event(event);
+        });
         true
     }
     
     fn stop(&mut self) -> bool {
         log::debug!("EventLogger stopping");
+        // Use the base plugin's unsubscribe_from_event_bus method
+        self.base.unsubscribe_from_event_bus();
         true
+    }
+    
+    fn handle_event(&self, event: PlayerEvent) {
+        self.handle_event_bus_events(event);
     }
 }
 
@@ -490,8 +439,6 @@ impl Clone for EventLogger {
             only_active: self.only_active,
             log_level: self.log_level,
             event_types: self.event_types.clone(),
-            event_bus_subscription: Arc::new(Mutex::new(None)),
-            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
 }

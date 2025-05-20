@@ -1,8 +1,10 @@
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Weak, Mutex};
 use std::any::Any;
 use crate::data::PlayerEvent;
 use crate::plugins::plugin::Plugin;
 use crate::audiocontrol::AudioController;
+use crate::audiocontrol::eventbus::EventBus;
+use log;
 
 /// A plugin that can respond to events from an AudioController
 /// and take actions based on those events, potentially controlling
@@ -19,6 +21,11 @@ pub trait ActionPlugin: Plugin {
     /// Stop the plugin functionality
     /// This is called before shutdown and should clean up any event listeners or workers
     fn stop(&mut self) -> bool;
+    
+    /// Handle an event received from the event bus
+    /// This is called when an event is received from the global event bus
+    /// Default implementation does nothing
+    fn handle_event(&self, _event: PlayerEvent) {}
 }
 
 /// Base implementation for ActionPlugin
@@ -31,6 +38,12 @@ pub struct BaseActionPlugin {
     
     /// Weak reference to the AudioController
     controller: Option<Weak<AudioController>>,
+    
+    /// Subscription to the global event bus
+    event_bus_subscription: Arc<Mutex<Option<(u64, crossbeam::channel::Receiver<PlayerEvent>)>>>,
+    
+    /// Handle to the event listener thread
+    event_listener_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 impl BaseActionPlugin {
@@ -40,6 +53,8 @@ impl BaseActionPlugin {
             name: name.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             controller: None,
+            event_bus_subscription: Arc::new(Mutex::new(None)),
+            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
     
@@ -51,6 +66,63 @@ impl BaseActionPlugin {
     /// Set the controller reference
     pub fn set_controller(&mut self, controller: Weak<AudioController>) {
         self.controller = Some(controller);
+    }
+    
+    /// Subscribe to the event bus and start a listener thread
+    pub fn subscribe_to_event_bus<F>(&self, event_handler: F) 
+    where
+        F: Fn(PlayerEvent) + Send + 'static,
+    {
+        log::debug!("Subscribing to event bus for plugin '{}'", self.name);
+        
+        // Set up subscription to the global event bus
+        let event_bus = EventBus::instance();
+        let (id, receiver) = event_bus.subscribe_all();
+        
+        // Store our subscription ID (we'll need it to unsubscribe later)
+        if let Ok(mut sub) = self.event_bus_subscription.lock() {
+            *sub = Some((id, receiver.clone()));
+        }
+        
+        // Start a thread to listen for events from the event bus
+        let thread_handle = std::thread::spawn(move || {
+            log::debug!("Event bus listener thread started");
+            
+            // Process events until the channel is closed
+            while let Ok(event) = receiver.recv() {
+                // Handle the event using the provided handler
+                event_handler(event);
+            }
+            
+            log::debug!("Event bus listener thread exiting");
+        });
+        
+        // Store the thread handle
+        if let Ok(mut handle) = self.event_listener_thread.lock() {
+            *handle = Some(thread_handle);
+        }
+    }
+    
+    /// Unsubscribe from the event bus and clean up the listener thread
+    pub fn unsubscribe_from_event_bus(&self) {
+        log::debug!("Unsubscribing from event bus for plugin '{}'", self.name);
+        
+        // Unsubscribe from the event bus
+        if let Ok(mut sub_guard) = self.event_bus_subscription.lock() {
+            if let Some((id, _)) = sub_guard.take() {
+                EventBus::instance().unsubscribe(id);
+                log::debug!("Unsubscribed from event bus");
+            }
+        }
+        
+        // Wait for the event listener thread to exit
+        if let Ok(mut thread_guard) = self.event_listener_thread.lock() {
+            if thread_guard.is_some() {
+                // Just take the handle and drop it, which detaches the thread
+                let _ = thread_guard.take();
+                log::debug!("Detaching event bus listener thread");
+            }
+        }
     }
 }
 
@@ -69,7 +141,9 @@ impl Plugin for BaseActionPlugin {
     }
     
     fn shutdown(&mut self) -> bool {
-        // Default implementation does nothing
+        // Unsubscribe from the event bus if necessary
+        self.unsubscribe_from_event_bus();
+        log::info!("Plugin '{}' shut down", self.name);
         true
     }
     
@@ -92,5 +166,9 @@ impl ActionPlugin for BaseActionPlugin {
     fn stop(&mut self) -> bool {
         log::debug!("BaseActionPlugin '{}' stopped", self.name);
         true
+    }
+    
+    fn handle_event(&self, _event: PlayerEvent) {
+        // Default implementation does nothing
     }
 }

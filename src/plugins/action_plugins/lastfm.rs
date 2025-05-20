@@ -7,7 +7,6 @@ use std::time::SystemTime;
 use std::sync::atomic::{AtomicBool, Ordering}; // Added
 
 use crate::audiocontrol::AudioController;
-use crate::audiocontrol::eventbus::EventBus;
 use crate::data::PlayerEvent;
 use crate::data::Song; // Added import for Song struct
 use crate::helpers::lastfm::{LastfmClient, LastfmTrackInfoDetails}; // Added LastfmTrackInfoDetails
@@ -18,7 +17,6 @@ use serde::Deserialize;
 use crate::data::PlaybackState;
 use crate::players::PlayerController; // Added for get_playback_state
 use crate::data::PlayerSource; // Added PlayerSource
-use std::collections::HashMap; // For song metadata in calculate_updates
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct LastfmConfig {
@@ -40,12 +38,6 @@ pub struct Lastfm {
     current_track_data: Arc<Mutex<CurrentScrobbleTrack>>,
     lastfm_client: Option<LastfmClient>,
     worker_running: Arc<AtomicBool>, // Added for graceful shutdown
-    
-    /// Subscription to the global event bus
-    event_bus_subscription: Arc<Mutex<Option<(u64, crossbeam::channel::Receiver<PlayerEvent>)>>>,
-    
-    /// Handle to the event listener thread
-    event_listener_thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -327,8 +319,6 @@ impl Lastfm {
             current_track_data: Arc::new(Mutex::new(CurrentScrobbleTrack::default())),
             lastfm_client: None,
             worker_running: Arc::new(AtomicBool::new(true)), // Initialize worker_running
-            event_bus_subscription: Arc::new(Mutex::new(None)),
-            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
     
@@ -486,7 +476,7 @@ impl Lastfm {
         trace!("Received event from event bus");
         
         // First determine if this is from the active player
-        let is_active_player = if let Some(controller) = self.base.get_controller() {
+        let _is_active_player = if let Some(controller) = self.base.get_controller() {
             // Get player ID from the event
             let event_player_id = event.source().player_id();
             
@@ -566,43 +556,10 @@ impl Plugin for Lastfm {
                         let scrobble_config_for_thread = self.config.scrobble; // Added
 
                         let handle = thread::spawn(move || {
-                            lastfm_worker(track_data_for_thread, plugin_name_for_thread, client_for_thread, worker_running_for_thread, scrobble_config_for_thread); // Pass worker_running and scrobble_config
+                            lastfm_worker(track_data_for_thread, plugin_name_for_thread, client_for_thread, worker_running_for_thread, scrobble_config_for_thread);
                         });
                         self.worker_thread = Some(handle);
                         
-                        // Set up subscription to the global event bus
-                        let event_bus = EventBus::instance();
-                        let (id, receiver) = event_bus.subscribe_all();
-                        
-                        // Store our subscription ID (we'll need it to unsubscribe later)
-                        if let Ok(mut sub) = self.event_bus_subscription.lock() {
-                            *sub = Some((id, receiver.clone()));
-                        }
-
-                        // Create a thread-safe reference to self for the worker thread
-                        let lastfm = Arc::new(Mutex::new(self.clone()));
-                        
-                        // Start a thread to listen for events from the event bus
-                        let thread_handle = std::thread::spawn(move || {
-                            log::debug!("Lastfm event bus listener thread started");
-                            
-                            // Process events until the channel is closed
-                            while let Ok(event) = receiver.recv() {
-                                // Get a lock on the lastfm plugin
-                                if let Ok(lastfm_guard) = lastfm.lock() {
-                                    // Handle the event
-                                    lastfm_guard.handle_event_bus_events(event);
-                                }
-                            }
-                            
-                            log::debug!("Lastfm event bus listener thread exiting");
-                        });
-
-                        // Store the thread handle
-                        if let Ok(mut handle) = self.event_listener_thread.lock() {
-                            *handle = Some(thread_handle);
-                        }
-
                         self.base.init()
                     }
                     Err(e) => {
@@ -633,23 +590,7 @@ impl Plugin for Lastfm {
             info!("Lastfm: No worker thread to join.");
         }
         
-        // Unsubscribe from the event bus
-        if let Ok(mut sub_guard) = self.event_bus_subscription.lock() {
-            if let Some((id, _)) = sub_guard.take() {
-                EventBus::instance().unsubscribe(id);
-                log::debug!("Lastfm unsubscribed from event bus");
-            }
-        }
-          // Wait for the event listener thread to exit
-        if let Ok(mut thread_guard) = self.event_listener_thread.lock() {
-            if thread_guard.is_some() {
-                // Just take the handle and drop it, which detaches the thread
-                let _ = thread_guard.take();
-                log::debug!("Lastfm detaching event bus listener thread");
-            }
-        }
-        
-        // Perform other shutdown tasks from BaseActionPlugin
+        // Perform shutdown tasks from BaseActionPlugin
         self.base.shutdown()
     }
 
@@ -661,17 +602,43 @@ impl Plugin for Lastfm {
 impl ActionPlugin for Lastfm {
     fn initialize(&mut self, controller: Weak<AudioController>) {
         self.base.set_controller(controller);
-        info!("Lastfm received controller reference."); // Updated log
-    }    
-    
+    }
+
     fn start(&mut self) -> bool {
-        info!("Lastfm starting");
+        log::debug!("Lastfm starting");
+        
+        // If not enabled, don't start
+        if !self.config.enabled {
+            log::info!("Lastfm plugin is disabled, not starting");
+            return true;
+        }
+        
+        // Use the base plugin's subscribe_to_event_bus method
+        let self_clone = self.clone();
+        self.base.subscribe_to_event_bus(move |event| {
+            self_clone.handle_event(event);
+        });
+        
         true
     }
     
     fn stop(&mut self) -> bool {
-        info!("Lastfm stopping");
+        log::debug!("Lastfm stopping");
+        
+        // Stop worker thread if running
+        if self.worker_running.load(Ordering::SeqCst) {
+            self.worker_running.store(false, Ordering::SeqCst);
+        }
+        
+        // Use the base plugin's unsubscribe_from_event_bus method
+        self.base.unsubscribe_from_event_bus();
+        
         true
+    }
+    
+    fn handle_event(&self, event: PlayerEvent) {
+        // Handle events using the existing method
+        self.handle_event_bus_events(event);
     }
 }
 
@@ -694,8 +661,6 @@ impl Clone for Lastfm {
             current_track_data: Arc::clone(&self.current_track_data),
             lastfm_client: self.lastfm_client.clone(),
             worker_running: Arc::clone(&self.worker_running),
-            event_bus_subscription: Arc::new(Mutex::new(None)),
-            event_listener_thread: Arc::new(Mutex::new(None)),
         }
     }
 }

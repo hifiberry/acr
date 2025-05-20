@@ -1,5 +1,5 @@
 use crate::players::PlayerController;
-use crate::data::{PlayerCommand, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerEvent, Track};
+use crate::data::{PlayerCommand, PlayerCapabilitySet, Song, LoopMode, PlaybackState, Track};
 use crate::players::{create_player_from_json, PlayerCreationError};
 use crate::plugins::ActionPlugin;
 use serde_json::Value;
@@ -280,7 +280,7 @@ impl AudioController {
     /// If this is the first controller added, it becomes the active controller.
     pub fn add_controller(&mut self, controller: Box<dyn PlayerController + Send + Sync>) -> usize {
         // Check if we have a self reference for listener registration
-        let self_weak = if let Ok(self_ref) = self.self_ref.read() {
+        let _self_weak = if let Ok(self_ref) = self.self_ref.read() {
             if let Some(weak_ref) = self_ref.as_ref() {
                 weak_ref.clone() as Weak<dyn PlayerController + Send + Sync>
             } else {
@@ -555,19 +555,6 @@ impl AudioController {
         Ok(controller)
     }
 
-    /// Check if the given player name and ID match the active player
-    fn is_active_player(&self, player_name: &str, player_id: &str) -> bool {
-        if let Ok(active_idx) = self.active_index.read() {
-            if *active_idx < self.controllers.len() {
-                if let Ok(controller) = self.controllers[*active_idx].read() {
-                    return controller.get_player_name() == player_name && 
-                           controller.get_player_id() == player_id;
-                }
-            }
-        }
-        false
-    }
-    
     /// Add an action plugin to the controller
     /// Returns the index of the added plugin
     pub fn add_action_plugin(&mut self, mut plugin: Box<dyn ActionPlugin + Send + Sync>) -> usize {
@@ -644,11 +631,6 @@ impl AudioController {
         count
     }    
     
-    /// Process an event
-    fn process_event(&self, event: PlayerEvent, is_active: bool) {
-        // Then handle the event as before
-        // TODO: handle state changes to find active player
-    }    
 
     /// Get information about all registered action plugins
     pub fn get_action_plugin_info(&self) -> Vec<(String, String)> {

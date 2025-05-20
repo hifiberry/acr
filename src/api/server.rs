@@ -100,7 +100,6 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         lastfm::prepare_complete_auth,
         lastfm::complete_auth,
         lastfm::disconnect_handler,
-        lastfm::get_loved_tracks_handler // Added this line
     ];
     
     // ImageCache routes

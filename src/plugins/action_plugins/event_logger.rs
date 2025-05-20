@@ -296,75 +296,7 @@ impl EventLogger {
                 );
             },
         }
-    }    fn get_event_json_payload(&self, event: &PlayerEvent) -> Option<serde_json::Value> {
-        match event {
-            PlayerEvent::SongChanged { song, .. } => {
-                song.as_ref().map(|s| serde_json::json!({
-                    "title": s.title,
-                    "artist": s.artist,
-                    "album": s.album,
-                    "stream_url": s.stream_url, // Corrected field name
-                    "source": s.source, // Corrected field name
-                }))
-            }
-            PlayerEvent::SongInformationUpdate { song, .. } => {
-                // song is type Song
-                Some(serde_json::json!({
-                    "title": song.title,
-                    "artist": song.artist,
-                    "album": song.album,
-                    "stream_url": song.stream_url, // Corrected field name
-                    "source": song.source, // Corrected field name
-                }))
-            }
-            PlayerEvent::StateChanged { state, .. } => Some(serde_json::json!({ "state": state })),
-            PlayerEvent::LoopModeChanged { mode, .. } => Some(serde_json::json!({ "loop_mode": mode })),
-            PlayerEvent::RandomChanged { enabled, .. } => Some(serde_json::json!({ "random_enabled": enabled })),
-            PlayerEvent::CapabilitiesChanged { capabilities, .. } => Some(serde_json::json!({ "capabilities": capabilities })),
-            PlayerEvent::PositionChanged { position, .. } => Some(serde_json::json!({ "position": position })),
-            PlayerEvent::DatabaseUpdating { artist, album, song, percentage, .. } => {
-                let mut payload = serde_json::json!({});
-
-                if let Some(percentage) = percentage {
-                    payload["percentage"] = serde_json::json!(percentage);
-                }
-
-                match (artist, album, song) {
-                    (Some(a), Some(b), Some(s)) => {
-                        payload["artist"] = serde_json::json!(a);
-                        payload["album"] = serde_json::json!(b);
-                        payload["song"] = serde_json::json!(s);
-                    },
-                    (Some(a), Some(b), None) => {
-                        payload["artist"] = serde_json::json!(a);
-                        payload["album"] = serde_json::json!(b);
-                    },
-                    (Some(a), None, None) => {
-                        payload["artist"] = serde_json::json!(a);
-                    },
-                    (None, Some(b), None) => {
-                        payload["album"] = serde_json::json!(b);
-                    },
-                    (None, None, Some(s)) => {
-                        payload["song"] = serde_json::json!(s);
-                    },
-                    (None, Some(b), Some(s)) => {
-                        payload["album"] = serde_json::json!(b);
-                        payload["song"] = serde_json::json!(s);
-                    },
-                    (Some(a), None, Some(s)) => {
-                        payload["artist"] = serde_json::json!(a);
-                        payload["song"] = serde_json::json!(s);
-                    },
-                    _ => {} // Do nothing for None values
-                }
-
-                Some(payload)
-            },
-            PlayerEvent::QueueChanged { .. } => Some(serde_json::json!({})),
-            PlayerEvent::ActivePlayerChanged { player_id, .. } => Some(serde_json::json!({ "player_id": player_id })),
-        }
-    }
+    }    
 }
 
 impl Plugin for EventLogger {

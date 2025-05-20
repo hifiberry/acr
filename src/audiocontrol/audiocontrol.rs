@@ -221,7 +221,7 @@ impl AudioController {
         let (id, receiver) = bus.subscribe_all();
         debug!("AudioController subscribed to global EventBus for logging with ID: {:?}", id);
         bus.spawn_worker(id, receiver, move |event| {
-            warn!("[EventBus GLOBAL] Received event: {:?}", event);
+            debug!("[EventBus GLOBAL] Received event: {:?}, doing nothing", event);
         });
     }
 

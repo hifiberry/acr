@@ -7,7 +7,7 @@ fn main() {
     println!("cargo:rerun-if-changed=secrets.txt");
     
     // Log all secrets found during build
-    println!("cargo:warning=SEARCHING FOR SECRETS DURING BUILD:");
+    println!("cargo:warning=SECRETS FOUND DURING BUILD:");
     
     // Check for secrets in various possible locations
     check_secrets_file("secrets.txt");
@@ -16,11 +16,6 @@ fn main() {
     
     // Look for environment variables with secret-like names
     check_environment_secrets();
-    
-    // Print current directory for debugging
-    if let Ok(current_dir) = env::current_dir() {
-        println!("cargo:warning=Build running from directory: {}", current_dir.display());
-    }
 }
 
 fn check_secrets_file(filename: &str) {
@@ -46,7 +41,7 @@ fn check_secrets_file(filename: &str) {
                         let key = line[..pos].trim();
                         let value = line[pos+1..].trim();
                         
-                        // Display the key normally but mask the value
+                        // Show full key but mask the value
                         let masked_value = mask_value(value);
                         println!("cargo:warning=Secret: {}={}", key, masked_value);
                         count += 1;
@@ -71,7 +66,7 @@ fn check_environment_secrets() {
         let upper_key = key.to_uppercase();
         for prefix in &secret_prefixes {
             if upper_key.starts_with(prefix) || upper_key.contains("_SECRET_") || upper_key.contains("_API_KEY") {
-                // Display the key normally but mask the value
+                // Show full key but mask the value
                 let masked_value = mask_value(&value);
                 println!("cargo:warning=Environment secret: {}={}", key, masked_value);
                 found = true;
@@ -84,12 +79,11 @@ fn check_environment_secrets() {
     }
 }
 
-// Mask a value by showing only the first few characters followed by asterisks
+// Mask a value by showing only the first 3 characters followed by asterisks
 fn mask_value(value: &str) -> String {
     if value.len() <= 3 {
         return "***".to_string();
     }
     
-    // Show first 3 characters and mask the rest
     format!("{}***", &value[0..3])
 }

@@ -558,9 +558,8 @@
         let socket = null;
         let reconnectInterval = null;
         let wsController = null;
-            
-        // Event Handlers
-        playerSelect.addEventListener('change', switchPlayer); // Switch player immediately on selection
+              // Event Handlers
+        playerSelect.addEventListener('change', () => switchPlayer()); // Switch player immediately on selection
         refreshBtn.addEventListener('click', fetchPlayers);
         playPauseBtn.addEventListener('click', () => {
             PlayerFunctions.togglePlayPause(currentData, currentPlayerName, API_BASE)
@@ -609,9 +608,20 @@
                         setTimeout(fetchCurrentPlayer, CONFIG.fastUpdateAfterCommand);
                     }
                 });
-        });
-        libraryBtn.addEventListener('click', () => {
-            PlayerFunctions.openPlayerLibrary(currentPlayerName || 'active');
+        });        libraryBtn.addEventListener('click', async () => {
+            let playerNameToUse = currentPlayerName;
+            
+            if (!playerNameToUse) {
+                // If no specific player is selected, get the actual active player
+                try {
+                    playerNameToUse = await PlayerFunctions.change_active_player();
+                } catch (error) {
+                    console.error('Error getting active player name:', error);
+                    playerNameToUse = 'active'; // Fallback on error
+                }
+            }
+            
+            PlayerFunctions.openPlayerLibrary(playerNameToUse);
         });
         
         // Queue control event handlers
@@ -624,13 +634,12 @@
                     }
                 });
         });
-        
-        // Initialize on page load
+          // Initialize on page load
         document.addEventListener('DOMContentLoaded', initialize);
         
-        function initialize() {
-            fetchPlayers();
-            fetchCurrentPlayer();
+        async function initialize() {
+            await fetchPlayers();
+            await fetchCurrentPlayer();
             
             // Set up periodic updates using the configured polling interval
             updateInterval = setInterval(fetchCurrentPlayer, CONFIG.pollingInterval);
@@ -674,9 +683,8 @@
             const players = await PlayerFunctions.fetchPlayers(API_BASE);
             PlayerFunctions.updatePlayerDropdown(players, playerSelect, libraryBtn, (name) => { currentPlayerName = name; });
         }
-        
-        // Switch to selected player
-        function switchPlayer() {
+          // Switch to selected player
+        async function switchPlayer() {
             const selectedPlayer = playerSelect.value;
             
             if (!selectedPlayer) {
@@ -691,20 +699,25 @@
             fetchCurrentPlayer();
             
             // Update WebSocket subscription for the new player
-            subscribeToPlayerEvents();
+            await subscribeToPlayerEvents();
             
             // Reset the queue display
             queueContainer.innerHTML = '<div class="queue-message">Loading queue...</div>';
             queueContainer.removeAttribute('data-loaded');
             // Queue will be fetched when capabilities are updated
         }
-        
-        // Fetch current player and now playing information
+          // Fetch current player and now playing information
         async function fetchCurrentPlayer() {
             try {
                 const data = await PlayerFunctions.fetchCurrentPlayer(API_BASE);
                 
                 if (data) {
+                    // If we're using the "Default (Active Player)" option (currentPlayerName is null)
+                    // and the active player has changed, we need to resubscribe
+                    const oldPlayerName = currentData?.player?.name;
+                    const newPlayerName = data.player?.name;
+                    const needsResubscribe = !currentPlayerName && oldPlayerName !== newPlayerName;
+                    
                     currentData = data;
                     
                     // Extract player capabilities
@@ -747,6 +760,12 @@
                         libraryBtn.disabled = false;
                     } else {
                         libraryBtn.disabled = true;
+                    }
+                    
+                    // Resubscribe if needed (active player changed while using default selection)
+                    if (needsResubscribe) {
+                        console.log(`Active player changed from ${oldPlayerName || 'none'} to ${newPlayerName || 'none'}, resubscribing...`);
+                        await subscribeToPlayerEvents();
                     }
                 }
             } catch (error) {
@@ -808,8 +827,7 @@
                 console.error('Error removing track from queue:', error);
             }
         }
-        
-        // Setup WebSocket connection
+          // Setup WebSocket connection
         function setupWebSocket() {
             // Close any existing WebSocket controller
             if (wsController) {
@@ -823,7 +841,10 @@
                 port: window.location.port || 1080,
                 onConnect: () => {
                     console.log('WebSocket connected');
-                    subscribeToPlayerEvents();
+                    // Use async/await with the subscribe function
+                    (async () => {
+                        await subscribeToPlayerEvents();
+                    })();
                 },
                 onDisconnect: () => {
                     console.log('WebSocket disconnected');
@@ -840,10 +861,8 @@
             
             // Connect to the WebSocket
             wsController.connect();
-        }
-        
-        // Subscribe to events for the current player
-        function subscribeToPlayerEvents() {
+        }        // Subscribe to events for the current player
+        async function subscribeToPlayerEvents() {
             if (!wsController) return;
             
             const socket = wsController.getSocket();
@@ -852,8 +871,43 @@
                 return;
             }
             
-            // Get the current player name to subscribe to
-            const playerToSubscribe = currentPlayerName || 'active';
+            // Get the player name to subscribe to
+            let playerToSubscribe;
+            
+            if (currentPlayerName) {
+                // We have a specific player selected
+                playerToSubscribe = currentPlayerName;
+                console.log(`Using selected player for subscription: ${playerToSubscribe}`);
+            } else {
+                // No specific player selected, get the actual active player name
+                try {
+                    playerToSubscribe = await PlayerFunctions.change_active_player();
+                    if (!playerToSubscribe) {
+                        console.warn('Failed to get active player name, using first available player');
+                        // Try to fetch all players and use the first one if available
+                        const players = await PlayerFunctions.fetchPlayers();
+                        if (players && players.length > 0) {
+                            playerToSubscribe = players[0].name;
+                            console.log(`Using first available player for subscription: ${playerToSubscribe}`);
+                        } else {
+                            console.error('No players available for subscription');
+                            return; // No players available, can't subscribe
+                        }
+                    } else {
+                        console.log(`Retrieved active player for subscription: ${playerToSubscribe}`);
+                    }
+                } catch (error) {
+                    console.error('Error getting active player name:', error);
+                    return; // Can't subscribe without a valid player
+                }
+            }
+            
+            if (!playerToSubscribe) {
+                console.error('No player name available for subscription');
+                return; // Can't subscribe without a valid player
+            }
+            
+            console.log(`Subscribing to player events for: ${playerToSubscribe}`);
             
             // Subscribe to player events
             wsController.subscribe(playerToSubscribe, [
@@ -863,7 +917,8 @@
                 "loop_mode_changed", 
                 "shuffle_changed",
                 "capabilities_changed",
-                "metadata_changed"
+                "metadata_changed",
+                "song_information_update"
             ]);
         }
         

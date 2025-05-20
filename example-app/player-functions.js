@@ -1026,15 +1026,21 @@ function handlePlayerEvent(data, options) {
             case 'capabilities_changed': eventType = 'CapabilitiesChanged'; break;
         }
     }
-    
-    // Check if this event is for our current player
+      // Check if this event is for our current player
+    // When currentPlayerName is null, we're using the "Default (Active Player)" option
+    // In this case, we need to handle events from the active player
     const isForCurrentPlayer = 
-        (!currentPlayerName && isActivePlayer) || // Event for active player, and we are on "Default (Active Player)"
+        (!currentPlayerName && (isActivePlayer === true || data.is_active === true || data.is_active_player === true)) || // Event for active player
         (currentPlayerName && playerName === currentPlayerName); // Event for a specific player we are viewing
 
-    console.log(`Event ${eventType} is for player ${playerName || 'unknown'}, is active: ${isActivePlayer}, current player is ${currentPlayerName || 'active'}. ${isForCurrentPlayer ? 'Processing' : 'Ignoring'}.`);
+    // If we still can't determine if this event is for us, but we're using the active player,
+    // just assume it's for us since "active" is no longer supported in the WebSocket subscription
+    // and the server may not be sending the is_active flag
+    const assumeActiveForDefaultSelection = !currentPlayerName && (!isActivePlayer && isActivePlayer !== false);
 
-    if (isForCurrentPlayer) {
+    console.log(`Event ${eventType} is for player ${playerName || 'unknown'}, is active: ${isActivePlayer}, current player is ${currentPlayerName || 'active'}. ${isForCurrentPlayer || assumeActiveForDefaultSelection ? 'Processing' : 'Ignoring'}.`);
+
+    if (isForCurrentPlayer || assumeActiveForDefaultSelection) {
         // Update UI based on event type
         switch (eventType) {
             case 'PlayerChanged':
@@ -1101,10 +1107,32 @@ function handlePlayerEvent(data, options) {
                 }
                 break;
             default:
-                console.log('Unhandled event type:', eventType);
-        }
+                console.log('Unhandled event type:', eventType);        }
     } else {
-        console.log(`Event ${eventType} is for player ${playerName || 'unknown'}, but current player is ${currentPlayerName || 'active'}. Ignoring.`);
+        console.log(`Event ${eventType} is for player ${playerName || 'unknown'}, but not relevant for current selection (${currentPlayerName || 'Default (Active Player)'}). Ignoring.`);
+    }
+}
+
+/**
+ * Get the name of the active player
+ * @param {string} apiBase - The base URL for the API
+ * @returns {Promise<string>} The name of the active player, or null if no player is active
+ */
+async function retrieve_active_player(apiBase = PLAYER_CONFIG.apiBasePath) {
+    try {
+        const response = await fetch(`${apiBase}/now-playing`);
+        const data = await response.json();
+        
+        if (data && data.player && data.player.name) {
+            console.log(`Retrieved active player name: ${data.player.name}`);
+            return data.player.name;
+        } else {
+            console.warn('No active player found or player name not available');
+            return null;
+        }
+    } catch (error) {
+        console.error('Failed to get active player name:', error);
+        return null;
     }
 }
 
@@ -1134,5 +1162,6 @@ export {
     displayQueue,
     playQueueIndex,
     removeTrackFromQueue,
-    handlePlayerEvent
+    handlePlayerEvent,
+    retrieve_active_player as change_active_player
 };

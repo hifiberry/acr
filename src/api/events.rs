@@ -1,16 +1,15 @@
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::any::Any;
 use std::time::{Duration, Instant};
 use serde::{Serialize, Deserialize};
-use log::{debug, info, warn, error};
+use log::{debug, info, error};
 
 // Use the correct rocket_ws imports
 use rocket_ws::{WebSocket, Channel, Message};
 use rocket::futures::{SinkExt, StreamExt};
 
 use crate::data::PlayerEvent;
-use crate::audiocontrol::eventbus::{EventBus, EventSubscription as BusSubscription};
+use crate::audiocontrol::eventbus::EventBus;
 
 /// New format for WebSocket messages with source at top level
 #[derive(Debug, Clone, Serialize)]

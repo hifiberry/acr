@@ -3,7 +3,7 @@ use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, Playbac
 use crate::data::library::LibraryInterface;
 use crate::constants::API_PREFIX;
 use delegate::delegate;
-use std::sync::{Arc, Weak, Mutex};
+use std::sync::{Arc, Mutex};
 use log::{debug, info, warn, error, trace};
 use mpd::{Client, error::Error as MpdError, idle::Subsystem};
 use mpd::Idle; // Add the Idle trait import

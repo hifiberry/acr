@@ -1,5 +1,13 @@
 # rust-debian-package/rust-debian-package/debian/changelog
-acr (0.1.0) unstable; urgency=medium
-  * Initial release of the Rust Debian package.
+acr (0.2.0) unstable; urgency=medium
+  * Added Lyrion media server support
+  * Integrated Last.fm functionality
+  * Enhanced messaging system
+  * Implemented new caching system for improved performance
+  * Added enhanced metadata capabilities (artist images, album art)
+  * Improved WebSocket API for real-time updates
+  * Enhanced library management system
+  * Added queue management and playlist support
+  * Added multiple player backend support (MPD, LMS)
 
  -- HiFiBerry <info@hifiberry.com>  Thu, 15 May 2025 00:00:00 +0000

@@ -482,6 +482,12 @@
                     <div class="progress-container">
                         <div class="progress-bar" id="progress-bar"></div>
                     </div>
+                    <!-- Display additional song information -->
+                    <div id="song-details" style="font-size: 0.9em; color: #555; margin-top: 10px;">
+                        <div>Album: <span id="song-album">N/A</span></div>
+                        <div>Track: <span id="song-track-number">N/A</span></div>
+                        <div>Liked: <button id="song-liked-button" style="border: none; background: none; font-size: 1.2em; cursor: pointer; padding: 0; vertical-align: middle;">?</button></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -500,10 +506,13 @@
             <div class="queue-container" id="queue-container">
                 <div class="queue-message">Loading queue...</div>
             </div>
-        </div>
-    </div>
+        </div>    </div>
     
-    <script>
+    <!-- Import player functions -->
+    <script type="module">
+        // Import the player functions from the module
+        import * as PlayerFunctions from './player-functions.js';
+        
         // DOM Elements
         const playerSelect = document.getElementById('player-select');
         const refreshBtn = document.getElementById('refresh-btn');
@@ -528,140 +537,109 @@
         const refreshQueueBtn = document.getElementById('refresh-queue-btn');
         const clearQueueBtn = document.getElementById('clear-queue-btn');
         
+        // Additional song info elements
+        const songAlbum = document.getElementById('song-album');
+        const songTrackNumber = document.getElementById('song-track-number');
+        const songLikedButton = document.getElementById('song-liked-button');
+        
         // Configuration
-        const CONFIG = {
-            pollingInterval: 30000, // Time in milliseconds between updates (30 seconds)
-            fastUpdateAfterCommand: 300, // Time to wait for quick update after sending a command
-            wsReconnectInterval: 5000,  // Time to wait before attempting to reconnect WebSocket
-            progressUpdateInterval: 500  // Time in milliseconds between progress bar updates (0.5 seconds)
-        };
+        const CONFIG = PlayerFunctions.PLAYER_CONFIG;
         
         // API Endpoints
         const API_BASE = '/api';
         let updateInterval = null;
         let currentData = null;
         let currentPlayerName = null; // Track the current player name for commands
-        let socket = null; // WebSocket connection
-        let reconnectInterval = null; // Interval for WebSocket reconnection attempts
         let progressInterval = null; // Interval for auto progress updates
         let lastProgressUpdate = null; // Timestamp of the last progress update
-        let playerCapabilities = { // Default capabilities (all disabled)
-            canPlay: false,
-            canPause: false,
-            canStop: false,
-            canPrevious: false,
-            canNext: false,
-            canSeek: false,
-            hasQueue: false,
-            canShuffle: false,
-            canLoop: false
-        };
+        let playerCapabilities = { ...PlayerFunctions.DEFAULT_CAPABILITIES };
 
-        // Extract player capabilities from response data
-        function extractPlayerCapabilities(data) {
-            const capabilities = {
-                canPlay: false,
-                canPause: false,
-                canStop: false,
-                canPrevious: false,
-                canNext: false,
-                canSeek: false,
-                hasQueue: false,
-                canShuffle: false,
-                canLoop: false
-            };
-            
-            if (!data || !data.player) {
-                return capabilities;
-            }
-            
-            // Check if player metadata contains capabilities information
-            if (data.player.metadata && data.player.metadata.capabilities) {
-                const caps = data.player.metadata.capabilities;
-                capabilities.canPlay = caps.includes('play');
-                capabilities.canPause = caps.includes('pause');
-                capabilities.canStop = caps.includes('stop');
-                capabilities.canPrevious = caps.includes('previous');
-                capabilities.canNext = caps.includes('next');
-                capabilities.canSeek = caps.includes('seek');
-                capabilities.hasQueue = caps.includes('queue');
-                capabilities.canShuffle = caps.includes('shuffle') || caps.includes('random');
-                capabilities.canLoop = caps.includes('loop');
-                return capabilities;
-            }
-            
-            // Alternative: Check if capabilities are directly in player info
-            if (data.player.capabilities) {
-                const caps = data.player.capabilities;
-                capabilities.canPlay = caps.includes('play');
-                capabilities.canPause = caps.includes('pause');
-                capabilities.canStop = caps.includes('stop');
-                capabilities.canPrevious = caps.includes('previous');
-                capabilities.canNext = caps.includes('next');
-                capabilities.canSeek = caps.includes('seek');
-                capabilities.hasQueue = caps.includes('queue');
-                capabilities.canShuffle = caps.includes('shuffle') || caps.includes('random');
-                capabilities.canLoop = caps.includes('loop');
-                return capabilities;
-            }
-            
-            // Fallback: If no explicit capabilities, infer from player state
-            // Most players will support basic operations
-            if (data.player.is_active) {
-                capabilities.canPlay = true;
-                capabilities.canPause = true;
-                capabilities.canStop = true;
-                
-                // Assume track navigation if a song is playing
-                if (data.song) {
-                    capabilities.canPrevious = true;
-                    capabilities.canNext = true;
-                }
-                
-                // If player has shuffle or loop state, assume it can change these
-                if (typeof data.shuffle === 'boolean') {
-                    capabilities.canShuffle = true;
-                }
-                
-                if (data.loop_mode) {
-                    capabilities.canLoop = true;
-                }
-                
-                // If position is reported, assume seeking is possible
-                if (data.position !== undefined && data.position !== null) {
-                    capabilities.canSeek = true;
-                }
-                
-                // If the player has a library, assume it also has a queue
-                if (data.player.has_library) {
-                    capabilities.hasQueue = true;
-                }
-            }
-            
-            return capabilities;
-        }
-
-        // Event Handlers
-        playerSelect.addEventListener('change', switchPlayer); // Switch player immediately on selection
+        // WebSocket management
+        let socket = null;
+        let reconnectInterval = null;
+        let wsController = null;
+              // Event Handlers
+        playerSelect.addEventListener('change', () => switchPlayer()); // Switch player immediately on selection
         refreshBtn.addEventListener('click', fetchPlayers);
-        playPauseBtn.addEventListener('click', togglePlayPause);
-        stopBtn.addEventListener('click', () => sendCommand('stop'));
-        prevBtn.addEventListener('click', () => sendCommand('previous'));
-        nextBtn.addEventListener('click', () => sendCommand('next'));
-        loopModeBtn.addEventListener('click', cycleLoopMode);
-        toggleShuffleBtn.addEventListener('click', toggleShuffle);
-        libraryBtn.addEventListener('click', openPlayerLibrary);
+        playPauseBtn.addEventListener('click', () => {
+            PlayerFunctions.togglePlayPause(currentData, currentPlayerName, API_BASE)
+                .then(success => {
+                    if (success) {
+                        setTimeout(fetchCurrentPlayer, CONFIG.fastUpdateAfterCommand);
+                    }
+                });
+        });
+        stopBtn.addEventListener('click', () => {
+            PlayerFunctions.sendCommand('stop', currentPlayerName, API_BASE)
+                .then(success => {
+                    if (success) {
+                        setTimeout(fetchCurrentPlayer, CONFIG.fastUpdateAfterCommand);
+                    }
+                });
+        });
+        prevBtn.addEventListener('click', () => {
+            PlayerFunctions.sendCommand('previous', currentPlayerName, API_BASE)
+                .then(success => {
+                    if (success) {
+                        setTimeout(fetchCurrentPlayer, CONFIG.fastUpdateAfterCommand);
+                    }
+                });
+        });
+        nextBtn.addEventListener('click', () => {
+            PlayerFunctions.sendCommand('next', currentPlayerName, API_BASE)
+                .then(success => {
+                    if (success) {
+                        setTimeout(fetchCurrentPlayer, CONFIG.fastUpdateAfterCommand);
+                    }
+                });
+        });
+        loopModeBtn.addEventListener('click', () => {
+            PlayerFunctions.cycleLoopMode(currentData, currentPlayerName, API_BASE)
+                .then(success => {
+                    if (success) {
+                        setTimeout(fetchCurrentPlayer, CONFIG.fastUpdateAfterCommand);
+                    }
+                });
+        });
+        toggleShuffleBtn.addEventListener('click', () => {
+            PlayerFunctions.toggleShuffle(currentPlayerName, API_BASE)
+                .then(success => {
+                    if (success) {
+                        setTimeout(fetchCurrentPlayer, CONFIG.fastUpdateAfterCommand);
+                    }
+                });
+        });        libraryBtn.addEventListener('click', async () => {
+            let playerNameToUse = currentPlayerName;
+            
+            if (!playerNameToUse) {
+                // If no specific player is selected, get the actual active player
+                try {
+                    playerNameToUse = await PlayerFunctions.change_active_player();
+                } catch (error) {
+                    console.error('Error getting active player name:', error);
+                    playerNameToUse = 'active'; // Fallback on error
+                }
+            }
+            
+            PlayerFunctions.openPlayerLibrary(playerNameToUse);
+        });
         
         // Queue control event handlers
         refreshQueueBtn.addEventListener('click', fetchQueue);
-        clearQueueBtn.addEventListener('click', clearQueue);
-        
-        // Initialize on page load
+        clearQueueBtn.addEventListener('click', () => {
+            PlayerFunctions.clearQueue(currentPlayerName, API_BASE)
+                .then(success => {
+                    if (success) {
+                        setTimeout(fetchQueue, CONFIG.fastUpdateAfterCommand);
+                    }
+                });
+        });
+          // Initialize on page load
         document.addEventListener('DOMContentLoaded', initialize);
         
-        function initialize() {
-            fetchPlayers();
-            fetchCurrentPlayer();
+        async function initialize() {
+            await fetchPlayers();
+            await fetchCurrentPlayer();
             
             // Set up periodic updates using the configured polling interval
             updateInterval = setInterval(fetchCurrentPlayer, CONFIG.pollingInterval);
@@ -677,32 +655,21 @@
         function setupProgressBarClickHandler() {
             const progressContainer = document.querySelector('.progress-container');
             
-            progressContainer.addEventListener('click', function(event) {
-                // Only allow seeking if we have a song playing and the player supports seeking
-                if (!currentData || !currentData.song || !currentData.song.duration || !playerCapabilities.canSeek) {
-                    return;
-                }
-                
-                // Calculate the position to seek to based on the click position
-                const rect = this.getBoundingClientRect();
-                const clickOffset = event.clientX - rect.left;
-                const clickPercentage = clickOffset / rect.width;
-                const seekPosition = currentData.song.duration * clickPercentage;
-                
-                // Send the seek command
-                console.log(`Seeking to position: ${formatTime(seekPosition)} (${Math.round(clickPercentage * 100)}%)`);
-                seekToPosition(seekPosition);
-            });
+            PlayerFunctions.setupProgressBarClickHandler(
+                progressContainer, 
+                seekToPosition, 
+                currentData, 
+                playerCapabilities
+            );
         }
         
         // Send seek command to player
         async function seekToPosition(position) {
             try {
-                const seekCommand = `seek:${Math.floor(position)}`;
-                await sendCommand(seekCommand);
+                const success = await PlayerFunctions.seekToPosition(position, currentPlayerName, API_BASE);
                 
-                // Update local position immediately for smoother UI
-                if (currentData && currentData.song) {
+                if (success && currentData && currentData.song) {
+                    // Update local position immediately for smoother UI
                     currentData.position = position;
                     updateProgressBar();
                 }
@@ -713,61 +680,11 @@
         
         // Fetch available players
         async function fetchPlayers() {
-            try {
-                const response = await fetch(`${API_BASE}/players`);
-                const data = await response.json();
-                
-                if (data.players && Array.isArray(data.players)) {
-                    updatePlayerDropdown(data.players);
-                } else {
-                    console.error('Invalid players data structure:', data);
-                }
-            } catch (error) {
-                console.error('Failed to fetch players:', error);
-            }
+            const players = await PlayerFunctions.fetchPlayers(API_BASE);
+            PlayerFunctions.updatePlayerDropdown(players, playerSelect, libraryBtn, (name) => { currentPlayerName = name; });
         }
-        
-        // Update player dropdown with available players
-        function updatePlayerDropdown(players) {
-            playerSelect.innerHTML = '';
-            
-            if (players.length === 0) {
-                const option = document.createElement('option');
-                option.value = '';
-                option.textContent = 'No players available';
-                playerSelect.appendChild(option);
-                return;
-            }
-            
-            // Add a default option for the active player
-            const defaultOption = document.createElement('option');
-            defaultOption.value = '';
-            defaultOption.textContent = 'Default (Active Player)';
-            playerSelect.appendChild(defaultOption);
-            
-            // Find the active player for library button state
-            const activePlayer = players.find(player => player.is_active);
-            if (activePlayer) {
-                // Update library button state based on active player
-                const hasLibrary = activePlayer.has_library;
-                libraryBtn.disabled = !hasLibrary;
-                
-                // Mark the default option as selected
-                defaultOption.selected = true;
-                currentPlayerName = null; // Use the default active player
-            }
-            
-            // Add remaining players to dropdown
-            players.forEach(player => {
-                const option = document.createElement('option');
-                option.value = player.name;
-                option.textContent = player.name;
-                playerSelect.appendChild(option);
-            });
-        }
-        
-        // Switch to selected player
-        function switchPlayer() {
+          // Switch to selected player
+        async function switchPlayer() {
             const selectedPlayer = playerSelect.value;
             
             if (!selectedPlayer) {
@@ -782,634 +699,325 @@
             fetchCurrentPlayer();
             
             // Update WebSocket subscription for the new player
-            subscribeToPlayerEvents();
+            await subscribeToPlayerEvents();
             
             // Reset the queue display
             queueContainer.innerHTML = '<div class="queue-message">Loading queue...</div>';
             queueContainer.removeAttribute('data-loaded');
             // Queue will be fetched when capabilities are updated
         }
-        
-        // Toggle play/pause based on current state
-        function togglePlayPause() {
-            if (!currentData) return;
-            
-            // Check state case-insensitively to handle different API response formats
-            const isPlaying = currentData.state && 
-                             currentData.state.toLowerCase() === 'playing';
-            
-            const command = isPlaying ? 'pause' : 'play';
-            console.log(`Sending command: ${command} based on state: ${currentData.state}`);
-            sendCommand(command);
-        }
-        
-        // Cycle through loop modes: None -> Track -> Playlist -> None
-        function cycleLoopMode() {
-            if (!currentData) return;
-            
-            let nextMode;
-            // Check the loop mode value case-insensitively since API might use different cases
-            const currentMode = (currentData.loop_mode || '').toLowerCase();
-            
-            console.log(`Current loop mode: ${currentMode}`);
-            
-            switch(currentMode) {
-                case 'none':
-                case 'no':
-                    nextMode = 'track';
-                    break;
-                case 'track':
-                case 'song':
-                    nextMode = 'playlist';
-                    break;
-                case 'playlist':
-                default:
-                    nextMode = 'none';
-                    break;
-            }
-            
-            console.log(`Setting new loop mode: ${nextMode}`);
-            sendCommand(`set_loop:${nextMode}`);
-        }
-        
-        // Fetch current player and now playing information
+          // Fetch current player and now playing information
         async function fetchCurrentPlayer() {
             try {
-                const response = await fetch(`${API_BASE}/now-playing`);
-                const data = await response.json();
+                const data = await PlayerFunctions.fetchCurrentPlayer(API_BASE);
                 
-                currentData = data;
-                updatePlayerInfo(data);
-                updateNowPlaying(data);
-                updateControlButtons(data);
+                if (data) {
+                    // If we're using the "Default (Active Player)" option (currentPlayerName is null)
+                    // and the active player has changed, we need to resubscribe
+                    const oldPlayerName = currentData?.player?.name;
+                    const newPlayerName = data.player?.name;
+                    const needsResubscribe = !currentPlayerName && oldPlayerName !== newPlayerName;
+                    
+                    currentData = data;
+                    
+                    // Extract player capabilities
+                    playerCapabilities = PlayerFunctions.extractPlayerCapabilities(data);
+                    
+                    // Update UI components
+                    PlayerFunctions.updatePlayerInfo(data, currentPlayerInfo, libraryBtn);
+                    
+                    PlayerFunctions.updateNowPlaying(
+                        data, 
+                        nowPlayingInfo, 
+                        progressBar, 
+                        songThumbnail, 
+                        noThumbnail, 
+                        startAutoProgress, 
+                        stopAutoProgress
+                    );
+                    
+                    const buttons = {
+                        playPauseBtn,
+                        stopBtn,
+                        prevBtn,
+                        nextBtn,
+                        loopModeBtn,
+                        toggleShuffleBtn,
+                        libraryBtn
+                    };
+                    
+                    PlayerFunctions.updateControlButtons(
+                        data, 
+                        playerCapabilities, 
+                        buttons, 
+                        queuePanel, 
+                        queueContainer, 
+                        fetchQueue
+                    );
+                    
+                    // If the player has a library, update the library button
+                    if (data.player && data.player.has_library) {
+                        libraryBtn.disabled = false;
+                    } else {
+                        libraryBtn.disabled = true;
+                    }
+                    
+                    // Resubscribe if needed (active player changed while using default selection)
+                    if (needsResubscribe) {
+                        console.log(`Active player changed from ${oldPlayerName || 'none'} to ${newPlayerName || 'none'}, resubscribing...`);
+                        await subscribeToPlayerEvents();
+                    }
+                }
             } catch (error) {
                 console.error('Failed to fetch current player:', error);
             }
         }
         
-        // Update player info display
-        function updatePlayerInfo(data) {
-            if (data.player && data.player.name) {
-                const stateClass = `state-${data.state.toLowerCase()}`;
-                currentPlayerInfo.innerHTML = `
-                    <div>
-                        <span class="state-indicator ${stateClass}"></span>
-                        <strong>${data.player.name}</strong> (${data.state})
-                    </div>
-                `;
-
-                // Update Library button link if player has a library
-                const hasLibrary = data.player.has_library;
-                libraryBtn.disabled = !hasLibrary;
-                if (hasLibrary) {
-                    libraryBtn.href = `library.html?player=${encodeURIComponent(data.player.name)}`;
-                }
-            } else {
-                currentPlayerInfo.textContent = 'No active player';
-            }
-        }
-        
-        // Update now playing information
-        function updateNowPlaying(data) {
-            if (data.song) {
-                const song = data.song;
-                const position = data.position ? formatTime(data.position) : '0:00';
-                const duration = song.duration ? formatTime(song.duration) : '0:00';
-                
-                // Update progress bar
-                if (song.duration && data.position) {
-                    const percentage = (data.position / song.duration) * 100;
-                    progressBar.style.width = `${percentage}%`;
-                } else {
-                    progressBar.style.width = '0%';
-                }
-                
-                nowPlayingInfo.innerHTML = `
-                    <div><strong>Title:</strong> ${song.title || 'Unknown'}</div>
-                    <div><strong>Artist:</strong> ${song.artist || 'Unknown'}</div>
-                    ${song.album ? `<div><strong>Album:</strong> ${song.album}</div>` : ''}
-                    <div><strong>Position:</strong> ${position} / ${duration}</div>
-                `;
-
-                // Update song thumbnail - prioritize cover_art_url over thumbnail
-                if (song.cover_art_url) {
-                    console.log("Using cover_art_url for album art:", song.cover_art_url);
-                    songThumbnail.src = song.cover_art_url;
-                    songThumbnail.style.display = 'inline-block';
-                    noThumbnail.style.display = 'none';
-                } else if (song.thumbnail) {
-                    console.log("Using thumbnail for album art:", song.thumbnail);
-                    songThumbnail.src = song.thumbnail;
-                    songThumbnail.style.display = 'inline-block';
-                    noThumbnail.style.display = 'none';
-                } else {
-                    console.log("No album art available");
-                    songThumbnail.style.display = 'none';
-                    noThumbnail.style.display = 'inline-flex';
-                }
-                
-                // Start auto progress updates if the player is playing
-                if (data.state && data.state.toLowerCase() === 'playing') {
-                    // Reset the timestamp to now whenever we get a real update
-                    lastProgressUpdate = Date.now();
-                    startAutoProgress();
-                } else {
-                    stopAutoProgress();
-                }
-            } else {
-                nowPlayingInfo.textContent = 'Nothing playing';
-                progressBar.style.width = '0%';
-                songThumbnail.style.display = 'none';
-                noThumbnail.style.display = 'inline-flex';
-                stopAutoProgress();
-            }
-        }
-        
-        // Update control buttons based on available capabilities and current state
-        function updateControlButtons(data) {
-            // Extract player capabilities
-            playerCapabilities = extractPlayerCapabilities(data);
-            
-            // Check playback state
-            const isPlaying = data.state && data.state.toLowerCase() === 'playing';
-            const isPaused = data.state && data.state.toLowerCase() === 'paused'; 
-            const isPlayingOrPaused = isPlaying || isPaused;
-            
-            // Enable/disable buttons based on player capabilities
-            playPauseBtn.disabled = !(playerCapabilities.canPlay || playerCapabilities.canPause);
-            stopBtn.disabled = !playerCapabilities.canStop || !isPlayingOrPaused;
-            prevBtn.disabled = !playerCapabilities.canPrevious;
-            nextBtn.disabled = !playerCapabilities.canNext;
-            loopModeBtn.disabled = !playerCapabilities.canLoop;
-            toggleShuffleBtn.disabled = !playerCapabilities.canShuffle;
-            
-            // Enable/disable Library button based on whether player has a library
-            const hasLibrary = data.player && data.player.has_library;
-            libraryBtn.disabled = !hasLibrary;
-            
-            // Show or hide queue panel based on whether player supports queue
-            if (playerCapabilities.hasQueue) {
-                queuePanel.style.display = 'block';
-                // Fetch queue if it's now visible and we haven't already
-                if (!queueContainer.hasAttribute('data-loaded')) {
-                    fetchQueue();
-                }
-            } else {
-                queuePanel.style.display = 'none';
-            }
-            
-            // Update play/pause button icon based on state
-            if (playPauseBtn.disabled === false) {
-                // Update play/pause button icon
-                if (isPlaying) {
-                    playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
-                    playPauseBtn.title = 'Pause';
-                } else {
-                    playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
-                    playPauseBtn.title = 'Play';
-                }
-            }
-            
-            if (loopModeBtn.disabled === false) {
-                // Update loop mode button
-                let loopIcon, loopText;
-                const loopMode = (data.loop_mode || '').toLowerCase();
-                
-                switch(loopMode) {
-                    case 'track':
-                    case 'song':
-                        loopIcon = 'fa-redo';
-                        loopText = 'Loop: Track';
-                        break;
-                    case 'playlist':
-                        loopIcon = 'fa-retweet';
-                        loopText = 'Loop: Playlist';
-                        break;
-                    case 'none':
-                    case 'no':
-                    default:
-                        loopIcon = 'fa-times';
-                        loopText = 'Loop: None';
-                        break;
-                }
-                loopModeBtn.innerHTML = `<i class="fas ${loopIcon}"></i> ${loopText}`;
-                loopModeBtn.classList.toggle('active', loopMode !== 'none' && loopMode !== 'no');
-            }
-            
-            if (toggleShuffleBtn.disabled === false) {
-                // Update shuffle button state
-                toggleShuffleBtn.classList.toggle('active', data.shuffle);
-                toggleShuffleBtn.innerHTML = `<i class="fas fa-random"></i> Shuffle: ${data.shuffle ? 'On' : 'Off'}`;
-            }
-            
-            // Log the current capabilities
-            console.log('Player capabilities:', playerCapabilities);
-        }
-        
-        // Send command to player
-        async function sendCommand(command) {
+        // Fetch the queue for the current player
+        async function fetchQueue() {
             try {
-                // Build the URL based on whether we're using a specific player or the active player
-                let url;
-                if (currentPlayerName) {
-                    // Send to specific player
-                    url = `${API_BASE}/player/${currentPlayerName}/command/${command}`;
-                } else {
-                    // Send to active player (default)
-                    url = `${API_BASE}/player/active/command/${command}`;
-                }
+                // Display loading message
+                queueContainer.innerHTML = '<div class="queue-message">Loading queue...</div>';
                 
-                console.log(`Sending command to: ${url}`);
-                const response = await fetch(url, {
-                    method: 'POST'
-                });
+                // Reset the loaded flag
+                queueContainer.removeAttribute('data-loaded');
                 
-                if (response.ok) {
-                    // Update UI after command was successfully sent
+                // Fetch queue data
+                const data = await PlayerFunctions.fetchQueue(currentPlayerName, API_BASE);
+                const queueData = { queue: data };
+                
+                // Display queue data
+                PlayerFunctions.displayQueue(
+                    queueData, 
+                    queueContainer, 
+                    queueCount, 
+                    currentData, 
+                    (index) => { playQueueIndex(index); }, 
+                    (position) => { removeTrackFromQueue(position); }
+                );
+                
+                // Mark as loaded
+                queueContainer.setAttribute('data-loaded', 'true');
+            } catch (error) {
+                console.error('Error fetching queue:', error);
+                queueContainer.innerHTML = '<div class="queue-message">Failed to load queue</div>';
+            }
+        }
+        
+        // Play a track from the queue by its index
+        async function playQueueIndex(index) {
+            try {
+                const success = await PlayerFunctions.playQueueIndex(index, currentPlayerName, API_BASE);
+                if (success) {
                     setTimeout(fetchCurrentPlayer, CONFIG.fastUpdateAfterCommand);
-                } else {
-                    console.error('Failed to send command:', await response.text());
                 }
             } catch (error) {
-                console.error('Error sending command:', error);
+                console.error('Error playing queue index:', error);
             }
         }
         
-        // Toggle shuffle state
-        async function toggleShuffle() {
+        // Remove a track from the queue
+        async function removeTrackFromQueue(position) {
             try {
-                // First fetch the current state to toggle it
-                const response = await fetch(`${API_BASE}/now-playing`);
-                const data = await response.json();
-                
-                if (data.shuffle !== undefined) {
-                    // Send the opposite of the current shuffle state
-                    await sendCommand(`set_random:${!data.shuffle}`);
+                const success = await PlayerFunctions.removeTrackFromQueue(position, currentPlayerName, API_BASE);
+                if (success) {
+                    setTimeout(fetchQueue, CONFIG.fastUpdateAfterCommand);
                 }
             } catch (error) {
-                console.error('Error toggling shuffle:', error);
+                console.error('Error removing track from queue:', error);
             }
         }
-        
-        // Format time in seconds to MM:SS or HH:MM:SS
-        function formatTime(seconds) {
-            if (seconds === undefined || seconds === null) return '00:00';
-            
-            seconds = Math.floor(seconds);
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const secs = seconds % 60;
-            
-            if (hours > 0) {
-                return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-            } else {
-                return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-            }
-        }
-        
-        // Setup WebSocket connection
+          // Setup WebSocket connection
         function setupWebSocket() {
-            // Close any existing connection first
-            if (socket) {
-                console.log('Closing existing WebSocket connection before creating a new one');
-                socket.onclose = null; // Remove the event handler to avoid reconnect loops
-                if (socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
-                    socket.close();
-                }
-                socket = null;
+            // Close any existing WebSocket controller
+            if (wsController) {
+                wsController.disconnect();
+                wsController = null;
             }
             
-            // Clear any existing reconnect interval
-            if (reconnectInterval) {
-                clearInterval(reconnectInterval);
-                reconnectInterval = null;
-            }
-            
-            // Create WebSocket connection
-            const wsUrl = `ws://${window.location.hostname}:${window.location.port || 1080}/api/events`;
-            console.log(`Connecting to WebSocket at: ${wsUrl}`);
-            
-            try {
-                socket = new WebSocket(wsUrl);
-                
-                socket.onopen = function() {
+            // Create a new WebSocket controller
+            wsController = PlayerFunctions.createPlayerWebSocket({
+                hostname: window.location.hostname,
+                port: window.location.port || 1080,
+                onConnect: () => {
                     console.log('WebSocket connected');
-                    websocketStatus.querySelector('.indicator').style.backgroundColor = '#28a745';
-                    websocketStatus.querySelector('span').textContent = 'Connected';
-                    
-                    // Subscribe to events for the current player
-                    subscribeToPlayerEvents();
-                    
-                    // Clear any reconnect interval
-                    if (reconnectInterval) {
-                        clearInterval(reconnectInterval);
-                        reconnectInterval = null;
-                    }
-                };
-                
-                socket.onmessage = function(event) {
-                    try {
-                        const data = JSON.parse(event.data);
-                        console.log('WebSocket message received:', data);
-                        
-                        // Handle welcome message
-                        if (data.type === 'welcome' || data.type === 'subscription_updated') {
-                            console.log('WebSocket:', data.message);
-                            return;
-                        }
-                        
-                        // Process player events
-                        handlePlayerEvent(data);
-                    } catch (error) {
-                        console.error('Error parsing WebSocket message:', error);
-                    }
-                };
-                
-                socket.onclose = function(event) {
-                    console.log(`WebSocket disconnected (code: ${event.code}, reason: ${event.reason || 'No reason given'})`);
-                    websocketStatus.querySelector('.indicator').style.backgroundColor = '#dc3545';
-                    websocketStatus.querySelector('span').textContent = 'Disconnected';
-                    
-                    // Attempt to reconnect, but only if not closing intentionally
-                    if (event.code !== 1000 && event.code !== 1001) {
-                        console.log('Scheduling reconnection attempt...');
-                        if (!reconnectInterval) {
-                            reconnectInterval = setTimeout(() => {
-                                console.log('Attempting to reconnect WebSocket...');
-                                setupWebSocket();
-                            }, CONFIG.wsReconnectInterval);
-                        }
-                    }
-                };
-                
-                socket.onerror = function(error) {
+                    // Use async/await with the subscribe function
+                    (async () => {
+                        await subscribeToPlayerEvents();
+                    })();
+                },
+                onDisconnect: () => {
+                    console.log('WebSocket disconnected');
+                },
+                onMessage: (data) => {
+                    handlePlayerEvent(data);
+                },
+                onError: (error) => {
                     console.error('WebSocket error:', error);
-                    // Error handling is managed by onclose handler
-                };
-            } catch (error) {
-                console.error('Failed to create WebSocket connection:', error);
-                websocketStatus.querySelector('.indicator').style.backgroundColor = '#dc3545';
-                websocketStatus.querySelector('span').textContent = 'Connection Failed';
-                
-                // Schedule reconnection attempt
-                if (!reconnectInterval) {
-                    reconnectInterval = setTimeout(setupWebSocket, CONFIG.wsReconnectInterval);
-                }
-            }
-        }
-        
-        // Subscribe to events for the current player
-        function subscribeToPlayerEvents() {
+                },
+                statusIndicator: websocketStatus.querySelector('.indicator'),
+                statusText: websocketStatus.querySelector('span')
+            });
+            
+            // Connect to the WebSocket
+            wsController.connect();
+        }        // Subscribe to events for the current player
+        async function subscribeToPlayerEvents() {
+            if (!wsController) return;
+            
+            const socket = wsController.getSocket();
             if (!socket || socket.readyState !== WebSocket.OPEN) {
                 console.warn('Cannot subscribe to player events: WebSocket not open');
                 return;
             }
             
-            // Get the current player name to subscribe to
-            const playerToSubscribe = currentPlayerName || 'active';
+            // Get the player name to subscribe to
+            let playerToSubscribe;
             
-            // Create subscription message - using proper format expected by the server
-            const subscription = {
-                "players": playerToSubscribe === 'active' ? null : [playerToSubscribe],
-                "event_types": [
-                    "state_changed",
-                    "song_changed",
-                    "position_changed",
-                    "loop_mode_changed", 
-                    "shuffle_changed",
-                    "capabilities_changed",
-                    "metadata_changed"
-                ]
-            };
+            if (currentPlayerName) {
+                // We have a specific player selected
+                playerToSubscribe = currentPlayerName;
+                console.log(`Using selected player for subscription: ${playerToSubscribe}`);
+            } else {
+                // No specific player selected, get the actual active player name
+                try {
+                    playerToSubscribe = await PlayerFunctions.change_active_player();
+                    if (!playerToSubscribe) {
+                        console.warn('Failed to get active player name, using first available player');
+                        // Try to fetch all players and use the first one if available
+                        const players = await PlayerFunctions.fetchPlayers();
+                        if (players && players.length > 0) {
+                            playerToSubscribe = players[0].name;
+                            console.log(`Using first available player for subscription: ${playerToSubscribe}`);
+                        } else {
+                            console.error('No players available for subscription');
+                            return; // No players available, can't subscribe
+                        }
+                    } else {
+                        console.log(`Retrieved active player for subscription: ${playerToSubscribe}`);
+                    }
+                } catch (error) {
+                    console.error('Error getting active player name:', error);
+                    return; // Can't subscribe without a valid player
+                }
+            }
             
-            console.log(`Subscribing to events for player: ${playerToSubscribe}`, subscription);
-            socket.send(JSON.stringify(subscription));
+            if (!playerToSubscribe) {
+                console.error('No player name available for subscription');
+                return; // Can't subscribe without a valid player
+            }
+            
+            console.log(`Subscribing to player events for: ${playerToSubscribe}`);
+            
+            // Subscribe to player events
+            wsController.subscribe(playerToSubscribe, [
+                "state_changed",
+                "song_changed",
+                "position_changed",
+                "loop_mode_changed", 
+                "shuffle_changed",
+                "capabilities_changed",
+                "metadata_changed",
+                "song_information_update"
+            ]);
         }
         
         // Handle player events received from WebSocket
         function handlePlayerEvent(data) {
-            // Get the event source (player name)
-            const source = data.source || {};
-            const playerName = source.player_name;
-            
-            // Check if this event is for our current player
-            const isForCurrentPlayer = 
-                !currentPlayerName || // We're using the active player
-                playerName === currentPlayerName || // Event is for our selected player
-                (source.is_active && !currentPlayerName); // Event is for the active player and we're using the active player
-                
-            if (!isForCurrentPlayer) {
-                return; // Ignore events for other players
-            }
-            
-            console.log(`Processing event for player: ${playerName}`);
-            
-            // Only process events with the type field (snake_case format)
-            if (data.type) {
-                switch(data.type) {
-                    case 'state_changed':
-                        processStateChange(data.state);
-                        break;
-                    case 'song_changed':
-                        processSongChange(data.song);
-                        break;
-                    case 'position_changed':
-                        processPositionChange(data.position);
-                        break;
-                    case 'loop_mode_changed':
-                        processLoopModeChange(data.mode);
-                        break;
-                    case 'shuffle_changed':
-                        processShuffleChange(data.shuffle);
-                        break;
-                    case 'capabilities_changed':
-                        processCapabilitiesChange(data);
-                        break;
-                    default:
-                        console.log(`Unhandled event type: ${data.type}`);
-                }
+            PlayerFunctions.handlePlayerEvent(data, {
+                currentPlayerName,
+                currentData,
+                fetchPlayers,
+                fetchCurrentPlayer,
+                updatePlayerInfo: (data) => {
+                    PlayerFunctions.updatePlayerInfo(data, currentPlayerInfo, libraryBtn);
+                },
+                updateNowPlaying: (data) => {
+                    PlayerFunctions.updateNowPlaying(
+                        data, 
+                        nowPlayingInfo, 
+                        progressBar, 
+                        songThumbnail, 
+                        noThumbnail, 
+                        startAutoProgress, 
+                        stopAutoProgress
+                    );
+                },
+                updateControlButtons: (data) => {
+                    const buttons = {
+                        playPauseBtn,
+                        stopBtn,
+                        prevBtn,
+                        nextBtn,
+                        loopModeBtn,
+                        toggleShuffleBtn,
+                        libraryBtn
+                    };
+                    
+                    PlayerFunctions.updateControlButtons(
+                        data, 
+                        playerCapabilities, 
+                        buttons, 
+                        queuePanel, 
+                        queueContainer, 
+                        fetchQueue
+                    );
+                },
+                updateSongInfo: (song) => {
+                    PlayerFunctions.updateSongInfo(
+                        song,
+                        nowPlayingInfo,
+                        songThumbnail,
+                        noThumbnail,
+                        progressBar,
+                        songAlbum,
+                        songTrackNumber,
+                        songLikedButton
+                    );
+                },
+                fetchQueue,
+                playerCapabilities
+            });
+        }
+          // Start auto progress updates for the progress bar
+        function startAutoProgress() {
+            PlayerFunctions.startAutoProgress(currentData, progressBar, nowPlayingInfo, fetchCurrentPlayer);
+        }
+        
+        // Stop auto progress updates
+        function stopAutoProgress() {
+            PlayerFunctions.stopAutoProgress();
+        }
+          // Update only the progress bar and position text without updating the entire UI
+        function updateProgressBar() {
+            if (!currentData || !currentData.song || !currentData.position) {
                 return;
             }
-            
-            // If we get here, log the unrecognized format
-            console.log('Unknown event format:', data);
+            PlayerFunctions.updateProgress(currentData.song, currentData.position, progressBar, nowPlayingInfo);
         }
         
-        // Process state change events
-        function processStateChange(newState) {
-            if (!newState) return;
-            
-            console.log(`Player state changed to: ${newState}`);
-            
-            // Update UI for state change
-            if (currentData) {
-                currentData.state = newState;
-                updatePlayerInfo(currentData);
-                updateControlButtons(currentData);
-                
-                // Start or stop auto progress updates based on state
-                if (newState.toLowerCase() === 'playing') {
-                    lastProgressUpdate = Date.now(); // Reset timestamp on play
-                    startAutoProgress();
-                } else {
-                    stopAutoProgress();
-                }
-            } else {
-                // If we don't have current data, fetch everything
-                fetchCurrentPlayer();
-            }
-        }
-        
-        // Process song change events
-        function processSongChange(songData) {
-            if (!songData) return;
-            
-            console.log(`Song changed: ${songData.title || 'Unknown'} by ${songData.artist || 'Unknown'}`);
-            
-            // Update song information
-            if (currentData) {
-                currentData.song = songData;
-                // Reset position to 0 for new song if not provided
-                if (!songData.position) {
-                    currentData.position = 0;
-                }
-                updateNowPlaying(currentData);
-                
-                // Reset and restart auto progress for the new song if playing
-                if (currentData.state && currentData.state.toLowerCase() === 'playing') {
-                    lastProgressUpdate = Date.now();
-                    startAutoProgress();
-                }
-            } else {
-                fetchCurrentPlayer();
-            }
-        }
-        
-        // Process position change events
-        function processPositionChange(positionData) {
-            if (!positionData) return;
-            
-            console.log('Processing position update with data:', positionData);
-            
-            let newPosition;
-            
-            // Handle the different possible formats of position data:
-            if (typeof positionData === 'object') {
-                // Format 1: {position: number, duration: number}
-                if (positionData.position !== undefined) {
-                    newPosition = positionData.position;
-                }
-                // Format 2: direct number value in the object (server oddity)
-                else {
-                    const positionValue = Object.values(positionData)[0];
-                    if (typeof positionValue === 'number') {
-                        newPosition = positionValue;
+        // Create click handler for the liked button
+        songLikedButton.addEventListener('click', () => {
+            PlayerFunctions.toggleLike(currentPlayerName, currentData)
+                .then(success => {
+                    if (success) {
+                        // Update UI to reflect the change
+                        if (currentData && currentData.song) {
+                            const isNowLiked = currentData.song.liked === true;
+                            songLikedButton.textContent = isNowLiked ? '♥' : '♡';
+                            songLikedButton.title = isNowLiked ? 'Liked' : 'Not Liked';
+                            console.log(`Song like status updated to: ${isNowLiked ? 'Liked' : 'Not Liked'}`);
+                        }
                     }
-                }
-            }
-            // Format 3: direct number value
-            else if (typeof positionData === 'number') {
-                newPosition = positionData;
-            }
-            
-            // If we couldn't determine a valid position, return
-            if (newPosition === undefined || isNaN(newPosition)) {
-                console.warn('Could not determine valid position from event data:', positionData);
-                return;
-            }
-            
-            // Only log position changes every 5 seconds to reduce console spam
-            if (Math.floor(newPosition) % 5 === 0) {
-                console.log(`Position changed: ${formatTime(newPosition)}`);
-            }
-            
-            // Update position in UI
-            if (currentData) {
-                currentData.position = newPosition;
-                lastProgressUpdate = Date.now(); // Reset timestamp on position update
-                updateProgressBar(); // Just update the progress bar, not the whole UI
-                
-                // Check if player is playing and restart the progress interval if it is
-                const isPlaying = currentData.state && currentData.state.toLowerCase() === 'playing';
-                console.log(`Player state is: ${currentData.state} (isPlaying: ${isPlaying})`);
-                
-                if (isPlaying) {
-                    console.log(`Position update for playing track - resetting auto progress with position: ${formatTime(newPosition)}`);
-                    stopAutoProgress(); // Make sure any existing interval is cleared
-                    startAutoProgress(); // Start a new interval
-                }
-            }
-        }
-        
-        // Process loop mode change events
-        function processLoopModeChange(newLoopMode) {
-            if (!newLoopMode) return;
-            
-            console.log(`Loop mode changed: ${newLoopMode}`);
-            
-            // Update loop mode in UI
-            if (currentData) {
-                currentData.loop_mode = newLoopMode;
-                updatePlayerInfo(currentData);
-                updateControlButtons(currentData);
-            } else {
-                fetchCurrentPlayer();
-            }
-        }
-        
-        // Process shuffle change events
-        function processShuffleChange(newShuffle) {
-            console.log(`Shuffle mode changed: ${newShuffle}`);
-            
-            // Update shuffle state in UI
-            if (currentData) {
-                currentData.shuffle = newShuffle;
-                updatePlayerInfo(currentData);
-                updateControlButtons(currentData);
-            } else {
-                fetchCurrentPlayer();
-            }
-        }
-        
-        // Process capabilities change events
-        function processCapabilitiesChange(data) {
-            console.log('Player capabilities changed:', data);
-            
-            // Handle capabilities directly if they are provided in the event
-            if (data.capabilities && Array.isArray(data.capabilities)) {
-                const caps = data.capabilities;
-                
-                // Update our capability object
-                playerCapabilities.canPlay = caps.includes('play');
-                playerCapabilities.canPause = caps.includes('pause');
-                playerCapabilities.canStop = caps.includes('stop');
-                playerCapabilities.canPrevious = caps.includes('previous');
-                playerCapabilities.canNext = caps.includes('next');
-                playerCapabilities.canSeek = caps.includes('seek');
-                playerCapabilities.hasQueue = caps.includes('queue');
-                playerCapabilities.canShuffle = caps.includes('shuffle') || caps.includes('random');
-                playerCapabilities.canLoop = caps.includes('loop');
-                
-                console.log('Updated capabilities from event:', playerCapabilities);
-                
-                // Update UI with new capabilities
-                if (currentData) {
-                    updateControlButtons(currentData);
-                }
-            } else {
-                // If capabilities not directly provided, fetch from server
-                console.log('Fetching updated capabilities from server');
-                fetchCurrentPlayer();
-            }
-        }
+                });
+        });
         
         // Clean up resources when page is unloaded
         window.addEventListener('beforeunload', function() {
             // Close WebSocket connection cleanly
-            if (socket) {
-                socket.onclose = null; // Prevent reconnection attempts
-                socket.close();
-                socket = null;
+            if (wsController) {
+                wsController.disconnect();
+                wsController = null;
             }
             
             // Clear any reconnection timers
@@ -1427,281 +1035,7 @@
             // Clear progress update interval
             stopAutoProgress();
         });
-        
-        // Start auto progress updates for the progress bar
-        function startAutoProgress() {
-            // Stop any existing interval first
-            stopAutoProgress();
-            
-            // Only start if we have current data and a song is playing
-            if (!currentData || !currentData.song || !currentData.song.duration) {
-                console.log('Cannot start auto progress: missing song data or duration');
-                return;
-            }
-            
-            const isPlaying = currentData.state && currentData.state.toLowerCase() === 'playing';
-            if (!isPlaying) {
-                console.log('Cannot start auto progress: player is not in playing state');
-                return;
-            }
-            
-            console.log(`Starting auto progress updates from position: ${formatTime(currentData.position || 0)}`);
-            
-            // Ensure position is initialized
-            if (currentData.position === undefined || currentData.position === null) {
-                console.log('Initializing position to 0 as it was undefined');
-                currentData.position = 0;
-            }
-            
-            // Reset the timestamp to now
-            lastProgressUpdate = Date.now();
-            
-            // Create a new interval
-            progressInterval = setInterval(() => {
-                if (!currentData || !currentData.song || !currentData.song.duration) {
-                    console.warn('Progress update: missing song data, stopping auto-updates');
-                    stopAutoProgress();
-                    return;
-                }
-                
-                // Make sure position is defined
-                if (currentData.position === undefined || currentData.position === null) {
-                    currentData.position = 0;
-                }
-                
-                // Calculate how much time has passed since the last position update
-                const now = Date.now();
-                const elapsedSeconds = (now - lastProgressUpdate) / 1000;
-                lastProgressUpdate = now;
-                
-                // Add the elapsed time to the current position
-                currentData.position += elapsedSeconds;
-                
-                // Check if we've reached the end of the song
-                if (currentData.position >= currentData.song.duration) {
-                    // Stop at the end of the song
-                    currentData.position = currentData.song.duration;
-                    
-                    // Force an update of player state from server when we reach the end
-                    console.log('Track reached the end, fetching current player state from server');
-                    fetchCurrentPlayer();
-                    
-                    // Don't stop the timer yet - it will be managed based on the updated state
-                }
-                
-                // Update the progress bar and position display
-                updateProgressBar();
-                
-            }, CONFIG.progressUpdateInterval);
-        }
-        
-        // Stop auto progress updates
-        function stopAutoProgress() {
-            if (progressInterval) {
-                clearInterval(progressInterval);
-                progressInterval = null;
-            }
-        }
-        
-        // Update only the progress bar and position text without updating the entire UI
-        function updateProgressBar() {
-            if (!currentData || !currentData.song || !currentData.position) {
-                return;
-            }
-            
-            const song = currentData.song;
-            
-            // Update progress bar
-            if (song.duration) {
-                const percentage = (currentData.position / song.duration) * 100;
-                progressBar.style.width = `${percentage}%`;
-                
-                // Update position text if it exists in the DOM
-                const positionElement = nowPlayingInfo.querySelector('div:last-child');
-                if (positionElement) {
-                    const position = formatTime(currentData.position);
-                    const duration = formatTime(song.duration);
-                    positionElement.innerHTML = `<strong>Position:</strong> ${position} / ${duration}`;
-                }
-            }
-        }
-        
-        // Open player library
-        function openPlayerLibrary() {
-            if (!currentData || !currentData.player || !currentData.player.name) {
-                console.warn('No player selected to open library');
-                return;
-            }
-            
-            const playerName = currentPlayerName || 'active';
-            const libraryUrl = `library.html?player=${encodeURIComponent(playerName)}`;
-            console.log(`Navigating to library: ${libraryUrl}`);
-            window.location.href = libraryUrl;
-        }
-        
-        // Fetch the queue for the current player
-        async function fetchQueue() {
-            try {
-                // Display loading message
-                queueContainer.innerHTML = '<div class="queue-message">Loading queue...</div>';
-                
-                // Reset the loaded flag
-                queueContainer.removeAttribute('data-loaded');
-                
-                // Determine which player to fetch the queue for
-                const playerToFetch = currentPlayerName || 'active';
-                const apiUrl = `${API_BASE}/player/${playerToFetch}/queue`;
-                
-                console.log(`Fetching queue from: ${apiUrl}`);
-                const response = await fetch(apiUrl);
-                
-                if (!response.ok) {
-                    console.error(`Failed to fetch queue: ${response.status} ${response.statusText}`);
-                    queueContainer.innerHTML = '<div class="queue-message">Failed to load queue</div>';
-                    return;
-                }
-                
-                const data = await response.json();
-                displayQueue(data);
-                
-                // Mark as loaded
-                queueContainer.setAttribute('data-loaded', 'true');
-            } catch (error) {
-                console.error('Error fetching queue:', error);
-                queueContainer.innerHTML = '<div class="queue-message">Failed to load queue</div>';
-            }
-        }
-        
-        // Display the queue data
-        function displayQueue(data) {
-            // Validate data
-            if (!data || !data.queue || !Array.isArray(data.queue)) {
-                queueContainer.innerHTML = '<div class="queue-message">No queue items</div>';
-                queueCount.textContent = '(0)';
-                return;
-            }
-            
-            // Update queue count badge
-            queueCount.textContent = `(${data.queue.length})`;
-            
-            // If queue is empty
-            if (data.queue.length === 0) {
-                queueContainer.innerHTML = '<div class="queue-message">Queue is empty</div>';
-                return;
-            }
-              // Build queue items
-            let queueHtml = '';
-            
-            data.queue.forEach((track, index) => {
-                // Check if this is the currently playing track
-                const isCurrent = currentData && currentData.song && 
-                                  currentData.song.uri === track.uri;
-                
-                const trackTitle = track.name || 'Unknown';
-                const trackArtist = track.artist || 'Unknown Artist';
-                
-                queueHtml += `
-                    <div class="queue-item ${isCurrent ? 'current' : ''}" data-uri="${track.uri || ''}" data-position="${index}" data-index="${index}">
-                        <div class="queue-item-info">
-                            <div class="queue-item-title">${isCurrent ? '▶ ' : ''}${trackTitle}</div>
-                            <div class="queue-item-artist">${trackArtist}</div>
-                        </div>
-                        <div class="queue-item-actions">
-                            <button class="queue-action-btn play-track-btn" title="Play Now" data-index="${index}">
-                                <i class="fas fa-play"></i>
-                            </button>
-                            <button class="queue-action-btn remove-track-btn" title="Remove" data-position="${index}">
-                                <i class="fas fa-times"></i>
-                            </button>
-                        </div>
-                    </div>
-                `;
-            });
-            
-            // Set HTML content
-            queueContainer.innerHTML = queueHtml;
-            
-            // Add event listeners to the queue action buttons
-            const playButtons = queueContainer.querySelectorAll('.play-track-btn');
-            const removeButtons = queueContainer.querySelectorAll('.remove-track-btn');
-              // Play track buttons
-            playButtons.forEach(button => {
-                button.addEventListener('click', function() {
-                    const index = parseInt(this.getAttribute('data-index'), 10);
-                    if (!isNaN(index)) {
-                        playQueueIndex(index);
-                    }
-                });
-            });
-            
-            // Remove track buttons
-            removeButtons.forEach(button => {
-                button.addEventListener('click', function() {
-                    const trackPosition = this.getAttribute('data-position');
-                    if (trackPosition) {
-                        removeTrackFromQueue(trackPosition);
-                    }
-                });
-            });
-        }
-          // Play a track from the queue by URI
-        function playTrackByUri(uri) {
-            if (!uri) return;
-            
-            console.log(`Playing track with URI: ${uri}`);
-            sendCommand(`play_uri:${uri}`);
-        }
-        
-        // Play a track from the queue by its index
-        function playQueueIndex(index) {
-            if (index === undefined || index === null) return;
-            
-            console.log(`Playing track at index: ${index} in queue`);
-            sendCommand(`play_queue_index:${index}`);
-        }
-        // Remove a track from the queue
-        async function removeTrackFromQueue(position) {
-            if (position === undefined || position === null) return;
-            
-            console.log(`Removing track at position: ${position} from queue`);
-            
-            try {
-                await sendCommand(`remove_track:${position}`);
-                // Refresh the queue after removing
-                setTimeout(fetchQueue, CONFIG.fastUpdateAfterCommand);
-            } catch (error) {
-                console.error('Error removing track from queue:', error);
-            }
-        }
-        
-        // Clear the entire queue
-        async function clearQueue() {
-            if (!confirm('Are you sure you want to clear the entire queue?')) {
-                return;
-            }
-            
-            console.log('Clearing queue');
-            
-            try {
-                await sendCommand('clear_queue');
-                // Refresh the queue after clearing
-                setTimeout(fetchQueue, CONFIG.fastUpdateAfterCommand);
-            } catch (error) {
-                console.error('Error clearing queue:', error);
-            }
-        }
-        
-        // Call this function when switching players or when capabilities change
-        // to update the queue display if needed
-        function updateQueueDisplay() {
-            // Check if we should show the queue panel
-            if (playerCapabilities.hasQueue) {
-                queuePanel.style.display = 'block';
-                fetchQueue();
-            } else {
-                queuePanel.style.display = 'none';
-            }
-        }    </script>
+    </script>
     <script src="queue-event-listeners.js"></script>
 </body>
 </html>

@@ -4,9 +4,7 @@
             "active-monitor": {
                 "enabled": true
             }
-        }
-    ],
-    "event_filters": [
+        },
         {
             "event-logger": {
                 "enabled": true,
@@ -15,10 +13,20 @@
                     "song",
                     "loop",
                     "capabilities",
-                    "position"
+                    "position",
+                    "song_information_update",
+                    "state_changed"
                 ],
                 "log_level": "info",
                 "only_active": false
+            }
+        },
+        {
+            "lastfm": {
+                "enabled": true,
+                "api_key": "",
+                "api_secret": "",
+                "scrobble": true
             }
         }
     ],
@@ -39,11 +47,22 @@
     },    "musicbrainz": {
         "enable": true,
         "rate_limit_ms": 1000
-    },
-    "theartistdb": {
+    },    
+    "theaudiodb": {
         "enable": true,
-        "api_key": "YOUR_API_KEY_HERE",
+        "api_key": "", 
         "rate_limit_ms": 500
+    },
+    "lastfm": {
+        "enable": true,
+        "api_key": "",
+        "api_secret": "",
+        "scrobble_enabled": true, // This seems to be a duplicate or alternative, will use "scrobble" as per previous request for consistency
+        "now_playing_enabled": true,
+        "scrobble": true 
+    },
+    "general": {
+        "security_store": "/var/run/acr/security_store.json",
     },
     "players": [
         {

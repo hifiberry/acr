@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::data::{LoopMode, PlaybackState, PlayerCapabilitySet, PlayerCapability, PlayerCommand, Song, Track};
-use crate::PlayerStateListener;
 use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::players::lms::jsonrps::LmsRpcClient;
@@ -27,25 +26,29 @@ pub fn lms_image_url() -> String {
 pub struct LMSAudioConfig {
     /// Server address (hostname or IP)
     pub server: Option<String>,
-    
+
     /// Server port (usually 9000)
     #[serde(default = "default_lms_port")]
     pub port: u16,
-    
+
     /// Auto-discovery enabled
     #[serde(default = "default_true")]
     pub autodiscovery: bool,
-    
+
     /// Player name to connect to
     pub player_name: Option<String>,
-    
+
     /// Player MAC addresses to connect to (multiple MACs)
     #[serde(default)]
     pub player_macs: Vec<String>,
-    
+
     /// Reconnection interval in seconds (0 = disabled)
     #[serde(default = "default_reconnection_interval")]
     pub reconnection_interval: u64,
+
+    /// Enable library features
+    #[serde(default = "default_true")]
+    pub enable_library: bool,
 }
 
 /// Default LMS server port
@@ -72,6 +75,7 @@ impl Default for LMSAudioConfig {
             player_name: None,
             player_macs: Vec::new(),
             reconnection_interval: default_reconnection_interval(),
+            enable_library: true,
         }
     }
 }
@@ -172,7 +176,7 @@ impl LMSAudioController {
         // Parse configuration from JSON
         let config = match serde_json::from_value::<LMSAudioConfig>(config_json) {
             Ok(cfg) => {
-                info!("LMS controller configured with server: {:?}", cfg.server);
+                info!("LMS controller configured with server: {:?}, library enabled: {}", cfg.server, cfg.enable_library);
                 cfg
             },
             Err(e) => {
@@ -251,9 +255,14 @@ impl LMSAudioController {
             
             // Initialize the library with the same connection as the player
             if let Ok(mut library_lock) = controller.library.write() {
-                let library = crate::players::lms::library::LMSLibrary::with_connection(&server, config.port);
-                info!("Created LMS library instance for server: {}", server);
-                *library_lock = Some(library);
+                if config.enable_library {
+                    let library = crate::players::lms::library::LMSLibrary::with_connection(&server, config.port);
+                    info!("Created LMS library instance for server: {}", server);
+                    *library_lock = Some(library);
+                } else {
+                    info!("LMS library is disabled by configuration");
+                    *library_lock = None;
+                }
             }
             
             // Update connection state
@@ -1157,14 +1166,6 @@ impl PlayerController for LMSAudioController {
         }
     }
     
-    fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool {
-        self.base.register_state_listener(listener)
-    }
-    
-    fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool {
-        self.base.unregister_state_listener(listener)
-    }
-    
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -1178,73 +1179,77 @@ impl PlayerController for LMSAudioController {
                 LMSAudioConfig::default()
             }
         };
-        
+
         // Check connection status using find_server_connection
         let (is_connected, _, _, _) = self.find_server_connection(&config);
-        
+
         // Update connection status
         self.is_connected.store(is_connected, Ordering::SeqCst);
-        
+
         if is_connected {
             info!("LMS player successfully connected");
-            
-            // Refresh the library if we're connected
-            if let Ok(connected_server_guard) = self.connected_server.read() {
-                if let Some(server) = connected_server_guard.as_ref() {
-                    // Get port from config
-                    let port = match self.config.read() {
-                        Ok(config) => config.port,
-                        Err(_) => 9000 // Default LMS port
-                    };
-                    
-                    // Make sure we have a library instance
-                    let mut need_to_create_library = false;
-                    {
-                        if let Ok(lib_lock) = self.library.read() {
-                            if lib_lock.is_none() {
+
+            // Refresh the library if we're connected and library is enabled
+            if config.enable_library {
+                if let Ok(connected_server_guard) = self.connected_server.read() {
+                    if let Some(server) = connected_server_guard.as_ref() {
+                        // Get port from config
+                        let port = match self.config.read() {
+                            Ok(config_read) => config_read.port,
+                            Err(_) => 9000 // Default LMS port
+                        };
+
+                        // Make sure we have a library instance
+                        let mut need_to_create_library = false;
+                        {
+                            if let Ok(lib_lock) = self.library.read() {
+                                if lib_lock.is_none() {
+                                    need_to_create_library = true;
+                                }
+                            } else {
                                 need_to_create_library = true;
                             }
-                        } else {
-                            need_to_create_library = true;
                         }
-                    }
-                    
-                    // Create the library if needed
-                    if need_to_create_library {
-                        let library = crate::players::lms::library::LMSLibrary::with_connection(server, port);
-                        
-                        // Store the library instance
-                        if let Ok(mut lib_lock) = self.library.write() {
-                            *lib_lock = Some(library.clone());
-                            info!("Created and stored LMS library instance for server: {}", server);
-                        }
-                    }
-                    
-                    // Get the library instance
-                    let library_clone = if let Ok(lib_lock) = self.library.read() {
-                        lib_lock.clone()
-                    } else {
-                        None
-                    };
-                    
-                    if let Some(library) = library_clone {
-                        // Run the refresh in a separate thread to avoid blocking startup
-                        let library_for_thread = library.clone();
-                        thread::spawn(move || {
-                            info!("Starting LMS library refresh...");
-                            match library_for_thread.refresh_library() {
-                                Ok(_) => info!("LMS library loaded successfully"),
-                                Err(e) => warn!("Failed to load LMS library: {}", e),
+
+                        // Create the library if needed
+                        if need_to_create_library {
+                            let library = crate::players::lms::library::LMSLibrary::with_connection(server, port);
+                            
+                            // Store the library instance
+                            if let Ok(mut lib_lock) = self.library.write() {
+                                *lib_lock = Some(library.clone());
+                                info!("Created and stored LMS library instance for server: {}", server);
                             }
-                        });
+                        }
+
+                        // Get the library instance
+                        let library_clone = if let Ok(lib_lock) = self.library.read() {
+                            lib_lock.clone()
+                        } else {
+                            None
+                        };
+
+                        if let Some(library) = library_clone {
+                            // Run the refresh in a separate thread to avoid blocking startup
+                            let library_for_thread = library.clone();
+                            thread::spawn(move || {
+                                info!("Starting LMS library refresh...");
+                                match library_for_thread.refresh_library() {
+                                    Ok(_) => info!("LMS library loaded successfully"),
+                                    Err(e) => warn!("Failed to load LMS library: {}", e),
+                                }
+                            });
+                        } else {
+                            warn!("Failed to get library instance for refresh");
+                        }
                     } else {
-                        warn!("Failed to get library instance for refresh");
+                        debug!("Skipping LMS library loading (no server information available)");
                     }
                 } else {
-                    debug!("Skipping LMS library loading (no server information available)");
+                    debug!("Skipping LMS library loading (cannot access server information)");
                 }
             } else {
-                debug!("Skipping LMS library loading (cannot access server information)");
+                info!("LMS library is disabled, skipping refresh.");
             }
         } else {
             // Log all the MAC addresses that were tested
@@ -1283,6 +1288,19 @@ impl PlayerController for LMSAudioController {
     }
     
     fn get_library(&self) -> Option<Box<dyn LibraryInterface>> {
+        // Check config first
+        if let Ok(config) = self.config.read() {
+            if !config.enable_library {
+                debug!("LMS library is disabled by configuration in get_library");
+                return None;
+            }
+        } else {
+            warn!("Could not read config to check enable_library flag in get_library");
+            // Proceed with caution, or return None if strict checking is required.
+            // For now, let's assume if we can't read config, we shouldn't provide library.
+            return None;
+        }
+
         // First, check if we already have a loaded library stored
         if let Ok(lib_lock) = self.library.read() {
             if let Some(lib) = lib_lock.as_ref() {

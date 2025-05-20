@@ -4,7 +4,7 @@ use crate::data::{PlayerEvent, PlaybackState};
 use crate::plugins::plugin::Plugin;
 use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
 use crate::audiocontrol::AudioController;
-use log::{debug, info, warn};
+use log::{debug, info, warn, trace};
 use delegate::delegate;
 
 /// A plugin that monitors player state changes and sets the active player
@@ -72,6 +72,21 @@ impl ActiveMonitor {
             warn!("ActiveMonitor: No valid AudioController reference available");
         }
     }
+    
+    /// Handle events coming from the event bus
+    fn handle_event_bus_events(&self, event: PlayerEvent) {
+        trace!("Received event from event bus");
+        
+        // We only care about state changed events
+        if let PlayerEvent::StateChanged { source, state } = event {
+            // If a player state changes to Playing, make it the active player
+            if state == PlaybackState::Playing {
+                debug!("ActiveMonitor: Detected player {}:{} state changed to Playing", 
+                       source.player_name(), source.player_id());
+                self.set_active_player(source.player_name(), source.player_id());
+            }
+        }
+    }
 }
 
 impl Plugin for ActiveMonitor {
@@ -79,9 +94,17 @@ impl Plugin for ActiveMonitor {
         to self.base {
             fn name(&self) -> &str;
             fn version(&self) -> &str;
-            fn init(&mut self) -> bool;
-            fn shutdown(&mut self) -> bool;
         }
+    }
+
+    fn init(&mut self) -> bool {
+        log::info!("ActiveMonitor initializing");
+        self.base.init()
+    }
+
+    fn shutdown(&mut self) -> bool {
+        log::info!("ActiveMonitor shutting down");
+        self.base.shutdown()
     }
     
     fn as_any(&self) -> &dyn Any {
@@ -92,19 +115,35 @@ impl Plugin for ActiveMonitor {
 impl ActionPlugin for ActiveMonitor {
     fn initialize(&mut self, controller: Weak<AudioController>) {
         self.base.set_controller(controller);
-        debug!("ActiveMonitor initialized with AudioController reference");
+        
+        // Subscribe to event bus in the initialize method
+        log::debug!("ActiveMonitor initializing and subscribing to event bus");
+        let self_clone = self.clone();
+        self.base.subscribe_to_event_bus(move |event| {
+            self_clone.handle_event(event);
+        });
     }
     
-    fn on_event(&mut self, event: &PlayerEvent, _is_active_player: bool) {
-        // We only care about state changed events
-        // log events for debugging
-        if let PlayerEvent::StateChanged { source, state } = event {
-            // If a player state changes to Playing, make it the active player
-            if *state == PlaybackState::Playing {
-                debug!("ActiveMonitor: Detected player {}:{} state changed to Playing", 
-                       source.player_name(), source.player_id());
-                self.set_active_player(source.player_name(), source.player_id());
-            }
+    fn handle_event(&self, event: PlayerEvent) {
+        // Handle events using the existing method
+        self.handle_event_bus_events(event);
+    }
+}
+
+// Clone implementation for ActiveMonitor to allow for passing to thread
+impl Clone for ActiveMonitor {
+    fn clone(&self) -> Self {
+        let mut new_base = BaseActionPlugin::new(self.base.name());
+        
+        // Get the controller reference from the original object
+        if let Some(controller) = self.base.get_controller() {
+            // The controller is already an Arc, we need to downgrade it to a Weak
+            let controller_weak = Arc::downgrade(&controller);
+            new_base.set_controller(controller_weak);
+        }
+        
+        Self {
+            base: new_base,
         }
     }
 }

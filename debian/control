@@ -13,3 +13,8 @@ Description: AudioControl/Rust (ACR) application
  A Rust application for audio control functionality.
  This package provides tools for managing audio playback
  and control across different audio systems.
+ .
+ Includes command-line tools:
+  * acr_dumpcache - Cache inspection utility
+  * acr_lms_client - Logitech Media Server client
+  * acr_send_update - Player state update utility

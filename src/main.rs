@@ -4,7 +4,9 @@ use acr::api::server;
 use acr::helpers::attributecache::AttributeCache;
 use acr::helpers::imagecache::ImageCache;
 use acr::helpers::musicbrainz;
-use acr::helpers::theartistdb;
+use acr::helpers::theaudiodb;
+use acr::helpers::lastfm;
+use acr::helpers::security_store::SecurityStore;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
 use acr::players::lms::lmsaudio::LMSAudioController;
@@ -18,6 +20,7 @@ use ctrlc;
 use std::fs;
 use std::path::Path;
 use std::env;
+use std::path::PathBuf;
 // Import global Tokio runtime functions from lib.rs
 use acr::{initialize_tokio_runtime, get_tokio_runtime};
 
@@ -83,6 +86,38 @@ fn main() {
         panic!("Cannot continue without a valid configuration file");
     };
 
+    // Initialize the Security Store (Moved Up)
+    let security_store_path_str = controllers_config
+        .get("general")
+        .and_then(|g| g.get("security_store"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            info!("No security_store path specified in configuration, using default 'secrets/security_store.json'");
+            "secrets/security_store.json".to_string() // Ensure this default path is appropriate
+        });
+
+    let security_store_path = PathBuf::from(&security_store_path_str);
+    // Ensure the directory for the security store exists, especially if it's not in the root
+    if let Some(parent_dir) = security_store_path.parent() {
+        if !parent_dir.exists() {
+            if let Err(e) = fs::create_dir_all(parent_dir) {
+                error!("Failed to create directory for security store at {}: {}. Please check permissions.", parent_dir.display(), e);
+                // Depending on how critical this is, you might panic or try a default fallback.
+                // For now, we'll log an error and proceed, initialize_with_defaults might handle it or fail.
+            } else {
+                info!("Created directory for security store: {}", parent_dir.display());
+            }
+        }
+    }
+    
+    if let Err(e) = SecurityStore::initialize_with_defaults(Some(security_store_path.clone())) {
+        error!("Failed to initialize security store at {}: {}. Please check permissions and configuration.", security_store_path.display(), e);
+        panic!("Critical component: Security store initialization failed. Application cannot continue. Error: {}", e);
+    } else {
+        info!("Security store initialized successfully at {}", security_store_path.display());
+    }
+
     // Get the attribute cache path from configuration
     let attribute_cache_path = if let Some(cache_config) = controllers_config.get("cache") {
         if let Some(cache_path) = cache_config.get("attribute_cache_path").and_then(|p| p.as_str()) {
@@ -118,12 +153,14 @@ fn main() {
     
     // Initialize the global image cache with the configured path from JSON
     initialize_image_cache(&image_cache_path);
-    
-    // Initialize MusicBrainz with the configuration
+      // Initialize MusicBrainz with the configuration
     initialize_musicbrainz(&controllers_config);
 
-    // Initialize TheArtistDB with the configuration
-    initialize_theartistdb(&controllers_config);
+    // Initialize TheAudioDB with the configuration
+    initialize_theaudiodb(&controllers_config);
+    
+    // Initialize Last.fm with the configuration
+    initialize_lastfm(&controllers_config);
     
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
@@ -246,8 +283,51 @@ fn initialize_musicbrainz(config: &serde_json::Value) {
     info!("MusicBrainz initialized successfully");
 }
 
-// Helper function to initialize TheArtistDB
-fn initialize_theartistdb(config: &serde_json::Value) {
-    theartistdb::initialize_from_config(config);
-    info!("TheArtistDB initialized successfully");
+// Helper function to initialize TheAudioDB
+fn initialize_theaudiodb(config: &serde_json::Value) {
+    theaudiodb::initialize_from_config(config);
+    info!("TheAudioDB initialized successfully");
+}
+
+// Helper function to initialize Last.fm
+fn initialize_lastfm(config: &serde_json::Value) {
+    if let Some(lastfm_config) = config.get("lastfm") {
+        // Check if enabled flag exists and is set to true
+        let enabled = lastfm_config.get("enable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false); // Default to disabled if not specified
+        
+        if enabled {
+            // Initialize with default API credentials
+            if let Err(e) = lastfm::LastfmClient::initialize_with_defaults() {
+                warn!("Failed to initialize Last.fm client: {}", e);
+                return;
+            }
+            
+            // Log Last.fm connection status
+            match lastfm::LastfmClient::get_instance() {
+                Ok(client) => {
+                    if client.is_authenticated() {
+                        if let Some(username) = client.get_username() {
+                            info!("Last.fm connected as user: {}", username);
+                        } else {
+                            // This case should ideally not happen if is_authenticated is true
+                            warn!("Last.fm is authenticated but username is not available.");
+                        }
+                    } else {
+                        info!("Last.fm is not connected. User needs to authenticate.");
+                    }
+                }
+                Err(e) => {
+                    // This might happen if initialization failed silently or was never called
+                    warn!("Could not get Last.fm client instance to check status: {}", e);
+                }
+            }
+            info!("Last.fm initialized successfully"); // This message might be redundant now or could be rephrased
+        } else {
+            info!("Last.fm integration is disabled");
+        }
+    } else {
+        debug!("No Last.fm configuration found, Last.fm features will be unavailable.");
+    }
 }

@@ -67,20 +67,31 @@ sed -i "s/^Version:.*/Version: $VERSION/" debian/control
 
 # Check if we want to skip rebuilding the binary
 if [ "$1" = "--skip-build" ] || [ "${SKIP_BUILD:-0}" = "1" ]; then
-    echo "===== Skipping build stage and reusing existing binary ====="
+    echo "===== Skipping build stage and reusing existing binaries ====="
     export SKIP_BUILD=1
     
-    # Check if the binary exists
+    # Check if the main binary exists
     if [ ! -f "target/release/acr" ]; then
-        echo "ERROR: Cannot skip build, binary not found at target/release/acr"
+        echo "ERROR: Cannot skip build, main binary not found at target/release/acr"
         echo "       Please run the build without --skip-build first"
         exit 1
     fi
     
-    # Make sure the binary is marked as executable
+    # Check if the CLI tool binaries exist
+    for tool in acr_dumpcache acr_lms_client acr_send_update; do
+        if [ ! -f "target/release/$tool" ]; then
+            echo "WARNING: CLI tool $tool not found at target/release/$tool"
+            echo "         Some CLI tools may not be included in the package"
+        else
+            # Make sure the tool binary is marked as executable
+            chmod +x "target/release/$tool"
+        fi
+    done
+      # Make sure the main binary is marked as executable
     chmod +x target/release/acr
 else
-    echo "===== Building binary ====="
+    echo "===== Building binaries ====="
+    echo "Building main application and CLI tools (acr_dumpcache, acr_lms_client, acr_send_update)"
     # Tip: You can use SKIP_BUILD=1 or --skip-build to skip this step next time
     # Clear the SKIP_BUILD variable to ensure a full build
     unset SKIP_BUILD
@@ -126,5 +137,11 @@ echo "===== Cleaning up ====="
 rm ../acr-dbgsym*.deb
 # The package will be created in the out directory
 echo "Debian package created at: out/acr_${VERSION}_*.deb"
-
+echo ""
+echo "Package contains the following executables:"
+echo "  - acr (main application)"
+echo "  - acr_dumpcache (cache inspection tool)"
+echo "  - acr_lms_client (Logitech Media Server client)"
+echo "  - acr_send_update (player state update tool)"
+echo ""
 echo "===== Build completed successfully ====="

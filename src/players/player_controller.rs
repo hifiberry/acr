@@ -5,19 +5,6 @@ use std::any::Any;
 use std::time::SystemTime;
 use log::{debug, trace, warn};
 
-/// Trait for objects that listener to PlayerController state changes
-pub trait PlayerStateListener: Send + Sync {
-    /// Called when any player event occurs
-    /// 
-    /// # Arguments
-    /// 
-    /// * `event` - The event that occurred
-    fn on_event(&self, event: PlayerEvent);
-    
-    /// Convert to Any for dynamic casting
-    fn as_any(&self) -> &dyn Any;
-}
-
 /// PlayerController trait - abstract interface for player implementations
 /// 
 /// This trait defines the core functionality that any player implementation must provide.
@@ -84,28 +71,6 @@ pub trait PlayerController: Send + Sync {
     /// 
     /// Return s`true` if the command was successfully processed, `false` otherwise
     fn send_command(&self, command: PlayerCommand) -> bool;
-    
-    /// Register a state listener to be notified of state changes
-    /// 
-    /// # Arguments
-    /// 
-    /// * `listener` - The listener to register
-    /// 
-    /// # Returns
-    /// 
-    /// `true` if the listener was successfully registered, `false` otherwise
-    fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
-    
-    /// Unregister a previously registered state listener
-    /// 
-    /// # Arguments
-    /// 
-    /// * `listener` - The listener to unregister
-    /// 
-    /// # Returns
-    /// 
-    /// `true` if the listener was successfully unregistered, `false` if it wasn't registered
-    fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
     
     /// Downcasts the player controller to a concrete type via Any
     /// 
@@ -228,9 +193,6 @@ pub trait PlayerController: Send + Sync {
 /// can be used by concrete player implementations.
 #[derive(Clone)]
 pub struct BasePlayerController {
-    /// List of state listeners registered with this controller
-    listeners: Arc<RwLock<Vec<Weak<dyn PlayerStateListener>>>>,
-    
     /// Current capabilities of the player
     capabilities: Arc<RwLock<PlayerCapabilitySet>>,
     
@@ -249,7 +211,6 @@ impl BasePlayerController {
     pub fn new() -> Self {
         debug!("Creating new BasePlayerController");
         Self {
-            listeners: Arc::new(RwLock::new(Vec::new())),
             capabilities: Arc::new(RwLock::new(PlayerCapabilitySet::empty())),
             player_name: Arc::new(RwLock::new("unknown".to_string())),
             player_id: Arc::new(RwLock::new("unknown".to_string())),
@@ -261,7 +222,6 @@ impl BasePlayerController {
     pub fn with_player_info(name: &str, id: &str) -> Self {
         debug!("Creating BasePlayerController with name='{}', id='{}'", name, id);
         Self {
-            listeners: Arc::new(RwLock::new(Vec::new())),
             capabilities: Arc::new(RwLock::new(PlayerCapabilitySet::empty())),
             player_name: Arc::new(RwLock::new(name.to_string())),
             player_id: Arc::new(RwLock::new(id.to_string())),
@@ -403,15 +363,10 @@ impl BasePlayerController {
         }
         
         changed
-    }
-
-    /// Notify all registered listeners that the player state has changed
+    }    /// Notify all registered listeners that the player state has changed
     pub fn notify_state_changed(&self, state: PlaybackState) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
-        
-        debug!("Notifying listeners of state change: {}", state);
-        self.prune_dead_listeners();
         
         let source = PlayerSource::new(player_name, player_id);
         
@@ -420,26 +375,16 @@ impl BasePlayerController {
             state,
         };
         
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of state change", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of state change");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying state change");
-        }
-    }
-
+        // Publish to the global event bus
+        debug!("Publishing state change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+    }    
+    
     /// Notify all listeners that the song has changed
     pub fn notify_song_changed(&self, song: Option<&Song>) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
-        
-        debug!("Notifying listeners of song change");
-        self.prune_dead_listeners();
         
         // Create a cloned version of the song to pass to listeners
         let song_copy = song.cloned();
@@ -451,27 +396,19 @@ impl BasePlayerController {
             song: song_copy,
         };
         
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of song change", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of song change");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying song change");
-        }
-    }
-
+        // Publish to the global event bus
+        debug!("Publishing song change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+    }    
+    
     /// Notify all registered listeners that the loop mode has changed
     pub fn notify_loop_mode_changed(&self, mode: LoopMode) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
         
         debug!("Notifying listeners of loop mode change: {}", mode);
-        self.prune_dead_listeners();
-        
+
         let source = PlayerSource::new(player_name, player_id);
         
         let event = PlayerEvent::LoopModeChanged {
@@ -479,27 +416,19 @@ impl BasePlayerController {
             mode,
         };
         
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of loop mode change", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of loop mode change");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying loop mode change");
-        }
-    }
-
-    /// Notify all registered listeners that the random mode has changed
+        // Publish to the global event bus
+        debug!("Publishing loop mode change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+        // do not notify listeners anymore
+        
+    }    /// Notify all registered listeners that the random mode has changed
     pub fn notify_random_changed(&self, enabled: bool) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
         
         debug!("Notifying listeners of random mode change: {}", enabled);
-        self.prune_dead_listeners();
-        
+
         let source = PlayerSource::new(player_name, player_id);
         
         let event = PlayerEvent::RandomChanged {
@@ -507,26 +436,18 @@ impl BasePlayerController {
             enabled,
         };
         
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of random mode change", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of random mode change");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying random mode change");
-        }
-    }
-
+        // Publish to the global event bus
+        debug!("Publishing random mode change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+    }    
+    
     /// Notify all listeners that the capabilities have changed
     pub fn notify_capabilities_changed(&self, capabilities: &PlayerCapabilitySet) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
         
         debug!("Notifying listeners of capabilities change");
-        self.prune_dead_listeners();
         
         // Store the capabilities internally
         if let Ok(mut caps) = self.capabilities.write() {
@@ -543,26 +464,16 @@ impl BasePlayerController {
             capabilities: *capabilities,
         };
         
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of capabilities change", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of capabilities change");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying capabilities change");
-        }
-    }
-
+        // Publish to the global event bus
+        debug!("Publishing capabilities change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+    }    
+    
     /// Notify all registered listeners that the player position has changed
     pub fn notify_position_changed(&self, position: f64) {
         let player_name = self.get_player_name();
         let player_id = self.get_player_id();
-        
-        debug!("Notifying listeners of position change: {:.1}s", position);
-        self.prune_dead_listeners();
         
         let source = PlayerSource::new(player_name, player_id);
         
@@ -571,41 +482,16 @@ impl BasePlayerController {
             position,
         };
         
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Notifying {} listeners of position change", listeners.len());
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of position change");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when notifying position change");
-        }
+        // Publish to the global event bus
+        debug!("Publishing position change event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
     }
 
     /// Create a PlayerSource object for the current player
     pub fn create_player_source(&self) -> PlayerSource {
         PlayerSource::new(self.get_player_name(), self.get_player_id())
-    }
-
-    /// Broadcast an event to all registered listeners
-    pub fn broadcast_event(&self, event: PlayerEvent) {
-        self.prune_dead_listeners();
-        
-        if let Ok(listeners) = self.listeners.read() {
-            debug!("Broadcasting event to {} listeners: {:?}", listeners.len(), event);
-            for listener_weak in listeners.iter() {
-                if let Some(listener) = listener_weak.upgrade() {
-                    trace!("Notifying listener of event");
-                    listener.on_event(event.clone());
-                }
-            }
-        } else {
-            warn!("Failed to acquire read lock for listeners when broadcasting event");
-        }
-    }
-
+    }    
+    
     /// Notify listeners that the database is being updated
     pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>,
                                 song: Option<String>, percentage: Option<f32>) {
@@ -616,15 +502,36 @@ impl BasePlayerController {
             song,
             percentage,
         };
-        self.broadcast_event(event);
-    }
+        
+        // Publish to the global event bus
+        debug!("Publishing database update event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+    }    
     
     /// Notify listeners that the player's queue has changed
     pub fn notify_queue_changed(&self) {
         let event = PlayerEvent::QueueChanged {
             source: self.create_player_source(),
         };
-        self.broadcast_event(event);
+        
+        // Publish to the global event bus
+        debug!("Publishing queue changed event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
+    }
+    
+    /// Notify listeners that the active player has changed
+    pub fn notify_active_player_changed(&self, player_id: String) {
+        let event = PlayerEvent::ActivePlayerChanged {
+            source: self.create_player_source(),
+            player_id,
+        };
+        
+        // Publish to the global event bus
+        debug!("Publishing active player changed event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+        
     }
 
     /// Get the last time this player was seen active
@@ -637,80 +544,6 @@ impl BasePlayerController {
         }
     }
 
-    /// Register a state listener to be notified of state changes
-    pub fn register_listener(&self, listener: Weak<dyn PlayerStateListener>) -> bool {
-        debug!("Attempting to register a new listener");
-        if let Ok(mut listeners) = self.listeners.write() {
-            // Check for duplicates before adding
-            for existing in listeners.iter() {
-                if let (Some(new), Some(old)) = (listener.upgrade(), existing.upgrade()) {
-                    // Compare pointers to check if they're the same object
-                    if Arc::ptr_eq(&new, &old) {
-                        debug!("Listener already registered, skipping");
-                        return false;
-                    }
-                }
-            }
-            listeners.push(listener);
-            debug!("Listener successfully registered, total listeners: {}", listeners.len());
-            return true;
-        }
-        warn!("Failed to acquire write lock when registering listener");
-        false
-    }
-
-    /// Unregister a previously registered state listener
-    pub fn unregister_listener(&self, listener: &Arc<dyn PlayerStateListener>) -> bool {
-        debug!("Attempting to unregister a listener");
-        if let Ok(mut listeners) = self.listeners.write() {
-            let original_len = listeners.len();
-            // Remove all weak references that point to the same object or are dead
-            listeners.retain(|weak_ref| {
-                if let Some(target) = weak_ref.upgrade() {
-                    !Arc::ptr_eq(&target, listener)
-                } else {
-                    false // Remove dead weak references
-                }
-            });
-            let removed = listeners.len() < original_len;
-            if removed {
-                debug!("Listener successfully unregistered, remaining listeners: {}", listeners.len());
-            } else {
-                debug!("Listener not found for unregistration");
-            }
-            return removed;
-        }
-        warn!("Failed to acquire write lock when unregistering listener");
-        false
-    }
-
-    /// Remove any dead (dropped) listeners
-    fn prune_dead_listeners(&self) {
-        trace!("Pruning dead listeners");
-        if let Ok(mut listeners) = self.listeners.write() {
-            let original_len = listeners.len();
-            listeners.retain(|weak_ref| weak_ref.upgrade().is_some());
-            let removed = original_len - listeners.len();
-            if removed > 0 {
-                debug!("Pruned {} dead listeners, remaining: {}", removed, listeners.len());
-            }
-        } else {
-            warn!("Failed to acquire write lock when pruning dead listeners");
-        }
-    }
-
-    /// Register a state listener to be notified of state changes
-    /// This is an alias for register_listener to match the PlayerController trait
-    pub fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool {
-        self.register_listener(listener)
-    }
-
-    /// Unregister a previously registered state listener
-    /// This is an alias for unregister_listener to match the PlayerController trait
-    pub fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool {
-        self.unregister_listener(listener)
-    }
-    
     /// Update the last_seen timestamp for this player
     /// 
     /// This should be called by player implementations whenever they are accessed

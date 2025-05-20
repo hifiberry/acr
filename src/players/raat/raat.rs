@@ -1,4 +1,4 @@
-use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
+use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track, PlayerUpdate}; // Added PlayerUpdate
 use crate::players::raat::metadata_pipe_reader::MetadataPipeReader;
 use crate::data::stream_details::StreamDetails;
@@ -427,8 +427,6 @@ impl RAATPlayerController {
 impl PlayerController for RAATPlayerController {
     delegate! {
         to self.base {
-            fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
-            fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
             fn get_capabilities(&self) -> PlayerCapabilitySet;
             fn get_last_seen(&self) -> Option<std::time::SystemTime>;
         }

@@ -1,5 +1,6 @@
 use crate::data::{PlaybackState, Song, LoopMode, PlayerCapabilitySet};
 use serde::{Serialize, Deserialize};
+use std::fmt; // Added for Display
 
 /// Identifies the source of a player event
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,6 +29,12 @@ impl PlayerSource {
     }
 }
 
+impl fmt::Display for PlayerSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.player_name, self.player_id)
+    }
+}
+
 /// Represents different events that can occur in a player
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PlayerEvent {
@@ -41,6 +48,18 @@ pub enum PlayerEvent {
     SongChanged {
         source: PlayerSource,
         song: Option<Song>,
+    },
+    
+    /// Song information has been updated (e.g., cover art, metadata)
+    // in this event, song title and artist are not updated, they
+    // are only present to check in the UI if the song is the same
+    // as the one currently playing
+    // all other fields are optional. if a field is None, it means
+    // that the field is not updated
+    // only updated fields are populated
+    SongInformationUpdate {
+        source: PlayerSource,
+        song: Song,
     },
     
     /// Loop mode has changed
@@ -80,10 +99,16 @@ pub enum PlayerEvent {
     QueueChanged {
         source: PlayerSource,
     },
+
+    /// Active player has changed
+    ActivePlayerChanged {
+        source: PlayerSource,
+        player_id: String,
+    },
+
 }
 
-impl PlayerEvent {
-    /// Get the player source associated with this event
+impl PlayerEvent {    /// Get the player source associated with this event
     pub fn source(&self) -> &PlayerSource {
         match self {
             PlayerEvent::StateChanged { source, .. } => source,
@@ -94,6 +119,8 @@ impl PlayerEvent {
             PlayerEvent::PositionChanged { source, .. } => source,
             PlayerEvent::DatabaseUpdating { source, .. } => source,
             PlayerEvent::QueueChanged { source } => source,
+            PlayerEvent::SongInformationUpdate { source, .. } => source,
+            PlayerEvent::ActivePlayerChanged { source, .. } => source,
         }
     }
     
@@ -105,5 +132,58 @@ impl PlayerEvent {
     /// Get the player ID associated with this event
     pub fn player_id(&self) -> &str {
         self.source().player_id()
+    }
+}
+
+impl fmt::Display for PlayerEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlayerEvent::StateChanged { source, state } => {
+                write!(f, "Player {} state changed to {}", source, state)
+            }
+            PlayerEvent::SongChanged { source, song } => {
+                if let Some(s) = song {
+                    write!(f, "Player {} song changed to '{}'", source, s)
+                } else {
+                    write!(f, "Player {} song changed to None", source)
+                }
+            }
+            PlayerEvent::LoopModeChanged { source, mode } => {
+                write!(f, "Player {} loop mode changed to {}", source, mode)
+            }
+            PlayerEvent::RandomChanged { source, enabled } => {
+                write!(f, "Player {} random mode changed to {}", source, if *enabled { "enabled" } else { "disabled" })
+            }
+            PlayerEvent::CapabilitiesChanged { source, capabilities } => {
+                write!(f, "Player {} capabilities changed: {:?}", source, capabilities) // Using Debug for capabilities
+            }
+            PlayerEvent::PositionChanged { source, position } => {
+                write!(f, "Player {} position changed to {:.2}s", source, position)
+            }
+            PlayerEvent::DatabaseUpdating { source, artist, album, song, percentage } => {
+                let mut details = String::new();
+                if let Some(p) = percentage {
+                    details.push_str(&format!("{}% ", p));
+                }
+                if let Some(s_artist) = artist {
+                    details.push_str(&format!("Artist: {} ", s_artist));
+                }
+                if let Some(s_album) = album {
+                    details.push_str(&format!("Album: {} ", s_album));
+                }
+                if let Some(s_song) = song {
+                    details.push_str(&format!("Song: {} ", s_song));
+                }
+                write!(f, "Player {} database updating {}", source, details.trim())
+            }            PlayerEvent::QueueChanged { source } => {
+                write!(f, "Player {} queue changed", source)
+            }
+            PlayerEvent::SongInformationUpdate { source, song } => {
+                write!(f, "Player {} song information updated for '{}'", source, song)
+            }
+            PlayerEvent::ActivePlayerChanged { source, player_id } => {
+                write!(f, "Active player changed to {} (ID: {})", source, player_id)
+            }
+        }
     }
 }

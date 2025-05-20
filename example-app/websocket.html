@@ -139,10 +139,9 @@
         <div class="panel">
             <h2>Connection</h2>
             <div class="status disconnected" id="connection-status">Disconnected</div>
-            
-            <div class="form-group">
+              <div class="form-group">
                 <label for="ws-url">WebSocket URL</label>
-                <input type="text" id="ws-url" value="ws://'+window.location.hostname+':1080/api/events" />
+                <input type="text" id="ws-url" value="ws://localhost:1080/api/events" />
             </div>
             
             <div class="controls">
@@ -165,6 +164,7 @@
             <div class="event-selector" id="event-selector">
                 <div class="event-type selected" data-event="state_changed">State Changed</div>
                 <div class="event-type selected" data-event="song_changed">Song Changed</div>
+                <div class="event-type selected" data-event="song_information_update">Song Information Updated</div>
                 <div class="event-type selected" data-event="loop_mode_changed">Loop Mode</div>
                 <div class="event-type selected" data-event="random_changed">Random/Shuffle</div>
                 <div class="event-type selected" data-event="capabilities_changed">Capabilities</div>
@@ -181,7 +181,9 @@
         </div>
     </div>
     
-    <script>
+    <script>        // Set default WebSocket URL based on current hostname
+        document.getElementById('ws-url').value = `ws://${window.location.hostname}:1080/api/events`;
+
         // DOM Elements
         const connectBtn = document.getElementById('connect-btn');
         const disconnectBtn = document.getElementById('disconnect-btn');
@@ -308,10 +310,19 @@
                                             <div><b>Title:</b> ${song.title || 'Unknown'}</div>
                                             <div><b>Artist:</b> ${song.artist || 'Unknown'}</div>
                                             ${song.album ? `<div><b>Album:</b> ${song.album}</div>` : ''}
+                                            ${song.album_artist ? `<div><b>Album Artist:</b> ${song.album_artist}</div>` : ''} <!-- Added album_artist -->
+                                            ${song.track_number ? `<div><b>Track:</b> ${song.track_number}${song.total_tracks ? ` of ${song.total_tracks}` : ''}</div>` : ''} <!-- Added track_number and total_tracks -->
+                                            ${song.genre ? `<div><b>Genre:</b> ${song.genre}</div>` : ''} <!-- Added genre -->
+                                            ${song.year ? `<div><b>Year:</b> ${song.year}</div>` : ''} <!-- Added year -->
+                                            ${song.liked !== undefined ? `<div><b>Liked:</b> ${song.liked ? 'Yes' : 'No'}</div>` : ''} <!-- Added liked status -->
                                             ${song.duration ? `<div><b>Duration:</b> ${formatTime(song.duration)}</div>` : ''}
                                             ${song.cover_art_url ? `<div><b>Cover Art:</b> <a href="${song.cover_art_url}" target="_blank">${song.cover_art_url}</a></div>` : ''}
                                             ${song.thumbnail && !song.cover_art_url ? `<div><b>Thumbnail:</b> <a href="${song.thumbnail}" target="_blank">${song.thumbnail}</a></div>` : ''}
                                         </div>`;
+                                        // Log if the song change was due to an update
+                                        if (data.updated_fields && data.updated_fields.length > 0) {
+                                            message += `<div style="font-style: italic; color: #555; margin-top: 3px;">Updated fields: ${data.updated_fields.join(', ')}</div>`;
+                                        }
                                     } else {
                                         message += 'No song information';
                                     }

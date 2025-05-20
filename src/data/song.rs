@@ -1,5 +1,6 @@
 /// Class representing metadata for a song/track
 use std::collections::HashMap;
+use std::fmt; // Added for Display
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -39,6 +40,9 @@ pub struct Song {
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>, // e.g., "spotify", "local", "radio"
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub liked: Option<bool>, // Indicates if the song is liked or favorited
     
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
@@ -53,5 +57,21 @@ impl PartialEq for Song {
         self.title == other.title &&
         self.artist == other.artist &&
         self.album == other.album
+    }
+}
+
+impl fmt::Display for Song {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut display_str = self.title.as_deref().unwrap_or("Unknown Title").to_string();
+        if let Some(artist_name) = &self.artist {
+            if !artist_name.is_empty() {
+                display_str.push_str(" by ");
+                display_str.push_str(artist_name);
+            }
+        }
+        if let Some(album_name) = &self.album {
+            display_str.push_str(&format!(" (Album: {})", album_name));
+        }
+        write!(f, "{}", display_str)
     }
 }

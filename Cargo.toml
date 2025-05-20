@@ -39,14 +39,30 @@ moka = { version = "0.12", features = ["sync"] }
 rocket_ws = "0.1.0"
 # For command line argument parsing
 clap = { version = "4.5", features = ["derive"] }
+# For calculating MD5 hashes (Last.fm API signing)
+md5 = "0.7.0"
 thiserror = "1.0"
 mac_address = "1.1.8"
 get_if_addrs = "0.5.3"
 hex = "0.4.3"
+# For secure storage encryption
+aes-gcm = "0.10.2"
+rand = "0.8.5"
+base64 = "0.21.0"
+# For testing
+tempfile = "3.8.1"
 # For async trait implementations
 async-trait = "0.1.77"
 # Simple synchronous HTTP client without tokio dependency
 ureq = "2.9"
+# For event bus messaging
+event-bus = "0.1.0" # Corrected version
+# For concurrent data structures and channels
+crossbeam = "0.8.2"
+
+[features]
+default = []
+theaudiodb = []
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
@@ -58,13 +74,17 @@ named_pipe = "0.4"
 
 # Binary targets
 [[bin]]
-name = "dumpcache"
+name = "acr_dumpcache"
 path = "src/tools/dumpcache.rs"
 
 [[bin]]
-name = "lms_client"
+name = "acr_lms_client"
 path = "src/tools/lms_client.rs"
 
 [[bin]]
 name = "acr_send_update"
-path = "src/tools/acr_send_update.rs"
+path = "src/tools/send_update.rs"
+
+[[bin]]
+name = "acr_dump_store"
+path = "src/tools/acr_dump_store.rs"

@@ -24,14 +24,14 @@ These paths can be customized in the configuration file.
 ACR uses the Sled database engine to implement its attribute caching. To view the contents of the attribute cache, a tool is provided:
 
 ```
-dumpcache [PATH]
+acr_dumpcache [PATH]
 ```
 
 The argument is the full path to the cache directory. If no path is specified, it defaults to `cache/attributes`.
 
 Example:
 ```
-dumpcache cache/attributes
+acr_dumpcache cache/attributes
 ```
 
 This will output all key-value pairs in the cache in a `key|value` format.

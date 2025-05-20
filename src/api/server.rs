@@ -1,8 +1,8 @@
 use crate::AudioController;
-use crate::api::{players, plugins, library, imagecache, events};
+use crate::api::{players, plugins, library, imagecache, events, lastfm};
 use crate::api::events::WebSocketManager;
 use crate::constants::API_PREFIX;
-use crate::players::{PlayerController, PlayerStateListener}; // Added PlayerStateListener import
+use crate::players::{PlayerController}; 
 use log::{info, warn};
 use rocket::{routes, get};
 use rocket::serde::json::Json;
@@ -58,17 +58,6 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     let ws_manager = Arc::new(WebSocketManager::new());
     events::start_prune_task(ws_manager.clone());
     
-    // Register the WebSocket manager as a listener for all player events
-    info!("Registering WebSocketManager as a player event listener");
-    
-    // Get a mutable reference to register the WebSocketManager as a listener
-    let mut_controller = unsafe { &mut *(Arc::as_ptr(&controller) as *mut AudioController) };
-    if mut_controller.register_state_listener(Arc::downgrade(&(ws_manager.clone() as Arc<dyn PlayerStateListener>))) {
-        info!("WebSocketManager successfully registered as listener");
-    } else {
-        warn!("Failed to register WebSocketManager as listener");
-    }
-    
     let api_routes = routes![
         get_version,
         
@@ -79,11 +68,9 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         players::get_now_playing,
         players::get_player_queue,
         players::get_player_metadata,      
-        players::get_player_metadata_key,   
-        
+        players::get_player_metadata_key,        
         // Plugin routes
         plugins::list_action_plugins,
-        plugins::list_event_filters,
         
         // Library routes
         library::list_libraries,
@@ -101,10 +88,19 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::get_image,
         library::get_library_metadata,
         library::get_library_metadata_key,
-        
-        // WebSocket routes
+          // WebSocket routes
         events::event_messages,
-        events::player_event_messages
+        events::player_event_messages,
+    ];
+    
+    // Define Last.fm specific routes
+    let lastfm_routes = routes![
+        lastfm::get_status,
+        lastfm::get_auth_url_handler,
+        lastfm::prepare_complete_auth,
+        lastfm::complete_auth,
+        lastfm::disconnect_handler,
+        lastfm::get_loved_tracks_handler // Added this line
     ];
     
     // ImageCache routes
@@ -113,7 +109,8 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     ];
     
     let mut rocket_builder = rocket::custom(config)
-        .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting routes
+        .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting general api routes
+        .mount(format!("{}/lastfm", API_PREFIX), lastfm_routes) // Mount Last.fm routes under /api/lastfm (or similar)
         .mount(format!("{}/imagecache", API_PREFIX), imagecache_routes) // Mount imagecache routes
         .manage(controller)
         .manage(ws_manager); // Add WebSocket manager as managed state

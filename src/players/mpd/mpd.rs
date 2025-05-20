@@ -1,4 +1,4 @@
-use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
+use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::library::LibraryInterface;
 use crate::constants::API_PREFIX;
@@ -739,6 +739,7 @@ impl MPDPlayerController {
             cover_art_url: cover_url,
             stream_url: Some(mpd_song.file.clone()),
             source: Some("mpd".to_string()),
+            liked: None,
             metadata: HashMap::new(),
         }
     }
@@ -850,8 +851,6 @@ lazy_static! {
 impl PlayerController for MPDPlayerController {
     delegate! {
         to self.base {
-            fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
-            fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
             fn get_capabilities(&self) -> PlayerCapabilitySet;
             fn get_last_seen(&self) -> Option<std::time::SystemTime>;
         }

@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACR Last.fm Integration</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        h1, h2, h3 {
+            color: #222;
+        }
+        
+        .panel {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            padding: 20px;
+        }
+        
+        .status {
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+        }
+        
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.pending {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+        
+        button {
+            padding: 10px 15px;
+            background-color: #d51007;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        
+        button:hover {
+            background-color: #aa0d06;
+        }
+        
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        .error {
+            color: #721c24;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        
+        .hidden {
+            display: none;
+        }
+
+        .instructions {
+            background-color: #e2f0ff;
+            border: 1px solid #b8daff;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 15px 0;
+            color: #004085;
+        }
+
+        .instructions h3 {
+            margin-top: 0;
+            color: #004085;
+        }
+
+        .instructions ol {
+            margin-bottom: 0;
+            padding-left: 20px;
+        }
+
+        .instructions li {
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="panel">
+            <h1>
+                <i class="fab fa-lastfm" style="color: #d51007;"></i>
+                Last.fm Integration
+            </h1>
+            
+            <div id="status" class="status">
+                Checking Last.fm connection status...
+            </div>
+            
+            <div id="error" class="error hidden"></div>
+            
+            <!-- Renamed and simplified for desktop flow -->
+            <div id="authInProgressMessage" class="instructions hidden">
+                <h3>Authentication in Progress</h3>
+                <p>You will be redirected to Last.fm to authorize this application. Once authorized, return to this page. We will automatically try to complete the connection.</p>
+                <p>Current step: <span id="authProgressStep">Waiting for redirection...</span></p>
+            </div>
+            
+            <div id="authSection" class="hidden">
+                <p>Connect your Last.fm account to scrobble tracks and share what you\'re listening to.</p>
+                <button id="connectBtn">
+                    <i class="fab fa-lastfm"></i>
+                    Connect to Last.fm
+                </button>
+            </div>
+
+            <button id="disconnectButton" class="hidden">
+                <i class="fas fa-unlink"></i>
+                Disconnect from Last.fm
+            </button>
+        </div>
+
+        <div id="lovedTracksPanel" class="panel hidden">
+            <h2>
+                <i class="fas fa-heart" style="color: #d51007;"></i>
+                Your Loved Tracks on Last.fm
+            </h2>
+            <button id="fetchLovedTracksBtn">
+                <i class="fas fa-sync-alt"></i>
+                Fetch Loved Tracks
+            </button>
+            <div id="lovedTracksList" style="margin-top: 15px;">
+                <!-- Loved tracks will be listed here -->
+            </div>
+            <div id="lovedTracksError" class="error hidden"></div>
+        </div>
+    </div>
+    
+    <script>
+        const API_PREFIX = '/api';  // Match our API prefix constant
+        let isAttemptingAuthCompletion = false; // Renamed from authInProgress
+        let authPollInterval = null; // New interval for polling auth status
+
+        let statusElement = null;
+        let connectButtonElement = null;
+        let disconnectButtonElement = null;
+        let authSectionElement = null;
+        let authInProgressMessageElement = null;
+        let lovedTracksPanelElement = null;
+        let fetchLovedTracksBtnElement = null;
+        let lovedTracksListElement = null;
+        let lovedTracksErrorElement = null;
+
+        document.addEventListener('DOMContentLoaded', initializePage);
+
+        async function initializePage() {
+            console.log("DOM fully loaded and parsed. Initializing Last.fm page script.");
+
+            statusElement = document.getElementById('status');
+            connectButtonElement = document.getElementById('connectBtn');
+            disconnectButtonElement = document.getElementById('disconnectButton');
+            authSectionElement = document.getElementById('authSection');
+            authInProgressMessageElement = document.getElementById('authInProgressMessage');
+            lovedTracksPanelElement = document.getElementById('lovedTracksPanel');
+            fetchLovedTracksBtnElement = document.getElementById('fetchLovedTracksBtn');
+            lovedTracksListElement = document.getElementById('lovedTracksList');
+            lovedTracksErrorElement = document.getElementById('lovedTracksError');
+
+
+            if (!statusElement || !connectButtonElement || !disconnectButtonElement || !authSectionElement || !authInProgressMessageElement || !lovedTracksPanelElement || !fetchLovedTracksBtnElement || !lovedTracksListElement || !lovedTracksErrorElement) {
+                console.error("CRITICAL ERROR: One or more essential UI elements are missing from the HTML.");
+                if (statusElement) {
+                    statusElement.textContent = "Page Error: Required UI elements are missing. Cannot initialize.";
+                }
+                return; // Stop initialization
+            }
+
+            if (connectButtonElement) {
+                connectButtonElement.onclick = connectToLastfm;
+            }
+            if (disconnectButtonElement) {
+                disconnectButtonElement.onclick = disconnectFromLastfm;
+            }
+            if (fetchLovedTracksBtnElement) {
+                fetchLovedTracksBtnElement.onclick = fetchAndDisplayLovedTracks;
+            }
+
+            updateStatus('Initializing page...'); 
+            
+            try {
+                await checkStatus(); 
+            } catch (e) {
+                console.error("Error during initializePage's call to checkStatus:", e);
+                updateStatus("Initialization error. Check console.");
+            }
+            console.log("initializePage: checkStatus has completed or thrown. Initialization finished.");
+        }
+
+        async function attemptToCompleteAuth() {
+            if (!isAttemptingAuthCompletion && !localStorage.getItem('lastfm_request_token')) {
+                // If polling was stopped externally or no token, don't attempt.
+                // This check might be redundant if start/stopAuthPolling are strictly used.
+                console.log("attemptToCompleteAuth: Aborting, isAttemptingAuthCompletion is false or no token.");
+                stopAuthPolling(); // Ensure it's stopped.
+                return;
+            }
+            console.log('Attempting to complete Last.fm auth...');
+            updateStatus('Checking Last.fm authorization status...');
+
+            try {
+                const response = await fetch('/api/lastfm/complete_auth');
+                const data = await response.json();
+                console.log('Auth completion attempt response:', data);
+
+                if (data.authenticated === true) { 
+                    updateStatus(`Connected to Last.fm as ${data.username}.`); 
+                    localStorage.removeItem('lastfm_request_token');
+                    if (connectButtonElement) connectButtonElement.style.display = 'none';
+                    if (authSectionElement) authSectionElement.classList.add('hidden');
+                    if (disconnectButtonElement) disconnectButtonElement.style.display = 'inline-block';
+                    if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+                    stopAuthPolling();
+                    updateUIForAuthenticated(data.username); // Ensure loved tracks panel is shown
+                } else if (
+                    data.error === 'TokenNotAuthorized' || 
+                    (data.error === 'ApiError' && data.error_description && data.error_description.startsWith('Unauthorized Token'))
+                ) {
+                    updateStatus('Waiting for you to authorize ACR on the Last.fm website. We will keep checking...');
+                    // Do NOT stop polling here, let it continue for a while.
+                    // Consider adding a max attempts counter to stopAuthPolling eventually.
+                } else { // For any other error, stop polling
+                    let errorMessage = "Unknown error during authentication.";
+                    if (data.error_description) { // Prefer error_description
+                        errorMessage = data.error_description;
+                    } else if (data.error) { // Fallback to error (could be a code or string)
+                        errorMessage = data.error;
+                    } else if (!response.ok) { // Fallback if data parsing might have issues but response was not ok
+                        errorMessage = `Server error: ${response.status} ${response.statusText}`;
+                    }
+                    updateStatus(`Error connecting to Last.fm: ${errorMessage}`);
+                    stopAuthPolling();
+                }
+            } catch (error) {
+                console.error('Error during /api/lastfm/complete_auth:', error);
+                updateStatus('Error connecting to Last.fm. Check console for details.');
+                stopAuthPolling();
+            }
+        }
+
+        function startAuthPolling() {
+            console.log("startAuthPolling called");
+            if (authPollInterval) {
+                clearInterval(authPollInterval);
+                authPollInterval = null;
+            }
+            isAttemptingAuthCompletion = true;
+            // updateStatus('Attempting to complete Last.fm connection...'); // Message is set by caller now or after first poll
+            
+            // Don't call attemptToCompleteAuth() immediately.
+            // Instead, let the interval handle the first call.
+            authPollInterval = setInterval(attemptToCompleteAuth, 5000); // Poll every 5 seconds
+            console.log("Auth polling interval set. First attempt in 5 seconds.");
+            // Optionally, set a status indicating polling has started if not already clear
+            // For example, if the status was "Please authorize...", it can remain that way until the first poll.
+        }
+
+        function stopAuthPolling() {
+            console.log("stopAuthPolling called");
+            if (authPollInterval) {
+                clearInterval(authPollInterval);
+                authPollInterval = null;
+            }
+            isAttemptingAuthCompletion = false;
+            // Do not reset status here, let the calling function decide the final status
+        }
+
+        async function connectToLastfm() {
+            if (!connectButtonElement) {
+                console.error("connectToLastfm: connectButtonElement is null!");
+                return;
+            }
+            connectButtonElement.disabled = true;
+            document.getElementById('error').classList.add('hidden');
+            document.getElementById('error').textContent = '';
+            
+            if (authInProgressMessageElement) authInProgressMessageElement.classList.remove('hidden');
+            if (document.getElementById('authProgressStep')) document.getElementById('authProgressStep').textContent = 'Requesting authorization URL...';
+            if (authSectionElement) authSectionElement.classList.add('hidden');
+            if (statusElement) {
+                statusElement.className = 'status pending';
+                statusElement.textContent = 'Connecting to Last.fm...';
+            }
+
+            isAttemptingAuthCompletion = false; 
+            if (authPollInterval) clearInterval(authPollInterval); // Clear any existing polling from previous attempts
+            localStorage.removeItem('lastfm_request_token'); 
+
+            try {
+                const authResponse = await fetch('/api/lastfm/auth');
+                if (!authResponse.ok) {
+                    const errorText = await authResponse.text();
+                    throw new Error(`Failed to get auth URL: ${authResponse.status} ${errorText}`);
+                }
+                const authData = await authResponse.json();
+
+                if (authData.url && authData.request_token) {
+                    localStorage.setItem('lastfm_request_token', authData.request_token);
+                    console.log('Request token stored for new auth:', authData.request_token);
+
+                    if (document.getElementById('authProgressStep')) {
+                        document.getElementById('authProgressStep').textContent = 'Notifying backend of new token...';
+                    }
+                    
+                    // This will POST to /api/lastfm/prepare_complete_auth 
+                    // and then start polling if successful.
+                    await prepareBackendForAuthCompletion(authData.request_token); 
+                    
+                    // prepareBackendForAuthCompletion handles UI updates including errors or success + polling start.
+                    // We can now open the window.
+                    window.open(authData.url, '_blank');
+                    
+                    // Check if prepareBackendForAuthCompletion set an error.
+                    // If not, update status to guide user.
+                    const errorIsVisible = !document.getElementById('error').classList.contains('hidden');
+                    const statusIsError = statusElement && statusElement.textContent && statusElement.textContent.toLowerCase().includes('error');
+
+                    if (errorIsVisible || statusIsError) {
+                        console.log("connectToLastfm: prepareBackendForAuthCompletion might have failed. Window opened anyway. User needs to check messages.");
+                        // Button re-enabling will be handled by prepareBackendForAuthCompletion's error path or here if it throws
+                    } else {
+                         updateStatus('Please authorize ACR on the Last.fm page that just opened. We will check for completion automatically.');
+                    }
+                    // connectButtonElement remains disabled if all went well, 
+                    // as successful auth completion will hide it and show disconnect.
+                    // authSectionElement remains hidden.
+                } else {
+                    let errorMsg = authData.error || 'Could not get auth URL or request token from /api/lastfm/auth.';
+                    if (authData.url && !authData.request_token) errorMsg = 'Auth URL received but request_token was missing.';
+                    
+                    if (statusElement) statusElement.className = 'status disconnected';
+                    if (statusElement) statusElement.textContent = 'Failed to start Last.fm connection.';
+                    document.getElementById('error').textContent = `Error: ${errorMsg}`;
+                    document.getElementById('error').classList.remove('hidden');
+                    if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+                    if (authSectionElement) authSectionElement.classList.remove('hidden');
+                    connectButtonElement.disabled = false; 
+                }
+            } catch (error) {
+                console.error('Error in connectToLastfm:', error);
+                if (statusElement) statusElement.className = 'status disconnected';
+                if (statusElement) statusElement.textContent = 'Failed to start Last.fm connection (network/fetch error).';
+                document.getElementById('error').textContent = `Error: ${error.message}`;
+                document.getElementById('error').classList.remove('hidden');
+                if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+                if (authSectionElement) authSectionElement.classList.remove('hidden');
+                connectButtonElement.disabled = false; 
+            }
+        }
+
+        // New function to set token on backend before polling
+        async function prepareBackendForAuthCompletion(token) {
+            updateStatus('Resuming session: Notifying backend of your request token...');
+            console.log('prepareBackendForAuthCompletion: POSTing to /api/lastfm/prepare_complete_auth with token:', token);
+            let response;
+            try {
+                response = await fetch('/api/lastfm/prepare_complete_auth', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: token }) 
+                });
+                console.log('prepareBackendForAuthCompletion: /api/lastfm/prepare_complete_auth fetch completed. Status:', response.status, 'Ok:', response.ok);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error(`prepareBackendForAuthCompletion: Call failed. Status: ${response.status}. Body: ${errorText}`);
+                    updateStatus(`Error resuming session (prepare step): ${response.status} - ${response.statusText}. See console.`);
+                    localStorage.removeItem('lastfm_request_token'); // Clear token if prepare fails
+                    if (connectButtonElement) connectButtonElement.style.display = 'inline-block';
+                    if (connectButtonElement) connectButtonElement.disabled = false; // Re-enable
+                    if (disconnectButtonElement) disconnectButtonElement.style.display = 'none';
+                    if (authSectionElement) authSectionElement.classList.remove('hidden');
+                    if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+                    return; // Stop further processing
+                }
+
+                const data = await response.json();
+                console.log('prepareBackendForAuthCompletion: /api/lastfm/prepare_complete_auth response data:', data);
+
+                if (data.success) {
+                    updateStatus('Resuming session: Backend ready. If you have already authorized on Last.fm, we will now poll for completion.');
+                    startAuthPolling(); 
+                } else {
+                    updateStatus(`Failed to prepare backend for auth resumption: ${data.error || 'Unknown error'}. Please try connecting again.`);
+                    localStorage.removeItem('lastfm_request_token'); // Clear token
+                    if (connectButtonElement) connectButtonElement.style.display = 'inline-block';
+                    if (connectButtonElement) connectButtonElement.disabled = false; // Re-enable
+                    if (disconnectButtonElement) disconnectButtonElement.style.display = 'none';
+                    if (authSectionElement) authSectionElement.classList.remove('hidden');
+                    if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+                }
+            } catch (error) {
+                console.error('prepareBackendForAuthCompletion: Critical error during fetch or processing:', error);
+                if (response) {
+                    console.error('prepareBackendForAuthCompletion: Response object at time of error (if available):', response);
+                }
+                updateStatus('Failed to resume session (network/parse error). Check console. Please try connecting again.');
+                localStorage.removeItem('lastfm_request_token'); // Clear token
+                if (connectButtonElement) connectButtonElement.style.display = 'inline-block';
+                if (connectButtonElement) connectButtonElement.disabled = false; // Re-enable
+                if (authSectionElement) authSectionElement.classList.remove('hidden');
+                if (disconnectButtonElement) disconnectButtonElement.style.display = 'none';
+                if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+            }
+        }
+
+        async function checkStatus() {
+            updateStatus('Checking Last.fm connection status...');
+            console.log('checkStatus: Attempting to fetch /api/lastfm/status');
+            let response;
+            try {
+                response = await fetch('/api/lastfm/status');
+                console.log('checkStatus: /api/lastfm/status fetch completed. Status code:', response.status, 'Ok:', response.ok);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error(`checkStatus: /api/lastfm/status call failed. Status: ${response.status}. Body: ${errorText}`);
+                    updateStatus(`Error checking status: ${response.status} - ${response.statusText}. Check console.`);
+                    if (connectButtonElement) connectButtonElement.style.display = 'inline-block';
+                    if (disconnectButtonElement) disconnectButtonElement.style.display = 'none';
+                    if (statusElement) statusElement.textContent = 'Disconnected (status check failed). Please try connecting.';
+                    return;
+                }
+
+                const data = await response.json();
+                console.log('checkStatus: /api/lastfm/status response data:', data);
+
+                if (data.authenticated === true) { // Changed from is_connected to authenticated
+                    updateStatus(`Connected to Last.fm as ${data.username}.`); // Changed from data.user to data.username
+                    if (connectButtonElement) connectButtonElement.style.display = 'none';
+                    if (authSectionElement) authSectionElement.classList.add('hidden');
+                    if (disconnectButtonElement) {
+                        disconnectButtonElement.style.display = 'inline-block';
+                        // disconnectButtonElement.onclick = disconnectFromLastfm; // Already set in initializePage
+                    }
+                    if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+                    localStorage.removeItem('lastfm_request_token');
+                    updateUIForAuthenticated(data.username); // Show loved tracks panel
+                } else {
+                    updateStatus('Not connected to Last.fm. You can connect using the button below.');
+                    if (connectButtonElement) connectButtonElement.style.display = 'inline-block';
+                    if (authSectionElement) authSectionElement.classList.remove('hidden');
+                    if (disconnectButtonElement) disconnectButtonElement.style.display = 'none';
+                    if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+
+                    const storedToken = localStorage.getItem('lastfm_request_token');
+                    console.log('checkStatus: Not connected. Checking for stored token. Found:', storedToken);
+                    if (storedToken) {
+                        console.log('checkStatus: Token found in localStorage. Attempting to resume session by preparing backend.');
+                        await prepareBackendForAuthCompletion(storedToken); 
+                    } else {
+                        console.log('checkStatus: No stored token found. Waiting for user to initiate connection.');
+                    }
+                }
+            } catch (error) {
+                console.error('checkStatus: Critical error during fetch or processing of /api/lastfm/status:', error);
+                if (response) {
+                     console.error('checkStatus: Response object at time of error (if available):', response);
+                }
+                updateStatus('Failed to check Last.fm status. Network error or invalid server response. Check console.');
+                if (connectButtonElement) connectButtonElement.style.display = 'inline-block'; // Fallback: show connect button
+                if (authSectionElement) authSectionElement.classList.remove('hidden'); // Fallback: show auth section
+                if (disconnectButtonElement) disconnectButtonElement.style.display = 'none';
+                if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+                if (statusElement) statusElement.textContent = 'Disconnected (error fetching status). Please try connecting.';
+            }
+        }
+
+        function updateStatus(message) {
+            console.log("UI Update (status message):", message);
+            if (statusElement) {
+                statusElement.textContent = message;
+            } else {
+                console.error("updateStatus: statusElement is null! Cannot update UI message.");
+            }
+        }
+
+        async function disconnectFromLastfm() {
+            console.log("Disconnecting from Last.fm...");
+            const disconnectButton = document.getElementById('disconnectButton');
+            const connectBtn = document.getElementById('connectBtn');
+            const statusDiv = document.getElementById('status');
+            const authSection = document.getElementById('authSection');
+
+            disconnectButton.disabled = true;
+
+            try {
+                const response = await fetch('/api/lastfm/disconnect', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ error_description: "Failed to disconnect. Server returned an error." }));
+                    throw new Error(errorData.error_description || `HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (!data.authenticated && !data.error) {
+                    statusDiv.textContent = 'Not connected to Last.fm.';
+                    authSection.style.display = 'block';
+                    connectBtn.style.display = 'inline-block';
+                    disconnectButton.style.display = 'none';
+                    localStorage.removeItem('lastfm_request_token'); // Clear token on successful disconnect
+                    console.log("Successfully disconnected from Last.fm.");
+                    updateUIForDisconnected(); // Hide loved tracks panel
+                } else {
+                    const errorMessage = data.error_description || data.error || "Unknown error during disconnect.";
+                    statusDiv.textContent = `Error disconnecting: ${errorMessage}`;
+                    console.error("Error disconnecting from Last.fm:", errorMessage);
+                    // Keep disconnect button enabled if disconnect failed, allowing user to retry
+                    disconnectButton.disabled = false; 
+                }
+            } catch (error) {
+                console.error('Error during disconnectFromLastfm:', error);
+                statusDiv.textContent = `Error: ${error.message}`;
+                disconnectButton.disabled = false; // Re-enable on error
+            }
+            // Optionally, call checkStatus() to ensure UI reflects the true backend state after any operation
+            // await checkStatus(); // Decided to update UI directly based on disconnect response for now.
+        }
+
+        function updateUIForAuthenticated(username) {
+            if (statusElement) {
+                statusElement.textContent = `Connected to Last.fm as ${username}.`;
+                statusElement.className = 'status connected';
+            }
+            if (connectButtonElement) connectButtonElement.style.display = 'none';
+            if (authSectionElement) authSectionElement.classList.add('hidden');
+            if (disconnectButtonElement) {
+                disconnectButtonElement.style.display = 'inline-block';
+                disconnectButtonElement.disabled = false; // Ensure it's enabled
+            }
+            if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+            if (lovedTracksPanelElement) lovedTracksPanelElement.classList.remove('hidden'); // Show loved tracks
+        }
+
+        function updateUIForDisconnected() {
+            if (statusElement) {
+                statusElement.textContent = 'Not connected to Last.fm. You can connect using the button below.';
+                statusElement.className = 'status disconnected';
+            }
+            if (connectButtonElement) connectButtonElement.style.display = 'inline-block';
+            if (authSectionElement) authSectionElement.classList.remove('hidden');
+            if (disconnectButtonElement) disconnectButtonElement.style.display = 'none';
+            if (authInProgressMessageElement) authInProgressMessageElement.classList.add('hidden');
+            if (lovedTracksPanelElement) lovedTracksPanelElement.classList.add('hidden'); // Hide loved tracks
+            if (lovedTracksListElement) lovedTracksListElement.innerHTML = ''; // Clear list
+            if (lovedTracksErrorElement) lovedTracksErrorElement.classList.add('hidden'); // Hide error
+        }
+
+        async function fetchAndDisplayLovedTracks() {
+            if (!fetchLovedTracksBtnElement || !lovedTracksListElement || !lovedTracksErrorElement) {
+                console.error("fetchAndDisplayLovedTracks: UI elements for loved tracks are missing.");
+                return;
+            }
+
+            fetchLovedTracksBtnElement.disabled = true;
+            lovedTracksListElement.innerHTML = '<p>Fetching loved tracks...</p>';
+            lovedTracksErrorElement.classList.add('hidden');
+            lovedTracksErrorElement.textContent = '';
+
+            try {
+                const response = await fetch('/api/lastfm/loved_tracks');
+                const data = await response.json();
+
+                if (response.ok && data.tracks) {
+                    if (data.tracks.length > 0) {
+                        let html = '<ul>';
+                        data.tracks.forEach(track => {
+                            html += `<li>${track.name} by ${track.artist.name} (Loved on: ${new Date(track.date.uts * 1000).toLocaleDateString()})</li>`;
+                        });
+                        html += '</ul>';
+                        lovedTracksListElement.innerHTML = html;
+                    } else {
+                        lovedTracksListElement.innerHTML = '<p>No loved tracks found.</p>';
+                    }
+                } else {
+                    const errorMsg = data.error_description || data.error || 'Failed to fetch loved tracks.';
+                    lovedTracksErrorElement.textContent = `Error: ${errorMsg}`;
+                    lovedTracksErrorElement.classList.remove('hidden');
+                    lovedTracksListElement.innerHTML = ''; // Clear loading message
+                    console.error("Error fetching loved tracks:", data);
+                }
+            } catch (error) {
+                console.error('Error in fetchAndDisplayLovedTracks:', error);
+                lovedTracksErrorElement.textContent = `Error: ${error.message}`;
+                lovedTracksErrorElement.classList.remove('hidden');
+                lovedTracksListElement.innerHTML = ''; // Clear loading message
+            } finally {
+                fetchLovedTracksBtnElement.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>

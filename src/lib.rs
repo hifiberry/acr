@@ -22,7 +22,6 @@ pub mod constants;
 pub use crate::audiocontrol::audiocontrol::AudioController;
 pub use crate::data::PlayerCommand;
 pub use crate::players::PlayerController;
-pub use crate::players::PlayerStateListener;
 
 use std::sync::Once;
 use tokio::runtime::Runtime;

@@ -1,4 +1,4 @@
-use crate::players::player_controller::{BasePlayerController, PlayerController, PlayerStateListener};
+use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand};
 use delegate::delegate;
 use std::sync::{Arc, Weak};
@@ -51,8 +51,6 @@ impl NullPlayerController {
 impl PlayerController for NullPlayerController {
     delegate! {
         to self.base {
-            fn register_state_listener(&mut self, listener: Weak<dyn PlayerStateListener>) -> bool;
-            fn unregister_state_listener(&mut self, listener: &Arc<dyn PlayerStateListener>) -> bool;
             fn get_capabilities(&self) -> PlayerCapabilitySet;
             fn get_last_seen(&self) -> Option<std::time::SystemTime>;
         }

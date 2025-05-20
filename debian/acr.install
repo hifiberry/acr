@@ -2,7 +2,7 @@ target/release/acr usr/bin/
 target/release/acr_dumpcache usr/bin/
 target/release/acr_lms_client usr/bin/
 target/release/acr_send_update usr/bin/
-target/release/acr_lastfm_auth usr/bin/
+target/release/acr_dump_store usr/bin
 acr.json.sample usr/share/acr/
 example-app/* usr/share/acr/sample-web/
 debian/acr.service lib/systemd/system/

@@ -72,6 +72,10 @@ named_pipe = "0.4"
 [target.'cfg(not(windows))'.dependencies]
 # Add any Linux-specific alternatives here if needed
 
+# Build dependencies
+[build-dependencies]
+base64 = "0.21.0"
+
 # Binary targets
 [[bin]]
 name = "acr_dump_cache"

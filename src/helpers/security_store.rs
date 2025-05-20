@@ -20,13 +20,13 @@ use rand::{rngs::OsRng, RngCore};
 
 // Compiled from secrets.txt at build time
 #[cfg(not(test))]
-pub fn default_encryption_key() -> &'static str {
-    crate::secrets::SECRETS_ENCRYPTION_KEY
+pub fn default_encryption_key() -> String {
+    crate::secrets::secrets_encryption_key()
 }
 
 #[cfg(test)]
-pub fn default_encryption_key() -> &'static str {
-    "test_encryption_key"
+pub fn default_encryption_key() -> String {
+    "test_encryption_key".to_string()
 }
 
 // Error type for security store operations
@@ -230,7 +230,7 @@ impl SecurityStore {
         }
         
         info!("Using default encryption key now or during compile time");
-        Self::initialize(encryption_key, file_path)
+        Self::initialize(&encryption_key, file_path)
     }
     
     // Check if the store is initialized

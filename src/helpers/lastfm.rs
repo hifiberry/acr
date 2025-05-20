@@ -18,27 +18,27 @@ const LASTFM_AUTH_URL: &str = "http://www.last.fm/api/auth/";
 const LASTFM_SESSION_KEY_STORE: &str = "lastfm_session_key";
 const LASTFM_USERNAME_STORE: &str = "lastfm_username";
 
-// Default Last.fm API credentials compiled from secrets.txt if available
+// Default Last.fm API credentials compiled from secrets.txt at build time
 // These are used as fallbacks if no credentials are provided
 #[cfg(not(test))]
-pub fn default_lastfm_api_key() -> &'static str {
-    option_env!("LASTFM_APIKEY").unwrap_or("YOUR_API_KEY_HERE")
+pub fn default_lastfm_api_key() -> String {
+    crate::secrets::lastfm_api_key()
 }
 
 #[cfg(not(test))]
-pub fn default_lastfm_api_secret() -> &'static str {
-    option_env!("LASTFM_APISECRET").unwrap_or("YOUR_API_SECRET_HERE")
+pub fn default_lastfm_api_secret() -> String {
+    crate::secrets::lastfm_api_secret()
 }
 
 // Test credentials (placeholders for tests)
 #[cfg(test)]
-pub fn default_lastfm_api_key() -> &'static str {
-    "test_api_key"
+pub fn default_lastfm_api_key() -> String {
+    "test_api_key".to_string()
 }
 
 #[cfg(test)]
-pub fn default_lastfm_api_secret() -> &'static str {
-    "test_api_secret"
+pub fn default_lastfm_api_secret() -> String {
+    "test_api_secret".to_string()
 }
 
 

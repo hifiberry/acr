@@ -17,6 +17,18 @@ CURRENT_RUST_VERSION=$(rustc --version | cut -d ' ' -f 2)
 echo "Current Rust version: $CURRENT_RUST_VERSION"
 echo "Required Rust version: $REQUIRED_RUST_VERSION"
 
+# Check if secrets.txt exists
+if [ ! -f "secrets.txt" ]; then
+    if [[ " $* " == *" --force "* ]]; then
+        echo "Warning: secrets.txt not found, but continuing due to --force flag"
+    else
+        echo "Error: secrets.txt not found. This file is required for building."
+        echo "You can copy secrets.txt.sample to secrets.txt and modify it,"
+        echo "or use --force to build without it."
+        exit 1
+    fi
+fi
+
 # Function to compare version strings
 version_lt() {
     # Check if version1 is less than version2

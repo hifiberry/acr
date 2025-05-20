@@ -1,7 +1,6 @@
 use log::{debug, info, warn};
 use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
-use crate::helpers::theaudiodb;
 use crate::helpers::fanarttv;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;

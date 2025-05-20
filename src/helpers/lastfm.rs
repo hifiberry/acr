@@ -653,7 +653,7 @@ impl LastfmClient {
 
         ratelimit::rate_limit("lastfm");
 
-        let mut params = vec![
+        let params = vec![
             ("method", "track.getInfo"),
             ("artist", artist),
             ("track", title),

@@ -1,9 +1,9 @@
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, Track, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource, PlayerState, PlayerUpdate};
 use crate::data::library::LibraryInterface;
-use std::sync::{Arc, Weak, RwLock};
+use std::sync::{Arc, RwLock};
 use std::any::Any;
 use std::time::SystemTime;
-use log::{debug, trace, warn};
+use log::{debug, warn};
 
 /// PlayerController trait - abstract interface for player implementations
 /// 

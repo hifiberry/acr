@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::sync::{Arc, RwLock, Weak, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, RwLock, atomic::{AtomicBool, Ordering}};
 use std::time::{SystemTime, Duration};
 use std::thread;
 use log::{debug, info, warn, error};

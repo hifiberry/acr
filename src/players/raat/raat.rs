@@ -3,7 +3,7 @@ use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, Playbac
 use crate::players::raat::metadata_pipe_reader::MetadataPipeReader;
 use crate::data::stream_details::StreamDetails;
 use delegate::delegate;
-use std::sync::{Arc, Weak, RwLock, Mutex};
+use std::sync::{Arc, RwLock, Mutex};
 use log::{debug, info, warn, error, trace};
 use std::thread;
 use std::time::Duration;

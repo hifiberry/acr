@@ -1,15 +1,7 @@
 name: Build Debian Package
 
 on:
-  # Only build packages on main branch pushes (after PR is merged) or when creating a release
-  push:
-    branches: [ "main" ]
-    paths-ignore:
-      - '**.md'
-      - 'doc/**'
-  release:
-    types: [created]
-  workflow_dispatch:  # Allows manual triggering
+  workflow_dispatch:  # Only manual triggering allowed
 
 env:
   CARGO_TERM_COLOR: always

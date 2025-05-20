@@ -444,14 +444,8 @@ function updateNowPlaying(data, nowPlayingInfoEl, progressBarEl, songThumbnailEl
         const position = data.position ? formatTime(data.position) : '0:00';
         const duration = song.duration ? formatTime(song.duration) : '0:00';
         
-        // Update progress bar
-        if (song.duration && data.position) {
-            const percentage = (data.position / song.duration) * 100;
-            progressBarEl.style.width = `${percentage}%`;
-        } else {
-            progressBarEl.style.width = '0%';
-        }
-        
+        // Update progress bar and position text
+        updateProgress(data.song, data.position, progressBarEl, nowPlayingInfoEl);
         nowPlayingInfoEl.innerHTML = `
             <div><strong>Title:</strong> ${song.title || 'Unknown'}</div>
             <div><strong>Artist:</strong> ${song.artist || 'Unknown'}</div>
@@ -788,6 +782,67 @@ async function removeTrackFromQueue(position, playerName = null, apiBase = PLAYE
 }
 
 /**
+ * Toggle the like status of the current song
+ * @param {string} playerName - Optional specific player name
+ * @param {Object} currentData - The current player data with song information
+ * @param {string} apiBase - The base URL for the API
+ * @returns {Promise<boolean>} Success or failure
+ */
+async function toggleLike(playerName = null, currentData = null, apiBase = PLAYER_CONFIG.apiBasePath) {
+    if (!currentData || !currentData.song || !currentData.player) {
+        console.error('No song is currently playing');
+        return false;
+    }
+    
+    // Get the current song and toggle the liked status
+    const song = currentData.song;
+    const newLikedStatus = !(song.liked === true);
+    console.log(`Toggling like status for "${song.title}" to ${newLikedStatus}`);
+    
+    // Get the player name to use
+    let playerNameToUse = playerName;
+    if (!playerNameToUse) {
+        try {
+            playerNameToUse = await change_active_player(apiBase);
+        } catch (error) {
+            console.error('Error getting active player name:', error);
+            playerNameToUse = 'active'; // Fallback on error
+        }
+    }
+    
+    try {
+        // Create the updated song object with only the liked status changed
+        const updatedSong = {
+            liked: newLikedStatus
+        };
+        
+        // Send the update to the API
+        const url = `${apiBase}/player/${playerNameToUse}/song/update`;
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(updatedSong)
+        });
+        
+        if (response.ok) {
+            // Update the local data immediately for better UI responsiveness
+            if (currentData && currentData.song) {
+                currentData.song.liked = newLikedStatus;
+            }
+            return true;
+        } else {
+            console.error('Failed to update like status:', response.statusText);
+            return false;
+        }
+    } catch (error) {
+        console.error('Error toggling like status:', error);
+        return false;
+    }
+}
+
+/**
  * Create a WebSocket connection for player events
  * @param {Object} options - The WebSocket options
  * @param {string} options.hostname - The hostname for the WebSocket connection
@@ -1021,9 +1076,10 @@ function handlePlayerEvent(data, options) {
                 if (data.enabled !== undefined) {
                     data.shuffle = data.enabled;
                 }
-                break;
-            case 'queue_changed': eventType = 'QueueChanged'; break;
+                break;            case 'queue_changed': eventType = 'QueueChanged'; break;
             case 'capabilities_changed': eventType = 'CapabilitiesChanged'; break;
+            case 'song_information_update': eventType = 'SongInformationUpdate'; break;
+            case 'metadata_changed': eventType = 'MetadataChanged'; break;
         }
     }
       // Check if this event is for our current player
@@ -1099,15 +1155,43 @@ function handlePlayerEvent(data, options) {
                     currentData.shuffle = data.shuffle;
                     updateControlButtons(currentData); // Updates shuffle button
                 }
-                break;
-            case 'QueueChanged':
+                break;            case 'QueueChanged':
                 // Queue has changed, refresh it
                 if (playerCapabilities.hasQueue) {
                     fetchQueue();
                 }
                 break;
+            case 'SongInformationUpdate':
+            case 'song_information_update':
+                // Update song information (cover art, liked status, etc.) without changing the entire song
+                if (currentData && currentData.song && data.song) {
+                    console.log('Received song information update:', data.song);
+                    
+                    // Merge the updated song information with the existing song object
+                    Object.assign(currentData.song, data.song);
+                    
+                    // Update song info in the UI
+                    updateSongInfo(currentData.song);
+                    
+                    // Also update the now playing display as it might include artwork
+                    updateNowPlaying(currentData);
+                }
+                break;
+            case 'MetadataChanged':
+                // Handle metadata changes similarly to song information updates
+                if (currentData && currentData.song && data.metadata) {
+                    console.log('Received metadata change:', data.metadata);
+                    
+                    // Update song metadata if present in the event
+                    if (data.metadata.song) {
+                        Object.assign(currentData.song, data.metadata.song);
+                        updateSongInfo(currentData.song);
+                        updateNowPlaying(currentData);
+                    }
+                }
+                break;
             default:
-                console.log('Unhandled event type:', eventType);        }
+                console.log('Unhandled event type:', eventType);}
     } else {
         console.log(`Event ${eventType} is for player ${playerName || 'unknown'}, but not relevant for current selection (${currentPlayerName || 'Default (Active Player)'}). Ignoring.`);
     }
@@ -1133,6 +1217,91 @@ async function retrieve_active_player(apiBase = PLAYER_CONFIG.apiBasePath) {
     } catch (error) {
         console.error('Failed to get active player name:', error);
         return null;
+    }
+}
+
+let progressInterval = null;
+let lastProgressUpdate = null;
+
+/**
+ * Start auto progress updates for the progress bar
+ * @param {Object} data - The current player data
+ * @param {Element} progressBarEl - The progress bar element
+ * @param {Element} positionEl - Element to display position text
+ * @param {function} fetchCurrentPlayer - Function to fetch current player
+ */
+function startAutoProgress(data, progressBarEl, positionEl, fetchCurrentPlayer) {
+    // Stop any existing interval first
+    stopAutoProgress();
+    
+    // Only start if we have current data and a song is playing
+    if (!data || !data.song || !data.song.duration) {
+        console.log('Cannot start auto progress: missing song data or duration');
+        return;
+    }
+    
+    const isPlaying = data.state && data.state.toLowerCase() === 'playing';
+    if (!isPlaying) {
+        console.log('Cannot start auto progress: player is not in playing state');
+        return;
+    }
+    
+    console.log(`Starting auto progress updates from position: ${formatTime(data.position || 0)}`);
+    
+    // Ensure position is initialized
+    if (data.position === undefined || data.position === null) {
+        console.log('Initializing position to 0 as it was undefined');
+        data.position = 0;
+    }
+    
+    // Reset the timestamp to now
+    lastProgressUpdate = Date.now();
+    
+    // Create a new interval
+    progressInterval = setInterval(() => {
+        if (!data || !data.song || !data.song.duration) {
+            console.warn('Progress update: missing song data, stopping auto-updates');
+            stopAutoProgress();
+            return;
+        }
+        
+        // Make sure position is defined
+        if (data.position === undefined || data.position === null) {
+            data.position = 0;
+        }
+        
+        // Calculate how much time has passed since the last position update
+        const now = Date.now();
+        const elapsedSeconds = (now - lastProgressUpdate) / 1000;
+        lastProgressUpdate = now;
+        
+        // Add the elapsed time to the current position
+        data.position += elapsedSeconds;
+        
+        // Check if we've reached the end of the song
+        if (data.position >= data.song.duration) {
+            // Stop at the end of the song
+            data.position = data.song.duration;
+            
+            // Force an update of player state from server when we reach the end
+            console.log('Track reached the end, fetching current player state from server');
+            fetchCurrentPlayer();
+            
+            // Don't stop the timer yet - it will be managed based on the updated state
+        }
+        
+        // Update the progress bar and position display
+        updateProgress(data.song, data.position, progressBarEl, positionEl);
+    }, PLAYER_CONFIG.progressUpdateInterval);
+}
+
+/**
+ * Stop auto progress updates
+ */
+function stopAutoProgress() {
+    if (progressInterval) {
+        clearInterval(progressInterval);
+        progressInterval = null;
     }
 }
 
@@ -1162,6 +1331,33 @@ export {
     displayQueue,
     playQueueIndex,
     removeTrackFromQueue,
-    handlePlayerEvent,
-    retrieve_active_player as change_active_player
+    toggleLike,    handlePlayerEvent,
+    retrieve_active_player as change_active_player,
+    updateProgress,
+    startAutoProgress,
+    stopAutoProgress
 };
+
+/**
+ * Update progress bar and position text
+ * @param {Object} song - The song object
+ * @param {number} position - Current position in seconds
+ * @param {Element} progressBarEl - The progress bar element
+ * @param {Element} positionEl - Element to display position text
+ */
+function updateProgress(song, position, progressBarEl, positionEl) {
+    if (song && song.duration && position !== undefined && position !== null) {
+        const percentage = (position / song.duration) * 100;
+        progressBarEl.style.width = `${percentage}%`;
+        
+        // Update position text if it exists in the DOM
+        const posElement = positionEl.querySelector('div:last-child');
+        if (posElement) {
+            const formattedPosition = formatTime(position);
+            const formattedDuration = formatTime(song.duration);
+            posElement.innerHTML = `<strong>Position:</strong> ${formattedPosition} / ${formattedDuration}`;
+        }
+    } else {
+        progressBarEl.style.width = '0%';
+    }
+}

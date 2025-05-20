@@ -979,104 +979,38 @@
                 playerCapabilities
             });
         }
-        
-        // Start auto progress updates for the progress bar
+          // Start auto progress updates for the progress bar
         function startAutoProgress() {
-            // Stop any existing interval first
-            stopAutoProgress();
-            
-            // Only start if we have current data and a song is playing
-            if (!currentData || !currentData.song || !currentData.song.duration) {
-                console.log('Cannot start auto progress: missing song data or duration');
-                return;
-            }
-            
-            const isPlaying = currentData.state && currentData.state.toLowerCase() === 'playing';
-            if (!isPlaying) {
-                console.log('Cannot start auto progress: player is not in playing state');
-                return;
-            }
-            
-            console.log(`Starting auto progress updates from position: ${PlayerFunctions.formatTime(currentData.position || 0)}`);
-            
-            // Ensure position is initialized
-            if (currentData.position === undefined || currentData.position === null) {
-                console.log('Initializing position to 0 as it was undefined');
-                currentData.position = 0;
-            }
-            
-            // Reset the timestamp to now
-            lastProgressUpdate = Date.now();
-            
-            // Create a new interval
-            progressInterval = setInterval(() => {
-                if (!currentData || !currentData.song || !currentData.song.duration) {
-                    console.warn('Progress update: missing song data, stopping auto-updates');
-                    stopAutoProgress();
-                    return;
-                }
-                
-                // Make sure position is defined
-                if (currentData.position === undefined || currentData.position === null) {
-                    currentData.position = 0;
-                }
-                
-                // Calculate how much time has passed since the last position update
-                const now = Date.now();
-                const elapsedSeconds = (now - lastProgressUpdate) / 1000;
-                lastProgressUpdate = now;
-                
-                // Add the elapsed time to the current position
-                currentData.position += elapsedSeconds;
-                
-                // Check if we've reached the end of the song
-                if (currentData.position >= currentData.song.duration) {
-                    // Stop at the end of the song
-                    currentData.position = currentData.song.duration;
-                    
-                    // Force an update of player state from server when we reach the end
-                    console.log('Track reached the end, fetching current player state from server');
-                    fetchCurrentPlayer();
-                    
-                    // Don't stop the timer yet - it will be managed based on the updated state
-                }
-                
-                // Update the progress bar and position display
-                updateProgressBar();
-                
-            }, CONFIG.progressUpdateInterval);
+            PlayerFunctions.startAutoProgress(currentData, progressBar, nowPlayingInfo, fetchCurrentPlayer);
         }
         
         // Stop auto progress updates
         function stopAutoProgress() {
-            if (progressInterval) {
-                clearInterval(progressInterval);
-                progressInterval = null;
-            }
+            PlayerFunctions.stopAutoProgress();
         }
-        
-        // Update only the progress bar and position text without updating the entire UI
+          // Update only the progress bar and position text without updating the entire UI
         function updateProgressBar() {
             if (!currentData || !currentData.song || !currentData.position) {
                 return;
             }
-            
-            const song = currentData.song;
-            
-            // Update progress bar
-            if (song.duration) {
-                const percentage = (currentData.position / song.duration) * 100;
-                progressBar.style.width = `${percentage}%`;
-                
-                // Update position text if it exists in the DOM
-                const positionElement = nowPlayingInfo.querySelector('div:last-child');
-                if (positionElement) {
-                    const position = PlayerFunctions.formatTime(currentData.position);
-                    const duration = PlayerFunctions.formatTime(song.duration);
-                    positionElement.innerHTML = `<strong>Position:</strong> ${position} / ${duration}`;
-                }
-            }
+            PlayerFunctions.updateProgress(currentData.song, currentData.position, progressBar, nowPlayingInfo);
         }
+        
+        // Create click handler for the liked button
+        songLikedButton.addEventListener('click', () => {
+            PlayerFunctions.toggleLike(currentPlayerName, currentData)
+                .then(success => {
+                    if (success) {
+                        // Update UI to reflect the change
+                        if (currentData && currentData.song) {
+                            const isNowLiked = currentData.song.liked === true;
+                            songLikedButton.textContent = isNowLiked ? '♥' : '♡';
+                            songLikedButton.title = isNowLiked ? 'Liked' : 'Not Liked';
+                            console.log(`Song like status updated to: ${isNowLiked ? 'Liked' : 'Not Liked'}`);
+                        }
+                    }
+                });
+        });
         
         // Clean up resources when page is unloaded
         window.addEventListener('beforeunload', function() {

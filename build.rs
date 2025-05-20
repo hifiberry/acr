@@ -4,61 +4,92 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 fn main() {
-    // Tell Cargo to rebuild if this build script changes
-    println!("cargo:rerun-if-changed=build.rs");
-    
-    // Tell Cargo to rebuild if the secrets file changes
     println!("cargo:rerun-if-changed=secrets.txt");
     
-    // Check for secrets.txt and extract Last.fm API credentials
-    read_lastfm_secrets();
+    // Log all secrets found during build
+    println!("cargo:warning=SEARCHING FOR SECRETS DURING BUILD:");
+    
+    // Check for secrets in various possible locations
+    check_secrets_file("secrets.txt");
+    check_secrets_file("config/secrets.txt");
+    check_secrets_file("../secrets.txt");
+    
+    // Look for environment variables with secret-like names
+    check_environment_secrets();
+    
+    // Print current directory for debugging
+    if let Ok(current_dir) = env::current_dir() {
+        println!("cargo:warning=Build running from directory: {}", current_dir.display());
+    }
 }
 
-fn read_lastfm_secrets() {
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let secrets_path = Path::new(&manifest_dir).join("secrets.txt");
+fn check_secrets_file(filename: &str) {
+    let path = Path::new(filename);
     
-    if !secrets_path.exists() {
-        println!("No secrets.txt file found, using placeholder values for Last.fm API credentials");
-        return;
-    }
-    
-    println!("Found secrets.txt, reading Last.fm API credentials");
-    
-    match File::open(&secrets_path) {
-        Ok(file) => {
+    if path.exists() {
+        println!("cargo:warning=Found secrets file: {}", path.display());
+        
+        if let Ok(file) = File::open(path) {
             let reader = BufReader::new(file);
+            let mut count = 0;
             
             for line in reader.lines() {
                 if let Ok(line) = line {
-                    if line.trim().is_empty() || line.trim().starts_with("//") {
+                    // Skip empty lines and comments
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
                         continue;
                     }
                     
-                    if let Some((key, value)) = line.split_once('=') {
-                        let key = key.trim();
-                        let value = value.trim();
-                          match key {
-                            "LASTFM_APIKEY" => {
-                                println!("cargo:rustc-env=LASTFM_APIKEY={}", value);
-                            },                            
-                            "LASTFM_APISECRET" => {
-                                println!("cargo:rustc-env=LASTFM_APISECRET={}", value);
-                            },
-                            "ARTISTDB_APIKEY" => {
-                                println!("cargo:rustc-env=ARTISTDB_APIKEY={}", value);
-                            },
-                            "SECRETS_ENCRYPTION_KEY" => {
-                                println!("cargo:rustc-env=SECRETS_ENCRYPTION_KEY={}", value);
-                            },
-                            _ => {} // Ignore other keys
-                        }
+                    // Try to parse as key=value
+                    if let Some(pos) = line.find('=') {
+                        let key = line[..pos].trim();
+                        let value = line[pos+1..].trim();
+                        
+                        // Display the key normally but mask the value
+                        let masked_value = mask_value(value);
+                        println!("cargo:warning=Secret: {}={}", key, masked_value);
+                        count += 1;
                     }
                 }
             }
-        },
-        Err(e) => {
-            println!("Failed to open secrets.txt: {}", e);
+            
+            println!("cargo:warning=Read {} secrets from {}", count, path.display());
+        } else {
+            println!("cargo:warning=Failed to open secrets file: {}", path.display());
         }
     }
+}
+
+fn check_environment_secrets() {
+    let secret_prefixes = ["API_", "TOKEN_", "SECRET_", "PASSWORD_", "AUTH_", "CREDENTIAL_", "KEY_"];
+    let mut found = false;
+    
+    println!("cargo:warning=Checking environment variables for secrets...");
+    
+    for (key, value) in env::vars() {
+        let upper_key = key.to_uppercase();
+        for prefix in &secret_prefixes {
+            if upper_key.starts_with(prefix) || upper_key.contains("_SECRET_") || upper_key.contains("_API_KEY") {
+                // Display the key normally but mask the value
+                let masked_value = mask_value(&value);
+                println!("cargo:warning=Environment secret: {}={}", key, masked_value);
+                found = true;
+            }
+        }
+    }
+    
+    if !found {
+        println!("cargo:warning=No environment secrets found with common prefixes");
+    }
+}
+
+// Mask a value by showing only the first few characters followed by asterisks
+fn mask_value(value: &str) -> String {
+    if value.len() <= 3 {
+        return "***".to_string();
+    }
+    
+    // Show first 3 characters and mask the rest
+    format!("{}***", &value[0..3])
 }

@@ -407,3 +407,43 @@ pub fn check_server() -> Json<ApiResponse> {
         }
     }
 }
+
+/// Get the current Spotify playback state for the authenticated user
+#[get("/playback")]
+pub fn get_playback() -> Result<Json<Value>, Status> {    let spotify = Spotify::new();
+    
+    // Try to ensure we have valid tokens, refreshing if necessary
+    match spotify.ensure_valid_token() {
+        Err(e) => {
+            error!("Failed to get valid Spotify token: {}", e);
+            return Err(Status::Unauthorized);
+        },
+        Ok(_) => info!("Successfully obtained valid Spotify token")
+    }
+    
+    match spotify.get_playback_state() {
+        Ok(Some(playback)) => {
+            // Convert to generic JSON value to avoid exposing internal types
+            match serde_json::to_value(playback) {
+                Ok(json) => Ok(Json(json)),
+                Err(e) => {
+                    error!("Error serializing playback state: {}", e);
+                    Err(Status::InternalServerError)
+                }
+            }
+        },
+        Ok(None) => {
+            // No active playback, return empty object
+            Ok(Json(serde_json::json!({"is_playing": false, "message": "No active playback"})))
+        },
+        Err(e) => {
+            error!("Error getting playback state: {}", e);
+            // Check if this is an authentication error
+            if e.to_string().contains("token") || e.to_string().contains("auth") {
+                Err(Status::Unauthorized)
+            } else {
+                Err(Status::InternalServerError)
+            }
+        }
+    }
+}

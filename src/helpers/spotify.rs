@@ -2,7 +2,7 @@
 // This module provides functionality for authenticating with Spotify
 // and managing tokens through the OAuth2 flow
 
-use log::{error, info};
+use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use once_cell::sync::Lazy;
@@ -77,6 +77,63 @@ pub struct SpotifyTokens {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: u64,  // Unix timestamp when the token expires
+}
+
+// Spotify playback state structures
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpotifyPlaybackState {
+    pub device: Option<SpotifyDevice>,
+    pub repeat_state: Option<String>,
+    pub shuffle_state: Option<bool>,
+    pub is_playing: bool,
+    pub item: Option<SpotifyTrack>,
+    pub progress_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpotifyDevice {
+    pub id: Option<String>,
+    pub name: String,
+    pub volume_percent: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpotifyTrack {
+    pub id: Option<String>,
+    pub name: String,
+    pub duration_ms: u32,
+    pub artists: Vec<SpotifyArtist>,
+    pub album: Option<SpotifyAlbum>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpotifyArtist {
+    pub id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpotifyAlbum {
+    pub id: Option<String>,
+    pub name: String,
+    pub images: Option<Vec<SpotifyImage>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpotifyImage {
+    pub url: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+// Spotify token refresh response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SpotifyTokenResponse {
+    access_token: String,
+    token_type: String,
+    scope: Option<String>,
+    expires_in: u64,
+    refresh_token: Option<String>,
 }
 
 // Spotify user profile data
@@ -333,7 +390,174 @@ impl Spotify {
             },
             Err(e) => {
                 error!("Failed to connect to OAuth server: {}", e);
-                Err(SpotifyError::ConfigError(format!("OAuth server unreachable: {}", e)))
+                Err(SpotifyError::ConfigError(format!("OAuth server unreachable: {}", e)))            }
+        }
+    }    
+    
+    /// Refresh the access token using the refresh token via OAuth proxy (only method)
+    pub fn refresh_token(&self) -> Result<SpotifyTokens> {
+        use crate::helpers::http_client::new_http_client;
+        // Get the current tokens
+        let current_tokens = self.get_tokens()?;
+
+        // Create an HTTP client for token refresh
+        let http_client = new_http_client(10);
+
+        // Construct the token refresh endpoint URL, adding proxy_secret as a query parameter
+        let refresh_url = format!("{}refresh?proxy_secret={}", self.config.oauth_url, self.config.proxy_secret);
+
+        // Prepare the request payload
+        let payload = serde_json::json!({
+            "refresh_token": current_tokens.refresh_token
+        });
+
+        info!("Refreshing Spotify access token via OAuth proxy (proxy_secret as query param)");
+
+        // Make the refresh request (no custom headers needed)
+        let response = match http_client.post_json_value(&refresh_url, payload) {
+            Ok(value) => value,
+            Err(e) => {
+                error!("Failed to refresh Spotify token via proxy: {}", e);
+                return Err(SpotifyError::AuthError(format!("Token refresh via proxy failed: {}", e)));
+            }
+        };
+
+        // Parse the token response
+        let token_response: SpotifyTokenResponse = match serde_json::from_value(response) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                error!("Failed to parse token refresh response from proxy: {}", e);
+                return Err(SpotifyError::SerializationError(e));
+            }
+        };
+
+        // Calculate the new expiration time
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let expires_at = now + token_response.expires_in;
+
+        // Create the new tokens structure
+        let new_tokens = SpotifyTokens {
+            access_token: token_response.access_token,
+            // If we got a new refresh token, use it; otherwise keep the old one
+            refresh_token: token_response.refresh_token.unwrap_or(current_tokens.refresh_token),
+            expires_at,
+        };
+
+        // Store the updated tokens
+        self.store_tokens(&new_tokens)?;
+
+        info!("Successfully refreshed Spotify access token via OAuth proxy");
+        Ok(new_tokens)
+    }
+      /// Ensure we have a valid token, refreshing if necessary
+    pub fn ensure_valid_token(&self) -> Result<String> {
+        match self.get_tokens() {
+            Ok(tokens) => {
+                // Check if token is expired or about to expire (within 60 seconds)
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                
+                if tokens.expires_at <= now + 60 {
+                    // Token is expired or about to expire, refresh it
+                    info!("Spotify token is expired or about to expire, refreshing");
+                    
+                    // Only use direct API refresh, never the OAuth proxy
+                    match self.refresh_token() {
+                        Ok(new_tokens) => {
+                            info!("Token refresh via direct API successful, new token will expire in {} seconds", 
+                                  new_tokens.expires_at.saturating_sub(now));
+                            Ok(new_tokens.access_token)
+                        },
+                        Err(e) => {
+                            error!("Direct API token refresh failed: {}", e);
+                            Err(e)
+                        }
+                    }
+                } else {
+                    // Token is still valid
+                    debug!("Spotify token is still valid for {} more seconds", tokens.expires_at - now);
+                    Ok(tokens.access_token)
+                }
+            },
+            Err(e) => {
+                error!("Failed to get Spotify tokens: {}", e);
+                Err(e)
+            }
+        }
+    }/// Get the current playback state from Spotify API
+    /// 
+    /// This method fetches information about the user's current playback state,
+    /// including the currently playing track, playback position, and active device.
+    /// 
+    /// See: https://developer.spotify.com/documentation/web-api/reference/get-information-about-the-users-current-playback
+    pub fn get_playback_state(&self) -> Result<Option<SpotifyPlaybackState>> {
+        use crate::helpers::http_client::{new_http_client, HttpClientError};
+        
+        // Ensure we have a valid token
+        let access_token = self.ensure_valid_token()?;
+        
+        // Create an HTTP client
+        let http_client = new_http_client(10);
+        
+        // Use the real Spotify API endpoint, not the OAuth proxy
+        let endpoint_url = "https://api.spotify.com/v1/me/player";
+          // Set up authorization header
+        let headers = [
+            ("Authorization", &format!("Bearer {}", access_token)[..]),
+            ("Content-Type", "application/json")
+        ];
+        
+        info!("Fetching Spotify playback state");
+        
+        // Make the API request
+        let response = match http_client.get_json_with_headers(&endpoint_url, &headers) {
+            Ok(value) => {
+                // Check if we got a 204 No Content (no active playback)
+                if value.is_null() {
+                    debug!("No active Spotify playback found");
+                    return Ok(None);
+                }
+                value
+            },            Err(e) => {
+                match e {
+                    // Handle 204 No Content as a legitimate response indicating no active playback
+                    HttpClientError::EmptyResponse => {
+                        debug!("No active Spotify playback (204 No Content)");
+                        return Ok(None);
+                    },
+                    // Handle auth errors differently
+                    HttpClientError::ServerError(msg) if msg.contains("401") || msg.contains("403") => {
+                        error!("Authentication error when fetching playback state: {}", msg);
+                        return Err(SpotifyError::AuthError("Authentication failed".to_string()));
+                    },
+                    // Other errors indicate a problem
+                    _ => {
+                        error!("Failed to fetch Spotify playback state: {}", e);
+                        return Err(SpotifyError::ApiError(format!("Failed to fetch playback state: {}", e)));
+                    }
+                }
+            }
+        };
+        
+        // Parse the playback state response
+        match serde_json::from_value::<SpotifyPlaybackState>(response) {
+            Ok(playback_state) => {
+                if let Some(track) = &playback_state.item {
+                    debug!("Currently playing: {} by {}", 
+                          track.name, 
+                          track.artists.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", "));
+                }
+                Ok(Some(playback_state))
+            },
+            Err(e) => {
+                error!("Failed to parse Spotify playback state: {}", e);
+                Err(SpotifyError::SerializationError(e))
             }
         }
     }

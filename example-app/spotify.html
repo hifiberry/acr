@@ -3,7 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Spotify Integration - HiFiBerry OS</title>
+    <titl        // Initialize the page
+        function init() {
+            // Check the connection status
+            checkStatus();
+        }
+        
+        // Event listeners
+        document.addEventListener('DOMContentLoaded', init);
+        connectBtn.addEventListener('click', connectSpotify);
+        disconnectBtn.addEventListener('click', disconnectSpotify);
+        checkPlaybackBtn.addEventListener('click', checkPlaybackState);ntegration - HiFiBerry OS</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -112,26 +122,28 @@
 <body>
     <div class="container">
         <h1>Spotify Integration</h1>
-        
-        <div class="status-card">
-            <h3>Connection Status</h3>
+          <div class="status-card" id="statusCard">
+            <h3>Status</h3>
             <p>
-                <span id="statusIndicator" class="status-indicator disconnected"></span>
-                <span id="statusText">Checking status...</span>
+                <span class="status-indicator disconnected" id="statusIndicator"></span>
+                <span id="statusText">Checking connection status...</span>
                 <span id="expiryTime"></span>
             </p>
         </div>
         
-        <div id="actionButtons">
-            <button id="connectBtn" onclick="connectSpotify()">
-                Connect to Spotify
-            </button>
-            <button id="disconnectBtn" class="danger" onclick="disconnectSpotify()" disabled>
-                Disconnect
-            </button>
-            <button id="checkServerBtn" onclick="checkOAuthServer()" style="background-color: #607d8b;">
-                Check Server
-            </button>
+        <div class="actions">
+            <button id="connectBtn">Connect with Spotify</button>
+            <button id="disconnectBtn" class="danger hidden">Disconnect</button>
+            <button id="checkPlaybackBtn" class="hidden">Check Playback</button>
+        </div>
+        
+        <div class="status-card hidden" id="playbackCard">
+            <h3>Current Playback</h3>
+            <div id="playbackInfo">
+                <p id="nowPlaying">Nothing playing</p>
+                <p id="playbackDevice"></p>
+                <p id="playbackProgress"></p>
+            </div>
         </div>
         
         <div id="responseData" class="hidden">
@@ -141,18 +153,31 @@
     </div>    <script>
         // Configuration
         const API_PREFIX = '/api';
-        
-        // DOM elements
+          // DOM elements
         const statusIndicator = document.getElementById('statusIndicator');
         const statusText = document.getElementById('statusText');
         const expiryTime = document.getElementById('expiryTime');
         const connectBtn = document.getElementById('connectBtn');
         const disconnectBtn = document.getElementById('disconnectBtn');
+        const checkPlaybackBtn = document.getElementById('checkPlaybackBtn');
         const responseData = document.getElementById('responseData');
         const responseContent = document.getElementById('responseContent');
+        const playbackCard = document.getElementById('playbackCard');
         
-        // Check connection status on page load
-        document.addEventListener('DOMContentLoaded', checkStatus);
+        // Initialize the page
+        function init() {
+            // Check the connection status
+            checkStatus();
+        }
+        
+        // Event listeners
+        document.addEventListener('DOMContentLoaded', init);
+        connectBtn.addEventListener('click', connectSpotify);
+        disconnectBtn.addEventListener('click', disconnectSpotify);
+        checkPlaybackBtn.addEventListener('click', checkPlaybackState);
+        
+        // Remove the duplicate event listener for checkStatus since it's now in init
+        // document.addEventListener('DOMContentLoaded', checkStatus);
           // Check if we've just returned from OAuth flow
         window.onload = function() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -188,18 +213,24 @@
                 statusIndicator.className = 'status-indicator connected';
                 statusText.textContent = 'Connected to Spotify';
                 connectBtn.disabled = true;
+                disconnectBtn.classList.remove('hidden');
                 disconnectBtn.disabled = false;
+                checkPlaybackBtn.classList.remove('hidden');
                 
                 if (data.expires_at) {
                     const expiryDate = new Date(data.expires_at * 1000);
                     expiryTime.textContent = `(expires ${expiryDate.toLocaleString()})`;
+                } else {
+                    expiryTime.textContent = '';
                 }
             } else {
                 statusIndicator.className = 'status-indicator disconnected';
-                statusText.textContent = 'Not connected';
-                expiryTime.textContent = '';
+                statusText.textContent = 'Not connected to Spotify';
                 connectBtn.disabled = false;
-                disconnectBtn.disabled = true;
+                disconnectBtn.classList.add('hidden');
+                checkPlaybackBtn.classList.add('hidden');
+                playbackCard.classList.add('hidden');
+                expiryTime.textContent = '';
             }
         }
           // Start Spotify connection process
@@ -432,6 +463,92 @@
         function showResponse(data) {
             responseData.classList.remove('hidden');
             responseContent.textContent = JSON.stringify(data, null, 2);
+        }
+        
+        // Fetch and display current playback state
+        async function checkPlaybackState() {
+            try {
+                const checkPlaybackBtn = document.getElementById('checkPlaybackBtn');
+                checkPlaybackBtn.disabled = true;
+                checkPlaybackBtn.innerHTML = '<span class="loader"></span> Checking...';
+                
+                const playbackCard = document.getElementById('playbackCard');
+                const nowPlaying = document.getElementById('nowPlaying');
+                const playbackDevice = document.getElementById('playbackDevice');
+                const playbackProgress = document.getElementById('playbackProgress');
+                
+                const response = await fetch(`${API_PREFIX}/spotify/playback`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error ${response.status}`);
+                }
+                
+                const data = await response.json();
+                showResponse(data);
+                
+                playbackCard.classList.remove('hidden');
+                
+                if (data.is_playing && data.item) {
+                    // Format artist names
+                    const artists = data.item.artists.map(artist => artist.name).join(', ');
+                    
+                    // Format track name and artists
+                    nowPlaying.textContent = `Now Playing: ${data.item.name} - ${artists}`;
+                    
+                    // Show album if available
+                    if (data.item.album && data.item.album.name) {
+                        nowPlaying.textContent += ` (${data.item.album.name})`;
+                    }
+                    
+                    // Show device info if available
+                    if (data.device && data.device.name) {
+                        playbackDevice.textContent = `Device: ${data.device.name}`;
+                        
+                        if (data.device.volume_percent) {
+                            playbackDevice.textContent += ` (Volume: ${data.device.volume_percent}%)`;
+                        }
+                    } else {
+                        playbackDevice.textContent = '';
+                    }
+                    
+                    // Show progress if available
+                    if (data.progress_ms !== undefined && data.item.duration_ms) {
+                        const progressPercent = Math.round((data.progress_ms / data.item.duration_ms) * 100);
+                        const progressTime = formatTime(data.progress_ms);
+                        const durationTime = formatTime(data.item.duration_ms);
+                        
+                        playbackProgress.textContent = `Progress: ${progressTime} / ${durationTime} (${progressPercent}%)`;
+                    } else {
+                        playbackProgress.textContent = '';
+                    }
+                } else {
+                    nowPlaying.textContent = 'Nothing currently playing';
+                    playbackDevice.textContent = '';
+                    playbackProgress.textContent = '';
+                }
+                
+                // Reset button state
+                checkPlaybackBtn.disabled = false;
+                checkPlaybackBtn.textContent = 'Check Playback';
+            } catch (error) {
+                console.error('Error checking playback:', error);
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error checking playback: ${error.message}`
+                });
+                
+                const checkPlaybackBtn = document.getElementById('checkPlaybackBtn');
+                checkPlaybackBtn.disabled = false;
+                checkPlaybackBtn.textContent = 'Check Playback';
+            }
+        }
+        
+        // Format milliseconds to mm:ss format
+        function formatTime(ms) {
+            const totalSeconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return `${minutes}:${seconds.toString().padStart(2, '0')}`;
         }
     </script>
 </body>

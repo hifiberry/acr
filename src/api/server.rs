@@ -109,6 +109,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         spotify::login,
         spotify::poll_session,
         spotify::check_server,
+        spotify::get_playback,
     ];
     
     // ImageCache routes

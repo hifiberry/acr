@@ -3,17 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <titl        // Initialize the page
-        function init() {
-            // Check the connection status
-            checkStatus();
-        }
-        
-        // Event listeners
-        document.addEventListener('DOMContentLoaded', init);
-        connectBtn.addEventListener('click', connectSpotify);
-        disconnectBtn.addEventListener('click', disconnectSpotify);
-        checkPlaybackBtn.addEventListener('click', checkPlaybackState);ntegration - HiFiBerry OS</title>
+    <title>Spotify Integration - HiFiBerry OS</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -135,6 +125,13 @@
             <button id="connectBtn">Connect with Spotify</button>
             <button id="disconnectBtn" class="danger hidden">Disconnect</button>
             <button id="checkPlaybackBtn" class="hidden">Check Playback</button>
+            <button id="playBtn" class="hidden">Play</button>
+            <button id="pauseBtn" class="hidden">Pause</button>
+            <button id="nextBtn" class="hidden">Next</button>
+            <button id="prevBtn" class="hidden">Previous</button>
+            <button id="seekBtn" class="hidden">Seek</button>
+            <button id="repeatBtn" class="hidden">Repeat</button>
+            <button id="shuffleBtn" class="hidden">Shuffle</button>
         </div>
         
         <div class="status-card hidden" id="playbackCard">
@@ -163,6 +160,13 @@
         const responseData = document.getElementById('responseData');
         const responseContent = document.getElementById('responseContent');
         const playbackCard = document.getElementById('playbackCard');
+        const playBtn = document.getElementById('playBtn');
+        const pauseBtn = document.getElementById('pauseBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const prevBtn = document.getElementById('prevBtn');
+        const seekBtn = document.getElementById('seekBtn');
+        const repeatBtn = document.getElementById('repeatBtn');
+        const shuffleBtn = document.getElementById('shuffleBtn');
         
         // Initialize the page
         function init() {
@@ -175,7 +179,23 @@
         connectBtn.addEventListener('click', connectSpotify);
         disconnectBtn.addEventListener('click', disconnectSpotify);
         checkPlaybackBtn.addEventListener('click', checkPlaybackState);
-        
+        playBtn.addEventListener('click', () => sendSpotifyCommand('play'));
+        pauseBtn.addEventListener('click', () => sendSpotifyCommand('pause'));
+        nextBtn.addEventListener('click', () => sendSpotifyCommand('next'));
+        prevBtn.addEventListener('click', () => sendSpotifyCommand('previous'));
+        seekBtn.addEventListener('click', () => {
+            const ms = prompt('Seek to position (ms):', '60000');
+            if (ms !== null) sendSpotifyCommand('seek', { position_ms: parseInt(ms) });
+        });
+        repeatBtn.addEventListener('click', () => {
+            const mode = prompt('Repeat mode (track, context, off):', 'off');
+            if (mode) sendSpotifyCommand('repeat', { state: mode });
+        });
+        shuffleBtn.addEventListener('click', () => {
+            const state = confirm('Enable shuffle? OK = Yes, Cancel = No');
+            sendSpotifyCommand('shuffle', { state: state });
+        });
+
         // Remove the duplicate event listener for checkStatus since it's now in init
         // document.addEventListener('DOMContentLoaded', checkStatus);
           // Check if we've just returned from OAuth flow
@@ -216,6 +236,13 @@
                 disconnectBtn.classList.remove('hidden');
                 disconnectBtn.disabled = false;
                 checkPlaybackBtn.classList.remove('hidden');
+                playBtn.classList.remove('hidden');
+                pauseBtn.classList.remove('hidden');
+                nextBtn.classList.remove('hidden');
+                prevBtn.classList.remove('hidden');
+                seekBtn.classList.remove('hidden');
+                repeatBtn.classList.remove('hidden');
+                shuffleBtn.classList.remove('hidden');
                 
                 if (data.expires_at) {
                     const expiryDate = new Date(data.expires_at * 1000);
@@ -231,6 +258,13 @@
                 checkPlaybackBtn.classList.add('hidden');
                 playbackCard.classList.add('hidden');
                 expiryTime.textContent = '';
+                playBtn.classList.add('hidden');
+                pauseBtn.classList.add('hidden');
+                nextBtn.classList.add('hidden');
+                prevBtn.classList.add('hidden');
+                seekBtn.classList.add('hidden');
+                repeatBtn.classList.add('hidden');
+                shuffleBtn.classList.add('hidden');
             }
         }
           // Start Spotify connection process
@@ -549,6 +583,23 @@
             const minutes = Math.floor(totalSeconds / 60);
             const seconds = totalSeconds % 60;
             return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        // Send a Spotify command to the backend
+        async function sendSpotifyCommand(command, args = {}) {
+            try {
+                const response = await fetch(`${API_PREFIX}/spotify/command/${command}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(args)
+                });
+                const data = await response.json();
+                showResponse(data);
+                // Optionally refresh playback state after command
+                await checkPlaybackState();
+            } catch (error) {
+                showResponse({ status: 'error', message: `Error sending command: ${error.message}` });
+            }
         }
     </script>
 </body>

@@ -447,3 +447,24 @@ pub fn get_playback() -> Result<Json<Value>, Status> {    let spotify = Spotify:
         }
     }
 }
+
+/// Handle Spotify commands like play, pause, next, previous, seek, repeat, and shuffle
+#[post("/command/<command>", data = "<args>")]
+pub fn spotify_command(command: &str, args: Json<Value>) -> Json<ApiResponse> {
+    let spotify = Spotify::new();
+    match spotify.send_command(command, &args.0) {
+        Ok(_) => Json(ApiResponse {
+            status: "success".to_string(),
+            message: format!("Command '{}' sent successfully", command),
+            expires_at: None,
+        }),
+        Err(e) => {
+            error!("Spotify command error: {}", e);
+            Json(ApiResponse {
+                status: "error".to_string(),
+                message: format!("Command failed: {}", e),
+                expires_at: None,
+            })
+        }
+    }
+}

@@ -561,4 +561,50 @@ impl Spotify {
             }
         }
     }
+    /// Send a command to the Spotify Web API (play, pause, next, previous, seek, repeat, shuffle)
+    pub fn send_command(&self, command: &str, args: &serde_json::Value) -> Result<()> {
+        use crate::helpers::http_client::new_http_client;
+        let access_token = self.ensure_valid_token()?;
+        let http_client = new_http_client(10);
+        let api_url = match command {
+            "play" => "https://api.spotify.com/v1/me/player/play",
+            "pause" => "https://api.spotify.com/v1/me/player/pause",
+            "next" => "https://api.spotify.com/v1/me/player/next",
+            "previous" => "https://api.spotify.com/v1/me/player/previous",
+            "seek" => "https://api.spotify.com/v1/me/player/seek",
+            "repeat" => "https://api.spotify.com/v1/me/player/repeat",
+            "shuffle" => "https://api.spotify.com/v1/me/player/shuffle",
+            _ => return Err(SpotifyError::ApiError(format!("Unknown command: {}", command))),
+        };
+        let headers = [
+            ("Authorization", &format!("Bearer {}", access_token)[..]),
+            ("Content-Type", "application/json"),
+        ];
+        let result = match command {
+            // Use PUT for play, pause, seek, repeat, shuffle
+            "play" | "pause" => http_client.put_json_value_with_headers(api_url, args.clone(), &headers),
+            "seek" => {
+                let position_ms = args.get("position_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                let url = format!("{}?position_ms={}", api_url, position_ms);
+                http_client.put_json_value_with_headers(&url, serde_json::json!({}), &headers)
+            },
+            "repeat" => {
+                let state = args.get("state").and_then(|v| v.as_str()).unwrap_or("off");
+                let url = format!("{}?state={}", api_url, state);
+                http_client.put_json_value_with_headers(&url, serde_json::json!({}), &headers)
+            },
+            "shuffle" => {
+                let state = args.get("state").and_then(|v| v.as_bool()).unwrap_or(false);
+                let url = format!("{}?state={}", api_url, state);
+                http_client.put_json_value_with_headers(&url, serde_json::json!({}), &headers)
+            },
+            // Use POST for next and previous
+            "next" | "previous" => http_client.post_json_value_with_headers(api_url, args.clone(), &headers),
+            _ => Err(crate::helpers::http_client::HttpClientError::RequestError("Not implemented".to_string())),
+        };
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(SpotifyError::ApiError(format!("Command failed: {}", e))),
+        }
+    }
 }

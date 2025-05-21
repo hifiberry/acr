@@ -36,6 +36,12 @@ pub trait HttpClient: Send + Sync + std::fmt::Debug {
     /// Send a GET request with headers and return JSON value
     fn get_json_with_headers(&self, url: &str, headers: &[(&str, &str)]) -> Result<Value, HttpClientError>;
     
+    /// Send a POST request with a JSON payload and custom headers
+    fn post_json_value_with_headers(&self, url: &str, payload: Value, headers: &[(&str, &str)]) -> Result<Value, HttpClientError>;
+    
+    /// Send a PUT request with a JSON payload and custom headers
+    fn put_json_value_with_headers(&self, url: &str, payload: Value, headers: &[(&str, &str)]) -> Result<Value, HttpClientError>;
+    
     /// Clone the client as a boxed trait object
     fn clone_box(&self) -> Box<dyn HttpClient>;
 }
@@ -264,6 +270,110 @@ impl HttpClient for UreqHttpClient {
                     return Err(HttpClientError::ParseError("Response is HTML instead of expected JSON. The OAuth service might be returning an error page.".to_string()));
                 }
                 Err(HttpClientError::ParseError(format!("Failed to parse response: {}", e)))
+            }
+        }
+    }
+    
+    fn post_json_value_with_headers(&self, url: &str, payload: Value, headers: &[(&str, &str)]) -> Result<Value, HttpClientError> {
+        debug!("POST request with headers to {}", url);
+        debug!("POST payload: {}", payload);
+
+        // Serialize the JSON value to a string
+        let json_string = match serde_json::to_string(&payload) {
+            Ok(str) => str,
+            Err(e) => {
+                debug!("Failed to serialize JSON payload: {}", e);
+                return Err(HttpClientError::ParseError(format!("Failed to serialize JSON payload: {}", e)));
+            }
+        };
+
+        let mut request = ureq::post(url).timeout(self.timeout);
+        for &(name, value) in headers {
+            debug!("Adding header '{}': '{}'", name, if name == "Authorization" {
+                if value.len() > 15 { format!("{}...", &value[0..15]) } else { "[hidden]".to_string() }
+            } else { value.to_string() });
+            request = request.set(name, value);
+        }
+
+        let response = match request.send_string(&json_string) {
+            Ok(resp) => resp,
+            Err(e) => {
+                debug!("POST request with headers failed: {}", e);
+                debug!("POST payload was: {}", json_string);
+                return Err(HttpClientError::RequestError(e.to_string()));
+            }
+        };
+
+        let response_text = match response.into_string() {
+            Ok(text) => text,
+            Err(e) => {
+                debug!("Failed to read response body: {}", e);
+                return Err(HttpClientError::ParseError(format!("Failed to read response body: {}", e)));
+            }
+        };
+
+        if response_text.is_empty() {
+            return Err(HttpClientError::EmptyResponse);
+        }
+
+        match serde_json::from_str::<Value>(&response_text) {
+            Ok(json_value) => Ok(json_value),
+            Err(e) => {
+                debug!("Failed to parse JSON response: {}", e);
+                debug!("Response text: {}", response_text);
+                Err(HttpClientError::ParseError(e.to_string()))
+            }
+        }
+    }
+    
+    fn put_json_value_with_headers(&self, url: &str, payload: Value, headers: &[(&str, &str)]) -> Result<Value, HttpClientError> {
+        debug!("PUT request with headers to {}", url);
+        debug!("PUT payload: {}", payload);
+
+        // Serialize the JSON value to a string
+        let json_string = match serde_json::to_string(&payload) {
+            Ok(str) => str,
+            Err(e) => {
+                debug!("Failed to serialize JSON payload: {}", e);
+                return Err(HttpClientError::ParseError(format!("Failed to serialize JSON payload: {}", e)));
+            }
+        };
+
+        let mut request = ureq::put(url).timeout(self.timeout);
+        for &(name, value) in headers {
+            debug!("Adding header '{}': '{}'", name, if name == "Authorization" {
+                if value.len() > 15 { format!("{}...", &value[0..15]) } else { "[hidden]".to_string() }
+            } else { value.to_string() });
+            request = request.set(name, value);
+        }
+
+        let response = match request.send_string(&json_string) {
+            Ok(resp) => resp,
+            Err(e) => {
+                debug!("PUT request with headers failed: {}", e);
+                debug!("PUT payload was: {}", json_string);
+                return Err(HttpClientError::RequestError(e.to_string()));
+            }
+        };
+
+        let response_text = match response.into_string() {
+            Ok(text) => text,
+            Err(e) => {
+                debug!("Failed to read response body: {}", e);
+                return Err(HttpClientError::ParseError(format!("Failed to read response body: {}", e)));
+            }
+        };
+
+        if response_text.is_empty() {
+            return Err(HttpClientError::EmptyResponse);
+        }
+
+        match serde_json::from_str::<Value>(&response_text) {
+            Ok(json_value) => Ok(json_value),
+            Err(e) => {
+                debug!("Failed to parse JSON response: {}", e);
+                debug!("Response text: {}", response_text);
+                Err(HttpClientError::ParseError(e.to_string()))
             }
         }
     }

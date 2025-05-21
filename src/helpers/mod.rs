@@ -12,6 +12,7 @@ pub mod http_client;
 pub mod ratelimit;
 pub mod lastfm;
 pub mod security_store;
+pub mod spotify;
 
 use crate::data::artist::Artist;
 

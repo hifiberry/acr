@@ -94,8 +94,7 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
     let lastfm_key = secrets.get("LASTFM_APIKEY")
         .or_else(|| secrets.get("LASTFM_API_KEY"))
         .map(|s| s.as_str()).unwrap_or("unknown");
-    
-    let lastfm_secret = secrets.get("LASTFM_APISECRET")
+      let lastfm_secret = secrets.get("LASTFM_APISECRET")
         .or_else(|| secrets.get("LASTFM_API_SECRET"))
         .map(|s| s.as_str()).unwrap_or("unknown");
     
@@ -107,16 +106,37 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
     let encryption_key = secrets.get("SECRETS_ENCRYPTION_KEY")
         .or_else(|| secrets.get("SECURITY_KEY"))
         .map(|s| s.as_str()).unwrap_or("unknown");
+      // Spotify OAuth credentials
+    let spotify_oauth_url = secrets.get("SPOTIFY_OAUTH_URL")
+        .map(|s| s.as_str()).unwrap_or("unknown");
+    
+    let spotify_proxy_secret = secrets.get("SPOTIFY_PROXY_SECRET")
+        .map(|s| s.as_str()).unwrap_or("unknown");
+        
+    // Log the actual values found during build time for debugging
+    if spotify_oauth_url == "unknown" {
+        println!("cargo:warning=SPOTIFY_OAUTH_URL not found in secrets.txt");
+    } else {
+        println!("cargo:warning=Using Spotify OAuth URL: {}", spotify_oauth_url);
+    }
+    
+    if spotify_proxy_secret == "unknown" {
+        println!("cargo:warning=SPOTIFY_PROXY_SECRET not found in secrets.txt");
+    } else {
+        println!("cargo:warning=Found valid Spotify proxy secret (not shown for security)");
+    }
         
     // Obfuscate the keys
     let lastfm_key_obf = obfuscate(lastfm_key);
     let lastfm_secret_obf = obfuscate(lastfm_secret);
     let artistdb_key_obf = obfuscate(artistdb_key);
     let encryption_key_obf = obfuscate(encryption_key);
-    content.push_str(&format!("pub const LASTFM_API_KEY_OBF: &str = \"{}\";\n", lastfm_key_obf));
+    let spotify_oauth_url_obf = obfuscate(spotify_oauth_url);
+    let spotify_proxy_secret_obf = obfuscate(spotify_proxy_secret);    content.push_str(&format!("pub const LASTFM_API_KEY_OBF: &str = \"{}\";\n", lastfm_key_obf));
     content.push_str(&format!("pub const LASTFM_API_SECRET_OBF: &str = \"{}\";\n", lastfm_secret_obf));
-    content.push_str(&format!("pub const ARTISTDB_API_KEY_OBF: &str = \"{}\";\n", artistdb_key_obf));
-    content.push_str(&format!("pub const SECRETS_ENCRYPTION_KEY_OBF: &str = \"{}\";\n", encryption_key_obf));
+    content.push_str(&format!("pub const ARTISTDB_API_KEY_OBF: &str = \"{}\";\n", artistdb_key_obf));    content.push_str(&format!("pub const SECRETS_ENCRYPTION_KEY_OBF: &str = \"{}\";\n", encryption_key_obf));
+    content.push_str(&format!("pub const SPOTIFY_OAUTH_URL_OBF: &str = \"{}\";\n", spotify_oauth_url_obf));
+    content.push_str(&format!("pub const SPOTIFY_PROXY_SECRET_OBF: &str = \"{}\";\n", spotify_proxy_secret_obf));
     content.push_str("\npub fn get_all_secrets_obfuscated() -> std::collections::HashMap<String, String> {\n");
     content.push_str("    let mut map = std::collections::HashMap::new();\n");
     for (key, value) in secrets {
@@ -129,6 +149,8 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
     content.push_str(&format!("pub fn lastfm_api_secret() -> String {{ r#do(LASTFM_API_SECRET_OBF) }}\n"));
     content.push_str(&format!("pub fn artistdb_api_key() -> String {{ r#do(ARTISTDB_API_KEY_OBF) }}\n"));
     content.push_str(&format!("pub fn secrets_encryption_key() -> String {{ r#do(SECRETS_ENCRYPTION_KEY_OBF) }}\n"));
+    content.push_str(&format!("pub fn spotify_oauth_url() -> String {{ r#do(SPOTIFY_OAUTH_URL_OBF) }}\n"));
+    content.push_str(&format!("pub fn spotify_proxy_secret() -> String {{ r#do(SPOTIFY_PROXY_SECRET_OBF) }}\n"));
     fs::write(&dest_path, content).unwrap();
     println!("cargo:warning=Generated secrets file at: {}", dest_path.display());
     println!("cargo:rerun-if-changed=build.rs");

@@ -33,6 +33,9 @@ pub trait HttpClient: Send + Sync + std::fmt::Debug {
     /// Send a GET request and return binary data with mimetype
     fn get_binary(&self, url: &str) -> Result<(Vec<u8>, String), HttpClientError>;
     
+    /// Send a GET request with headers and return JSON value
+    fn get_json_with_headers(&self, url: &str, headers: &[(&str, &str)]) -> Result<Value, HttpClientError>;
+    
     /// Clone the client as a boxed trait object
     fn clone_box(&self) -> Box<dyn HttpClient>;
 }
@@ -175,6 +178,94 @@ impl HttpClient for UreqHttpClient {
     
     fn clone_box(&self) -> Box<dyn HttpClient> {
         Box::new(self.clone())
+    }
+    
+    fn get_json_with_headers(&self, url: &str, headers: &[(&str, &str)]) -> Result<Value, HttpClientError> {
+        debug!("GET JSON request with headers to {}", url);
+        
+        let mut request = ureq::get(url).timeout(self.timeout);
+        
+        // Add all headers to the request
+        for &(name, value) in headers {
+            debug!("Adding header '{}': '{}'", name, if name == "Authorization" { 
+                // Don't log full auth token but show the first few characters
+                if value.len() > 15 {
+                    format!("{}...", &value[0..15])
+                } else {
+                    "[hidden]".to_string()
+                }
+            } else { 
+                value.to_string() 
+            });
+            request = request.set(name, value);
+        }
+        
+        // Send the request
+        let response = match request.call() {
+            Ok(resp) => {
+                debug!("GET request with headers succeeded with status: {}", resp.status());
+                resp
+            },
+            Err(e) => {
+                // Check if it's a ureq::Error::Status with HTTP status code
+                match e {
+                    ureq::Error::Status(code, response) => {
+                        let error_body = response.into_string().unwrap_or_else(|_| "<failed to read response body>".to_string());
+                        
+                        // Provide more specific error info for authentication issues
+                        if code == 401 {
+                            error!("HTTP 401 Unauthorized error - check if the X-Proxy-Secret header is correct");
+                            error!("HTTP 401 error body: {}", error_body);
+                            return Err(HttpClientError::ServerError(format!(
+                                "HTTP 401 Unauthorized: Authentication failed. Check that the proxy_secret is correct in secrets.txt and matches what the OAuth service expects. Error: {}", 
+                                error_body
+                            )));
+                        } else {
+                            error!("HTTP error {}: {}", code, error_body);
+                            return Err(HttpClientError::ServerError(format!("HTTP {} error: {}", code, error_body)));
+                        }
+                    },
+                    _ => {
+                        error!("GET request with headers failed: {}", e);
+                        return Err(HttpClientError::RequestError(e.to_string()));
+                    }
+                }
+            }
+        };
+        
+        // Get the response as text
+        let response_text = match response.into_string() {
+            Ok(text) => text,
+            Err(e) => {
+                debug!("Failed to read response body: {}", e);
+                return Err(HttpClientError::ParseError(format!("Failed to read response body: {}", e)));
+            }
+        };
+        
+        if response_text.is_empty() {
+            return Err(HttpClientError::EmptyResponse);
+        }
+        
+        // Parse the response as JSON
+        match serde_json::from_str::<Value>(&response_text) {
+            Ok(json_value) => Ok(json_value),
+            Err(e) => {
+                // Log the actual response content (truncated if too large)
+                let truncated_response = if response_text.len() > 500 {
+                    format!("{}... (truncated, total length: {} bytes)", &response_text[0..500], response_text.len())
+                } else {
+                    response_text.clone()
+                };
+                error!("Failed to parse JSON response: {}", e);
+                error!("Response content: {}", truncated_response);
+                // Try to determine if it might be HTML instead of JSON
+                if response_text.contains("<html") || response_text.contains("<!DOCTYPE") {
+                    error!("Response appears to be HTML instead of JSON - check if the OAuth URL is correct");
+                    return Err(HttpClientError::ParseError("Response is HTML instead of expected JSON. The OAuth service might be returning an error page.".to_string()));
+                }
+                Err(HttpClientError::ParseError(format!("Failed to parse response: {}", e)))
+            }
+        }
     }
 }
 

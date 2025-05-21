@@ -19,5 +19,8 @@ pub mod events;
 // Export the lastfm module
 pub mod lastfm;
 
+// Export the spotify module
+pub mod spotify;
+
 // Export the server module
 pub mod server;

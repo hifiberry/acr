@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spotify Integration - HiFiBerry OS</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        h1 {
+            color: #e41e45;
+            margin-bottom: 20px;
+        }
+        
+        button {
+            background-color: #1DB954;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 10px;
+            min-width: 150px;
+        }
+        
+        button:hover {
+            background-color: #1AA64B;
+        }
+        
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        
+        button.danger {
+            background-color: #e41e45;
+        }
+        
+        button.danger:hover {
+            background-color: #c91a3d;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .status-card {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .connected {
+            background-color: #1DB954;
+        }
+        
+        .disconnected {
+            background-color: #e41e45;
+        }
+        
+        pre {
+            background-color: #f1f1f1;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #1DB954;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Spotify Integration</h1>
+        
+        <div class="status-card">
+            <h3>Connection Status</h3>
+            <p>
+                <span id="statusIndicator" class="status-indicator disconnected"></span>
+                <span id="statusText">Checking status...</span>
+                <span id="expiryTime"></span>
+            </p>
+        </div>
+        
+        <div id="actionButtons">
+            <button id="connectBtn" onclick="connectSpotify()">
+                Connect to Spotify
+            </button>
+            <button id="disconnectBtn" class="danger" onclick="disconnectSpotify()" disabled>
+                Disconnect
+            </button>
+            <button id="checkServerBtn" onclick="checkOAuthServer()" style="background-color: #607d8b;">
+                Check Server
+            </button>
+        </div>
+        
+        <div id="responseData" class="hidden">
+            <h3>Response Data</h3>
+            <pre id="responseContent"></pre>
+        </div>
+    </div>    <script>
+        // Configuration
+        const API_PREFIX = '/api';
+        
+        // DOM elements
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const expiryTime = document.getElementById('expiryTime');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const responseData = document.getElementById('responseData');
+        const responseContent = document.getElementById('responseContent');
+        
+        // Check connection status on page load
+        document.addEventListener('DOMContentLoaded', checkStatus);
+          // Check if we've just returned from OAuth flow
+        window.onload = function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const sessionId = urlParams.get('session_id');
+            
+            if (sessionId) {
+                // Clean up the URL
+                history.replaceState({}, document.title, window.location.pathname);
+                
+                // Poll for token status
+                pollForTokens(sessionId);
+            }
+        };
+        
+        // Check current Spotify connection status
+        async function checkStatus() {
+            try {
+                const response = await fetch(`${API_PREFIX}/spotify/status`);
+                const data = await response.json();
+                
+                updateStatusDisplay(data);
+                return data;
+            } catch (error) {
+                console.error('Error checking status:', error);
+                updateStatusDisplay({ authenticated: false });
+                return { authenticated: false };
+            }
+        }
+        
+        // Update the UI based on connection status
+        function updateStatusDisplay(data) {
+            if (data.authenticated) {
+                statusIndicator.className = 'status-indicator connected';
+                statusText.textContent = 'Connected to Spotify';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                
+                if (data.expires_at) {
+                    const expiryDate = new Date(data.expires_at * 1000);
+                    expiryTime.textContent = `(expires ${expiryDate.toLocaleString()})`;
+                }
+            } else {
+                statusIndicator.className = 'status-indicator disconnected';
+                statusText.textContent = 'Not connected';
+                expiryTime.textContent = '';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+        }
+          // Start Spotify connection process
+        async function connectSpotify() {
+            try {
+                // Show loading state
+                connectBtn.disabled = true;
+                connectBtn.innerHTML = '<span class="loader"></span> Connecting...';
+                
+                // Get OAuth configuration
+                const configResponse = await fetch(`${API_PREFIX}/spotify/oauth_config`);
+                const config = await configResponse.json();
+                
+                if (!config.oauth_url) {
+                    throw new Error('Failed to retrieve OAuth configuration');
+                }
+                
+                // Create a new authentication session
+                const response = await fetch(`${API_PREFIX}/spotify/create_session`);
+                const data = await response.json();
+                
+                if (!data.session_id) {
+                    throw new Error('Failed to create authentication session');
+                }
+                
+                // Store session ID in localStorage for verification later
+                localStorage.setItem('spotify_session_id', data.session_id);                // Make a request to the login endpoint to get the redirect URL
+                const loginResponse = await fetch(`${API_PREFIX}/spotify/login/${data.session_id}`);
+                console.log('Login response status:', loginResponse.status);
+                const loginData = await loginResponse.json();
+                console.log('Login data received:', loginData);
+                  if ((loginData.status === 'success' || loginData.status === 'redirect') && loginData.message) {
+                    // The message contains the Spotify authorization URL
+                    // Open Spotify's authorization page in a new window/tab
+                    console.log('Opening Spotify authorization URL in new window:', loginData.message);
+                    
+                    // Decode HTML entities in the URL if present
+                    let spotifyUrl = loginData.message
+                        .replace(/&amp;/g, '&')
+                        .replace(/&quot;/g, '"')
+                        .replace(/&lt;/g, '<')
+                        .replace(/&gt;/g, '>');
+                    
+                    // Save the current URL to construct the callback URL
+                    let currentUrl = window.location.href.split('?')[0]; // Remove any existing query params
+                    
+                    // Add the session_id to the current URL as a query parameter
+                    let callbackUrl = `${currentUrl}?session_id=${data.session_id}`;
+                    
+                    // Check if the URL already has callback parameters
+                    if (spotifyUrl.includes('redirect_uri=')) {
+                        console.log('URL already contains redirect_uri parameter');
+                    } else {
+                        console.log('Adding redirect_uri to Spotify URL');
+                        // Add redirect_uri parameter if not already present
+                        let separator = spotifyUrl.includes('?') ? '&' : '?';
+                        spotifyUrl += `${separator}redirect_uri=${encodeURIComponent(callbackUrl)}`;
+                    }
+                    
+                    // Open in a new window and store the reference
+                    let authWindow = window.open(spotifyUrl, 'spotify_auth_window', 'width=800,height=600');
+                    
+                    // Update UI to inform user
+                    statusText.textContent = 'Authenticating with Spotify...';
+                    
+                    // Start polling for token status right away
+                    setTimeout(() => pollForTokens(data.session_id), 3000);
+                } else {
+                    console.error('Invalid login response format:', loginData);
+                    throw new Error('Failed to get Spotify authorization URL');
+                }
+            } catch (error) {
+                console.error('Error starting auth flow:', error);
+                connectBtn.disabled = false;
+                connectBtn.textContent = 'Connect to Spotify';
+                
+                // Show error
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error connecting to Spotify: ${error.message}`
+                });
+            }
+        }        // Poll for token status after redirect
+        async function pollForTokens(sessionId) {
+            // Show loading state
+            connectBtn.disabled = true;
+            connectBtn.innerHTML = '<span class="loader"></span> Completing authentication...';
+            statusText.textContent = 'Completing authentication...';
+            
+            // Verify the session ID matches what we sent (only if we stored one)
+            const storedSessionId = localStorage.getItem('spotify_session_id');
+            if (storedSessionId && storedSessionId !== sessionId) {
+                console.error('Session ID mismatch');
+                connectBtn.disabled = false;
+                connectBtn.textContent = 'Connect to Spotify';
+                showResponse({ 
+                    status: 'error', 
+                    message: 'Authentication failed: Session ID mismatch'
+                });
+                return;
+            }
+            
+            // Store the current session ID if not already stored
+            if (!storedSessionId) {
+                localStorage.setItem('spotify_session_id', sessionId);
+            }
+            
+            try {
+                console.log('Polling for token data for session:', sessionId);
+                // Poll for token data
+                const response = await fetch(`${API_PREFIX}/spotify/poll/${sessionId}`);
+                const data = await response.json();
+                console.log('Poll response:', data.status);
+                
+                if (data.status === 'completed' && data.token_data) {
+                    console.log('Authentication completed successfully');
+                    // We have the tokens, store them via our API
+                    await storeTokens(data.token_data);
+                } else if (data.status === 'error') {
+                    throw new Error(data.error || 'Authentication failed');
+                } else {
+                    console.log('Still waiting for authentication, polling again in 3 seconds');
+                    // Still waiting, poll again after a delay
+                    setTimeout(() => pollForTokens(sessionId), 3000);
+                    return;
+                }
+            } catch (error) {
+                console.error('Error polling for tokens:', error);
+                connectBtn.disabled = false;
+                connectBtn.textContent = 'Connect to Spotify';
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error completing authentication: ${error.message}`
+                });
+            }
+        }
+        
+        // Store tokens in our security store
+        async function storeTokens(tokenData) {
+            try {
+                const response = await fetch(`${API_PREFIX}/spotify/tokens`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        access_token: tokenData.access_token,
+                        refresh_token: tokenData.refresh_token,
+                        expires_in: tokenData.expires_in
+                    })
+                });
+                
+                const data = await response.json();
+                showResponse(data);
+                
+                // Update status display
+                await checkStatus();
+                
+                // Reset button state
+                connectBtn.textContent = 'Connect to Spotify';
+            } catch (error) {
+                console.error('Error storing tokens:', error);
+                connectBtn.disabled = false;
+                connectBtn.textContent = 'Connect to Spotify';
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error storing tokens: ${error.message}`
+                });
+            }
+        }
+        
+        // Disconnect from Spotify
+        async function disconnectSpotify() {
+            try {
+                disconnectBtn.disabled = true;
+                disconnectBtn.textContent = 'Disconnecting...';
+                
+                const response = await fetch(`${API_PREFIX}/spotify/logout`, {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                showResponse(data);
+                
+                // Update status display
+                await checkStatus();
+                
+                // Reset button state
+                disconnectBtn.textContent = 'Disconnect';
+            } catch (error) {
+                console.error('Error disconnecting:', error);
+                disconnectBtn.disabled = false;
+                disconnectBtn.textContent = 'Disconnect';
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error disconnecting: ${error.message}`
+                });
+            }
+        }
+          // Check Server button is already defined in HTML, no need to add it again
+        
+        // Diagnostic function to check OAuth server connectivity
+        async function checkOAuthServer() {
+            try {
+                const checkServerBtn = document.getElementById('checkServerBtn');
+                checkServerBtn.disabled = true;
+                checkServerBtn.innerHTML = '<span class="loader"></span> Checking...';
+                
+                const response = await fetch(`${API_PREFIX}/spotify/check_server`);
+                const data = await response.json();
+                
+                showResponse(data);
+                
+                checkServerBtn.disabled = false;
+                checkServerBtn.textContent = 'Check Server';
+            } catch (error) {
+                console.error('Error checking OAuth server:', error);
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error checking OAuth server: ${error.message}`
+                });
+                
+                const checkServerBtn = document.getElementById('checkServerBtn');
+                checkServerBtn.disabled = false;
+                checkServerBtn.textContent = 'Check Server';
+            }
+        }
+        
+        // Show response data in the UI
+        function showResponse(data) {
+            responseData.classList.remove('hidden');
+            responseContent.textContent = JSON.stringify(data, null, 2);
+        }
+    </script>
+</body>
+</html>

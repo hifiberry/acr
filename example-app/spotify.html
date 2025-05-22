@@ -132,6 +132,7 @@
             <button id="seekBtn" class="hidden">Seek</button>
             <button id="repeatBtn" class="hidden">Repeat</button>
             <button id="shuffleBtn" class="hidden">Shuffle</button>
+            <button id="currentlyPlayingBtn" class="hidden">Currently Playing</button>
         </div>
         
         <div class="status-card hidden" id="playbackCard">
@@ -141,6 +142,26 @@
                 <p id="playbackDevice"></p>
                 <p id="playbackProgress"></p>
             </div>
+        </div>
+        
+        <div class="status-card" id="searchCard">
+            <h3>Spotify Search</h3>
+            <form id="searchForm" style="margin-bottom: 10px;">
+                <input type="text" id="searchQuery" placeholder="Search query" style="width: 200px;">
+                <select id="searchType" multiple style="width: 120px;">
+                    <option value="album">Album</option>
+                    <option value="artist">Artist</option>
+                    <option value="track">Track</option>
+                </select>
+                <input type="text" id="searchArtist" placeholder="Artist filter" style="width: 120px;">
+                <input type="text" id="searchYear" placeholder="Year or range" style="width: 100px;">
+                <input type="text" id="searchAlbum" placeholder="Album filter" style="width: 120px;">
+                <input type="text" id="searchGenre" placeholder="Genre filter" style="width: 100px;">
+                <input type="text" id="searchISRC" placeholder="ISRC" style="width: 80px;">
+                <input type="text" id="searchTrack" placeholder="Track filter" style="width: 120px;">
+                <button type="submit">Search</button>
+            </form>
+            <div id="searchResults"></div>
         </div>
         
         <div id="responseData" class="hidden">
@@ -167,6 +188,7 @@
         const seekBtn = document.getElementById('seekBtn');
         const repeatBtn = document.getElementById('repeatBtn');
         const shuffleBtn = document.getElementById('shuffleBtn');
+        const currentlyPlayingBtn = document.getElementById('currentlyPlayingBtn');
         
         // Initialize the page
         function init() {
@@ -195,6 +217,7 @@
             const state = confirm('Enable shuffle? OK = Yes, Cancel = No');
             sendSpotifyCommand('shuffle', { state: state });
         });
+        currentlyPlayingBtn.addEventListener('click', checkCurrentlyPlaying);
 
         // Remove the duplicate event listener for checkStatus since it's now in init
         // document.addEventListener('DOMContentLoaded', checkStatus);
@@ -243,6 +266,7 @@
                 seekBtn.classList.remove('hidden');
                 repeatBtn.classList.remove('hidden');
                 shuffleBtn.classList.remove('hidden');
+                currentlyPlayingBtn.classList.remove('hidden');
                 
                 if (data.expires_at) {
                     const expiryDate = new Date(data.expires_at * 1000);
@@ -265,6 +289,7 @@
                 seekBtn.classList.add('hidden');
                 repeatBtn.classList.add('hidden');
                 shuffleBtn.classList.add('hidden');
+                currentlyPlayingBtn.classList.add('hidden');
             }
         }
           // Start Spotify connection process
@@ -601,6 +626,95 @@
                 showResponse({ status: 'error', message: `Error sending command: ${error.message}` });
             }
         }
+        
+        // Check currently playing song
+        async function checkCurrentlyPlaying() {
+            try {
+                currentlyPlayingBtn.disabled = true;
+                currentlyPlayingBtn.innerHTML = '<span class="loader"></span> Checking...';
+                const response = await fetch(`${API_PREFIX}/spotify/currently_playing`);
+                if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+                const data = await response.json();
+                showResponse(data);
+                playbackCard.classList.remove('hidden');
+                const nowPlaying = document.getElementById('nowPlaying');
+                const playbackDevice = document.getElementById('playbackDevice');
+                const playbackProgress = document.getElementById('playbackProgress');
+                if (data && data.item) {
+                    const artists = data.item.artists.map(artist => artist.name).join(', ');
+                    nowPlaying.textContent = `Now Playing: ${data.item.name} - ${artists}`;
+                    if (data.item.album && data.item.album.name) {
+                        nowPlaying.textContent += ` (${data.item.album.name})`;
+                    }
+                    if (data.device && data.device.name) {
+                        playbackDevice.textContent = `Device: ${data.device.name}`;
+                        if (data.device.volume_percent) {
+                            playbackDevice.textContent += ` (Volume: ${data.device.volume_percent}%)`;
+                        }
+                    } else {
+                        playbackDevice.textContent = '';
+                    }
+                    if (data.progress_ms !== undefined && data.item.duration_ms) {
+                        const progressPercent = Math.round((data.progress_ms / data.item.duration_ms) * 100);
+                        const progressTime = formatTime(data.progress_ms);
+                        const durationTime = formatTime(data.item.duration_ms);
+                        playbackProgress.textContent = `Progress: ${progressTime} / ${durationTime} (${progressPercent}%)`;
+                    } else {
+                        playbackProgress.textContent = '';
+                    }
+                } else {
+                    nowPlaying.textContent = 'Nothing currently playing';
+                    playbackDevice.textContent = '';
+                    playbackProgress.textContent = '';
+                }
+                currentlyPlayingBtn.disabled = false;
+                currentlyPlayingBtn.textContent = 'Currently Playing';
+            } catch (error) {
+                showResponse({ status: 'error', message: `Error checking currently playing: ${error.message}` });
+                currentlyPlayingBtn.disabled = false;
+                currentlyPlayingBtn.textContent = 'Currently Playing';
+            }
+        }
+        
+        // Search form handler
+        document.getElementById('searchForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const query = document.getElementById('searchQuery').value;
+            const typeSelect = document.getElementById('searchType');
+            const types = Array.from(typeSelect.selectedOptions).map(opt => opt.value);
+            const filters = {};
+            const artist = document.getElementById('searchArtist').value;
+            if (artist) filters.artist = artist;
+            const year = document.getElementById('searchYear').value;
+            if (year) filters.year = year;
+            const album = document.getElementById('searchAlbum').value;
+            if (album) filters.album = album;
+            const genre = document.getElementById('searchGenre').value;
+            if (genre) filters.genre = genre;
+            const isrc = document.getElementById('searchISRC').value;
+            if (isrc) filters.isrc = isrc;
+            const track = document.getElementById('searchTrack').value;
+            if (track) filters.track = track;
+            const body = {
+                query,
+                types,
+                filters: Object.keys(filters).length > 0 ? filters : undefined
+            };
+            const resultsDiv = document.getElementById('searchResults');
+            resultsDiv.innerHTML = '<span class="loader"></span> Searching...';
+            try {
+                const response = await fetch(`${API_PREFIX}/spotify/search`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await response.json();
+                showResponse(data);
+                resultsDiv.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+            } catch (error) {
+                resultsDiv.innerHTML = `<span style="color:red">Error: ${error.message}</span>`;
+            }
+        });
     </script>
 </body>
 </html>

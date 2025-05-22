@@ -99,8 +99,14 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         lastfm::prepare_complete_auth,
         lastfm::complete_auth,
         lastfm::disconnect_handler,
-    ];    // Define Spotify specific routes
-    let spotify_routes = routes![
+    ];    // Read spotify.api_enabled config (default: false)
+    let spotify_api_enabled = config_json.get("spotify")
+        .and_then(|s| s.get("api_enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // Define Spotify authentication-only routes
+    let spotify_auth_routes = routes![
         spotify::store_tokens,
         spotify::token_status,
         spotify::logout,
@@ -109,8 +115,21 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         spotify::login,
         spotify::poll_session,
         spotify::check_server,
+    ];
+    // Define full Spotify API routes
+    let spotify_full_routes = routes![
+        spotify::store_tokens,
+        spotify::token_status,
+        spotify::logout,
+        spotify::get_oauth_config,
+        spotify::create_session,
+        spotify::login,
+        spotify::poll_session,
+        spotify::check_server,
+        spotify::spotify_command,
         spotify::get_playback,
-        spotify::spotify_command, // <-- Register the command endpoint
+        spotify::spotify_currently_playing,
+        spotify::spotify_search,
     ];
     
     // ImageCache routes
@@ -120,7 +139,10 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
       let mut rocket_builder = rocket::custom(config)
         .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting general api routes
         .mount(format!("{}/lastfm", API_PREFIX), lastfm_routes) // Mount Last.fm routes under /api/lastfm (or similar)
-        .mount(format!("{}/spotify", API_PREFIX), spotify_routes) // Mount Spotify routes under /api/spotify
+        .mount(
+            format!("{}/spotify", API_PREFIX),
+            if spotify_api_enabled { spotify_full_routes } else { spotify_auth_routes }
+        )
         .mount(format!("{}/imagecache", API_PREFIX), imagecache_routes) // Mount imagecache routes
         .manage(controller)
         .manage(ws_manager); // Add WebSocket manager as managed state

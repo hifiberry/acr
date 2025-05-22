@@ -529,6 +529,9 @@ impl SecurityStore {
     }
 }
 
+// Add a static to hold the main config loaded in main.rs
+// static mut MAIN_CONFIG: Option<serde_json::Value> = None;
+
 // Helper function to set the module path to a default location
 pub fn set_default_store_path(path: &Path) -> Result<()> {
     let store = SECURITY_STORE.clone();

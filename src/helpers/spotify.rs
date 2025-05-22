@@ -2,10 +2,13 @@
 // This module provides functionality for authenticating with Spotify
 // and managing tokens through the OAuth2 flow
 
+/// Spotify scopes required for full playback and library control
+pub const SPOTIFY_REQUIRED_SCOPES: &str = "user-read-private user-read-email user-read-playback-state user-modify-playback-state user-read-currently-playing app-remote-control playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public user-read-playback-position user-top-read user-read-recently-played user-library-modify user-library-read";
+
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use std::sync::Mutex;
 
 use crate::helpers::security_store::SecurityStore;
@@ -24,6 +27,9 @@ const SPOTIFY_DEFAULT_OAUTH_URL: &str = "https://oauth.hifiberry.com/spotify/";
 
 // Global singleton instance of Spotify client
 pub(crate) static SPOTIFY_CLIENT: Lazy<Mutex<Option<Spotify>>> = Lazy::new(|| Mutex::new(None));
+
+// Global singleton for Spotify config
+static GLOBAL_SPOTIFY_CONFIG: OnceCell<SpotifyConfig> = OnceCell::new();
 
 // Default Spotify OAuth URL and proxy secret compiled from secrets.txt at build time
 #[cfg(not(test))]
@@ -149,6 +155,8 @@ pub struct SpotifyUserProfile {
 pub struct SpotifyConfig {
     pub oauth_url: String,
     pub proxy_secret: String,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
 }
 
 /// Spotify helper class for managing authentication and tokens
@@ -170,20 +178,29 @@ impl Clone for Spotify {
     }
 }
 
+impl SpotifyConfig {
+    pub fn from_json(spotify_config: &serde_json::Value) -> Self {
+        let oauth_url = spotify_config.get("oauth_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let proxy_secret = match spotify_config.get("proxy_secret").and_then(|v| v.as_str()) {
+            Some(s) if !s.trim().is_empty() => s.to_string(),
+            _ => default_spotify_proxy_secret(),
+        };
+        let client_id = spotify_config.get("client_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let client_secret = spotify_config.get("client_secret").and_then(|v| v.as_str()).map(|s| s.to_string());
+        SpotifyConfig { oauth_url, proxy_secret, client_id, client_secret }
+    }
+}
+
 impl Spotify {
     /// Create a new Spotify helper instance with default configuration
     pub fn new() -> Self {
-        // Attempt to get instance from global client first
-        if let Ok(spotify) = Self::get_instance() {
-            return spotify;
-        }
-        
-        // Otherwise create with default configuration
         Spotify {
-            config: SpotifyConfig {
-                oauth_url: default_spotify_oauth_url(),
-                proxy_secret: default_spotify_proxy_secret(),
-            }
+            config: GLOBAL_SPOTIFY_CONFIG.get().cloned().unwrap_or_else(|| SpotifyConfig {
+                oauth_url: crate::helpers::spotify::default_spotify_oauth_url(),
+                proxy_secret: crate::helpers::spotify::default_spotify_proxy_secret(),
+                client_id: None,
+                client_secret: None,
+            }),
         }
     }    /// Initialize the Spotify client with OAuth configuration
     pub fn initialize(mut oauth_url: String, proxy_secret: String) -> Result<()> {
@@ -209,6 +226,8 @@ impl Spotify {
         let config = SpotifyConfig {
             oauth_url,
             proxy_secret,
+            client_id: None,
+            client_secret: None,
         };
         
         let spotify = Spotify { config };
@@ -270,6 +289,13 @@ impl Spotify {
             error!("Proxy secret is empty or only whitespace - this will cause authentication failure");
         }
         &self.config.proxy_secret
+    }
+    /// Get the Spotify client_id and client_secret if configured
+    pub fn get_client_id(&self) -> Option<&str> {
+        self.config.client_id.as_deref()
+    }
+    pub fn get_client_secret(&self) -> Option<&str> {
+        self.config.client_secret.as_deref()
     }
       /// Store Spotify tokens in the security store
     pub fn store_tokens(&self, tokens: &SpotifyTokens) -> Result<()> {
@@ -394,27 +420,47 @@ impl Spotify {
         }
     }    
     
+    // Build headers for OAuth proxy requests
+    pub fn build_oauth_headers(&self) -> Vec<(&str, String)> {
+        let mut headers = vec![
+            ("X-Proxy-Secret", self.get_proxy_secret().to_string()),
+        ];
+        if let Some(client_id) = self.get_client_id() {
+            if !client_id.is_empty() {
+                debug!("Sending X-Spotify-Client-Id: {}... ({} chars)", &client_id[..std::cmp::min(6, client_id.len())], client_id.len());
+                headers.push(("X-Spotify-Client-Id", client_id.to_string()));
+            } else {
+                debug!("Not sending X-Spotify-Client-Id: value is empty");
+            }
+        } else {
+            debug!("Not sending X-Spotify-Client-Id: not set in config");
+        }
+        if let Some(client_secret) = self.get_client_secret() {
+            if !client_secret.is_empty() {
+                debug!("Sending X-Spotify-Client-Secret: {}... ({} chars)", &client_secret[..std::cmp::min(6, client_secret.len())], client_secret.len());
+                headers.push(("X-Spotify-Client-Secret", client_secret.to_string()));
+            } else {
+                debug!("Not sending X-Spotify-Client-Secret: value is empty");
+            }
+        } else {
+            debug!("Not sending X-Spotify-Client-Secret: not set in config");
+        }
+        headers
+    }
     /// Refresh the access token using the refresh token via OAuth proxy (only method)
     pub fn refresh_token(&self) -> Result<SpotifyTokens> {
         use crate::helpers::http_client::new_http_client;
-        // Get the current tokens
         let current_tokens = self.get_tokens()?;
-
-        // Create an HTTP client for token refresh
         let http_client = new_http_client(10);
-
-        // Construct the token refresh endpoint URL, adding proxy_secret as a query parameter
-        let refresh_url = format!("{}refresh?proxy_secret={}", self.config.oauth_url, self.config.proxy_secret);
-
-        // Prepare the request payload
+        let refresh_url = format!("{}refresh", self.config.oauth_url);
         let payload = serde_json::json!({
             "refresh_token": current_tokens.refresh_token
         });
-
-        info!("Refreshing Spotify access token via OAuth proxy (proxy_secret as query param)");
-
-        // Make the refresh request (no custom headers needed)
-        let response = match http_client.post_json_value(&refresh_url, payload) {
+        info!("Refreshing Spotify access token via OAuth proxy (headers)");
+        let mut headers = self.build_oauth_headers();
+        headers.push(("Content-Type", "application/json".to_string()));
+        let headers_ref: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let response = match http_client.post_json_value_with_headers(&refresh_url, payload, &headers_ref) {
             Ok(value) => value,
             Err(e) => {
                 error!("Failed to refresh Spotify token via proxy: {}", e);
@@ -606,5 +652,110 @@ impl Spotify {
             Ok(_) => Ok(()),
             Err(e) => Err(SpotifyError::ApiError(format!("Command failed: {}", e))),
         }
+    }
+    /// Get the user's currently playing track from Spotify
+    pub fn get_currently_playing(&self) -> Result<Option<serde_json::Value>> {
+        use crate::helpers::http_client::new_http_client;
+        let access_token = self.ensure_valid_token()?;
+        let http_client = new_http_client(10);
+        let url = "https://api.spotify.com/v1/me/player/currently-playing";
+        let headers = [
+            ("Authorization", &format!("Bearer {}", access_token)[..]),
+            ("Content-Type", "application/json"),
+        ];
+        let result = http_client.get_json_with_headers(url, &headers);
+        match result {
+            Ok(json) => {
+                if json.is_null() {
+                    Ok(None)
+                } else {
+                    Ok(Some(json))
+                }
+            },
+            Err(e) => Err(SpotifyError::ApiError(format!("Failed to get currently playing: {}", e))),
+        }
+    }
+    /// Search Spotify for albums, artists, or tracks with optional filters
+    /// See: https://developer.spotify.com/documentation/web-api/reference/search
+    pub fn search(&self, query: &str, types: &[&str], filters: Option<&serde_json::Value>) -> Result<serde_json::Value> {
+        use crate::helpers::http_client::new_http_client;
+        let access_token = self.ensure_valid_token()?;
+        let http_client = new_http_client(10);
+        let mut q = query.to_string();
+        // Add filters to the query string
+        if let Some(filters) = filters {
+            if let Some(artist) = filters.get("artist").and_then(|v| v.as_str()) {
+                q.push_str(&format!(" artist:{}", artist));
+            }
+            if let Some(year) = filters.get("year").and_then(|v| v.as_str()) {
+                q.push_str(&format!(" year:{}", year));
+            }
+            if let Some(album) = filters.get("album").and_then(|v| v.as_str()) {
+                q.push_str(&format!(" album:{}", album));
+            }
+            if let Some(genre) = filters.get("genre").and_then(|v| v.as_str()) {
+                q.push_str(&format!(" genre:{}", genre));
+            }
+            if let Some(isrc) = filters.get("isrc").and_then(|v| v.as_str()) {
+                q.push_str(&format!(" isrc:{}", isrc));
+            }
+            if let Some(track) = filters.get("track").and_then(|v| v.as_str()) {
+                q.push_str(&format!(" track:{}", track));
+            }
+        }
+        let type_param = types.join(",");
+        let url = format!(
+            "https://api.spotify.com/v1/search?q={}&type={}",
+            urlencoding::encode(&q),
+            urlencoding::encode(&type_param)
+        );
+        let headers = [
+            ("Authorization", &format!("Bearer {}", access_token)[..]),
+            ("Content-Type", "application/json"),
+        ];
+        let result = http_client.get_json_with_headers(&url, &headers);
+        match result {
+            Ok(json) => Ok(json),
+            Err(e) => Err(SpotifyError::ApiError(format!("Failed to search: {}", e))),
+        }
+    }
+
+    /// Construct the OAuth login URL with required scopes as a query parameter
+    pub fn build_oauth_login_url(&self) -> String {
+        let base_url = self.get_oauth_url();
+        let scopes = Self::required_scopes();
+        // Ensure no double ? in URL
+        let sep = if base_url.contains('?') { "&" } else { "?" };
+        format!("{}login{}scope={}", base_url, sep, urlencoding::encode(scopes))
+    }
+}
+
+impl Spotify {
+    /// Helper to get the required scopes as a string
+    pub fn required_scopes() -> &'static str {
+        SPOTIFY_REQUIRED_SCOPES
+    }
+
+    /// Helper to construct the /create_session URL with required scopes as a query parameter
+    pub fn build_create_session_url(&self) -> String {
+        let base_url = self.get_oauth_url();
+        let scopes = Self::required_scopes();
+        // Ensure no double ? in URL
+        let sep = if base_url.contains('?') { "&" } else { "?" };
+        format!("{}create_session{}scope={}", base_url, sep, urlencoding::encode(scopes))
+    }
+
+    /// Helper to construct the OAuth login URL (only needs session_id)
+    pub fn build_login_url(&self, session_id: &str) -> String {
+        let base_url = self.get_oauth_url();
+        format!("{base_url}login/{session_id}")
+    }
+}
+
+// Add the missing set_global_config method for the Spotify global config singleton
+impl Spotify {
+    pub fn set_global_config(spotify_config: &serde_json::Value) {
+        let config = SpotifyConfig::from_json(spotify_config);
+        let _ = GLOBAL_SPOTIFY_CONFIG.set(config);
     }
 }

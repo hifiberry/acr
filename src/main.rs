@@ -163,6 +163,9 @@ fn main() {
     initialize_lastfm(&controllers_config);
     
     // Initialize Spotify with the configuration
+    if let Some(spotify_config) = controllers_config.get("spotify") {
+        spotify::Spotify::set_global_config(spotify_config);
+    }
     initialize_spotify(&controllers_config);
     
     // Set up a shared flag for graceful shutdown

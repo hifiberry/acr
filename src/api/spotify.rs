@@ -3,8 +3,9 @@
 use rocket::serde::{json::Json, Deserialize, Serialize};
 use rocket::post;
 use rocket::get;
-use log::{error, info};
+use log::{debug, error, info};
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde_json::json;
 
 use crate::helpers::spotify::{Spotify, SpotifyTokens};
 use crate::helpers::http_client::new_http_client;
@@ -41,6 +42,13 @@ pub struct OAuthConfig {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSessionResponse {
     session_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchRequest {
+    pub query: String,
+    pub types: Vec<String>,
+    pub filters: Option<serde_json::Value>,
 }
 
 /// Store Spotify tokens in the security store
@@ -151,49 +159,15 @@ pub fn get_oauth_config() -> Json<OAuthConfig> {
 #[get("/create_session")]
 pub fn create_session() -> Result<Json<CreateSessionResponse>, Status> {
     let spotify = Spotify::new();
-    // Create HTTP client with a reasonable timeout
-    let http_client = new_http_client(10);    
-    // Proxy the request to the OAuth service
-    // Ensure the OAuth URL has a trailing slash before adding the endpoint path
-    let base_url = spotify.get_oauth_url();
-    let url = if base_url.ends_with('/') {
-        format!("{}create_session", base_url)
-    } else {
-        format!("{}/create_session", base_url)
-    };
-    
-    // IMPORTANT: Use X-Proxy-Secret header instead of Authorization: Bearer
-    let proxy_secret = spotify.get_proxy_secret();
-    
-    // Log more details about the request
-    info!("Creating OAuth session with URL: {}", url);
-    info!("OAuth URL from config: '{}'", base_url);
-    info!("Proxy secret length: {} chars", proxy_secret.len());
-    
-    // Check for issues with the OAuth URL format
-    if !url.starts_with("http") {
-        error!("Invalid OAuth URL: does not start with http/https");
-    }
-    
-    if spotify.get_proxy_secret().trim().is_empty() {
-        error!("Proxy secret is empty or whitespace only");
-    }
-    
-    let headers = [
-        ("X-Proxy-Secret", proxy_secret)
-    ];
-    
-    match http_client.get_json_with_headers(&url, &headers) {
+    let http_client = new_http_client(10);
+    // Use the helper to build the correct URL with scopes
+    let url = spotify.build_create_session_url();
+    let headers = spotify.build_oauth_headers();
+    let headers_ref: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    match http_client.get_json_with_headers(&url, &headers_ref) {
         Ok(response) => {
-            info!("Successfully received response from OAuth service");
-            // Parse the session ID from the response
             match response.get("session_id").and_then(|id| id.as_str()) {
-                Some(session_id) => {
-                    info!("Created OAuth session with ID: {}", session_id);
-                    Ok(Json(CreateSessionResponse {
-                        session_id: session_id.to_string(),
-                    }))
-                },
+                Some(session_id) => Ok(Json(CreateSessionResponse { session_id: session_id.to_string() })),
                 None => {
                     error!("Invalid response from OAuth service: missing session_id");
                     error!("Response content: {}", serde_json::to_string_pretty(&response).unwrap_or_else(|_| format!("{:?}", response)));
@@ -212,80 +186,48 @@ pub fn create_session() -> Result<Json<CreateSessionResponse>, Status> {
 #[get("/login/<session_id>")]
 pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
     let spotify = Spotify::new();
-    
-    // Ensure the OAuth URL has a trailing slash before adding the endpoint path
     let base_url = spotify.get_oauth_url();
     let url = if base_url.ends_with('/') {
         format!("{}login/{}", base_url, session_id)
     } else {
         format!("{}/login/{}", base_url, session_id)
     };
-    
-    // Get the proxy secret for X-Proxy-Secret header
-    let proxy_secret = spotify.get_proxy_secret();
-    
-    info!("Proxying login request for session: {}", session_id);
-    info!("Full login URL: {}", url);
-    
-    // Create a custom agent that doesn't follow redirects
-    let agent = ureq::AgentBuilder::new()
-        .redirects(0)  // Disable automatic redirect following
-        .build();
-        
-    // Make the request with our custom agent
-    let result = agent.get(&url)
-        .timeout(std::time::Duration::from_secs(10))
-        .set("X-Proxy-Secret", proxy_secret)
-        .call();    match result {
-        // Check for redirect status codes (3xx)
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let mut request = agent.get(&url).timeout(std::time::Duration::from_secs(10));
+    for (name, value) in spotify.build_oauth_headers() {
+        request = request.set(name, &value);
+    }
+    let result = request.call();
+    match result {
         Err(ureq::Error::Status(code, response)) if (300..400).contains(&code) => {
-            // Extract the Location header for the redirect
             if let Some(location) = response.header("Location") {
-                info!("Successfully got redirect URL from OAuth service: {}", location);
-                
-                // Decode HTML entities in the redirect URL
                 let decoded_location = location
                     .replace("&amp;", "&")
                     .replace("&quot;", "\"")
                     .replace("&lt;", "<")
-                    .replace("&gt;", ">");
-                
-                info!("Decoded redirect URL: {}", decoded_location);
-                
-                // Return the redirect URL to the client
+                    .replace("&gt;", ">\\");
                 return Ok(Json(ApiResponse {
                     status: "redirect".to_string(),
-                    message: decoded_location, // Contains the Spotify authorization URL
+                    message: decoded_location,
                     expires_at: None,
                 }));
             } else {
                 error!("OAuth server returned a redirect without Location header");
                 return Err(Status::InternalServerError);
             }
-        },// Regular successful response (unlikely with OAuth but handle it anyway)
+        },
         Ok(response) => {
-            // Capture the status code before consuming the response
             let status_code = response.status();
-            
-            // In the case of a non-redirect successful response, check if the body contains a Spotify URL
             if let Ok(body) = response.into_string() {
                 if body.contains("spotify.com/authorize") || body.contains("accounts.spotify.com") {
-                    info!("Response contains Spotify authorization URL");
-                    
-                    // Extract the URL from the response if possible
                     if let Some(url_start) = body.find("https://accounts.spotify.com") {
-                        if let Some(url_end) = body[url_start..].find("\"") {                            let spotify_url = &body[url_start..(url_start + url_end)];
-                            info!("Extracted Spotify URL: {}", spotify_url);
-                            
-                            // Decode HTML entities
+                        if let Some(url_end) = body[url_start..].find('"') {
+                            let spotify_url = &body[url_start..(url_start + url_end)];
                             let decoded_url = spotify_url
                                 .replace("&amp;", "&")
                                 .replace("&quot;", "\"")
                                 .replace("&lt;", "<")
-                                .replace("&gt;", ">");
-                            
-                            info!("Decoded Spotify URL: {}", decoded_url);
-                            
+                                .replace("&gt;", ">\\");
                             return Ok(Json(ApiResponse {
                                 status: "redirect".to_string(),
                                 message: decoded_url,
@@ -293,14 +235,9 @@ pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
                             }));
                         }
                     }
-                    
-                    // If we found Spotify references but couldn't extract the URL
                     info!("Found Spotify references but couldn't extract the exact URL");
                 }
-                
-                // If we couldn't extract a URL, just log what we got
                 info!("Got response body of length {} with status {}", body.len(), status_code);
-                
                 return Ok(Json(ApiResponse {
                     status: "success".to_string(),
                     message: "Login request processed".to_string(),
@@ -311,13 +248,11 @@ pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
                 return Err(Status::InternalServerError);
             }
         },
-        // Handle other HTTP status errors
         Err(ureq::Error::Status(code, response)) => {
             let error_body = response.into_string().unwrap_or_else(|_| "<failed to read response body>".to_string());
             error!("OAuth server returned error {}: {}", code, error_body);
             return Err(Status::InternalServerError);
         },
-        // Handle network and other errors
         Err(e) => {
             error!("Failed to proxy login request for session {}: {}", session_id, e);
             return Err(Status::InternalServerError);
@@ -329,44 +264,17 @@ pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
 #[get("/poll/<session_id>")]
 pub fn poll_session(session_id: String) -> Result<Json<Value>, Status> {
     let spotify = Spotify::new();
-    // Create HTTP client with a reasonable timeout
     let http_client = new_http_client(10);
-    
-    // Ensure the OAuth URL has a trailing slash before adding the endpoint path
     let base_url = spotify.get_oauth_url();
     let url = if base_url.ends_with('/') {
         format!("{}poll/{}", base_url, session_id)
     } else {
         format!("{}/poll/{}", base_url, session_id)
     };
-    
-    // Get the proxy secret for X-Proxy-Secret header
-    let proxy_secret = spotify.get_proxy_secret();
-    
-    info!("Polling session: {}", session_id);
-    info!("Full poll URL: {}", url);
-    
-    let headers = [
-        ("X-Proxy-Secret", proxy_secret)
-    ];
-    
-    match http_client.get_json_with_headers(&url, &headers) {
-        Ok(data) => {
-            info!("Successfully polled session: {}", session_id);
-            // Log the response status but not all data (might contain tokens)
-            if let Some(status) = data.get("status").and_then(|s| s.as_str()) {
-                info!("Poll status: {}", status);
-                
-                // Log if completed
-                if status == "completed" {
-                    info!("OAuth flow completed successfully for session: {}", session_id);
-                }
-            } else {
-                info!("Poll response has no status field");
-            }
-            
-            Ok(Json(data))
-        },
+    let headers = spotify.build_oauth_headers();
+    let headers_ref: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    match http_client.get_json_with_headers(&url, &headers_ref) {
+        Ok(data) => Ok(Json(data)),
         Err(e) => {
             error!("Failed to poll session {}: {}", session_id, e);
             Err(Status::InternalServerError)
@@ -466,5 +374,27 @@ pub fn spotify_command(command: &str, args: Json<Value>) -> Json<ApiResponse> {
                 expires_at: None,
             })
         }
+    }
+}
+
+/// Get currently playing track information
+#[get("/currently_playing")]
+pub fn spotify_currently_playing() -> Json<Value> {
+    let spotify = Spotify::new();
+    match spotify.get_currently_playing() {
+        Ok(Some(json)) => Json(json),
+        Ok(None) => Json(json!({"status": "no_track"})),
+        Err(e) => Json(json!({"status": "error", "message": format!("{}", e)})),
+    }
+}
+
+/// Search for Spotify content (tracks, albums, artists, playlists)
+#[post("/search", data = "<request>")]
+pub fn spotify_search(request: Json<SearchRequest>) -> Json<Value> {
+    let spotify = Spotify::new();
+    let types: Vec<&str> = request.types.iter().map(|s| s.as_str()).collect();
+    match spotify.search(&request.query, &types, request.filters.as_ref()) {
+        Ok(json) => Json(json),
+        Err(e) => Json(json!({"status": "error", "message": format!("{}", e)})),
     }
 }

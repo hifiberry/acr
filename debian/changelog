@@ -1,4 +1,8 @@
 # rust-debian-package/rust-debian-package/debian/changelog
+acr (0.3.0) unstable; urgency=medium
+  * Added Spotify support
+ -- HiFiBerry <info@hifiberry.com>  Wed, 22 May 2025 00:00:00 +0000
+
 acr (0.2.0) unstable; urgency=medium
   * Added Lyrion media server support
   * Integrated Last.fm functionality

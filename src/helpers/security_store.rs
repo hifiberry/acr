@@ -20,13 +20,13 @@ use rand::{rngs::OsRng, RngCore};
 
 // Compiled from secrets.txt at build time
 #[cfg(not(test))]
-pub fn default_encryption_key() -> &'static str {
-    option_env!("SECRETS_ENCRYPTION_KEY").unwrap_or("YOUR_ENCRYPTION_KEY_HERE")
+pub fn default_encryption_key() -> String {
+    crate::secrets::secrets_encryption_key()
 }
 
 #[cfg(test)]
-pub fn default_encryption_key() -> &'static str {
-    "test_encryption_key"
+pub fn default_encryption_key() -> String {
+    "test_encryption_key".to_string()
 }
 
 // Error type for security store operations
@@ -220,18 +220,17 @@ impl SecurityStore {
         Ok(())
     }
     
-    // Initialize the security store with the default encryption key from secrets.txt
     pub fn initialize_with_defaults(file_path: Option<PathBuf>) -> Result<()> {
         let encryption_key = default_encryption_key();
         
-        if encryption_key == "YOUR_ENCRYPTION_KEY_HERE" {
+        if encryption_key == "unknown" {
             return Err(SecurityStoreError::InvalidKeyError(
-                "No valid encryption key found in secrets.txt".to_string(),
+                "No valid encryption key configured now or during compile time".to_string(),
             ));
         }
         
-        info!("Using default encryption key from secrets.txt");
-        Self::initialize(encryption_key, file_path)
+        info!("Using default encryption key now or during compile time");
+        Self::initialize(&encryption_key, file_path)
     }
     
     // Check if the store is initialized
@@ -529,6 +528,9 @@ impl SecurityStore {
         Ok(())
     }
 }
+
+// Add a static to hold the main config loaded in main.rs
+// static mut MAIN_CONFIG: Option<serde_json::Value> = None;
 
 // Helper function to set the module path to a default location
 pub fn set_default_store_path(path: &Path) -> Result<()> {

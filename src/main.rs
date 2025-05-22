@@ -6,6 +6,7 @@ use acr::helpers::imagecache::ImageCache;
 use acr::helpers::musicbrainz;
 use acr::helpers::theaudiodb;
 use acr::helpers::lastfm;
+use acr::helpers::spotify;
 use acr::helpers::security_store::SecurityStore;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
@@ -158,9 +159,14 @@ fn main() {
 
     // Initialize TheAudioDB with the configuration
     initialize_theaudiodb(&controllers_config);
-    
-    // Initialize Last.fm with the configuration
+      // Initialize Last.fm with the configuration
     initialize_lastfm(&controllers_config);
+    
+    // Initialize Spotify with the configuration
+    if let Some(spotify_config) = controllers_config.get("spotify") {
+        spotify::Spotify::set_global_config(spotify_config);
+    }
+    initialize_spotify(&controllers_config);
     
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
@@ -329,5 +335,73 @@ fn initialize_lastfm(config: &serde_json::Value) {
         }
     } else {
         debug!("No Last.fm configuration found, Last.fm features will be unavailable.");
+    }
+}
+
+// Helper function to initialize Spotify
+fn initialize_spotify(config: &serde_json::Value) {
+    info!("Starting Spotify initialization");
+    
+    if let Some(spotify_config) = config.get("spotify") {
+        // Check if enabled flag exists and is set to true
+        let enabled = spotify_config.get("enable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false); // Default to disabled if not specified
+        
+        info!("Spotify enabled in config: {}", enabled);
+        
+        if enabled {
+            // Get custom OAuth URL and proxy secret if specified in config
+            let oauth_url = spotify_config.get("oauth_url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            
+            let proxy_secret = spotify_config.get("proxy_secret")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            
+            info!("Config values - OAuth URL present: {}, proxy secret present: {}", 
+                 oauth_url.is_some(), proxy_secret.is_some());
+            
+            // Initialize with values from config or fall back to defaults
+            let init_result = match (oauth_url, proxy_secret) {
+                (Some(url), Some(secret)) if !url.is_empty() && !secret.is_empty() => {
+                    info!("Initializing Spotify with configuration from acr.json, URL: '{}'", url);
+                    spotify::Spotify::initialize(url, secret)
+                },
+                _ => {
+                    info!("No valid Spotify config in acr.json, falling back to secrets.txt");
+                    spotify::Spotify::initialize_with_defaults()
+                }
+            };
+              if let Err(e) = init_result {
+                warn!("Failed to initialize Spotify client: {}", e);
+                
+                // Additional logging to help diagnose the issue
+                info!("Checking default OAuth URL directly: '{}'", 
+                      spotify::default_spotify_oauth_url());
+                      
+                return;
+            }
+            
+            // Log Spotify connection status
+            match spotify::Spotify::get_instance() {
+                Ok(client) => {
+                    if client.has_valid_tokens() {
+                        info!("Spotify is connected with valid tokens");
+                    } else {
+                        info!("Spotify is not connected. User needs to authenticate.");
+                    }
+                },
+                Err(e) => {
+                    warn!("Could not get Spotify client instance to check status: {}", e);
+                }
+            }
+            info!("Spotify initialized successfully");
+        } else {
+            info!("Spotify integration is disabled");
+        }
+    } else {
+        debug!("No Spotify configuration found, Spotify features will be unavailable.");
     }
 }

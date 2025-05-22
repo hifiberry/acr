@@ -25,7 +25,7 @@ jobs:
       run: chmod +x build.sh
       
     - name: Build Debian package
-      run: ./build.sh
+      run: ./build.sh --force
       
     - name: Upload Debian package
       uses: actions/upload-artifact@v4

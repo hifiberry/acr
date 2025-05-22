@@ -1,6 +1,6 @@
 [package]
 name = "acr"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 default-run = "acr"
 
@@ -71,6 +71,10 @@ named_pipe = "0.4"
 # Non-Windows dependencies (Linux, macOS, etc.)
 [target.'cfg(not(windows))'.dependencies]
 # Add any Linux-specific alternatives here if needed
+
+# Build dependencies
+[build-dependencies]
+base64 = "0.21.0"
 
 # Binary targets
 [[bin]]

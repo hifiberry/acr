@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spotify Integration - HiFiBerry OS</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        h1 {
+            color: #e41e45;
+            margin-bottom: 20px;
+        }
+        
+        button {
+            background-color: #1DB954;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 10px;
+            min-width: 150px;
+        }
+        
+        button:hover {
+            background-color: #1AA64B;
+        }
+        
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        
+        button.danger {
+            background-color: #e41e45;
+        }
+        
+        button.danger:hover {
+            background-color: #c91a3d;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .status-card {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .connected {
+            background-color: #1DB954;
+        }
+        
+        .disconnected {
+            background-color: #e41e45;
+        }
+        
+        pre {
+            background-color: #f1f1f1;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #1DB954;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Spotify Integration</h1>
+          <div class="status-card" id="statusCard">
+            <h3>Status</h3>
+            <p>
+                <span class="status-indicator disconnected" id="statusIndicator"></span>
+                <span id="statusText">Checking connection status...</span>
+                <span id="expiryTime"></span>
+            </p>
+        </div>
+        
+        <div class="actions">
+            <button id="connectBtn">Connect with Spotify</button>
+            <button id="disconnectBtn" class="danger hidden">Disconnect</button>
+            <button id="checkPlaybackBtn" class="hidden">Check Playback</button>
+            <button id="playBtn" class="hidden">Play</button>
+            <button id="pauseBtn" class="hidden">Pause</button>
+            <button id="nextBtn" class="hidden">Next</button>
+            <button id="prevBtn" class="hidden">Previous</button>
+            <button id="seekBtn" class="hidden">Seek</button>
+            <button id="repeatBtn" class="hidden">Repeat</button>
+            <button id="shuffleBtn" class="hidden">Shuffle</button>
+            <button id="currentlyPlayingBtn" class="hidden">Currently Playing</button>
+        </div>
+        
+        <div class="status-card hidden" id="playbackCard">
+            <h3>Current Playback</h3>
+            <div id="playbackInfo">
+                <p id="nowPlaying">Nothing playing</p>
+                <p id="playbackDevice"></p>
+                <p id="playbackProgress"></p>
+            </div>
+        </div>
+        
+        <div class="status-card" id="searchCard">
+            <h3>Spotify Search</h3>
+            <form id="searchForm" style="margin-bottom: 10px;">
+                <input type="text" id="searchQuery" placeholder="Search query" style="width: 200px;">
+                <select id="searchType" multiple style="width: 120px;">
+                    <option value="album">Album</option>
+                    <option value="artist">Artist</option>
+                    <option value="track">Track</option>
+                </select>
+                <input type="text" id="searchArtist" placeholder="Artist filter" style="width: 120px;">
+                <input type="text" id="searchYear" placeholder="Year or range" style="width: 100px;">
+                <input type="text" id="searchAlbum" placeholder="Album filter" style="width: 120px;">
+                <input type="text" id="searchGenre" placeholder="Genre filter" style="width: 100px;">
+                <input type="text" id="searchISRC" placeholder="ISRC" style="width: 80px;">
+                <input type="text" id="searchTrack" placeholder="Track filter" style="width: 120px;">
+                <button type="submit">Search</button>
+            </form>
+            <div id="searchResults"></div>
+        </div>
+        
+        <div id="responseData" class="hidden">
+            <h3>Response Data</h3>
+            <pre id="responseContent"></pre>
+        </div>
+    </div>    <script>
+        // Configuration
+        const API_PREFIX = '/api';
+          // DOM elements
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const expiryTime = document.getElementById('expiryTime');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const checkPlaybackBtn = document.getElementById('checkPlaybackBtn');
+        const responseData = document.getElementById('responseData');
+        const responseContent = document.getElementById('responseContent');
+        const playbackCard = document.getElementById('playbackCard');
+        const playBtn = document.getElementById('playBtn');
+        const pauseBtn = document.getElementById('pauseBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const prevBtn = document.getElementById('prevBtn');
+        const seekBtn = document.getElementById('seekBtn');
+        const repeatBtn = document.getElementById('repeatBtn');
+        const shuffleBtn = document.getElementById('shuffleBtn');
+        const currentlyPlayingBtn = document.getElementById('currentlyPlayingBtn');
+        
+        // Initialize the page
+        function init() {
+            // Check the connection status
+            checkStatus();
+        }
+        
+        // Event listeners
+        document.addEventListener('DOMContentLoaded', init);
+        connectBtn.addEventListener('click', connectSpotify);
+        disconnectBtn.addEventListener('click', disconnectSpotify);
+        checkPlaybackBtn.addEventListener('click', checkPlaybackState);
+        playBtn.addEventListener('click', () => sendSpotifyCommand('play'));
+        pauseBtn.addEventListener('click', () => sendSpotifyCommand('pause'));
+        nextBtn.addEventListener('click', () => sendSpotifyCommand('next'));
+        prevBtn.addEventListener('click', () => sendSpotifyCommand('previous'));
+        seekBtn.addEventListener('click', () => {
+            const ms = prompt('Seek to position (ms):', '60000');
+            if (ms !== null) sendSpotifyCommand('seek', { position_ms: parseInt(ms) });
+        });
+        repeatBtn.addEventListener('click', () => {
+            const mode = prompt('Repeat mode (track, context, off):', 'off');
+            if (mode) sendSpotifyCommand('repeat', { state: mode });
+        });
+        shuffleBtn.addEventListener('click', () => {
+            const state = confirm('Enable shuffle? OK = Yes, Cancel = No');
+            sendSpotifyCommand('shuffle', { state: state });
+        });
+        currentlyPlayingBtn.addEventListener('click', checkCurrentlyPlaying);
+
+        // Remove the duplicate event listener for checkStatus since it's now in init
+        // document.addEventListener('DOMContentLoaded', checkStatus);
+          // Check if we've just returned from OAuth flow
+        window.onload = function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const sessionId = urlParams.get('session_id');
+            
+            if (sessionId) {
+                // Clean up the URL
+                history.replaceState({}, document.title, window.location.pathname);
+                
+                // Poll for token status
+                pollForTokens(sessionId);
+            }
+        };
+        
+        // Check current Spotify connection status
+        async function checkStatus() {
+            try {
+                const response = await fetch(`${API_PREFIX}/spotify/status`);
+                const data = await response.json();
+                
+                updateStatusDisplay(data);
+                return data;
+            } catch (error) {
+                console.error('Error checking status:', error);
+                updateStatusDisplay({ authenticated: false });
+                return { authenticated: false };
+            }
+        }
+        
+        // Update the UI based on connection status
+        function updateStatusDisplay(data) {
+            if (data.authenticated) {
+                statusIndicator.className = 'status-indicator connected';
+                statusText.textContent = 'Connected to Spotify';
+                connectBtn.disabled = true;
+                disconnectBtn.classList.remove('hidden');
+                disconnectBtn.disabled = false;
+                checkPlaybackBtn.classList.remove('hidden');
+                playBtn.classList.remove('hidden');
+                pauseBtn.classList.remove('hidden');
+                nextBtn.classList.remove('hidden');
+                prevBtn.classList.remove('hidden');
+                seekBtn.classList.remove('hidden');
+                repeatBtn.classList.remove('hidden');
+                shuffleBtn.classList.remove('hidden');
+                currentlyPlayingBtn.classList.remove('hidden');
+                
+                if (data.expires_at) {
+                    const expiryDate = new Date(data.expires_at * 1000);
+                    expiryTime.textContent = `(expires ${expiryDate.toLocaleString()})`;
+                } else {
+                    expiryTime.textContent = '';
+                }
+            } else {
+                statusIndicator.className = 'status-indicator disconnected';
+                statusText.textContent = 'Not connected to Spotify';
+                connectBtn.disabled = false;
+                disconnectBtn.classList.add('hidden');
+                checkPlaybackBtn.classList.add('hidden');
+                playbackCard.classList.add('hidden');
+                expiryTime.textContent = '';
+                playBtn.classList.add('hidden');
+                pauseBtn.classList.add('hidden');
+                nextBtn.classList.add('hidden');
+                prevBtn.classList.add('hidden');
+                seekBtn.classList.add('hidden');
+                repeatBtn.classList.add('hidden');
+                shuffleBtn.classList.add('hidden');
+                currentlyPlayingBtn.classList.add('hidden');
+            }
+        }
+          // Start Spotify connection process
+        async function connectSpotify() {
+            try {
+                // Show loading state
+                connectBtn.disabled = true;
+                connectBtn.innerHTML = '<span class="loader"></span> Connecting...';
+                
+                // Get OAuth configuration
+                const configResponse = await fetch(`${API_PREFIX}/spotify/oauth_config`);
+                const config = await configResponse.json();
+                
+                if (!config.oauth_url) {
+                    throw new Error('Failed to retrieve OAuth configuration');
+                }
+                
+                // Create a new authentication session
+                const response = await fetch(`${API_PREFIX}/spotify/create_session`);
+                const data = await response.json();
+                
+                if (!data.session_id) {
+                    throw new Error('Failed to create authentication session');
+                }
+                
+                // Store session ID in localStorage for verification later
+                localStorage.setItem('spotify_session_id', data.session_id);                // Make a request to the login endpoint to get the redirect URL
+                const loginResponse = await fetch(`${API_PREFIX}/spotify/login/${data.session_id}`);
+                console.log('Login response status:', loginResponse.status);
+                const loginData = await loginResponse.json();
+                console.log('Login data received:', loginData);
+                  if ((loginData.status === 'success' || loginData.status === 'redirect') && loginData.message) {
+                    // The message contains the Spotify authorization URL
+                    // Open Spotify's authorization page in a new window/tab
+                    console.log('Opening Spotify authorization URL in new window:', loginData.message);
+                    
+                    // Decode HTML entities in the URL if present
+                    let spotifyUrl = loginData.message
+                        .replace(/&amp;/g, '&')
+                        .replace(/&quot;/g, '"')
+                        .replace(/&lt;/g, '<')
+                        .replace(/&gt;/g, '>');
+                    
+                    // Save the current URL to construct the callback URL
+                    let currentUrl = window.location.href.split('?')[0]; // Remove any existing query params
+                    
+                    // Add the session_id to the current URL as a query parameter
+                    let callbackUrl = `${currentUrl}?session_id=${data.session_id}`;
+                    
+                    // Check if the URL already has callback parameters
+                    if (spotifyUrl.includes('redirect_uri=')) {
+                        console.log('URL already contains redirect_uri parameter');
+                    } else {
+                        console.log('Adding redirect_uri to Spotify URL');
+                        // Add redirect_uri parameter if not already present
+                        let separator = spotifyUrl.includes('?') ? '&' : '?';
+                        spotifyUrl += `${separator}redirect_uri=${encodeURIComponent(callbackUrl)}`;
+                    }
+                    
+                    // Open in a new window and store the reference
+                    let authWindow = window.open(spotifyUrl, 'spotify_auth_window', 'width=800,height=600');
+                    
+                    // Update UI to inform user
+                    statusText.textContent = 'Authenticating with Spotify...';
+                    
+                    // Start polling for token status right away
+                    setTimeout(() => pollForTokens(data.session_id), 3000);
+                } else {
+                    console.error('Invalid login response format:', loginData);
+                    throw new Error('Failed to get Spotify authorization URL');
+                }
+            } catch (error) {
+                console.error('Error starting auth flow:', error);
+                connectBtn.disabled = false;
+                connectBtn.textContent = 'Connect to Spotify';
+                
+                // Show error
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error connecting to Spotify: ${error.message}`
+                });
+            }
+        }        // Poll for token status after redirect
+        async function pollForTokens(sessionId) {
+            // Show loading state
+            connectBtn.disabled = true;
+            connectBtn.innerHTML = '<span class="loader"></span> Completing authentication...';
+            statusText.textContent = 'Completing authentication...';
+            
+            // Verify the session ID matches what we sent (only if we stored one)
+            const storedSessionId = localStorage.getItem('spotify_session_id');
+            if (storedSessionId && storedSessionId !== sessionId) {
+                console.error('Session ID mismatch');
+                connectBtn.disabled = false;
+                connectBtn.textContent = 'Connect to Spotify';
+                showResponse({ 
+                    status: 'error', 
+                    message: 'Authentication failed: Session ID mismatch'
+                });
+                return;
+            }
+            
+            // Store the current session ID if not already stored
+            if (!storedSessionId) {
+                localStorage.setItem('spotify_session_id', sessionId);
+            }
+            
+            try {
+                console.log('Polling for token data for session:', sessionId);
+                // Poll for token data
+                const response = await fetch(`${API_PREFIX}/spotify/poll/${sessionId}`);
+                const data = await response.json();
+                console.log('Poll response:', data.status);
+                
+                if (data.status === 'completed' && data.token_data) {
+                    console.log('Authentication completed successfully');
+                    // We have the tokens, store them via our API
+                    await storeTokens(data.token_data);
+                } else if (data.status === 'error') {
+                    throw new Error(data.error || 'Authentication failed');
+                } else {
+                    console.log('Still waiting for authentication, polling again in 3 seconds');
+                    // Still waiting, poll again after a delay
+                    setTimeout(() => pollForTokens(sessionId), 3000);
+                    return;
+                }
+            } catch (error) {
+                console.error('Error polling for tokens:', error);
+                connectBtn.disabled = false;
+                connectBtn.textContent = 'Connect to Spotify';
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error completing authentication: ${error.message}`
+                });
+            }
+        }
+        
+        // Store tokens in our security store
+        async function storeTokens(tokenData) {
+            try {
+                const response = await fetch(`${API_PREFIX}/spotify/tokens`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        access_token: tokenData.access_token,
+                        refresh_token: tokenData.refresh_token,
+                        expires_in: tokenData.expires_in
+                    })
+                });
+                
+                const data = await response.json();
+                showResponse(data);
+                
+                // Update status display
+                await checkStatus();
+                
+                // Reset button state
+                connectBtn.textContent = 'Connect to Spotify';
+            } catch (error) {
+                console.error('Error storing tokens:', error);
+                connectBtn.disabled = false;
+                connectBtn.textContent = 'Connect to Spotify';
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error storing tokens: ${error.message}`
+                });
+            }
+        }
+        
+        // Disconnect from Spotify
+        async function disconnectSpotify() {
+            try {
+                disconnectBtn.disabled = true;
+                disconnectBtn.textContent = 'Disconnecting...';
+                
+                const response = await fetch(`${API_PREFIX}/spotify/logout`, {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                showResponse(data);
+                
+                // Update status display
+                await checkStatus();
+                
+                // Reset button state
+                disconnectBtn.textContent = 'Disconnect';
+            } catch (error) {
+                console.error('Error disconnecting:', error);
+                disconnectBtn.disabled = false;
+                disconnectBtn.textContent = 'Disconnect';
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error disconnecting: ${error.message}`
+                });
+            }
+        }
+          // Check Server button is already defined in HTML, no need to add it again
+        
+        // Diagnostic function to check OAuth server connectivity
+        async function checkOAuthServer() {
+            try {
+                const checkServerBtn = document.getElementById('checkServerBtn');
+                checkServerBtn.disabled = true;
+                checkServerBtn.innerHTML = '<span class="loader"></span> Checking...';
+                
+                const response = await fetch(`${API_PREFIX}/spotify/check_server`);
+                const data = await response.json();
+                
+                showResponse(data);
+                
+                checkServerBtn.disabled = false;
+                checkServerBtn.textContent = 'Check Server';
+            } catch (error) {
+                console.error('Error checking OAuth server:', error);
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error checking OAuth server: ${error.message}`
+                });
+                
+                const checkServerBtn = document.getElementById('checkServerBtn');
+                checkServerBtn.disabled = false;
+                checkServerBtn.textContent = 'Check Server';
+            }
+        }
+        
+        // Show response data in the UI
+        function showResponse(data) {
+            responseData.classList.remove('hidden');
+            responseContent.textContent = JSON.stringify(data, null, 2);
+        }
+        
+        // Fetch and display current playback state
+        async function checkPlaybackState() {
+            try {
+                const checkPlaybackBtn = document.getElementById('checkPlaybackBtn');
+                checkPlaybackBtn.disabled = true;
+                checkPlaybackBtn.innerHTML = '<span class="loader"></span> Checking...';
+                
+                const playbackCard = document.getElementById('playbackCard');
+                const nowPlaying = document.getElementById('nowPlaying');
+                const playbackDevice = document.getElementById('playbackDevice');
+                const playbackProgress = document.getElementById('playbackProgress');
+                
+                const response = await fetch(`${API_PREFIX}/spotify/playback`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error ${response.status}`);
+                }
+                
+                const data = await response.json();
+                showResponse(data);
+                
+                playbackCard.classList.remove('hidden');
+                
+                if (data.is_playing && data.item) {
+                    // Format artist names
+                    const artists = data.item.artists.map(artist => artist.name).join(', ');
+                    
+                    // Format track name and artists
+                    nowPlaying.textContent = `Now Playing: ${data.item.name} - ${artists}`;
+                    
+                    // Show album if available
+                    if (data.item.album && data.item.album.name) {
+                        nowPlaying.textContent += ` (${data.item.album.name})`;
+                    }
+                    
+                    // Show device info if available
+                    if (data.device && data.device.name) {
+                        playbackDevice.textContent = `Device: ${data.device.name}`;
+                        
+                        if (data.device.volume_percent) {
+                            playbackDevice.textContent += ` (Volume: ${data.device.volume_percent}%)`;
+                        }
+                    } else {
+                        playbackDevice.textContent = '';
+                    }
+                    
+                    // Show progress if available
+                    if (data.progress_ms !== undefined && data.item.duration_ms) {
+                        const progressPercent = Math.round((data.progress_ms / data.item.duration_ms) * 100);
+                        const progressTime = formatTime(data.progress_ms);
+                        const durationTime = formatTime(data.item.duration_ms);
+                        
+                        playbackProgress.textContent = `Progress: ${progressTime} / ${durationTime} (${progressPercent}%)`;
+                    } else {
+                        playbackProgress.textContent = '';
+                    }
+                } else {
+                    nowPlaying.textContent = 'Nothing currently playing';
+                    playbackDevice.textContent = '';
+                    playbackProgress.textContent = '';
+                }
+                
+                // Reset button state
+                checkPlaybackBtn.disabled = false;
+                checkPlaybackBtn.textContent = 'Check Playback';
+            } catch (error) {
+                console.error('Error checking playback:', error);
+                showResponse({ 
+                    status: 'error', 
+                    message: `Error checking playback: ${error.message}`
+                });
+                
+                const checkPlaybackBtn = document.getElementById('checkPlaybackBtn');
+                checkPlaybackBtn.disabled = false;
+                checkPlaybackBtn.textContent = 'Check Playback';
+            }
+        }
+        
+        // Format milliseconds to mm:ss format
+        function formatTime(ms) {
+            const totalSeconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        // Send a Spotify command to the backend
+        async function sendSpotifyCommand(command, args = {}) {
+            try {
+                const response = await fetch(`${API_PREFIX}/spotify/command/${command}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(args)
+                });
+                const data = await response.json();
+                showResponse(data);
+                // Optionally refresh playback state after command
+                await checkPlaybackState();
+            } catch (error) {
+                showResponse({ status: 'error', message: `Error sending command: ${error.message}` });
+            }
+        }
+        
+        // Check currently playing song
+        async function checkCurrentlyPlaying() {
+            try {
+                currentlyPlayingBtn.disabled = true;
+                currentlyPlayingBtn.innerHTML = '<span class="loader"></span> Checking...';
+                const response = await fetch(`${API_PREFIX}/spotify/currently_playing`);
+                if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+                const data = await response.json();
+                showResponse(data);
+                playbackCard.classList.remove('hidden');
+                const nowPlaying = document.getElementById('nowPlaying');
+                const playbackDevice = document.getElementById('playbackDevice');
+                const playbackProgress = document.getElementById('playbackProgress');
+                if (data && data.item) {
+                    const artists = data.item.artists.map(artist => artist.name).join(', ');
+                    nowPlaying.textContent = `Now Playing: ${data.item.name} - ${artists}`;
+                    if (data.item.album && data.item.album.name) {
+                        nowPlaying.textContent += ` (${data.item.album.name})`;
+                    }
+                    if (data.device && data.device.name) {
+                        playbackDevice.textContent = `Device: ${data.device.name}`;
+                        if (data.device.volume_percent) {
+                            playbackDevice.textContent += ` (Volume: ${data.device.volume_percent}%)`;
+                        }
+                    } else {
+                        playbackDevice.textContent = '';
+                    }
+                    if (data.progress_ms !== undefined && data.item.duration_ms) {
+                        const progressPercent = Math.round((data.progress_ms / data.item.duration_ms) * 100);
+                        const progressTime = formatTime(data.progress_ms);
+                        const durationTime = formatTime(data.item.duration_ms);
+                        playbackProgress.textContent = `Progress: ${progressTime} / ${durationTime} (${progressPercent}%)`;
+                    } else {
+                        playbackProgress.textContent = '';
+                    }
+                } else {
+                    nowPlaying.textContent = 'Nothing currently playing';
+                    playbackDevice.textContent = '';
+                    playbackProgress.textContent = '';
+                }
+                currentlyPlayingBtn.disabled = false;
+                currentlyPlayingBtn.textContent = 'Currently Playing';
+            } catch (error) {
+                showResponse({ status: 'error', message: `Error checking currently playing: ${error.message}` });
+                currentlyPlayingBtn.disabled = false;
+                currentlyPlayingBtn.textContent = 'Currently Playing';
+            }
+        }
+        
+        // Search form handler
+        document.getElementById('searchForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const query = document.getElementById('searchQuery').value;
+            const typeSelect = document.getElementById('searchType');
+            const types = Array.from(typeSelect.selectedOptions).map(opt => opt.value);
+            const filters = {};
+            const artist = document.getElementById('searchArtist').value;
+            if (artist) filters.artist = artist;
+            const year = document.getElementById('searchYear').value;
+            if (year) filters.year = year;
+            const album = document.getElementById('searchAlbum').value;
+            if (album) filters.album = album;
+            const genre = document.getElementById('searchGenre').value;
+            if (genre) filters.genre = genre;
+            const isrc = document.getElementById('searchISRC').value;
+            if (isrc) filters.isrc = isrc;
+            const track = document.getElementById('searchTrack').value;
+            if (track) filters.track = track;
+            const body = {
+                query,
+                types,
+                filters: Object.keys(filters).length > 0 ? filters : undefined
+            };
+            const resultsDiv = document.getElementById('searchResults');
+            resultsDiv.innerHTML = '<span class="loader"></span> Searching...';
+            try {
+                const response = await fetch(`${API_PREFIX}/spotify/search`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await response.json();
+                showResponse(data);
+                resultsDiv.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+            } catch (error) {
+                resultsDiv.innerHTML = `<span style="color:red">Error: ${error.message}</span>`;
+            }
+        });
+    </script>
+</body>
+</html>

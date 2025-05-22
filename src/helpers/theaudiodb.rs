@@ -29,15 +29,15 @@ struct TheAudioDBConfig {
     api_key: String,
 }
 
-// Default API key from secrets.txt
+// Default API key from secrets.txt compiled at build time
 #[cfg(not(test))]
-pub fn default_theaudiodb_api_key() -> &'static str {
-    option_env!("THEAUDIODB_APIKEY").unwrap_or("YOUR_API_KEY_HERE")
+pub fn default_theaudiodb_api_key() -> String {
+    crate::secrets::artistdb_api_key()
 }
 
 #[cfg(test)]
-pub fn default_theaudiodb_api_key() -> &'static str {
-    "test_api_key"
+pub fn default_theaudiodb_api_key() -> String {
+    "test_api_key".to_string()
 }
 
 // Global singleton for TheAudioDB configuration

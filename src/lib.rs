@@ -19,6 +19,9 @@ pub mod api;
 /// Global constants
 pub mod constants;
 
+/// Secrets management
+pub mod secrets;
+
 pub use crate::audiocontrol::audiocontrol::AudioController;
 pub use crate::data::PlayerCommand;
 pub use crate::players::PlayerController;

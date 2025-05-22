@@ -102,5 +102,13 @@
                 "polling_interval": 30
             }
         }
-    ]
+    ],
+    "spotify": {
+        "enable": true,
+        "oauth_url": "https://oauth.hifiberry.com/spotify/",
+        "debug_mode": true,
+        "api_enabled": false,
+        "client_id": "",
+        "client_secret": ""
+    }
 }

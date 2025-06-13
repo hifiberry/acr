@@ -1,22 +1,29 @@
 #!/usr/bin/make -f
+# debian/rules for acr package
+
+export DH_VERBOSE=1
+
+# Rust uses parallel build internally, so avoid duplicate job server
+CARGO_BUILD_JOBS=$(shell grep -c ^processor /proc/cpuinfo)
+export CARGO_BUILD_JOBS
 
 %:
 	dh $@
 
 override_dh_auto_build:
-	if [ "$$SKIP_BUILD" = "1" ]; then \
+	if [ "$(SKIP_BUILD)" = "1" ]; then \
 		echo "Skipping cargo build as requested"; \
 	else \
 		cargo build --release; \
 	fi
 
 override_dh_auto_install:
-	# Let dh_install handle the file copying based on debian/acr.install
+	# Let dh_install handle the file copying based on debian/acr.install file
 
 override_dh_auto_clean:
-	dh_auto_clean
-	if [ "$$SKIP_BUILD" = "1" ]; then \
+	if [ "$(SKIP_BUILD)" = "1" ]; then \
 		echo "Skipping cargo clean as requested"; \
 	else \
-		cargo clean; \
+		dh_auto_clean; \
+		cargo clean || true; \
 	fi

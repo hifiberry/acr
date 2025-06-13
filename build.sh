@@ -117,27 +117,38 @@ echo "Build mode: SKIP_BUILD=${SKIP_BUILD:-0}"
 
 echo "===== Preparing Debian package ====="
 
+# Make sure the target directory exists
+mkdir -p target/release
+
 # We'll let dh_install handle the file copying
 echo "Configuration files will be handled by dh_install..."
 
-# Ensure the debian/postinst and debian/preinst scripts are executable
+# Ensure all debian scripts are executable
 echo "Making scripts executable..."
-chmod +x debian/postinst
-chmod +x debian/preinst
+chmod +x debian/postinst debian/preinst debian/rules
 
 # Verify that scripts were made executable
-if [ ! -x debian/postinst ]; then
-    echo "WARNING: Failed to make postinst script executable!"
-fi
+for script in postinst preinst rules; do
+    if [ ! -x "debian/$script" ]; then
+        echo "WARNING: Failed to make $script script executable!"
+        # Force it to be executable
+        chmod 755 "debian/$script"
+    fi
+done
 
-if [ ! -x debian/preinst ]; then
-    echo "WARNING: Failed to make preinst script executable!"
+# Check if debian/rules has DOS line endings and fix
+if grep -q $'\r' debian/rules; then
+    echo "Fixing DOS line endings in debian/rules..."
+    tr -d '\r' < debian/rules > debian/rules.unix
+    mv debian/rules.unix debian/rules
+    chmod +x debian/rules
 fi
 
 # Create the Debian package
 # Pass environment variables explicitly to dpkg-buildpackage
 echo "Starting build with SKIP_BUILD=${SKIP_BUILD}"
-env SKIP_BUILD=${SKIP_BUILD} dpkg-buildpackage -us -uc -B
+export SKIP_BUILD
+dpkg-buildpackage -us -uc -b
 
 echo "===== Moving package files to out directory ====="
 # Move the .deb package file to the out directory

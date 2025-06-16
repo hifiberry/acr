@@ -69,8 +69,9 @@
             "oauth_url": "https://oauth.hifiberry.com/spotify/",
             "debug_mode": true,
             "api_enabled": false,
-            "client_id": "",
-            "client_secret": ""        }
+            "client_id": "",            
+            "client_secret": ""
+        }
     },
     "players": [
         {
@@ -105,7 +106,8 @@
                 "port": 9000,
                 "autodiscovery": true,
                 "player_name": null,
-                "player_mac": [],                "reconnection_interval": 30,
+                "player_mac": [],
+                "reconnection_interval": 30,
                 "polling_interval": 30
             }
         }

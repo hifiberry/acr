@@ -28,7 +28,7 @@ fn get_version() -> Json<VersionResponse> {
 // Start the Rocket server
 pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: &serde_json::Value) -> Result<(), rocket::Error> {
     // Check if webserver is enabled (default to true if not specified)
-    let webserver_enabled = config_json.get("webserver")
+    let webserver_enabled = get_service_config(config_json, "webserver")
         .and_then(|ws| ws.get("enable"))
         .and_then(|e| e.as_bool())
         .unwrap_or(true);
@@ -39,12 +39,12 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     }
     
     // Get webserver config or use defaults
-    let host = config_json.get("webserver")
+    let host = get_service_config(config_json, "webserver")
         .and_then(|ws| ws.get("host"))
         .and_then(|h| h.as_str())
         .unwrap_or("0.0.0.0");
         
-    let port = config_json.get("webserver")
+    let port = get_service_config(config_json, "webserver")
         .and_then(|ws| ws.get("port"))
         .and_then(|p| p.as_u64())
         .unwrap_or(1080);
@@ -150,9 +150,8 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         .mount(format!("{}/imagecache", API_PREFIX), imagecache_routes) // Mount imagecache routes
         .manage(controller)
         .manage(ws_manager); // Add WebSocket manager as managed state
-    
-    // Check for static file routes in the configuration
-    if let Some(static_routes) = config_json.get("webserver")
+      // Check for static file routes in the configuration
+    if let Some(static_routes) = get_service_config(config_json, "webserver")
         .and_then(|ws| ws.get("static_routes"))
         .and_then(|sr| sr.as_array()) {
         for (index, route_config) in static_routes.iter().enumerate() {

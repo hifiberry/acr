@@ -86,12 +86,9 @@ fn main() {
         // No config file found
         error!("Configuration file not found at {}", config_path_str);
         panic!("Cannot continue without a valid configuration file");
-    };
-
-    // Initialize the Security Store (Moved Up)
-    let security_store_path_str = controllers_config
-        .get("general")
-        .and_then(|g| g.get("security_store"))
+    };    // Initialize the Security Store (Moved Up)
+    let security_store_path_str = get_service_config(&controllers_config, "security_store")
+        .and_then(|s| s.get("path"))
         .and_then(|s| s.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
@@ -118,14 +115,13 @@ fn main() {
         panic!("Critical component: Security store initialization failed. Application cannot continue. Error: {}", e);
     } else {
         info!("Security store initialized successfully at {}", security_store_path.display());
-    }
-
-    // Get the attribute cache path from configuration
-    let attribute_cache_path = if let Some(cache_config) = controllers_config.get("cache") {
+    }    // Get the attribute cache path from configuration
+    let attribute_cache_path = if let Some(cache_config) = get_service_config(&controllers_config, "cache") {
         if let Some(cache_path) = cache_config.get("attribute_cache_path").and_then(|p| p.as_str()) {
             info!("Using attribute cache path from config: {}", cache_path);
             cache_path.to_string()
-        } else {            let default_path = "cache/attributes".to_string();
+        } else {
+            let default_path = "cache/attributes".to_string();
             info!("No attribute_cache_path specified in cache configuration, using default path: {}", default_path);
             default_path
         }
@@ -136,11 +132,12 @@ fn main() {
     };
 
     // Get the image cache path from configuration
-    let image_cache_path = if let Some(cache_config) = controllers_config.get("cache") {
+    let image_cache_path = if let Some(cache_config) = get_service_config(&controllers_config, "cache") {
         if let Some(cache_path) = cache_config.get("image_cache_path").and_then(|p| p.as_str()) {
             info!("Using image cache path from config: {}", cache_path);
             cache_path.to_string()
-        } else {            let default_path = "cache/images".to_string();
+        } else {
+            let default_path = "cache/images".to_string();
             info!("No image_cache_path specified in cache configuration, using default path: {}", default_path);
             default_path
         }

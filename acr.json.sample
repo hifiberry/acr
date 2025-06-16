@@ -28,40 +28,49 @@
                 "api_secret": "",
                 "scrobble": true
             }
-        }
-    ],
-    "webserver": {
-        "enable": true,
-        "host": "0.0.0.0",
-        "port": 1080,
-        "static_routes": [
-            {
-                "url_path": "/web",
-                "directory": "/usr/share/acr/web"
-            }
-        ]
-    },
-    "cache": {
-        "attribute_cache_path": "/var/acr/cache/attributes",
-        "image_cache_path": "/var/acr/cache/images"
-    },    "musicbrainz": {
-        "enable": true,
-        "rate_limit_ms": 1000
-    },    
-    "theaudiodb": {
-        "enable": true,
-        "api_key": "", 
-        "rate_limit_ms": 500
-    },
-    "lastfm": {
-        "enable": true,
-        "api_key": "",
-        "api_secret": "",
-        "now_playing_enabled": true,
-        "scrobble": true 
-    },
-    "general": {
-        "security_store": "/var/run/acr/security_store.json"
+        }    ],
+    "services": {
+        "webserver": {
+            "enable": true,
+            "host": "0.0.0.0",
+            "port": 1080,
+            "static_routes": [
+                {
+                    "url_path": "/web",
+                    "directory": "/usr/share/acr/web"
+                }
+            ]
+        },
+        "cache": {
+            "attribute_cache_path": "/var/acr/cache/attributes",
+            "image_cache_path": "/var/acr/cache/images"
+        },
+        "security_store": {
+            "path": "/var/run/acr/security_store.json"
+        },
+        "musicbrainz": {
+            "enable": true,
+            "rate_limit_ms": 1000
+        },    
+        "theaudiodb": {
+            "enable": true,
+            "api_key": "", 
+            "rate_limit_ms": 500
+        },
+        "lastfm": {
+            "enable": true,
+            "api_key": "",
+            "api_secret": "",
+            "now_playing_enabled": true,
+            "scrobble": true 
+        },
+        "spotify": {
+            "enable": true,
+            "oauth_url": "https://oauth.hifiberry.com/spotify/",
+            "debug_mode": true,
+            "api_enabled": false,
+            "client_id": "",
+            "client_secret": ""        }
     },
     "players": [
         {
@@ -96,18 +105,9 @@
                 "port": 9000,
                 "autodiscovery": true,
                 "player_name": null,
-                "player_mac": [],
-                "reconnection_interval": 30,
+                "player_mac": [],                "reconnection_interval": 30,
                 "polling_interval": 30
             }
         }
-    ],
-    "spotify": {
-        "enable": true,
-        "oauth_url": "https://oauth.hifiberry.com/spotify/",
-        "debug_mode": true,
-        "api_enabled": false,
-        "client_id": "",
-        "client_secret": ""
-    }
+    ]
 }

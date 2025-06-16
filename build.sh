@@ -136,6 +136,30 @@ for script in postinst preinst rules; do
     fi
 done
 
+# Check for and fix DOS line endings in all relevant files
+echo "Converting DOS line endings to Unix format for all .json, .yaml, and .sh files..."
+
+# Check if dos2unix is available
+if command -v dos2unix >/dev/null 2>&1; then
+    echo "Using dos2unix to convert line endings..."
+    # Find and convert all .json, .yaml, .yml, and .sh files
+    find . -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.sh" \) -exec dos2unix {} \; 2>/dev/null || true
+else
+    echo "dos2unix not found, using manual conversion..."
+    # Fallback to manual conversion for these file types
+    find . -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.sh" \) -print0 | while IFS= read -r -d '' file; do
+        if [ -f "$file" ] && grep -q $'\r' "$file" 2>/dev/null; then
+            echo "Converting line endings in $file..."
+            tr -d '\r' < "$file" > "${file}.unix"
+            mv "${file}.unix" "$file"
+            # Make shell scripts executable
+            if [[ "$file" == *.sh ]]; then
+                chmod +x "$file"
+            fi
+        fi
+    done
+fi
+
 # Check for and fix DOS line endings in all debian/ files
 echo "Checking for and fixing DOS line endings in debian files..."
 for file in debian/rules debian/control debian/postinst debian/preinst; do

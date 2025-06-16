@@ -1,4 +1,10 @@
 # rust-debian-package/rust-debian-package/debian/changelog
+acr (0.4.0) unstable; urgency=medium
+  * Streamlined config file syntax with unified services section
+  * Improved build process with proper line ending handling
+
+ -- HiFiBerry <info@hifiberry.com>  Wed, 22 May 2025 00:00:00 +0000
+
 acr (0.3.0) unstable; urgency=medium
   * Added Spotify support
  -- HiFiBerry <info@hifiberry.com>  Wed, 22 May 2025 00:00:00 +0000

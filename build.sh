@@ -137,17 +137,17 @@ for script in postinst preinst rules; do
 done
 
 # Check for and fix DOS line endings in all relevant files
-echo "Converting DOS line endings to Unix format for all .json, .yaml, and .sh files..."
+echo "Converting DOS line endings to Unix format for all .json, .yaml, .sh, and .sample files..."
 
 # Check if dos2unix is available
 if command -v dos2unix >/dev/null 2>&1; then
     echo "Using dos2unix to convert line endings..."
-    # Find and convert all .json, .yaml, .yml, and .sh files
-    find . -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.sh" \) -exec dos2unix {} \; 2>/dev/null || true
+    # Find and convert all .json, .yaml, .yml, .sh, and .sample files
+    find . -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.sh" -o -name "*.sample" \) -exec dos2unix {} \; 2>/dev/null || true
 else
     echo "dos2unix not found, using manual conversion..."
     # Fallback to manual conversion for these file types
-    find . -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.sh" \) -print0 | while IFS= read -r -d '' file; do
+    find . -type f \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.sh" -o -name "*.sample" \) -print0 | while IFS= read -r -d '' file; do
         if [ -f "$file" ] && grep -q $'\r' "$file" 2>/dev/null; then
             echo "Converting line endings in $file..."
             tr -d '\r' < "$file" > "${file}.unix"

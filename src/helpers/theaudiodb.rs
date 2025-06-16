@@ -4,6 +4,7 @@ use log::{info, debug, warn, error};
 use lazy_static::lazy_static;
 use std::sync::Mutex;
 use serde_json::{Value};
+use crate::config::get_service_config;
 use crate::helpers::http_client;
 use crate::helpers::imagecache;
 use crate::helpers::attributecache;
@@ -46,8 +47,8 @@ lazy_static! {
 }
 
 /// Initialize TheAudioDB module from configuration
-pub fn initialize_from_config(config: &serde_json::Value) {
-    if let Some(audiodb_config) = config.get("theaudiodb") {
+pub fn initialize_from_config(config: &serde_json::Value) {    
+    if let Some(audiodb_config) = get_service_config(config, "theaudiodb") {
         // Check if enabled flag exists and is set to true
         let enabled = audiodb_config.get("enable")
             .and_then(|v| v.as_bool())

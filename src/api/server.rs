@@ -1,6 +1,7 @@
 use crate::AudioController;
 use crate::api::{players, plugins, library, imagecache, events, lastfm, spotify};
 use crate::api::events::WebSocketManager;
+use crate::config::get_service_config;
 use crate::constants::API_PREFIX;
  
 use log::{info, warn};
@@ -87,20 +88,23 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::get_artist_by_mbid,
         library::get_image,
         library::get_library_metadata,
-        library::get_library_metadata_key,
-          // WebSocket routes
+                library::get_library_metadata_key,
+        // WebSocket routes
         events::event_messages,
         events::player_event_messages,
     ];
-      // Define Last.fm specific routes
+
+    // Define Last.fm specific routes
     let lastfm_routes = routes![
         lastfm::get_status,
         lastfm::get_auth_url_handler,
         lastfm::prepare_complete_auth,
         lastfm::complete_auth,
         lastfm::disconnect_handler,
-    ];    // Read spotify.api_enabled config (default: false)
-    let spotify_api_enabled = config_json.get("spotify")
+    ];
+
+    // Read spotify.api_enabled config (default: false)
+    let spotify_api_enabled = get_service_config(config_json, "spotify")
         .and_then(|s| s.get("api_enabled"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);

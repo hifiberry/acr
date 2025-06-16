@@ -1,6 +1,9 @@
 /// Metadata handling for AudioControl3
 pub mod data;
 
+/// Configuration utilities with backward compatibility support
+pub mod config;
+
 /// Player implementation and controllers
 pub mod players;
 

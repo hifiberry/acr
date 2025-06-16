@@ -1,5 +1,6 @@
 use crate::helpers::attributecache;
 use crate::helpers::ratelimit;
+use crate::config::get_service_config;
 use log::{info, error, debug};
 use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,8 +71,8 @@ struct MusicBrainzAlias {
 }
 
 /// Initialize the MusicBrainz module from configuration
-pub fn initialize_from_config(config: &serde_json::Value) {
-    if let Some(mb_config) = config.get("musicbrainz") {
+pub fn initialize_from_config(config: &serde_json::Value) {    
+    if let Some(mb_config) = get_service_config(config, "musicbrainz") {
         if let Some(enabled) = mb_config.get("enable").and_then(|v| v.as_bool()) {
             MUSICBRAINZ_ENABLED.store(enabled, Ordering::SeqCst);
             info!("MusicBrainz lookup {}", if enabled { "enabled" } else { "disabled" });

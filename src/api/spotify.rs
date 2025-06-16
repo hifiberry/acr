@@ -3,7 +3,7 @@
 use rocket::serde::{json::Json, Deserialize, Serialize};
 use rocket::post;
 use rocket::get;
-use log::{debug, error, info};
+use log::{error, info};
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
 

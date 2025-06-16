@@ -1,6 +1,7 @@
 use acr::players::PlayerController;
 use acr::AudioController;
 use acr::api::server;
+use acr::config::get_service_config;
 use acr::helpers::attributecache::AttributeCache;
 use acr::helpers::imagecache::ImageCache;
 use acr::helpers::musicbrainz;
@@ -161,9 +162,8 @@ fn main() {
     initialize_theaudiodb(&controllers_config);
       // Initialize Last.fm with the configuration
     initialize_lastfm(&controllers_config);
-    
-    // Initialize Spotify with the configuration
-    if let Some(spotify_config) = controllers_config.get("spotify") {
+      // Initialize Spotify with the configuration
+    if let Some(spotify_config) = get_service_config(&controllers_config, "spotify") {
         spotify::Spotify::set_global_config(spotify_config);
     }
     initialize_spotify(&controllers_config);
@@ -265,8 +265,6 @@ fn main() {
     info!("Exiting application");
 }
 
-
-
 // Helper function to initialize the global attribute cache
 fn initialize_attribute_cache(attribute_cache_path: &str) {
     match AttributeCache::initialize(attribute_cache_path) {
@@ -297,7 +295,7 @@ fn initialize_theaudiodb(config: &serde_json::Value) {
 
 // Helper function to initialize Last.fm
 fn initialize_lastfm(config: &serde_json::Value) {
-    if let Some(lastfm_config) = config.get("lastfm") {
+    if let Some(lastfm_config) = get_service_config(config, "lastfm") {
         // Check if enabled flag exists and is set to true
         let enabled = lastfm_config.get("enable")
             .and_then(|v| v.as_bool())
@@ -342,7 +340,7 @@ fn initialize_lastfm(config: &serde_json::Value) {
 fn initialize_spotify(config: &serde_json::Value) {
     info!("Starting Spotify initialization");
     
-    if let Some(spotify_config) = config.get("spotify") {
+    if let Some(spotify_config) = get_service_config(config, "spotify") {
         // Check if enabled flag exists and is set to true
         let enabled = spotify_config.get("enable")
             .and_then(|v| v.as_bool())
@@ -400,8 +398,7 @@ fn initialize_spotify(config: &serde_json::Value) {
             info!("Spotify initialized successfully");
         } else {
             info!("Spotify integration is disabled");
-        }
-    } else {
+        }    } else {
         debug!("No Spotify configuration found, Spotify features will be unavailable.");
     }
 }

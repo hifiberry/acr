@@ -19,17 +19,27 @@ use log::debug;
 /// 
 /// # Example
 /// ```rust
-/// use crate::config::get_service_config;
+/// use serde_json::json;
+/// use acr::config::get_service_config;
 /// 
 /// // For a config with new structure:
-/// // {
-/// //   "services": {
-/// //     "spotify": { "enable": true, ... }
-/// //   }
-/// // }
+/// let config = json!({
+///   "services": {
+///     "spotify": { "enable": true }
+///   }
+/// });
 /// 
 /// if let Some(spotify_config) = get_service_config(&config, "spotify") {
-///     // Use spotify_config...
+///     assert_eq!(spotify_config["enable"], true);
+/// }
+/// 
+/// // For old structure (backward compatibility):
+/// let old_config = json!({
+///   "spotify": { "enable": false }
+/// });
+/// 
+/// if let Some(spotify_config) = get_service_config(&old_config, "spotify") {
+///     assert_eq!(spotify_config["enable"], false);
 /// }
 /// ```
 pub fn get_service_config<'a>(config: &'a serde_json::Value, service_name: &str) -> Option<&'a serde_json::Value> {

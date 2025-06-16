@@ -136,13 +136,21 @@ for script in postinst preinst rules; do
     fi
 done
 
-# Check if debian/rules has DOS line endings and fix
-if grep -q $'\r' debian/rules; then
-    echo "Fixing DOS line endings in debian/rules..."
-    tr -d '\r' < debian/rules > debian/rules.unix
-    mv debian/rules.unix debian/rules
-    chmod +x debian/rules
-fi
+# Check for and fix DOS line endings in all debian/ files
+echo "Checking for and fixing DOS line endings in debian files..."
+for file in debian/rules debian/control debian/postinst debian/preinst; do
+    if [ -f "$file" ] && grep -q $'\r' "$file" 2>/dev/null; then
+        echo "Fixing DOS line endings in $file..."
+        # Create a temporary file with Unix line endings
+        tr -d '\r' < "$file" > "${file}.unix"
+        # Replace the original with the fixed file
+        mv "${file}.unix" "$file"
+        # Make sure it's executable if it's a script
+        if [[ "$file" == *"rules" || "$file" == *"post"* || "$file" == *"pre"* ]]; then
+            chmod +x "$file"
+        fi
+    fi
+done
 
 # Create the Debian package
 # Pass environment variables explicitly to dpkg-buildpackage
@@ -151,13 +159,32 @@ export SKIP_BUILD
 dpkg-buildpackage -us -uc -b
 
 echo "===== Moving package files to out directory ====="
-# Move the .deb package file to the out directory
-mv ../acr_${VERSION}_*.deb out/
-# If there are any additional Debian files created in the parent directory, move them too
-mv ../acr_${VERSION}* out/ 2>/dev/null || true
-
-echo "===== Cleaning up ====="
-rm ../acr-dbgsym*.deb
+# Check if the package was created
+if ls ../acr_${VERSION}_*.deb 1> /dev/null 2>&1; then
+    # Move the .deb package file to the out directory
+    mv ../acr_${VERSION}_*.deb out/
+    # If there are any additional Debian files created in the parent directory, move them too
+    mv ../acr_${VERSION}* out/ 2>/dev/null || true
+    
+    echo "===== Cleaning up ====="
+    # Remove debug symbol packages if they exist
+    rm -f ../acr-dbgsym*.deb 2>/dev/null || true
+    
+    # The package will be created in the out directory
+    echo "Debian package created at: out/acr_${VERSION}_*.deb"
+    echo ""
+    echo "Package contains the following executables:"
+    echo "  - acr (main application)"
+    echo "  - acr_dumpcache (cache inspection tool)"
+    echo "  - acr_lms_client (Logitech Media Server client)"
+    echo "  - acr_send_update (player state update tool)"
+    echo ""
+    echo "===== Build completed successfully ====="
+else
+    echo "===== ERROR: Build failed, no package was created ====="
+    echo "Check the build output for errors"
+    exit 1
+fi
 # The package will be created in the out directory
 echo "Debian package created at: out/acr_${VERSION}_*.deb"
 echo ""

@@ -1,29 +1,47 @@
 #!/usr/bin/make -f
-# debian/rules for acr package
 
 export DH_VERBOSE=1
-
-# Rust uses parallel build internally, so avoid duplicate job server
-CARGO_BUILD_JOBS=$(shell grep -c ^processor /proc/cpuinfo)
-export CARGO_BUILD_JOBS
+export SKIP_BUILD
 
 %:
 	dh $@
 
 override_dh_auto_build:
-	if [ "$(SKIP_BUILD)" = "1" ]; then \
+	if [ "$$SKIP_BUILD" = "1" ]; then \
 		echo "Skipping cargo build as requested"; \
 	else \
 		cargo build --release; \
 	fi
 
 override_dh_auto_install:
-	# Let dh_install handle the file copying based on debian/acr.install file
+	# Create required directories
+	mkdir -p debian/acr/usr/bin
+	mkdir -p debian/acr/usr/share/acr
+	mkdir -p debian/acr/usr/share/acr/sample-web
+	mkdir -p debian/acr/lib/systemd/system
+	# Install main binary
+	if [ -f target/release/acr ]; then \
+		cp target/release/acr debian/acr/usr/bin/; \
+		chmod +x debian/acr/usr/bin/acr; \
+	fi
+	# Install CLI tools if they exist
+	for tool in acr_dumpcache acr_lms_client acr_send_update; do \
+		if [ -f "target/release/$$tool" ]; then \
+			cp "target/release/$$tool" debian/acr/usr/bin/; \
+			chmod +x "debian/acr/usr/bin/$$tool"; \
+		fi; \
+	done
+	# Install config samples
+	cp acr.json.sample debian/acr/usr/share/acr/
+	# Install example app
+	if [ -d example-app ]; then \
+		cp -r example-app/* debian/acr/usr/share/acr/sample-web/; \
+	fi
+	# Install systemd service
+	cp debian/acr.service debian/acr/lib/systemd/system/
 
 override_dh_auto_clean:
-	if [ "$(SKIP_BUILD)" = "1" ]; then \
-		echo "Skipping cargo clean as requested"; \
-	else \
-		dh_auto_clean; \
+	dh_auto_clean
+	if [ "$$SKIP_BUILD" != "1" ]; then \
 		cargo clean || true; \
 	fi

@@ -57,12 +57,11 @@
         "enable": true,
         "api_key": "",
         "api_secret": "",
-        "scrobble_enabled": true, // This seems to be a duplicate or alternative, will use "scrobble" as per previous request for consistency
         "now_playing_enabled": true,
         "scrobble": true 
     },
     "general": {
-        "security_store": "/var/run/acr/security_store.json",
+        "security_store": "/var/run/acr/security_store.json"
     },
     "players": [
         {

@@ -87,15 +87,15 @@
         {
             "raat": {
                 "enable": true,
-                "metadata_pipe": "/var/run/raat/metadata_pipe",
-                "control_pipe": "/var/run/raat/control_pipe",
+                "metadata_pipe": "/var/lib/raat/metadata_pipe",
+                "control_pipe": "/var/lib/raat/control_pipe",
                 "reopen_metadata_pipe": true
             }
         },
         {
             "librespot": {
                 "enable": true,
-                "event_pipe": "/var/run/librespot/event_pipe",
+                "event_pipe": "/var/lib/librespot/event_pipe",
                 "reopen_event_pipe": true
             }
         },

@@ -2,6 +2,7 @@ use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::library::LibraryInterface;
 use crate::constants::API_PREFIX;
+use crate::helpers::retry::RetryHandler;
 use delegate::delegate;
 use std::sync::{Arc, Mutex};
 use log::{debug, info, warn, error, trace};
@@ -259,13 +260,86 @@ impl MPDPlayerController {
     pub fn get_artist_separators(&self) -> Option<&[String]> {
         self.artist_separators.as_deref()
     }
-    
-    /// Notify all registered listeners that the database is being updated
+      /// Notify all registered listeners that the database is being updated
     pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>, 
                                  song: Option<String>, percentage: Option<f32>) {
         // The source parameter is redundant since BasePlayerController creates its own source
         // Just pass the remaining parameters to the base method
         self.base.notify_database_update(artist, album, song, percentage);
+    }
+    
+    /// Initialize the MPD library with retry logic
+    /// 
+    /// This method attempts to initialize the library and will retry with exponential backoff
+    /// if the initial connection fails. The retry intervals are: 1s, 2s, 4s, 8s, 15s, 30s, 60s
+    /// 
+    /// # Arguments
+    /// * `player_arc` - Arc reference to the player controller
+    /// * `running` - Atomic boolean to check if the player is still running
+    fn initialize_library_with_retry(player_arc: Arc<Self>, running: Arc<AtomicBool>) {
+        info!("Starting MPD library initialization with retry logic");
+        
+        // Run in a separate thread to avoid blocking the main startup
+        thread::spawn(move || {
+            let mut retry_handler = RetryHandler::connection_retry();
+              let library_initialized = retry_handler.execute_with_retry(
+                || {
+                    // Check if we should stop due to shutdown signal
+                    if !running.load(Ordering::SeqCst) {
+                        debug!("Library initialization interrupted by shutdown signal");
+                        return None;
+                    }
+                    
+                    debug!("Attempting to initialize MPD library");
+                    
+                    // Try to connect to MPD to test connectivity
+                    if let Some(_client) = player_arc.get_fresh_client() {
+                        info!("Successfully connected to MPD, initializing library");
+                        
+                        // Import MPDLibrary here to ensure it's available
+                        use crate::players::mpd::library::MPDLibrary;
+                        
+                        // Create a library with the same connection parameters
+                        let library = MPDLibrary::with_connection(
+                            &player_arc.hostname, 
+                            player_arc.port, 
+                            player_arc.clone()
+                        );
+                        
+                        // Store the library in the controller
+                        if let Ok(mut library_guard) = player_arc.library.lock() {
+                            *library_guard = Some(library.clone());
+                            debug!("Library instance stored in controller");
+                        } else {
+                            warn!("Failed to store library in controller");
+                            return None;
+                        }
+                        
+                        // Start the library refresh in the current thread
+                        info!("Starting MPD library refresh...");
+                        match library.refresh_library() {
+                            Ok(_) => {
+                                info!("MPD library loaded successfully");
+                                Some(()) // Success
+                            },
+                            Err(e) => {
+                                warn!("Failed to refresh MPD library: {}", e);
+                                None // Failed, will retry
+                            }
+                        }
+                    } else {
+                        debug!("Failed to connect to MPD for library initialization");
+                        None // Failed, will retry
+                    }
+                },
+                Some(&running),
+                "MPD library initialization"
+            );
+            
+            if library_initialized.is_none() {
+                warn!("MPD library initialization failed after all retry attempts");
+            }
+        });
     }
     
     /// Starts a background thread that listens for MPD events
@@ -1176,8 +1250,7 @@ impl PlayerController for MPDPlayerController {
         
         // Create a new running flag
         let running = Arc::new(AtomicBool::new(true));
-        
-        // Try to get the current song from MPD first
+          // Try to get the current song from MPD first
         if let Some(mut client) = self.get_fresh_client() {
             // Initialize song state and capabilities
             info!("Fetching initial song state from MPD");
@@ -1185,38 +1258,22 @@ impl PlayerController for MPDPlayerController {
             
             // Load MPD library if configured to do so
             if self.load_mpd_library {
-                info!("Loading MPD library data");
-                // Import MPDLibrary here to ensure it's available
-                use crate::players::mpd::library::MPDLibrary;
+                info!("Starting MPD library initialization with retry mechanism");
                 
-                // Create a library with the same connection parameters and pass self as controller
-                let library = MPDLibrary::with_connection(&self.hostname, self.port, player_arc.clone());
-                
-                // Store the library in the controller first
-                {
-                    let mut library_guard = self.library.lock().unwrap();
-                    *library_guard = Some(library.clone());
-                }
-                
-                // Explicitly call refresh_library on the library instance
-                // This ensures the library refresh is triggered immediately
-                info!("Starting MPD library refresh...");
-                
-                // Get a clone of the library for the thread
-                let library_clone = library.clone();
-                
-                // Run the refresh in a separate thread to avoid blocking startup
-                thread::spawn(move || {
-                    match library_clone.refresh_library() {
-                        Ok(_) => info!("MPD library loaded successfully"),
-                        Err(e) => warn!("Failed to load MPD library: {}", e),
-                    }
-                });
+                // Use the new retry mechanism for library initialization
+                Self::initialize_library_with_retry(player_arc.clone(), running.clone());
             } else {
                 debug!("Skipping MPD library loading (disabled in config)");
             }
         } else {
             warn!("Could not connect to MPD to fetch initial song state");
+            
+            // Even if we can't connect initially, still try to initialize the library with retry
+            // if library loading is enabled
+            if self.load_mpd_library {
+                info!("Initial MPD connection failed, but starting library initialization with retry mechanism");
+                Self::initialize_library_with_retry(player_arc.clone(), running.clone());
+            }
         }
         
         // Store the running flag in the MPD player instance

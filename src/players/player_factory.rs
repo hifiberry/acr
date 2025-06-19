@@ -79,10 +79,9 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                 }
                 
                 Ok(Box::new(player))
-            },
-            "raat" => {
+            },            "raat" => {
                 // Create RAATPlayerController with config
-                let metadata_source = config_obj.get("event_pipe")
+                let metadata_source = config_obj.get("metadata_pipe")
                     .and_then(|v| v.as_str())
                     .unwrap_or("/var/run/raat/metadata_pipe");
 
@@ -90,8 +89,8 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_str())
                     .unwrap_or("/var/run/raat/control_pipe");
                 
-                // Check if reopen_event_pipe parameter is specified in the JSON
-                let reopen = config_obj.get("reopen_event_pipe")
+                // Check if reopen_metadata_pipe parameter is specified in the JSON
+                let reopen = config_obj.get("reopen_metadata_pipe")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true); // Default to true if not specified
                 

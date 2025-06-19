@@ -206,15 +206,17 @@ impl RAATPlayerController {
                 // Process the metadata and update the player
                 player_clone.update_metadata(song, state, capabilities, stream_details);
             });
-            
-            // Create a metadata pipe reader with our callback and reopen setting
+              // Create a metadata pipe reader with our callback and reopen setting
             let reader = MetadataPipeReader::with_callback_and_reopen(source, callback, player_arc.reopen_metadata_pipe);
             
             // Try to read from the pipe
             match reader.read_and_log_pipe() {
                 Ok(_) => {
+                    // For RAAT, this could mean:
+                    // 1. The writer closed normally after sending data (expected)
+                    // 2. No writer is present and we got immediate EOF (need to wait longer)
                     if player_arc.reopen_metadata_pipe {
-                        info!("Metadata pipe closed, will attempt to reconnect");
+                        debug!("RAAT reader completed, will reconnect after delay");
                     } else {
                         info!("Metadata pipe closed, not reconnecting (reopen=false)");
                         break; // Exit the loop if reopen is false
@@ -225,14 +227,15 @@ impl RAATPlayerController {
                     if !player_arc.reopen_metadata_pipe {
                         warn!("Not reconnecting due to reopen=false");
                         break; // Exit the loop if reopen is false
-                    }
-                }
+                    }                }
             }
             
             // If we get here and reopen is true, wait before trying to reconnect
             if running.load(Ordering::SeqCst) && player_arc.reopen_metadata_pipe {
-                info!("Will attempt to reconnect to metadata source in 5 seconds");
-                for _ in 0..50 {
+                // Wait a reasonable amount of time before reconnecting
+                // This prevents rapid cycling when no RAAT writer is present
+                debug!("Will attempt to reconnect to RAAT metadata source in 2 seconds");
+                for _ in 0..20 {  // 20 × 100ms = 2 seconds
                     if !running.load(Ordering::SeqCst) {
                         break;
                     }

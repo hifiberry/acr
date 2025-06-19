@@ -2,6 +2,8 @@ use std::io::{self, BufRead, BufReader, Read};
 use log::{warn, error, debug, info};
 use std::collections::HashMap;
 use serde_json::Value;
+use std::thread;
+use std::time::Duration;
 
 // Import the stream helper and data structs
 use crate::helpers::stream_helper::{open_stream, AccessMode};
@@ -54,35 +56,118 @@ impl MetadataPipeReader {
     /// Get whether the pipe will reopen when closed
     pub fn get_reopen(&self) -> bool {
         self.reopen
+    }    /// Open the source and read it line by line until it's closed
+    /// Uses auto-reopen pattern similar to the provided example
+    pub fn read_and_log_pipe(&self) -> io::Result<()> {
+        info!("Opening metadata source: {}", self.source);
+        let mut first_open = true;
+
+        loop {
+            // Open the pipe/source (with retry logic for initial open)
+            let mut stream_wrapper = loop {
+                match open_stream(&self.source, AccessMode::Read) {
+                    Ok(wrapper) => break wrapper,
+                    Err(e) => {
+                        if first_open {
+                            warn!("Waiting for metadata source '{}': {}", self.source, e);
+                            first_open = false;
+                        }
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                }
+            };
+            
+            // Get a reader from the stream wrapper
+            let reader = match stream_wrapper.as_reader() {
+                Ok(reader) => BufReader::new(reader),
+                Err(e) => return Err(e),
+            };
+
+            if first_open {
+                info!("Started reading from metadata source");
+                first_open = false;
+            }
+
+            // Read until EOF (i.e., writer disconnects) 
+            let read_result = self.read_until_eof(reader);
+            
+            // Check if we should exit or reopen
+            if !self.reopen {
+                return read_result;
+            }
+            
+            // If reopen is enabled, the outer loop will automatically reopen
+            // Optional: wait a bit before reopening to avoid hammering
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
-    /// Open the source and read it line by line until it's closed
-    /// Each line is logged using warn!
-    pub fn read_and_log_pipe(&self) -> io::Result<()> {
-       info!("Opening metadata source: {}", self.source);
+    /// Read from a stream until EOF, processing each line
+    fn read_until_eof<R: Read>(&self, mut reader: BufReader<R>) -> io::Result<()> {
+        let mut buffer = String::new();
+        let mut line_number = 1;
 
-        // Use the helper function with read-only access mode
-        let mut stream_wrapper = open_stream(&self.source, AccessMode::Read)?;
-        
-        // Get a reader from the stream wrapper
-        let reader = match stream_wrapper.as_reader() {
-            Ok(reader) => BufReader::new(reader),
-            Err(e) => return Err(e),
-        };
-
-        info!("Started reading from metadata source");
-
-        // Keep reading until explicitly told to stop
-        let result = self.read_stream(reader);
-        
-        // Check if we should exit or reopen
-        if !self.reopen {
-            return result;
+        loop {
+            match reader.read_line(&mut buffer) {
+                Ok(0) => {
+                    // EOF — writer closed pipe, this is normal for FIFO behavior
+                    debug!("Writer closed connection (EOF)");
+                    return Ok(());
+                },
+                Ok(_) => {
+                    // Successfully read some data
+                    if buffer.ends_with('\n') {
+                        buffer.pop(); // Remove trailing newline
+                    }
+                    
+                    if !buffer.is_empty() {
+                        self.process_line(&buffer, line_number);
+                        line_number += 1;
+                    }
+                    
+                    buffer.clear();
+                },
+                Err(e) => {
+                    error!("Read error from metadata source: {}", e);
+                    return Err(e);
+                }
+            }
         }
+    }
+
+    /// Process a single line of metadata
+    fn process_line(&self, line: &str, line_number: u32) {
+        debug!("Metadata [{}]: Processing...", line_number);
         
-        // If we get here and reopen is true, return Ok so the calling
-        // code knows it can try to reopen
-        Ok(())
+        match Self::parse_line(line) {
+            Some((song, player, capabilities, stream_details)) => {
+                // Log the structured data
+                debug!("Parsed metadata [{}]:", line_number);
+                debug!("  Song: '{} - {}' from album '{}'", 
+                       song.title.as_deref().unwrap_or("Unknown"),
+                       song.artist.as_deref().unwrap_or("Unknown"),
+                       song.album.as_deref().unwrap_or("Unknown"));
+                
+                debug!("  Player state: {:?}", player.state);
+                debug!("  Loop mode: {:?}, Shuffle: {}", player.loop_mode, player.shuffle);
+                
+                if !capabilities.is_empty() {
+                    debug!("  Capabilities: {:?}", capabilities);
+                }
+                
+                if let Some(_sample_rate) = stream_details.sample_rate {
+                    debug!("  Audio format: {}", stream_details.format_description());
+                }
+                
+                // If we have a callback function, call it with the parsed metadata
+                if let Some(callback) = &self.callback {
+                    callback(song, player, capabilities, stream_details);
+                }
+            },
+            None => {
+                warn!("Metadata [{}]: Failed to parse JSON data", line_number);
+            }
+        }
     }
 
     /// Parse a JSON line of metadata and return a tuple of (Song, PlayerState, PlayerCapabilitySet, StreamDetails) if successful
@@ -299,9 +384,7 @@ impl MetadataPipeReader {
                 None
             }
         }
-    }
-
-    /// Read from a stream until it's closed
+    }    /// Read from a stream until it's closed
     fn read_stream<R: Read>(&self, mut reader: BufReader<R>) -> io::Result<()> {
         let mut buffer = String::new();
         let mut line_number = 1; // Track line numbers
@@ -309,9 +392,20 @@ impl MetadataPipeReader {
         loop {
             match reader.read_line(&mut buffer) {
                 Ok(0) => {
-                    // End of data, exit the loop
-                    debug!("End of data (OK(0)) received from pipe, exiting read loop");
-                    return Ok(());
+                    // End of data for now. For FIFOs/named pipes, this typically means
+                    // the writer has closed their end, but might open it again later.
+                    // For RAAT, this is normal behavior - it opens, writes metadata, then closes.
+                    debug!("No more data available from metadata source (writer closed)");
+                    
+                    // If reopen is enabled, this signals the caller that the pipe 
+                    // should be reopened to wait for the next writer
+                    if self.reopen {
+                        debug!("Reopen enabled - signaling caller to reopen pipe for next data");
+                        return Ok(());
+                    } else {
+                        debug!("Reopen disabled - exiting reader loop");
+                        return Ok(());
+                    }
                 },
                 Ok(_) => {
                     // Successfully read some data

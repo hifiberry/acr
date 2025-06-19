@@ -10,6 +10,9 @@ use log::{debug, warn};
 #[cfg(windows)]
 use std::os::windows::prelude::*;
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 
 /// AccessMode for opening a stream
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -161,8 +164,7 @@ pub fn open_stream(source: &str, mode: AccessMode) -> io::Result<StreamWrapper> 
                 }
             }
         }
-        
-        #[cfg(not(windows))]
+          #[cfg(not(windows))]
         {
             // Unix file/FIFO handling
             let mut options = OpenOptions::new();
@@ -178,6 +180,19 @@ pub fn open_stream(source: &str, mode: AccessMode) -> io::Result<StreamWrapper> 
                 AccessMode::ReadWrite => {
                     options.read(true).write(true);
                 }
+            }
+            
+            // For FIFOs/named pipes, we need to ensure proper blocking behavior
+            // Check if this looks like a FIFO path (contains "pipe" in the name)
+            // and we're opening for read access
+            let is_fifo_read = matches!(mode, AccessMode::Read | AccessMode::ReadWrite) 
+                && (source.contains("pipe") || source.contains("fifo"));
+            
+            if is_fifo_read {
+                debug!("Opening what appears to be a FIFO for reading: {}", source);
+                // For FIFOs, we want to ensure blocking behavior
+                // Don't set O_NONBLOCK - this ensures the open() call itself may block
+                // until a writer is available, which is the desired behavior for pipes
             }
             
             let file = options.open(path)?;

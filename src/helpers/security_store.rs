@@ -224,12 +224,11 @@ impl SecurityStore {
         let encryption_key = default_encryption_key();
         
         if encryption_key == "unknown" {
-            return Err(SecurityStoreError::InvalidKeyError(
-                "No valid encryption key configured now or during compile time".to_string(),
-            ));
+            debug!("Using unknown encryption key");     
+        } else {
+            debug!("Using default encryption key");
         }
         
-        info!("Using default encryption key now or during compile time");
         Self::initialize(&encryption_key, file_path)
     }
     

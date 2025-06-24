@@ -42,11 +42,11 @@
             ]
         },
         "cache": {
-            "attribute_cache_path": "/var/acr/cache/attributes",
-            "image_cache_path": "/var/acr/cache/images"
+            "attribute_cache_path": "/var/lib/acr/cache/attributes",
+            "image_cache_path": "/var/lib/acr/cache/images"
         },
         "security_store": {
-            "path": "/var/run/acr/security_store.json"
+            "path": "/var/lib/acr/security_store.json"
         },
         "musicbrainz": {
             "enable": true,

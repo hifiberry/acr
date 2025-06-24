@@ -1,4 +1,9 @@
-# rust-debian-package/rust-debian-package/debian/changelog
+acr (0.4.1) unstable; urgency=medium
+
+  * Changed build system to sbuild
+
+ -- HiFiBerry <info@hifiberry.com>  Tue, 24 Jun 2025 12:46:46 +0100
+
 acr (0.4.0) unstable; urgency=medium
   * Streamlined config file syntax with unified services section
   * Improved build process with proper line ending handling

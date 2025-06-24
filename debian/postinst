@@ -12,10 +12,7 @@ setup_config() {
     if [ ! -f /etc/acr/acr.json ]; then
         echo "No configuration file found, creating from sample..."
         if [ -f /usr/share/acr/acr.json.sample ]; then
-            cp /usr/share/acr/acr.json.sample /etc/acr/acr.json
-            # Set proper ownership
-            chown acr:acr /etc/acr/acr.json
-            chmod 644 /etc/acr/acr.json
+            install -o acr -g acr -m 644 /usr/share/acr/acr.json.sample /etc/acr/acr.json
             echo "Sample config copied to acr.json successfully"
         else
             echo "ERROR: No sample configuration file found"
@@ -49,30 +46,26 @@ setup_user_and_dirs() {
     
     # Create directory structure
     echo "Setting up directory structure..."
-    mkdir -p /etc/acr/cache/attributes
-    mkdir -p /etc/acr/cache/images
-    mkdir -p /var/acr
+    mkdir -p /var/lib/acr/cache/attributes
+    mkdir -p /var/lib/acr/cache/images
+    mkdir -p /var/lib/acr
     
     # Fix permissions for all directories
     echo "Setting proper permissions..."
-    chown -R acr:acr /etc/acr
+    chown acr:acr /etc/acr
     chmod 755 /etc/acr
     
-    chown -R acr:acr /var/acr
-    chmod 755 /var/acr
+    chown acr:acr /var/lib/acr /var/lib/acr/cache /var/lib/acr/cache/attributes /var/lib/acr/cache/images
+    chmod 755 /var/lib/acr /var/lib/acr/cache /var/lib/acr/cache/attributes /var/lib/acr/cache/images
 }
 
 case "$1" in
     configure)
         setup_user_and_dirs
         setup_config
-        # Enable and start the service
-        if [ -d /run/systemd/system ]; then
-            systemctl daemon-reload >/dev/null 2>&1 || true
-            systemctl enable acr.service >/dev/null 2>&1 || true
-            systemctl restart acr.service >/dev/null 2>&1 || true
-        fi
         ;;
 esac
 
 exit 0
+
+#DEBHELPER#

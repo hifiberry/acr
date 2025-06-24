@@ -2,7 +2,7 @@ Source: acr
 Section: utils
 Priority: optional
 Maintainer: HiFiBerry <info@hifiberry.com>
-Build-Depends: debhelper-compat (= 13)
+Build-Depends: debhelper-compat (= 13), cargo (>= 1.86.0), ca-certificates, pkgconf, libssl-dev
 Standards-Version: 4.5.1
 Homepage: https://github.com/hifiberry/acr
 

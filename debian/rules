@@ -10,7 +10,7 @@ override_dh_auto_build:
 	if [ "$$SKIP_BUILD" = "1" ]; then \
 		echo "Skipping cargo build as requested"; \
 	else \
-		cargo build --release; \
+		HOME=/tmp cargo build --release; \
 	fi
 
 override_dh_auto_install:

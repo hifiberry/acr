@@ -11,4 +11,4 @@ else
     DIST_ARG=""
 fi
 
-sbuild --chroot-mode=unshare --enable-network --no-clean-source $DIST_ARG
+sbuild --chroot-mode=unshare --enable-network --no-clean-source --no-automatic-dbgsym $DIST_ARG

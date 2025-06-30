@@ -2,15 +2,26 @@
 
 export DH_VERBOSE=1
 export SKIP_BUILD
+export CARGO_HOME = $(CURDIR)/debian/cargo_home
+export RUSTUP_HOME = $(CURDIR)/debian/rustup_home
 
 %:
 	dh $@
+
+override_dh_auto_configure:
+	# Install Rust via rustup if not available or if cargo version is too old
+	if ! which cargo >/dev/null 2>&1 || ! cargo --version | grep -q "1\.[8-9][0-9]\|1\.[0-9][0-9][0-9]"; then \
+		mkdir -p $(RUSTUP_HOME) $(CARGO_HOME); \
+		curl https://sh.rustup.rs -sSf | \
+		RUSTUP_HOME=$(RUSTUP_HOME) CARGO_HOME=$(CARGO_HOME) \
+		sh -s -- -y --no-modify-path; \
+	fi
 
 override_dh_auto_build:
 	if [ "$$SKIP_BUILD" = "1" ]; then \
 		echo "Skipping cargo build as requested"; \
 	else \
-		HOME=/tmp cargo build --release; \
+		PATH="$(CARGO_HOME)/bin:$(PATH)" HOME=/tmp cargo build --release; \
 	fi
 
 override_dh_auto_install:
@@ -42,9 +53,9 @@ override_dh_auto_install:
 
 override_dh_auto_clean:
 	dh_auto_clean
-	if [ "$$SKIP_BUILD" != "1" ]; then \
-		cargo clean || true; \
-	fi
+	rm -rf target/
+	rm -rf $(CARGO_HOME)
+	rm -rf $(RUSTUP_HOME)
 
 override_dh_installsystemd:
 	dh_installsystemd --restart-after-upgrade

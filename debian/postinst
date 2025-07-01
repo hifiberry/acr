@@ -9,11 +9,11 @@ fi
 # Function to safely copy default config if none exists
 setup_config() {
     # Check if we need to copy the sample config to the actual config file
-    if [ ! -f /etc/acr/acr.json ]; then
+    if [ ! -f /etc/audiocontrol/audiocontrol.json ]; then
         echo "No configuration file found, creating from sample..."
-        if [ -f /usr/share/acr/acr.json.sample ]; then
-            install -o acr -g acr -m 644 /usr/share/acr/acr.json.sample /etc/acr/acr.json
-            echo "Sample config copied to acr.json successfully"
+        if [ -f /usr/share/hifiberry-audiocontrol/acr.json.sample ]; then
+            install -o audiocontrol -g audiocontrol -m 644 /usr/share/hifiberry-audiocontrol/acr.json.sample /etc/audiocontrol/audiocontrol.json
+            echo "Sample config copied to audiocontrol.json successfully"
         else
             echo "ERROR: No sample configuration file found"
             echo "Cannot continue without a valid configuration file"
@@ -26,37 +26,38 @@ setup_config() {
 
 # Function to create user, group and directory
 setup_user_and_dirs() {
-    # Create acr group if it doesn't exist
-    if ! getent group acr > /dev/null; then
-        echo "Creating acr group..."
-        groupadd --system acr
+    # Create audiocontrol group if it doesn't exist
+    if ! getent group audiocontrol > /dev/null; then
+        echo "Creating audiocontrol group..."
+        groupadd --system audiocontrol
     fi
     
-    # Create acr user if it doesn't exist
-    if ! getent passwd acr > /dev/null; then
-        echo "Creating acr user..."
-        useradd --system --gid acr --shell /usr/sbin/nologin --home-dir /etc/acr acr
+    # Create audiocontrol user if it doesn't exist
+    if ! getent passwd audiocontrol > /dev/null; then
+        echo "Creating audiocontrol user..."
+        useradd --system --gid audiocontrol --shell /usr/sbin/nologin --home-dir /etc/audiocontrol audiocontrol
     fi
     
-    # Add acr user to the audio group for audio device access
+    # Add audiocontrol user to the audio group for audio device access
     if getent group audio > /dev/null; then
-        echo "Adding acr user to audio group..."
-        usermod -a -G audio acr
+        echo "Adding audiocontrol user to audio group..."
+        usermod -a -G audio audiocontrol
     fi
     
     # Create directory structure
     echo "Setting up directory structure..."
-    mkdir -p /var/lib/acr/cache/attributes
-    mkdir -p /var/lib/acr/cache/images
-    mkdir -p /var/lib/acr
+    mkdir -p /etc/audiocontrol
+    mkdir -p /var/lib/audiocontrol/cache/attributes
+    mkdir -p /var/lib/audiocontrol/cache/images
+    mkdir -p /var/lib/audiocontrol
     
     # Fix permissions for all directories
     echo "Setting proper permissions..."
-    chown acr:acr /etc/acr
-    chmod 755 /etc/acr
+    chown audiocontrol:audiocontrol /etc/audiocontrol
+    chmod 755 /etc/audiocontrol
     
-    chown acr:acr /var/lib/acr /var/lib/acr/cache /var/lib/acr/cache/attributes /var/lib/acr/cache/images
-    chmod 755 /var/lib/acr /var/lib/acr/cache /var/lib/acr/cache/attributes /var/lib/acr/cache/images
+    chown audiocontrol:audiocontrol /var/lib/audiocontrol /var/lib/audiocontrol/cache /var/lib/audiocontrol/cache/attributes /var/lib/audiocontrol/cache/images
+    chmod 755 /var/lib/audiocontrol /var/lib/audiocontrol/cache /var/lib/audiocontrol/cache/attributes /var/lib/audiocontrol/cache/images
 }
 
 case "$1" in

@@ -1,0 +1,21 @@
+[Unit]
+Description=HiFiBerry AudioControl - Audio Player Management Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/audiocontrol -c /etc/audiocontrol/audiocontrol.json
+Restart=on-failure
+RestartSec=5
+User=audiocontrol
+Group=audiocontrol
+WorkingDirectory=/etc/audiocontrol
+RuntimeDirectory=audiocontrol
+RuntimeDirectoryMode=0755
+PIDFile=/var/run/audiocontrol/audiocontrol.pid
+
+[Install]
+WantedBy=multi-user.target
+
+# Environment
+Environment=RUST_LOG=info

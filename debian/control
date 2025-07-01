@@ -1,4 +1,4 @@
-Source: acr
+Source: hifiberry-audiocontrol
 Section: utils
 Priority: optional
 Maintainer: HiFiBerry <info@hifiberry.com>
@@ -6,15 +6,16 @@ Build-Depends: debhelper-compat (= 13), curl, ca-certificates, pkgconf, libssl-d
 Standards-Version: 4.5.1
 Homepage: https://github.com/hifiberry/acr
 
-Package: acr
+Package: hifiberry-audiocontrol
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: AudioControl/Rust (ACR) application
+Description: HiFiBerry AudioControl/Rust application
  A Rust application for audio control functionality.
  This package provides tools for managing audio playback
  and control across different audio systems.
  .
  Includes command-line tools:
-  * acr_dumpcache - Cache inspection utility
-  * acr_lms_client - Logitech Media Server client
-  * acr_send_update - Player state update utility
+  * audiocontrol - Main audio control daemon
+  * audiocontrol_dumpcache - Cache inspection utility
+  * audiocontrol_lms_client - Logitech Media Server client
+  * audiocontrol_send_update - Player state update utility

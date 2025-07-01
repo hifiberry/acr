@@ -1,4 +1,14 @@
-acr (0.4.1) unstable; urgency=medium
+hifiberry-audiocontrol (0.5.0) stable; urgency=medium
+
+  * Renamed package from hifiberry-acr to hifiberry-audiocontrol
+    to avoid conflicts
+  * Renamed binary from acr to audiocontrol
+  * Renamed service from acr to audiocontrol
+  * Updated all references to use audiocontrol naming
+
+ -- HiFiBerry <info@hifiberry.com>  Tue, 01 Jul 2025 10:00:00 +0000
+
+hifiberry-acr (0.4.1) unstable; urgency=medium
 
   * Changed build system to sbuild
 

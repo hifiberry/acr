@@ -26,30 +26,28 @@ override_dh_auto_build:
 
 override_dh_auto_install:
 	# Create required directories
-	mkdir -p debian/acr/usr/bin
-	mkdir -p debian/acr/usr/share/acr
-	mkdir -p debian/acr/usr/share/acr/sample-web
-	mkdir -p debian/acr/usr/lib/systemd/system
+	mkdir -p debian/hifiberry-audiocontrol/usr/bin
+	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol
+	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web
 	# Install main binary
 	if [ -f target/release/acr ]; then \
-		cp target/release/acr debian/acr/usr/bin/; \
-		chmod +x debian/acr/usr/bin/acr; \
+		cp target/release/acr debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
+		chmod +x debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
 	fi
 	# Install CLI tools if they exist
 	for tool in acr_dumpcache acr_lms_client acr_send_update; do \
 		if [ -f "target/release/$$tool" ]; then \
-			cp "target/release/$$tool" debian/acr/usr/bin/; \
-			chmod +x "debian/acr/usr/bin/$$tool"; \
+			new_tool=$$(echo "$$tool" | sed 's/acr_/audiocontrol_/'); \
+			cp "target/release/$$tool" "debian/hifiberry-audiocontrol/usr/bin/$$new_tool"; \
+			chmod +x "debian/hifiberry-audiocontrol/usr/bin/$$new_tool"; \
 		fi; \
 	done
 	# Install config samples
-	cp acr.json.sample debian/acr/usr/share/acr/
+	cp acr.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
 	# Install example app
 	if [ -d example-app ]; then \
-		cp -r example-app/* debian/acr/usr/share/acr/sample-web/; \
+		cp -r example-app/* debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web/; \
 	fi
-	# Install systemd service
-	cp debian/acr.service debian/acr/usr/lib/systemd/system/
 
 override_dh_auto_clean:
 	dh_auto_clean
@@ -58,7 +56,7 @@ override_dh_auto_clean:
 	rm -rf $(RUSTUP_HOME)
 
 override_dh_installsystemd:
-	dh_installsystemd --restart-after-upgrade
+	dh_installsystemd --name=audiocontrol --restart-after-upgrade
 
 override_dh_strip:
 	# Skip debug symbol extraction - don't create dbgsym package

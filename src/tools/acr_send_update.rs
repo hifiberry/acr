@@ -33,7 +33,7 @@ struct Args {
     shuffle: Option<bool>,
 
     #[clap(long, default_value = "http://localhost:8000")]
-    acr_host: String,
+    audiocontrol_host: String,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let client = ureq::agent(); // Using ureq as it's simpler for sync CLI
-    let url = format!("{}/player/{}/update", args.acr_host, args.player_name);
+    let url = format!("{}/player/{}/update", args.audiocontrol_host, args.player_name);
 
     println!("Sending update to: {}", url);
     println!("Payload: {}", serde_json::to_string_pretty(&updates)?);

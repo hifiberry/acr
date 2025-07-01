@@ -37,16 +37,16 @@
             "static_routes": [
                 {
                     "url_path": "/web",
-                    "directory": "/usr/share/acr/web"
+                    "directory": "/usr/share/hifiberry-audiocontrol/sample-web"
                 }
             ]
         },
         "cache": {
-            "attribute_cache_path": "/var/lib/acr/cache/attributes",
-            "image_cache_path": "/var/lib/acr/cache/images"
+            "attribute_cache_path": "/var/lib/audiocontrol/cache/attributes",
+            "image_cache_path": "/var/lib/audiocontrol/cache/images"
         },
         "security_store": {
-            "path": "/var/lib/acr/security_store.json"
+            "path": "/var/lib/audiocontrol/security_store.json"
         },
         "musicbrainz": {
             "enable": true,

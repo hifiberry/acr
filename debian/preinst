@@ -7,22 +7,22 @@ if [ -n "$BASH_VERSION" ]; then
 fi
 
 # Ensure base directories exist and have correct permissions
-if [ ! -d /etc/acr ]; then
-    echo "Creating /etc/acr directory..."
-    mkdir -p /etc/acr
-    chmod 755 /etc/acr
+if [ ! -d /etc/audiocontrol ]; then
+    echo "Creating /etc/audiocontrol directory..."
+    mkdir -p /etc/audiocontrol
+    chmod 755 /etc/audiocontrol
 fi
 
-if [ ! -d /usr/share/acr ]; then
-    echo "Creating /usr/share/acr directory..."
-    mkdir -p /usr/share/acr
-    chmod 755 /usr/share/acr
+if [ ! -d /usr/share/hifiberry-audiocontrol ]; then
+    echo "Creating /usr/share/hifiberry-audiocontrol directory..."
+    mkdir -p /usr/share/hifiberry-audiocontrol
+    chmod 755 /usr/share/hifiberry-audiocontrol
 fi
 
-if [ ! -d /usr/share/acr/web ]; then
-    echo "Creating /usr/share/acr/web directory..."
-    mkdir -p /usr/share/acr/web
-    chmod 755 /usr/share/acr/web
+if [ ! -d /usr/share/hifiberry-audiocontrol/sample-web ]; then
+    echo "Creating /usr/share/hifiberry-audiocontrol/sample-web directory..."
+    mkdir -p /usr/share/hifiberry-audiocontrol/sample-web
+    chmod 755 /usr/share/hifiberry-audiocontrol/sample-web
 fi
 
 exit 0

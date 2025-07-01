@@ -79,7 +79,7 @@ Both `/etc/audiocontrol` and `/var/lib/audiocontrol` directories are owned by th
 
 ### Command Line Options
 
-ACR supports the following command line options:
+AudioControl supports the following command line options:
 
 - `-c <path>`: Specifies the path to the configuration file
 - `--debug`: Enables debug-level logging

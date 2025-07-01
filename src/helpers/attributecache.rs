@@ -29,7 +29,7 @@ impl AttributeCache {
     /// Create a new attribute cache with default settings
     pub fn new() -> Self {
         // Using the default path that matches our cache.attribute_cache_path setting
-        let cache_dir = PathBuf::from("cache/attributes");
+        let cache_dir = PathBuf::from("/var/lib/audiocontrol/cache/attributes");
         Self::with_directory(cache_dir)
     }
 

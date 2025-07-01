@@ -121,12 +121,12 @@ fn main() {
             info!("Using attribute cache path from config: {}", cache_path);
             cache_path.to_string()
         } else {
-            let default_path = "cache/attributes".to_string();
+            let default_path = "/var/lib/audiocontrol/cache/attributes".to_string();
             info!("No attribute_cache_path specified in cache configuration, using default path: {}", default_path);
             default_path
         }
     } else {
-        let default_path = "cache/attributes".to_string();
+        let default_path = "/var/lib/audiocontrol/cache/attributes".to_string();
         info!("No cache configuration found, using default attribute cache path: {}", default_path);
         default_path
     };
@@ -137,12 +137,12 @@ fn main() {
             info!("Using image cache path from config: {}", cache_path);
             cache_path.to_string()
         } else {
-            let default_path = "cache/images".to_string();
+            let default_path = "/var/lib/audiocontrol/cache/images".to_string();
             info!("No image_cache_path specified in cache configuration, using default path: {}", default_path);
             default_path
         }
     } else {
-        let default_path = "cache/images".to_string();
+        let default_path = "/var/lib/audiocontrol/cache/images".to_string();
         info!("No cache configuration found, using default image cache path: {}", default_path);
         default_path
     };

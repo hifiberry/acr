@@ -22,7 +22,7 @@ impl ImageCache {
     /// Create a new image cache with default settings
     pub fn new() -> Self {
         // Using the default path that matches our cache.image_cache_path setting
-        let cache_dir = PathBuf::from("cache/images");
+        let cache_dir = PathBuf::from("/var/lib/audiocontrol/cache/images");
         Self::with_directory(cache_dir)
     }
 

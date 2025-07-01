@@ -13,7 +13,7 @@ fn print_usage() {
     println!("Arguments:");
     println!("  PATH              Path to the cache database directory");
     println!();
-    println!("If no path is specified, defaults to \"cache/attributes\"");
+    println!("If no path is specified, defaults to \"/var/lib/audiocontrol/cache/attributes\"");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     
     // Default path
-    let mut db_path = PathBuf::from("cache/attributes");
+    let mut db_path = PathBuf::from("/var/lib/audiocontrol/cache/attributes");
     
     // Process arguments
     let mut i = 1;

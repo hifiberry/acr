@@ -57,8 +57,8 @@ When installed as a system service:
 
 AudioControl uses these paths for caching data:
 
-- `/etc/audiocontrol/cache/attributes` - For metadata and other attributes
-- `/etc/audiocontrol/cache/images` - For image files like album covers
+- `/var/lib/audiocontrol/cache/attributes` - For metadata and other attributes
+- `/var/lib/audiocontrol/cache/images` - For image files like album covers
 
 These paths are automatically created during installation with the correct permissions.
 
@@ -68,10 +68,10 @@ These paths are automatically created during installation with the correct permi
 
 When installed as a system service, AudioControl uses the following directory structure:
 
-- `/etc/audiocontrol` - Configuration files and cache location
+- `/etc/audiocontrol` - Configuration files location
   - `/etc/audiocontrol/audiocontrol.json` - Main configuration file
-  - `/etc/audiocontrol/cache/` - Cache directories
-- `/var/lib/audiocontrol` - Variable data directory for runtime files
+- `/var/lib/audiocontrol` - Variable data directory for runtime files and cache
+  - `/var/lib/audiocontrol/cache/` - Cache directories for images and metadata
 - `/usr/bin/audiocontrol` - The executable binary
 - `/usr/share/hifiberry-audiocontrol/audiocontrol.json.sample` - Sample configuration file
 

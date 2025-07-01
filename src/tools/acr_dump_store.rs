@@ -1,4 +1,4 @@
-use acr::helpers::security_store::{SecurityStore};
+use audiocontrol::helpers::security_store::{SecurityStore};
 use std::fs;
 use std::path::PathBuf;
 use clap::Parser;

@@ -1,6 +1,6 @@
-# AudioControl/Rust (ACR)
+# AudioControl
 
-AudioControl/Rust (ACR) is the next-generation audio control software for HiFiBerry devices, designed as the successor to [audiocontrol2](https://github.com/hifiberry/audiocontrol2). This Rust implementation offers improved performance, reliability, and a more modular architecture compared to its Python predecessor.
+AudioControl is the next-generation audio control software for HiFiBerry devices, designed as the successor to [audiocontrol2](https://github.com/hifiberry/audiocontrol2). This Rust implementation offers improved performance, reliability, and a more modular architecture compared to its Python predecessor.
 
 ## Why a Rewrite?
 
@@ -34,7 +34,7 @@ AudioControl/Rust uses a player controller abstraction to handle different audio
 
 ## Configuration
 
-ACR uses a JSON configuration file to define its behavior. The configuration file specifies settings for:
+AudioControl uses a JSON configuration file to define its behavior. The configuration file specifies settings for:
 
 - Player backends (MPD, Librespot, etc.)
 - API server settings
@@ -43,23 +43,22 @@ ACR uses a JSON configuration file to define its behavior. The configuration fil
 
 ### Configuration File Locations
 
-ACR requires a valid configuration file to run. The configuration file is looked up in this order:
+AudioControl requires a valid configuration file to run. The configuration file is looked up in this order:
 
 1. Path specified with the `-c` command line argument
-2. `acr.json` in the current directory
+2. `audiocontrol.json` in the current directory
 
 When installed as a system service:
 
-- The configuration file is located at `/etc/acr/acr.json`
-- If this file doesn't exist during installation, it's automatically created from `/etc/acr/acr.json.sample`
-- A default configuration is also available at `/usr/share/acr/acr-default.json`
+- The configuration file is located at `/etc/audiocontrol/audiocontrol.json`
+- If this file doesn't exist during installation, it's automatically created from `/usr/share/hifiberry-audiocontrol/audiocontrol.json.sample`
 
 ### Cache Directories
 
-ACR uses these paths for caching data:
+AudioControl uses these paths for caching data:
 
-- `/etc/acr/cache/attributes` - For metadata and other attributes
-- `/etc/acr/cache/images` - For image files like album covers
+- `/etc/audiocontrol/cache/attributes` - For metadata and other attributes
+- `/etc/audiocontrol/cache/images` - For image files like album covers
 
 These paths are automatically created during installation with the correct permissions.
 
@@ -67,17 +66,16 @@ These paths are automatically created during installation with the correct permi
 
 ### Directory Structure
 
-When installed as a system service, ACR uses the following directory structure:
+When installed as a system service, AudioControl uses the following directory structure:
 
-- `/etc/acr` - Configuration files and cache location
-  - `/etc/acr/acr.json` - Main configuration file
-  - `/etc/acr/acr.json.sample` - Sample configuration file
-  - `/etc/acr/cache/` - Cache directories
-- `/var/acr` - Variable data directory for runtime files
-- `/usr/bin/acr` - The executable binary
-- `/usr/share/acr/acr-default.json` - Default configuration (backup)
+- `/etc/audiocontrol` - Configuration files and cache location
+  - `/etc/audiocontrol/audiocontrol.json` - Main configuration file
+  - `/etc/audiocontrol/cache/` - Cache directories
+- `/var/lib/audiocontrol` - Variable data directory for runtime files
+- `/usr/bin/audiocontrol` - The executable binary
+- `/usr/share/hifiberry-audiocontrol/audiocontrol.json.sample` - Sample configuration file
 
-Both `/etc/acr` and `/var/acr` directories are owned by the `acr` user and group, which is automatically created during installation.
+Both `/etc/audiocontrol` and `/var/lib/audiocontrol` directories are owned by the `audiocontrol` user and group, which is automatically created during installation.
 
 ### Command Line Options
 

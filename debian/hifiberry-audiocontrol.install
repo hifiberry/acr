@@ -1,4 +1,4 @@
 # All installation is handled in debian/rules
 # This file is kept for reference
-acr.json.sample usr/share/hifiberry-audiocontrol/
+audiocontrol.json.sample usr/share/hifiberry-audiocontrol/
 example-app/* usr/share/hifiberry-audiocontrol/sample-web/

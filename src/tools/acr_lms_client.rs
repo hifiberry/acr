@@ -2,9 +2,9 @@ use std::error::Error;
 use clap::{Parser, Subcommand};
 use log::{info, warn};
 
-use acr::players::lms::jsonrps::LmsRpcClient;
-use acr::players::lms::lmsserver::{find_local_servers, get_local_mac_addresses};
-use acr::helpers::macaddress::normalize_mac_address;
+use audiocontrol::players::lms::jsonrps::LmsRpcClient;
+use audiocontrol::players::lms::lmsserver::{find_local_servers, get_local_mac_addresses};
+use audiocontrol::helpers::macaddress::normalize_mac_address;
 
 /// Command line client for interacting with a Lyrion Music Server (LMS)
 #[derive(Parser)]

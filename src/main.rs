@@ -1,17 +1,17 @@
-use acr::players::PlayerController;
-use acr::AudioController;
-use acr::api::server;
-use acr::config::get_service_config;
-use acr::helpers::attributecache::AttributeCache;
-use acr::helpers::imagecache::ImageCache;
-use acr::helpers::musicbrainz;
-use acr::helpers::theaudiodb;
-use acr::helpers::lastfm;
-use acr::helpers::spotify;
-use acr::helpers::security_store::SecurityStore;
+use audiocontrol::players::PlayerController;
+use audiocontrol::AudioController;
+use audiocontrol::api::server;
+use audiocontrol::config::get_service_config;
+use audiocontrol::helpers::attributecache::AttributeCache;
+use audiocontrol::helpers::imagecache::ImageCache;
+use audiocontrol::helpers::musicbrainz;
+use audiocontrol::helpers::theaudiodb;
+use audiocontrol::helpers::lastfm;
+use audiocontrol::helpers::spotify;
+use audiocontrol::helpers::security_store::SecurityStore;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
-use acr::players::lms::lmsaudio::LMSAudioController;
+use audiocontrol::players::lms::lmsaudio::LMSAudioController;
 use std::thread;
 use std::time::Duration;
 use log::{debug, info, warn, error};
@@ -24,7 +24,7 @@ use std::path::Path;
 use std::env;
 use std::path::PathBuf;
 // Import global Tokio runtime functions from lib.rs
-use acr::{initialize_tokio_runtime, get_tokio_runtime};
+use audiocontrol::{initialize_tokio_runtime, get_tokio_runtime};
 
 fn main() {
     // Initialize the Tokio runtime early
@@ -45,10 +45,10 @@ fn main() {
             .init();
     }
 
-    info!("AudioControl3 (ACR) Player Controller starting");
+    info!("AudioControl Player Controller starting");
     
     // Check for config file path in command line arguments (-c option)
-    let mut config_path_str = String::from("acr.json");
+    let mut config_path_str = String::from("audiocontrol.json");
     let mut i = 1;
     while i < args.len() {
         if args[i] == "-c" && i + 1 < args.len() {
@@ -361,11 +361,11 @@ fn initialize_spotify(config: &serde_json::Value) {
             // Initialize with values from config or fall back to defaults
             let init_result = match (oauth_url, proxy_secret) {
                 (Some(url), Some(secret)) if !url.is_empty() && !secret.is_empty() => {
-                    info!("Initializing Spotify with configuration from acr.json, URL: '{}'", url);
+                    info!("Initializing Spotify with configuration from audiocontrol.json, URL: '{}'", url);
                     spotify::Spotify::initialize(url, secret)
                 },
                 _ => {
-                    info!("No valid Spotify config in acr.json, falling back to secrets.txt");
+                    info!("No valid Spotify config in audiocontrol.json, falling back to secrets.txt");
                     spotify::Spotify::initialize_with_defaults()
                 }
             };

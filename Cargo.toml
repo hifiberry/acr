@@ -1,8 +1,8 @@
 [package]
-name = "acr"
+name = "audiocontrol"
 version = "0.4.1"
 edition = "2021"
-default-run = "acr"
+default-run = "audiocontrol"
 
 [dependencies]
 serde = { version = "1.0.219", features = ["derive"] }
@@ -78,17 +78,17 @@ base64 = "0.21.0"
 
 # Binary targets
 [[bin]]
-name = "acr_dump_cache"
+name = "audiocontrol_dump_cache"
 path = "src/tools/acr_dump_cache.rs"
 
 [[bin]]
-name = "acr_lms_client"
+name = "audiocontrol_lms_client"
 path = "src/tools/acr_lms_client.rs"
 
 [[bin]]
-name = "acr_send_update"
+name = "audiocontrol_send_update"
 path = "src/tools/acr_send_update.rs"
 
 [[bin]]
-name = "acr_dump_store"
+name = "audiocontrol_dump_store"
 path = "src/tools/acr_dump_store.rs"

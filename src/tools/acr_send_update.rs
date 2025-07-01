@@ -1,5 +1,5 @@
 use clap::Parser;
-use acr::data::{PlayerUpdate, Song, PlaybackState, LoopMode};
+use audiocontrol::data::{PlayerUpdate, Song, PlaybackState, LoopMode};
 use std::error::Error;
 
 #[derive(Parser, Debug)]

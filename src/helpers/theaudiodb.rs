@@ -119,7 +119,7 @@ pub fn is_enabled() -> bool {
 /// Get the configured API key
 pub fn get_api_key() -> Option<String> {
     if let Ok(config) = THEAUDIODB_CONFIG.lock() {
-        if config.api_key.is_empty() {            // If no API key is configured in acr.json, use the default from secrets.txt
+        if config.api_key.is_empty() {            // If no API key is configured in audiocontrol.json, use the default from secrets.txt
             let default_key = default_theaudiodb_api_key();
             
             if default_key != "YOUR_API_KEY_HERE" {

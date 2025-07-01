@@ -30,20 +30,19 @@ override_dh_auto_install:
 	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol
 	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web
 	# Install main binary
-	if [ -f target/release/acr ]; then \
-		cp target/release/acr debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
+	if [ -f target/release/audiocontrol ]; then \
+		cp target/release/audiocontrol debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
 		chmod +x debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
 	fi
 	# Install CLI tools if they exist
-	for tool in acr_dumpcache acr_lms_client acr_send_update; do \
+	for tool in audiocontrol_dump_cache audiocontrol_lms_client audiocontrol_send_update audiocontrol_dump_store; do \
 		if [ -f "target/release/$$tool" ]; then \
-			new_tool=$$(echo "$$tool" | sed 's/acr_/audiocontrol_/'); \
-			cp "target/release/$$tool" "debian/hifiberry-audiocontrol/usr/bin/$$new_tool"; \
-			chmod +x "debian/hifiberry-audiocontrol/usr/bin/$$new_tool"; \
+			cp "target/release/$$tool" "debian/hifiberry-audiocontrol/usr/bin/$$tool"; \
+			chmod +x "debian/hifiberry-audiocontrol/usr/bin/$$tool"; \
 		fi; \
 	done
 	# Install config samples
-	cp acr.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
+	cp audiocontrol.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
 	# Install example app
 	if [ -d example-app ]; then \
 		cp -r example-app/* debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web/; \

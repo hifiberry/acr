@@ -11,8 +11,8 @@ setup_config() {
     # Check if we need to copy the sample config to the actual config file
     if [ ! -f /etc/audiocontrol/audiocontrol.json ]; then
         echo "No configuration file found, creating from sample..."
-        if [ -f /usr/share/hifiberry-audiocontrol/acr.json.sample ]; then
-            install -o audiocontrol -g audiocontrol -m 644 /usr/share/hifiberry-audiocontrol/acr.json.sample /etc/audiocontrol/audiocontrol.json
+        if [ -f /usr/share/hifiberry-audiocontrol/audiocontrol.json.sample ]; then
+            install -o audiocontrol -g audiocontrol -m 644 /usr/share/hifiberry-audiocontrol/audiocontrol.json.sample /etc/audiocontrol/audiocontrol.json
             echo "Sample config copied to audiocontrol.json successfully"
         else
             echo "ERROR: No sample configuration file found"

@@ -14,8 +14,8 @@ By default, entries in the cache have no expiry date, though the attribute cache
 ## Cache Locations
 
 By default, the cache directories are:
-- Attribute cache: `cache/attributes`
-- Image cache: `cache/images`
+- Attribute cache: `/var/lib/audiocontrol/cache/attributes`
+- Image cache: `/var/lib/audiocontrol/cache/images`
 
 These paths can be customized in the configuration file.
 
@@ -27,11 +27,11 @@ ACR uses the Sled database engine to implement its attribute caching. To view th
 acr_dumpcache [PATH]
 ```
 
-The argument is the full path to the cache directory. If no path is specified, it defaults to `cache/attributes`.
+The argument is the full path to the cache directory. If no path is specified, it defaults to `/var/lib/audiocontrol/cache/attributes`.
 
 Example:
 ```
-acr_dumpcache cache/attributes
+audiocontrol_dump_cache /var/lib/audiocontrol/cache/attributes
 ```
 
 This will output all key-value pairs in the cache in a `key|value` format.
@@ -116,8 +116,8 @@ Available configuration options:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `attribute_cache_path` | `"cache/attributes"` | Path to the attribute cache directory |
-| `image_cache_path` | `"cache/images"` | Path to the image cache directory |
+| `attribute_cache_path` | `"/var/lib/audiocontrol/cache/attributes"` | Path to the attribute cache directory |
+| `image_cache_path` | `"/var/lib/audiocontrol/cache/images"` | Path to the image cache directory |
 | `max_age_days` | `30` | Maximum age of cached items in days (0 = no expiration) |
 | `enabled` | `true` | Whether caching is enabled |
 

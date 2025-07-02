@@ -1,0 +1,52 @@
+.TH AUDIOCONTROL_SEND_UPDATE 1 "July 2025" "audiocontrol 0.5.0" "User Commands"
+.SH NAME
+audiocontrol_send_update \- send player state updates to audiocontrol
+.SH SYNOPSIS
+.B audiocontrol_send_update
+[\fIOPTIONS\fR] \fIUPDATE_DATA\fR
+.SH DESCRIPTION
+.B audiocontrol_send_update
+is a utility for sending player state updates to the audiocontrol daemon.
+This tool is used for external applications and scripts to notify
+audiocontrol of playback changes, track information, or other status updates.
+.PP
+The utility communicates with the audiocontrol daemon via its API interface
+to ensure real-time synchronization of player state across all connected
+clients and services.
+.SH OPTIONS
+.TP
+.BR \-t ", " \-\-type " " \fITYPE\fR
+Specify the type of update (track, status, volume, etc.)
+.TP
+.BR \-f ", " \-\-format " " \fIFORMAT\fR
+Data format for the update (json, text)
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit
+.TP
+.BR \-V ", " \-\-version
+Display version information and exit
+.SH ARGUMENTS
+.TP
+.I UPDATE_DATA
+The update data to send, format depends on the \-\-type and \-\-format options
+.SH FILES
+.TP
+.I /var/run/audiocontrol/
+Socket directory for daemon communication
+.SH EXAMPLES
+.TP
+Send track change update:
+.B audiocontrol_send_update \-t track '{"artist": "Artist Name", "title": "Song Title"}'
+.TP
+Send volume update:
+.B audiocontrol_send_update \-t volume '{"level": 75}'
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_dump_cache (1),
+.BR audiocontrol_dump_store (1),
+.BR audiocontrol_lms_client (1)
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>
+.SH COPYRIGHT
+Copyright \(co 2025 HiFiBerry. All rights reserved.

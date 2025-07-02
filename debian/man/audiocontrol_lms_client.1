@@ -1,0 +1,48 @@
+.TH AUDIOCONTROL_LMS_CLIENT 1 "July 2025" "audiocontrol 0.5.0" "User Commands"
+.SH NAME
+audiocontrol_lms_client \- Logitech Media Server client for audiocontrol
+.SH SYNOPSIS
+.B audiocontrol_lms_client
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol_lms_client
+is a client utility for connecting to and communicating with Logitech Media
+Server (LMS) instances. This tool enables audiocontrol to integrate with
+LMS/Lyrion music servers for music streaming and control.
+.PP
+The client handles protocol communication, authentication, and data exchange
+with LMS servers, providing seamless integration for music library access
+and playback control.
+.SH OPTIONS
+.TP
+.BR \-s ", " \-\-server " " \fISERVER\fR
+Connect to the specified LMS server address
+.TP
+.BR \-p ", " \-\-port " " \fIPORT\fR
+Use the specified port for LMS connection (default: 9000)
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit
+.TP
+.BR \-V ", " \-\-version
+Display version information and exit
+.SH FILES
+.TP
+.I /etc/audiocontrol/audiocontrol.json
+Configuration file containing LMS server settings
+.SH EXAMPLES
+.TP
+Connect to LMS server on localhost:
+.B audiocontrol_lms_client \-s localhost
+.TP
+Connect to LMS server on custom port:
+.B audiocontrol_lms_client \-s 192.168.1.100 \-p 9001
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_dump_cache (1),
+.BR audiocontrol_dump_store (1),
+.BR audiocontrol_send_update (1)
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>
+.SH COPYRIGHT
+Copyright \(co 2025 HiFiBerry. All rights reserved.

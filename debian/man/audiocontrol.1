@@ -1,0 +1,52 @@
+.TH AUDIOCONTROL 1 "July 2025" "audiocontrol 0.5.0" "User Commands"
+.SH NAME
+audiocontrol \- HiFiBerry audio control daemon
+.SH SYNOPSIS
+.B audiocontrol
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol
+is the main daemon for HiFiBerry audio control functionality. It provides
+a unified interface for managing audio playback across different audio
+systems and streaming services.
+.PP
+The daemon supports multiple audio backends including MPD (Music Player Daemon),
+Logitech Media Server, and various streaming protocols like Spotify Connect,
+AirPlay, and Roon Audio Transport.
+.SH OPTIONS
+.TP
+.BR \-c ", " \-\-config " " \fIFILE\fR
+Use the specified configuration file instead of the default
+.I /etc/audiocontrol/audiocontrol.json
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit
+.TP
+.BR \-V ", " \-\-version
+Display version information and exit
+.SH FILES
+.TP
+.I /etc/audiocontrol/audiocontrol.json
+Default configuration file
+.TP
+.I /var/log/audiocontrol/
+Log directory
+.TP
+.I /var/run/audiocontrol/
+Runtime directory for PID files and sockets
+.SH EXAMPLES
+.TP
+Start audiocontrol with default configuration:
+.B audiocontrol
+.TP
+Start with custom configuration file:
+.B audiocontrol \-c /path/to/custom/config.json
+.SH SEE ALSO
+.BR audiocontrol_dump_cache (1),
+.BR audiocontrol_dump_store (1),
+.BR audiocontrol_lms_client (1),
+.BR audiocontrol_send_update (1)
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>
+.SH COPYRIGHT
+Copyright \(co 2025 HiFiBerry. All rights reserved.

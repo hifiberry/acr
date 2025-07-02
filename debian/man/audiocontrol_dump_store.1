@@ -1,0 +1,38 @@
+.TH AUDIOCONTROL_DUMP_STORE 1 "July 2025" "audiocontrol 0.5.0" "User Commands"
+.SH NAME
+audiocontrol_dump_store \- dump audiocontrol data store contents
+.SH SYNOPSIS
+.B audiocontrol_dump_store
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol_dump_store
+is a utility for inspecting and dumping the contents of the audiocontrol
+data store. This tool is useful for debugging storage-related issues and
+understanding the current state of persistent data.
+.PP
+The data store contains configuration data, user preferences, playlists,
+and other persistent information used by the audiocontrol system.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit
+.TP
+.BR \-V ", " \-\-version
+Display version information and exit
+.SH FILES
+.TP
+.I /var/lib/audiocontrol/
+Default data store directory
+.SH EXAMPLES
+.TP
+Dump all data store contents:
+.B audiocontrol_dump_store
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_dump_cache (1),
+.BR audiocontrol_lms_client (1),
+.BR audiocontrol_send_update (1)
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>
+.SH COPYRIGHT
+Copyright \(co 2025 HiFiBerry. All rights reserved.

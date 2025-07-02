@@ -1,0 +1,38 @@
+.TH AUDIOCONTROL_DUMP_CACHE 1 "July 2025" "audiocontrol 0.5.0" "User Commands"
+.SH NAME
+audiocontrol_dump_cache \- dump audiocontrol cache contents
+.SH SYNOPSIS
+.B audiocontrol_dump_cache
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol_dump_cache
+is a utility for inspecting and dumping the contents of the audiocontrol
+cache. This tool is useful for debugging cache-related issues and
+understanding the current state of cached metadata.
+.PP
+The cache stores metadata about tracks, albums, artists, and other audio
+information to improve performance and reduce network requests.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit
+.TP
+.BR \-V ", " \-\-version
+Display version information and exit
+.SH FILES
+.TP
+.I /var/cache/audiocontrol/
+Default cache directory
+.SH EXAMPLES
+.TP
+Dump all cache contents:
+.B audiocontrol_dump_cache
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_dump_store (1),
+.BR audiocontrol_lms_client (1),
+.BR audiocontrol_send_update (1)
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>
+.SH COPYRIGHT
+Copyright \(co 2025 HiFiBerry. All rights reserved.

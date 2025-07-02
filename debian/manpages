@@ -1,0 +1,5 @@
+debian/man/audiocontrol.1
+debian/man/audiocontrol_dump_cache.1
+debian/man/audiocontrol_dump_store.1
+debian/man/audiocontrol_lms_client.1
+debian/man/audiocontrol_send_update.1

@@ -117,9 +117,32 @@ impl RAATPlayerController {
     }
 
     /// Create a new RAAT player controller with custom metadata source, control pipe, and reopen setting
+    #[deprecated(since = "0.4.1", note = "Use with_pipes_and_reopen_and_systemd instead")]
     pub fn with_pipes_and_reopen(metadata_source: &str, control_pipe: &str, reopen: bool) -> Self {
-        debug!("Creating new RAATPlayerController with metadata_source: {}, control_pipe: {}, reopen: {}", 
-               metadata_source, control_pipe, reopen);
+        Self::with_pipes_and_reopen_and_systemd(metadata_source, control_pipe, reopen, Some("raat"))
+    }
+
+    /// Create a new RAAT player controller with custom metadata source, control pipe, reopen setting, and systemd unit check
+    pub fn with_pipes_and_reopen_and_systemd(metadata_source: &str, control_pipe: &str, reopen: bool, systemd_unit: Option<&str>) -> Self {
+        debug!("Creating new RAATPlayerController with metadata_source: {}, control_pipe: {}, reopen: {}, systemd_unit: {:?}", 
+               metadata_source, control_pipe, reopen, systemd_unit);
+        
+        // Check systemd unit if specified
+        if let Some(unit_name) = systemd_unit {
+            if !unit_name.is_empty() {
+                match crate::helpers::systemd::SystemdHelper::new().is_unit_active(unit_name) {
+                    Ok(true) => {
+                        debug!("Systemd unit '{}' is active", unit_name);
+                    }
+                    Ok(false) => {
+                        warn!("Systemd unit '{}' is not active - RAAT player may not work correctly", unit_name);
+                    }
+                    Err(e) => {
+                        warn!("Could not check systemd unit '{}': {} - continuing anyway", unit_name, e);
+                    }
+                }
+            }
+        }
         
         // Create a base controller with player name and ID
         let base = BasePlayerController::with_player_info("raat", "raat");

@@ -14,6 +14,7 @@ pub mod lastfm;
 pub mod security_store;
 pub mod spotify;
 pub mod retry;
+pub mod systemd;
 
 use crate::data::artist::Artist;
 

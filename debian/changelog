@@ -1,3 +1,13 @@
+hifiberry-audiocontrol (0.4.2) stable; urgency=medium
+
+  * Added systemd unit integration for librespot and RAAT backends
+  * Librespot and RAAT controllers now check if systemd units are active
+  * Added 'systemd_unit' configuration option (defaults: 'librespot', 'raat')
+  * Improved error handling with non-blocking systemd checks
+  * Enhanced player initialization with service status validation
+
+ -- HiFiBerry <info@hifiberry.com>  Thu, 04 Jul 2025 10:00:00 +0000
+
 hifiberry-audiocontrol (0.5.0) stable; urgency=medium
 
   * Renamed package from hifiberry-acr to hifiberry-audiocontrol

@@ -1,0 +1,9 @@
+{
+  "raat": {
+    "enable": true,
+    "metadata_pipe": "/var/run/raat/metadata_pipe",
+    "control_pipe": "/var/run/raat/control_pipe",
+    "reopen_metadata_pipe": true,
+    "systemd_unit": "raat"
+  }
+}

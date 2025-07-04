@@ -94,7 +94,17 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true); // Default to true if not specified
                 
-                let player = RAATPlayerController::with_pipes_and_reopen(metadata_source, control_pipe, reopen);
+                // Check if systemd_unit parameter is specified in the JSON
+                let systemd_unit = config_obj.get("systemd_unit")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty()); // Filter out empty strings
+                
+                let player = RAATPlayerController::with_pipes_and_reopen_and_systemd(
+                    metadata_source, 
+                    control_pipe, 
+                    reopen, 
+                    systemd_unit
+                );
                 Ok(Box::new(player))
             },
             "librespot" => {
@@ -112,7 +122,17 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true); // Default to true if not specified
                 
-                let player = LibrespotPlayerController::with_config(event_source, process_name, reopen);
+                // Check if systemd_unit parameter is specified in the JSON
+                let systemd_unit = config_obj.get("systemd_unit")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty()); // Filter out empty strings
+                
+                let player = LibrespotPlayerController::with_config_and_systemd(
+                    event_source, 
+                    process_name, 
+                    reopen, 
+                    systemd_unit
+                );
                 Ok(Box::new(player))
             },
             "lms" => {

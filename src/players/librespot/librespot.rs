@@ -116,9 +116,32 @@ impl LibrespotPlayerController {
     }
 
     /// Create a new Librespot player controller with fully custom settings
+    #[deprecated(since = "0.4.1", note = "Use with_config_and_systemd instead")]
     pub fn with_config(event_source: &str, process_name: &str, reopen: bool) -> Self {
-        debug!("Creating new LibrespotPlayerController with event_source: {}, process_name: {}, reopen: {}", 
-               event_source, process_name, reopen);
+        Self::with_config_and_systemd(event_source, process_name, reopen, Some("librespot"))
+    }
+
+    /// Create a new Librespot player controller with fully custom settings and systemd unit check
+    pub fn with_config_and_systemd(event_source: &str, process_name: &str, reopen: bool, systemd_unit: Option<&str>) -> Self {
+        debug!("Creating new LibrespotPlayerController with event_source: {}, process_name: {}, reopen: {}, systemd_unit: {:?}", 
+               event_source, process_name, reopen, systemd_unit);
+        
+        // Check systemd unit if specified
+        if let Some(unit_name) = systemd_unit {
+            if !unit_name.is_empty() {
+                match crate::helpers::systemd::SystemdHelper::new().is_unit_active(unit_name) {
+                    Ok(true) => {
+                        debug!("Systemd unit '{}' is active", unit_name);
+                    }
+                    Ok(false) => {
+                        warn!("Systemd unit '{}' is not active - librespot player may not work correctly", unit_name);
+                    }
+                    Err(e) => {
+                        warn!("Could not check systemd unit '{}': {} - continuing anyway", unit_name, e);
+                    }
+                }
+            }
+        }
         
         // Create a base controller with player name and ID
         let base = BasePlayerController::with_player_info("spotify", "librespot");

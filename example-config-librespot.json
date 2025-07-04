@@ -1,0 +1,9 @@
+{
+  "librespot": {
+    "enable": true,
+    "event_pipe": "/var/run/librespot/events_pipe",
+    "process_name": "/usr/bin/librespot",
+    "reopen_event_pipe": true,
+    "systemd_unit": "librespot"
+  }
+}

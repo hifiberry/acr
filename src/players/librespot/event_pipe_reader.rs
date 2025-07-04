@@ -18,6 +18,10 @@ use crate::data::loop_mode::LoopMode;
 pub type EventCallback = Box<dyn Fn(Song, PlayerState, PlayerCapabilitySet, StreamDetails) + Send + Sync>;
 
 /// A reader for Spotify/librespot events from a named pipe or network connection
+/// 
+/// This reader processes JSON events from Spotify/librespot in a specific format.
+/// For detailed documentation of the expected event format, see EVENT_PIPE_FORMAT.md
+/// in this directory.
 #[allow(dead_code)]
 pub struct EventPipeReader {
     source: String,

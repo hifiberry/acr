@@ -1,15 +1,16 @@
 {
-  "_comment": "AudioControl Production Logging Configuration",
+  "_comment": "Production Logging Configuration",
   "_description": "This file configures logging for the AudioControl service in production environments",
   
   "level": "info",
   "target": "stderr",
   "timestamps": true,
   "colors": false,
-  "include_module_path": false,
+  "include_module_path": true,
   "include_line_numbers": false,
   
   "subsystems": {
+    "_comment": "Configure log levels for different subsystems or specific modules",
     "players": "info",
     "api": "info",
     "cache": "warn",
@@ -25,7 +26,14 @@
     "events": "info",
     "config": "info",
     "plugins": "info",
-    "deps": "error"
+    "deps": "error",
+    
+    "_examples": "Specific module targeting examples (uncomment to use):",
+    "_audiocontrol::players::librespot::librespot": "debug",
+    "_audiocontrol::players::librespot::event_pipe_reader": "warn",
+    "_audiocontrol::players::raat": "debug",
+    "_audiocontrol::api::server": "debug",
+    "_audiocontrol::helpers::spotify": "debug"
   },
   
   "env_overrides": {

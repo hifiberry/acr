@@ -1,4 +1,5 @@
 # All installation is handled in debian/rules
 # This file is kept for reference
 audiocontrol.json.sample usr/share/hifiberry-audiocontrol/
+debian/logging.json.sample usr/share/hifiberry-audiocontrol/
 example-app/* usr/share/hifiberry-audiocontrol/sample-web/

@@ -22,6 +22,20 @@ setup_config() {
     else
         echo "Existing configuration file found, keeping it."
     fi
+    
+    # Check if we need to copy the default logging config
+    if [ ! -f /etc/audiocontrol/logging.json ]; then
+        echo "No logging configuration file found, creating from sample..."
+        if [ -f /usr/share/hifiberry-audiocontrol/logging.json.sample ]; then
+            install -o audiocontrol -g audiocontrol -m 644 /usr/share/hifiberry-audiocontrol/logging.json.sample /etc/audiocontrol/logging.json
+            echo "Sample logging config copied to logging.json successfully"
+        else
+            echo "WARNING: No sample logging configuration file found"
+            echo "Logging will use fallback configuration"
+        fi
+    else
+        echo "Existing logging configuration file found, keeping it."
+    fi
 }
 
 # Function to create user, group and directory

@@ -6,17 +6,11 @@
   "include_module_path": true,
   "include_line_numbers": false,
   "subsystems": {
-    "players": "debug",
-    "cache": "warn",
-    "network": "error",
+    "players": "info",
     "deps": "warn",
-    
-    "_comment_specific": "Examples of specific module targeting:",
-    "_audiocontrol::players::librespot::librespot": "debug",
+    "_comment": "Examples of specific module targeting (remove _ to activate):",
     "_audiocontrol::players::librespot::event_pipe_reader": "warn",
-    "_audiocontrol::api::server": "info",
-    "database": "warn",
-    "http": "warn"
+    "_audiocontrol::players::librespot::librespot": "debug"
   },
   "env_overrides": {
     "RUST_BACKTRACE": "1"

@@ -11,6 +11,11 @@ else
     DIST_ARG=""
 fi
 
+if [ -f target ]; then
+    echo "Removing previous build target"
+    rm -f target
+fi
+
 sbuild --chroot-mode=unshare \
        --enable-network \
        --no-clean-source \

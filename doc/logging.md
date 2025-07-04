@@ -310,3 +310,55 @@ You can also specify custom module filters in the `subsystems` section using ful
 ```
 
 This provides fine-grained control over logging for specific components.
+
+### Module-Specific Logging
+
+AudioControl supports fine-grained logging control at the module level. You can specify log levels for specific Rust modules using their full path.
+
+#### Examples
+
+**Librespot Player Debugging:**
+```json
+{
+  "level": "info",
+  "include_module_path": true,
+  "subsystems": {
+    "audiocontrol::players::librespot::librespot": "debug",
+    "audiocontrol::players::librespot::event_pipe_reader": "trace"
+  }
+}
+```
+
+**RAAT Player Debugging:**
+```json
+{
+  "level": "info", 
+  "include_module_path": true,
+  "subsystems": {
+    "audiocontrol::players::raat": "debug",
+    "audiocontrol::players::raat::raat": "trace"
+  }
+}
+```
+
+**API Server Debugging:**
+```json
+{
+  "level": "info",
+  "include_module_path": true,
+  "subsystems": {
+    "audiocontrol::api::server": "debug",
+    "audiocontrol::api::players": "trace",
+    "rocket": "warn"
+  }
+}
+```
+
+**Finding Module Names:**
+Enable `include_module_path: true` to see module names in log output:
+```
+[2025-07-04T13:02:43Z INFO audiocontrol::players::librespot::librespot] Starting Librespot player controller
+[2025-07-04T13:02:43Z WARN audiocontrol::players::librespot::event_pipe_reader] Opening Spotify event source
+```
+
+Copy the module name (e.g., `audiocontrol::players::librespot::librespot`) and use it as a key in the `subsystems` section.

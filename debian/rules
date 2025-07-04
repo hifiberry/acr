@@ -43,6 +43,8 @@ override_dh_auto_install:
 	done
 	# Install config samples
 	cp audiocontrol.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
+	# Install logging configuration sample
+	cp debian/logging.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
 	# Install example app
 	if [ -d example-app ]; then \
 		cp -r example-app/* debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web/; \

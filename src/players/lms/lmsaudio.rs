@@ -1152,9 +1152,7 @@ impl PlayerController for LMSAudioController {
                 }
                 
                 // If any track was successfully added, notify listeners
-                if all_success || !all_success {
-                    self.base.notify_queue_changed();
-                }
+                self.base.notify_queue_changed();
                 
                 all_success
             },

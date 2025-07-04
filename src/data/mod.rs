@@ -46,14 +46,6 @@ impl Identifier {
             _ => None,
         }
     }
-
-    /// Convert to string representation
-    pub fn to_string(&self) -> String {
-        match self {
-            Identifier::Numeric(n) => n.to_string(),
-            Identifier::String(s) => s.clone(),
-        }
-    }
 }
 
 // Make Identifier hashable, hashing based on content

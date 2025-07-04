@@ -194,6 +194,66 @@ curl -X POST http://<device-ip>:1080/api/player/lms/command/clear_queue
 curl -X POST http://<device-ip>:1080/api/player/lms/command/play_queue_index:3
 ```
 
+### Librespot Event Update
+
+Receives Spotify/Librespot events via API endpoint instead of reading from a pipe.
+
+- **Endpoint**: `/api/player/librespot/update`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Request Body**: JSON event data in the same format as expected by the event pipe reader (see EVENT_PIPE_FORMAT.md)
+- **Response**:
+
+  ```json
+  {
+    "success": true,
+    "message": "Event processed successfully"
+  }
+  ```
+
+- **Error Response** (400 Bad Request, 500 Internal Server Error):
+
+  ```json
+  {
+    "success": false,
+    "message": "Error message"
+  }
+  ```
+
+#### Librespot API Examples
+
+```bash
+# Send a track_changed event
+curl -X POST http://<device-ip>:1080/api/player/librespot/update \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "track_changed",
+    "NAME": "Bohemian Rhapsody",
+    "ARTISTS": "Queen",
+    "ALBUM": "A Night at the Opera",
+    "DURATION_MS": "354000",
+    "TRACK_ID": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"
+  }'
+
+# Send a playing event
+curl -X POST http://<device-ip>:1080/api/player/librespot/update \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "playing",
+    "POSITION_MS": "30000",
+    "TRACK_ID": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"
+  }'
+
+# Send a paused event
+curl -X POST http://<device-ip>:1080/api/player/librespot/update \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "paused",
+    "POSITION_MS": "45000",
+    "TRACK_ID": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"
+  }'
+```
+
 ### Get Now Playing Information
 
 Retrieves information about the currently playing track and player status.

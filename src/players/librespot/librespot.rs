@@ -1,6 +1,7 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::players::librespot::event_pipe_reader::EventPipeReader;
+use crate::players::librespot::event_api_processor::{EventApiProcessor, register_processor, unregister_processor};
 use crate::data::stream_details::StreamDetails;
 use delegate::delegate;
 use std::sync::{Arc, RwLock, Mutex};
@@ -13,7 +14,7 @@ use std::any::Any;
 use lazy_static::lazy_static;
 
 /// Librespot player controller implementation
-/// This controller interfaces with Spotify/librespot event pipes
+/// This controller interfaces with Spotify/librespot events via pipe reading and/or API endpoints
 pub struct LibrespotPlayerController {
     /// Base controller
     base: BasePlayerController,
@@ -35,6 +36,15 @@ pub struct LibrespotPlayerController {
     
     /// Whether to reopen the event pipe when it's closed
     reopen_event_pipe: bool,
+    
+    /// Whether to enable pipe reading
+    enable_pipe_reader: bool,
+    
+    /// Whether to enable API endpoint processing
+    enable_api_processor: bool,
+    
+    /// API event processor
+    api_processor: Arc<RwLock<EventApiProcessor>>,
 }
 
 // Manually implement Clone for LibrespotPlayerController
@@ -49,6 +59,9 @@ impl Clone for LibrespotPlayerController {
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
             reopen_event_pipe: self.reopen_event_pipe,
+            enable_pipe_reader: self.enable_pipe_reader,
+            enable_api_processor: self.enable_api_processor,
+            api_processor: Arc::clone(&self.api_processor),
         }
     }
 }
@@ -75,6 +88,8 @@ impl LibrespotPlayerController {
         // Create a base controller with player name and ID
         let base = BasePlayerController::with_player_info("spotify", "librespot");
         
+        let api_processor = Arc::new(RwLock::new(EventApiProcessor::new()));
+        
         let player = Self {
             base,
             event_source: source.to_string(),
@@ -83,10 +98,16 @@ impl LibrespotPlayerController {
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: true,
+            enable_pipe_reader: true,
+            enable_api_processor: true,
+            api_processor,
         };
         
         // Set default capabilities - only Killable is available
         player.set_default_capabilities();
+        
+        // Register the API processor
+        register_processor("spotify", Arc::clone(&player.api_processor));
         
         player
     }
@@ -99,6 +120,8 @@ impl LibrespotPlayerController {
         // Create a base controller with player name and ID
         let base = BasePlayerController::with_player_info("spotify", "librespot");
         
+        let api_processor = Arc::new(RwLock::new(EventApiProcessor::new()));
+        
         let player = Self {
             base,
             event_source: source.to_string(),
@@ -107,10 +130,16 @@ impl LibrespotPlayerController {
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: reopen,
+            enable_pipe_reader: true,
+            enable_api_processor: true,
+            api_processor,
         };
         
         // Set default capabilities - only Killable is available
         player.set_default_capabilities();
+        
+        // Register the API processor
+        register_processor("spotify", Arc::clone(&player.api_processor));
         
         player
     }
@@ -123,8 +152,20 @@ impl LibrespotPlayerController {
 
     /// Create a new Librespot player controller with fully custom settings and systemd unit check
     pub fn with_config_and_systemd(event_source: &str, process_name: &str, reopen: bool, systemd_unit: Option<&str>) -> Self {
-        debug!("Creating new LibrespotPlayerController with event_source: {}, process_name: {}, reopen: {}, systemd_unit: {:?}", 
-               event_source, process_name, reopen, systemd_unit);
+        Self::with_full_config(event_source, process_name, reopen, systemd_unit, true, true)
+    }
+    
+    /// Create a new Librespot player controller with full configuration options
+    pub fn with_full_config(
+        event_source: &str, 
+        process_name: &str, 
+        reopen: bool, 
+        systemd_unit: Option<&str>,
+        enable_pipe_reader: bool,
+        enable_api_processor: bool
+    ) -> Self {
+        debug!("Creating new LibrespotPlayerController with event_source: {}, process_name: {}, reopen: {}, systemd_unit: {:?}, enable_pipe_reader: {}, enable_api_processor: {}", 
+               event_source, process_name, reopen, systemd_unit, enable_pipe_reader, enable_api_processor);
         
         // Check systemd unit if specified
         if let Some(unit_name) = systemd_unit {
@@ -146,6 +187,8 @@ impl LibrespotPlayerController {
         // Create a base controller with player name and ID
         let base = BasePlayerController::with_player_info("spotify", "librespot");
         
+        let api_processor = Arc::new(RwLock::new(EventApiProcessor::new()));
+        
         let player = Self {
             base,
             event_source: event_source.to_string(),
@@ -154,10 +197,18 @@ impl LibrespotPlayerController {
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: reopen,
+            enable_pipe_reader,
+            enable_api_processor,
+            api_processor,
         };
         
         // Set default capabilities - only Killable is available
         player.set_default_capabilities();
+        
+        // Register the API processor if enabled
+        if enable_api_processor {
+            register_processor("spotify", Arc::clone(&player.api_processor));
+        }
         
         player
     }
@@ -211,19 +262,41 @@ impl LibrespotPlayerController {
         &self.process_name
     }
     
-    /// Starts a background thread that listens for Librespot events
+    /// Starts a background thread that listens for Librespot events (if pipe reading is enabled)
+    /// Also sets up the API processor callback
     /// The thread will run until the running flag is set to false
     fn start_event_listener(&self, running: Arc<AtomicBool>, self_arc: Arc<Self>) {
         let source = self.event_source.clone();
         
-        info!("Starting Librespot event listener thread");
+        info!("Starting Librespot event listener (pipe_reader: {}, api_processor: {})", 
+              self.enable_pipe_reader, self.enable_api_processor);
         
-        // Spawn a new thread for event listening
-        thread::spawn(move || {
-            info!("Librespot event listener thread started");
-            Self::run_event_loop(&source, running, self_arc);
-            info!("Librespot event listener thread shutting down");
-        });
+        // Set up API processor callback if enabled
+        if self.enable_api_processor {
+            let player_clone = self_arc.clone();
+            let callback = Box::new(move |song: Song, state: PlayerState, capabilities: PlayerCapabilitySet, stream_details: StreamDetails| {
+                // Process the event data and update the player
+                player_clone.update_from_event(song, state, capabilities, stream_details);
+            });
+            
+            if let Ok(mut processor) = self.api_processor.write() {
+                processor.set_callback(callback);
+                debug!("API processor callback set up for Librespot player");
+            } else {
+                error!("Failed to set up API processor callback");
+            }
+        }
+        
+        // Start pipe reader thread if enabled
+        if self.enable_pipe_reader {
+            thread::spawn(move || {
+                info!("Librespot event pipe reader thread started");
+                Self::run_event_loop(&source, running, self_arc);
+                info!("Librespot event pipe reader thread shutting down");
+            });
+        } else {
+            debug!("Pipe reader disabled, not starting pipe reader thread");
+        }
     }
 
     /// Main event loop for listening to Librespot events
@@ -492,6 +565,12 @@ impl PlayerController for LibrespotPlayerController {
     
     fn stop(&self) -> bool {
         info!("Stopping Librespot player controller");
+        
+        // Unregister the API processor if it was registered
+        if self.enable_api_processor {
+            unregister_processor("spotify");
+            debug!("Unregistered API processor for Librespot player");
+        }
         
         // Signal the event listener thread to stop
         if let Ok(mut state) = PLAYER_STATE.lock() {

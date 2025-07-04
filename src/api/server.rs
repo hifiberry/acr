@@ -3,6 +3,7 @@ use crate::api::{players, plugins, library, imagecache, events, lastfm, spotify}
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
 use crate::constants::API_PREFIX;
+use crate::players::librespot::{librespot_event_update};
  
 use log::{info, warn};
 use rocket::{routes, get};
@@ -92,6 +93,9 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         // WebSocket routes
         events::event_messages,
         events::player_event_messages,
+        
+        // Librespot API event endpoint
+        librespot_event_update,
     ];
 
     // Define Last.fm specific routes

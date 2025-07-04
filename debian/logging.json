@@ -1,0 +1,34 @@
+{
+  "_comment": "AudioControl Production Logging Configuration",
+  "_description": "This file configures logging for the AudioControl service in production environments",
+  
+  "level": "info",
+  "target": "stderr",
+  "timestamps": true,
+  "colors": false,
+  "include_module_path": false,
+  "include_line_numbers": false,
+  
+  "subsystems": {
+    "players": "info",
+    "api": "info",
+    "cache": "warn",
+    "metadata": "warn",
+    "spotify": "info",
+    "websocket": "info",
+    "library": "info",
+    "security": "warn",
+    "http": "warn",
+    "network": "error",
+    "database": "warn",
+    "io": "warn",
+    "events": "info",
+    "config": "info",
+    "plugins": "info",
+    "deps": "error"
+  },
+  
+  "env_overrides": {
+    "RUST_BACKTRACE": "0"
+  }
+}

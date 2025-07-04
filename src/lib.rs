@@ -19,6 +19,9 @@ pub mod helpers;
 /// API server for REST endpoints
 pub mod api;
 
+/// Logging configuration and utilities
+pub mod logging;
+
 /// Global constants
 pub mod constants;
 

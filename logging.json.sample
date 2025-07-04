@@ -1,0 +1,19 @@
+{
+  "level": "info",
+  "target": "stdout",
+  "timestamps": true,
+  "colors": true,
+  "include_module_path": false,
+  "include_line_numbers": false,
+  "subsystems": {
+    "players": "debug",
+    "cache": "warn",
+    "network": "error",
+    "deps": "warn",
+    "database": "warn",
+    "http": "warn"
+  },
+  "env_overrides": {
+    "RUST_BACKTRACE": "1"
+  }
+}

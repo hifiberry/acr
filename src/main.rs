@@ -9,13 +9,13 @@ use audiocontrol::helpers::theaudiodb;
 use audiocontrol::helpers::lastfm;
 use audiocontrol::helpers::spotify;
 use audiocontrol::helpers::security_store::SecurityStore;
+use audiocontrol::logging;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
 use audiocontrol::players::lms::lmsaudio::LMSAudioController;
 use std::thread;
 use std::time::Duration;
 use log::{debug, info, warn, error};
-use env_logger::Env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use ctrlc;
@@ -29,35 +29,38 @@ use audiocontrol::{initialize_tokio_runtime, get_tokio_runtime};
 fn main() {
     // Initialize the Tokio runtime early
     initialize_tokio_runtime();
-      // Parse command line arguments
-    let args: Vec<String> = env::args().collect();
-    let debug_mode = args.iter().any(|arg| arg == "--debug");
     
-    // Initialize the logger with the appropriate level based on debug flag
-    if debug_mode {
-        env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
-            .format_timestamp_secs()
-            .init();
-        info!("Debug mode enabled");
-    } else {
-        env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+    // Parse command line arguments
+    let args: Vec<String> = env::args().collect();
+    
+    // Look for config file path in command line arguments (-c option)
+    let config_file_path = find_config_file_in_args(&args);
+    
+    // Look for logging config file path in command line arguments (--log-config option)
+    let log_config_path = find_log_config_in_args(&args);
+    
+    // Initialize logging system
+    if let Err(e) = logging::initialize_logging_with_args(&args, log_config_path.as_deref()) {
+        // Fallback to basic logging if configuration fails
+        eprintln!("Warning: Failed to initialize logging configuration: {}", e);
+        eprintln!("Falling back to basic logging...");
+        
+        let debug_mode = args.iter().any(|arg| arg == "--debug" || arg == "-d");
+        let log_level = if debug_mode { "debug" } else { "info" };
+        
+        std::env::set_var("RUST_LOG", log_level);
+        env_logger::Builder::from_env(env_logger::Env::default())
             .format_timestamp_secs()
             .init();
     }
 
     info!("AudioControl Player Controller starting");
     
-    // Check for config file path in command line arguments (-c option)
-    let mut config_path_str = String::from("audiocontrol.json");
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "-c" && i + 1 < args.len() {
-            config_path_str = args[i + 1].clone();
-            info!("Using configuration file specified by -c: {}", config_path_str);
-            break;
-        }
-        i += 1;
-    }
+    // Use the config file path found earlier or default
+    let config_path_str = config_file_path.unwrap_or_else(|| {
+        info!("No configuration file specified, using default: audiocontrol.json");
+        "audiocontrol.json".to_string()
+    });
     
     // Check if the specified config file exists
     let config_path_obj = Path::new(&config_path_str);
@@ -398,4 +401,47 @@ fn initialize_spotify(config: &serde_json::Value) {
         }    } else {
         debug!("No Spotify configuration found, Spotify features will be unavailable.");
     }
+}
+
+/// Find config file path from command line arguments (-c option)
+fn find_config_file_in_args(args: &[String]) -> Option<String> {
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "-c" && i + 1 < args.len() {
+            info!("Using configuration file specified by -c: {}", args[i + 1]);
+            return Some(args[i + 1].clone());
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find logging config file path from command line arguments (--log-config option)
+fn find_log_config_in_args(args: &[String]) -> Option<PathBuf> {
+    let mut i = 1;
+    while i < args.len() {
+        if (args[i] == "--log-config" || args[i] == "--logging-config") && i + 1 < args.len() {
+            let path = PathBuf::from(&args[i + 1]);
+            info!("Using logging configuration file: {}", path.display());
+            return Some(path);
+        }
+        i += 1;
+    }
+    
+    // Check for default logging config files
+    let default_paths = [
+        "/etc/audiocontrol/logging.json",
+        "logging.json",
+        "config/logging.json",
+    ];
+    
+    for path_str in &default_paths {
+        let path = PathBuf::from(path_str);
+        if path.exists() {
+            info!("Found default logging configuration file: {}", path.display());
+            return Some(path);
+        }
+    }
+    
+    None
 }

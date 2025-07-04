@@ -4,7 +4,7 @@ After=network.target mpd.service raat.service shairport-sync.service librespot.s
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/audiocontrol -c /etc/audiocontrol/audiocontrol.json
+ExecStart=/usr/bin/audiocontrol -c /etc/audiocontrol/audiocontrol.json --log-config /etc/audiocontrol/logging.json
 Restart=on-failure
 RestartSec=5
 User=audiocontrol
@@ -14,8 +14,10 @@ RuntimeDirectory=audiocontrol
 RuntimeDirectoryMode=0755
 PIDFile=/var/run/audiocontrol/audiocontrol.pid
 
-# Environment
+# Environment variables for logging
+# Note: --log-config takes precedence over RUST_LOG
 Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=0
 
 [Install]
 WantedBy=multi-user.target

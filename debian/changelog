@@ -1,3 +1,16 @@
+hifiberry-audiocontrol (0.4.3) stable; urgency=medium
+
+  * Improved logging system with JSON-based configuration support
+  * Added flexible logging configuration with subsystem-specific log levels
+  * Added support for --log-config command line option in systemd service
+  * Added environment variable overrides for logging configuration
+  * Fixed logging initialization issues and improved error handling
+  * Added comprehensive logging documentation and sample configurations
+  * Enhanced logging subsystem mappings for better debugging
+  * Added production-ready logging configuration for deployment
+
+ -- HiFiBerry <info@hifiberry.com>  Fri, 04 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.4.2) stable; urgency=medium
 
   * Added systemd unit integration for librespot and RAAT backends

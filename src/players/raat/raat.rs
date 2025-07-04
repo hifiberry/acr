@@ -116,12 +116,6 @@ impl RAATPlayerController {
         player
     }
 
-    /// Create a new RAAT player controller with custom metadata source, control pipe, and reopen setting
-    #[deprecated(since = "0.4.1", note = "Use with_pipes_and_reopen_and_systemd instead")]
-    pub fn with_pipes_and_reopen(metadata_source: &str, control_pipe: &str, reopen: bool) -> Self {
-        Self::with_pipes_and_reopen_and_systemd(metadata_source, control_pipe, reopen, Some("raat"))
-    }
-
     /// Create a new RAAT player controller with custom metadata source, control pipe, reopen setting, and systemd unit check
     pub fn with_pipes_and_reopen_and_systemd(metadata_source: &str, control_pipe: &str, reopen: bool, systemd_unit: Option<&str>) -> Self {
         debug!("Creating new RAATPlayerController with metadata_source: {}, control_pipe: {}, reopen: {}, systemd_unit: {:?}", 

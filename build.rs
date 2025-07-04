@@ -137,7 +137,7 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
     content.push_str(&format!("pub const ARTISTDB_API_KEY_OBF: &str = \"{}\";\n", artistdb_key_obf));    content.push_str(&format!("pub const SECRETS_ENCRYPTION_KEY_OBF: &str = \"{}\";\n", encryption_key_obf));
     content.push_str(&format!("pub const SPOTIFY_OAUTH_URL_OBF: &str = \"{}\";\n", spotify_oauth_url_obf));
     content.push_str(&format!("pub const SPOTIFY_PROXY_SECRET_OBF: &str = \"{}\";\n", spotify_proxy_secret_obf));
-    content.push_str("\npub fn get_all_secrets_obfuscated() -> std::collections::HashMap<String, String> {\n");
+    content.push_str("\n#[allow(unused_mut)]\npub fn get_all_secrets_obfuscated() -> std::collections::HashMap<String, String> {\n");
     content.push_str("    let mut map = std::collections::HashMap::new();\n");
     for (key, value) in secrets {
         let obf = obfuscate(value);

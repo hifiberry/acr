@@ -384,7 +384,10 @@ impl MetadataPipeReader {
                 None
             }
         }
-    }    /// Read from a stream until it's closed
+    }
+
+    /// Read from a stream until it's closed
+    #[allow(dead_code)]
     fn read_stream<R: Read>(&self, mut reader: BufReader<R>) -> io::Result<()> {
         let mut buffer = String::new();
         let mut line_number = 1; // Track line numbers

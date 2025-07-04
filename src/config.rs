@@ -20,7 +20,7 @@ use log::debug;
 /// # Example
 /// ```rust
 /// use serde_json::json;
-/// use acr::config::get_service_config;
+/// use audiocontrol::config::get_service_config;
 /// 
 /// // For a config with new structure:
 /// let config = json!({

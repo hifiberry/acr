@@ -133,20 +133,6 @@ The player responds to the following event types:
 }
 ```
 
-### Queue Change
-```json
-{
-  "type": "queue_changed",
-  "queue": [
-    {
-      "title": "Track 1",
-      "artist": "Artist 1",
-      "track_number": 1
-    }
-  ]
-}
-```
-
 ## Multiple Players
 
 You can configure multiple generic players:

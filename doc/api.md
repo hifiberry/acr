@@ -944,7 +944,6 @@ curl -X POST "http://localhost:3000/api/player/generic_player_1/update" \
 - `position_changed`: Update playback position
 - `loop_mode_changed`: Update loop mode
 - `shuffle_changed`: Update shuffle state
-- `queue_changed`: Update queue
 
 ### Example API Events
 
@@ -978,26 +977,6 @@ curl -X POST "http://localhost:3000/api/player/generic_player_1/update" \
 {
   "type": "position_changed",
   "position": 120.5
-}
-```
-
-#### Queue Change
-
-```json
-{
-  "type": "queue_changed",
-  "queue": [
-    {
-      "title": "Track 1",
-      "artist": "Artist 1",
-      "track_number": 1
-    },
-    {
-      "title": "Track 2", 
-      "artist": "Artist 2",
-      "track_number": 2
-    }
-  ]
 }
 ```
 

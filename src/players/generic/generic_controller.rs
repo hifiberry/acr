@@ -162,7 +162,6 @@ impl GenericPlayerController {
             "position_changed" => self.handle_position_change_event(event_data),
             "loop_mode_changed" => self.handle_loop_mode_change_event(event_data),
             "shuffle_changed" => self.handle_shuffle_change_event(event_data),
-            "queue_changed" => self.handle_queue_change_event(event_data),
             _ => {
                 debug!("Unknown event type '{}' for generic player", event_type);
                 false
@@ -248,25 +247,6 @@ impl GenericPlayerController {
         false
     }
     
-    /// Handle queue change events
-    fn handle_queue_change_event(&self, event_data: &Value) -> bool {
-        if let Some(queue_data) = event_data.get("queue").and_then(|q| q.as_array()) {
-            let mut tracks = Vec::new();
-            for track_data in queue_data {
-                if let Some(track) = self.parse_track_from_song_data(track_data) {
-                    tracks.push(track);
-                }
-            }
-            
-            if let Ok(mut queue) = self.current_queue.write() {
-                *queue = tracks;
-                debug!("Generic player '{}' queue changed ({} tracks)", self.player_name, queue.len());
-                return true;
-            }
-        }
-        false
-    }
-    
     /// Parse a song from JSON data
     fn parse_song_from_json(&self, song_data: &Value) -> Option<Song> {
         let mut song = Song::default();
@@ -293,32 +273,6 @@ impl GenericPlayerController {
         }
         
         Some(song)
-    }
-    
-    /// Parse a track from song-like JSON data (reuses song parsing logic)
-    fn parse_track_from_song_data(&self, track_data: &Value) -> Option<Track> {
-        // Get the basic track information
-        let name = track_data.get("name")
-            .or_else(|| track_data.get("title"))  // Allow both "name" and "title"
-            .and_then(|n| n.as_str())
-            .unwrap_or("Unknown")
-            .to_string();
-        
-        let track_number = track_data.get("track_number").and_then(|t| t.as_u64()).map(|n| n as u16);
-        
-        let mut track = Track::new(None, track_number, name);
-        
-        // Set artist if available
-        if let Some(artist) = track_data.get("artist").and_then(|a| a.as_str()) {
-            track.artist = Some(artist.to_string());
-        }
-        
-        // Set URI if available
-        if let Some(uri) = track_data.get("uri").and_then(|u| u.as_str()) {
-            track.uri = Some(uri.to_string());
-        }
-        
-        Some(track)
     }
 }
 

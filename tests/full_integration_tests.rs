@@ -4,6 +4,7 @@
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use std::fs;
+use std::io::{self, Write};
 use serde_json::json;
 use reqwest;
 use tokio;
@@ -242,12 +243,14 @@ fn ensure_binaries_built() -> Result<(), Box<dyn std::error::Error>> {
     let cli_exists = cli_binary_path.exists();
     
     if !server_exists || !cli_exists {
-        println!("🔨 Building required binaries...");
-        println!("   Server binary exists: {}", server_exists);
-        println!("   CLI binary exists: {}", cli_exists);
+        eprintln!("🔨 Building required binaries...");
+        eprintln!("   Server binary exists: {}", server_exists);
+        eprintln!("   CLI binary exists: {}", cli_exists);
+        let _ = io::stderr().flush(); // Force immediate output
         
         // Build both binaries
-        println!("🔨 Running: cargo build --bin audiocontrol --bin audiocontrol_player_event_client");
+        eprintln!("🔨 Running: cargo build --bin audiocontrol --bin audiocontrol_player_event_client");
+        let _ = io::stderr().flush(); // Force immediate output
         let build_output = Command::new("cargo")
             .args(&["build", "--bin", "audiocontrol", "--bin", "audiocontrol_player_event_client"])
             .output()?;
@@ -257,9 +260,11 @@ fn ensure_binaries_built() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("Failed to build binaries: {}", stderr).into());
         }
         
-        println!("✓ Binaries built successfully");
+        eprintln!("✓ Binaries built successfully");
+        let _ = io::stderr().flush(); // Force immediate output
     } else {
-        println!("✓ Required binaries already exist, skipping build");
+        eprintln!("✓ Required binaries already exist, skipping build");
+        let _ = io::stderr().flush(); // Force immediate output
     }
     
     Ok(())

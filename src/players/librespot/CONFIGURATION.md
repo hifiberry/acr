@@ -13,7 +13,7 @@ The Librespot player supports both traditional event pipe reading and modern API
 - `reopen_event_pipe`: Whether to reopen the pipe when it closes (default: `true`)
 - `systemd_unit`: Name of the systemd unit to check (optional)
 - `enable_pipe_reader`: Enable reading from event pipe (default: `true`)
-- `enable_api_processor`: Enable API endpoint processing (default: `true`)
+- `enable_api_processor`: **Deprecated** - API event processing is now always available
 
 ### Example Configurations
 
@@ -90,11 +90,13 @@ The Librespot player supports both traditional event pipe reading and modern API
 
 ### Using the API Endpoint
 
-When `enable_api_processor` is `true`, you can send events to:
+The Librespot player now supports the generic player API event mechanism. You can send events to:
 - **Endpoint**: `POST /api/player/librespot/update`
 - **Content-Type**: `application/json`
 
 The event format is the same as used by the pipe reader. For detailed information about the event format, see `EVENT_PIPE_FORMAT.md`.
+
+Note: The `enable_api_processor` configuration option has been deprecated. API event processing is now always available as part of the generic player API.
 
 ### Example API Usage
 

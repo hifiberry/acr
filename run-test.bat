@@ -3,96 +3,106 @@ setlocal EnableDelayedExpansion
 
 REM Script to run the AudioControl integration test suite
 REM Usage: 
-REM   run-test.bat                    - Run all tests
-REM   run-test.bat test_name          - Run specific test
-REM   run-test.bat test1 test2 test3  - Run multiple specific tests
+REM   run-test.bat                    - Run all tests (normal output)
+REM   run-test.bat --quiet            - Only show summary
+REM   run-test.bat --verbose          - Show full output
+REM   run-test.bat test_name ...      - Run specific test(s)
+REM   run-test.bat --quiet test_name  - Quiet, specific test(s)
+REM   run-test.bat --verbose test_name - Verbose, specific test(s)
 REM
 REM Examples:
 REM   run-test.bat test_librespot_api_events
-REM   run-test.bat test_librespot_api_events test_generic_player_becomes_active_on_playing
+REM   run-test.bat --quiet test_librespot_api_events
+REM   run-test.bat --verbose test_librespot_api_events
 
-if "%~1"=="" (
-    echo [TEST] Running AudioControl Integration Test Suite ^(All Tests^)
-    echo =========================================================
-    set "TEST_ARGS="
+REM Parse --quiet/--verbose flags
+set QUIET=0
+set VERBOSE=0
+set TEST_ARGS=
+:parse_args
+if "%~1"=="" goto after_args
+if "%~1"=="--quiet" (
+    set QUIET=1
+) else if "%~1"=="--verbose" (
+    set VERBOSE=1
 ) else (
-    echo [TEST] Running AudioControl Integration Test Suite ^(Specific Tests^)
-    echo ==============================================================
-    echo Tests to run: %*
-    echo.
-    REM For multiple tests, we need to pass them as space-separated arguments
-    REM Rust test filter supports space-separated names
-    set "TEST_ARGS=%*"
+    if defined TEST_ARGS (
+        set TEST_ARGS=!TEST_ARGS! %1
+    ) else (
+        set TEST_ARGS=%1
+    )
 )
+shift
+goto parse_args
+:after_args
 
 REM Ensure we're in the correct directory
 cd /d "%~dp0"
 
 REM Kill any existing audiocontrol processes before starting
-echo [CLEANUP] Cleaning up any existing audiocontrol processes...
-taskkill /F /IM audiocontrol.exe 2>nul || echo No existing audiocontrol processes found
-
-echo [WAIT] Waiting for process cleanup...
+taskkill /F /IM audiocontrol.exe 2>nul >nul
+REM Wait for process cleanup
 timeout /t 1 /nobreak >nul
 
-REM Run the integration tests with verbose output
-echo [START] Starting integration test suite...
-echo.
+REM List of test files
+set TEST_FILES=full_integration_tests librespot_integration_tests activemonitor_integration_test
+set FAILURES=0
 
 if not defined TEST_ARGS (
-    REM Run all tests
-    cargo test --test full_integration_tests -- --nocapture
-) else (
-    REM Run specific tests - for multiple tests, we need to run them individually
-    for %%t in (!TEST_ARGS!) do (
-        echo Running test: %%t
-        cargo test --test full_integration_tests "%%t" -- --nocapture
-        if !ERRORLEVEL! neq 0 (
-            echo [FAIL] Test %%t failed
-            set TEST_EXIT_CODE=1
-            goto :post_cleanup
+    for %%f in (%TEST_FILES%) do (
+        echo [RUN] %%f
+        if %QUIET%==1 (
+            cargo test --test %%f -- --quiet > output.txt 2>&1
+        ) else if %VERBOSE%==1 (
+            cargo test --test %%f -- --nocapture
+        ) else (
+            cargo test --test %%f
         )
-        echo [PASS] Test %%t passed
-        echo.
+        if !ERRORLEVEL! neq 0 (
+            echo [FAIL] %%f
+            set /a FAILURES+=1
+            if %QUIET%==1 (
+                type output.txt
+            )
+        ) else (
+            echo [PASS] %%f
+        )
+    )
+) else (
+    for %%f in (%TEST_FILES%) do (
+        for %%t in (!TEST_ARGS!) do (
+            echo [RUN] %%f %%t
+            if %QUIET%==1 (
+                cargo test --test %%f %%t -- --quiet > output.txt 2>&1
+            ) else if %VERBOSE%==1 (
+                cargo test --test %%f %%t -- --nocapture
+            ) else (
+                cargo test --test %%f %%t
+            )
+            if !ERRORLEVEL! neq 0 (
+                echo [FAIL] %%f %%t
+                set /a FAILURES+=1
+                if %QUIET%==1 (
+                    type output.txt
+                )
+            ) else (
+                echo [PASS] %%f %%t
+            )
+        )
     )
 )
 
-REM Capture the exit code
-if not defined TEST_ARGS (
-    set TEST_EXIT_CODE=%ERRORLEVEL%
-) else (
-    REM For specific tests, exit code was already set in the loop
-    if not defined TEST_EXIT_CODE set TEST_EXIT_CODE=0
-)
-
-:post_cleanup
-REM Additional cleanup after tests
-echo.
-echo [CLEANUP] Post-test cleanup...
-taskkill /F /IM audiocontrol.exe 2>nul || echo No audiocontrol processes to clean up
-
-REM Clean up test artifacts
-del /q test_config_*.json 2>nul || echo No config files to clean up
-rmdir /s /q test_cache_* 2>nul || echo No cache directories to clean up
-
-echo [CLEANUP] Cleanup complete
-echo.
+REM Cleanup
+if exist output.txt del /q output.txt
+taskkill /F /IM audiocontrol.exe 2>nul >nul
+del /q test_config_*.json 2>nul >nul
+rmdir /s /q test_cache_* 2>nul >nul
 
 REM Report results
-if %TEST_EXIT_CODE% equ 0 (
-    if not defined TEST_ARGS (
-        echo [PASS] All integration tests passed!
-    ) else (
-        echo [PASS] Selected integration tests passed!
-    )
+if %FAILURES%==0 (
+    echo [PASS] All integration tests passed!
+    exit /b 0
 ) else (
-    if not defined TEST_ARGS (
-        echo [FAIL] Some integration tests failed ^(exit code: %TEST_EXIT_CODE%^)
-    ) else (
-        echo [FAIL] Some selected integration tests failed ^(exit code: %TEST_EXIT_CODE%^)
-    )
+    echo [FAIL] Some integration tests failed!
+    exit /b 1
 )
-
-echo ==============================================
-
-exit /b %TEST_EXIT_CODE%

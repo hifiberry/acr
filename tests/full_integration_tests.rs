@@ -17,33 +17,8 @@ fn kill_existing_processes() {
         .args(&["/F", "/IM", "audiocontrol.exe"])
         .output();
     
-    // Also kill any cargo processes that might be running audiocontrol
-    let _ = Command::new("taskkill")
-        .args(&["/F", "/IM", "cargo.exe"])
-        .output();
-    
-    // Kill any processes using our test ports
-    for port in [3001, 3002, 3003, 3004] {
-        let _ = Command::new("netstat")
-            .args(&["-ano"])
-            .output()
-            .and_then(|output| {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    if line.contains(&format!(":{}", port)) && line.contains("LISTENING") {
-                        if let Some(pid) = line.split_whitespace().last() {
-                            let _ = Command::new("taskkill")
-                                .args(&["/F", "/PID", pid])
-                                .output();
-                        }
-                    }
-                }
-                Ok(output)
-            });
-    }
-    
     // Wait a moment for processes to be killed and ports to be released
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     
     println!("Process cleanup complete");
 }
@@ -167,20 +142,13 @@ fn cleanup_test_files(port: u16) {
 /// Helper function to ensure server process is killed
 fn ensure_server_killed(mut server_process: std::process::Child) {
     // Try to kill the process gracefully first
-    if let Err(_) = server_process.kill() {
-        // If that fails, force kill using taskkill
-        if let Ok(id) = server_process.id().try_into() {
-            let _ = Command::new("taskkill")
-                .args(&["/F", "/PID", &id.to_string()])
-                .output();
-        }
-    }
+    let _ = server_process.kill();
     
     // Wait for process to exit
     let _ = server_process.wait();
     
     // Additional cleanup - kill any remaining processes
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(200));
 }
 
 #[cfg(test)]
@@ -198,7 +166,7 @@ mod tests {
         let server_url = format!("http://localhost:{}", port);
         
         // Start AudioControl server
-        let mut server_process = Command::new("cargo")
+        let server_process = Command::new("cargo")
             .args(&["run", "--bin", "audiocontrol", "--", "-c", &config_path])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -281,7 +249,7 @@ mod tests {
         let server_url = format!("http://localhost:{}", port);
         
         // Start AudioControl server
-        let mut server_process = Command::new("cargo")
+        let server_process = Command::new("cargo")
             .args(&["run", "--bin", "audiocontrol", "--", "-c", &config_path])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -291,7 +259,7 @@ mod tests {
         // Wait for server to be ready
         let server_ready = wait_for_server(&server_url, 30).await;
         if server_ready.is_err() {
-            server_process.kill().expect("Failed to kill server process");
+            ensure_server_killed(server_process);
             cleanup_test_files(port);
             panic!("Server failed to start: {:?}", server_ready.err());
         }
@@ -315,7 +283,7 @@ mod tests {
         
         if !cli_output.status.success() {
             let stderr = String::from_utf8_lossy(&cli_output.stderr);
-            server_process.kill().expect("Failed to kill server process");
+            ensure_server_killed(server_process);
             cleanup_test_files(port);
             panic!("CLI command failed: {}", stderr);
         }
@@ -338,14 +306,14 @@ mod tests {
                 }
             }
             Err(e) => {
-                server_process.kill().expect("Failed to kill server process");
+                ensure_server_killed(server_process);
                 cleanup_test_files(port);
                 panic!("Failed to get updated now playing state: {}", e);
             }
         }
         
         // Cleanup
-        server_process.kill().expect("Failed to kill server process");
+        ensure_server_killed(server_process);
         cleanup_test_files(port);
     }
 
@@ -360,7 +328,7 @@ mod tests {
         let server_url = format!("http://localhost:{}", port);
         
         // Start AudioControl server
-        let mut server_process = Command::new("cargo")
+        let server_process = Command::new("cargo")
             .args(&["run", "--bin", "audiocontrol", "--", "-c", &config_path])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -370,7 +338,7 @@ mod tests {
         // Wait for server to be ready
         let server_ready = wait_for_server(&server_url, 30).await;
         if server_ready.is_err() {
-            server_process.kill().expect("Failed to kill server process");
+            ensure_server_killed(server_process);
             cleanup_test_files(port);
             panic!("Server failed to start: {:?}", server_ready.err());
         }
@@ -410,7 +378,7 @@ mod tests {
             
             if !cli_output.status.success() {
                 let stderr = String::from_utf8_lossy(&cli_output.stderr);
-                server_process.kill().expect("Failed to kill server process");
+                ensure_server_killed(server_process);
                 cleanup_test_files(port);
                 panic!("CLI command failed: {}", stderr);
             }
@@ -448,19 +416,19 @@ mod tests {
                 assert_eq!(now_playing["position"], 42.5);
             }
             (Err(e), _) => {
-                server_process.kill().expect("Failed to kill server process");
+                ensure_server_killed(server_process);
                 cleanup_test_files(port);
                 panic!("Failed to get final player state: {}", e);
             }
             (_, Err(e)) => {
-                server_process.kill().expect("Failed to kill server process");
+                ensure_server_killed(server_process);
                 cleanup_test_files(port);
                 panic!("Failed to get final now playing state: {}", e);
             }
         }
         
         // Cleanup
-        server_process.kill().expect("Failed to kill server process");
+        ensure_server_killed(server_process);
         cleanup_test_files(port);
     }
 
@@ -475,7 +443,7 @@ mod tests {
         let server_url = format!("http://localhost:{}", port);
         
         // Start AudioControl server
-        let mut server_process = Command::new("cargo")
+        let server_process = Command::new("cargo")
             .args(&["run", "--bin", "audiocontrol", "--", "-c", &config_path])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -485,7 +453,7 @@ mod tests {
         // Wait for server to be ready
         let server_ready = wait_for_server(&server_url, 30).await;
         if server_ready.is_err() {
-            server_process.kill().expect("Failed to kill server process");
+            ensure_server_killed(server_process);
             cleanup_test_files(port);
             panic!("Server failed to start: {:?}", server_ready.err());
         }
@@ -510,7 +478,7 @@ mod tests {
         
         if !cli_output.status.success() {
             let stderr = String::from_utf8_lossy(&cli_output.stderr);
-            server_process.kill().expect("Failed to kill server process");
+            ensure_server_killed(server_process);
             cleanup_test_files(port);
             panic!("CLI command failed: {}", stderr);
         }
@@ -526,14 +494,14 @@ mod tests {
                 assert_eq!(state["state"], "paused");
             }
             Err(e) => {
-                server_process.kill().expect("Failed to kill server process");
+                ensure_server_killed(server_process);
                 cleanup_test_files(port);
                 panic!("Failed to get updated player state: {}", e);
             }
         }
         
         // Cleanup
-        server_process.kill().expect("Failed to kill server process");
+        ensure_server_killed(server_process);
         cleanup_test_files(port);
     }
 }

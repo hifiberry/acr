@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
 use crate::data::PlayerUpdate;
+use serde_json::json;
 
 /// Librespot player controller implementation
 /// This controller interfaces with Spotify/librespot events via pipe reading and/or API endpoints
@@ -289,7 +290,7 @@ impl LibrespotPlayerController {
     /// Process event updates from the pipe reader
     fn update_from_event(&self, song: Song, player_state: PlayerState, 
                        capabilities: PlayerCapabilitySet, stream_details: StreamDetails) {
-        log::info!("[DEBUG] Librespot update_from_event: state={:?}, song={:?}", player_state.state, song.title);
+        log::info!("[API DEBUG] update_from_event called: state={:?}, song={:?}, capabilities={:?}, stream_details={:?}", player_state.state, song.title, capabilities, stream_details);
         // Store the new song if different from current
         let mut song_to_notify: Option<Song> = None;
         {
@@ -298,10 +299,8 @@ impl LibrespotPlayerController {
                 (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
                 (None, _) => true,
             };
-            
             if song_changed {
-                debug!("Updating current song from event");
-                // Replace the current song
+                debug!("[API DEBUG] Song changed: {:?} -> {:?}", current_song.as_ref().map(|s| &s.title), song.title);
                 *current_song = Some(song.clone());
                 song_to_notify = Some(song);
             }
@@ -309,38 +308,37 @@ impl LibrespotPlayerController {
         
         // Update stored player state
         if let Ok(mut current_state) = self.current_state.write() {
-            // Update playback state if it has changed
-            if current_state.state != player_state.state {
-                log::info!("[DEBUG] Librespot state change: {:?} -> {:?}", current_state.state, player_state.state);
-                debug!("Playback state changed from {:?} to {:?}", 
-                      current_state.state, player_state.state);
-                let new_state = player_state.state;
-                current_state.state = new_state;
-                
-                // Notify listeners of playback state change
+            let new_state = player_state.state;
+            let state_changed = current_state.state != new_state;
+            if state_changed {
+                log::info!("[API DEBUG] Librespot state change: {:?} -> {:?}", current_state.state, new_state);
+            }
+            if new_state == PlaybackState::Playing || state_changed {
+                log::info!("[API DEBUG] Notifying state changed: {:?}", new_state);
                 self.base.notify_state_changed(new_state);
             }
-            
-            // Update metadata
             current_state.metadata = player_state.metadata.clone();
         } else {
-            warn!("Failed to acquire lock on current state");
+            warn!("[API DEBUG] Failed to acquire lock on current state");
         }
         
         // Update stored capabilities - although capabilities are fixed for Librespot
         let capabilities_changed = self.base.set_capabilities_set(capabilities, false);
         if capabilities_changed {
             let current_caps = self.base.get_capabilities();
+            log::info!("[API DEBUG] Capabilities changed: {:?}", current_caps);
             self.base.notify_capabilities_changed(&current_caps);
         }
         
         // Update stored stream details
         if let Ok(mut details) = self.stream_details.write() {
+            log::info!("[API DEBUG] Stream details updated: {:?}", stream_details);
             *details = Some(stream_details);
         }
         
         // Now notify listeners of song change if needed
         if let Some(song) = song_to_notify {
+            log::info!("[API DEBUG] Notifying song changed: {:?}", song.title);
             self.base.notify_song_changed(Some(&song));
         }
         
@@ -350,8 +348,7 @@ impl LibrespotPlayerController {
     
     /// Convert generic API event format to Librespot event format
     fn convert_generic_to_librespot_event(&self, event_data: &serde_json::Value) -> Option<serde_json::Value> {
-        use serde_json::json;
-        
+        log::info!("[API DEBUG] convert_generic_to_librespot_event called: event_data={:?}", event_data);
         // Get the event type from the generic format
         let event_type = event_data.get("type").and_then(|t| t.as_str())?;
         

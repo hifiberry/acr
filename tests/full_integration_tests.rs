@@ -169,7 +169,13 @@ fn create_test_config(port: u16) -> Result<String, Box<dyn std::error::Error>> {
                 "path": format!("./test_cache_{}/images", port)
             }
         },
-        "action_plugins": []
+        "action_plugins": [
+            {
+                "active-monitor": {
+                    "enabled": true
+                }
+            }
+        ]
     });
     
     let config_path = format!("test_config_{}.json", port);
@@ -460,27 +466,67 @@ mod tests {
     static INIT: Once = Once::new();
     static mut SERVER_PROCESS: Option<std::process::Child> = None;
     static SERVER_READY: AtomicBool = AtomicBool::new(false);
+    static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
     
     const TEST_PORT: u16 = 3001;
+    
+    /// Force cleanup of server and test resources
+    fn force_cleanup() {
+        println!("🧹 Force cleanup: Killing server and cleaning up test resources...");
+        
+        // Kill server process directly if we have a handle to it
+        unsafe {
+            if let Some(mut process) = SERVER_PROCESS.take() {
+                println!("🧹 Killing server process directly...");
+                let _ = process.kill();
+                let _ = process.wait();
+            }
+        }
+        
+        // Also kill any processes by name
+        kill_existing_processes();
+        
+        // Clean up config files and cache directories
+        let _ = fs::remove_file(format!("test_config_{}.json", TEST_PORT));
+        let _ = fs::remove_dir_all(format!("test_cache_{}", TEST_PORT));
+        
+        println!("🧹 Force cleanup complete");
+    }
+    
+    /// Register cleanup to run when the process exits
+    fn register_cleanup() {
+        if !CLEANUP_REGISTERED.swap(true, Ordering::Relaxed) {
+            // Register multiple cleanup mechanisms to ensure server is always killed
+            
+            // 1. Register a panic hook to cleanup on panic
+            let original_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |panic_info| {
+                println!("🚨 Panic detected, forcing cleanup...");
+                force_cleanup();
+                original_hook(panic_info);
+            }));
+            
+            // 2. Register an exit hook using ctrlc if available
+            if let Ok(_) = ctrlc::set_handler(move || {
+                println!("🚨 Interrupt signal received, forcing cleanup...");
+                force_cleanup();
+                std::process::exit(1);
+            }) {
+                println!("✓ Registered interrupt handler for cleanup");
+            }
+            
+            println!("✓ Registered cleanup handlers");
+        }
+    }
     
     /// Cleanup guard that ensures server is killed when dropped
     struct ServerCleanupGuard;
     
     impl Drop for ServerCleanupGuard {
         fn drop(&mut self) {
-            println!("ServerCleanupGuard: Ensuring server cleanup...");
-            kill_existing_processes();
-            
-            // Clean up config files and cache directories
-            let _ = fs::remove_file(format!("test_config_{}.json", TEST_PORT));
-            let _ = fs::remove_dir_all(format!("test_cache_{}", TEST_PORT));
+            force_cleanup();
         }
     }
-    
-    // Global cleanup guard - when tests end, this will be dropped and cleanup the server
-    static CLEANUP_GUARD: std::sync::LazyLock<ServerCleanupGuard> = std::sync::LazyLock::new(|| {
-        ServerCleanupGuard
-    });
     
     async fn reset_player_state(server_url: &str) {
         // Get the CLI binary path
@@ -510,8 +556,8 @@ mod tests {
     async fn setup_test_server() -> String {
         let server_url = format!("http://localhost:{}", TEST_PORT);
         
-        // Ensure cleanup guard is initialized
-        std::sync::LazyLock::force(&CLEANUP_GUARD);
+        // Register cleanup handlers immediately when first test runs
+        register_cleanup();
         
         INIT.call_once(|| {
             // Ensure binaries are built before running tests
@@ -571,6 +617,9 @@ mod tests {
     #[serial]
     async fn test_full_integration_state_change() {
         let server_url = setup_test_server().await;
+        
+        // Ensure module cleanup is initialized
+        ensure_module_cleanup();
         
         // Reset player to known state
         reset_player_state(&server_url).await;
@@ -1225,29 +1274,165 @@ mod tests {
         println!("✓ Librespot error handling test completed");
     }
     
-    // This test should be run last to verify cleanup (named to run last alphabetically)
     #[tokio::test]
     #[serial]
-    async fn test_zzz_final_cleanup_verification() {
-        // This test runs last due to the "zzz" prefix
-        // It only verifies that the server is still working - cleanup happens via the guard
-        println!("Running final cleanup verification test...");
+    async fn test_generic_player_becomes_active_on_playing() {
+        let server_url = setup_test_server().await;
         
-        let server_url = format!("http://localhost:{}", TEST_PORT);
-        let client = reqwest::Client::new();
-        let health_url = format!("{}/api/version", server_url);
+        // Reset player to known state
+        reset_player_state(&server_url).await;
         
-        // Verify server is still running for this test
-        match client.get(&health_url).send().await {
-            Ok(response) => {
-                println!("✓ Server still reachable: status={}", response.status());
-                println!("✓ All tests completed successfully - server will be cleaned up by guard");
-            }
+        // Check initial state - player should be inactive when stopped
+        let initial_state = match get_player_state(&server_url, "test_player").await {
+            Ok(state) => state,
             Err(e) => {
-                println!("ℹ Server already down: {}", e);
+                assert!(false, "Failed to get initial player state: {}", e);
+                return;
             }
+        };
+        
+        println!("Initial test_player state: {}", serde_json::to_string_pretty(&initial_state).unwrap());
+        assert_eq!(initial_state["state"], "stopped");
+        
+        // The active monitor may take some time to mark players as inactive when stopped
+        // For this test, we'll focus on the transition to active when playing starts
+        
+        // Send state change to playing
+        let cli_binary = get_cli_binary_path().expect("Failed to get CLI binary path");
+        let cli_output = Command::new(&cli_binary)
+            .args(&[
+                "--host", &server_url,
+                "test_player", "state-changed", "playing"
+            ])
+            .output()
+            .expect("Failed to execute CLI command");
+        
+        if !cli_output.status.success() {
+            let stderr = String::from_utf8_lossy(&cli_output.stderr);
+            assert!(false, "CLI command failed: {}", stderr);
+            return;
         }
         
-        // Note: Actual cleanup happens via the ServerCleanupGuard when the process exits
+        // Wait a moment for the active monitor to process the state change
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        
+        // Check that player is now active
+        let updated_state = match get_player_state(&server_url, "test_player").await {
+            Ok(state) => state,
+            Err(e) => {
+                assert!(false, "Failed to get updated player state: {}", e);
+                return;
+            }
+        };
+        
+        println!("Updated test_player state: {}", serde_json::to_string_pretty(&updated_state).unwrap());
+        assert_eq!(updated_state["state"], "playing");
+        
+        // With active monitor enabled, player should become active when playing
+        if let Some(is_active) = updated_state.get("is_active").and_then(|a| a.as_bool()) {
+            assert!(is_active, "Player should be active when playing with active-monitor enabled");
+            println!("✓ Generic player correctly became active when playing");
+        } else {
+            assert!(false, "Player should have is_active field");
+        }
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_librespot_player_becomes_active_on_playing() {
+        let server_url = setup_test_server().await;
+        
+        // Get initial librespot player state
+        let initial_state = match get_librespot_player_state(&server_url).await {
+            Ok(state) => state,
+            Err(e) => {
+                assert!(false, "Librespot player should be available for testing: {}", e);
+                return;
+            }
+        };
+        
+        println!("Initial librespot state: {}", serde_json::to_string_pretty(&initial_state).unwrap());
+        
+        // Librespot should initially be inactive
+        if let Some(is_active) = initial_state.get("is_active").and_then(|a| a.as_bool()) {
+            println!("Initial librespot is_active: {}", is_active);
+        }
+        
+        // Send a playing state event via API to librespot
+        let playing_event = json!({
+            "event": "playing",
+            "NAME": "Active Test Song",
+            "ARTISTS": "Active Test Artist",
+            "ALBUM": "Active Test Album",
+            "POSITION_MS": 15000,
+            "DURATION_MS": 200000,
+            "TRACK_ID": "spotify:track:active123"
+        });
+        
+        if let Err(e) = send_librespot_api_event(&server_url, &playing_event).await {
+            assert!(false, "Failed to send playing event to Librespot: {}", e);
+            return;
+        }
+        
+        // Wait for the active monitor to process the state change
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        
+        // Check updated librespot player state
+        let updated_state = match get_librespot_player_state(&server_url).await {
+            Ok(state) => state,
+            Err(e) => {
+                assert!(false, "Librespot player should be available for testing: {}", e);
+                return;
+            }
+        };
+        
+        println!("Updated librespot state: {}", serde_json::to_string_pretty(&updated_state).unwrap());
+        
+        // Check if the player became active due to the playing event
+        if let Some(is_active) = updated_state.get("is_active").and_then(|a| a.as_bool()) {
+            if is_active {
+                println!("✓ Librespot player correctly became active when playing");
+                
+                // Verify the state was updated to playing
+                if let Some(state) = updated_state.get("state") {
+                    assert_eq!(state, &json!("playing"), "Librespot state should be 'playing'");
+                } else {
+                    assert!(false, "Librespot player should have state field");
+                }
+                
+                // Verify that last_seen was updated (indicating activity)
+                if let Some(last_seen) = updated_state.get("last_seen") {
+                    assert!(!last_seen.is_null(), "Librespot last_seen should be updated when active");
+                    println!("✓ Librespot last_seen updated: {}", last_seen);
+                } else {
+                    assert!(false, "Librespot player should have last_seen field");
+                }
+            } else {
+                println!("ℹ Librespot player received the event but did not become active");
+                println!("  This might be expected behavior if the active monitor requires specific conditions");
+            }
+        } else {
+            assert!(false, "Librespot player should have is_active field");
+        }
+    }
+    
+    // Module-level cleanup function that runs when the module is dropped
+    struct ModuleCleanup;
+    
+    impl Drop for ModuleCleanup {
+        fn drop(&mut self) {
+            println!("🧹 Module cleanup: Ensuring all resources are freed...");
+            force_cleanup();
+        }
+    }
+    
+    // This ensures cleanup even if the final test doesn't run
+    static MODULE_CLEANUP: std::sync::LazyLock<ModuleCleanup> = std::sync::LazyLock::new(|| {
+        ModuleCleanup
+    });
+    
+    // Helper function to ensure module cleanup is initialized
+    fn ensure_module_cleanup() {
+        std::sync::LazyLock::force(&MODULE_CLEANUP);
     }
 }

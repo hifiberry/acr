@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
+use crate::data::PlayerUpdate;
 
 /// Librespot player controller implementation
 /// This controller interfaces with Spotify/librespot events via pipe reading and/or API endpoints
@@ -288,6 +289,7 @@ impl LibrespotPlayerController {
     /// Process event updates from the pipe reader
     fn update_from_event(&self, song: Song, player_state: PlayerState, 
                        capabilities: PlayerCapabilitySet, stream_details: StreamDetails) {
+        log::info!("[DEBUG] Librespot update_from_event: state={:?}, song={:?}", player_state.state, song.title);
         // Store the new song if different from current
         let mut song_to_notify: Option<Song> = None;
         {
@@ -309,6 +311,7 @@ impl LibrespotPlayerController {
         if let Ok(mut current_state) = self.current_state.write() {
             // Update playback state if it has changed
             if current_state.state != player_state.state {
+                log::info!("[DEBUG] Librespot state change: {:?} -> {:?}", current_state.state, player_state.state);
                 debug!("Playback state changed from {:?} to {:?}", 
                       current_state.state, player_state.state);
                 let new_state = player_state.state;
@@ -631,6 +634,7 @@ impl PlayerController for LibrespotPlayerController {
     }
     
     fn process_api_event(&self, event_data: &serde_json::Value) -> bool {
+        log::info!("[DEBUG] Librespot process_api_event called with: {}", event_data);
         debug!("Processing API event for Librespot player: {}", event_data);
         
         // Check if this is a Librespot-specific event format (with "event" field)
@@ -639,21 +643,35 @@ impl PlayerController for LibrespotPlayerController {
             let json_str = event_data.to_string();
             if let Some((song, player_state, capabilities, stream_details)) = 
                 super::event_common::LibrespotEventProcessor::parse_event_json(&json_str) {
+                log::info!("[DEBUG] Librespot parsed legacy event: state={:?}, song={:?}", player_state.state, song.title);
                 self.update_from_event(song, player_state, capabilities, stream_details);
                 return true;
             }
         } else {
             // Try to convert from generic format to Librespot format
             if let Some(librespot_event) = self.convert_generic_to_librespot_event(event_data) {
+                log::info!("[DEBUG] Librespot converted generic event to: {}", librespot_event);
                 let json_str = librespot_event.to_string();
                 if let Some((song, player_state, capabilities, stream_details)) = 
                     super::event_common::LibrespotEventProcessor::parse_event_json(&json_str) {
+                    log::info!("[DEBUG] Librespot parsed converted event: state={:?}, song={:?}", player_state.state, song.title);
                     self.update_from_event(song, player_state, capabilities, stream_details);
                     return true;
                 }
             }
         }
-        
+        log::warn!("[DEBUG] Librespot process_api_event: event not processed");
         false
+    }
+
+    fn receive_update(&self, update: PlayerUpdate) -> bool {
+        // Convert PlayerUpdate to serde_json::Value and forward to process_api_event
+        match serde_json::to_value(&update) {
+            Ok(json_val) => self.process_api_event(&json_val),
+            Err(e) => {
+                log::warn!("[DEBUG] Librespot receive_update: failed to convert PlayerUpdate to JSON: {}", e);
+                false
+            }
+        }
     }
 }

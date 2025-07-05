@@ -12,11 +12,11 @@ REM   run-test.bat test_librespot_api_events
 REM   run-test.bat test_librespot_api_events test_generic_player_becomes_active_on_playing
 
 if "%~1"=="" (
-    echo 🧪 Running AudioControl Integration Test Suite ^(All Tests^)
+    echo [TEST] Running AudioControl Integration Test Suite ^(All Tests^)
     echo =========================================================
     set "TEST_ARGS="
 ) else (
-    echo 🧪 Running AudioControl Integration Test Suite ^(Specific Tests^)
+    echo [TEST] Running AudioControl Integration Test Suite ^(Specific Tests^)
     echo ==============================================================
     echo Tests to run: %*
     echo.
@@ -29,14 +29,14 @@ REM Ensure we're in the correct directory
 cd /d "%~dp0"
 
 REM Kill any existing audiocontrol processes before starting
-echo 🧹 Cleaning up any existing audiocontrol processes...
+echo [CLEANUP] Cleaning up any existing audiocontrol processes...
 taskkill /F /IM audiocontrol.exe 2>nul || echo No existing audiocontrol processes found
 
-echo ⏳ Waiting for process cleanup...
+echo [WAIT] Waiting for process cleanup...
 timeout /t 1 /nobreak >nul
 
 REM Run the integration tests with verbose output
-echo 🚀 Starting integration test suite...
+echo [START] Starting integration test suite...
 echo.
 
 if not defined TEST_ARGS (
@@ -48,11 +48,11 @@ if not defined TEST_ARGS (
         echo Running test: %%t
         cargo test --test full_integration_tests "%%t" -- --nocapture
         if !ERRORLEVEL! neq 0 (
-            echo ❌ Test %%t failed
+            echo [FAIL] Test %%t failed
             set TEST_EXIT_CODE=1
             goto :post_cleanup
         )
-        echo ✅ Test %%t passed
+        echo [PASS] Test %%t passed
         echo.
     )
 )
@@ -68,28 +68,28 @@ if not defined TEST_ARGS (
 :post_cleanup
 REM Additional cleanup after tests
 echo.
-echo 🧹 Post-test cleanup...
+echo [CLEANUP] Post-test cleanup...
 taskkill /F /IM audiocontrol.exe 2>nul || echo No audiocontrol processes to clean up
 
 REM Clean up test artifacts
 del /q test_config_*.json 2>nul || echo No config files to clean up
 rmdir /s /q test_cache_* 2>nul || echo No cache directories to clean up
 
-echo 🧹 Cleanup complete
+echo [CLEANUP] Cleanup complete
 echo.
 
 REM Report results
 if %TEST_EXIT_CODE% equ 0 (
     if not defined TEST_ARGS (
-        echo ✅ All integration tests passed!
+        echo [PASS] All integration tests passed!
     ) else (
-        echo ✅ Selected integration tests passed!
+        echo [PASS] Selected integration tests passed!
     )
 ) else (
     if not defined TEST_ARGS (
-        echo ❌ Some integration tests failed ^(exit code: %TEST_EXIT_CODE%^)
+        echo [FAIL] Some integration tests failed ^(exit code: %TEST_EXIT_CODE%^)
     ) else (
-        echo ❌ Some selected integration tests failed ^(exit code: %TEST_EXIT_CODE%^)
+        echo [FAIL] Some selected integration tests failed ^(exit code: %TEST_EXIT_CODE%^)
     )
 )
 

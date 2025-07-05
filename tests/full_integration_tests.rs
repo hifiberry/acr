@@ -161,11 +161,24 @@ fn create_test_config(port: u16) -> Result<String, Box<dyn std::error::Error>> {
                 "port": port
             }
         },
+        "cache": {
+            "attributes": {
+                "path": format!("./test_cache_{}/attributes", port)
+            },
+            "images": {
+                "path": format!("./test_cache_{}/images", port)
+            }
+        },
         "action_plugins": []
     });
     
     let config_path = format!("test_config_{}.json", port);
     fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+    
+    // Create the cache directories
+    std::fs::create_dir_all(format!("./test_cache_{}/attributes", port))?;
+    std::fs::create_dir_all(format!("./test_cache_{}/images", port))?;
+    
     Ok(config_path)
 }
 
@@ -295,6 +308,149 @@ fn get_cli_binary_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error
     Ok(binary_path)
 }
 
+/// Helper function to create a librespot test event in JSON format
+fn create_librespot_event(event_type: &str, title: Option<&str>, artist: Option<&str>) -> String {
+    let mut event = json!({
+        "event": event_type
+    });
+
+    if let Some(title) = title {
+        event["NAME"] = json!(title);
+    }
+
+    if let Some(artist) = artist {
+        event["ARTISTS"] = json!(artist);
+    }
+
+    // Add common fields based on event type
+    match event_type {
+        "playing" | "paused" | "stopped" => {
+            event["POSITION_MS"] = json!(30000);
+        }
+        "track_changed" => {
+            event["ALBUM"] = json!("Test Album");
+            event["DURATION_MS"] = json!(240000);
+            event["TRACK_ID"] = json!("spotify:track:test123");
+            event["URI"] = json!("spotify:track:test123");
+        }
+        _ => {}
+    }
+
+    event.to_string()
+}
+
+/// Helper function to create a generic API event
+fn create_generic_api_event(event_type: &str, title: Option<&str>, artist: Option<&str>) -> serde_json::Value {
+    let mut event = json!({
+        "type": event_type
+    });
+
+    match event_type {
+        "state_changed" => {
+            event["state"] = json!("playing");
+            event["position"] = json!(30.0);
+        }
+        "song_changed" => {
+            if let Some(title) = title {
+                event["song"] = json!({
+                    "title": title,
+                    "artist": artist.unwrap_or("Unknown Artist"),
+                    "album": "Test Album",
+                    "duration": 240.0,
+                    "track_number": 1,
+                    "metadata": {
+                        "track_id": "spotify:track:test123",
+                        "uri": "spotify:track:test123"
+                    }
+                });
+            }
+        }
+        "position_changed" => {
+            event["position"] = json!(45.0);
+        }
+        "loop_mode_changed" => {
+            event["mode"] = json!("none");
+        }
+        "shuffle_changed" => {
+            event["enabled"] = json!(false);
+        }
+        _ => {}
+    }
+
+    event
+}
+
+/// Helper function to send API events to Librespot
+async fn send_librespot_api_event(server_url: &str, event: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/player/librespot/update", server_url);
+    
+    let response = client
+        .post(&url)
+        .json(event)
+        .send()
+        .await?;
+    
+    if !response.status().is_success() {
+        return Err(format!("API request failed with status: {}", response.status()).into());
+    }
+    
+    Ok(())
+}
+
+/// Helper function to get Librespot player state
+async fn get_librespot_player_state(server_url: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/players", server_url);
+    
+    let response = client.get(&url).send().await?;
+    let players_response: serde_json::Value = response.json().await?;
+    
+    if let Some(players) = players_response.get("players").and_then(|p| p.as_array()) {
+        for player in players {
+            if let Some(id) = player.get("id").and_then(|i| i.as_str()) {
+                if id == "librespot" {
+                    return Ok(player.clone());
+                }
+            }
+        }
+    }
+    
+    Err("Librespot player not found".into())
+}
+
+/// Helper function to write events to the shared Librespot pipe
+fn write_librespot_events_to_pipe(events: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let pipe_path = if cfg!(target_os = "windows") {
+        let temp_dir = std::env::temp_dir();
+        temp_dir.join("test_librespot_event").to_string_lossy().to_string()
+    } else {
+        "/tmp/test_librespot_event".to_string()
+    };
+    
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(true)
+        .open(&pipe_path)?;
+    
+    for event in events {
+        writeln!(file, "{}", event)?;
+    }
+    
+    file.flush()?;
+    Ok(())
+}
+
+/// Helper function to get the shared Librespot pipe path
+fn get_librespot_pipe_path() -> String {
+    if cfg!(target_os = "windows") {
+        let temp_dir = std::env::temp_dir();
+        temp_dir.join("test_librespot_event").to_string_lossy().to_string()
+    } else {
+        "/tmp/test_librespot_event".to_string()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,21 +471,14 @@ mod tests {
             println!("ServerCleanupGuard: Ensuring server cleanup...");
             kill_existing_processes();
             
-            // Clean up config files
+            // Clean up config files and cache directories
             let _ = fs::remove_file(format!("test_config_{}.json", TEST_PORT));
+            let _ = fs::remove_dir_all(format!("test_cache_{}", TEST_PORT));
         }
     }
     
     // Global cleanup guard - when tests end, this will be dropped and cleanup the server
     static CLEANUP_GUARD: std::sync::LazyLock<ServerCleanupGuard> = std::sync::LazyLock::new(|| {
-        // Register a panic hook to ensure cleanup happens even if tests panic
-        let original_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |panic_info| {
-            println!("Test panic detected, performing cleanup...");
-            kill_existing_processes();
-            original_hook(panic_info);
-        }));
-        
         ServerCleanupGuard
     });
     
@@ -406,7 +555,8 @@ mod tests {
         if !SERVER_READY.load(Ordering::Relaxed) {
             let server_ready = wait_for_server(&server_url, 30).await;
             if server_ready.is_err() {
-                panic!("Server failed to start: {:?}", server_ready.err());
+                eprintln!("Server failed to start: {:?}", server_ready.err());
+                return server_url; // Return anyway, let individual tests handle the failure
             }
             SERVER_READY.store(true, Ordering::Relaxed);
             
@@ -434,7 +584,9 @@ mod tests {
                 assert_eq!(state["state"], "stopped");
             }
             Err(e) => {
-                panic!("Failed to get initial player state: {}", e);
+                eprintln!("Failed to get initial player state: {}", e);
+                assert!(false, "Failed to get initial player state: {}", e);
+                return;
             }
         }
         
@@ -450,7 +602,9 @@ mod tests {
         
         if !cli_output.status.success() {
             let stderr = String::from_utf8_lossy(&cli_output.stderr);
-            panic!("CLI command failed: {}", stderr);
+            eprintln!("CLI command failed: {}", stderr);
+            assert!(false, "CLI command failed: {}", stderr);
+            return;
         }
         
         // Wait a moment for the event to be processed
@@ -464,7 +618,9 @@ mod tests {
                 assert_eq!(state["state"], "playing");
             }
             Err(e) => {
-                panic!("Failed to get updated player state: {}", e);
+                eprintln!("Failed to get updated player state: {}", e);
+                assert!(false, "Failed to get updated player state: {}", e);
+                return;
             }
         }
     }
@@ -493,7 +649,7 @@ mod tests {
         
         if !cli_output.status.success() {
             let stderr = String::from_utf8_lossy(&cli_output.stderr);
-            panic!("CLI command failed: {}", stderr);
+            assert!(false, "CLI command failed: {}", stderr);
         }
         
         // Wait a moment for the event to be processed
@@ -510,11 +666,11 @@ mod tests {
                     assert_eq!(song["title"], "Integration Test Song");
                     assert_eq!(song["artist"], "Test Artist");
                 } else {
-                    panic!("No song in now playing state");
+                    assert!(false, "No song in now playing state");
                 }
             }
             Err(e) => {
-                panic!("Failed to get updated now playing state: {}", e);
+                assert!(false, "Failed to get updated now playing state: {}", e);
             }
         }
     }
@@ -555,7 +711,7 @@ mod tests {
             
             if !cli_output.status.success() {
                 let stderr = String::from_utf8_lossy(&cli_output.stderr);
-                panic!("CLI command failed: {}", stderr);
+                assert!(false, "CLI command failed: {}", stderr);
             }
             
             // Small delay between events
@@ -582,7 +738,7 @@ mod tests {
                     assert_eq!(song["title"], "Multi Test Song");
                     assert_eq!(song["artist"], "Multi Artist");
                 } else {
-                    panic!("No song in now playing state");
+                    assert!(false, "No song in now playing state");
                 }
                 
                 // Verify other now playing state
@@ -591,10 +747,10 @@ mod tests {
                 assert_eq!(now_playing["position"], 42.5);
             }
             (Err(e), _) => {
-                panic!("Failed to get final player state: {}", e);
+                assert!(false, "Failed to get final player state: {}", e);
             }
             (_, Err(e)) => {
-                panic!("Failed to get final now playing state: {}", e);
+                assert!(false, "Failed to get final now playing state: {}", e);
             }
         }
     }
@@ -624,7 +780,7 @@ mod tests {
         
         if !cli_output.status.success() {
             let stderr = String::from_utf8_lossy(&cli_output.stderr);
-            panic!("CLI command failed: {}", stderr);
+            assert!(false, "CLI command failed: {}", stderr);
         }
         
         // Wait a moment for the event to be processed
@@ -638,7 +794,7 @@ mod tests {
                 assert_eq!(state["state"], "paused");
             }
             Err(e) => {
-                panic!("Failed to get updated player state: {}", e);
+                assert!(false, "Failed to get updated player state: {}", e);
             }
         }
     }
@@ -680,11 +836,11 @@ mod tests {
                     println!("Initialized players: {:?}", found_players);
                     
                 } else {
-                    panic!("Invalid players response format");
+                    assert!(false, "Invalid players response format");
                 }
             }
             Err(e) => {
-                panic!("Failed to get players: {}", e);
+                assert!(false, "Failed to get players: {}", e);
             }
         }
     }
@@ -715,11 +871,11 @@ mod tests {
                         println!("ℹ RAAT player not found - likely due to missing pipe dependencies in test environment");
                     }
                 } else {
-                    panic!("Invalid players response format");
+                    assert!(false, "Invalid players response format");
                 }
             }
             Err(e) => {
-                panic!("Failed to get players: {}", e);
+                assert!(false, "Failed to get players: {}", e);
             }
         }
     }
@@ -750,11 +906,11 @@ mod tests {
                         println!("ℹ MPD player not found - likely due to missing MPD server in test environment");
                     }
                 } else {
-                    panic!("Invalid players response format");
+                    assert!(false, "Invalid players response format");
                 }
             }
             Err(e) => {
-                panic!("Failed to get players: {}", e);
+                assert!(false, "Failed to get players: {}", e);
             }
         }
     }
@@ -770,7 +926,7 @@ mod tests {
             Ok(response) => {
                 if let Some(players) = response.get("players").and_then(|p| p.as_array()) {
                     let librespot_player = players.iter().find(|p| {
-                        p.get("name").and_then(|n| n.as_str()).map(|s| s.contains("librespot")).unwrap_or(false)
+                        p.get("id").and_then(|i| i.as_str()).map(|s| s == "librespot").unwrap_or(false)
                     });
                     
                     if let Some(player) = librespot_player {
@@ -782,16 +938,291 @@ mod tests {
                         
                         println!("✓ Librespot player initialized successfully");
                     } else {
-                        println!("ℹ Librespot player not found - likely due to missing pipe dependencies in test environment");
+                        assert!(false, "Librespot player not found - it should be initialized in test environment");
                     }
                 } else {
-                    panic!("Invalid players response format");
+                    assert!(false, "Invalid players response format");
                 }
             }
             Err(e) => {
-                panic!("Failed to get players: {}", e);
+                assert!(false, "Failed to get players: {}", e);
             }
         }
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_librespot_api_events() {
+        let server_url = setup_test_server().await;
+        
+        // Test sending API events to the Librespot player
+        let track_changed_event = create_generic_api_event("song_changed", Some("API Test Song"), Some("API Test Artist"));
+        
+        // Send the API event - this should succeed even if librespot isn't active
+        if let Err(e) = send_librespot_api_event(&server_url, &track_changed_event).await {
+            assert!(false, "Failed to send API event to Librespot: {}", e);
+            return;
+        }
+        
+        // Wait for event processing
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        
+        // Check server state via API - this should find the librespot player
+        let player_state = match get_librespot_player_state(&server_url).await {
+            Ok(state) => state,
+            Err(e) => {
+                assert!(false, "Librespot player should be available for testing: {}", e);
+                return;
+            }
+        };
+        
+        println!("Librespot player state: {}", serde_json::to_string_pretty(&player_state).unwrap());
+        
+        // The player should exist but may not have processed the event if not active
+        if let Some(is_active) = player_state.get("is_active").and_then(|a| a.as_bool()) {
+            if is_active {
+                // If player is active, it should have processed the event
+                if let Some(song) = player_state.get("current_song") {
+                    assert_eq!(song.get("title"), Some(&json!("API Test Song")));
+                    assert_eq!(song.get("artist"), Some(&json!("API Test Artist")));
+                    println!("✓ Librespot API event processed successfully");
+                } else {
+                    assert!(false, "Active Librespot player should have processed the song change event");
+                }
+            } else {
+                println!("ℹ Librespot player is present but not active - skipping event verification");
+            }
+        } else {
+            assert!(false, "Librespot player should have is_active field");
+        }
+        
+        println!("✓ Librespot API event test passed");
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_librespot_pipe_events() {
+        let server_url = setup_test_server().await;
+        
+        // Write events to the shared librespot pipe file
+        let events = vec![
+            create_librespot_event("track_changed", Some("Pipe Test Song"), Some("Pipe Test Artist")),
+            create_librespot_event("playing", None, None),
+        ];
+        
+        // Write events to the shared librespot pipe file - handle failures gracefully
+        let pipe_write_success = match write_librespot_events_to_pipe(&events) {
+            Ok(()) => {
+                println!("✓ Successfully wrote events to Librespot pipe");
+                true
+            }
+            Err(e) => {
+                println!("ℹ Failed to write to Librespot pipe: {} - test will skip pipe verification", e);
+                false
+            }
+        };
+        
+        if pipe_write_success {
+            // Give the server time to process pipe events
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+        }
+        
+        // Check server state via API - this should find the librespot player
+        let player_state = match get_librespot_player_state(&server_url).await {
+            Ok(state) => state,
+            Err(e) => {
+                assert!(false, "Librespot player should be available for testing: {}", e);
+                return;
+            }
+        };
+        
+        println!("Librespot player state after pipe events: {}", serde_json::to_string_pretty(&player_state).unwrap());
+        
+        // The player should exist but may not have processed the event if not active
+        if let Some(is_active) = player_state.get("is_active").and_then(|a| a.as_bool()) {
+            if is_active && pipe_write_success {
+                // If player is active and pipe write succeeded, it should have processed the pipe events
+                if let Some(song) = player_state.get("current_song") {
+                    assert_eq!(song.get("title"), Some(&json!("Pipe Test Song")));
+                    assert_eq!(song.get("artist"), Some(&json!("Pipe Test Artist")));
+                } else {
+                    assert!(false, "Active Librespot player should have processed the pipe events");
+                }
+                
+                if let Some(state) = player_state.get("state") {
+                    assert_eq!(state, &json!("playing"));
+                } else {
+                    assert!(false, "Active Librespot player should have state");
+                }
+                
+                println!("✓ Librespot pipe events processed successfully");
+            } else {
+                println!("ℹ Librespot player is present but not active or pipe write failed - pipe events may not be processed");
+            }
+        } else {
+            assert!(false, "Librespot player should have is_active field");
+        }
+        
+        println!("✓ Librespot pipe event test passed");
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_librespot_legacy_format_api() {
+        let server_url = setup_test_server().await;
+        
+        // Test legacy Librespot format events via API
+        let legacy_event = json!({
+            "event": "track_changed",
+            "NAME": "Legacy API Song",
+            "ARTISTS": "Legacy API Artist",
+            "ALBUM": "Legacy API Album",
+            "DURATION_MS": 180000,
+            "TRACK_ID": "spotify:track:legacy123"
+        });
+        
+        if let Err(e) = send_librespot_api_event(&server_url, &legacy_event).await {
+            assert!(false, "Failed to send legacy API event to Librespot: {}", e);
+            return;
+        }
+        
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        
+        // Check server state via API - this should find the librespot player
+        let player_state = match get_librespot_player_state(&server_url).await {
+            Ok(state) => state,
+            Err(e) => {
+                assert!(false, "Librespot player should be available for testing: {}", e);
+                return;
+            }
+        };
+        
+        println!("Librespot player state after legacy event: {}", serde_json::to_string_pretty(&player_state).unwrap());
+        
+        // The player should exist but may not have processed the event if not active
+        if let Some(is_active) = player_state.get("is_active").and_then(|a| a.as_bool()) {
+            if is_active {
+                // If player is active, it should have processed the legacy event
+                if let Some(song) = player_state.get("current_song") {
+                    assert_eq!(song.get("title"), Some(&json!("Legacy API Song")));
+                    assert_eq!(song.get("artist"), Some(&json!("Legacy API Artist")));
+                    assert_eq!(song.get("album"), Some(&json!("Legacy API Album")));
+                    println!("✓ Librespot legacy event processed successfully");
+                } else {
+                    assert!(false, "Active Librespot player should have processed the legacy event");
+                }
+            } else {
+                println!("ℹ Librespot player is present but not active - skipping legacy event verification");
+            }
+        } else {
+            assert!(false, "Librespot player should have is_active field");
+        }
+        
+        println!("✓ Librespot legacy format API test passed");
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_librespot_mixed_events() {
+        let server_url = setup_test_server().await;
+        
+        // Start with a pipe event
+        let pipe_events = vec![
+            create_librespot_event("track_changed", Some("Mixed Test Song 1"), Some("Mixed Test Artist 1")),
+            create_librespot_event("playing", None, None),
+        ];
+        
+        let mut pipe_success = false;
+        if let Ok(_) = write_librespot_events_to_pipe(&pipe_events) {
+            pipe_success = true;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        
+        // Now send an API event regardless of pipe success
+        let api_event = create_generic_api_event("song_changed", Some("Mixed Test Song 2"), Some("Mixed Test Artist 2"));
+        
+        if let Err(e) = send_librespot_api_event(&server_url, &api_event).await {
+            assert!(false, "Failed to send API event to Librespot: {}", e);
+            return;
+        }
+        
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        
+        // Check updated state - this should find the librespot player
+        let player_state = match get_librespot_player_state(&server_url).await {
+            Ok(state) => state,
+            Err(e) => {
+                assert!(false, "Librespot player should be available for testing: {}", e);
+                return;
+            }
+        };
+        
+        println!("Librespot player state after mixed events: {}", serde_json::to_string_pretty(&player_state).unwrap());
+        
+        // The player should exist but may not have processed the event if not active
+        if let Some(is_active) = player_state.get("is_active").and_then(|a| a.as_bool()) {
+            if is_active {
+                // If player is active, it should have processed the API event (most recent)
+                if let Some(song) = player_state.get("current_song") {
+                    assert_eq!(song.get("title"), Some(&json!("Mixed Test Song 2")));
+                    assert_eq!(song.get("artist"), Some(&json!("Mixed Test Artist 2")));
+                    println!("✓ Librespot mixed events processed successfully");
+                } else {
+                    assert!(false, "Active Librespot player should have processed the API event");
+                }
+            } else {
+                println!("ℹ Librespot player is present but not active - mixed events may not be processed");
+            }
+        } else {
+            assert!(false, "Librespot player should have is_active field");
+        }
+        
+        println!("✓ Librespot mixed events test passed (pipe_success: {})", pipe_success);
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_librespot_error_handling() {
+        let server_url = setup_test_server().await;
+        
+        // Test invalid API event
+        let invalid_event = json!({
+            "invalid": "event"
+        });
+        
+        // This should succeed (server handles gracefully) but event won't be processed
+        if let Err(e) = send_librespot_api_event(&server_url, &invalid_event).await {
+            assert!(false, "Server should handle invalid events gracefully: {}", e);
+            return;
+        }
+        println!("✓ Server handled invalid event gracefully");
+        
+        // Test malformed JSON
+        let client = reqwest::Client::new();
+        let url = format!("{}/api/player/librespot/update", server_url);
+        let malformed_response = match client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body("{ invalid json")
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                assert!(false, "Should be able to send malformed JSON request: {}", e);
+                return;
+            }
+        };
+        
+        println!("Malformed JSON response status: {}", malformed_response.status());
+        // Should return a client error status
+        if malformed_response.status().is_client_error() {
+            println!("✓ Server correctly rejected malformed JSON");
+        } else {
+            assert!(false, "Server should have rejected malformed JSON with client error status, got: {}", malformed_response.status());
+        }
+        
+        println!("✓ Librespot error handling test completed");
     }
     
     // This test should be run last to verify cleanup (named to run last alphabetically)

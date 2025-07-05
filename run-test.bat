@@ -1,11 +1,29 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
-REM Script to run the full integration test suite for AudioControl
-REM This script runs all integration tests in verbose mode with proper cleanup
+REM Script to run the AudioControl integration test suite
+REM Usage: 
+REM   run-test.bat                    - Run all tests
+REM   run-test.bat test_name          - Run specific test
+REM   run-test.bat test1 test2 test3  - Run multiple specific tests
+REM
+REM Examples:
+REM   run-test.bat test_librespot_api_events
+REM   run-test.bat test_librespot_api_events test_generic_player_becomes_active_on_playing
 
-echo 🧪 Running AudioControl Integration Test Suite
-echo ==============================================
+if "%~1"=="" (
+    echo 🧪 Running AudioControl Integration Test Suite ^(All Tests^)
+    echo =========================================================
+    set "TEST_ARGS="
+) else (
+    echo 🧪 Running AudioControl Integration Test Suite ^(Specific Tests^)
+    echo ==============================================================
+    echo Tests to run: %*
+    echo.
+    REM For multiple tests, we need to pass them as space-separated arguments
+    REM Rust test filter supports space-separated names
+    set "TEST_ARGS=%*"
+)
 
 REM Ensure we're in the correct directory
 cd /d "%~dp0"
@@ -21,11 +39,33 @@ REM Run the integration tests with verbose output
 echo 🚀 Starting integration test suite...
 echo.
 
-cargo test --test full_integration_tests -- --nocapture
+if not defined TEST_ARGS (
+    REM Run all tests
+    cargo test --test full_integration_tests -- --nocapture
+) else (
+    REM Run specific tests - for multiple tests, we need to run them individually
+    for %%t in (!TEST_ARGS!) do (
+        echo Running test: %%t
+        cargo test --test full_integration_tests "%%t" -- --nocapture
+        if !ERRORLEVEL! neq 0 (
+            echo ❌ Test %%t failed
+            set TEST_EXIT_CODE=1
+            goto :post_cleanup
+        )
+        echo ✅ Test %%t passed
+        echo.
+    )
+)
 
 REM Capture the exit code
-set TEST_EXIT_CODE=%ERRORLEVEL%
+if not defined TEST_ARGS (
+    set TEST_EXIT_CODE=%ERRORLEVEL%
+) else (
+    REM For specific tests, exit code was already set in the loop
+    if not defined TEST_EXIT_CODE set TEST_EXIT_CODE=0
+)
 
+:post_cleanup
 REM Additional cleanup after tests
 echo.
 echo 🧹 Post-test cleanup...
@@ -40,9 +80,17 @@ echo.
 
 REM Report results
 if %TEST_EXIT_CODE% equ 0 (
-    echo ✅ All integration tests passed!
+    if not defined TEST_ARGS (
+        echo ✅ All integration tests passed!
+    ) else (
+        echo ✅ Selected integration tests passed!
+    )
 ) else (
-    echo ❌ Some integration tests failed (exit code: %TEST_EXIT_CODE%^)
+    if not defined TEST_ARGS (
+        echo ❌ Some integration tests failed ^(exit code: %TEST_EXIT_CODE%^)
+    ) else (
+        echo ❌ Some selected integration tests failed ^(exit code: %TEST_EXIT_CODE%^)
+    )
 )
 
 echo ==============================================

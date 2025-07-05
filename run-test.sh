@@ -1,10 +1,28 @@
 #!/bin/bash
 
-# Script to run the full integration test suite for AudioControl
-# This script runs all integration tests in verbose mode with proper cleanup
+# Script to run the AudioControl integration test suite
+# Usage: 
+#   ./run-test.sh                    - Run all tests
+#   ./run-test.sh test_name          - Run specific test
+#   ./run-test.sh test1 test2 test3  - Run multiple specific tests
+#
+# Examples:
+#   ./run-test.sh test_librespot_api_events
+#   ./run-test.sh test_librespot_api_events test_generic_player_becomes_active_on_playing
 
-echo "🧪 Running AudioControl Integration Test Suite"
-echo "=============================================="
+if [ $# -eq 0 ]; then
+    echo "🧪 Running AudioControl Integration Test Suite (All Tests)"
+    echo "========================================================="
+    TEST_ARGS=""
+else
+    echo "🧪 Running AudioControl Integration Test Suite (Specific Tests)"
+    echo "=============================================================="
+    echo "Tests to run: $*"
+    echo ""
+    # For multiple tests, we need to run them individually or use a pattern
+    # Rust test filter supports space-separated names or regex patterns
+    TEST_ARGS="$*"
+fi
 
 # Ensure we're in the correct directory
 cd "$(dirname "$0")"
@@ -26,7 +44,23 @@ sleep 1
 echo "🚀 Starting integration test suite..."
 echo ""
 
-cargo test --test full_integration_tests -- --nocapture
+if [ -z "$TEST_ARGS" ]; then
+    # Run all tests
+    cargo test --test full_integration_tests -- --nocapture
+else
+    # Run specific tests - for multiple tests, we need to run them individually
+    # But we can use a pattern that matches all of them
+    for test_name in $TEST_ARGS; do
+        echo "Running test: $test_name"
+        cargo test --test full_integration_tests "$test_name" -- --nocapture
+        if [ $? -ne 0 ]; then
+            echo "❌ Test $test_name failed"
+            exit 1
+        fi
+        echo "✅ Test $test_name passed"
+        echo ""
+    done
+fi
 
 # Capture the exit code
 TEST_EXIT_CODE=$?
@@ -51,9 +85,17 @@ echo ""
 
 # Report results
 if [ $TEST_EXIT_CODE -eq 0 ]; then
-    echo "✅ All integration tests passed!"
+    if [ -z "$TEST_ARGS" ]; then
+        echo "✅ All integration tests passed!"
+    else
+        echo "✅ Selected integration tests passed!"
+    fi
 else
-    echo "❌ Some integration tests failed (exit code: $TEST_EXIT_CODE)"
+    if [ -z "$TEST_ARGS" ]; then
+        echo "❌ Some integration tests failed (exit code: $TEST_EXIT_CODE)"
+    else
+        echo "❌ Some selected integration tests failed (exit code: $TEST_EXIT_CODE)"
+    fi
 fi
 
 echo "=============================================="

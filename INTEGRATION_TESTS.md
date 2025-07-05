@@ -4,17 +4,53 @@ This directory contains scripts to run the AudioControl integration test suite w
 
 ## Usage
 
-### Windows
+### Run all tests
+
+**Windows:**
 
 ```cmd
 run-test.bat
 ```
 
-### Linux/Unix/macOS
+**Linux/Unix/macOS:**
 
 ```bash
 ./run-test.sh
 ```
+
+### Run specific tests
+
+**Windows:**
+
+```cmd
+run-test.bat test_librespot_api_events
+run-test.bat test_librespot_api_events test_generic_player_becomes_active_on_playing
+```
+
+**Linux/Unix/macOS:**
+
+```bash
+./run-test.sh test_librespot_api_events
+./run-test.sh test_librespot_api_events test_generic_player_becomes_active_on_playing
+```
+
+### Available tests
+
+- `test_full_integration_state_change`
+- `test_full_integration_song_change`
+- `test_full_integration_multiple_events`
+- `test_full_integration_custom_event`
+- `test_players_initialization`
+- `test_raat_player_initialization`
+- `test_mpd_player_initialization`
+- `test_librespot_player_initialization`
+- `test_librespot_api_events`
+- `test_librespot_pipe_events`
+- `test_librespot_legacy_format_api`
+- `test_librespot_mixed_events`
+- `test_librespot_error_handling`
+- `test_generic_player_becomes_active_on_playing`
+- `test_librespot_player_becomes_active_on_playing`
 
 ## What the scripts do
 

@@ -367,7 +367,10 @@ impl AudioController {
     pub fn get_player_by_name(&self, player_name: &str) -> Option<Arc<RwLock<Box<dyn PlayerController + Send + Sync>>>> {
         for ctrl_lock in &self.controllers {
             if let Ok(ctrl) = ctrl_lock.read() {
-                if ctrl.get_player_name() == player_name {
+                // Match by player name or player id, case-insensitive
+                if ctrl.get_player_name().eq_ignore_ascii_case(player_name)
+                    || ctrl.get_player_id().eq_ignore_ascii_case(player_name)
+                {
                     return Some(ctrl_lock.clone());
                 }
             }

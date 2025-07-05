@@ -595,7 +595,10 @@ pub fn update_player_state(
     let mut found_controller = None;
     for ctrl_lock in controllers {
         if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == effective_player_name {
+            // Match by player name or player id (case-insensitive)
+            if ctrl.get_player_name().eq_ignore_ascii_case(&effective_player_name)
+                || ctrl.get_player_id().eq_ignore_ascii_case(&effective_player_name)
+            {
                 found_controller = Some(ctrl_lock.clone());
                 break;
             }
@@ -609,7 +612,7 @@ pub fn update_player_state(
                 Status::NotFound,
                 Json(PlayerUpdateResponse {
                     success: false,
-                    message: format!("No player found with name: {}", effective_player_name),
+                    message: format!("Player '{}' not found", effective_player_name),
                 }),
             ));
         }

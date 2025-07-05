@@ -14,7 +14,7 @@ pub struct PlayerEventResponse {
 }
 
 /// Generic API endpoint to receive player events via API
-#[post("/api/player/<player_name>/update", data = "<event_data>")]
+#[post("/player/<player_name>/update", data = "<event_data>")]
 pub fn player_event_update(
     player_name: String, 
     event_data: Json<Value>,

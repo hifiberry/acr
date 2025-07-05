@@ -870,3 +870,159 @@ A Track represents a single song on an album.
 | name | string | Track title |
 | artist | string | Track-specific artist (only included if different from album artist), may be null |
 | uri | string | URI/filename of the track, may be null |
+
+## Generic Player Controller
+
+The `GenericPlayerController` provides a configurable player that can be controlled entirely through the API events. It maintains internal state and can be used to represent external players or services that are controlled through the ACR API.
+
+### Configuration
+
+Multiple generic players can be configured in the JSON configuration file:
+
+```json
+{
+  "generic_player_1": {
+    "type": "generic",
+    "name": "generic_player_1",
+    "display_name": "Generic Player 1",
+    "enable": true,
+    "supports_api_events": true,
+    "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop"],
+    "initial_state": "stopped",
+    "shuffle": false,
+    "loop_mode": "none"
+  }
+}
+```
+
+### Configuration Options
+
+- `name`: Unique identifier for the player instance
+- `display_name`: Human-readable name for the player
+- `enable`: Whether the player is enabled (default: true)
+- `supports_api_events`: Whether the player accepts API events (default: true)
+- `capabilities`: Array of supported capabilities (default: ["play", "pause", "stop", "next", "previous"])
+- `initial_state`: Initial playback state ("playing", "paused", "stopped")
+- `shuffle`: Initial shuffle state (default: false)
+- `loop_mode`: Initial loop mode ("none", "song", "playlist")
+
+### Available Capabilities
+
+- `play`: Can start playback
+- `pause`: Can pause playback
+- `stop`: Can stop playback
+- `next`: Can skip to next track
+- `previous`: Can skip to previous track
+- `seek`: Can seek within track
+- `shuffle`: Can toggle shuffle mode
+- `loop`: Can set loop mode
+- `queue`: Can manage queue
+- `volume`: Can control volume
+
+### API Events
+
+The generic player responds to the standard player event API:
+
+```bash
+curl -X POST "http://localhost:3000/api/player/generic_player_1/update" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "song_changed",
+    "song": {
+      "title": "Song Title",
+      "artist": "Artist Name",
+      "album": "Album Name",
+      "duration": 240.5
+    }
+  }'
+```
+
+### Supported Event Types
+
+- `state_changed`: Update playback state
+- `song_changed`: Update current song
+- `position_changed`: Update playback position
+- `loop_mode_changed`: Update loop mode
+- `shuffle_changed`: Update shuffle state
+- `queue_changed`: Update queue
+
+### Example API Events
+
+#### State Change
+
+```json
+{
+  "type": "state_changed",
+  "state": "playing"
+}
+```
+
+#### Song Change
+
+```json
+{
+  "type": "song_changed",
+  "song": {
+    "title": "Song Title",
+    "artist": "Artist Name",
+    "album": "Album Name",
+    "duration": 240.5,
+    "uri": "https://example.com/song.mp3"
+  }
+}
+```
+
+#### Position Change
+
+```json
+{
+  "type": "position_changed",
+  "position": 120.5
+}
+```
+
+#### Queue Change
+
+```json
+{
+  "type": "queue_changed",
+  "queue": [
+    {
+      "title": "Track 1",
+      "artist": "Artist 1",
+      "track_number": 1
+    },
+    {
+      "title": "Track 2", 
+      "artist": "Artist 2",
+      "track_number": 2
+    }
+  ]
+}
+```
+
+### Multiple Instances
+
+Multiple generic players can be configured with different names and used independently:
+
+```json
+{
+  "player_a": {
+    "type": "generic",
+    "name": "player_a",
+    "display_name": "Player A",
+    "capabilities": ["play", "pause", "stop"]
+  },
+  "player_b": {
+    "type": "generic",
+    "name": "player_b", 
+    "display_name": "Player B",
+    "capabilities": ["play", "pause", "stop", "next", "previous", "seek"]
+  }
+}
+```
+
+Each instance has its own API endpoint:
+
+- `POST /api/player/player_a/update`
+- `POST /api/player/player_b/update`

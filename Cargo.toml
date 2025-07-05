@@ -92,3 +92,7 @@ path = "src/tools/acr_send_update.rs"
 [[bin]]
 name = "audiocontrol_dump_store"
 path = "src/tools/acr_dump_store.rs"
+
+[[bin]]
+name = "audiocontrol_player_event_client"
+path = "src/tools/acr_player_event_client.rs"

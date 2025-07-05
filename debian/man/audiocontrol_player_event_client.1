@@ -1,0 +1,82 @@
+.TH audiocontrol_player_event_client 1 "December 2024" "audiocontrol 0.4.3" "AudioControl Manual"
+.SH NAME
+audiocontrol_player_event_client \- send events to AudioControl player API
+.SH SYNOPSIS
+.B audiocontrol_player_event_client
+[\fB\-\-host\fR \fIHOST\fR]
+.I PLAYER_NAME
+.I COMMAND
+[\fICOMMAND_OPTIONS\fR...]
+.SH DESCRIPTION
+.B audiocontrol_player_event_client
+is a command-line tool for sending events to the AudioControl player API. It is designed to work with the generic player API and can send various types of events to control player state.
+.SH OPTIONS
+.TP
+.B \-\-host \fIHOST\fR
+AudioControl host URL (default: http://localhost:3000)
+.TP
+.B \-h, \-\-help
+Print help information
+.TP
+.B \-V, \-\-version
+Print version information
+.SH COMMANDS
+.TP
+.B state\-changed \fISTATE\fR
+Send a playback state change event. STATE can be: playing, paused, stopped, unknown
+.TP
+.B song\-changed \-\-title \fITITLE\fR [\fIOPTIONS\fR]
+Send a song change event. Required: \-\-title. Optional: \-\-artist, \-\-album, \-\-duration, \-\-uri
+.TP
+.B position\-changed \fIPOSITION\fR
+Send a position change event. POSITION is in seconds (float)
+.TP
+.B shuffle\-changed \fIBOOL\fR
+Send a shuffle state change event. BOOL is true or false
+.TP
+.B loop\-mode\-changed \fIMODE\fR
+Send a loop mode change event. MODE can be: none, song, track, playlist
+.TP
+.B queue\-changed [\-\-file \fIFILE\fR | \-\-json \fIJSON\fR]
+Send a queue change event from a JSON file or inline JSON string
+.TP
+.B custom \fIJSON\fR
+Send a custom event from JSON string
+.SH EXAMPLES
+.TP
+Send a song change event:
+.B audiocontrol_player_event_client my_player song\-changed \-\-title "Song Title" \-\-artist "Artist"
+.TP
+Change playback state:
+.B audiocontrol_player_event_client my_player state\-changed playing
+.TP
+Update position:
+.B audiocontrol_player_event_client my_player position\-changed 120.5
+.TP
+Enable shuffle:
+.B audiocontrol_player_event_client my_player shuffle\-changed true
+.TP
+Update queue from file:
+.B audiocontrol_player_event_client my_player queue\-changed \-\-file queue.json
+.TP
+Connect to remote host:
+.B audiocontrol_player_event_client \-\-host http://192.168.1.100:3000 remote_player state\-changed playing
+.SH EXIT STATUS
+.TP
+.B 0
+Success
+.TP
+.B 1
+Network error, HTTP error, or JSON parsing error
+.TP
+.B 2
+Command-line argument error
+.SH FILES
+.TP
+.B ~/.config/audiocontrol/
+Configuration directory (if applicable)
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_send_update (1)
+.SH AUTHOR
+AudioControl Development Team

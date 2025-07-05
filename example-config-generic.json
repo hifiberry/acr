@@ -1,0 +1,24 @@
+{
+  "generic_player_1": {
+    "type": "generic",
+    "name": "generic_player_1",
+    "display_name": "Generic Player 1",
+    "enable": true,
+    "supports_api_events": true,
+    "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop"],
+    "initial_state": "stopped",
+    "shuffle": false,
+    "loop_mode": "none"
+  },
+  "generic_player_2": {
+    "type": "generic", 
+    "name": "generic_player_2",
+    "display_name": "Generic Player 2",
+    "enable": true,
+    "supports_api_events": true,
+    "capabilities": ["play", "pause", "stop"],
+    "initial_state": "stopped",
+    "shuffle": false,
+    "loop_mode": "none"
+  }
+}

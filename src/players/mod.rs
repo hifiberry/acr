@@ -7,6 +7,7 @@ mod raat;
 pub mod librespot;
 pub mod lms;
 pub mod event_api;
+pub mod generic;
 
 // Re-export the PlayerController trait and related components
 pub use player_controller::{PlayerController, BasePlayerController};
@@ -16,6 +17,8 @@ pub use player_factory::{create_player_from_json, create_player_from_json_str, P
 pub use raat::MetadataPipeReader;
 // Export the LibrespotPlayerController for use in player_factory
 pub use librespot::LibrespotPlayerController;
+// Export the GenericPlayerController for use in player_factory
+pub use generic::GenericPlayerController;
 // Export the event API components
 pub use event_api::{PlayerEventResponse, player_event_update};
 

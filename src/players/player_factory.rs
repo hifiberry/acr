@@ -1,4 +1,4 @@
-use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController};
+use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController, generic::GenericPlayerController};
 use serde_json::Value;
 use std::error::Error;
 use std::fmt;
@@ -150,6 +150,12 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
             "lms" => {
                 // Create LMSAudioController with config
                 let player = LMSAudioController::new(config_obj.clone());
+                Ok(Box::new(player))
+            },
+            "generic" => {
+                // Create GenericPlayerController from config
+                let player = GenericPlayerController::from_config(config_obj)
+                    .map_err(|e| PlayerCreationError::ParseError(e))?;
                 Ok(Box::new(player))
             },
             "null" => {

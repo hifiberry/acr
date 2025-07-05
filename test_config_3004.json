@@ -1,0 +1,33 @@
+{
+  "action_plugins": [],
+  "players": [
+    {
+      "generic": {
+        "capabilities": [
+          "play",
+          "pause",
+          "stop",
+          "next",
+          "previous",
+          "seek",
+          "shuffle",
+          "loop"
+        ],
+        "display_name": "Test Player",
+        "enable": true,
+        "initial_state": "stopped",
+        "loop_mode": "none",
+        "name": "test_player",
+        "shuffle": false,
+        "supports_api_events": true
+      }
+    }
+  ],
+  "services": {
+    "webserver": {
+      "enable": true,
+      "host": "127.0.0.1",
+      "port": 3004
+    }
+  }
+}

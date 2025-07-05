@@ -76,6 +76,10 @@ named_pipe = "0.4"
 [build-dependencies]
 base64 = "0.21.0"
 
+# Development dependencies for testing
+[dev-dependencies]
+serial_test = "3.0"
+
 # Binary targets
 [[bin]]
 name = "audiocontrol_dump_cache"

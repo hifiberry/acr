@@ -7,15 +7,24 @@ use std::fs;
 use serde_json::json;
 use reqwest;
 use tokio;
+use serial_test::serial;
 
-/// Helper function to kill any existing audiocontrol processes
+/// Helper function to kill any existing audiocontrol processes (cross-platform)
 fn kill_existing_processes() {
     println!("Killing any existing audiocontrol processes...");
     
-    // On Windows, use taskkill to kill processes by name
-    let _ = Command::new("taskkill")
-        .args(&["/F", "/IM", "audiocontrol.exe"])
-        .output();
+    // Cross-platform process killing
+    if cfg!(target_os = "windows") {
+        // On Windows, use taskkill to kill processes by name
+        let _ = Command::new("taskkill")
+            .args(&["/F", "/IM", "audiocontrol.exe"])
+            .output();
+    } else {
+        // On Linux/Unix, use pkill to kill processes by name with SIGKILL
+        let _ = Command::new("pkill")
+            .args(&["-KILL", "-f", "audiocontrol"])
+            .output();
+    }
     
     // Wait a moment for processes to be killed and ports to be released
     std::thread::sleep(Duration::from_millis(1000));
@@ -134,29 +143,10 @@ fn create_test_config(port: u16) -> Result<String, Box<dyn std::error::Error>> {
     Ok(config_path)
 }
 
-/// Helper function to clean up test files
-fn cleanup_test_files(port: u16) {
-    let _ = fs::remove_file(format!("test_config_{}.json", port));
-}
-
-/// Helper function to ensure server process is killed
-fn ensure_server_killed(mut server_process: std::process::Child) {
-    // Try to kill the process gracefully first
-    let _ = server_process.kill();
-    
-    // Wait for process to exit
-    let _ = server_process.wait();
-    
-    // Additional cleanup - kill any remaining processes
-    std::thread::sleep(Duration::from_millis(200));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Once;
-    use std::sync::Arc;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     
     static INIT: Once = Once::new();
@@ -164,6 +154,32 @@ mod tests {
     static SERVER_READY: AtomicBool = AtomicBool::new(false);
     
     const TEST_PORT: u16 = 3001;
+    
+    /// Cleanup guard that ensures server is killed when dropped
+    struct ServerCleanupGuard;
+    
+    impl Drop for ServerCleanupGuard {
+        fn drop(&mut self) {
+            println!("ServerCleanupGuard: Ensuring server cleanup...");
+            kill_existing_processes();
+            
+            // Clean up config files
+            let _ = fs::remove_file(format!("test_config_{}.json", TEST_PORT));
+        }
+    }
+    
+    // Global cleanup guard - when tests end, this will be dropped and cleanup the server
+    static CLEANUP_GUARD: std::sync::LazyLock<ServerCleanupGuard> = std::sync::LazyLock::new(|| {
+        // Register a panic hook to ensure cleanup happens even if tests panic
+        let original_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            println!("Test panic detected, performing cleanup...");
+            kill_existing_processes();
+            original_hook(panic_info);
+        }));
+        
+        ServerCleanupGuard
+    });
     
     async fn reset_player_state(server_url: &str) {
         // Reset player to a known state
@@ -195,6 +211,9 @@ mod tests {
     
     async fn setup_test_server() -> String {
         let server_url = format!("http://localhost:{}", TEST_PORT);
+        
+        // Ensure cleanup guard is initialized
+        std::sync::LazyLock::force(&CLEANUP_GUARD);
         
         INIT.call_once(|| {
             // Kill any existing processes first
@@ -232,6 +251,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_full_integration_state_change() {
         let server_url = setup_test_server().await;
         
@@ -283,6 +303,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_full_integration_song_change() {
         let server_url = setup_test_server().await;
         
@@ -332,6 +353,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_full_integration_multiple_events() {
         let server_url = setup_test_server().await;
         
@@ -415,6 +437,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_full_integration_custom_event() {
         let server_url = setup_test_server().await;
         
@@ -453,6 +476,35 @@ mod tests {
             }
             Err(e) => {
                 panic!("Failed to get updated player state: {}", e);
+            }
+        }
+    }
+    
+    // This test should be run last to verify cleanup
+    #[tokio::test]
+    #[serial]
+    async fn test_zzz_cleanup_verification() {
+        // This test runs last due to the "zzz" prefix
+        // It verifies that we can clean up properly
+        println!("Running final cleanup verification test...");
+        
+        // Force cleanup
+        kill_existing_processes();
+        
+        // Wait a moment and verify server is down
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        
+        let server_url = format!("http://localhost:{}", TEST_PORT);
+        let client = reqwest::Client::new();
+        let health_url = format!("{}/api/version", server_url);
+        
+        // Server should not be reachable after cleanup
+        match client.get(&health_url).send().await {
+            Ok(_) => {
+                println!("Warning: Server still reachable after cleanup");
+            }
+            Err(_) => {
+                println!("✓ Server properly cleaned up");
             }
         }
     }

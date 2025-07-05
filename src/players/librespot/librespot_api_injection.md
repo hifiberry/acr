@@ -20,19 +20,36 @@ curl -X POST \
 ## Sending a Song Change Event
 To simulate a song change:
 
+### Windows PowerShell
+```
+Invoke-WebRequest -Uri "http://localhost:1080/api/player/librespot/update" -Method POST -ContentType "application/json" -Body '{
+  "event": "track_changed",
+  "NAME": "Test Song",
+  "ARTISTS": "Test Artist",
+  "ALBUM": "Test Album",
+  "DURATION_MS": "180000",
+  "TRACK_ID": "spotify:track:test123"
+}'
+```
+
+### Windows CMD
+```
+curl.exe -X POST -H "Content-Type: application/json" -d "{\"event\":\"track_changed\",\"NAME\":\"Test Song\",\"ARTISTS\":\"Test Artist\",\"ALBUM\":\"Test Album\",\"DURATION_MS\":\"180000\",\"TRACK_ID\":\"spotify:track:test123\"}" http://localhost:1080/api/player/librespot/update
+```
+
+### Linux/macOS/WSL
 ```
 curl -X POST \
   -H "Content-Type: application/json" \
   -d '{
-    "type": "song_changed",
-    "song": {
-      "title": "Test Song",
-      "artist": "Test Artist",
-      "album": "Test Album",
-      "duration": 180.0
-    }
+    "event": "track_changed",
+    "NAME": "Test Song",
+    "ARTISTS": "Test Artist",
+    "ALBUM": "Test Album",
+    "DURATION_MS": "180000",
+    "TRACK_ID": "spotify:track:test123"
   }' \
-  http://localhost:1350/api/players/librespot/event
+  http://localhost:1080/api/player/librespot/update
 ```
 
 ## Checking the Player State

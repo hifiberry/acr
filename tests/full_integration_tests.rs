@@ -213,6 +213,58 @@ fn create_test_pipes() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Helper function to ensure required binaries are built
+fn ensure_binaries_built() -> Result<(), Box<dyn std::error::Error>> {
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .unwrap_or_else(|_| "target".to_string());
+    
+    // Check for audiocontrol binary
+    let server_binary_name = if cfg!(target_os = "windows") {
+        "audiocontrol.exe"
+    } else {
+        "audiocontrol"
+    };
+    let server_binary_path = std::path::PathBuf::from(&target_dir)
+        .join("debug")
+        .join(server_binary_name);
+    
+    // Check for CLI binary
+    let cli_binary_name = if cfg!(target_os = "windows") {
+        "audiocontrol_player_event_client.exe"
+    } else {
+        "audiocontrol_player_event_client"
+    };
+    let cli_binary_path = std::path::PathBuf::from(&target_dir)
+        .join("debug")
+        .join(cli_binary_name);
+    
+    let server_exists = server_binary_path.exists();
+    let cli_exists = cli_binary_path.exists();
+    
+    if !server_exists || !cli_exists {
+        println!("🔨 Building required binaries...");
+        println!("   Server binary exists: {}", server_exists);
+        println!("   CLI binary exists: {}", cli_exists);
+        
+        // Build both binaries
+        println!("🔨 Running: cargo build --bin audiocontrol --bin audiocontrol_player_event_client");
+        let build_output = Command::new("cargo")
+            .args(&["build", "--bin", "audiocontrol", "--bin", "audiocontrol_player_event_client"])
+            .output()?;
+        
+        if !build_output.status.success() {
+            let stderr = String::from_utf8_lossy(&build_output.stderr);
+            return Err(format!("Failed to build binaries: {}", stderr).into());
+        }
+        
+        println!("✓ Binaries built successfully");
+    } else {
+        println!("✓ Required binaries already exist, skipping build");
+    }
+    
+    Ok(())
+}
+
 /// Helper function to get the path to the audiocontrol_player_event_client binary
 fn get_cli_binary_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     // Get the target directory path
@@ -308,6 +360,9 @@ mod tests {
         std::sync::LazyLock::force(&CLEANUP_GUARD);
         
         INIT.call_once(|| {
+            // Ensure binaries are built before running tests
+            ensure_binaries_built().expect("Failed to build required binaries");
+            
             // Kill any existing processes first
             kill_existing_processes();
             

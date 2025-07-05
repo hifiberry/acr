@@ -27,7 +27,7 @@ fn kill_existing_processes() {
     }
     
     // Wait a moment for processes to be killed and ports to be released
-    std::thread::sleep(Duration::from_millis(1000));
+    std::thread::sleep(Duration::from_millis(500));
     
     println!("Process cleanup complete");
 }
@@ -52,7 +52,7 @@ async fn wait_for_server(base_url: &str, timeout_seconds: u64) -> Result<(), Box
             }
             Err(e) => {
                 println!("Health check failed: {}", e);
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
     }
@@ -213,6 +213,31 @@ fn create_test_pipes() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Helper function to get the path to the audiocontrol_player_event_client binary
+fn get_cli_binary_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    // Get the target directory path
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .unwrap_or_else(|_| "target".to_string());
+    
+    // Build the path to the CLI binary
+    let binary_name = if cfg!(target_os = "windows") {
+        "audiocontrol_player_event_client.exe"
+    } else {
+        "audiocontrol_player_event_client"
+    };
+    
+    let binary_path = std::path::PathBuf::from(target_dir)
+        .join("debug")
+        .join(binary_name);
+    
+    // The binary should already exist from the test compilation
+    if !binary_path.exists() {
+        return Err(format!("CLI binary not found at {:?}. Make sure to run 'cargo build --bin audiocontrol_player_event_client' first.", binary_path).into());
+    }
+    
+    Ok(binary_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,31 +277,28 @@ mod tests {
     });
     
     async fn reset_player_state(server_url: &str) {
+        // Get the CLI binary path
+        let cli_binary = get_cli_binary_path().expect("Failed to get CLI binary path");
+        
         // Reset player to a known state
         let reset_commands = vec![
-            vec!["test_player", "state-changed", "stopped"],
-            vec!["test_player", "shuffle-changed"], // No --shuffle flag = false
-            vec!["test_player", "loop-mode-changed", "none"],
-            vec!["test_player", "position-changed", "0.0"],
+            vec!["--host", server_url, "test_player", "state-changed", "stopped"],
+            vec!["--host", server_url, "test_player", "shuffle-changed"], // No --shuffle flag = false
+            vec!["--host", server_url, "test_player", "loop-mode-changed", "none"],
+            vec!["--host", server_url, "test_player", "position-changed", "0.0"],
         ];
         
         for command_args in reset_commands {
-            let mut full_args = vec![
-                "run", "--bin", "audiocontrol_player_event_client", "--",
-                "--host", server_url
-            ];
-            full_args.extend_from_slice(&command_args);
-            
-            let _ = Command::new("cargo")
-                .args(&full_args)
+            let _ = Command::new(&cli_binary)
+                .args(&command_args)
                 .output();
                 
             // Small delay between reset commands
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
         
         // Wait for reset to complete
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     
     async fn setup_test_server() -> String {
@@ -292,12 +314,24 @@ mod tests {
             // Create test pipes for players that need them
             let _ = create_test_pipes();
             
-            // Setup
+            // Setup config
             let config_path = create_test_config(TEST_PORT).expect("Failed to create test config");
             
-            // Start AudioControl server
-            let server_process = Command::new("cargo")
-                .args(&["run", "--bin", "audiocontrol", "--", "-c", &config_path])
+            // Get the path to the pre-built audiocontrol binary
+            let target_dir = std::env::var("CARGO_TARGET_DIR")
+                .unwrap_or_else(|_| "target".to_string());
+            let binary_name = if cfg!(target_os = "windows") {
+                "audiocontrol.exe"
+            } else {
+                "audiocontrol"
+            };
+            let binary_path = std::path::PathBuf::from(target_dir)
+                .join("debug")
+                .join(binary_name);
+            
+            // Start AudioControl server using pre-built binary
+            let server_process = Command::new(&binary_path)
+                .args(&["-c", &config_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -317,7 +351,7 @@ mod tests {
             SERVER_READY.store(true, Ordering::Relaxed);
             
             // Give server a moment to fully initialize
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
         
         server_url
@@ -345,9 +379,9 @@ mod tests {
         }
         
         // Send state change event using CLI tool
-        let cli_output = Command::new("cargo")
+        let cli_binary = get_cli_binary_path().expect("Failed to get CLI binary path");
+        let cli_output = Command::new(&cli_binary)
             .args(&[
-                "run", "--bin", "audiocontrol_player_event_client", "--",
                 "--host", &server_url,
                 "test_player", "state-changed", "playing"
             ])
@@ -360,7 +394,7 @@ mod tests {
         }
         
         // Wait a moment for the event to be processed
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         
         // Check that player state has changed
         let updated_state = get_player_state(&server_url, "test_player").await;
@@ -384,9 +418,9 @@ mod tests {
         reset_player_state(&server_url).await;
         
         // Send song change event using CLI tool
-        let cli_output = Command::new("cargo")
+        let cli_binary = get_cli_binary_path().expect("Failed to get CLI binary path");
+        let cli_output = Command::new(&cli_binary)
             .args(&[
-                "run", "--bin", "audiocontrol_player_event_client", "--",
                 "--host", &server_url,
                 "test_player", "song-changed",
                 "--title", "Integration Test Song",
@@ -403,7 +437,7 @@ mod tests {
         }
         
         // Wait a moment for the event to be processed
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         
         // Check that player song has changed
         let updated_state = get_now_playing(&server_url).await;
@@ -434,32 +468,28 @@ mod tests {
         reset_player_state(&server_url).await;
         
         // Send multiple events
+        let cli_binary = get_cli_binary_path().expect("Failed to get CLI binary path");
         let events = vec![
             // Set song
             vec![
+                "--host", &server_url,
                 "test_player", "song-changed",
                 "--title", "Multi Test Song",
                 "--artist", "Multi Artist"
             ],
             // Set state to playing
-            vec!["test_player", "state-changed", "playing"],
+            vec!["--host", &server_url, "test_player", "state-changed", "playing"],
             // Set shuffle
-            vec!["test_player", "shuffle-changed", "--shuffle"],
+            vec!["--host", &server_url, "test_player", "shuffle-changed", "--shuffle"],
             // Set loop mode
-            vec!["test_player", "loop-mode-changed", "track"],
+            vec!["--host", &server_url, "test_player", "loop-mode-changed", "track"],
             // Set position
-            vec!["test_player", "position-changed", "42.5"],
+            vec!["--host", &server_url, "test_player", "position-changed", "42.5"],
         ];
         
         for event_args in events {
-            let mut full_args = vec![
-                "run", "--bin", "audiocontrol_player_event_client", "--",
-                "--host", &server_url
-            ];
-            full_args.extend_from_slice(&event_args);
-            
-            let cli_output = Command::new("cargo")
-                .args(&full_args)
+            let cli_output = Command::new(&cli_binary)
+                .args(&event_args)
                 .output()
                 .expect("Failed to execute CLI command");
             
@@ -469,11 +499,11 @@ mod tests {
             }
             
             // Small delay between events
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         
         // Wait for all events to be processed
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
         
         // Check final state
         let final_player_state = get_player_state(&server_url, "test_player").await;
@@ -523,9 +553,9 @@ mod tests {
             "state": "paused"
         });
         
-        let cli_output = Command::new("cargo")
+        let cli_binary = get_cli_binary_path().expect("Failed to get CLI binary path");
+        let cli_output = Command::new(&cli_binary)
             .args(&[
-                "run", "--bin", "audiocontrol_player_event_client", "--",
                 "--host", &server_url,
                 "test_player", "custom", &custom_event.to_string()
             ])
@@ -538,7 +568,7 @@ mod tests {
         }
         
         // Wait a moment for the event to be processed
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         
         // Check that player state has changed
         let updated_state = get_player_state(&server_url, "test_player").await;
@@ -704,32 +734,29 @@ mod tests {
         }
     }
     
-    // This test should be run last to verify cleanup
+    // This test should be run last to verify cleanup (named to run last alphabetically)
     #[tokio::test]
     #[serial]
-    async fn test_zzz_cleanup_verification() {
+    async fn test_zzz_final_cleanup_verification() {
         // This test runs last due to the "zzz" prefix
-        // It verifies that we can clean up properly
+        // It only verifies that the server is still working - cleanup happens via the guard
         println!("Running final cleanup verification test...");
-        
-        // Force cleanup
-        kill_existing_processes();
-        
-        // Wait a moment and verify server is down
-        tokio::time::sleep(Duration::from_millis(1000)).await;
         
         let server_url = format!("http://localhost:{}", TEST_PORT);
         let client = reqwest::Client::new();
         let health_url = format!("{}/api/version", server_url);
         
-        // Server should not be reachable after cleanup
+        // Verify server is still running for this test
         match client.get(&health_url).send().await {
-            Ok(_) => {
-                println!("Warning: Server still reachable after cleanup");
+            Ok(response) => {
+                println!("✓ Server still reachable: status={}", response.status());
+                println!("✓ All tests completed successfully - server will be cleaned up by guard");
             }
-            Err(_) => {
-                println!("✓ Server properly cleaned up");
+            Err(e) => {
+                println!("ℹ Server already down: {}", e);
             }
         }
+        
+        // Note: Actual cleanup happens via the ServerCleanupGuard when the process exits
     }
 }

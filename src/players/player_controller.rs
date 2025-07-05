@@ -185,6 +185,26 @@ pub trait PlayerController: Send + Sync {
     fn has_metadata(&self) -> bool {
         !self.get_meta_keys().is_empty()
     }
+    
+    /// Check if this player supports API events
+    /// 
+    /// Returns true if the player can process API events, false otherwise
+    fn supports_api_events(&self) -> bool {
+        false
+    }
+    
+    /// Process an API event
+    /// 
+    /// # Arguments
+    /// 
+    /// * `event_data` - The event data to process
+    /// 
+    /// # Returns
+    /// 
+    /// `true` if the event was successfully processed, `false` otherwise
+    fn process_api_event(&self, _event_data: &serde_json::Value) -> bool {
+        false
+    }
 }
 
 /// Base implementation of PlayerController that handles state listener management

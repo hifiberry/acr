@@ -363,6 +363,18 @@ impl AudioController {
         self.controllers.clone()
     }
     
+    /// Get a controller by player name
+    pub fn get_player_by_name(&self, player_name: &str) -> Option<Arc<RwLock<Box<dyn PlayerController + Send + Sync>>>> {
+        for ctrl_lock in &self.controllers {
+            if let Ok(ctrl) = ctrl_lock.read() {
+                if ctrl.get_player_name() == player_name {
+                    return Some(ctrl_lock.clone());
+                }
+            }
+        }
+        None
+    }
+    
     /// Set the active controller by index
     /// 
     /// Returns true if the active controller was changed, false if the index was invalid.

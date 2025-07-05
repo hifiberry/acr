@@ -194,14 +194,16 @@ curl -X POST http://<device-ip>:1080/api/player/lms/command/clear_queue
 curl -X POST http://<device-ip>:1080/api/player/lms/command/play_queue_index:3
 ```
 
-### Librespot Event Update
+### Player Event Update
 
-Receives Spotify/Librespot events via API endpoint instead of reading from a pipe.
+Receives player events via API endpoint. This endpoint allows external systems to send event notifications to players that support API event processing.
 
-- **Endpoint**: `/api/player/librespot/update`
+**Purpose**: External systems (like Spotify Connect, RAAT bridges, or other audio services) can use this endpoint to inform players about events that occurred elsewhere, such as track changes, playback state changes, or other player-related events.
+
+- **Endpoint**: `/api/player/<player-name>/update`
 - **Method**: POST
 - **Content-Type**: `application/json`
-- **Request Body**: JSON event data in the same format as expected by the event pipe reader (see EVENT_PIPE_FORMAT.md)
+- **Request Body**: JSON event data in a format specific to the player
 - **Response**:
 
   ```json
@@ -220,10 +222,12 @@ Receives Spotify/Librespot events via API endpoint instead of reading from a pip
   }
   ```
 
-#### Librespot API Examples
+**Note**: Not all players support API event processing. Currently, only Librespot implements this functionality.
+
+#### Player Event API Examples
 
 ```bash
-# Send a track_changed event
+# Send a track_changed event to Librespot
 curl -X POST http://<device-ip>:1080/api/player/librespot/update \
   -H "Content-Type: application/json" \
   -d '{
@@ -235,7 +239,7 @@ curl -X POST http://<device-ip>:1080/api/player/librespot/update \
     "TRACK_ID": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"
   }'
 
-# Send a playing event
+# Send a playing event to Librespot
 curl -X POST http://<device-ip>:1080/api/player/librespot/update \
   -H "Content-Type: application/json" \
   -d '{
@@ -244,14 +248,13 @@ curl -X POST http://<device-ip>:1080/api/player/librespot/update \
     "TRACK_ID": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"
   }'
 
-# Send a paused event
-curl -X POST http://<device-ip>:1080/api/player/librespot/update \
+# Try to send an event to a player that doesn't support API events
+curl -X POST http://<device-ip>:1080/api/player/mpd/update \
   -H "Content-Type: application/json" \
   -d '{
-    "event": "paused",
-    "POSITION_MS": "45000",
-    "TRACK_ID": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"
+    "event": "some_event"
   }'
+# Response: {"success": false, "message": "Player 'mpd' does not support API event processing"}
 ```
 
 ### Get Now Playing Information

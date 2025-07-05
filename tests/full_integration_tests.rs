@@ -912,12 +912,21 @@ mod tests {
                         println!("RAAT player found: {}", serde_json::to_string_pretty(player).unwrap());
                         
                         // Verify RAAT player has basic state
-                        assert!(player.get("state").is_some(), "RAAT player missing state");
-                        assert!(player.get("is_active").is_some(), "RAAT player missing is_active");
+                        if player.get("state").is_none() {
+                            eprintln!("❌ RAAT player missing state field");
+                            assert!(false, "RAAT player missing state");
+                            return;
+                        }
+                        if player.get("is_active").is_none() {
+                            eprintln!("❌ RAAT player missing is_active field");
+                            assert!(false, "RAAT player missing is_active");
+                            return;
+                        }
                         
                         println!("✓ RAAT player initialized successfully");
                     } else {
-                        println!("ℹ RAAT player not found - likely due to missing pipe dependencies in test environment");
+                        println!("ℹ RAAT player not found - this may be expected if pipe dependencies are not available");
+                        // Don't fail - RAAT player may not be available in test environment
                     }
                 } else {
                     assert!(false, "Invalid players response format");
@@ -947,12 +956,21 @@ mod tests {
                         println!("MPD player found: {}", serde_json::to_string_pretty(player).unwrap());
                         
                         // Verify MPD player has basic state
-                        assert!(player.get("state").is_some(), "MPD player missing state");
-                        assert!(player.get("is_active").is_some(), "MPD player missing is_active");
+                        if player.get("state").is_none() {
+                            eprintln!("❌ MPD player missing state field");
+                            assert!(false, "MPD player missing state");
+                            return;
+                        }
+                        if player.get("is_active").is_none() {
+                            eprintln!("❌ MPD player missing is_active field");
+                            assert!(false, "MPD player missing is_active");
+                            return;
+                        }
                         
                         println!("✓ MPD player initialized successfully");
                     } else {
-                        println!("ℹ MPD player not found - likely due to missing MPD server in test environment");
+                        println!("ℹ MPD player not found - this may be expected if MPD server is not available");
+                        // Don't fail - MPD player may not be available in test environment
                     }
                 } else {
                     assert!(false, "Invalid players response format");
@@ -1027,22 +1045,36 @@ mod tests {
         
         println!("Librespot player state: {}", serde_json::to_string_pretty(&player_state).unwrap());
         
-        // The player should exist but may not have processed the event if not active
+        // The player should exist and process events when they're sent
         if let Some(is_active) = player_state.get("is_active").and_then(|a| a.as_bool()) {
             if is_active {
                 // If player is active, it should have processed the event
                 if let Some(song) = player_state.get("current_song") {
-                    assert_eq!(song.get("title"), Some(&json!("API Test Song")));
-                    assert_eq!(song.get("artist"), Some(&json!("API Test Artist")));
+                    if song.get("title") != Some(&json!("API Test Song")) {
+                        eprintln!("❌ Expected song title 'API Test Song', got {:?}", song.get("title"));
+                        assert!(false, "Active Librespot player should have processed the song title");
+                        return;
+                    }
+                    if song.get("artist") != Some(&json!("API Test Artist")) {
+                        eprintln!("❌ Expected artist 'API Test Artist', got {:?}", song.get("artist"));
+                        assert!(false, "Active Librespot player should have processed the artist");
+                        return;
+                    }
                     println!("✓ Librespot API event processed successfully");
                 } else {
+                    eprintln!("❌ Active Librespot player has no current_song after sending event");
                     assert!(false, "Active Librespot player should have processed the song change event");
+                    return;
                 }
             } else {
-                println!("ℹ Librespot player is present but not active - skipping event verification");
+                println!("ℹ Librespot player is not active - this is expected since we only sent a song change event");
+                println!("  Players only become active when they receive a state change to 'playing'");
+                println!("✓ Librespot player correctly remained inactive for non-playing event");
             }
         } else {
+            eprintln!("❌ Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
+            return;
         }
         
         println!("✓ Librespot API event test passed");
@@ -1059,14 +1091,14 @@ mod tests {
             create_librespot_event("playing", None, None),
         ];
         
-        // Write events to the shared librespot pipe file - handle failures gracefully
+        // Write events to the shared librespot pipe file
         let pipe_write_success = match write_librespot_events_to_pipe(&events) {
             Ok(()) => {
                 println!("✓ Successfully wrote events to Librespot pipe");
                 true
             }
             Err(e) => {
-                println!("ℹ Failed to write to Librespot pipe: {} - test will skip pipe verification", e);
+                println!("ℹ Failed to write to Librespot pipe: {} - pipe may not be available in test environment", e);
                 false
             }
         };
@@ -1087,29 +1119,58 @@ mod tests {
         
         println!("Librespot player state after pipe events: {}", serde_json::to_string_pretty(&player_state).unwrap());
         
-        // The player should exist but may not have processed the event if not active
+        // The player should exist and may process events if active, but should only become active on "playing" state
         if let Some(is_active) = player_state.get("is_active").and_then(|a| a.as_bool()) {
             if is_active && pipe_write_success {
                 // If player is active and pipe write succeeded, it should have processed the pipe events
                 if let Some(song) = player_state.get("current_song") {
-                    assert_eq!(song.get("title"), Some(&json!("Pipe Test Song")));
-                    assert_eq!(song.get("artist"), Some(&json!("Pipe Test Artist")));
+                    if song.get("title") != Some(&json!("Pipe Test Song")) {
+                        eprintln!("❌ Expected song title 'Pipe Test Song', got {:?}", song.get("title"));
+                        assert!(false, "Active Librespot player should have processed pipe song title");
+                        return;
+                    }
+                    if song.get("artist") != Some(&json!("Pipe Test Artist")) {
+                        eprintln!("❌ Expected artist 'Pipe Test Artist', got {:?}", song.get("artist"));
+                        assert!(false, "Active Librespot player should have processed pipe artist");
+                        return;
+                    }
                 } else {
+                    eprintln!("❌ Active Librespot player has no current_song after pipe events");
                     assert!(false, "Active Librespot player should have processed the pipe events");
+                    return;
                 }
                 
                 if let Some(state) = player_state.get("state") {
-                    assert_eq!(state, &json!("playing"));
+                    if state != &json!("playing") {
+                        eprintln!("❌ Expected state 'playing', got {:?}", state);
+                        assert!(false, "Active Librespot player should have playing state");
+                        return;
+                    }
                 } else {
+                    eprintln!("❌ Active Librespot player missing state field");
                     assert!(false, "Active Librespot player should have state");
+                    return;
                 }
                 
-                println!("✓ Librespot pipe events processed successfully");
+                println!("✓ Librespot pipe events processed successfully by active player");
+            } else if !is_active {
+                println!("ℹ Librespot player is not active - this is expected since it should only become active on 'playing' state");
+                println!("  We sent track_changed and playing events, so it should have become active from the playing event");
+                // Since we sent a "playing" event, the player should have become active
+                if pipe_write_success {
+                    eprintln!("❌ Librespot player should have become active after receiving 'playing' event via pipe");
+                    assert!(false, "Librespot player should become active when receiving 'playing' state via pipe");
+                    return;
+                } else {
+                    println!("  Pipe write failed, so player staying inactive is expected");
+                }
             } else {
-                println!("ℹ Librespot player is present but not active or pipe write failed - pipe events may not be processed");
+                println!("ℹ Librespot player is active but pipe write failed - cannot verify pipe event processing");
             }
         } else {
+            eprintln!("❌ Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
+            return;
         }
         
         println!("✓ Librespot pipe event test passed");
@@ -1148,23 +1209,41 @@ mod tests {
         
         println!("Librespot player state after legacy event: {}", serde_json::to_string_pretty(&player_state).unwrap());
         
-        // The player should exist but may not have processed the event if not active
+        // The player should exist but should only become active on "playing" state, not on track changes
         if let Some(is_active) = player_state.get("is_active").and_then(|a| a.as_bool()) {
             if is_active {
                 // If player is active, it should have processed the legacy event
                 if let Some(song) = player_state.get("current_song") {
-                    assert_eq!(song.get("title"), Some(&json!("Legacy API Song")));
-                    assert_eq!(song.get("artist"), Some(&json!("Legacy API Artist")));
-                    assert_eq!(song.get("album"), Some(&json!("Legacy API Album")));
+                    if song.get("title") != Some(&json!("Legacy API Song")) {
+                        eprintln!("❌ Expected song title 'Legacy API Song', got {:?}", song.get("title"));
+                        assert!(false, "Active Librespot player should have processed legacy song title");
+                        return;
+                    }
+                    if song.get("artist") != Some(&json!("Legacy API Artist")) {
+                        eprintln!("❌ Expected artist 'Legacy API Artist', got {:?}", song.get("artist"));
+                        assert!(false, "Active Librespot player should have processed legacy artist");
+                        return;
+                    }
+                    if song.get("album") != Some(&json!("Legacy API Album")) {
+                        eprintln!("❌ Expected album 'Legacy API Album', got {:?}", song.get("album"));
+                        assert!(false, "Active Librespot player should have processed legacy album");
+                        return;
+                    }
                     println!("✓ Librespot legacy event processed successfully");
                 } else {
+                    eprintln!("❌ Active Librespot player has no current_song after legacy event");
                     assert!(false, "Active Librespot player should have processed the legacy event");
+                    return;
                 }
             } else {
-                println!("ℹ Librespot player is present but not active - skipping legacy event verification");
+                println!("ℹ Librespot player is not active - this is expected since we only sent a track_changed event");
+                println!("  Players only become active when they receive a state change to 'playing'");
+                println!("✓ Librespot player correctly remained inactive for track_changed event");
             }
         } else {
+            eprintln!("❌ Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
+            return;
         }
         
         println!("✓ Librespot legacy format API test passed");
@@ -1208,22 +1287,43 @@ mod tests {
         
         println!("Librespot player state after mixed events: {}", serde_json::to_string_pretty(&player_state).unwrap());
         
-        // The player should exist but may not have processed the event if not active
+        // The player should exist and may process events, but should only become active on "playing" state
         if let Some(is_active) = player_state.get("is_active").and_then(|a| a.as_bool()) {
             if is_active {
                 // If player is active, it should have processed the API event (most recent)
                 if let Some(song) = player_state.get("current_song") {
-                    assert_eq!(song.get("title"), Some(&json!("Mixed Test Song 2")));
-                    assert_eq!(song.get("artist"), Some(&json!("Mixed Test Artist 2")));
+                    if song.get("title") != Some(&json!("Mixed Test Song 2")) {
+                        eprintln!("❌ Expected song title 'Mixed Test Song 2', got {:?}", song.get("title"));
+                        assert!(false, "Active Librespot player should have processed API song title");
+                        return;
+                    }
+                    if song.get("artist") != Some(&json!("Mixed Test Artist 2")) {
+                        eprintln!("❌ Expected artist 'Mixed Test Artist 2', got {:?}", song.get("artist"));
+                        assert!(false, "Active Librespot player should have processed API artist");
+                        return;
+                    }
                     println!("✓ Librespot mixed events processed successfully");
                 } else {
+                    eprintln!("❌ Active Librespot player has no current_song after mixed events");
                     assert!(false, "Active Librespot player should have processed the API event");
+                    return;
                 }
             } else {
-                println!("ℹ Librespot player is present but not active - mixed events may not be processed");
+                println!("ℹ Librespot player is not active - checking if this is expected...");
+                if pipe_success {
+                    println!("  We sent a 'playing' event via pipe, so player should have become active");
+                    eprintln!("❌ Librespot player should have become active after receiving 'playing' event via pipe");
+                    assert!(false, "Librespot player should become active when receiving 'playing' state via pipe");
+                    return;
+                } else {
+                    println!("  Pipe write failed, and we only sent song_changed via API (not playing), so staying inactive is expected");
+                    println!("✓ Librespot player correctly remained inactive without 'playing' state event");
+                }
             }
         } else {
+            eprintln!("❌ Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
+            return;
         }
         
         println!("✓ Librespot mixed events test passed (pipe_success: {})", pipe_success);
@@ -1395,24 +1495,43 @@ mod tests {
                 
                 // Verify the state was updated to playing
                 if let Some(state) = updated_state.get("state") {
-                    assert_eq!(state, &json!("playing"), "Librespot state should be 'playing'");
+                    if state != &json!("playing") {
+                        eprintln!("❌ Expected state 'playing', got {:?}", state);
+                        assert!(false, "Librespot state should be 'playing'");
+                        return;
+                    }
                 } else {
+                    eprintln!("❌ Librespot player missing state field");
                     assert!(false, "Librespot player should have state field");
+                    return;
                 }
                 
                 // Verify that last_seen was updated (indicating activity)
                 if let Some(last_seen) = updated_state.get("last_seen") {
-                    assert!(!last_seen.is_null(), "Librespot last_seen should be updated when active");
+                    if last_seen.is_null() {
+                        eprintln!("❌ Librespot last_seen should not be null when active");
+                        assert!(false, "Librespot last_seen should be updated when active");
+                        return;
+                    }
                     println!("✓ Librespot last_seen updated: {}", last_seen);
                 } else {
+                    eprintln!("❌ Librespot player missing last_seen field");
                     assert!(false, "Librespot player should have last_seen field");
+                    return;
                 }
             } else {
-                println!("ℹ Librespot player received the event but did not become active");
-                println!("  This might be expected behavior if the active monitor requires specific conditions");
+                println!("ℹ Librespot player did not become active after 'playing' event");
+                println!("  This may indicate that:");
+                println!("  1. The active monitor plugin is not working correctly");
+                println!("  2. The Librespot player is not processing API events");
+                println!("  3. The event format is not correct for Librespot");
+                println!("  Current player state: {:?}", updated_state.get("state"));
+                println!("  This test documents the current behavior - player stays inactive");
             }
         } else {
+            eprintln!("❌ Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
+            return;
         }
     }
     

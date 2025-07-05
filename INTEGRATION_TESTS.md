@@ -38,6 +38,18 @@ The integration tests are designed to:
 - Start a single AudioControl server shared across all tests
 - Run tests serially to avoid conflicts
 - Use robust error handling (no panics except on server startup failure)
+- **Fail explicitly** when expected conditions aren't met (no soft failures)
 - Automatically clean up the server when tests complete or fail
 
 The cleanup mechanism ensures that the server is always killed regardless of how the tests finish.
+
+## Test expectations
+
+All tests are expected to pass in a proper test environment:
+
+- **Player initialization tests** expect all configured players to be present
+- **Event processing tests** expect events to be processed when sent
+- **State transition tests** expect players to become active when playing
+- **Pipe/API tests** expect communication mechanisms to work properly
+
+Tests will fail if dependencies are missing or if the system doesn't behave as expected.

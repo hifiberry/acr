@@ -262,13 +262,13 @@ fn ensure_binaries_built() -> Result<(), Box<dyn std::error::Error>> {
     let cli_exists = cli_binary_path.exists();
     
     if !server_exists || !cli_exists {
-        eprintln!("🔨 Building required binaries...");
+        eprintln!("[BUILD] Building required binaries...");
         eprintln!("   Server binary exists: {}", server_exists);
         eprintln!("   CLI binary exists: {}", cli_exists);
         let _ = io::stderr().flush(); // Force immediate output
         
         // Build both binaries
-        eprintln!("🔨 Running: cargo build --bin audiocontrol --bin audiocontrol_player_event_client");
+        eprintln!("[BUILD] Running: cargo build --bin audiocontrol --bin audiocontrol_player_event_client");
         let _ = io::stderr().flush(); // Force immediate output
         let build_output = Command::new("cargo")
             .args(&["build", "--bin", "audiocontrol", "--bin", "audiocontrol_player_event_client"])
@@ -279,10 +279,10 @@ fn ensure_binaries_built() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("Failed to build binaries: {}", stderr).into());
         }
         
-        eprintln!("✓ Binaries built successfully");
+        eprintln!("[OK] Binaries built successfully");
         let _ = io::stderr().flush(); // Force immediate output
     } else {
-        eprintln!("✓ Required binaries already exist, skipping build");
+        eprintln!("[OK] Required binaries already exist, skipping build");
         let _ = io::stderr().flush(); // Force immediate output
     }
     
@@ -472,12 +472,12 @@ mod tests {
     
     /// Force cleanup of server and test resources
     fn force_cleanup() {
-        println!("🧹 Force cleanup: Killing server and cleaning up test resources...");
+        println!("[CLEANUP] Force cleanup: Killing server and cleaning up test resources...");
         
         // Kill server process directly if we have a handle to it
         unsafe {
             if let Some(mut process) = SERVER_PROCESS.take() {
-                println!("🧹 Killing server process directly...");
+                println!("[CLEANUP] Killing server process directly...");
                 let _ = process.kill();
                 let _ = process.wait();
             }
@@ -490,7 +490,7 @@ mod tests {
         let _ = fs::remove_file(format!("test_config_{}.json", TEST_PORT));
         let _ = fs::remove_dir_all(format!("test_cache_{}", TEST_PORT));
         
-        println!("🧹 Force cleanup complete");
+        println!("[CLEANUP] Force cleanup complete");
     }
     
     /// Register cleanup to run when the process exits
@@ -501,21 +501,21 @@ mod tests {
             // 1. Register a panic hook to cleanup on panic
             let original_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |panic_info| {
-                println!("🚨 Panic detected, forcing cleanup...");
+                println!("[PROBLEM] Panic detected, forcing cleanup...");
                 force_cleanup();
                 original_hook(panic_info);
             }));
             
             // 2. Register an exit hook using ctrlc if available
             if let Ok(_) = ctrlc::set_handler(move || {
-                println!("🚨 Interrupt signal received, forcing cleanup...");
+                println!("[PROBLEM] Interrupt signal received, forcing cleanup...");
                 force_cleanup();
                 std::process::exit(1);
             }) {
-                println!("✓ Registered interrupt handler for cleanup");
+                println!("[OK] Registered interrupt handler for cleanup");
             }
             
-            println!("✓ Registered cleanup handlers");
+            println!("[OK] Registered cleanup handlers");
         }
     }
     
@@ -913,17 +913,17 @@ mod tests {
                         
                         // Verify RAAT player has basic state
                         if player.get("state").is_none() {
-                            eprintln!("❌ RAAT player missing state field");
+                            eprintln!("[FAIL] RAAT player missing state field");
                             assert!(false, "RAAT player missing state");
                             return;
                         }
                         if player.get("is_active").is_none() {
-                            eprintln!("❌ RAAT player missing is_active field");
+                            eprintln!("[FAIL] RAAT player missing is_active field");
                             assert!(false, "RAAT player missing is_active");
                             return;
                         }
                         
-                        println!("✓ RAAT player initialized successfully");
+                        println!("[OK] RAAT player initialized successfully");
                     } else {
                         println!("ℹ RAAT player not found - this may be expected if pipe dependencies are not available");
                         // Don't fail - RAAT player may not be available in test environment
@@ -957,17 +957,17 @@ mod tests {
                         
                         // Verify MPD player has basic state
                         if player.get("state").is_none() {
-                            eprintln!("❌ MPD player missing state field");
+                            eprintln!("[FAIL] MPD player missing state field");
                             assert!(false, "MPD player missing state");
                             return;
                         }
                         if player.get("is_active").is_none() {
-                            eprintln!("❌ MPD player missing is_active field");
+                            eprintln!("[FAIL] MPD player missing is_active field");
                             assert!(false, "MPD player missing is_active");
                             return;
                         }
                         
-                        println!("✓ MPD player initialized successfully");
+                        println!("[OK] MPD player initialized successfully");
                     } else {
                         println!("ℹ MPD player not found - this may be expected if MPD server is not available");
                         // Don't fail - MPD player may not be available in test environment
@@ -1003,7 +1003,7 @@ mod tests {
                         assert!(player.get("state").is_some(), "Librespot player missing state");
                         assert!(player.get("is_active").is_some(), "Librespot player missing is_active");
                         
-                        println!("✓ Librespot player initialized successfully");
+                        println!("[OK] Librespot player initialized successfully");
                     } else {
                         assert!(false, "Librespot player not found - it should be initialized in test environment");
                     }
@@ -1051,33 +1051,33 @@ mod tests {
                 // If player is active, it should have processed the event
                 if let Some(song) = player_state.get("current_song") {
                     if song.get("title") != Some(&json!("API Test Song")) {
-                        eprintln!("❌ Expected song title 'API Test Song', got {:?}", song.get("title"));
+                        eprintln!("[FAIL] Expected song title 'API Test Song', got {:?}", song.get("title"));
                         assert!(false, "Active Librespot player should have processed the song title");
                         return;
                     }
                     if song.get("artist") != Some(&json!("API Test Artist")) {
-                        eprintln!("❌ Expected artist 'API Test Artist', got {:?}", song.get("artist"));
+                        eprintln!("[FAIL] Expected artist 'API Test Artist', got {:?}", song.get("artist"));
                         assert!(false, "Active Librespot player should have processed the artist");
                         return;
                     }
-                    println!("✓ Librespot API event processed successfully");
+                    println!("[OK] Librespot API event processed successfully");
                 } else {
-                    eprintln!("❌ Active Librespot player has no current_song after sending event");
+                    eprintln!("[FAIL] Active Librespot player has no current_song after sending event");
                     assert!(false, "Active Librespot player should have processed the song change event");
                     return;
                 }
             } else {
                 println!("ℹ Librespot player is not active - this is expected since we only sent a song change event");
                 println!("  Players only become active when they receive a state change to 'playing'");
-                println!("✓ Librespot player correctly remained inactive for non-playing event");
+                println!("[OK] Librespot player correctly remained inactive for non-playing event");
             }
         } else {
-            eprintln!("❌ Librespot player missing is_active field");
+            eprintln!("[FAIL] Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
             return;
         }
         
-        println!("✓ Librespot API event test passed");
+        println!("[OK] Librespot API event test passed");
     }
     
     #[tokio::test]
@@ -1094,7 +1094,7 @@ mod tests {
         // Write events to the shared librespot pipe file
         let pipe_write_success = match write_librespot_events_to_pipe(&events) {
             Ok(()) => {
-                println!("✓ Successfully wrote events to Librespot pipe");
+                println!("[OK] Successfully wrote events to Librespot pipe");
                 true
             }
             Err(e) => {
@@ -1125,40 +1125,40 @@ mod tests {
                 // If player is active and pipe write succeeded, it should have processed the pipe events
                 if let Some(song) = player_state.get("current_song") {
                     if song.get("title") != Some(&json!("Pipe Test Song")) {
-                        eprintln!("❌ Expected song title 'Pipe Test Song', got {:?}", song.get("title"));
+                        eprintln!("[FAIL] Expected song title 'Pipe Test Song', got {:?}", song.get("title"));
                         assert!(false, "Active Librespot player should have processed pipe song title");
                         return;
                     }
                     if song.get("artist") != Some(&json!("Pipe Test Artist")) {
-                        eprintln!("❌ Expected artist 'Pipe Test Artist', got {:?}", song.get("artist"));
+                        eprintln!("[FAIL] Expected artist 'Pipe Test Artist', got {:?}", song.get("artist"));
                         assert!(false, "Active Librespot player should have processed pipe artist");
                         return;
                     }
                 } else {
-                    eprintln!("❌ Active Librespot player has no current_song after pipe events");
+                    eprintln!("[FAIL] Active Librespot player has no current_song after pipe events");
                     assert!(false, "Active Librespot player should have processed the pipe events");
                     return;
                 }
                 
                 if let Some(state) = player_state.get("state") {
                     if state != &json!("playing") {
-                        eprintln!("❌ Expected state 'playing', got {:?}", state);
+                        eprintln!("[FAIL] Expected state 'playing', got {:?}", state);
                         assert!(false, "Active Librespot player should have playing state");
                         return;
                     }
                 } else {
-                    eprintln!("❌ Active Librespot player missing state field");
+                    eprintln!("[FAIL] Active Librespot player missing state field");
                     assert!(false, "Active Librespot player should have state");
                     return;
                 }
                 
-                println!("✓ Librespot pipe events processed successfully by active player");
+                println!("[OK] Librespot pipe events processed successfully by active player");
             } else if !is_active {
                 println!("ℹ Librespot player is not active - this is expected since it should only become active on 'playing' state");
                 println!("  We sent track_changed and playing events, so it should have become active from the playing event");
                 // Since we sent a "playing" event, the player should have become active
                 if pipe_write_success {
-                    eprintln!("❌ Librespot player should have become active after receiving 'playing' event via pipe");
+                    eprintln!("[FAIL] Librespot player should have become active after receiving 'playing' event via pipe");
                     assert!(false, "Librespot player should become active when receiving 'playing' state via pipe");
                     return;
                 } else {
@@ -1168,12 +1168,12 @@ mod tests {
                 println!("ℹ Librespot player is active but pipe write failed - cannot verify pipe event processing");
             }
         } else {
-            eprintln!("❌ Librespot player missing is_active field");
+            eprintln!("[FAIL] Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
             return;
         }
         
-        println!("✓ Librespot pipe event test passed");
+        println!("[OK] Librespot pipe event test passed");
     }
     
     #[tokio::test]
@@ -1215,38 +1215,38 @@ mod tests {
                 // If player is active, it should have processed the legacy event
                 if let Some(song) = player_state.get("current_song") {
                     if song.get("title") != Some(&json!("Legacy API Song")) {
-                        eprintln!("❌ Expected song title 'Legacy API Song', got {:?}", song.get("title"));
+                        eprintln!("[FAIL] Expected song title 'Legacy API Song', got {:?}", song.get("title"));
                         assert!(false, "Active Librespot player should have processed legacy song title");
                         return;
                     }
                     if song.get("artist") != Some(&json!("Legacy API Artist")) {
-                        eprintln!("❌ Expected artist 'Legacy API Artist', got {:?}", song.get("artist"));
+                        eprintln!("[FAIL] Expected artist 'Legacy API Artist', got {:?}", song.get("artist"));
                         assert!(false, "Active Librespot player should have processed legacy artist");
                         return;
                     }
                     if song.get("album") != Some(&json!("Legacy API Album")) {
-                        eprintln!("❌ Expected album 'Legacy API Album', got {:?}", song.get("album"));
+                        eprintln!("[FAIL] Expected album 'Legacy API Album', got {:?}", song.get("album"));
                         assert!(false, "Active Librespot player should have processed legacy album");
                         return;
                     }
-                    println!("✓ Librespot legacy event processed successfully");
+                    println!("[OK] Librespot legacy event processed successfully");
                 } else {
-                    eprintln!("❌ Active Librespot player has no current_song after legacy event");
+                    eprintln!("[FAIL] Active Librespot player has no current_song after legacy event");
                     assert!(false, "Active Librespot player should have processed the legacy event");
                     return;
                 }
             } else {
                 println!("ℹ Librespot player is not active - this is expected since we only sent a track_changed event");
                 println!("  Players only become active when they receive a state change to 'playing'");
-                println!("✓ Librespot player correctly remained inactive for track_changed event");
+                println!("[OK] Librespot player correctly remained inactive for track_changed event");
             }
         } else {
-            eprintln!("❌ Librespot player missing is_active field");
+            eprintln!("[FAIL] Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
             return;
         }
         
-        println!("✓ Librespot legacy format API test passed");
+        println!("[OK] Librespot legacy format API test passed");
     }
     
     #[tokio::test]
@@ -1293,18 +1293,18 @@ mod tests {
                 // If player is active, it should have processed the API event (most recent)
                 if let Some(song) = player_state.get("current_song") {
                     if song.get("title") != Some(&json!("Mixed Test Song 2")) {
-                        eprintln!("❌ Expected song title 'Mixed Test Song 2', got {:?}", song.get("title"));
+                        eprintln!("[FAIL] Expected song title 'Mixed Test Song 2', got {:?}", song.get("title"));
                         assert!(false, "Active Librespot player should have processed API song title");
                         return;
                     }
                     if song.get("artist") != Some(&json!("Mixed Test Artist 2")) {
-                        eprintln!("❌ Expected artist 'Mixed Test Artist 2', got {:?}", song.get("artist"));
+                        eprintln!("[FAIL] Expected artist 'Mixed Test Artist 2', got {:?}", song.get("artist"));
                         assert!(false, "Active Librespot player should have processed API artist");
                         return;
                     }
-                    println!("✓ Librespot mixed events processed successfully");
+                    println!("[OK] Librespot mixed events processed successfully");
                 } else {
-                    eprintln!("❌ Active Librespot player has no current_song after mixed events");
+                    eprintln!("[FAIL] Active Librespot player has no current_song after mixed events");
                     assert!(false, "Active Librespot player should have processed the API event");
                     return;
                 }
@@ -1312,21 +1312,21 @@ mod tests {
                 println!("ℹ Librespot player is not active - checking if this is expected...");
                 if pipe_success {
                     println!("  We sent a 'playing' event via pipe, so player should have become active");
-                    eprintln!("❌ Librespot player should have become active after receiving 'playing' event via pipe");
+                    eprintln!("[FAIL] Librespot player should have become active after receiving 'playing' event via pipe");
                     assert!(false, "Librespot player should become active when receiving 'playing' state via pipe");
                     return;
                 } else {
                     println!("  Pipe write failed, and we only sent song_changed via API (not playing), so staying inactive is expected");
-                    println!("✓ Librespot player correctly remained inactive without 'playing' state event");
+                    println!("[OK] Librespot player correctly remained inactive without 'playing' state event");
                 }
             }
         } else {
-            eprintln!("❌ Librespot player missing is_active field");
+            eprintln!("[FAIL] Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
             return;
         }
         
-        println!("✓ Librespot mixed events test passed (pipe_success: {})", pipe_success);
+        println!("[OK] Librespot mixed events test passed (pipe_success: {})", pipe_success);
     }
     
     #[tokio::test]
@@ -1344,7 +1344,7 @@ mod tests {
             assert!(false, "Server should handle invalid events gracefully: {}", e);
             return;
         }
-        println!("✓ Server handled invalid event gracefully");
+        println!("[OK] Server handled invalid event gracefully");
         
         // Test malformed JSON
         let client = reqwest::Client::new();
@@ -1366,12 +1366,12 @@ mod tests {
         println!("Malformed JSON response status: {}", malformed_response.status());
         // Should return a client error status
         if malformed_response.status().is_client_error() {
-            println!("✓ Server correctly rejected malformed JSON");
+            println!("[OK] Server correctly rejected malformed JSON");
         } else {
             assert!(false, "Server should have rejected malformed JSON with client error status, got: {}", malformed_response.status());
         }
         
-        println!("✓ Librespot error handling test completed");
+        println!("[OK] Librespot error handling test completed");
     }
     
     #[tokio::test]
@@ -1431,7 +1431,7 @@ mod tests {
         // With active monitor enabled, player should become active when playing
         if let Some(is_active) = updated_state.get("is_active").and_then(|a| a.as_bool()) {
             assert!(is_active, "Player should be active when playing with active-monitor enabled");
-            println!("✓ Generic player correctly became active when playing");
+            println!("[OK] Generic player correctly became active when playing");
         } else {
             assert!(false, "Player should have is_active field");
         }
@@ -1491,17 +1491,17 @@ mod tests {
         // Check if the player became active due to the playing event
         if let Some(is_active) = updated_state.get("is_active").and_then(|a| a.as_bool()) {
             if is_active {
-                println!("✓ Librespot player correctly became active when playing");
+                println!("[OK] Librespot player correctly became active when playing");
                 
                 // Verify the state was updated to playing
                 if let Some(state) = updated_state.get("state") {
                     if state != &json!("playing") {
-                        eprintln!("❌ Expected state 'playing', got {:?}", state);
+                        eprintln!("[FAIL] Expected state 'playing', got {:?}", state);
                         assert!(false, "Librespot state should be 'playing'");
                         return;
                     }
                 } else {
-                    eprintln!("❌ Librespot player missing state field");
+                    eprintln!("[FAIL] Librespot player missing state field");
                     assert!(false, "Librespot player should have state field");
                     return;
                 }
@@ -1509,13 +1509,13 @@ mod tests {
                 // Verify that last_seen was updated (indicating activity)
                 if let Some(last_seen) = updated_state.get("last_seen") {
                     if last_seen.is_null() {
-                        eprintln!("❌ Librespot last_seen should not be null when active");
+                        eprintln!("[FAIL] Librespot last_seen should not be null when active");
                         assert!(false, "Librespot last_seen should be updated when active");
                         return;
                     }
-                    println!("✓ Librespot last_seen updated: {}", last_seen);
+                    println!("[OK] Librespot last_seen updated: {}", last_seen);
                 } else {
-                    eprintln!("❌ Librespot player missing last_seen field");
+                    eprintln!("[FAIL] Librespot player missing last_seen field");
                     assert!(false, "Librespot player should have last_seen field");
                     return;
                 }
@@ -1529,7 +1529,7 @@ mod tests {
                 println!("  This test documents the current behavior - player stays inactive");
             }
         } else {
-            eprintln!("❌ Librespot player missing is_active field");
+            eprintln!("[FAIL] Librespot player missing is_active field");
             assert!(false, "Librespot player should have is_active field");
             return;
         }
@@ -1540,7 +1540,7 @@ mod tests {
     
     impl Drop for ModuleCleanup {
         fn drop(&mut self) {
-            println!("🧹 Module cleanup: Ensuring all resources are freed...");
+            println!("[CLEANUP] Module cleanup: Ensuring all resources are freed...");
             force_cleanup();
         }
     }

@@ -3,6 +3,8 @@ use log::{debug, warn, error};
 use serde_json::Value;
 use rocket::serde::json::Json;
 use rocket::{post, State};
+use rocket::response::status::Custom;
+use rocket::http::Status;
 
 use crate::AudioController;
 
@@ -19,7 +21,7 @@ pub fn player_event_update(
     player_name: String, 
     event_data: Json<Value>,
     controller: &State<Arc<AudioController>>
-) -> Json<PlayerEventResponse> {
+) -> Result<Json<PlayerEventResponse>, Custom<Json<PlayerEventResponse>>> {
     debug!("Received event via API for player: {}", player_name);
     
     // Find the player by name
@@ -29,41 +31,44 @@ pub fn player_event_update(
             // Check if the player supports API events
             if !player_controller.supports_api_events() {
                 warn!("Player '{}' does not support API event processing", player_name);
-                return Json(PlayerEventResponse {
+                return Ok(Json(PlayerEventResponse {
                     success: false,
                     message: format!("Player '{}' does not support API event processing", player_name),
-                });
+                }));
             }
             
             // Process the event
             match player_controller.process_api_event(&event_data) {
                 true => {
                     debug!("Successfully processed API event for player: {}", player_name);
-                    Json(PlayerEventResponse {
+                    Ok(Json(PlayerEventResponse {
                         success: true,
                         message: "Event processed successfully".to_string(),
-                    })
+                    }))
                 }
                 false => {
                     warn!("Failed to process API event for player: {}", player_name);
-                    Json(PlayerEventResponse {
+                    Ok(Json(PlayerEventResponse {
                         success: false,
                         message: "Failed to process event or processor disabled".to_string(),
-                    })
+                    }))
                 }
             }
         } else {
             error!("Failed to acquire read lock on player controller: {}", player_name);
-            Json(PlayerEventResponse {
+            Ok(Json(PlayerEventResponse {
                 success: false,
                 message: "Internal error: could not access player controller".to_string(),
-            })
+            }))
         }
     } else {
         warn!("Player '{}' not found", player_name);
-        Json(PlayerEventResponse {
-            success: false,
-            message: format!("Player '{}' not found", player_name),
-        })
+        Err(Custom(
+            Status::NotFound,
+            Json(PlayerEventResponse {
+                success: false,
+                message: format!("Player '{}' not found", player_name),
+            })
+        ))
     }
 }

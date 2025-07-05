@@ -127,17 +127,11 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty()); // Filter out empty strings
                 
-                // Check if enable_pipe_reader parameter is specified in the JSON
-                let enable_pipe_reader = config_obj.get("enable_pipe_reader")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true); // Default to true if not specified
-                
                 let player = LibrespotPlayerController::with_full_config(
                     event_source, 
                     process_name, 
                     reopen, 
-                    systemd_unit,
-                    enable_pipe_reader
+                    systemd_unit
                 );
                 Ok(Box::new(player))
             },

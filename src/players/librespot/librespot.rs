@@ -35,9 +35,6 @@ pub struct LibrespotPlayerController {
     
     /// Whether to reopen the event pipe when it's closed
     reopen_event_pipe: bool,
-    
-    /// Whether to enable pipe reading
-    enable_pipe_reader: bool,
 }
 
 // Manually implement Clone for LibrespotPlayerController
@@ -52,7 +49,6 @@ impl Clone for LibrespotPlayerController {
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
             reopen_event_pipe: self.reopen_event_pipe,
-            enable_pipe_reader: self.enable_pipe_reader,
         }
     }
 }
@@ -87,7 +83,6 @@ impl LibrespotPlayerController {
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: true,
-            enable_pipe_reader: true,
         };
         
         // Set default capabilities - only Killable is available
@@ -112,7 +107,6 @@ impl LibrespotPlayerController {
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: reopen,
-            enable_pipe_reader: true,
         };
         
         // Set default capabilities - only Killable is available
@@ -121,15 +115,9 @@ impl LibrespotPlayerController {
         player
     }
 
-    /// Create a new Librespot player controller with fully custom settings
-    #[deprecated(since = "0.4.1", note = "Use with_config_and_systemd instead")]
-    pub fn with_config(event_source: &str, process_name: &str, reopen: bool) -> Self {
-        Self::with_config_and_systemd(event_source, process_name, reopen, Some("librespot"))
-    }
-
     /// Create a new Librespot player controller with fully custom settings and systemd unit check
     pub fn with_config_and_systemd(event_source: &str, process_name: &str, reopen: bool, systemd_unit: Option<&str>) -> Self {
-        Self::with_full_config(event_source, process_name, reopen, systemd_unit, true)
+        Self::with_full_config(event_source, process_name, reopen, systemd_unit)
     }
     
     /// Create a new Librespot player controller with full configuration options
@@ -137,11 +125,10 @@ impl LibrespotPlayerController {
         event_source: &str, 
         process_name: &str, 
         reopen: bool, 
-        systemd_unit: Option<&str>,
-        enable_pipe_reader: bool
+        systemd_unit: Option<&str>
     ) -> Self {
-        debug!("Creating new LibrespotPlayerController with event_source: {}, process_name: {}, reopen: {}, systemd_unit: {:?}, enable_pipe_reader: {}", 
-               event_source, process_name, reopen, systemd_unit, enable_pipe_reader);
+        debug!("Creating new LibrespotPlayerController with event_source: {}, process_name: {}, reopen: {}, systemd_unit: {:?}", 
+               event_source, process_name, reopen, systemd_unit);
         
         // Check systemd unit if specified
         if let Some(unit_name) = systemd_unit {
@@ -171,7 +158,6 @@ impl LibrespotPlayerController {
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: reopen,
-            enable_pipe_reader,
         };
         
         // Set default capabilities - only Killable is available
@@ -229,23 +215,23 @@ impl LibrespotPlayerController {
         &self.process_name
     }
     
-    /// Starts a background thread that listens for Librespot events (if pipe reading is enabled)
+    /// Starts a background thread that listens for Librespot events (if a filename is configured)
     /// The thread will run until the running flag is set to false
     fn start_event_listener(&self, running: Arc<AtomicBool>, self_arc: Arc<Self>) {
         let source = self.event_source.clone();
         
-        info!("Starting Librespot event listener (pipe_reader: {})", 
-              self.enable_pipe_reader);
+        debug!("Starting Librespot event listener for source: '{}'", source);
         
-        // Start pipe reader thread if enabled
-        if self.enable_pipe_reader {
+        // Start pipe reader thread if a filename is configured (non-empty string)
+        if !source.is_empty() {
+            info!("Event source '{}' configured, starting pipe reader", source);
             thread::spawn(move || {
                 info!("Librespot event pipe reader thread started");
                 Self::run_event_loop(&source, running, self_arc);
                 info!("Librespot event pipe reader thread shutting down");
             });
         } else {
-            debug!("Pipe reader disabled, not starting pipe reader thread");
+            info!("No event_pipe configured, not starting pipe reader thread to update librespot player state");
         }
     }
 

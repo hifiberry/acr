@@ -492,32 +492,7 @@ mod tests {
         
         println!("[CLEANUP] Force cleanup complete");
     }
-    
-    /// Register cleanup to run when the process exits
-    fn register_cleanup() {
-        if !CLEANUP_REGISTERED.swap(true, Ordering::Relaxed) {
-            // Register multiple cleanup mechanisms to ensure server is always killed
-            
-            // 1. Register a panic hook to cleanup on panic
-            let original_hook = std::panic::take_hook();
-            std::panic::set_hook(Box::new(move |panic_info| {
-                println!("[PROBLEM] Panic detected, forcing cleanup...");
-                force_cleanup();
-                original_hook(panic_info);
-            }));
-            
-            // 2. Register an exit hook using ctrlc if available
-            if let Ok(_) = ctrlc::set_handler(move || {
-                println!("[PROBLEM] Interrupt signal received, forcing cleanup...");
-                force_cleanup();
-                std::process::exit(1);
-            }) {
-                println!("[OK] Registered interrupt handler for cleanup");
-            }
-            
-            println!("[OK] Registered cleanup handlers");
-        }
-    }
+
     
     /// Cleanup guard that ensures server is killed when dropped
     struct ServerCleanupGuard;
@@ -555,9 +530,6 @@ mod tests {
     
     async fn setup_test_server() -> String {
         let server_url = format!("http://localhost:{}", TEST_PORT);
-        
-        // Register cleanup handlers immediately when first test runs
-        register_cleanup();
         
         INIT.call_once(|| {
             // Ensure binaries are built before running tests
@@ -969,7 +941,7 @@ mod tests {
                         
                         println!("[OK] MPD player initialized successfully");
                     } else {
-                        println!("ℹ MPD player not found - this may be expected if MPD server is not available");
+                        println!("[INFO] MPD player not found - this may be expected if MPD server is not available");
                         // Don't fail - MPD player may not be available in test environment
                     }
                 } else {
@@ -1067,7 +1039,7 @@ mod tests {
                     return;
                 }
             } else {
-                println!("ℹ Librespot player is not active - this is expected since we only sent a song change event");
+                println!("[INFO] Librespot player is not active - this is expected since we only sent a song change event");
                 println!("  Players only become active when they receive a state change to 'playing'");
                 println!("[OK] Librespot player correctly remained inactive for non-playing event");
             }
@@ -1098,7 +1070,7 @@ mod tests {
                 true
             }
             Err(e) => {
-                println!("ℹ Failed to write to Librespot pipe: {} - pipe may not be available in test environment", e);
+                println!("[INFO] Failed to write to Librespot pipe: {} - pipe may not be available in test environment", e);
                 false
             }
         };
@@ -1154,7 +1126,7 @@ mod tests {
                 
                 println!("[OK] Librespot pipe events processed successfully by active player");
             } else if !is_active {
-                println!("ℹ Librespot player is not active - this is expected since it should only become active on 'playing' state");
+                println!("[INFO] Librespot player is not active - this is expected since it should only become active on 'playing' state");
                 println!("  We sent track_changed and playing events, so it should have become active from the playing event");
                 // Since we sent a "playing" event, the player should have become active
                 if pipe_write_success {
@@ -1165,7 +1137,7 @@ mod tests {
                     println!("  Pipe write failed, so player staying inactive is expected");
                 }
             } else {
-                println!("ℹ Librespot player is active but pipe write failed - cannot verify pipe event processing");
+                println!("[INFO] Librespot player is active but pipe write failed - cannot verify pipe event processing");
             }
         } else {
             eprintln!("[FAIL] Librespot player missing is_active field");
@@ -1236,7 +1208,7 @@ mod tests {
                     return;
                 }
             } else {
-                println!("ℹ Librespot player is not active - this is expected since we only sent a track_changed event");
+                println!("[INFO] Librespot player is not active - this is expected since we only sent a track_changed event");
                 println!("  Players only become active when they receive a state change to 'playing'");
                 println!("[OK] Librespot player correctly remained inactive for track_changed event");
             }
@@ -1309,7 +1281,7 @@ mod tests {
                     return;
                 }
             } else {
-                println!("ℹ Librespot player is not active - checking if this is expected...");
+                println!("[INFO] Librespot player is not active - checking if this is expected...");
                 if pipe_success {
                     println!("  We sent a 'playing' event via pipe, so player should have become active");
                     eprintln!("[FAIL] Librespot player should have become active after receiving 'playing' event via pipe");
@@ -1520,13 +1492,14 @@ mod tests {
                     return;
                 }
             } else {
-                println!("ℹ Librespot player did not become active after 'playing' event");
+                println!("[INFO] Librespot player did not become active after 'playing' event");
                 println!("  This may indicate that:");
                 println!("  1. The active monitor plugin is not working correctly");
                 println!("  2. The Librespot player is not processing API events");
                 println!("  3. The event format is not correct for Librespot");
                 println!("  Current player state: {:?}", updated_state.get("state"));
                 println!("  This test documents the current behavior - player stays inactive");
+                assert!(false, "Librespot player did not become active after 'playing' event");
             }
         } else {
             eprintln!("[FAIL] Librespot player missing is_active field");

@@ -925,7 +925,7 @@ mod tests {
                         
                         println!("[OK] RAAT player initialized successfully");
                     } else {
-                        println!("ℹ RAAT player not found - this may be expected if pipe dependencies are not available");
+                        println!("[POTENTIAL PROBLEM] RAAT player not found - this may be expected if pipe dependencies are not available");
                         // Don't fail - RAAT player may not be available in test environment
                     }
                 } else {

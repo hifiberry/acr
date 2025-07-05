@@ -1,0 +1,39 @@
+{
+    "action_plugins": [
+        {
+            "active-monitor": { "enabled": true }
+        },
+        {
+            "event-logger": {
+                "enabled": true,
+                "event_types": ["state", "song", "state_changed"],
+                "log_level": "info",
+                "only_active": false
+            }
+        }
+    ],
+    "services": {
+        "webserver": {
+            "enable": true,
+            "host": "0.0.0.0",
+            "port": 1080
+        },
+        "spotify": {
+            "enable": true,
+            "oauth_url": "https://oauth.hifiberry.com/spotify/",
+            "debug_mode": true,
+            "api_enabled": true,
+            "client_id": "",
+            "client_secret": ""
+        }
+    },
+    "players": [
+        {
+            "librespot": {
+                "enable": true,
+                "event_pipe": "",
+                "reopen_event_pipe": true
+            }
+        }
+    ]
+}

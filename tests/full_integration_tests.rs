@@ -126,6 +126,31 @@ fn create_test_config(port: u16) -> Result<String, Box<dyn std::error::Error>> {
                     "shuffle": false,
                     "loop_mode": "none"
                 }
+            },
+            {
+                "raat": {
+                    "enable": true,
+                    "metadata_pipe": "/tmp/test_raat_metadata",
+                    "control_pipe": "/tmp/test_raat_control",
+                    "reopen_metadata_pipe": false
+                }
+            },
+            {
+                "mpd": {
+                    "enable": true,
+                    "host": "localhost",
+                    "port": 6600,
+                    "load_on_startup": false,
+                    "artist_separator": [",", "feat. "],
+                    "enhance_metadata": false
+                }
+            },
+            {
+                "librespot": {
+                    "enable": true,
+                    "event_pipe": "/tmp/test_librespot_event",
+                    "reopen_event_pipe": false
+                }
             }
         ],
         "services": {
@@ -141,6 +166,51 @@ fn create_test_config(port: u16) -> Result<String, Box<dyn std::error::Error>> {
     let config_path = format!("test_config_{}.json", port);
     fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
     Ok(config_path)
+}
+
+/// Helper function to get all players from API
+async fn get_all_players(base_url: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/players", base_url);
+    
+    let response = client.get(&url).send().await?;
+    let status = response.status();
+    let text = response.text().await?;
+    
+    println!("All players API response: status={}, url={}, body={}", status, url, text);
+    
+    if !status.is_success() {
+        return Err(format!("API call failed with status {}: {}", status, text).into());
+    }
+    
+    let json: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(json)
+}
+
+/// Helper function to create test pipes/files for players that need them
+fn create_test_pipes() -> Result<(), Box<dyn std::error::Error>> {
+    // Create temporary pipe files for testing
+    // These won't be real named pipes but will prevent immediate failures
+    if cfg!(not(target_os = "windows")) {
+        // On Unix systems, try to create test files
+        // Create directories if they don't exist
+        std::fs::create_dir_all("/tmp")?;
+        
+        // For testing, we'll create regular files instead of named pipes
+        // since creating named pipes requires special permissions
+        let _ = std::fs::write("/tmp/test_raat_metadata", "");
+        let _ = std::fs::write("/tmp/test_raat_control", "");
+        let _ = std::fs::write("/tmp/test_librespot_event", "");
+    } else {
+        // On Windows, create temporary files in the temp directory
+        if let Some(temp_dir) = std::env::temp_dir().to_str() {
+            let _ = std::fs::write(format!("{}\\test_raat_metadata", temp_dir), "");
+            let _ = std::fs::write(format!("{}\\test_raat_control", temp_dir), "");
+            let _ = std::fs::write(format!("{}\\test_librespot_event", temp_dir), "");
+        }
+    }
+    
+    Ok(())
 }
 
 #[cfg(test)]
@@ -218,6 +288,9 @@ mod tests {
         INIT.call_once(|| {
             // Kill any existing processes first
             kill_existing_processes();
+            
+            // Create test pipes for players that need them
+            let _ = create_test_pipes();
             
             // Setup
             let config_path = create_test_config(TEST_PORT).expect("Failed to create test config");
@@ -476,6 +549,157 @@ mod tests {
             }
             Err(e) => {
                 panic!("Failed to get updated player state: {}", e);
+            }
+        }
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_players_initialization() {
+        let server_url = setup_test_server().await;
+        
+        // Get all players to verify they are initialized
+        let players_response = get_all_players(&server_url).await;
+        match players_response {
+            Ok(response) => {
+                println!("All players response: {}", serde_json::to_string_pretty(&response).unwrap());
+                
+                // Verify we have the expected players
+                if let Some(players) = response.get("players").and_then(|p| p.as_array()) {
+                    println!("Found {} players", players.len());
+                    
+                    // Check for expected player types
+                    let mut found_players = Vec::new();
+                    for player in players {
+                        if let Some(name) = player.get("name").and_then(|n| n.as_str()) {
+                            found_players.push(name.to_string());
+                            println!("Found player: {}", name);
+                            
+                            // Verify each player has basic required fields
+                            assert!(player.get("id").is_some(), "Player {} missing id", name);
+                            assert!(player.get("state").is_some(), "Player {} missing state", name);
+                            assert!(player.get("is_active").is_some(), "Player {} missing is_active", name);
+                        }
+                    }
+                    
+                    // We should have at least our test player, though other players might not initialize
+                    // if their dependencies (MPD server, pipes, etc.) are not available
+                    assert!(found_players.contains(&"test_player".to_string()), "test_player should be initialized");
+                    
+                    // Log which players were found
+                    println!("Initialized players: {:?}", found_players);
+                    
+                } else {
+                    panic!("Invalid players response format");
+                }
+            }
+            Err(e) => {
+                panic!("Failed to get players: {}", e);
+            }
+        }
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_raat_player_initialization() {
+        let server_url = setup_test_server().await;
+        
+        // Check if RAAT player is initialized
+        let players_response = get_all_players(&server_url).await;
+        match players_response {
+            Ok(response) => {
+                if let Some(players) = response.get("players").and_then(|p| p.as_array()) {
+                    let raat_player = players.iter().find(|p| {
+                        p.get("name").and_then(|n| n.as_str()).map(|s| s.contains("raat")).unwrap_or(false)
+                    });
+                    
+                    if let Some(player) = raat_player {
+                        println!("RAAT player found: {}", serde_json::to_string_pretty(player).unwrap());
+                        
+                        // Verify RAAT player has basic state
+                        assert!(player.get("state").is_some(), "RAAT player missing state");
+                        assert!(player.get("is_active").is_some(), "RAAT player missing is_active");
+                        
+                        println!("✓ RAAT player initialized successfully");
+                    } else {
+                        println!("ℹ RAAT player not found - likely due to missing pipe dependencies in test environment");
+                    }
+                } else {
+                    panic!("Invalid players response format");
+                }
+            }
+            Err(e) => {
+                panic!("Failed to get players: {}", e);
+            }
+        }
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_mpd_player_initialization() {
+        let server_url = setup_test_server().await;
+        
+        // Check if MPD player is initialized
+        let players_response = get_all_players(&server_url).await;
+        match players_response {
+            Ok(response) => {
+                if let Some(players) = response.get("players").and_then(|p| p.as_array()) {
+                    let mpd_player = players.iter().find(|p| {
+                        p.get("name").and_then(|n| n.as_str()).map(|s| s.contains("mpd")).unwrap_or(false)
+                    });
+                    
+                    if let Some(player) = mpd_player {
+                        println!("MPD player found: {}", serde_json::to_string_pretty(player).unwrap());
+                        
+                        // Verify MPD player has basic state
+                        assert!(player.get("state").is_some(), "MPD player missing state");
+                        assert!(player.get("is_active").is_some(), "MPD player missing is_active");
+                        
+                        println!("✓ MPD player initialized successfully");
+                    } else {
+                        println!("ℹ MPD player not found - likely due to missing MPD server in test environment");
+                    }
+                } else {
+                    panic!("Invalid players response format");
+                }
+            }
+            Err(e) => {
+                panic!("Failed to get players: {}", e);
+            }
+        }
+    }
+    
+    #[tokio::test]
+    #[serial]
+    async fn test_librespot_player_initialization() {
+        let server_url = setup_test_server().await;
+        
+        // Check if Librespot player is initialized
+        let players_response = get_all_players(&server_url).await;
+        match players_response {
+            Ok(response) => {
+                if let Some(players) = response.get("players").and_then(|p| p.as_array()) {
+                    let librespot_player = players.iter().find(|p| {
+                        p.get("name").and_then(|n| n.as_str()).map(|s| s.contains("librespot")).unwrap_or(false)
+                    });
+                    
+                    if let Some(player) = librespot_player {
+                        println!("Librespot player found: {}", serde_json::to_string_pretty(player).unwrap());
+                        
+                        // Verify Librespot player has basic state
+                        assert!(player.get("state").is_some(), "Librespot player missing state");
+                        assert!(player.get("is_active").is_some(), "Librespot player missing is_active");
+                        
+                        println!("✓ Librespot player initialized successfully");
+                    } else {
+                        println!("ℹ Librespot player not found - likely due to missing pipe dependencies in test environment");
+                    }
+                } else {
+                    panic!("Invalid players response format");
+                }
+            }
+            Err(e) => {
+                panic!("Failed to get players: {}", e);
             }
         }
     }

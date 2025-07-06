@@ -30,7 +30,7 @@ TEST_PORTS = {
 }
 
 # Path to static configuration file
-STATIC_CONFIG_PATH = Path("tests/test_config_generic.json")
+STATIC_CONFIG_PATH = Path("test_config_generic.json")
 
 # Global server processes
 _server_processes: Dict[str, subprocess.Popen] = {}

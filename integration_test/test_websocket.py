@@ -143,21 +143,10 @@ def test_websocket_song_update(generic_server):
     print(f"API Response: {response}")
     
     # Check if the API indicated that the event was not processed
-    if response.get('success') == False:
-        print(f"WARNING: API reported event not processed: {response.get('message')}")
-        print("It appears that the generic player does not support processing events via the API.")
-        print("Skipping test since this feature appears to be disabled.")
-        ws.close()
-        pytest.skip("Event processing is disabled on the generic player")
+    assert response.get('success') != False, f"API reported event not processed: {response.get('message')}"
     
     # Wait for WebSocket to receive the event (allow up to 10 seconds for processing)
-    if not ws_received.wait(timeout=10):
-        ws.close()
-        print("WARNING: No event received on WebSocket within timeout period")
-        print("This could indicate that the generic player does not support websocket events")
-        print("or that the event was not processed correctly")
-        print("Check server logs for more information")
-        pytest.skip("WebSocket event not received - this feature may not be implemented")
+    assert ws_received.wait(timeout=10), "No event received on WebSocket within timeout period"
     
     # Check the received events
     assert len(received_events) >= 1, "No events received from WebSocket"
@@ -304,19 +293,10 @@ def test_websocket_simple_state_event(generic_server):
     print(f"API Response: {response}")
     
     # Check if the API indicated that the event was not processed
-    if response.get('success') == False:
-        print(f"WARNING: API reported event not processed: {response.get('message')}")
-        print("It appears that the generic player does not support processing events via the API.")
-        print("Skipping test since this feature appears to be disabled.")
-        ws.close()
-        pytest.skip("Event processing is disabled on the generic player")
+    assert response.get('success') != False, f"API reported event not processed: {response.get('message')}"
     
     # Wait for WebSocket to receive the event
-    if not ws_received.wait(timeout=10):
-        ws.close()
-        print("WARNING: No event received on WebSocket within timeout period")
-        print("This could indicate that the generic player does not support websocket events")
-        pytest.skip("WebSocket event not received - this feature may not be implemented")
+    assert ws_received.wait(timeout=10), "No event received on WebSocket within timeout period"
     
     # Check the received events
     assert len(received_events) >= 1, "No events received from WebSocket"

@@ -355,22 +355,16 @@ def test_librespot_shuffle_and_repeat(librespot_server):
         print(f"Shuffle state not yet updated (attempt {attempt+1}/{max_attempts}), waiting...")
         time.sleep(1.0)
     
-    # For test purposes, we'll use a softer assertion if shuffle isn't working
-    # This allows the rest of the tests to run even if shuffle doesn't work
-    if not shuffle_state_updated:
-        if "shuffle" not in now_playing and "Shuffle" not in now_playing:
-            print("WARNING: Shuffle field missing in now_playing response - skipping assertion")
-            print("API may not support shuffle or field may have a different name")
-        else:
-            shuffle_value = now_playing.get("shuffle", now_playing.get("Shuffle"))
-            print(f"WARNING: Expected shuffle to be True, got {shuffle_value} - API didn't update the state correctly")
-            print("This could be because the test player doesn't fully support the shuffle API")
+    # Assert that shuffle was updated correctly
+    assert shuffle_state_updated, f"Shuffle state was not updated correctly after {max_attempts} attempts"
+    
+    # Verify the final state
+    if "shuffle" in now_playing:
+        assert now_playing["shuffle"] is True, f"Expected shuffle to be True, got {now_playing['shuffle']}"
+    elif "Shuffle" in now_playing:
+        assert now_playing["Shuffle"] is True, f"Expected Shuffle to be True, got {now_playing['Shuffle']}"
     else:
-        # Only assert if we found the field with the expected value
-        if "shuffle" in now_playing:
-            assert now_playing["shuffle"] is True
-        elif "Shuffle" in now_playing:
-            assert now_playing["Shuffle"] is True
+        assert False, "Shuffle field missing from now_playing response"
     
     # Test loop mode change with softer assertions
     repeat_event = {"type": "loop_mode_changed", "mode": "all"}
@@ -388,15 +382,10 @@ def test_librespot_shuffle_and_repeat(librespot_server):
     print(f"[TIMING] get_now_playing (after repeat): {time.perf_counter() - step:.3f}s")
     print(f"Final now_playing: {now_playing}")
     
-    # Soft assertion for loop_mode
-    if "loop_mode" not in now_playing:
-        print("WARNING: Loop_mode field missing in now_playing response, skipping assertion")
-    else:
-        expected_values = ["all", "playlist", "Playlist", "All"]
-        if now_playing["loop_mode"] not in expected_values:
-            print(f"WARNING: Expected loop_mode to be one of {expected_values}, got {now_playing['loop_mode']}")
-        else:
-            assert now_playing["loop_mode"] in expected_values
+    # Assert loop_mode was updated correctly
+    assert "loop_mode" in now_playing, "Loop_mode field missing in now_playing response"
+    expected_values = ["all", "playlist", "Playlist", "All"]
+    assert now_playing["loop_mode"] in expected_values, f"Expected loop_mode to be one of {expected_values}, got {now_playing['loop_mode']}"
     
     elapsed = time.perf_counter() - start
     print(f"[TIMING] test_librespot_shuffle_and_repeat: {elapsed:.3f}s")

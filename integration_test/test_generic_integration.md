@@ -6,9 +6,12 @@ This document explains the integration tests in `test_generic_integration.py` fo
 
 These tests verify the functionality of the AudioControl REST API using a generic player. The tests focus on API endpoints, event handling, and state management across various player operations.
 
+**Important:** All tests use strict assertions - they will fail if expected functionality doesn't work correctly. No soft fails, warnings, or pytest.skip() calls are used.
+
 ## Test Configuration
 
 The tests use a static configuration file (`test_config_generic.json`) that configures:
+
 - A generic player with API event support
 - Web server on port 3001
 - Cache directories for attributes and images
@@ -21,141 +24,186 @@ The tests use a static configuration file (`test_config_generic.json`) that conf
 **Purpose:** Verifies that the AudioControl server starts properly and responds to basic API requests.
 
 **What it tests:**
+
 - Server successfully starts and binds to configured port
 - API version endpoint is accessible and returns valid response
 
-**Notes:**
-- This is a fundamental test that must pass for all other tests to work
+**Assertions:**
+
+- Version field is present in response
+- Version value is not null
 
 ### `test_players_endpoint`
 
 **Purpose:** Verifies that the `/api/players` endpoint returns expected data structure.
 
 **What it tests:**
+
 - The API returns player information in the expected format
 - The test player is present in the response
-- The player has expected basic fields (id, state)
+- The player has expected basic fields (id, state, supports_api_events)
 
-**Known limitations:**
-- The test now ignores checking for the 'capabilities' field as it may not always be present in API responses depending on the server implementation
+**Assertions:**
+
+- Response is a dictionary
+- 'test_player' key exists
+- Player has 'id', 'state', and 'supports_api_events' fields
+- supports_api_events is a boolean value
 
 ### `test_now_playing_endpoint`
 
 **Purpose:** Verifies that the `/api/now-playing` endpoint returns data in the expected format.
 
 **What it tests:**
+
 - The endpoint returns a valid JSON response
 - The response contains at least one of the expected top-level fields
 
-**Known limitations:**
-- The test is very lenient as the now-playing response structure can vary based on player state
+**Assertions:**
+
+- Response is a dictionary
+- Contains at least one of: 'player', 'song', or 'state'
 
 ### `test_player_state_events`
 
-**Purpose:** Verifies that player state events are processed correctly.
+**Purpose:** Verifies that the player can receive and process state change events via the API.
 
 **What it tests:**
-- Sending a "playing" state event
-- Verifying the player state is updated
 
-**Known limitations:**
-- Uses soft assertions and will not fail the test if the state is not updated
-- Prints warnings instead since some player implementations may not immediately update state
+- Sending a "playing" state event
+- Verification that the player state is updated correctly
+
+**Assertions:**
+
+- Player state is updated to "playing" after sending the event
+- State change is reflected in either now-playing or players endpoint
 
 ### `test_player_shuffle_events`
 
-**Purpose:** Verifies that player shuffle events are processed correctly.
+**Purpose:** Verifies that the player can receive and process shuffle events via the API.
 
 **What it tests:**
-- Sending a shuffle enable event
-- Verifying the shuffle state is updated if available
 
-**Known limitations:**
-- Will not fail if the 'shuffle' property is not available in the API response
-- Some players may not expose shuffle state or process shuffle events
+- Sending a shuffle enable event
+- Verification that the shuffle state is updated correctly
+
+**Assertions:**
+
+- 'shuffle' property is present in player API response
+- Shuffle state is updated to True after sending the event
 
 ### `test_player_loop_mode_events`
 
-**Purpose:** Verifies that player loop mode events are processed correctly.
+**Purpose:** Verifies that the player can receive and process loop mode events via the API.
 
 **What it tests:**
-- Sending a loop mode change event
-- Verifying the loop mode is updated if available
 
-**Known limitations:**
-- Will not fail if the 'loop_mode' property is not available in the API response
-- Checks for alternative property names like 'repeat' since API implementation may vary
+- Sending a loop mode change event
+- Verification that the loop mode is updated correctly
+
+**Assertions:**
+
+- 'loop_mode' property is present in player API response
+- Loop mode is updated to 'all' after sending the event
 
 ### `test_player_position_events`
 
-**Purpose:** Verifies that player position events are processed correctly.
+**Purpose:** Verifies that the player can receive and process position change events via the API.
 
 **What it tests:**
-- Sending a position change event
-- Checking if position is updated in either player object or now-playing response
 
-**Known limitations:**
-- Will not fail if position is not exposed in API responses
-- Position information is often not directly accessible through the player API
+- Sending a position change event
+- Verification that the position is updated correctly
+
+**Assertions:**
+
+- Position is exposed in API responses (either in now-playing or players endpoint)
+- Position is updated to the exact value sent (42.5)
 
 ### `test_song_metadata_events`
 
-**Purpose:** Verifies that song metadata events are processed correctly.
+**Purpose:** Verifies that the player can receive and process song metadata events via the API.
 
 **What it tests:**
-- Sending a metadata change event with song details
-- Verifying the metadata is updated in the now-playing response
 
-**Known limitations:**
-- Uses soft assertions and will not fail if metadata is not updated as expected
-- Prints warnings about which fields failed to update
+- Sending a metadata change event with song details
+- Verification that metadata is updated correctly
+
+**Assertions:**
+
+- Song data is available in now-playing response
+- Title, artist, and album are updated to exact values sent
 
 ### `test_multiple_events_sequence`
 
-**Purpose:** Verifies that a sequence of different events is processed correctly.
+**Purpose:** Verifies that the player can handle multiple events sent in sequence.
 
 **What it tests:**
-- Sending multiple events in sequence: state, shuffle, loop mode, position, metadata
-- Verifying that events are processed and state is updated where possible
 
-**Known limitations:**
-- Uses soft assertions for all property checks except the song title
-- Will not fail the test if some properties are not updated
-- Prints information about which properties were successfully updated
+- Sending multiple events in sequence: state, shuffle, loop mode, position, metadata
+- Verification that all properties are updated correctly
+
+**Assertions:**
+
+- All properties (state, shuffle, loop_mode, position) are present in API responses
+- All properties are updated to exact values sent
+- Song metadata is updated correctly
 
 ### `test_player_api_event_support`
 
-**Purpose:** Diagnostic test to check if the player supports API events.
+**Purpose:** Verifies that the player reports API event support correctly.
 
 **What it tests:**
+
 - Checks if the player reports 'supports_api_events' flag
-- Reports the player's capabilities
+- Attempts to send a test event and verify processing
 
-**Known limitations:**
-- This is mainly a diagnostic test that doesn't enforce any assertions
-- Will not fail if API event support is missing, only prints warnings
+**Assertions:**
 
-## Common Issues
+- 'supports_api_events' field is present in API response
+- Player reports that API events are supported (True)
+- Test event is processed successfully
 
-1. **State Updates Not Reflected:** Sometimes player state changes may not be immediately reflected in API responses. The tests include longer delays and soft assertions to handle this.
+## Running the Tests
 
-2. **Missing Properties:** Depending on the player implementation, some properties (shuffle, loop_mode, position) may not be exposed in the API. Tests are designed to handle this gracefully.
+From the integration_test directory:
 
-3. **API Response Format Differences:** The tests have been updated to handle differences between expected API response formats and actual responses.
+```bash
+# Run all generic integration tests
+python -m pytest test_generic_integration.py -v
 
-4. **Slow Event Processing:** Some events may take longer to process than others. Tests include appropriate delays but may need adjustment based on server performance.
+# Run a specific test
+python -m pytest test_generic_integration.py::test_player_state_events -v
 
-## Troubleshooting
+# Run with detailed output
+python -m pytest test_generic_integration.py -v -s
+```
 
-- **Failed State Updates:** Increase the delay time between sending events and checking state
-- **Missing Properties:** Check if your player implementation exposes these properties in the API
-- **Event Not Processed:** Verify that the player supports the event type being tested
-- **API Response Format:** Compare the actual API response with the expected format in the tests
+## Test Expectations
 
-## How Tests Are Run
+All tests are expected to pass if the generic player controller is properly implemented. Test failures indicate:
 
-The tests use pytest fixtures defined in `conftest.py` to:
-1. Create a test configuration based on the static file
-2. Start the AudioControl server with this configuration
-3. Run each test against the server
-4. Clean up resources after tests complete
+1. **API endpoint issues** - Server not responding or returning incorrect data structure
+2. **Event processing issues** - Player not processing API events correctly
+3. **State management issues** - Player not updating internal state based on events
+4. **Configuration issues** - Player not configured with proper capabilities or API event support
+
+## Troubleshooting Failed Tests
+
+### Common Issues:
+
+1. **Server startup failures** - Check if port 3001 is available and server configuration is correct
+2. **Event processing failures** - Verify that 'supports_api_events' is set to true in the player configuration
+3. **State update failures** - Check that the generic player controller properly implements state management
+4. **Missing API fields** - Verify that the player exposes all required fields in API responses
+
+### Debug Information:
+
+The tests include detailed debug output showing:
+
+- API response structures
+- Current player state
+- Event processing results
+- Timing information for slow operations
+
+Use this information to diagnose issues when tests fail.

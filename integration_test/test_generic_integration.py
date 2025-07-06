@@ -71,10 +71,7 @@ def test_player_state_events(generic_server):
         if 'test_player' in players and players['test_player'].get('state', '').lower() == 'playing':
             state_updated = True
         
-    if not state_updated:
-        print("WARNING: Player state did not update as expected")
-        print("This may happen if the generic player doesn't process API events correctly")
-        print("Continuing with tests but some assertions might fail")
+    assert state_updated, f"Player state was not updated to 'playing'. Current state: {now_playing}"
 
 def test_player_shuffle_events(generic_server):
     """Test sending player shuffle events"""
@@ -91,11 +88,8 @@ def test_player_shuffle_events(generic_server):
     
     # Verify the shuffle state changed if available
     players = generic_server.get_players()
-    if 'shuffle' in players['test_player']:
-        assert players['test_player']['shuffle'] is True
-    else:
-        print("WARNING: Player does not expose 'shuffle' property in API response")
-        print("This is expected if the player doesn't support shuffle or doesn't expose it via the API")
+    assert 'shuffle' in players['test_player'], "Player does not expose 'shuffle' property in API response"
+    assert players['test_player']['shuffle'] is True, f"Expected shuffle to be True, got {players['test_player']['shuffle']}"
 
 def test_player_loop_mode_events(generic_server):
     """Test sending player loop mode events"""
@@ -112,15 +106,8 @@ def test_player_loop_mode_events(generic_server):
     
     # Verify the loop mode changed if available
     players = generic_server.get_players()
-    if 'loop_mode' in players['test_player']:
-        assert players['test_player']['loop_mode'] == 'all'
-    else:
-        # It might be exposed under a different name like 'repeat'
-        if 'repeat' in players['test_player']:
-            print(f"Player has 'repeat' value: {players['test_player']['repeat']}")
-        else:
-            print("WARNING: Player does not expose 'loop_mode' property in API response")
-            print("This is expected if the player doesn't support loop mode or doesn't expose it via the API")
+    assert 'loop_mode' in players['test_player'], "Player does not expose 'loop_mode' property in API response"
+    assert players['test_player']['loop_mode'] == 'all', f"Expected loop_mode to be 'all', got {players['test_player']['loop_mode']}"
 
 def test_player_position_events(generic_server):
     """Test sending player position events"""
@@ -145,18 +132,17 @@ def test_player_position_events(generic_server):
     # Check now_playing response
     if 'song' in now_playing and 'position' in now_playing['song']:
         position = now_playing['song']['position']
-        print(f"Position in now_playing: {position}")
+        assert position == 42.5, f"Expected position 42.5, got {position}"
         position_checked = True
     
     # Also check the player object
     players = generic_server.get_players()
     if 'position' in players['test_player']:
-        print(f"Position in player object: {players['test_player']['position']}")
+        position = players['test_player']['position']
+        assert position == 42.5, f"Expected position 42.5, got {position}"
         position_checked = True
         
-    if not position_checked:
-        print("WARNING: Position is not exposed in API responses")
-        print("This is expected for some player types or configurations")
+    assert position_checked, "Position is not exposed in API responses"
 
 def test_song_metadata_events(generic_server):
     """Test sending song metadata events"""
@@ -181,25 +167,12 @@ def test_song_metadata_events(generic_server):
     
     # Verify the metadata was set
     now_playing = generic_server.get_now_playing()
-    if 'song' in now_playing and now_playing['song']:
-        song = now_playing['song']
-        # Use soft assertions and print warnings instead of failing the test
-        if song.get('title') == 'Test Song':
-            print("Song title updated correctly")
-        else:
-            print(f"WARNING: Song title not updated, current value: {song.get('title', 'N/A')}")
-            
-        if song.get('artist') == 'Test Artist':
-            print("Song artist updated correctly")
-        else:
-            print(f"WARNING: Song artist not updated, current value: {song.get('artist', 'N/A')}")
-            
-        if song.get('album') == 'Test Album':
-            print("Song album updated correctly")
-        else:
-            print(f"WARNING: Song album not updated, current value: {song.get('album', 'N/A')}")
-    else:
-        print("WARNING: Song data not available in now_playing response")
+    assert 'song' in now_playing and now_playing['song'], "Song data not available in now_playing response"
+    
+    song = now_playing['song']
+    assert song.get('title') == 'Test Song', f"Expected title 'Test Song', got {song.get('title', 'N/A')}"
+    assert song.get('artist') == 'Test Artist', f"Expected artist 'Test Artist', got {song.get('artist', 'N/A')}"
+    assert song.get('album') == 'Test Album', f"Expected album 'Test Album', got {song.get('album', 'N/A')}"
 
 def test_multiple_events_sequence(generic_server):
     """Test sending multiple events in sequence"""
@@ -228,49 +201,30 @@ def test_multiple_events_sequence(generic_server):
     # Wait for all events to be processed
     time.sleep(1.0)
     
-    # Verify final state - use soft assertions to avoid failing the whole test
-    # if just one property isn't updated
+    # Verify final state - all properties must be updated correctly
     players = generic_server.get_players()
     player = players['test_player']
     
     # Check state
-    if player.get('state') == 'playing':
-        print("State updated successfully to 'playing'")
-    else:
-        print(f"WARNING: State not updated, current value: {player.get('state', 'N/A')}")
+    assert player.get('state') == 'playing', f"Expected state 'playing', got {player.get('state', 'N/A')}"
     
     # Check shuffle
-    if 'shuffle' in player:
-        if player['shuffle'] is True:
-            print("Shuffle updated successfully")
-        else:
-            print(f"WARNING: Shuffle not updated, current value: {player['shuffle']}")
-    else:
-        print("Shuffle property not exposed in player API")
+    assert 'shuffle' in player, "Shuffle property not exposed in player API"
+    assert player['shuffle'] is True, f"Expected shuffle True, got {player['shuffle']}"
     
     # Check loop mode
-    if 'loop_mode' in player:
-        if player['loop_mode'] == 'one':
-            print("Loop mode updated successfully")
-        else:
-            print(f"WARNING: Loop mode not updated, current value: {player['loop_mode']}")
-    else:
-        print("Loop mode property not exposed in player API")
+    assert 'loop_mode' in player, "Loop mode property not exposed in player API"
+    assert player['loop_mode'] == 'one', f"Expected loop_mode 'one', got {player['loop_mode']}"
         
     # Check position
-    if 'position' in player:
-        if player['position'] == 30.0:
-            print("Position updated successfully")
-        else:
-            print(f"WARNING: Position not updated, current value: {player['position']}")
-    else:
-        print("Position property not exposed in player API")
+    assert 'position' in player, "Position property not exposed in player API"
+    assert player['position'] == 30.0, f"Expected position 30.0, got {player['position']}"
     
     # Check metadata
     now_playing = generic_server.get_now_playing()
-    if 'song' in now_playing and now_playing['song']:
-        song = now_playing['song']
-        assert song['title'] == 'Sequence Test'
+    assert 'song' in now_playing and now_playing['song'], "Song data not available in now_playing response"
+    song = now_playing['song']
+    assert song['title'] == 'Sequence Test', f"Expected title 'Sequence Test', got {song.get('title', 'N/A')}"
 
 def test_player_api_event_support(generic_server):
     """Check if the generic player supports API events
@@ -289,13 +243,7 @@ def test_player_api_event_support(generic_server):
     
     # Check if the player reports supports_api_events
     assert 'supports_api_events' in test_player, "supports_api_events field missing from API response"
-    
-    if not test_player.get('supports_api_events', False):
-        print("WARNING: Player reports API events are NOT supported")
-        print("This may explain why some event tests might fail")
-    else:
-        print("SUCCESS: Player reports API events are supported")
-        print("This indicates that the player should process API update events correctly")
+    assert test_player.get('supports_api_events', False), "Player reports API events are NOT supported"
         
     # Check capabilities
     capabilities = test_player.get('capabilities', [])
@@ -307,10 +255,5 @@ def test_player_api_event_support(generic_server):
     response = generic_server.send_player_event(test_player['id'], event)
     print(f"API Response: {response}")
     
-    if response.get('success') == False:
-        print("WARNING: API event was not processed")
-        print("This confirms that events cannot be sent to the player via the API")
-        print("Check if 'supports_api_events' is correctly configured in the server")
-    else:
-        print("SUCCESS: API event was processed successfully")
-        print("This indicates that the player can process events via the API")
+    assert response.get('success') != False, f"API event was not processed: {response.get('message', 'Unknown error')}"
+    print("SUCCESS: API event was processed successfully")

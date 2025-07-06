@@ -350,11 +350,11 @@ class AudioControlTestServer:
         for event in reset_events:
             try:
                 self.send_player_event(player_id, event)
-                time.sleep(0.025)  # Small delay between events
+                time.sleep(0.1)  # Small delay between events for better reliability
             except Exception as e:
                 print(f"Warning: Failed to send reset event {event} to player {player_id}: {e}")
         
-        time.sleep(0.1)  # Wait for reset to complete
+        time.sleep(0.5)  # Longer wait for reset to complete
 
 # Global cleanup function
 def cleanup_all_servers():

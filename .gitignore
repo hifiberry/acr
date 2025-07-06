@@ -34,7 +34,16 @@ src/devtest.rs
 secrets.txt
 secrets/security_store.json
 
+# Test related temporary files
 test_config_*.json
 output.txt
 tests/__pycache__/*
-tests/test_cache*
+tests/test_cache_*/*
+tests/test_librespot_event_*
+tests/test_raat_metadata_*
+tests/test_raat_control_*
+tests/*.pyc
+test_cache_3003/attributes/*
+test_librespot_event_3003
+test_raat_control_3003
+test_raat_metadata_3003

@@ -32,14 +32,14 @@ REM Ensure we're in the correct directory
 cd /d "%~dp0"
 
 REM Kill any existing audiocontrol processes before starting
-REM (integration tests may start/stop the server)
+REM (integration tests now have their own cleanup, but this is still helpful)
 echo [CLEANUP] Killing any existing audiocontrol processes...
 taskkill /F /IM audiocontrol.exe 2>nul >nul
 REM Also try PowerShell approach as fallback
 powershell -Command "Get-Process -Name 'audiocontrol' -ErrorAction SilentlyContinue | Stop-Process -Force" 2>nul >nul
-REM Wait for processes to fully terminate
-timeout /t 2 /nobreak >nul
-echo [CLEANUP] Process cleanup complete
+REM Shorter wait since tests now have better cleanup
+timeout /t 1 /nobreak >nul
+echo [CLEANUP] Initial cleanup complete
 
 REM List of integration test files
 set TEST_FILES=generic_integration_tests librespot_integration_tests activemonitor_integration_test raat_integration_tests mpd_integration_tests cli_integration_tests

@@ -30,7 +30,7 @@ const TEST_PORT: u16 = 3002;
 #[tokio::test]
 #[serial]
 async fn test_librespot_player_initialization() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
     // Check if Librespot player is initialized
     let players_response = get_all_players(&server_url).await;
     match players_response {
@@ -60,7 +60,7 @@ async fn test_librespot_player_initialization() {
 #[tokio::test]
 #[serial]
 async fn test_librespot_api_events() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
     let track_changed_event = create_generic_api_event("song_changed", Some("API Test Song"), Some("API Test Artist"));
     if let Err(e) = send_librespot_api_event(&server_url, &track_changed_event).await {
         assert!(false, "Failed to send API event to Librespot: {}", e);
@@ -110,7 +110,7 @@ async fn test_librespot_api_events() {
 #[tokio::test]
 #[serial]
 async fn test_librespot_api_event_activates_player() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
     let playing_event = create_generic_api_event("state_changed", None, None);
     if let Err(e) = send_librespot_api_event(&server_url, &playing_event).await {
         assert!(false, "Failed to send API event to Librespot: {}", e);
@@ -146,7 +146,7 @@ async fn test_librespot_api_event_activates_player() {
 #[tokio::test]
 #[serial]
 async fn test_librespot_pipe_event_activates_player() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
     let events = vec![
         create_librespot_event("playing", None, None),
     ];
@@ -190,5 +190,10 @@ async fn test_librespot_pipe_event_activates_player() {
         }
     } else {
         println!("[SKIP] Pipe write did not succeed, skipping activation assertion");
+    }
+    
+    // Clean up after the last test in this module
+    unsafe {
+        common::force_cleanup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY);
     }
 }

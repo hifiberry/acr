@@ -15,7 +15,7 @@ const TEST_PORT: u16 = 3004;
 #[tokio::test]
 #[serial]
 async fn test_raat_player_initialization() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
     
     // Check if RAAT player is initialized
     let players_response = get_all_players(&server_url).await;
@@ -51,5 +51,10 @@ async fn test_raat_player_initialization() {
         Err(e) => {
             assert!(false, "Failed to get players: {}", e);
         }
+    }
+    
+    // Clean up after the last test in this module
+    unsafe {
+        common::force_cleanup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY);
     }
 }

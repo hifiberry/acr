@@ -49,7 +49,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_generic_integration_state_change() {
-        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+        let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
         
         // Reset player to known state
         reset_player_state(&server_url).await;
@@ -107,7 +107,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_generic_integration_song_change() {
-        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+        let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
         
         // Reset player to known state
         reset_player_state(&server_url).await;
@@ -157,7 +157,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_generic_integration_multiple_events() {
-        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+        let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
         
         // Reset player to known state
         reset_player_state(&server_url).await;
@@ -236,7 +236,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_generic_integration_custom_event() {
-        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+        let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
         
         // Reset player to known state
         reset_player_state(&server_url).await;
@@ -280,7 +280,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_players_initialization() {
-        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+        let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
         
         // Get all players to verify they are initialized
         let players_response = get_all_players(&server_url).await;
@@ -318,6 +318,11 @@ mod tests {
             Err(e) => {
                 assert!(false, "Failed to get players: {}", e);
             }
+        }
+        
+        // Clean up after the last test in this module
+        unsafe {
+            common::force_cleanup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY);
         }
     }
     

@@ -16,7 +16,7 @@ const TEST_PORT: u16 = 3003;
 #[tokio::test]
 #[serial]
 async fn test_active_monitor_switches_active_player() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await;
 
     // 1. Send a 'playing' event to the generic player
     let generic_playing_event = create_generic_api_event("state_changed", None, None);
@@ -72,5 +72,10 @@ async fn test_active_monitor_switches_active_player() {
         None => {
             assert!(false, "No active player after librespot event");
         }
+    }
+    
+    // Clean up after the last test in this module
+    unsafe {
+        common::force_cleanup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY);
     }
 }

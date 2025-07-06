@@ -9,16 +9,61 @@ use std::time::Duration;
 
 // Helper function to kill any existing audiocontrol processes (cross-platform)
 pub fn kill_existing_processes() {
+    println!("[CLEANUP] Killing existing audiocontrol processes...");
+    
     if cfg!(target_os = "windows") {
+        // Use taskkill with /F for force and /T for killing child processes
         let _ = Command::new("taskkill")
-            .args(&["/F", "/IM", "audiocontrol.exe"])
+            .args(&["/F", "/T", "/IM", "audiocontrol.exe"])
+            .output();
+        
+        // Also try PowerShell approach for more thorough cleanup
+        let _ = Command::new("powershell")
+            .args(&["-Command", "Get-Process -Name 'audiocontrol' -ErrorAction SilentlyContinue | Stop-Process -Force"])
+            .output();
+            
+        // Also try using wmic as a fallback
+        let _ = Command::new("wmic")
+            .args(&["process", "where", "name='audiocontrol.exe'", "delete"])
             .output();
     } else {
+        // For Unix-like systems, use pkill
         let _ = Command::new("pkill")
             .args(&["-KILL", "-f", "audiocontrol"])
             .output();
+        
+        // Also try killall as a fallback
+        let _ = Command::new("killall")
+            .args(&["-KILL", "audiocontrol"])
+            .output();
     }
-    std::thread::sleep(Duration::from_millis(500));
+    
+    // Wait longer for processes to die
+    std::thread::sleep(Duration::from_millis(1000));
+    
+    // Verify cleanup worked
+    if cfg!(target_os = "windows") {
+        let output = Command::new("tasklist")
+            .args(&["/FI", "IMAGENAME eq audiocontrol.exe"])
+            .output();
+        
+        if let Ok(output) = output {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains("audiocontrol.exe") {
+                println!("[CLEANUP] Warning: audiocontrol.exe processes may still be running");
+                println!("[CLEANUP] Trying one more aggressive cleanup...");
+                
+                // Try one more time with different approach
+                let _ = Command::new("cmd")
+                    .args(&["/C", "taskkill /F /T /IM audiocontrol.exe"])
+                    .output();
+                    
+                std::thread::sleep(Duration::from_millis(500));
+            } else {
+                println!("[CLEANUP] Successfully killed all audiocontrol processes");
+            }
+        }
+    }
 }
 
 // Helper function to wait for the server to be ready
@@ -391,6 +436,175 @@ pub async fn reset_player_state(server_url: &str) {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+}
+
+/// Comprehensive cleanup function for test suites
+/// This function should be called after each test suite to ensure proper cleanup
+pub unsafe fn cleanup_test_server(
+    test_port: u16,
+    server_process: *mut Option<std::process::Child>,
+    server_ready: &std::sync::atomic::AtomicBool,
+) {
+    println!("[CLEANUP] Starting comprehensive test server cleanup for port {}...", test_port);
+    
+    // 1. Kill the server process directly if we have a handle to it
+    if let Some(mut process) = (*server_process).take() {
+        println!("[CLEANUP] Killing server process directly (PID: {})...", process.id());
+        let _ = process.kill();
+        let _ = process.wait();
+        println!("[CLEANUP] Server process killed directly");
+    }
+    
+    // 2. Kill any existing processes by name (more aggressive)
+    println!("[CLEANUP] Killing any remaining audiocontrol processes...");
+    kill_existing_processes();
+    
+    // 3. Clean up test config files and cache directories
+    println!("[CLEANUP] Cleaning up test artifacts...");
+    let _ = std::fs::remove_file(format!("test_config_{}.json", test_port));
+    let _ = std::fs::remove_dir_all(format!("test_cache_{}", test_port));
+    
+    // 4. Clean up test pipes
+    if cfg!(not(target_os = "windows")) {
+        let _ = std::fs::remove_file("/tmp/test_raat_metadata");
+        let _ = std::fs::remove_file("/tmp/test_raat_control");
+        let _ = std::fs::remove_file("/tmp/test_librespot_event");
+    } else {
+        if let Some(temp_dir) = std::env::temp_dir().to_str() {
+            let _ = std::fs::remove_file(format!("{}\\test_raat_metadata", temp_dir));
+            let _ = std::fs::remove_file(format!("{}\\test_raat_control", temp_dir));
+            let _ = std::fs::remove_file(format!("{}\\test_librespot_event", temp_dir));
+        }
+    }
+    
+    // 5. Reset the server ready flag
+    server_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+    
+    // 6. Wait longer to ensure everything is cleaned up
+    std::thread::sleep(Duration::from_millis(2000));
+    
+    // 7. Final verification
+    if cfg!(target_os = "windows") {
+        let output = Command::new("tasklist")
+            .args(&["/FI", "IMAGENAME eq audiocontrol.exe"])
+            .output();
+        
+        if let Ok(output) = output {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains("audiocontrol.exe") {
+                println!("[CLEANUP] WARNING: audiocontrol.exe processes are still running after cleanup!");
+            } else {
+                println!("[CLEANUP] Verified: No audiocontrol.exe processes running");
+            }
+        }
+    }
+    
+    println!("[CLEANUP] Comprehensive cleanup complete for port {}", test_port);
+}
+
+/// Force cleanup function that should be called manually at the end of test modules
+/// This is a more reliable approach than relying on Drop traits
+pub unsafe fn force_cleanup_test_server(
+    test_port: u16,
+    server_process: *mut Option<std::process::Child>,
+    server_ready: &std::sync::atomic::AtomicBool,
+) {
+    println!("[FORCE CLEANUP] Starting forced cleanup for port {}...", test_port);
+    cleanup_test_server(test_port, server_process, server_ready);
+}
+
+/// Simple function to register a cleanup callback that gets called at the end
+pub fn register_cleanup_callback(cleanup_fn: Box<dyn Fn() + Send + 'static>) {
+    use std::sync::Mutex;
+    use std::sync::Arc;
+    
+    static CLEANUP_CALLBACKS: std::sync::OnceLock<Arc<Mutex<Vec<Box<dyn Fn() + Send + 'static>>>>> = std::sync::OnceLock::new();
+    
+    let callbacks = CLEANUP_CALLBACKS.get_or_init(|| Arc::new(Mutex::new(Vec::new())));
+    
+    if let Ok(mut callbacks) = callbacks.lock() {
+        callbacks.push(cleanup_fn);
+        
+        // Register an exit hook if this is the first callback
+        if callbacks.len() == 1 {
+            std::panic::set_hook(Box::new(|_| {
+                println!("[CLEANUP] Panic hook triggered, running cleanup callbacks...");
+                run_cleanup_callbacks();
+            }));
+        }
+    }
+}
+
+/// Run all registered cleanup callbacks
+pub fn run_cleanup_callbacks() {
+    use std::sync::Mutex;
+    use std::sync::Arc;
+    
+    static CLEANUP_CALLBACKS: std::sync::OnceLock<Arc<Mutex<Vec<Box<dyn Fn() + Send + 'static>>>>> = std::sync::OnceLock::new();
+    
+    if let Some(callbacks) = CLEANUP_CALLBACKS.get() {
+        if let Ok(callbacks) = callbacks.lock() {
+            println!("[CLEANUP] Running {} cleanup callbacks...", callbacks.len());
+            for callback in callbacks.iter() {
+                callback();
+            }
+        }
+    }
+}
+
+/// A safer test wrapper that ensures cleanup runs
+pub async fn run_test_with_cleanup<F, Fut>(
+    test_port: u16,
+    server_process: *mut Option<std::process::Child>,
+    server_ready: &std::sync::atomic::AtomicBool,
+    test_fn: F,
+) where
+    F: FnOnce() -> Fut + std::panic::UnwindSafe,
+    Fut: std::future::Future<Output = ()>,
+{
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tokio::runtime::Runtime::new().unwrap().block_on(test_fn())
+    }));
+    
+    // Always run cleanup regardless of test result
+    unsafe {
+        force_cleanup_test_server(test_port, server_process, server_ready);
+    }
+    
+    // Re-throw panic if the test failed
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// Test cleanup guard that uses RAII to ensure cleanup runs
+pub struct TestCleanupGuard {
+    test_port: u16,
+    server_process: *mut Option<std::process::Child>,
+    server_ready: *const std::sync::atomic::AtomicBool,
+}
+
+impl TestCleanupGuard {
+    pub unsafe fn new(
+        test_port: u16,
+        server_process: *mut Option<std::process::Child>,
+        server_ready: *const std::sync::atomic::AtomicBool,
+    ) -> Self {
+        Self {
+            test_port,
+            server_process,
+            server_ready,
+        }
+    }
+}
+
+impl Drop for TestCleanupGuard {
+    fn drop(&mut self) {
+        println!("[CLEANUP] TestCleanupGuard dropped, running cleanup...");
+        unsafe {
+            force_cleanup_test_server(self.test_port, self.server_process, &*self.server_ready);
+        }
+    }
 }
 
 // Add any additional helpers from the old test files here as needed

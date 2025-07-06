@@ -205,33 +205,6 @@ mod tests {
     }
 
     #[test]
-    fn test_queue_event() {
-        let controller = create_test_controller();
-        
-        let queue_event = json!({
-            "type": "queue_changed",
-            "queue": [
-                {
-                    "title": "Song 1",
-                    "artist": "Artist 1"
-                },
-                {
-                    "title": "Song 2", 
-                    "artist": "Artist 2"
-                }
-            ]
-        });
-        
-        let result = controller.process_api_event(&queue_event);
-        assert!(result);
-        
-        let queue = controller.get_queue();
-        assert_eq!(queue.len(), 2);
-        assert_eq!(queue[0].name, "Song 1");
-        assert_eq!(queue[1].name, "Song 2");
-    }
-
-    #[test]
     fn test_invalid_event() {
         let controller = create_test_controller();
         

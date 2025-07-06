@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import tempfile
 import shutil
+import copy
 
 import pytest
 import requests
@@ -27,6 +28,9 @@ TEST_PORTS = {
     'raat': 3004,
     'mpd': 3005,
 }
+
+# Path to static configuration file
+STATIC_CONFIG_PATH = Path("tests/test_config_generic.json")
 
 # Global server processes
 _server_processes: Dict[str, subprocess.Popen] = {}
@@ -44,7 +48,7 @@ class AudioControlTestServer:
         self.server_url = f"http://localhost:{port}"
         
     def create_config(self) -> Path:
-        """Create a test configuration file"""
+        """Create a test configuration file based on the static configuration"""
         # Create cache directory paths
         cache_dir = Path(f"test_cache_{self.port}")
         cache_dir.mkdir(exist_ok=True)
@@ -55,66 +59,41 @@ class AudioControlTestServer:
         images_cache_dir = cache_dir / "images"
         images_cache_dir.mkdir(exist_ok=True)
         
-        config = {
-            "players": [
-                {
-                    "generic": {
-                        "enable": True,
-                        "name": "test_player",
-                        "display_name": "Test Player",
-                        "supports_api_events": True,
-                        "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop"],
-                        "initial_state": "stopped",
-                        "shuffle": False,
-                        "loop_mode": "none"
-                    }
-                },
-                {
-                    "raat": {
-                        "enable": True,
-                        "metadata_pipe": f"test_raat_metadata_{self.port}" if os.name == 'nt' else f"/tmp/test_raat_metadata_{self.port}",
-                        "control_pipe": f"test_raat_control_{self.port}" if os.name == 'nt' else f"/tmp/test_raat_control_{self.port}",
-                        "reopen_metadata_pipe": False
-                    }
-                },
-                {
-                    "mpd": {
-                        "enable": True,
-                        "host": "localhost",
-                        "port": 6600,
-                        "load_on_startup": False,
-                        "artist_separator": [",", "feat. "],
-                        "enhance_metadata": False
-                    }
-                },
-                {
-                    "librespot": {
-                        "enable": True,
-                        "event_pipe": f"test_librespot_event_{self.port}" if os.name == 'nt' else f"/tmp/test_librespot_event_{self.port}",
-                        "reopen_event_pipe": False
-                    }
-                }
-            ],
-            "services": {
-                "webserver": {
-                    "enable": True,
-                    "host": "127.0.0.1",
-                    "port": self.port
-                },
-                "cache": {
-                    "attribute_cache_path": str(attributes_cache_dir.absolute()),
-                    "image_cache_path": str(images_cache_dir.absolute())
-                }
-            },
-            "action_plugins": [
-                {
-                    "active_monitor": {
-                        "enable": True,
-                        "switch_threshold": 5
-                    }
-                }
-            ]
-        }
+        # Load static configuration file
+        if not STATIC_CONFIG_PATH.exists():
+            raise FileNotFoundError(f"Static configuration file not found at {STATIC_CONFIG_PATH}")
+            
+        with open(STATIC_CONFIG_PATH, 'r') as f:
+            config = json.load(f)
+        
+        # Update configuration for this test instance
+        
+        # Update port
+        config["services"]["webserver"]["port"] = self.port
+        
+        # Update pipe paths for different players based on OS
+        for player_config in config["players"]:
+            # Update librespot pipe
+            if "librespot" in player_config:
+                player_config["librespot"]["event_pipe"] = (
+                    f"test_librespot_event_{self.port}" if os.name == 'nt' 
+                    else f"/tmp/test_librespot_event_{self.port}"
+                )
+            
+            # Update RAAT pipes
+            if "raat" in player_config:
+                player_config["raat"]["metadata_pipe"] = (
+                    f"test_raat_metadata_{self.port}" if os.name == 'nt' 
+                    else f"/tmp/test_raat_metadata_{self.port}"
+                )
+                player_config["raat"]["control_pipe"] = (
+                    f"test_raat_control_{self.port}" if os.name == 'nt' 
+                    else f"/tmp/test_raat_control_{self.port}"
+                )
+        
+        # Update cache paths
+        config["services"]["cache"]["attribute_cache_path"] = str(attributes_cache_dir.absolute())
+        config["services"]["cache"]["image_cache_path"] = str(images_cache_dir.absolute())
         
         # Create config file
         self.config_path = Path(f"test_config_{self.port}.json")
@@ -292,6 +271,15 @@ class AudioControlTestServer:
         response = self.api_request('GET', '/api/players')
         # API returns a dict with 'players' key containing an array of player objects
         # Each player has an 'id' field
+        
+        # Convert the list of players into a dict indexed by player id for backwards compatibility
+        if 'players' in response:
+            players_dict = {}
+            for player in response['players']:
+                if 'id' in player:
+                    players_dict[player['id']] = player
+            return players_dict
+        
         return response
     
     def get_now_playing(self) -> Dict[str, Any]:
@@ -317,6 +305,10 @@ class AudioControlTestServer:
             api_event["ALBUM"] = metadata.get("album", "")
             api_event["DURATION_MS"] = str(int(metadata.get("duration", 0) * 1000))
             api_event["TRACK_ID"] = metadata.get("uri", "")
+        elif event_type == "song_changed":
+            # For song change events, pass along the event data as is
+            # The generic player expects this format
+            api_event = event_data
         elif event_type == "position_changed":
             # For position changes, use playing event with position
             api_event["event"] = "playing"
@@ -346,7 +338,7 @@ class AudioControlTestServer:
         print(f"Sending event to player {player_name}: {api_event}")
         return self.api_request('POST', f'/api/player/{player_name}/update', api_event)
     
-    def reset_player_state(self, player_id: str):
+    def reset_player_state(self, player_id: str = "test_player"):
         """Reset a player to a known state"""
         reset_events = [
             {"type": "state_changed", "state": "stopped"},

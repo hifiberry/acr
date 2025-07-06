@@ -54,7 +54,8 @@ def run_tests():
         "test_librespot_integration.py",
         "test_activemonitor_integration.py",
         "test_raat_integration.py",
-        "test_mpd_integration.py"
+        "test_mpd_integration.py",
+        "test_websocket.py"
     ]
     
     all_passed = True

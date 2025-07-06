@@ -13,6 +13,13 @@ The tests start AudioControl server instances and make HTTP API requests to test
 - `test_activemonitor_integration.py` - Tests the active monitor plugin
 - `test_raat_integration.py` - Tests RAAT player integration
 - `test_mpd_integration.py` - Tests MPD player integration
+- `test_websocket.py` - Tests WebSocket event notifications
+
+### Known Issues
+
+- **WebSocket Tests**: The WebSocket tests currently skip with "Event processing is disabled on the generic player". Even though the player is configured with `"supports_api_events": True` in `conftest.py`, API events are not processed. This issue is documented in `test_websocket.py`. See also `test_player_api_event_support` in `test_generic_integration.py` for diagnosis.
+
+- **Generic Integration Tests**: Some tests in `test_generic_integration.py` need to be updated to match the current API response structure. The API now returns player information in an array under the `players` key, rather than as direct keys.
 
 ## Running Tests
 

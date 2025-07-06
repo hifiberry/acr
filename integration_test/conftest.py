@@ -287,56 +287,73 @@ class AudioControlTestServer:
         return self.api_request('GET', '/api/now-playing')
     
     def send_player_event(self, player_name: str, event_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Send an event to a player"""
-        # Create a structure that matches what the API expects according to the docs
-        # Format depends on the event type
+        """Send an event to a player using the acr_send_update tool"""
+        import subprocess
+        import json
+        
+        # Build the command to call audiocontrol_send_update
+        cmd = ["cargo", "run", "--bin", "audiocontrol_send_update", "--"]
+        cmd.append(player_name)
+        cmd.extend(["--audiocontrol-host", f"http://localhost:{self.port}"])
+        
+        # Convert event_data to acr_send_update arguments
         event_type = event_data.get("type", "unknown")
-        api_event = {}
         
         if event_type == "state_changed":
-            # For state changes, use the state as the event name
-            api_event["event"] = event_data["state"]  # playing, paused, stopped
-        elif event_type == "metadata_changed":
-            # For metadata changes, use track_changed format
-            metadata = event_data.get("metadata", {})
-            api_event["event"] = "track_changed"
-            api_event["NAME"] = metadata.get("title", "")
-            api_event["ARTISTS"] = metadata.get("artist", "")
-            api_event["ALBUM"] = metadata.get("album", "")
-            api_event["DURATION_MS"] = str(int(metadata.get("duration", 0) * 1000))
-            api_event["TRACK_ID"] = metadata.get("uri", "")
-        elif event_type == "song_changed":
-            # For song change events, pass along the event data as is
-            # The generic player expects this format
-            api_event = event_data
+            state = event_data.get("state", "stopped")
+            cmd.extend(["--state", state])
+        elif event_type == "metadata_changed" or event_type == "song_changed":
+            metadata = event_data.get("metadata", event_data.get("song", {}))
+            if metadata.get("title"):
+                cmd.extend(["--title", metadata["title"]])
+            if metadata.get("artist"):
+                cmd.extend(["--artist", metadata["artist"]])
+            if metadata.get("album"):
+                cmd.extend(["--album", metadata["album"]])
+            if metadata.get("duration"):
+                cmd.extend(["--length", str(metadata["duration"])])
         elif event_type == "position_changed":
-            # For position changes, use playing event with position
-            api_event["event"] = "playing"
-            api_event["POSITION_MS"] = str(int(event_data.get("position", 0) * 1000))
-            api_event["TRACK_ID"] = "spotify:track:current"
+            position = event_data.get("position", 0.0)
+            cmd.extend(["--position", str(position)])
         elif event_type == "shuffle_changed":
-            # For shuffle changes - based on the API docs, the correct format is to use "shuffle" as the event name
-            # with a value of "on" or "off"
-            api_event["event"] = "shuffle"
-            api_event["value"] = "on" if event_data.get("enabled", False) else "off"
-            
-            # For some player implementations, the API expects "shuffle" directly in the event JSON
-            # rather than as a field in the nested structure
-            api_event["shuffle"] = event_data.get("enabled", False)
+            shuffle = event_data.get("enabled", event_data.get("shuffle", False))
+            cmd.extend(["--shuffle", str(shuffle).lower()])
         elif event_type == "loop_mode_changed":
-            # For loop mode changes
-            api_event["event"] = "repeat"
             mode = event_data.get("mode", "none")
-            if mode == "none":
-                api_event["value"] = "off"
-            elif mode == "track" or mode == "one":
-                api_event["value"] = "track"
-            elif mode == "all" or mode == "playlist":
-                api_event["value"] = "context"
-            
+            # Convert mode names to match Rust enum
+            if mode == "all" or mode == "playlist":
+                mode = "playlist"
+            elif mode == "one" or mode == "track":
+                mode = "track"
+            else:
+                mode = "none"
+            cmd.extend(["--loop-mode", mode])
+        else:
+            # For unknown event types, try to extract common fields
+            print(f"Unknown event type '{event_type}', attempting to extract common fields")
+            if "state" in event_data:
+                cmd.extend(["--state", event_data["state"]])
+            if "position" in event_data:
+                cmd.extend(["--position", str(event_data["position"])])
+        
         # Debug output
-        print(f"Sending event to player {player_name}: {api_event}")
-        return self.api_request('POST', f'/api/player/{player_name}/update', api_event)
+        print(f"Calling audiocontrol_send_update with command: {' '.join(cmd)}")
+        
+        # Execute the command
+        try:
+            result = subprocess.run(cmd, cwd=self.base_dir, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                print(f"audiocontrol_send_update output: {result.stdout}")
+                return {"success": True, "message": "Update sent successfully"}
+            else:
+                print(f"audiocontrol_send_update error: {result.stderr}")
+                return {"success": False, "message": f"Tool failed with exit code {result.returncode}: {result.stderr}"}
+                
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "Tool execution timed out"}
+        except Exception as e:
+            return {"success": False, "message": f"Tool execution failed: {str(e)}"}
     
     def reset_player_state(self, player_id: str = "test_player"):
         """Reset a player to a known state"""

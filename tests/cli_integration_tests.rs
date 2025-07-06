@@ -1,4 +1,5 @@
-//! Integration tests for the player event client
+//! CLI integration tests for the player event client
+//! These tests verify the command-line interface of audiocontrol_player_event_client
 
 use std::process::Command;
 

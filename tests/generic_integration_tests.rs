@@ -1,74 +1,25 @@
-//! Full integration tests for the AudioControl system
+//! Generic integration tests for the AudioControl system
 //! These tests start the AudioControl server and test the CLI tool against it
 
 #[path = "common/mod.rs"]
 mod common;
 use common::*;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::Duration;
 use serde_json::json;
 use serial_test::serial;
-use std::fs;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Once;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
     
     static INIT: Once = Once::new();
     static mut SERVER_PROCESS: Option<std::process::Child> = None;
     static SERVER_READY: AtomicBool = AtomicBool::new(false);
-    static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
     
     const TEST_PORT: u16 = 3001;
-    
-    /// Force cleanup of server and test resources
-    fn force_cleanup() {
-        println!("[CLEANUP] Force cleanup: Killing server and cleaning up test resources...");
-        
-        // Kill server process directly if we have a handle to it
-        unsafe {
-            if let Some(mut process) = SERVER_PROCESS.take() {
-                println!("[CLEANUP] Killing server process directly...");
-                let _ = process.kill();
-                let _ = process.wait();
-            }
-        }
-        
-        // Also kill any processes by name
-        kill_existing_processes();
-        
-        // Clean up config files and cache directories
-        let _ = fs::remove_file(format!("test_config_{}.json", TEST_PORT));
-        let _ = fs::remove_dir_all(format!("test_cache_{}", TEST_PORT));
-        
-        println!("[CLEANUP] Force cleanup complete");
-    }
-
-    
-    /// Cleanup guard that ensures server is killed when dropped
-    struct ServerCleanupGuard;
-    
-    impl Drop for ServerCleanupGuard {
-        fn drop(&mut self) {
-            force_cleanup();
-        }
-    }
-    
-    /// Ensures that cleanup is registered only once for the test module
-    fn ensure_module_cleanup() {
-        use std::sync::atomic::Ordering;
-        if !CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
-            // Register a guard to clean up when the test process exits
-            std::thread::spawn(|| {
-                // The guard will run force_cleanup() on drop
-                let _guard = ServerCleanupGuard;
-                // Block forever so the guard lives until process exit
-                std::thread::park();
-            });
-        }
-    }
     
     async fn reset_player_state(server_url: &str) {
         // Get the CLI binary path
@@ -94,70 +45,11 @@ mod tests {
         // Wait for reset to complete
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    
-    async fn setup_test_server() -> String {
-        let server_url = format!("http://localhost:{}", TEST_PORT);
-        INIT.call_once(|| {
-            // Ensure binaries are built before running tests
-            ensure_binaries_built().expect("Failed to build required binaries");
-            // Kill any existing processes first
-            kill_existing_processes();
-            // Create test pipes for players that need them
-            let _ = create_test_pipes();
-            // Wait for librespot pipe to exist before starting server
-            let ok = wait_for_librespot_pipe(5000);
-            assert!(ok, "Librespot event pipe was not created in time");
-            // Setup config
-            let config_path = create_test_config(TEST_PORT).expect("Failed to create test config");
-            
-            // Get the path to the pre-built audiocontrol binary
-            let target_dir = std::env::var("CARGO_TARGET_DIR")
-                .unwrap_or_else(|_| "target".to_string());
-            let binary_name = if cfg!(target_os = "windows") {
-                "audiocontrol.exe"
-            } else {
-                "audiocontrol"
-            };
-            let binary_path = std::path::PathBuf::from(target_dir)
-                .join("debug")
-                .join(binary_name);
-            
-            // Start AudioControl server using pre-built binary
-            let server_process = Command::new(&binary_path)
-                .args(&["-c", &config_path])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("Failed to start AudioControl server");
-            
-            unsafe {
-                SERVER_PROCESS = Some(server_process);
-            }
-        });
-        
-        // Wait for server to be ready if not already
-        if !SERVER_READY.load(Ordering::Relaxed) {
-            let server_ready = wait_for_server(&server_url, 30).await;
-            if server_ready.is_err() {
-                eprintln!("Server failed to start: {:?}", server_ready.err());
-                return server_url; // Return anyway, let individual tests handle the failure
-            }
-            SERVER_READY.store(true, Ordering::Relaxed);
-            
-            // Give server a moment to fully initialize
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        
-        server_url
-    }
 
     #[tokio::test]
     #[serial]
-    async fn test_full_integration_state_change() {
-        let server_url = setup_test_server().await;
-        
-        // Ensure module cleanup is initialized
-        ensure_module_cleanup();
+    async fn test_generic_integration_state_change() {
+        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
         
         // Reset player to known state
         reset_player_state(&server_url).await;
@@ -214,8 +106,8 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_full_integration_song_change() {
-        let server_url = setup_test_server().await;
+    async fn test_generic_integration_song_change() {
+        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
         
         // Reset player to known state
         reset_player_state(&server_url).await;
@@ -264,8 +156,8 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_full_integration_multiple_events() {
-        let server_url = setup_test_server().await;
+    async fn test_generic_integration_multiple_events() {
+        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
         
         // Reset player to known state
         reset_player_state(&server_url).await;
@@ -343,8 +235,8 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_full_integration_custom_event() {
-        let server_url = setup_test_server().await;
+    async fn test_generic_integration_custom_event() {
+        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
         
         // Reset player to known state
         reset_player_state(&server_url).await;
@@ -388,7 +280,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_players_initialization() {
-        let server_url = setup_test_server().await;
+        let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
         
         // Get all players to verify they are initialized
         let players_response = get_all_players(&server_url).await;
@@ -429,117 +321,4 @@ mod tests {
         }
     }
     
-    #[tokio::test]
-    #[serial]
-    async fn test_raat_player_initialization() {
-        let server_url = setup_test_server().await;
-        
-        // Check if RAAT player is initialized
-        let players_response = get_all_players(&server_url).await;
-        match players_response {
-            Ok(response) => {
-                if let Some(players) = response.get("players").and_then(|p| p.as_array()) {
-                    let raat_player = players.iter().find(|p| {
-                        p.get("name").and_then(|n| n.as_str()).map(|s| s.contains("raat")).unwrap_or(false)
-                    });
-                    if let Some(player) = raat_player {
-                        println!("RAAT player found: {}", serde_json::to_string_pretty::<serde_json::Value>(player).unwrap());
-                        // Verify RAAT player has basic state
-                        if player.get("state").is_none() {
-                            eprintln!("[FAIL] RAAT player missing state field");
-                            assert!(false, "RAAT player missing state");
-                            return;
-                        }
-                        if player.get("is_active").is_none() {
-                            eprintln!("[FAIL] RAAT player missing is_active field");
-                            assert!(false, "RAAT player missing is_active");
-                            return;
-                        }
-                        
-                        println!("[OK] RAAT player initialized successfully");
-                    } else {
-                        println!("[POTENTIAL PROBLEM] RAAT player not found - this may be expected if pipe dependencies are not available");
-                        // Don't fail - RAAT player may not be available in test environment
-                    }
-                } else {
-                    assert!(false, "Invalid players response format");
-                }
-            }
-            Err(e) => {
-                assert!(false, "Failed to get players: {}", e);
-            }
-        }
-    }
-    
-    #[tokio::test]
-    #[serial]
-    async fn test_mpd_player_initialization() {
-        let server_url = setup_test_server().await;
-        
-        // Check if MPD player is initialized
-        let players_response = get_all_players(&server_url).await;
-        match players_response {
-            Ok(response) => {
-                if let Some(players) = response.get("players").and_then(|p| p.as_array()) {
-                    let mpd_player = players.iter().find(|p| {
-                        p.get("name").and_then(|n| n.as_str()).map(|s| s.contains("mpd")).unwrap_or(false)
-                    });
-                    if let Some(player) = mpd_player {
-                        println!("MPD player found: {}", serde_json::to_string_pretty::<serde_json::Value>(player).unwrap());
-                        // Verify MPD player has basic state
-                        if player.get("state").is_none() {
-                            eprintln!("[FAIL] MPD player missing state field");
-                            assert!(false, "MPD player missing state");
-                            return;
-                        }
-                        if player.get("is_active").is_none() {
-                            eprintln!("[FAIL] MPD player missing is_active field");
-                            assert!(false, "MPD player missing is_active");
-                            return;
-                        }
-                        
-                        println!("[OK] MPD player initialized successfully");
-                    } else {
-                        println!("[INFO] MPD player not found - this may be expected if MPD server is not available");
-                        // Don't fail - MPD player may not be available in test environment
-                    }
-                } else {
-                    assert!(false, "Invalid players response format");
-                }
-            }
-            Err(e) => {
-                assert!(false, "Failed to get players: {}", e);
-            }
-        }
-    }
-    
-    #[tokio::test]
-    #[serial]
-    async fn test_librespot_player_initialization() {
-        // moved to librespot_integration_tests.rs
-    }
-    
-    #[tokio::test]
-    #[serial]
-    async fn test_librespot_api_events() {
-        // moved to librespot_integration_tests.rs
-    }
-    
-    #[tokio::test]
-    #[serial]
-    async fn test_librespot_pipe_events() {
-        // moved to librespot_integration_tests.rs
-    }
-    
-    #[tokio::test]
-    #[serial]
-    async fn test_librespot_api_event_activates_player() {
-        // moved to librespot_integration_tests.rs
-    }
-    
-    #[tokio::test]
-    #[serial]
-    async fn test_librespot_pipe_event_activates_player() {
-        // moved to librespot_integration_tests.rs
-    }
 } // end of mod tests

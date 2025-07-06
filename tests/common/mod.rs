@@ -1,12 +1,11 @@
+#![allow(dead_code)]
 // Common helpers for integration tests
 
 use serde_json::json;
 use std::fs;
 use std::io::{self, Write};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::Duration;
-
-pub use serial_test::serial;
 
 // Helper function to kill any existing audiocontrol processes (cross-platform)
 pub fn kill_existing_processes() {
@@ -341,7 +340,7 @@ pub fn wait_for_librespot_pipe(timeout_ms: u64) -> bool {
 // Helper to setup the test server (moved from full_integration_tests.rs)
 pub async fn setup_test_server(
     test_port: u16,
-    server_process: &mut Option<std::process::Child>,
+    server_process: *mut Option<std::process::Child>,
     server_ready: &std::sync::atomic::AtomicBool,
     init: &std::sync::Once,
 ) -> String {
@@ -362,7 +361,7 @@ pub async fn setup_test_server(
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("Failed to start AudioControl server");
-        *server_process = Some(process);
+        unsafe { *server_process = Some(process) };
     });
     if !server_ready.load(std::sync::atomic::Ordering::Relaxed) {
         let server_ready_result = wait_for_server(&server_url, 30).await;

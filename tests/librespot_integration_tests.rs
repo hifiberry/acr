@@ -11,17 +11,16 @@ fn deprecated_notice() {
     println!("This file has been deprecated. Use full_integration_tests.rs instead.");
 }
 
+/// Run all tests in this module (deprecated - tests moved to full_integration_tests)
 // Integration tests for Librespot/Spotify player
 
 #[path = "common/mod.rs"]
 mod common;
 use common::*;
-use std::process::Command;
-use std::time::Duration;
 use serde_json::json;
 use serial_test::serial;
 use std::sync::Once;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 static INIT: Once = Once::new();
 static mut SERVER_PROCESS: Option<std::process::Child> = None;
@@ -31,7 +30,7 @@ const TEST_PORT: u16 = 3002;
 #[tokio::test]
 #[serial]
 async fn test_librespot_player_initialization() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
     // Check if Librespot player is initialized
     let players_response = get_all_players(&server_url).await;
     match players_response {
@@ -61,7 +60,7 @@ async fn test_librespot_player_initialization() {
 #[tokio::test]
 #[serial]
 async fn test_librespot_api_events() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
     let track_changed_event = create_generic_api_event("song_changed", Some("API Test Song"), Some("API Test Artist"));
     if let Err(e) = send_librespot_api_event(&server_url, &track_changed_event).await {
         assert!(false, "Failed to send API event to Librespot: {}", e);
@@ -111,7 +110,7 @@ async fn test_librespot_api_events() {
 #[tokio::test]
 #[serial]
 async fn test_librespot_api_event_activates_player() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
     let playing_event = create_generic_api_event("state_changed", None, None);
     if let Err(e) = send_librespot_api_event(&server_url, &playing_event).await {
         assert!(false, "Failed to send API event to Librespot: {}", e);
@@ -147,7 +146,7 @@ async fn test_librespot_api_event_activates_player() {
 #[tokio::test]
 #[serial]
 async fn test_librespot_pipe_event_activates_player() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
     let events = vec![
         create_librespot_event("playing", None, None),
     ];

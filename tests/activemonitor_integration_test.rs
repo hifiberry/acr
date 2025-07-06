@@ -3,12 +3,9 @@
 #[path = "common/mod.rs"]
 mod common;
 use common::*;
-use std::process::Command;
-use std::time::Duration;
-use serde_json::json;
 use serial_test::serial;
 use std::sync::Once;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 static INIT: Once = Once::new();
 static mut SERVER_PROCESS: Option<std::process::Child> = None;
@@ -19,7 +16,7 @@ const TEST_PORT: u16 = 3003;
 #[tokio::test]
 #[serial]
 async fn test_active_monitor_switches_active_player() {
-    let server_url = unsafe { common::setup_test_server(TEST_PORT, &mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
+    let server_url = unsafe { common::setup_test_server(TEST_PORT, &raw mut SERVER_PROCESS, &SERVER_READY, &INIT).await };
 
     // 1. Send a 'playing' event to the generic player
     let generic_playing_event = create_generic_api_event("state_changed", None, None);

@@ -1,19 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-REM Script to run the AudioControl integration test suite
-REM Usage: 
-REM   run-test.bat                    - Run all tests (normal output)
-REM   run-test.bat --quiet            - Only show summary
-REM   run-test.bat --verbose          - Show full output
-REM   run-test.bat test_name ...      - Run specific test(s)
-REM   run-test.bat --quiet test_name  - Quiet, specific test(s)
-REM   run-test.bat --verbose test_name - Verbose, specific test(s)
+REM Script to run the AudioControl full test suite (integration + unit tests)
+REM Usage:
+REM   run-test.bat [--quiet|--verbose] [test_name ...]
 REM
-REM Examples:
-REM   run-test.bat test_librespot_api_events
-REM   run-test.bat --quiet test_librespot_api_events
-REM   run-test.bat --verbose test_librespot_api_events
+REM Runs all integration tests and the full unit test suite.
 
 REM Parse --quiet/--verbose flags
 set QUIET=0
@@ -40,14 +32,20 @@ REM Ensure we're in the correct directory
 cd /d "%~dp0"
 
 REM Kill any existing audiocontrol processes before starting
+REM (integration tests may start/stop the server)
+echo [CLEANUP] Killing any existing audiocontrol processes...
 taskkill /F /IM audiocontrol.exe 2>nul >nul
-REM Wait for process cleanup
-timeout /t 1 /nobreak >nul
+REM Also try PowerShell approach as fallback
+powershell -Command "Get-Process -Name 'audiocontrol' -ErrorAction SilentlyContinue | Stop-Process -Force" 2>nul >nul
+REM Wait for processes to fully terminate
+timeout /t 2 /nobreak >nul
+echo [CLEANUP] Process cleanup complete
 
-REM List of test files
-set TEST_FILES=full_integration_tests librespot_integration_tests activemonitor_integration_test
+REM List of integration test files
+set TEST_FILES=generic_integration_tests librespot_integration_tests activemonitor_integration_test raat_integration_tests mpd_integration_tests cli_integration_tests
 set FAILURES=0
 
+REM Run integration tests
 if not defined TEST_ARGS (
     for %%f in (%TEST_FILES%) do (
         echo [RUN] %%f
@@ -92,17 +90,41 @@ if not defined TEST_ARGS (
     )
 )
 
+REM Run all unit tests (main crate)
+echo [RUN] crate unit tests
+if %QUIET%==1 (
+    cargo test --lib -- --quiet > output.txt 2>&1
+) else if %VERBOSE%==1 (
+    cargo test --lib -- --nocapture
+) else (
+    cargo test --lib
+)
+if !ERRORLEVEL! neq 0 (
+    echo [FAIL] crate unit tests
+    set /a FAILURES+=1
+    if %QUIET%==1 (
+        type output.txt
+    )
+) else (
+    echo [PASS] crate unit tests
+)
+
 REM Cleanup
+echo [CLEANUP] Cleaning up test artifacts...
 if exist output.txt del /q output.txt
+REM Kill any remaining audiocontrol processes
 taskkill /F /IM audiocontrol.exe 2>nul >nul
+powershell -Command "Get-Process -Name 'audiocontrol' -ErrorAction SilentlyContinue | Stop-Process -Force" 2>nul >nul
+REM Clean up test config files and cache directories
 del /q test_config_*.json 2>nul >nul
 rmdir /s /q test_cache_* 2>nul >nul
+echo [CLEANUP] Cleanup complete
 
 REM Report results
 if %FAILURES%==0 (
-    echo [PASS] All integration tests passed!
+    echo [PASS] All integration and unit tests passed!
     exit /b 0
 ) else (
-    echo [FAIL] Some integration tests failed!
+    echo [FAIL] Some tests failed!
     exit /b 1
 )

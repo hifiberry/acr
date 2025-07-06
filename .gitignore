@@ -36,3 +36,4 @@ secrets/security_store.json
 
 test_config_*.json
 output.txt
+tests/__pycache__/*

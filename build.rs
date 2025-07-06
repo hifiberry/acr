@@ -29,10 +29,8 @@ fn main() {
 fn check_secrets_file(filename: &str, secrets: &mut HashMap<String, String>) {
     let path = Path::new(filename);
     if path.exists() {
-        println!("cargo:warning=Found secrets file: {}", path.display());
         if let Ok(file) = File::open(path) {
             let reader = BufReader::new(file);
-            let mut count = 0;
             for line in reader.lines() {
                 if let Ok(line) = line {
                     let trimmed = line.trim();
@@ -43,36 +41,22 @@ fn check_secrets_file(filename: &str, secrets: &mut HashMap<String, String>) {
                         let key = line[..pos].trim().to_string();
                         let value = line[pos+1..].trim().to_string();
                         secrets.insert(key.clone(), value.clone());
-                        let masked_value = mask_value(&value);
-                        println!("cargo:warning=Secret: {}={}", key, masked_value);
-                        count += 1;
                     }
                 }
             }
-            println!("cargo:warning=Read {} secrets from {}", count, path.display());
-        } else {
-            println!("cargo:warning=Failed to open secrets file: {}", path.display());
         }
     }
 }
 
 fn check_environment_secrets(secrets: &mut HashMap<String, String>) {
     let secret_prefixes = ["API_", "TOKEN_", "SECRET_", "PASSWORD_", "AUTH_", "CREDENTIAL_", "KEY_"];
-    let mut found = false;
-    println!("cargo:warning=Checking environment variables for secrets...");
     for (key, value) in env::vars() {
         let upper_key = key.to_uppercase();
         for prefix in &secret_prefixes {
             if upper_key.starts_with(prefix) || upper_key.contains("_SECRET_") || upper_key.contains("_API_KEY") {
                 secrets.insert(key.clone(), value.clone());
-                let masked_value = mask_value(&value);
-                println!("cargo:warning=Environment secret: {}={}", key, masked_value);
-                found = true;
             }
         }
-    }
-    if !found {
-        println!("cargo:warning=No environment secrets found with common prefixes");
     }
 }
 
@@ -113,19 +97,6 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
     let spotify_proxy_secret = secrets.get("SPOTIFY_PROXY_SECRET")
         .map(|s| s.as_str()).unwrap_or("unknown");
         
-    // Log the actual values found during build time for debugging
-    if spotify_oauth_url == "unknown" {
-        println!("cargo:warning=SPOTIFY_OAUTH_URL not found in secrets.txt");
-    } else {
-        println!("cargo:warning=Using Spotify OAuth URL: {}", spotify_oauth_url);
-    }
-    
-    if spotify_proxy_secret == "unknown" {
-        println!("cargo:warning=SPOTIFY_PROXY_SECRET not found in secrets.txt");
-    } else {
-        println!("cargo:warning=Found valid Spotify proxy secret (not shown for security)");
-    }
-        
     // Obfuscate the keys
     let lastfm_key_obf = obfuscate(lastfm_key);
     let lastfm_secret_obf = obfuscate(lastfm_secret);
@@ -152,13 +123,5 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
     content.push_str(&format!("pub fn spotify_oauth_url() -> String {{ r#do(SPOTIFY_OAUTH_URL_OBF) }}\n"));
     content.push_str(&format!("pub fn spotify_proxy_secret() -> String {{ r#do(SPOTIFY_PROXY_SECRET_OBF) }}\n"));
     fs::write(&dest_path, content).unwrap();
-    println!("cargo:warning=Generated secrets file at: {}", dest_path.display());
     println!("cargo:rerun-if-changed=build.rs");
-}
-
-fn mask_value(value: &str) -> String {
-    if value.len() <= 3 {
-        return "***".to_string();
-    }
-    format!("{}***", &value[0..3])
 }

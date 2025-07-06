@@ -31,6 +31,7 @@ pub struct PlayerInfo {
     state: PlaybackState,
     is_active: bool,
     has_library: bool,
+    supports_api_events: bool, // Whether the player supports receiving API events/updates
     last_seen: Option<String>, // ISO 8601 formatted timestamp of when the player was last seen
 }
 
@@ -147,6 +148,7 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
                     state: ctrl.get_playback_state(),
                     is_active: name == current_player_name && id == current_player_id,
                     has_library: ctrl.has_library(),
+                    supports_api_events: ctrl.supports_api_events(),
                     last_seen,
                 }
             } else {
@@ -157,6 +159,7 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
                     state: PlaybackState::Unknown,
                     is_active: false,
                     has_library: false,
+                    supports_api_events: false,
                     last_seen: None,
                 }
             }
@@ -291,6 +294,7 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
             state: PlaybackState::Unknown,
             is_active: false,
             has_library: false,
+            supports_api_events: false,
             last_seen: None,
         },
         song: None,
@@ -347,6 +351,7 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
             state,
             is_active: true,
             has_library: player.has_library(),
+            supports_api_events: player.supports_api_events(),
             last_seen,
         },
         song,

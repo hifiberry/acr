@@ -35,3 +35,4 @@ secrets.txt
 secrets/security_store.json
 
 test_config_*.json
+output.txt

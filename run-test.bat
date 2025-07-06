@@ -41,53 +41,18 @@ REM Shorter wait since tests now have better cleanup
 timeout /t 1 /nobreak >nul
 echo [CLEANUP] Initial cleanup complete
 
-REM List of integration test files
-set TEST_FILES=generic_integration_tests librespot_integration_tests activemonitor_integration_test raat_integration_tests mpd_integration_tests cli_integration_tests
+REM Integration tests have been migrated to Python - use tests\run_tests.py instead
+echo [INFO] Integration tests have been migrated to Python
+echo [INFO] To run integration tests, use: python tests\run_tests.py
 set FAILURES=0
 
-REM Run integration tests
+REM Skip old Rust integration tests (now using Python tests)
 if not defined TEST_ARGS (
-    for %%f in (%TEST_FILES%) do (
-        echo [RUN] %%f
-        if %QUIET%==1 (
-            cargo test --test %%f -- --quiet > output.txt 2>&1
-        ) else if %VERBOSE%==1 (
-            cargo test --test %%f -- --nocapture
-        ) else (
-            cargo test --test %%f
-        )
-        if !ERRORLEVEL! neq 0 (
-            echo [FAIL] %%f
-            set /a FAILURES+=1
-            if %QUIET%==1 (
-                type output.txt
-            )
-        ) else (
-            echo [PASS] %%f
-        )
-    )
+    echo [SKIP] Skipping old Rust integration tests - use Python tests instead
+    REM Old loop removed - use Python tests instead
 ) else (
-    for %%f in (%TEST_FILES%) do (
-        for %%t in (!TEST_ARGS!) do (
-            echo [RUN] %%f %%t
-            if %QUIET%==1 (
-                cargo test --test %%f %%t -- --quiet > output.txt 2>&1
-            ) else if %VERBOSE%==1 (
-                cargo test --test %%f %%t -- --nocapture
-            ) else (
-                cargo test --test %%f %%t
-            )
-            if !ERRORLEVEL! neq 0 (
-                echo [FAIL] %%f %%t
-                set /a FAILURES+=1
-                if %QUIET%==1 (
-                    type output.txt
-                )
-            ) else (
-                echo [PASS] %%f %%t
-            )
-        )
-    )
+    echo [SKIP] Skipping old Rust integration tests - use Python tests instead  
+    REM Old loop removed - use Python tests instead
 )
 
 REM Run all unit tests (main crate)

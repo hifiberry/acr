@@ -40,24 +40,28 @@ fi
 echo "[WAIT] Waiting for process cleanup..."
 sleep 1
 
-# Run the integration tests with verbose output
-echo "[START] Starting integration test suite..."
+# Integration tests have been migrated to Python
+echo "[INFO] Integration tests have been migrated to Python"
+echo "[INFO] To run integration tests, use: python tests/run_tests.py"
 echo ""
 
 if [ -z "$TEST_ARGS" ]; then
-    # Run all tests
-    cargo test --test full_integration_tests -- --nocapture
+    # Skip old Rust integration tests - now using Python tests
+    echo "[SKIP] Skipping old Rust integration tests - use Python tests instead"
+    # Old command for reference:
+    # cargo test --test full_integration_tests -- --nocapture
 else
-    # Run specific tests - for multiple tests, we need to run them individually
-    # But we can use a pattern that matches all of them
-    for test_name in $TEST_ARGS; do
-        echo "Running test: $test_name"
-        cargo test --test full_integration_tests "$test_name" -- --nocapture
-        if [ $? -ne 0 ]; then
-            echo "[FAIL] Test $test_name failed"
-            exit 1
-        fi
-        echo "[PASS] Test $test_name passed"
+    # Skip specific test runs too
+    echo "[SKIP] Skipping old Rust integration tests - use Python tests instead"
+    # Old loop for reference:
+    # for test_name in $TEST_ARGS; do
+    #     echo "Running test: $test_name"
+    #     cargo test --test full_integration_tests "$test_name" -- --nocapture
+    #     if [ $? -ne 0 ]; then
+    #         echo "[FAIL] Test $test_name failed"
+    #         exit 1
+    #     fi
+    #     echo "[PASS] Test $test_name passed"
         echo ""
     done
 fi

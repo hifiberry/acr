@@ -43,7 +43,8 @@ tests/test_librespot_event_*
 tests/test_raat_metadata_*
 tests/test_raat_control_*
 tests/*.pyc
-test_cache_3003/attributes/*
-test_librespot_event_3003
-test_raat_control_3003
-test_raat_metadata_3003
+test_cache_300*/attributes/*
+test_librespot_event_300*
+test_raat_control_300*
+test_raat_metadata_300*
+test_librespot_event_300*

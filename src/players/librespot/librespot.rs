@@ -40,6 +40,9 @@ pub struct LibrespotPlayerController {
     
     /// Whether to enable API updates/events
     enable_api_updates: bool,
+    
+    /// What to do when receiving pause/stop commands: "systemd", "kill", or None
+    on_pause_event: Option<String>,
 }
 
 // Manually implement Clone for LibrespotPlayerController
@@ -55,6 +58,7 @@ impl Clone for LibrespotPlayerController {
             stream_details: Arc::clone(&self.stream_details),
             reopen_event_pipe: self.reopen_event_pipe,
             enable_api_updates: self.enable_api_updates,
+            on_pause_event: self.on_pause_event.clone(),
         }
     }
 }
@@ -90,6 +94,7 @@ impl LibrespotPlayerController {
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: true,
             enable_api_updates: true, // Default to enabled
+            on_pause_event: None,
         };
         
         // Set default capabilities - only Killable is available
@@ -120,6 +125,7 @@ impl LibrespotPlayerController {
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: reopen,
             enable_api_updates,
+            on_pause_event: None,
         };
         
         // Set default capabilities - only Killable is available
@@ -173,6 +179,7 @@ impl LibrespotPlayerController {
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: reopen,
             enable_api_updates,
+            on_pause_event: None,
         };
         
         // Set default capabilities - only Killable is available
@@ -230,6 +237,19 @@ impl LibrespotPlayerController {
         &self.process_name
     }
     
+    /// Set the on_pause_event action
+    #[allow(dead_code)]
+    pub fn set_on_pause_event(&mut self, on_pause_event: Option<String>) {
+        debug!("Setting Librespot on_pause_event to: {:?}", on_pause_event);
+        self.on_pause_event = on_pause_event;
+    }
+    
+    /// Get the on_pause_event action
+    #[allow(dead_code)]
+    pub fn get_on_pause_event(&self) -> &Option<String> {
+        &self.on_pause_event
+    }
+
     /// Starts a background thread that listens for Librespot events (if a filename is configured)
     /// The thread will run until the running flag is set to false
     fn start_event_listener(&self, running: Arc<AtomicBool>, self_arc: Arc<Self>) {
@@ -571,44 +591,41 @@ impl PlayerController for LibrespotPlayerController {
     fn send_command(&self, command: PlayerCommand) -> bool {
         info!("Sending command to Librespot player: {}", command);
         
-        // Only the Kill command is supported
+        // Handle pause/stop commands with on_pause_event action
         match command {
-            PlayerCommand::Kill => {
-                // Try to kill the process using the process_name
-                info!("Attempting to kill Librespot process: {}", self.process_name);
-                
-                // Use system kill command
-                #[cfg(unix)]
-                {
-                    use std::process::Command;
-                    
-                    // Try to kill the process using pkill
-                    match Command::new("pkill")
-                        .arg("-f")
-                        .arg(&self.process_name)
-                        .status() {
-                            Ok(status) => {
-                                if status.success() {
-                                    info!("Successfully killed Librespot process");
+            PlayerCommand::Pause | PlayerCommand::Stop => {
+                if let Some(ref action) = self.on_pause_event {
+                    match action.as_str() {
+                        "systemd" => {
+                            info!("Received {} command, restarting librespot via systemd", command);
+                            match crate::helpers::systemd::SystemdHelper::new().restart_unit("librespot") {
+                                Ok(_) => {
+                                    info!("Successfully restarted librespot systemd unit");
                                     return true;
-                                } else {
-                                    warn!("Failed to kill Librespot process, exit code: {:?}", status.code());
+                                }
+                                Err(e) => {
+                                    error!("Failed to restart librespot systemd unit: {}", e);
                                     return false;
                                 }
-                            },
-                            Err(e) => {
-                                error!("Failed to execute kill command: {}", e);
-                                return false;
                             }
                         }
+                        "kill" => {
+                            info!("Received {} command, killing librespot process", command);
+                            return self.kill_process();
+                        }
+                        _ => {
+                            debug!("Received {} command, doing nothing (on_pause_event='{}')", command, action);
+                            return true;
+                        }
+                    }
+                } else {
+                    debug!("Received {} command, doing nothing (on_pause_event not configured)", command);
+                    return true;
                 }
-                
-                #[cfg(not(unix))]
-                {
-                    warn!("System process kill not implemented for this platform");
-                    return false;
-                }
-            },
+            }
+            PlayerCommand::Kill => {
+                return self.kill_process();
+            }
             _ => {
                 // Any other command is not supported
                 warn!("Command not supported by Librespot: {}", command);
@@ -616,7 +633,7 @@ impl PlayerController for LibrespotPlayerController {
             }
         }
     }
-    
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -729,6 +746,45 @@ impl PlayerController for LibrespotPlayerController {
                 log::warn!("[DEBUG] Librespot receive_update: failed to convert PlayerUpdate to JSON: {}", e);
                 false
             }
+        }
+    }
+}
+
+impl LibrespotPlayerController {
+    /// Kill the librespot process
+    fn kill_process(&self) -> bool {
+        info!("Attempting to kill Librespot process: {}", self.process_name);
+        
+        // Use system kill command
+        #[cfg(unix)]
+        {
+            use std::process::Command;
+            
+            // Try to kill the process using pkill
+            match Command::new("pkill")
+                .arg("-f")
+                .arg(&self.process_name)
+                .status() {
+                    Ok(status) => {
+                        if status.success() {
+                            info!("Successfully killed Librespot process");
+                            return true;
+                        } else {
+                            warn!("Failed to kill Librespot process, exit code: {:?}", status.code());
+                            return false;
+                        }
+                    },
+                    Err(e) => {
+                        error!("Failed to execute kill command: {}", e);
+                        return false;
+                    }
+                }
+        }
+        
+        #[cfg(not(unix))]
+        {
+            warn!("System process kill not implemented for this platform");
+            return false;
         }
     }
 }

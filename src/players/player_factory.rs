@@ -132,13 +132,23 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true); // Default to true if not specified
                 
-                let player = LibrespotPlayerController::with_full_config(
+                // Check if on_pause_event parameter is specified in the JSON
+                let on_pause_event = config_obj.get("on_pause_event")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty()) // Filter out empty strings
+                    .map(|s| s.to_string());
+                
+                let mut player = LibrespotPlayerController::with_full_config(
                     event_source, 
                     process_name, 
                     reopen, 
                     systemd_unit,
                     enable_api_updates
                 );
+                
+                // Set the on_pause_event configuration
+                player.set_on_pause_event(on_pause_event);
+                
                 Ok(Box::new(player))
             },
             "lms" => {

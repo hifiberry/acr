@@ -23,7 +23,7 @@
             }
         },
         {
-            "lastfm": {
+            "_lastfm": {
                 "enabled": true,
                 "api_key": "",
                 "api_secret": "",

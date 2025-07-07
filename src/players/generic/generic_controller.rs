@@ -176,12 +176,19 @@ impl GenericPlayerController {
                 "playing" => PlaybackState::Playing,
                 "paused" => PlaybackState::Paused,
                 "stopped" => PlaybackState::Stopped,
+                "killed" => PlaybackState::Killed,
+                "disconnected" => PlaybackState::Disconnected,
+                "unknown" => PlaybackState::Unknown,
                 _ => PlaybackState::Unknown,
             };
             
             if let Ok(mut state) = self.current_state.write() {
                 *state = playback_state;
                 debug!("Generic player '{}' state changed to: {:?}", self.player_name, playback_state);
+                
+                // Notify the event bus about the state change
+                self.base.notify_state_changed(playback_state);
+                
                 return true;
             }
         }
@@ -198,8 +205,12 @@ impl GenericPlayerController {
         };
         
         if let Ok(mut current_song) = self.current_song.write() {
-            *current_song = song;
+            *current_song = song.clone();
             debug!("Generic player '{}' song changed", self.player_name);
+            
+            // Notify the event bus about the song change
+            self.base.notify_song_changed(song.as_ref());
+            
             return true;
         }
         false
@@ -211,6 +222,10 @@ impl GenericPlayerController {
             if let Ok(mut pos) = self.current_position.write() {
                 *pos = Some(position);
                 debug!("Generic player '{}' position changed to: {}", self.player_name, position);
+                
+                // Notify the event bus about the position change
+                self.base.notify_position_changed(position);
+                
                 return true;
             }
         }
@@ -229,6 +244,10 @@ impl GenericPlayerController {
             if let Ok(mut mode) = self.current_loop_mode.write() {
                 *mode = loop_mode;
                 debug!("Generic player '{}' loop mode changed to: {:?}", self.player_name, loop_mode);
+                
+                // Notify the event bus about the loop mode change
+                self.base.notify_loop_mode_changed(loop_mode);
+                
                 return true;
             }
         }
@@ -241,6 +260,10 @@ impl GenericPlayerController {
             if let Ok(mut shuffle_lock) = self.current_shuffle.write() {
                 *shuffle_lock = shuffle;
                 debug!("Generic player '{}' shuffle changed to: {}", self.player_name, shuffle);
+                
+                // Notify the event bus about the shuffle change
+                self.base.notify_random_changed(shuffle);
+                
                 return true;
             }
         }

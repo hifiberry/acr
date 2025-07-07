@@ -67,6 +67,10 @@ impl LibrespotEventProcessor {
                     "seeked" => {
                         Self::process_seeked_event(&json, &mut player);
                     },
+                    "ping" => {
+                        // Special case: ping events are just to update "last seen" and don't modify state
+                        debug!("Processing ping event - no state changes needed");
+                    },
                     "loading" | "play_request_id_changed" | "preloading" => {
                         // don't use for anything
                         debug!("Ignoring event type: {}", event_type);

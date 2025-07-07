@@ -263,6 +263,10 @@ impl LibrespotPlayerController {
         let event_type = event_data.get("type").and_then(|t| t.as_str())?;
         
         match event_type {
+            "ping" => {
+                // Special handling for ping - just return a valid event so the player is marked as alive
+                Some(json!({ "event": "ping" }))
+            },
             "state_changed" => {
                 let state = event_data.get("state").and_then(|s| s.as_str())?;
                 let librespot_event = match state {

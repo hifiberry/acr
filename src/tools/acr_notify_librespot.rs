@@ -54,6 +54,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         "repeat_changed" => {
             handle_repeat_changed(&client, &args)?;
         }
+        "preloading" => {
+            handle_preloading(&client, &args)?;
+        }
         _ => {
             if !args.quiet {
                 eprintln!("Unknown or unsupported event type: {}", player_event);
@@ -247,6 +250,24 @@ fn handle_position_changed(client: &ureq::Agent, args: &Args) -> Result<(), Box<
             event["position"] = json!(position as f64 / 1000.0); // Convert to seconds
         }
     }
+
+    send_event(
+        client,
+        &args.baseurl,
+        &args.player_name,
+        &event,
+        args.verbose,
+        args.quiet,
+    )?;
+
+    Ok(())
+}
+
+fn handle_preloading(client: &ureq::Agent, args: &Args) -> Result<(), Box<dyn Error>> {
+    // For preloading, we just need to send a simple ping event to update the "last seen" timestamp
+    let event = json!({
+        "type": "ping"
+    });
 
     send_event(
         client,

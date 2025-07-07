@@ -304,8 +304,14 @@ impl LibrespotPlayerController {
                     if let Some(track_number) = song.get("track_number").and_then(|t| t.as_i64()) {
                         result["NUMBER"] = json!(track_number.to_string());
                     }
-                    if let Some(cover_url) = song.get("cover_art_url").and_then(|c| c.as_str()) {
-                        result["COVERS"] = json!(cover_url);
+                    
+                    // Check for cover URL in either field name (cover_art_url or cover_url)
+                    let cover_url = song.get("cover_art_url")
+                        .and_then(|c| c.as_str())
+                        .or_else(|| song.get("cover_url").and_then(|c| c.as_str()));
+                    
+                    if let Some(cover) = cover_url {
+                        result["COVERS"] = json!(cover);
                     }
                     
                     // Try to extract track_id from metadata

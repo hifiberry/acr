@@ -3,7 +3,7 @@
 audiocontrol_send_update \- send player state updates to audiocontrol
 .SH SYNOPSIS
 .B audiocontrol_send_update
-[\fIOPTIONS\fR] \fIUPDATE_DATA\fR
+[\fIOPTIONS\fR] \fIPLAYER_NAME\fR
 .SH DESCRIPTION
 .B audiocontrol_send_update
 is a utility for sending player state updates to the audiocontrol daemon.
@@ -15,11 +15,32 @@ to ensure real-time synchronization of player state across all connected
 clients and services.
 .SH OPTIONS
 .TP
-.BR \-t ", " \-\-type " " \fITYPE\fR
-Specify the type of update (track, status, volume, etc.)
+.BR \-\-artist " " \fIARTIST\fR
+Set the artist name for the current track
 .TP
-.BR \-f ", " \-\-format " " \fIFORMAT\fR
-Data format for the update (json, text)
+.BR \-\-title " " \fITITLE\fR
+Set the title for the current track
+.TP
+.BR \-\-album " " \fIALBUM\fR
+Set the album name for the current track
+.TP
+.BR \-\-length " " \fIDURATION\fR
+Set the track duration in seconds
+.TP
+.BR \-\-position " " \fIPOSITION\fR
+Set the current playback position in seconds
+.TP
+.BR \-\-state " " \fISTATE\fR
+Set the playback state (Playing, Paused, Stopped)
+.TP
+.BR \-\-loop\-mode " " \fIMODE\fR
+Set the loop mode (None, Track, Playlist)
+.TP
+.BR \-\-shuffle " " \fISHUFFLE\fR
+Set the shuffle state (true or false)
+.TP
+.BR \-\-baseurl " " \fIURL\fR
+Set the base URL for the audiocontrol API (default: http://localhost:1080/api)
 .TP
 .BR \-h ", " \-\-help
 Display help information and exit
@@ -28,19 +49,21 @@ Display help information and exit
 Display version information and exit
 .SH ARGUMENTS
 .TP
-.I UPDATE_DATA
-The update data to send, format depends on the \-\-type and \-\-format options
-.SH FILES
-.TP
-.I /var/run/audiocontrol/
-Socket directory for daemon communication
+.I PLAYER_NAME
+The name of the player to send updates for
 .SH EXAMPLES
 .TP
 Send track change update:
-.B audiocontrol_send_update \-t track '{"artist": "Artist Name", "title": "Song Title"}'
+.B audiocontrol_send_update \-\-artist "Artist Name" \-\-title "Song Title" generic
 .TP
-Send volume update:
-.B audiocontrol_send_update \-t volume '{"level": 75}'
+Send playback state update:
+.B audiocontrol_send_update \-\-state Playing generic
+.TP
+Send multiple updates:
+.B audiocontrol_send_update \-\-artist "Artist" \-\-title "Title" \-\-state Playing generic
+.TP
+Send update to remote server:
+.B audiocontrol_send_update \-\-baseurl http://192.168.1.100:1080/api \-\-artist "Artist" generic
 .SH SEE ALSO
 .BR audiocontrol (1),
 .BR audiocontrol_dump_cache (1),

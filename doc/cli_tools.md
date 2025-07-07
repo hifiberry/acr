@@ -18,7 +18,7 @@ The `acr_send_update` tool allows you to send player state updates to the AudioC
 
 **Example:**
 ```bash
-acr_send_update my-player --artist "Pink Floyd" --title "Comfortably Numb" --state Playing
+audiocontrol_send_update --artist "Pink Floyd" --title "Comfortably Numb" --state Playing generic
 ```
 
 ### acr_dumpcache
@@ -93,10 +93,10 @@ These tools can be integrated into scripts, cron jobs, or other systems to autom
 # Check if a specific process is running
 if pgrep -x "spotify" > /dev/null; then
     # Update player state to indicate Spotify is active
-    acr_send_update spotify-player --state Playing
+    audiocontrol_send_update --state Playing spotify-player
 else
     # Update player state to indicate Spotify is not active
-    acr_send_update spotify-player --state Stopped
+    audiocontrol_send_update --state Stopped spotify-player
 fi
 ```
 

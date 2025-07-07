@@ -31,10 +31,13 @@ pub fn player_event_update(
             // Check if the player supports API events
             if !player_controller.supports_api_events() {
                 warn!("Player '{}' does not support API event processing", player_name);
-                return Ok(Json(PlayerEventResponse {
-                    success: false,
-                    message: format!("Player '{}' does not support API event processing", player_name),
-                }));
+                return Err(Custom(
+                    Status::BadRequest,
+                    Json(PlayerEventResponse {
+                        success: false,
+                        message: format!("Player '{}' does not support API event processing", player_name),
+                    })
+                ));
             }
             
             // Process the event
@@ -48,18 +51,24 @@ pub fn player_event_update(
                 }
                 false => {
                     warn!("Failed to process API event for player: {}", player_name);
-                    Ok(Json(PlayerEventResponse {
-                        success: false,
-                        message: "Failed to process event or processor disabled".to_string(),
-                    }))
+                    Err(Custom(
+                        Status::BadRequest,
+                        Json(PlayerEventResponse {
+                            success: false,
+                            message: "Failed to process event or processor disabled".to_string(),
+                        })
+                    ))
                 }
             }
         } else {
             error!("Failed to acquire read lock on player controller: {}", player_name);
-            Ok(Json(PlayerEventResponse {
-                success: false,
-                message: "Internal error: could not access player controller".to_string(),
-            }))
+            Err(Custom(
+                Status::InternalServerError,
+                Json(PlayerEventResponse {
+                    success: false,
+                    message: "Internal error: could not access player controller".to_string(),
+                })
+            ))
         }
     } else {
         warn!("Player '{}' not found", player_name);

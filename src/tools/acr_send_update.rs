@@ -1,5 +1,6 @@
 use clap::Parser;
-use audiocontrol::data::{PlayerUpdate, Song, PlaybackState, LoopMode};
+use audiocontrol::data::{PlaybackState, LoopMode};
+use serde_json::{json, Value};
 use std::error::Error;
 
 #[derive(Parser, Debug)]
@@ -32,81 +33,113 @@ struct Args {
     #[clap(long)]
     shuffle: Option<bool>,
 
-    #[clap(long, default_value = "http://localhost:8000")]
-    audiocontrol_host: String,
+    #[clap(long, default_value = "http://localhost:1080/api")]
+    baseurl: String,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-    let mut updates: Vec<PlayerUpdate> = Vec::new();
+    let mut events: Vec<Value> = Vec::new();
 
-    let mut song_changed = false;
-    let mut current_song = Song::default(); // Assuming Song has a Default impl or a new()
-
-    if let Some(artist) = args.artist {
-        current_song.artist = Some(artist);
-        song_changed = true;
-    }
-    if let Some(title) = args.title {
-        current_song.title = Some(title);
-        song_changed = true;
-    }
-    if let Some(album) = args.album {
-        current_song.album = Some(album);
-        song_changed = true;
-    }
-    if let Some(length) = args.length {
-        current_song.duration = Some(length);
-        song_changed = true;
-    }
-
-    if song_changed {
-        updates.push(PlayerUpdate::SongChanged(Some(current_song)));
-    }
-
-    if let Some(pos) = args.position {
-        updates.push(PlayerUpdate::PositionChanged(Some(pos)));
+    // Check if we have song change data
+    if args.artist.is_some() || args.title.is_some() || args.album.is_some() || args.length.is_some() {
+        let mut song = json!({});
+        
+        if let Some(artist) = args.artist {
+            song["artist"] = json!(artist);
+        }
+        if let Some(title) = args.title {
+            song["title"] = json!(title);
+        }
+        if let Some(album) = args.album {
+            song["album"] = json!(album);
+        }
+        if let Some(length) = args.length {
+            song["duration"] = json!(length);
+        }
+        
+        events.push(json!({
+            "type": "song_changed",
+            "song": song
+        }));
     }
 
+    // Add position change event
+    if let Some(position) = args.position {
+        events.push(json!({
+            "type": "position_changed",
+            "position": position
+        }));
+    }
+
+    // Add state change event
     if let Some(state) = args.state {
-        updates.push(PlayerUpdate::StateChanged(state));
+        let state_str = match state {
+            PlaybackState::Playing => "playing",
+            PlaybackState::Paused => "paused",
+            PlaybackState::Stopped => "stopped",
+            _ => "unknown"
+        };
+        
+        events.push(json!({
+            "type": "state_changed",
+            "state": state_str
+        }));
     }
 
+    // Add loop mode change event
     if let Some(loop_mode) = args.loop_mode {
-        updates.push(PlayerUpdate::LoopModeChanged(loop_mode));
+        let mode_str = match loop_mode {
+            LoopMode::Track => "track",
+            LoopMode::Playlist => "playlist",
+            LoopMode::None => "none",
+        };
+        
+        events.push(json!({
+            "type": "loop_mode_changed",
+            "loop_mode": mode_str
+        }));
     }
 
+    // Add shuffle change event
     if let Some(shuffle) = args.shuffle {
-        updates.push(PlayerUpdate::ShuffleChanged(shuffle));
+        events.push(json!({
+            "type": "shuffle_changed",
+            "shuffle": shuffle
+        }));
     }
 
-    if updates.is_empty() {
+    if events.is_empty() {
         println!("No updates to send.");
         return Ok(());
     }
 
     let client = ureq::agent(); // Using ureq as it's simpler for sync CLI
-    let url = format!("{}/player/{}/update", args.audiocontrol_host, args.player_name);
+    
+    // Send each event individually
+    for event in events {
+        let url = format!("{}/player/{}/update", args.baseurl, args.player_name);
+        
+        println!("Sending event to: {}", url);
+        println!("Payload: {}", serde_json::to_string_pretty(&event)?);
 
-    println!("Sending update to: {}", url);
-    println!("Payload: {}", serde_json::to_string_pretty(&updates)?);
+        let response = client.post(&url)
+            .set("Content-Type", "application/json")
+            .send_string(&serde_json::to_string(&event)?);
 
-    let response = client.post(&url)
-        .set("Content-Type", "application/json")
-        .send_string(&serde_json::to_string(&updates)?);
-
-    match response {
-        Ok(resp) => {
-            if resp.status() >= 200 && resp.status() < 300 {
-                println!("Update sent successfully. Status: {}", resp.status());
-            } else {
-                eprintln!("Failed to send update. Status: {}", resp.status());
-                eprintln!("Response: {}", resp.into_string()?);
+        match response {
+            Ok(resp) => {
+                if resp.status() >= 200 && resp.status() < 300 {
+                    println!("Event sent successfully. Status: {}", resp.status());
+                } else {
+                    eprintln!("Failed to send event. Status: {}", resp.status());
+                    eprintln!("Response: {}", resp.into_string()?);
+                }
             }
-        }
-        Err(e) => {
-            eprintln!("Error sending request: {}", e);
-            return Err(Box::new(e));
+            Err(e) => {
+                eprintln!("Error sending request: {}", e);
+                return Err(Box::new(e));
+            }
         }
     }
 

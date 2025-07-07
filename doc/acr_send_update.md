@@ -35,7 +35,7 @@ acr_send_update [OPTIONS] <PLAYER_NAME>
 | `--state <STATE>` | Set the playback state (Playing, Paused, Stopped) |
 | `--loop-mode <LOOP_MODE>` | Set the loop mode (None, Track, Playlist) |
 | `--shuffle <SHUFFLE>` | Set the shuffle state (true or false) |
-| `--acr-host <ACR_HOST>` | Specify the AudioControl API host URL (default: http://localhost:8000) |
+| `--baseurl <BASEURL>` | Specify the AudioControl API base URL (default: `http://localhost:1080/api`) |
 
 ## Examples
 
@@ -82,7 +82,7 @@ This will set the loop mode to "Playlist" and enable shuffle.
 ### Using a Different API Host
 
 ```bash
-acr_send_update --acr-host "http://192.168.1.100:8000" my-player --state Paused
+acr_send_update --baseurl "http://192.168.1.100:1080/api" my-player --state Paused
 ```
 
 This will send the update to a different AudioControl API host.
@@ -96,14 +96,15 @@ When an update is successfully sent, the tool will display:
 
 Example:
 ```
-Sending update to: http://localhost:8000/player/my-player/update
-Payload: [
-  {
-    "StateChanged": "Playing"
-  }
-]
-Update sent successfully. Status: 200
+Sending event to: http://localhost:1080/api/player/my-player/update
+Payload: {
+  "type": "state_changed",
+  "state": "playing"
+}
+Event sent successfully. Status: 200
 ```
+
+Note: The tool sends individual events for each type of update. If you specify multiple update types (e.g., both song information and playback state), multiple events will be sent sequentially.
 
 ## Integration with Other Systems
 

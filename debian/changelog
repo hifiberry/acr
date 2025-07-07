@@ -1,3 +1,14 @@
+hifiberry-audiocontrol (0.4.6) stable; urgency=medium
+
+  * Added new audiocontrol_notify_librespot tool for librespot integration
+  * Added support for seeked events in librespot notification tool
+  * Enhanced librespot event handling with position tracking
+  * Added comprehensive CLI testing examples with environment variables
+  * Updated documentation with librespot integration examples
+  * Added man page for audiocontrol_notify_librespot tool
+
+ -- HiFiBerry <info@hifiberry.com>  Mon, 07 Jul 2025 13:00:00 +0000
+
 hifiberry-audiocontrol (0.4.5) stable; urgency=medium
 
   * Refactored audiocontrol_send_update CLI tool to use explicit subcommands

@@ -303,7 +303,7 @@ fn lastfm_worker(
             if track_data.name.is_none() {
                  debug!("LastFMWorker: No song actively tracked.");
             } else {
-                 info!("LastFMWorker: Track data incomplete. Name: {:?}, Artists: {:?}, Length: {:?}, Started: {:?}",
+                 debug!("LastFMWorker: Track data incomplete. Name: {:?}, Artists: {:?}, Length: {:?}, Started: {:?}",
                     track_data.name.is_some(), track_data.artists.is_some(), track_data.length.is_some(), track_data.started_timestamp.is_some());
             }
         }

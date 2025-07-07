@@ -1,0 +1,127 @@
+{
+    "_comment": "Keys starting with _ are commented out",
+    "action_plugins": [
+        {
+            "active-monitor": {
+                "enabled": true
+            }
+        },
+        {
+            "event-logger": {
+                "enabled": true,
+                "event_types": [
+                    "state",
+                    "song",
+                    "loop",
+                    "capabilities",
+                    "position",
+                    "song_information_update",
+                    "state_changed"
+                ],
+                "log_level": "info",
+                "only_active": false
+            }
+        },
+        {
+            "lastfm": {
+                "enabled": true,
+                "api_key": "",
+                "api_secret": "",
+                "scrobble": true
+            }
+        }    ],
+    "services": {
+        "webserver": {
+            "enable": true,
+            "host": "0.0.0.0",
+            "port": 1080,
+            "_static_routes": [
+                {
+                    "url_path": "/web",
+                    "directory": "/usr/share/hifiberry-audiocontrol/sample-web"
+                }
+            ]
+        },
+        "cache": {
+            "attribute_cache_path": "/var/lib/audiocontrol/cache/attributes",
+            "image_cache_path": "/var/lib/audiocontrol/cache/images"
+        },
+        "security_store": {
+            "path": "/var/lib/audiocontrol/security_store.json"
+        },
+        "musicbrainz": {
+            "enable": true,
+            "rate_limit_ms": 1000
+        },    
+        "theaudiodb": {
+            "enable": true,
+            "api_key": "", 
+            "rate_limit_ms": 500
+        },
+        "lastfm": {
+            "enable": true,
+            "api_key": "",
+            "api_secret": "",
+            "now_playing_enabled": true,
+            "scrobble": true 
+        },
+        "spotify": {
+            "enable": true,
+            "oauth_url": "https://oauth.hifiberry.com/spotify/",
+            "debug_mode": true,
+            "api_enabled": false,
+            "client_id": "",            
+            "client_secret": ""
+        }
+    },
+    "players": [
+        {
+            "mpd": {
+                "enable": false,
+                "host": "localhost",
+                "port": 6600,
+                "load_on_startup": true,
+                "artist_separator": [",", "feat. "],
+                "enhance_metadata": true
+            }
+        },
+        {
+            "raat": {
+                "enable": false,
+                "metadata_pipe": "",
+                "control_pipe": "",
+                "reopen_metadata_pipe": true
+            }
+        },
+        {
+            "librespot": {
+                "enable": true,
+                "event_pipe": "",
+                "reopen_event_pipe": true
+            }
+        },
+        {
+            "lms": {
+                "enable": false,
+                "server": null,
+                "port": 9000,
+                "autodiscovery": true,
+                "player_name": null,
+                "player_mac": [],
+                "reconnection_interval": 30,
+                "polling_interval": 30
+            }
+        },
+        {
+            "generic": {
+                "name": "generic",
+                "enable": true,
+                "supports_api_events": true,
+                "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop"],
+                "initial_state": "stopped",
+                "shuffle": false,
+                "loop_mode": "none"
+            }
+        }
+    ]
+}

@@ -12,9 +12,7 @@ The librespot player now supports a `systemd_unit` configuration option:
 {
   "librespot": {
     "enable": true,
-    "event_pipe": "/var/run/librespot/events_pipe",
     "process_name": "/usr/bin/librespot",
-    "reopen_event_pipe": true,
     "systemd_unit": "librespot"
   }
 }
@@ -83,9 +81,7 @@ To disable systemd checking, set the `systemd_unit` option to an empty string:
 {
   "librespot": {
     "enable": true,
-    "event_pipe": "/var/run/librespot/events_pipe",
     "process_name": "/usr/bin/librespot",
-    "reopen_event_pipe": true,
     "systemd_unit": ""
   }
 }

@@ -1,66 +1,66 @@
-use audiocontrol::players::PlayerController;
-use audiocontrol::AudioController;
 use audiocontrol::api::server;
 use audiocontrol::config::get_service_config;
 use audiocontrol::helpers::attributecache::AttributeCache;
 use audiocontrol::helpers::imagecache::ImageCache;
-use audiocontrol::helpers::musicbrainz;
-use audiocontrol::helpers::theaudiodb;
 use audiocontrol::helpers::lastfm;
-use audiocontrol::helpers::spotify;
+use audiocontrol::helpers::musicbrainz;
 use audiocontrol::helpers::security_store::SecurityStore;
+use audiocontrol::helpers::spotify;
+use audiocontrol::helpers::theaudiodb;
 use audiocontrol::logging;
+use audiocontrol::players::PlayerController;
 use audiocontrol::secrets;
+use audiocontrol::AudioController;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
 use audiocontrol::players::lms::lmsaudio::LMSAudioController;
-use std::thread;
-use std::time::Duration;
-use log::{debug, info, warn, error};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use ctrlc;
+use log::{debug, error, info, warn};
+use std::env;
 use std::fs;
 use std::path::Path;
-use std::env;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 // Import global Tokio runtime functions from lib.rs
-use audiocontrol::{initialize_tokio_runtime, get_tokio_runtime};
+use audiocontrol::{get_tokio_runtime, initialize_tokio_runtime};
 
 fn main() {
     // Initialize the Tokio runtime early
     initialize_tokio_runtime();
-    
+
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
-    
+
     // Check for --help option first
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print_help();
         return;
     }
-    
+
     // Check for --check-secrets option first (exit early if present)
     if args.iter().any(|arg| arg == "--check-secrets") {
         check_secrets_status();
         return;
     }
-    
+
     // Look for config file path in command line arguments (-c option)
     let config_file_path = find_config_file_in_args(&args);
-    
+
     // Look for logging config file path in command line arguments (--log-config option)
     let log_config_path = find_log_config_in_args(&args);
-    
+
     // Initialize logging system
     if let Err(e) = logging::initialize_logging_with_args(&args, log_config_path.as_deref()) {
         // Fallback to basic logging if configuration fails
         eprintln!("Warning: Failed to initialize logging configuration: {}", e);
         eprintln!("Falling back to basic logging...");
-        
+
         let debug_mode = args.iter().any(|arg| arg == "--debug" || arg == "-d");
         let log_level = if debug_mode { "debug" } else { "info" };
-        
+
         std::env::set_var("RUST_LOG", log_level);
         env_logger::Builder::from_env(env_logger::Env::default())
             .format_timestamp_secs()
@@ -68,29 +68,27 @@ fn main() {
     }
 
     info!("AudioControl Player Controller starting");
-    
+
     // Use the config file path found earlier or default
     let config_path_str = config_file_path.unwrap_or_else(|| {
         info!("No configuration file specified, using default: audiocontrol.json");
         "audiocontrol.json".to_string()
     });
-    
+
     // Check if the specified config file exists
     let config_path_obj = Path::new(&config_path_str);
     let controllers_config: serde_json::Value = if config_path_obj.exists() {
         // Read the configuration from the specified file
         info!("Found configuration file at {}, using it", config_path_str);
         match fs::read_to_string(&config_path_str) {
-            Ok(config_str) => {
-                match serde_json::from_str(&config_str) {
-                    Ok(config) => {
-                        info!("Successfully loaded configuration from {}", config_path_str);
-                        config
-                    },
-                    Err(e) => {
-                        error!("Failed to parse {}: {}", config_path_str, e);
-                        panic!("Cannot continue without a valid configuration file");
-                    }
+            Ok(config_str) => match serde_json::from_str(&config_str) {
+                Ok(config) => {
+                    info!("Successfully loaded configuration from {}", config_path_str);
+                    config
+                }
+                Err(e) => {
+                    error!("Failed to parse {}: {}", config_path_str, e);
+                    panic!("Cannot continue without a valid configuration file");
                 }
             },
             Err(e) => {
@@ -102,7 +100,7 @@ fn main() {
         // No config file found
         error!("Configuration file not found at {}", config_path_str);
         panic!("Cannot continue without a valid configuration file");
-    };    // Initialize the Security Store (Moved Up)
+    }; // Initialize the Security Store (Moved Up)
     let security_store_path_str = get_service_config(&controllers_config, "security_store")
         .and_then(|s| s.get("path"))
         .and_then(|s| s.as_str())
@@ -121,168 +119,209 @@ fn main() {
                 // Depending on how critical this is, you might panic or try a default fallback.
                 // For now, we'll log an error and proceed, initialize_with_defaults might handle it or fail.
             } else {
-                info!("Created directory for security store: {}", parent_dir.display());
+                info!(
+                    "Created directory for security store: {}",
+                    parent_dir.display()
+                );
             }
         }
     }
-    
+
     if let Err(e) = SecurityStore::initialize_with_defaults(Some(security_store_path.clone())) {
         error!("Failed to initialize security store at {}: {}. Please check permissions and configuration.", security_store_path.display(), e);
         panic!("Critical component: Security store initialization failed. Application cannot continue. Error: {}", e);
     } else {
-        info!("Security store initialized successfully at {}", security_store_path.display());
-    }    // Get the attribute cache path from configuration
-    let attribute_cache_path = if let Some(cache_config) = get_service_config(&controllers_config, "cache") {
-        if let Some(cache_path) = cache_config.get("attribute_cache_path").and_then(|p| p.as_str()) {
+        info!(
+            "Security store initialized successfully at {}",
+            security_store_path.display()
+        );
+    } // Get the attribute cache path from configuration
+    let attribute_cache_path = if let Some(cache_config) =
+        get_service_config(&controllers_config, "cache")
+    {
+        if let Some(cache_path) = cache_config
+            .get("attribute_cache_path")
+            .and_then(|p| p.as_str())
+        {
             info!("Using attribute cache path from config: {}", cache_path);
             cache_path.to_string()
         } else {
             let default_path = "/var/lib/audiocontrol/cache/attributes".to_string();
-            info!("No attribute_cache_path specified in cache configuration, using default path: {}", default_path);
+            info!(
+                "No attribute_cache_path specified in cache configuration, using default path: {}",
+                default_path
+            );
             default_path
         }
     } else {
         let default_path = "/var/lib/audiocontrol/cache/attributes".to_string();
-        info!("No cache configuration found, using default attribute cache path: {}", default_path);
+        info!(
+            "No cache configuration found, using default attribute cache path: {}",
+            default_path
+        );
         default_path
     };
 
     // Get the image cache path from configuration
-    let image_cache_path = if let Some(cache_config) = get_service_config(&controllers_config, "cache") {
-        if let Some(cache_path) = cache_config.get("image_cache_path").and_then(|p| p.as_str()) {
-            info!("Using image cache path from config: {}", cache_path);
-            cache_path.to_string()
+    let image_cache_path =
+        if let Some(cache_config) = get_service_config(&controllers_config, "cache") {
+            if let Some(cache_path) = cache_config
+                .get("image_cache_path")
+                .and_then(|p| p.as_str())
+            {
+                info!("Using image cache path from config: {}", cache_path);
+                cache_path.to_string()
+            } else {
+                let default_path = "/var/lib/audiocontrol/cache/images".to_string();
+                info!(
+                    "No image_cache_path specified in cache configuration, using default path: {}",
+                    default_path
+                );
+                default_path
+            }
         } else {
             let default_path = "/var/lib/audiocontrol/cache/images".to_string();
-            info!("No image_cache_path specified in cache configuration, using default path: {}", default_path);
+            info!(
+                "No cache configuration found, using default image cache path: {}",
+                default_path
+            );
             default_path
-        }
-    } else {
-        let default_path = "/var/lib/audiocontrol/cache/images".to_string();
-        info!("No cache configuration found, using default image cache path: {}", default_path);
-        default_path
-    };
+        };
 
     // Initialize the global attribute cache with the configured path from JSON
     initialize_attribute_cache(&attribute_cache_path);
-    
+
     // Initialize the global image cache with the configured path from JSON
     initialize_image_cache(&image_cache_path);
-      // Initialize MusicBrainz with the configuration
+    // Initialize MusicBrainz with the configuration
     initialize_musicbrainz(&controllers_config);
 
     // Initialize TheAudioDB with the configuration
     initialize_theaudiodb(&controllers_config);
-      // Initialize Last.fm with the configuration
+    // Initialize Last.fm with the configuration
     initialize_lastfm(&controllers_config);
-      // Initialize Spotify with the configuration
+    // Initialize Spotify with the configuration
     if let Some(spotify_config) = get_service_config(&controllers_config, "spotify") {
         spotify::Spotify::set_global_config(spotify_config);
     }
     initialize_spotify(&controllers_config);
-    
+
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
-    
+
     // Set up Ctrl+C handler
     ctrlc::set_handler(move || {
         info!("Received Ctrl+C, shutting down...");
         r.store(false, Ordering::SeqCst);
-        
+
         // Set up a force shutdown after a timeout
         let force_shutdown_delay = Duration::from_secs(5); // 5 seconds timeout
-        let r_clone = r.clone();  // Clone the Arc for the new thread
+        let r_clone = r.clone(); // Clone the Arc for the new thread
         let _force_shutdown_thread = thread::spawn(move || {
             thread::sleep(force_shutdown_delay);
             // If we're still running after the timeout, force exit
             if !r_clone.load(Ordering::SeqCst) {
-                info!("Graceful shutdown timed out after {} seconds, forcing exit...", force_shutdown_delay.as_secs());
+                info!(
+                    "Graceful shutdown timed out after {} seconds, forcing exit...",
+                    force_shutdown_delay.as_secs()
+                );
                 std::process::exit(0);
             }
         });
-    }).expect("Error setting Ctrl+C handler");
-    
+    })
+    .expect("Error setting Ctrl+C handler");
+
     // Create an AudioController from the JSON configuration and store it in the singleton
     let controller = match AudioController::from_json(&controllers_config) {
         Ok(controller) => {
             info!("Successfully created AudioController from JSON configuration");
             controller
-        },
+        }
         Err(e) => {
             error!("Failed to create AudioController from JSON: {}", e);
             panic!("Cannot continue without a valid AudioController");
         }
     };
-    
+
     // Initialize the AudioController singleton
     match AudioController::initialize_instance(controller.clone()) {
         Ok(_) => info!("AudioController singleton initialized successfully"),
         Err(e) => warn!("AudioController singleton initialization: {}", e),
     }
-    
+
     // Get a reference to the AudioController singleton
     let controller = AudioController::instance();
-    
+
     // Wrap the AudioController in a Box that implements PlayerController
     let player: Box<dyn PlayerController + Send + Sync> = Box::new(controller.as_ref().clone());
-       
+
     // Start the player directly through the trait interface
     if player.start() {
         info!("Player initialized and started successfully");
     } else {
         warn!("Failed to start player");
     }
-    
+
     // Log initial state information
     debug!("Initial player state:");
     debug!("State: {}", player.get_playback_state());
-    
+
     let capabilities = player.get_capabilities();
     debug!("Capabilities:");
     for cap in &capabilities {
         debug!("  - {}", cap);
     }
-    
+
     debug!("Loop mode: {}", player.get_loop_mode());
-    
+
     if let Some(song) = player.get_song() {
-        debug!("Current song: {} by {}", 
-            song.title.unwrap_or_else(|| "Unknown".to_string()), 
-            song.artist.unwrap_or_else(|| "Unknown".to_string()));
+        debug!(
+            "Current song: {} by {}",
+            song.title.unwrap_or_else(|| "Unknown".to_string()),
+            song.artist.unwrap_or_else(|| "Unknown".to_string())
+        );
     } else {
         debug!("No song currently playing");
     }
-    
+
     // Start the API server using the global Tokio runtime
     let controllers_config_clone = controllers_config.clone();
     let _api_thread = thread::spawn(move || {
         get_tokio_runtime().block_on(async {
             // Get a reference to the singleton AudioController for the server
             let controller = AudioController::instance();
-            if let Err(e) = server::start_rocket_server(controller, &controllers_config_clone).await {
+            if let Err(e) = server::start_rocket_server(controller, &controllers_config_clone).await
+            {
                 error!("API server error: {}", e);
             }
         });
     });
-    
-    info!("API server started on port {}", controllers_config.get("api_port")
-        .and_then(|p| p.as_u64())
-        .unwrap_or(1080));
-    
+
+    info!(
+        "API server started on port {}",
+        controllers_config
+            .get("api_port")
+            .and_then(|p| p.as_u64())
+            .unwrap_or(1080)
+    );
+
     // Keep the main thread alive until Ctrl+C is received
     while running.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(100));
     }
-    
+
     info!("Exiting application");
 }
 
 // Helper function to initialize the global attribute cache
 fn initialize_attribute_cache(attribute_cache_path: &str) {
     match AttributeCache::initialize(attribute_cache_path) {
-        Ok(_) => info!("Attribute cache initialized with path: {}", attribute_cache_path),
-        Err(e) => warn!("Failed to initialize attribute cache: {}", e)
+        Ok(_) => info!(
+            "Attribute cache initialized with path: {}",
+            attribute_cache_path
+        ),
+        Err(e) => warn!("Failed to initialize attribute cache: {}", e),
     }
 }
 
@@ -290,7 +329,7 @@ fn initialize_attribute_cache(attribute_cache_path: &str) {
 fn initialize_image_cache(image_cache_path: &str) {
     match ImageCache::initialize(image_cache_path) {
         Ok(_) => info!("Image cache initialized with path: {}", image_cache_path),
-        Err(e) => warn!("Failed to initialize image cache: {}", e)
+        Err(e) => warn!("Failed to initialize image cache: {}", e),
     }
 }
 
@@ -310,17 +349,18 @@ fn initialize_theaudiodb(config: &serde_json::Value) {
 fn initialize_lastfm(config: &serde_json::Value) {
     if let Some(lastfm_config) = get_service_config(config, "lastfm") {
         // Check if enabled flag exists and is set to true
-        let enabled = lastfm_config.get("enable")
+        let enabled = lastfm_config
+            .get("enable")
             .and_then(|v| v.as_bool())
             .unwrap_or(false); // Default to disabled if not specified
-        
+
         if enabled {
             // Initialize with default API credentials
             if let Err(e) = lastfm::LastfmClient::initialize_with_defaults() {
                 warn!("Failed to initialize Last.fm client: {}", e);
                 return;
             }
-            
+
             // Log Last.fm connection status
             match lastfm::LastfmClient::get_instance() {
                 Ok(client) => {
@@ -337,7 +377,10 @@ fn initialize_lastfm(config: &serde_json::Value) {
                 }
                 Err(e) => {
                     // This might happen if initialization failed silently or was never called
-                    warn!("Could not get Last.fm client instance to check status: {}", e);
+                    warn!(
+                        "Could not get Last.fm client instance to check status: {}",
+                        e
+                    );
                 }
             }
             info!("Last.fm initialized successfully"); // This message might be redundant now or could be rephrased
@@ -352,49 +395,62 @@ fn initialize_lastfm(config: &serde_json::Value) {
 // Helper function to initialize Spotify
 fn initialize_spotify(config: &serde_json::Value) {
     info!("Starting Spotify initialization");
-    
+
     if let Some(spotify_config) = get_service_config(config, "spotify") {
         // Check if enabled flag exists and is set to true
-        let enabled = spotify_config.get("enable")
+        let enabled = spotify_config
+            .get("enable")
             .and_then(|v| v.as_bool())
             .unwrap_or(false); // Default to disabled if not specified
-        
+
         info!("Spotify enabled in config: {}", enabled);
-        
+
         if enabled {
             // Get custom OAuth URL and proxy secret if specified in config
-            let oauth_url = spotify_config.get("oauth_url")
+            let oauth_url = spotify_config
+                .get("oauth_url")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            
-            let proxy_secret = spotify_config.get("proxy_secret")
+
+            let proxy_secret = spotify_config
+                .get("proxy_secret")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            
-            info!("Config values - OAuth URL present: {}, proxy secret present: {}", 
-                 oauth_url.is_some(), proxy_secret.is_some());
-            
+
+            info!(
+                "Config values - OAuth URL present: {}, proxy secret present: {}",
+                oauth_url.is_some(),
+                proxy_secret.is_some()
+            );
+
             // Initialize with values from config or fall back to defaults
             let init_result = match (oauth_url, proxy_secret) {
                 (Some(url), Some(secret)) if !url.is_empty() && !secret.is_empty() => {
-                    info!("Initializing Spotify with configuration from audiocontrol.json, URL: '{}'", url);
+                    info!(
+                        "Initializing Spotify with configuration from audiocontrol.json, URL: '{}'",
+                        url
+                    );
                     spotify::Spotify::initialize(url, secret)
-                },
+                }
                 _ => {
-                    info!("No valid Spotify config in audiocontrol.json, falling back to secrets.txt");
+                    info!(
+                        "No valid Spotify config in audiocontrol.json, falling back to secrets.txt"
+                    );
                     spotify::Spotify::initialize_with_defaults()
                 }
             };
-              if let Err(e) = init_result {
+            if let Err(e) = init_result {
                 warn!("Failed to initialize Spotify client: {}", e);
-                
+
                 // Additional logging to help diagnose the issue
-                info!("Checking default OAuth URL directly: '{}'", 
-                      spotify::default_spotify_oauth_url());
-                      
+                info!(
+                    "Checking default OAuth URL directly: '{}'",
+                    spotify::default_spotify_oauth_url()
+                );
+
                 return;
             }
-            
+
             // Log Spotify connection status
             match spotify::Spotify::get_instance() {
                 Ok(client) => {
@@ -403,15 +459,19 @@ fn initialize_spotify(config: &serde_json::Value) {
                     } else {
                         info!("Spotify is not connected. User needs to authenticate.");
                     }
-                },
+                }
                 Err(e) => {
-                    warn!("Could not get Spotify client instance to check status: {}", e);
+                    warn!(
+                        "Could not get Spotify client instance to check status: {}",
+                        e
+                    );
                 }
             }
             info!("Spotify initialized successfully");
         } else {
             info!("Spotify integration is disabled");
-        }    } else {
+        }
+    } else {
         debug!("No Spotify configuration found, Spotify features will be unavailable.");
     }
 }
@@ -440,22 +500,25 @@ fn find_log_config_in_args(args: &[String]) -> Option<PathBuf> {
         }
         i += 1;
     }
-    
+
     // Check for default logging config files
     let default_paths = [
         "/etc/audiocontrol/logging.json",
         "logging.json",
         "config/logging.json",
     ];
-    
+
     for path_str in &default_paths {
         let path = PathBuf::from(path_str);
         if path.exists() {
-            info!("Found default logging configuration file: {}", path.display());
+            info!(
+                "Found default logging configuration file: {}",
+                path.display()
+            );
             return Some(path);
         }
     }
-    
+
     None
 }
 
@@ -463,20 +526,20 @@ fn find_log_config_in_args(args: &[String]) -> Option<PathBuf> {
 fn check_secrets_status() {
     println!("AudioControl - Compiled Secrets Status");
     println!("=====================================");
-    
+
     // Get all compiled secrets
     let secrets_map = secrets::get_all_secrets_obfuscated();
-    
+
     if secrets_map.is_empty() {
         println!("❌ No secrets compiled into binary");
         println!("   This binary was compiled without any secrets configured.");
         println!("   External API integrations will not work unless configured at runtime.");
         return;
     }
-    
+
     println!("✅ Secrets compiled into binary: {}", secrets_map.len());
     println!();
-    
+
     // Check specific known secrets
     let known_secrets = vec![
         ("LASTFM_APIKEY", "Last.fm API integration"),
@@ -491,10 +554,10 @@ fn check_secrets_status() {
         ("SPOTIFY_OAUTH_URL", "Spotify OAuth integration"),
         ("SPOTIFY_PROXY_SECRET", "Spotify proxy authentication"),
     ];
-    
+
     println!("Known Integration Status:");
     println!("------------------------");
-    
+
     let mut found_any = false;
     for (key, description) in known_secrets {
         if secrets_map.contains_key(key) {
@@ -502,29 +565,67 @@ fn check_secrets_status() {
             found_any = true;
         }
     }
-    
+
     if !found_any {
         println!("⚠️  No known integration secrets found");
-        println!("   Available keys: {}", secrets_map.keys().cloned().collect::<Vec<_>>().join(", "));
+        println!(
+            "   Available keys: {}",
+            secrets_map.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
     }
-    
+
     println!();
     println!("API Service Status:");
     println!("------------------");
-    
+
     // Test specific service functions
     let lastfm_key = secrets::lastfm_api_key();
     let audiodb_key = secrets::artistdb_api_key();
     let encryption_key = secrets::secrets_encryption_key();
     let spotify_oauth = secrets::spotify_oauth_url();
     let spotify_secret = secrets::spotify_proxy_secret();
-    
-    println!("🔑 Last.fm API: {}", if lastfm_key != "unknown" { "✅ Available" } else { "❌ Not configured" });
-    println!("🔑 TheAudioDB API: {}", if audiodb_key != "unknown" { "✅ Available" } else { "❌ Not configured" });
-    println!("🔑 Security Store: {}", if encryption_key != "unknown" { "✅ Available" } else { "❌ Not configured" });
-    println!("🔑 Spotify OAuth: {}", if spotify_oauth != "unknown" { "✅ Available" } else { "❌ Not configured" });
-    println!("🔑 Spotify Proxy: {}", if spotify_secret != "unknown" { "✅ Available" } else { "❌ Not configured" });
-    
+
+    println!(
+        "🔑 Last.fm API: {}",
+        if lastfm_key != "unknown" {
+            "✅ Available"
+        } else {
+            "❌ Not configured"
+        }
+    );
+    println!(
+        "🔑 TheAudioDB API: {}",
+        if audiodb_key != "unknown" {
+            "✅ Available"
+        } else {
+            "❌ Not configured"
+        }
+    );
+    println!(
+        "🔑 Security Store: {}",
+        if encryption_key != "unknown" {
+            "✅ Available"
+        } else {
+            "❌ Not configured"
+        }
+    );
+    println!(
+        "🔑 Spotify OAuth: {}",
+        if spotify_oauth != "unknown" {
+            "✅ Available"
+        } else {
+            "❌ Not configured"
+        }
+    );
+    println!(
+        "🔑 Spotify Proxy: {}",
+        if spotify_secret != "unknown" {
+            "✅ Available"
+        } else {
+            "❌ Not configured"
+        }
+    );
+
     println!();
     println!("Note: This shows compile-time secrets only. Runtime configuration");
     println!("      may override these values or provide additional secrets.");

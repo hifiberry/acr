@@ -323,8 +323,7 @@ AudioControl supports fine-grained logging control at the module level. You can 
   "level": "info",
   "include_module_path": true,
   "subsystems": {
-    "audiocontrol::players::librespot::librespot": "debug",
-    "audiocontrol::players::librespot::event_pipe_reader": "trace"
+    "audiocontrol::players::librespot::librespot": "debug"
   }
 }
 ```
@@ -358,7 +357,7 @@ AudioControl supports fine-grained logging control at the module level. You can 
 Enable `include_module_path: true` to see module names in log output:
 ```
 [2025-07-04T13:02:43Z INFO audiocontrol::players::librespot::librespot] Starting Librespot player controller
-[2025-07-04T13:02:43Z WARN audiocontrol::players::librespot::event_pipe_reader] Opening Spotify event source
+[2025-07-04T13:02:43Z INFO audiocontrol::players::librespot::librespot] Connecting to Spotify service
 ```
 
 Copy the module name (e.g., `audiocontrol::players::librespot::librespot`) and use it as a key in the `subsystems` section.

@@ -95,9 +95,7 @@
         },
         {
             "librespot": {
-                "enable": true,
-                "event_pipe": "",
-                "reopen_event_pipe": true
+                "enable": true
             }
         },
         {

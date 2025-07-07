@@ -30,7 +30,6 @@
     
     "_examples": "Specific module targeting examples (uncomment to use):",
     "_audiocontrol::players::librespot::librespot": "debug",
-    "_audiocontrol::players::librespot::event_pipe_reader": "warn",
     "_audiocontrol::players::raat": "debug",
     "_audiocontrol::api::server": "debug",
     "_audiocontrol::helpers::spotify": "debug"

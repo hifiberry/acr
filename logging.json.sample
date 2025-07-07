@@ -13,7 +13,6 @@
     
     "_comment_specific": "Examples of specific module targeting:",
     "_audiocontrol::players::librespot::librespot": "debug",
-    "_audiocontrol::players::librespot::event_pipe_reader": "warn",
     "_audiocontrol::api::server": "info",
     "database": "warn",
     "http": "warn"

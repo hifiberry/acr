@@ -11,15 +11,13 @@ use crate::data::stream_details::StreamDetails;
 use crate::data::loop_mode::LoopMode;
 
 /// Type definition for the event callback function
-/// This is shared between both event pipe reader and event API processor
 pub type EventCallback = Box<dyn Fn(Song, PlayerState, PlayerCapabilitySet, StreamDetails) + Send + Sync>;
 
-/// Shared event processing logic for Librespot events
+/// Event processing logic for Librespot events
 pub struct LibrespotEventProcessor;
 
 impl LibrespotEventProcessor {
     /// Parse a JSON block of Librespot event data
-    /// This is the core parsing logic shared between pipe reader and API processor
     pub fn parse_event_json(block: &str) -> Option<(Song, PlayerState, PlayerCapabilitySet, StreamDetails)> {
         debug!("Parsing Librespot event: {}", block);
         

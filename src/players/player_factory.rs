@@ -118,11 +118,6 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty()); // Filter out empty strings
                 
-                // Check if enable_api_updates parameter is specified in the JSON
-                let enable_api_updates = config_obj.get("enable_api_updates")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true); // Default to true if not specified
-                
                 // Check if on_pause_event parameter is specified in the JSON
                 let on_pause_event = config_obj.get("on_pause_event")
                     .and_then(|v| v.as_str())
@@ -131,8 +126,7 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                 
                 let mut player = LibrespotPlayerController::with_full_config(
                     process_name,
-                    systemd_unit,
-                    enable_api_updates
+                    systemd_unit
                 );
                 
                 // Set the on_pause_event configuration

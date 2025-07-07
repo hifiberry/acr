@@ -97,7 +97,6 @@
             "librespot": {
                 "enable": true,
                 "process_name": "/usr/bin/librespot",
-                "enable_api_updates": true,
                 "on_pause_event": "systemd"
             }
         },

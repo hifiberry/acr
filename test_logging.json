@@ -9,7 +9,6 @@
     "players": "info",
     "deps": "warn",
     "_comment": "Examples of specific module targeting (remove _ to activate):",
-    "_audiocontrol::players::librespot::event_pipe_reader": "warn",
     "_audiocontrol::players::librespot::librespot": "debug"
   },
   "env_overrides": {

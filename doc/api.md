@@ -782,6 +782,115 @@ Retrieves an image (such as album art) from a player's library.
 curl http://<device-ip>:1080/api/library/mpd/image/album:12345 --output cover.jpg
 ```
 
+## External Services API
+
+### TheAudioDB Lookup
+
+Retrieves artist information from TheAudioDB by MusicBrainz ID. This endpoint is primarily used for integration testing to verify that the TheAudioDB module is working correctly.
+
+- **Endpoint**: `/api/audiodb/mbid/<mbid>`
+- **Method**: GET
+- **Path Parameters**:
+  - `mbid` (string): The MusicBrainz ID of the artist to look up
+- **Response** (200 OK):
+
+  ```json
+  {
+    "mbid": "53b106e7-0cc6-42cc-ac95-ed8d30a3a98e",
+    "success": true,
+    "data": {
+      "strArtist": "John Williams",
+      "strBiographyEN": "John Towner Williams is an American composer...",
+      "strGenre": "Classical",
+      "strCountry": "United States",
+      "strWebsite": "https://www.johnwilliams.org/"
+    },
+    "error": null
+  }
+  ```
+
+- **Response** (404 Not Found):
+
+  ```json
+  {
+    "mbid": "00000000-0000-0000-0000-000000000000",
+    "success": false,
+    "data": null,
+    "error": "No artist found for MBID: 00000000-0000-0000-0000-000000000000"
+  }
+  ```
+
+- **Response** (503 Service Unavailable):
+
+  ```json
+  {
+    "mbid": "53b106e7-0cc6-42cc-ac95-ed8d30a3a98e",
+    "success": false,
+    "data": null,
+    "error": "TheAudioDB lookups are disabled"
+  }
+  ```
+
+- **Response** (500 Internal Server Error):
+
+  ```json
+  {
+    "mbid": "53b106e7-0cc6-42cc-ac95-ed8d30a3a98e",
+    "success": false,
+    "data": null,
+    "error": "Failed to send request to TheAudioDB: HTTP request error: status code 404"
+  }
+  ```
+
+**Configuration Requirements**: This endpoint requires TheAudioDB to be enabled in the configuration with a valid API key:
+
+```json
+{
+  "services": {
+    "theaudiodb": {
+      "enable": true,
+      "api_key": "your_api_key_here",
+      "rate_limit_ms": 500
+    }
+  }
+}
+```
+
+#### TheAudioDB API Example
+
+```bash
+curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a98e
+```
+
+#### John Williams Response Example
+
+```json
+{
+  "mbid": "53b106e7-0cc6-42cc-ac95-ed8d30a3a98e",
+  "success": true,
+  "data": {
+    "strArtist": "John Williams",
+    "strBiographyEN": "John Towner Williams is an American composer, conductor and pianist...",
+    "strGenre": "Classical",
+    "strCountry": "United States",
+    "strWebsite": "https://www.johnwilliams.org/",
+    "strFacebook": "JohnWilliamsComposer",
+    "strTwitter": null,
+    "strLastFMChart": "https://www.last.fm/music/John+Williams"
+  },
+  "error": null
+}
+```
+
+**Rate Limiting**: Requests to this endpoint are rate-limited according to the configured `rate_limit_ms` value (default: 500ms between requests).
+
+**Use Cases**:
+
+- Integration testing of TheAudioDB connectivity
+- Validating artist MusicBrainz ID mappings
+- Testing external service rate limiting
+- Debugging TheAudioDB API configuration
+
 ## Data Structures
 
 The following section describes the main data structures used in the API responses.

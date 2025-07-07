@@ -19,10 +19,10 @@ fn print_usage() {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
-    
+
     // Default path
     let mut db_path = PathBuf::from("/var/lib/audiocontrol/cache/attributes");
-    
+
     // Process arguments
     let mut i = 1;
     while i < args.len() {
@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--help" | "-h" => {
                 print_usage();
                 return Ok(());
-            },
+            }
             arg => {
                 // If it doesn't start with a dash, assume it's a direct path argument
                 if !arg.starts_with('-') {
@@ -44,22 +44,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    
+
     println!("Opening cache database at: {:?}", db_path);
-    
+
     // Check if the directory exists before trying to open the database
     if !db_path.exists() {
         eprintln!("Error: Database directory does not exist: {:?}", db_path);
         return Err(format!("Database directory not found: {:?}", db_path).into());
     }
-    
+
     // Check if this looks like a Sled database by checking for the existence of the conf file
     let conf_path = db_path.join("conf");
     if !conf_path.exists() {
-        eprintln!("Error: Not a valid Sled database (missing 'conf' file): {:?}", db_path);
+        eprintln!(
+            "Error: Not a valid Sled database (missing 'conf' file): {:?}",
+            db_path
+        );
         return Err(format!("Not a valid Sled database at: {:?}", db_path).into());
     }
-    
+
     // Open the database
     let db = match sled::open(&db_path) {
         Ok(db) => db,
@@ -68,13 +71,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(Box::new(e));
         }
     };
-    
+
     // Dump all key-value pairs
     println!("Cache contents (key|value format):");
     println!("----------------------------------");
-    
+
     let mut count = 0;
-    
+
     for result in db.iter() {
         match result {
             Ok((key_bytes, value_bytes)) => {
@@ -83,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(s) => s.to_string(),
                     Err(_) => format!("<binary: {:?}>", key_bytes),
                 };
-                
+
                 // Try to parse value as JSON for better display
                 let value = match serde_json::from_slice::<serde_json::Value>(&value_bytes) {
                     Ok(json) => json.to_string(),
@@ -93,21 +96,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Ok(s) => s.to_string(),
                             Err(_) => format!("<binary: {:?}>", value_bytes),
                         }
-                    },
+                    }
                 };
-                
+
                 // Print in key|value format
                 println!("{}|{}", key, value);
                 count += 1;
-            },
+            }
             Err(e) => {
                 eprintln!("Error reading entry: {}", e);
-            },
+            }
         }
     }
-    
+
     println!("----------------------------------");
     println!("Total entries: {}", count);
-    
+
     Ok(())
 }

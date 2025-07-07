@@ -1,9 +1,9 @@
-use audiocontrol::helpers::security_store::{SecurityStore};
+use audiocontrol::helpers::security_store::SecurityStore;
+use clap::Parser;
+use log::{error, info};
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use clap::Parser;
-use log::{info, error};
-use serde_json::Value;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Security store file not found",
         )));
     }
-    
+
     let encryption_key_to_use: Option<String> = args.key;
 
     if let Some(enc_key) = encryption_key_to_use {
@@ -51,7 +51,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             for key_name in keys {
                                 match SecurityStore::get(&key_name) {
                                     Ok(value) => println!("{}: {}", key_name, value),
-                                    Err(e) => error!("Failed to get/decrypt key '{}': {}", key_name, e),
+                                    Err(e) => {
+                                        error!("Failed to get/decrypt key '{}': {}", key_name, e)
+                                    }
                                 }
                             }
                         }

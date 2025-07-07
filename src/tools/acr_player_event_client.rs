@@ -94,20 +94,20 @@ enum LoopMode {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-    
+
     let event_data = build_event_data(&args.event)?;
-    
+
     let client = ureq::agent();
     let url = format!("{}/api/player/{}/update", args.host, args.player_name);
-    
+
     println!("Sending event to: {}", url);
     println!("Event data: {}", serde_json::to_string_pretty(&event_data)?);
-    
+
     let response = client
         .post(&url)
         .set("Content-Type", "application/json")
         .send_string(&serde_json::to_string(&event_data)?);
-    
+
     match response {
         Ok(resp) => {
             if resp.status() >= 200 && resp.status() < 300 {
@@ -125,7 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             std::process::exit(1);
         }
     }
-    
+
     Ok(())
 }
 
@@ -134,22 +134,28 @@ fn build_event_data(event: &EventType) -> Result<Value, Box<dyn Error>> {
         EventType::StateChanged { state } => {
             let state_str = match state {
                 PlaybackState::Playing => "playing",
-                PlaybackState::Paused => "paused", 
+                PlaybackState::Paused => "paused",
                 PlaybackState::Stopped => "stopped",
                 PlaybackState::Unknown => "unknown",
             };
-            
+
             json!({
                 "type": "state_changed",
                 "state": state_str
             })
         }
-        
-        EventType::SongChanged { title, artist, album, duration, uri } => {
+
+        EventType::SongChanged {
+            title,
+            artist,
+            album,
+            duration,
+            uri,
+        } => {
             let mut song = json!({
                 "title": title
             });
-            
+
             if let Some(artist) = artist {
                 song["artist"] = json!(artist);
             }
@@ -162,41 +168,44 @@ fn build_event_data(event: &EventType) -> Result<Value, Box<dyn Error>> {
             if let Some(uri) = uri {
                 song["uri"] = json!(uri);
             }
-            
+
             json!({
                 "type": "song_changed",
                 "song": song
             })
         }
-        
+
         EventType::PositionChanged { position } => {
             json!({
                 "type": "position_changed",
                 "position": position
             })
         }
-        
+
         EventType::ShuffleChanged { shuffle } => {
             json!({
                 "type": "shuffle_changed",
                 "shuffle": shuffle
             })
         }
-        
+
         EventType::LoopModeChanged { loop_mode } => {
             let mode_str = match loop_mode {
                 LoopMode::None => "none",
                 LoopMode::Song | LoopMode::Track => "song",
                 LoopMode::Playlist => "playlist",
             };
-            
+
             json!({
                 "type": "loop_mode_changed",
                 "loop_mode": mode_str
             })
         }
-        
-        EventType::QueueChanged { file, json: json_str } => {
+
+        EventType::QueueChanged {
+            file,
+            json: json_str,
+        } => {
             let queue_data = if let Some(file_path) = file {
                 let file_content = std::fs::read_to_string(file_path)?;
                 serde_json::from_str::<Value>(&file_content)?
@@ -205,17 +214,15 @@ fn build_event_data(event: &EventType) -> Result<Value, Box<dyn Error>> {
             } else {
                 return Err("Either --file or --json must be provided for queue_changed".into());
             };
-            
+
             json!({
                 "type": "queue_changed",
                 "queue": queue_data
             })
         }
-        
-        EventType::Custom { json: json_str } => {
-            serde_json::from_str::<Value>(json_str)?
-        }
+
+        EventType::Custom { json: json_str } => serde_json::from_str::<Value>(json_str)?,
     };
-    
+
     Ok(event_data)
 }

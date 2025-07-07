@@ -1,5 +1,5 @@
+use audiocontrol::data::{LoopMode, PlaybackState};
 use clap::{Parser, Subcommand};
-use audiocontrol::data::{PlaybackState, LoopMode};
 use serde_json::{json, Value};
 use std::error::Error;
 
@@ -27,7 +27,7 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Update song information and optionally playback state
-    /// 
+    ///
     /// Example: audiocontrol_send_update player1 song --title "Song Title" --artist "Artist Name" --album "Album Name"
     Song {
         #[clap(long, help = "Artist name")]
@@ -46,12 +46,16 @@ enum Commands {
         uri: Option<String>, // Stream URI
 
         /// Playback state to set with the song (default: Playing)
-        #[clap(long, default_value = "Playing", help = "Playback state (Playing, Paused, Stopped, etc.)")]
+        #[clap(
+            long,
+            default_value = "Playing",
+            help = "Playback state (Playing, Paused, Stopped, etc.)"
+        )]
         state: PlaybackState,
     },
 
     /// Update playback state
-    /// 
+    ///
     /// Example: audiocontrol_send_update player1 state Playing
     State {
         /// Playback state (Playing, Paused, Stopped, etc.)
@@ -60,7 +64,7 @@ enum Commands {
     },
 
     /// Update shuffle setting
-    /// 
+    ///
     /// Example: audiocontrol_send_update player1 shuffle true
     Shuffle {
         /// Enable or disable shuffle (true/false)
@@ -69,16 +73,18 @@ enum Commands {
     },
 
     /// Update loop mode
-    /// 
+    ///
     /// Example: audiocontrol_send_update player1 loop Playlist
     Loop {
         /// Loop mode (None, Track, Playlist)
-        #[clap(help = "Loop mode: None (no looping), Track (repeat current track), Playlist (repeat playlist)")]
+        #[clap(
+            help = "Loop mode: None (no looping), Track (repeat current track), Playlist (repeat playlist)"
+        )]
         mode: LoopMode,
     },
 
     /// Update playback position
-    /// 
+    ///
     /// Example: audiocontrol_send_update player1 position 45.5
     Position {
         /// Current playback position in seconds
@@ -92,10 +98,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let client = ureq::agent();
 
     match args.command {
-        Commands::Song { artist, title, album, length, uri, state } => {
+        Commands::Song {
+            artist,
+            title,
+            album,
+            length,
+            uri,
+            state,
+        } => {
             // Send song change event first
             let mut song = json!({});
-            
+
             if let Some(artist) = artist {
                 song["artist"] = json!(artist);
             }
@@ -111,13 +124,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             if let Some(uri) = uri {
                 song["uri"] = json!(uri);
             }
-            
+
             let song_event = json!({
                 "type": "song_changed",
                 "song": song
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &song_event, args.verbose, args.quiet)?;
+            send_event(
+                &client,
+                &args.baseurl,
+                &args.player_name,
+                &song_event,
+                args.verbose,
+                args.quiet,
+            )?;
 
             // Send state change event (default to Playing)
             let state_str = match state {
@@ -134,7 +154,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "state": state_str
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &state_event, args.verbose, args.quiet)?;
+            send_event(
+                &client,
+                &args.baseurl,
+                &args.player_name,
+                &state_event,
+                args.verbose,
+                args.quiet,
+            )?;
         }
 
         Commands::State { state } => {
@@ -146,13 +173,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 PlaybackState::Disconnected => "disconnected",
                 PlaybackState::Unknown => "unknown",
             };
-            
+
             let event = json!({
                 "type": "state_changed",
                 "state": state_str
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &event, args.verbose, args.quiet)?;
+            send_event(
+                &client,
+                &args.baseurl,
+                &args.player_name,
+                &event,
+                args.verbose,
+                args.quiet,
+            )?;
         }
 
         Commands::Shuffle { enabled } => {
@@ -162,7 +196,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "enabled": enabled_bool
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &event, args.verbose, args.quiet)?;
+            send_event(
+                &client,
+                &args.baseurl,
+                &args.player_name,
+                &event,
+                args.verbose,
+                args.quiet,
+            )?;
         }
 
         Commands::Loop { mode } => {
@@ -171,13 +212,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 LoopMode::Playlist => "playlist",
                 LoopMode::None => "none",
             };
-            
+
             let event = json!({
                 "type": "loop_mode_changed",
                 "loop_mode": mode_str
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &event, args.verbose, args.quiet)?;
+            send_event(
+                &client,
+                &args.baseurl,
+                &args.player_name,
+                &event,
+                args.verbose,
+                args.quiet,
+            )?;
         }
 
         Commands::Position { position } => {
@@ -186,7 +234,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "position": position
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &event, args.verbose, args.quiet)?;
+            send_event(
+                &client,
+                &args.baseurl,
+                &args.player_name,
+                &event,
+                args.verbose,
+                args.quiet,
+            )?;
         }
     }
 
@@ -202,7 +257,7 @@ fn send_event(
     quiet: bool,
 ) -> Result<(), Box<dyn Error>> {
     let url = format!("{}/player/{}/update", baseurl, player_name);
-    
+
     if !quiet {
         println!("Sending event to: {}", url);
         if verbose {
@@ -210,7 +265,8 @@ fn send_event(
         }
     }
 
-    let response = client.post(&url)
+    let response = client
+        .post(&url)
         .set("Content-Type", "application/json")
         .send_string(&serde_json::to_string(&event)?);
 
@@ -222,7 +278,9 @@ fn send_event(
                 }
             } else {
                 let status = resp.status();
-                let response_body = resp.into_string().unwrap_or_else(|_| "Failed to read response body".to_string());
+                let response_body = resp
+                    .into_string()
+                    .unwrap_or_else(|_| "Failed to read response body".to_string());
                 if !quiet {
                     eprintln!("Failed to send event. Status: {}", status);
                     eprintln!("Response: {}", response_body);

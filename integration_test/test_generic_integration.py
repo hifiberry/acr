@@ -100,7 +100,7 @@ def test_player_loop_mode_events(generic_server):
     generic_server.reset_player_state()
     
     # Test loop mode change event
-    event = {"type": "loop_mode_changed", "mode": "all"}
+    event = {"type": "loop_mode_changed", "mode": "playlist"}
     response = generic_server.send_player_event("test_player", event)
     assert response is not None
     
@@ -110,7 +110,7 @@ def test_player_loop_mode_events(generic_server):
     # Verify the loop mode changed if available
     players = generic_server.get_players()
     assert 'loop_mode' in players['test_player'], "Player does not expose 'loop_mode' property in API response"
-    assert players['test_player']['loop_mode'] == 'all', f"Expected loop_mode to be 'all', got {players['test_player']['loop_mode']}"
+    assert players['test_player']['loop_mode'] == 'playlist', f"Expected loop_mode to be 'playlist', got {players['test_player']['loop_mode']}"
 
 def test_player_position_events(generic_server):
     """Test sending player position events"""
@@ -186,7 +186,7 @@ def test_multiple_events_sequence(generic_server):
     events = [
         {"type": "state_changed", "state": "playing"},
         {"type": "shuffle_changed", "enabled": True},
-        {"type": "loop_mode_changed", "mode": "one"},
+        {"type": "loop_mode_changed", "mode": "song"},
         {"type": "position_changed", "position": 30.0},
         {"type": "metadata_changed", "metadata": {
             "title": "Sequence Test",
@@ -217,7 +217,7 @@ def test_multiple_events_sequence(generic_server):
     
     # Check loop mode
     assert 'loop_mode' in player, "Loop mode property not exposed in player API"
-    assert player['loop_mode'] == 'one', f"Expected loop_mode 'one', got {player['loop_mode']}"
+    assert player['loop_mode'] == 'song', f"Expected loop_mode 'song', got {player['loop_mode']}"
         
     # Check position
     assert 'position' in player, "Position property not exposed in player API"

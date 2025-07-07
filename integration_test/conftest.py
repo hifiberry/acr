@@ -352,7 +352,7 @@ class AudioControlTestServer:
             # Convert mode names to match Rust enum
             if mode == "all" or mode == "playlist":
                 mode = "Playlist"
-            elif mode == "one" or mode == "track":
+            elif mode == "one" or mode == "track" or mode == "song":
                 mode = "Track"
             else:
                 mode = "None"

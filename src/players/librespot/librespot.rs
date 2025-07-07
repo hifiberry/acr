@@ -1,27 +1,18 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
-use crate::players::librespot::event_pipe_reader::EventPipeReader;
 use crate::data::stream_details::StreamDetails;
 use delegate::delegate;
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, RwLock};
 use log::{debug, info, warn, error, trace};
-use std::thread;
-use std::time::Duration;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::HashMap;
 use std::any::Any;
-use lazy_static::lazy_static;
 use crate::data::PlayerUpdate;
 use serde_json::json;
 
 /// Librespot player controller implementation
-/// This controller interfaces with Spotify/librespot events via pipe reading and/or API endpoints
+/// This controller interfaces with Spotify/librespot via API endpoints
 pub struct LibrespotPlayerController {
     /// Base controller
     base: BasePlayerController,
-    
-    /// Event pipe source path/URL
-    event_source: String,
     
     /// Path to the librespot executable
     process_name: String,
@@ -34,9 +25,6 @@ pub struct LibrespotPlayerController {
     
     /// Current stream details
     stream_details: Arc<RwLock<Option<StreamDetails>>>,
-    
-    /// Whether to reopen the event pipe when it's closed
-    reopen_event_pipe: bool,
     
     /// Whether to enable API updates/events
     enable_api_updates: bool,
@@ -51,35 +39,23 @@ impl Clone for LibrespotPlayerController {
         LibrespotPlayerController {
             // Share the BasePlayerController instance to maintain listener registrations
             base: self.base.clone(),
-            event_source: self.event_source.clone(),
             process_name: self.process_name.clone(),
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
-            reopen_event_pipe: self.reopen_event_pipe,
             enable_api_updates: self.enable_api_updates,
             on_pause_event: self.on_pause_event.clone(),
         }
     }
 }
 
-/// Structure to store player state for each instance
-struct PlayerInstanceData {
-    running_flag: Arc<AtomicBool>
-}
 
-/// A map to store running state for each player instance
-type PlayerStateMap = HashMap<usize, PlayerInstanceData>;
-lazy_static! {
-    static ref PLAYER_STATE: Mutex<PlayerStateMap> = Mutex::new(HashMap::new());
-}
 
 impl LibrespotPlayerController {
     /// Create a new Librespot player controller with default settings
     #[allow(dead_code)]
     pub fn new() -> Self {
         debug!("Creating new LibrespotPlayerController with default settings");
-        let source = "/var/run/librespot/events_pipe"; // Default pipe path
         let process = "/usr/bin/librespot"; // Default process path
         
         // Create a base controller with player name and ID
@@ -87,12 +63,10 @@ impl LibrespotPlayerController {
         
         let player = Self {
             base,
-            event_source: source.to_string(),
             process_name: process.to_string(),
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
-            reopen_event_pipe: true,
             enable_api_updates: true, // Default to enabled
             on_pause_event: None,
         };
@@ -103,14 +77,9 @@ impl LibrespotPlayerController {
         player
     }
     
-    /// Create a new Librespot player controller with custom event source and reopen setting
-    pub fn with_source_and_reopen(source: &str, reopen: bool) -> Self {
-        Self::with_source_reopen_and_api_updates(source, reopen, true)
-    }
-    
-    /// Create a new Librespot player controller with custom event source, reopen setting, and API updates setting
-    pub fn with_source_reopen_and_api_updates(source: &str, reopen: bool, enable_api_updates: bool) -> Self {
-        debug!("Creating new LibrespotPlayerController with source: {}, reopen: {}, enable_api_updates: {}", source, reopen, enable_api_updates);
+    /// Create a new Librespot player controller with API updates setting
+    pub fn with_api_updates(enable_api_updates: bool) -> Self {
+        debug!("Creating new LibrespotPlayerController with enable_api_updates: {}", enable_api_updates);
         let process = "/usr/bin/librespot"; // Default process path
         
         // Create a base controller with player name and ID
@@ -118,12 +87,10 @@ impl LibrespotPlayerController {
         
         let player = Self {
             base,
-            event_source: source.to_string(),
             process_name: process.to_string(),
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
-            reopen_event_pipe: reopen,
             enable_api_updates,
             on_pause_event: None,
         };
@@ -135,20 +102,18 @@ impl LibrespotPlayerController {
     }
 
     /// Create a new Librespot player controller with fully custom settings and systemd unit check
-    pub fn with_config_and_systemd(event_source: &str, process_name: &str, reopen: bool, systemd_unit: Option<&str>) -> Self {
-        Self::with_full_config(event_source, process_name, reopen, systemd_unit, true)
+    pub fn with_config_and_systemd(process_name: &str, systemd_unit: Option<&str>) -> Self {
+        Self::with_full_config(process_name, systemd_unit, true)
     }
     
     /// Create a new Librespot player controller with full configuration options
     pub fn with_full_config(
-        event_source: &str, 
-        process_name: &str, 
-        reopen: bool, 
+        process_name: &str,
         systemd_unit: Option<&str>,
         enable_api_updates: bool
     ) -> Self {
-        debug!("Creating new LibrespotPlayerController with event_source: {}, process_name: {}, reopen: {}, systemd_unit: {:?}, enable_api_updates: {}", 
-               event_source, process_name, reopen, systemd_unit, enable_api_updates);
+        debug!("Creating new LibrespotPlayerController with process_name: {}, systemd_unit: {:?}, enable_api_updates: {}", 
+               process_name, systemd_unit, enable_api_updates);
         
         // Check systemd unit if specified
         if let Some(unit_name) = systemd_unit {
@@ -172,12 +137,10 @@ impl LibrespotPlayerController {
         
         let player = Self {
             base,
-            event_source: event_source.to_string(),
             process_name: process_name.to_string(),
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
-            reopen_event_pipe: reopen,
             enable_api_updates,
             on_pause_event: None,
         };
@@ -198,30 +161,17 @@ impl LibrespotPlayerController {
         ], false); // Don't notify on initialization
     }
     
-    /// Update the event source
+    /// Set whether to enable API updates
     #[allow(dead_code)]
-    pub fn set_event_source(&mut self, source: &str) {
-        debug!("Updating Librespot event source to: {}", source);
-        self.event_source = source.to_string();
+    pub fn set_enable_api_updates(&mut self, enable: bool) {
+        debug!("Setting Librespot API updates to: {}", enable);
+        self.enable_api_updates = enable;
     }
     
-    /// Get the current event source
+    /// Get whether API updates are enabled
     #[allow(dead_code)]
-    pub fn get_event_source(&self) -> &str {
-        &self.event_source
-    }
-    
-    /// Set whether to reopen the event pipe when it's closed
-    #[allow(dead_code)]
-    pub fn set_reopen_event_pipe(&mut self, reopen: bool) {
-        debug!("Setting Librespot event pipe reopen to: {}", reopen);
-        self.reopen_event_pipe = reopen;
-    }
-    
-    /// Get whether the event pipe will reopen when closed
-    #[allow(dead_code)]
-    pub fn get_reopen_event_pipe(&self) -> bool {
-        self.reopen_event_pipe
+    pub fn get_enable_api_updates(&self) -> bool {
+        self.enable_api_updates
     }
     
     /// Set the path to the librespot executable
@@ -250,75 +200,7 @@ impl LibrespotPlayerController {
         &self.on_pause_event
     }
 
-    /// Starts a background thread that listens for Librespot events (if a filename is configured)
-    /// The thread will run until the running flag is set to false
-    fn start_event_listener(&self, running: Arc<AtomicBool>, self_arc: Arc<Self>) {
-        let source = self.event_source.clone();
-        
-        debug!("Starting Librespot event listener for source: '{}'", source);
-        
-        // Start pipe reader thread if a filename is configured (non-empty string)
-        if !source.is_empty() {
-            info!("Event source '{}' configured, starting pipe reader", source);
-            thread::spawn(move || {
-                info!("Librespot event pipe reader thread started");
-                Self::run_event_loop(&source, running, self_arc);
-                info!("Librespot event pipe reader thread shutting down");
-            });
-        } else {
-            info!("No event_pipe configured, not starting pipe reader thread to update librespot player state");
-        }
-    }
 
-    /// Main event loop for listening to Librespot events
-    fn run_event_loop(source: &str, running: Arc<AtomicBool>, player_arc: Arc<Self>) {
-        while running.load(Ordering::SeqCst) {
-            // Clone the Arc before moving it into the closure to avoid moving the original
-            let player_clone = player_arc.clone();
-            
-            // Create an event callback function that will update the player state
-            let callback = Box::new(move |song: Song, state: PlayerState, capabilities: PlayerCapabilitySet, stream_details: StreamDetails| {
-                // Process the event data and update the player
-                player_clone.update_from_event(song, state, capabilities, stream_details);
-            });
-            
-            // Create an event pipe reader with our callback and reopen setting
-            let reader = EventPipeReader::with_callback_and_reopen(source, callback, player_arc.reopen_event_pipe);
-            
-            // Try to read from the pipe
-            match reader.read_and_log_pipe() {
-                Ok(_) => {
-                    if player_arc.reopen_event_pipe {
-                        info!("Event pipe closed, will attempt to reconnect");
-                    } else {
-                        info!("Event pipe closed, not reconnecting (reopen=false)");
-                        break; // Exit the loop if reopen is false
-                    }
-                },
-                Err(e) => {
-                    warn!("Error reading from event pipe: {}", e);
-                    if !player_arc.reopen_event_pipe {
-                        warn!("Not reconnecting due to reopen=false");
-                        break; // Exit the loop if reopen is false
-                    }
-                }
-            }
-            
-            // If we get here and reopen is true, wait before trying to reconnect
-            if running.load(Ordering::SeqCst) && player_arc.reopen_event_pipe {
-                info!("Will attempt to reconnect to event source in 5 seconds");
-                for _ in 0..50 {
-                    if !running.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(100));
-                }
-            } else {
-                // Exit the loop if reopen is false
-                break;
-            }
-        }
-    }
     
     /// Process event updates from the pipe reader
     fn update_from_event(&self, song: Song, player_state: PlayerState, 
@@ -639,51 +521,18 @@ impl PlayerController for LibrespotPlayerController {
     }
 
     fn start(&self) -> bool {
-        info!("Starting Librespot player controller");
+        info!("Starting Librespot player controller (API mode only)");
         
-        // Create a new Arc<Self> for thread-safe sharing of player instance
-        let player_arc = Arc::new(self.clone());
-        
-        // Create a new running flag
-        let running = Arc::new(AtomicBool::new(true));
-        
-        // Store the running flag in the player instance
-        if let Ok(mut state) = PLAYER_STATE.lock() {
-            let instance_id = self as *const _ as usize;
-            
-            if let Some(data) = state.get(&instance_id) {
-                // Stop any existing thread
-                data.running_flag.store(false, Ordering::SeqCst);
-            }
-            
-            // Start a new listener thread
-            self.start_event_listener(running.clone(), player_arc.clone());
-            
-            // Store the running flag
-            state.insert(instance_id, PlayerInstanceData { running_flag: running });
-            true
-        } else {
-            error!("Failed to acquire lock for player state");
-            false
-        }
+        // No pipe listeners to start
+        self.base.alive();
+        true
     }
     
     fn stop(&self) -> bool {
         info!("Stopping Librespot player controller");
         
-        // Signal the event listener thread to stop
-        if let Ok(mut state) = PLAYER_STATE.lock() {
-            let instance_id = self as *const _ as usize;
-            
-            if let Some(data) = state.remove(&instance_id) {
-                data.running_flag.store(false, Ordering::SeqCst);
-                debug!("Signaled event listener thread to stop");
-                return true;
-            }
-        }
-        
-        debug!("No active event listener thread found");
-        false
+        // Nothing to stop in API-only mode
+        true
     }
 
     fn get_queue(&self) -> Vec<Track> {

@@ -96,8 +96,9 @@
         {
             "librespot": {
                 "enable": true,
-                "event_pipe": "/var/lib/librespot/event_pipe",
-                "reopen_event_pipe": true
+                "process_name": "/usr/bin/librespot",
+                "enable_api_updates": true,
+                "on_pause_event": "systemd"
             }
         },
         {

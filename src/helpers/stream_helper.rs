@@ -2,16 +2,18 @@ use std::io::{self, Read, Write};
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::net::TcpStream;
-use std::thread;
-use std::time::Duration;
 use url::Url;
-use log::{debug, warn};
+use log::debug;
+
+#[cfg(windows)]
+use std::thread;
+#[cfg(windows)]
+use std::time::Duration;
+#[cfg(windows)]
+use log::warn;
 
 #[cfg(windows)]
 use std::os::windows::prelude::*;
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 
 
 /// AccessMode for opening a stream

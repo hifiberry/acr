@@ -12,6 +12,14 @@ struct Args {
     #[clap(long, default_value = "http://localhost:1080/api")]
     baseurl: String,
 
+    /// Enable verbose output with JSON payloads
+    #[clap(long, short = 'v', help = "Enable verbose output")]
+    verbose: bool,
+
+    /// Suppress all output
+    #[clap(long, short = 'q', help = "Quiet mode - suppress all output")]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -109,7 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "song": song
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &song_event)?;
+            send_event(&client, &args.baseurl, &args.player_name, &song_event, args.verbose, args.quiet)?;
 
             // Send state change event (default to Playing)
             let state_str = match state {
@@ -126,7 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "state": state_str
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &state_event)?;
+            send_event(&client, &args.baseurl, &args.player_name, &state_event, args.verbose, args.quiet)?;
         }
 
         Commands::State { state } => {
@@ -144,7 +152,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "state": state_str
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &event)?;
+            send_event(&client, &args.baseurl, &args.player_name, &event, args.verbose, args.quiet)?;
         }
 
         Commands::Shuffle { enabled } => {
@@ -154,7 +162,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "enabled": enabled_bool
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &event)?;
+            send_event(&client, &args.baseurl, &args.player_name, &event, args.verbose, args.quiet)?;
         }
 
         Commands::Loop { mode } => {
@@ -169,7 +177,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "loop_mode": mode_str
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &event)?;
+            send_event(&client, &args.baseurl, &args.player_name, &event, args.verbose, args.quiet)?;
         }
 
         Commands::Position { position } => {
@@ -178,7 +186,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "position": position
             });
 
-            send_event(&client, &args.baseurl, &args.player_name, &event)?;
+            send_event(&client, &args.baseurl, &args.player_name, &event, args.verbose, args.quiet)?;
         }
     }
 
@@ -190,11 +198,17 @@ fn send_event(
     baseurl: &str,
     player_name: &str,
     event: &Value,
+    verbose: bool,
+    quiet: bool,
 ) -> Result<(), Box<dyn Error>> {
     let url = format!("{}/player/{}/update", baseurl, player_name);
     
-    println!("Sending event to: {}", url);
-    println!("Payload: {}", serde_json::to_string_pretty(&event)?);
+    if !quiet {
+        println!("Sending event to: {}", url);
+        if verbose {
+            println!("Payload: {}", serde_json::to_string_pretty(&event)?);
+        }
+    }
 
     let response = client.post(&url)
         .set("Content-Type", "application/json")
@@ -203,17 +217,23 @@ fn send_event(
     match response {
         Ok(resp) => {
             if resp.status() >= 200 && resp.status() < 300 {
-                println!("Event sent successfully. Status: {}", resp.status());
+                if !quiet {
+                    println!("Event sent successfully. Status: {}", resp.status());
+                }
             } else {
                 let status = resp.status();
                 let response_body = resp.into_string().unwrap_or_else(|_| "Failed to read response body".to_string());
-                eprintln!("Failed to send event. Status: {}", status);
-                eprintln!("Response: {}", response_body);
+                if !quiet {
+                    eprintln!("Failed to send event. Status: {}", status);
+                    eprintln!("Response: {}", response_body);
+                }
                 return Err(format!("HTTP error: {}", status).into());
             }
         }
         Err(e) => {
-            eprintln!("Error sending request: {}", e);
+            if !quiet {
+                eprintln!("Error sending request: {}", e);
+            }
             return Err(Box::new(e));
         }
     }

@@ -37,6 +37,9 @@ pub struct LibrespotPlayerController {
     
     /// Whether to reopen the event pipe when it's closed
     reopen_event_pipe: bool,
+    
+    /// Whether to enable API updates/events
+    enable_api_updates: bool,
 }
 
 // Manually implement Clone for LibrespotPlayerController
@@ -51,6 +54,7 @@ impl Clone for LibrespotPlayerController {
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
             reopen_event_pipe: self.reopen_event_pipe,
+            enable_api_updates: self.enable_api_updates,
         }
     }
 }
@@ -85,6 +89,7 @@ impl LibrespotPlayerController {
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: true,
+            enable_api_updates: true, // Default to enabled
         };
         
         // Set default capabilities - only Killable is available
@@ -95,7 +100,12 @@ impl LibrespotPlayerController {
     
     /// Create a new Librespot player controller with custom event source and reopen setting
     pub fn with_source_and_reopen(source: &str, reopen: bool) -> Self {
-        debug!("Creating new LibrespotPlayerController with source: {} and reopen: {}", source, reopen);
+        Self::with_source_reopen_and_api_updates(source, reopen, true)
+    }
+    
+    /// Create a new Librespot player controller with custom event source, reopen setting, and API updates setting
+    pub fn with_source_reopen_and_api_updates(source: &str, reopen: bool, enable_api_updates: bool) -> Self {
+        debug!("Creating new LibrespotPlayerController with source: {}, reopen: {}, enable_api_updates: {}", source, reopen, enable_api_updates);
         let process = "/usr/bin/librespot"; // Default process path
         
         // Create a base controller with player name and ID
@@ -109,6 +119,7 @@ impl LibrespotPlayerController {
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: reopen,
+            enable_api_updates,
         };
         
         // Set default capabilities - only Killable is available
@@ -119,7 +130,7 @@ impl LibrespotPlayerController {
 
     /// Create a new Librespot player controller with fully custom settings and systemd unit check
     pub fn with_config_and_systemd(event_source: &str, process_name: &str, reopen: bool, systemd_unit: Option<&str>) -> Self {
-        Self::with_full_config(event_source, process_name, reopen, systemd_unit)
+        Self::with_full_config(event_source, process_name, reopen, systemd_unit, true)
     }
     
     /// Create a new Librespot player controller with full configuration options
@@ -127,10 +138,11 @@ impl LibrespotPlayerController {
         event_source: &str, 
         process_name: &str, 
         reopen: bool, 
-        systemd_unit: Option<&str>
+        systemd_unit: Option<&str>,
+        enable_api_updates: bool
     ) -> Self {
-        debug!("Creating new LibrespotPlayerController with event_source: {}, process_name: {}, reopen: {}, systemd_unit: {:?}", 
-               event_source, process_name, reopen, systemd_unit);
+        debug!("Creating new LibrespotPlayerController with event_source: {}, process_name: {}, reopen: {}, systemd_unit: {:?}, enable_api_updates: {}", 
+               event_source, process_name, reopen, systemd_unit, enable_api_updates);
         
         // Check systemd unit if specified
         if let Some(unit_name) = systemd_unit {
@@ -160,6 +172,7 @@ impl LibrespotPlayerController {
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             reopen_event_pipe: reopen,
+            enable_api_updates,
         };
         
         // Set default capabilities - only Killable is available
@@ -310,6 +323,10 @@ impl LibrespotPlayerController {
         if let Ok(mut current_state) = self.current_state.write() {
             let new_state = player_state.state;
             let state_changed = current_state.state != new_state;
+            let position_changed = current_state.position != player_state.position;
+            let shuffle_changed = current_state.shuffle != player_state.shuffle;
+            let loop_mode_changed = current_state.loop_mode != player_state.loop_mode;
+            
             if state_changed {
                 log::info!("[API DEBUG] Librespot state change: {:?} -> {:?}", current_state.state, new_state);
             }
@@ -317,7 +334,29 @@ impl LibrespotPlayerController {
                 log::info!("[API DEBUG] Notifying state changed: {:?}", new_state);
                 self.base.notify_state_changed(new_state);
             }
-            current_state.metadata = player_state.metadata.clone();
+            
+            // Notify about position changes
+            if position_changed {
+                if let Some(position) = player_state.position {
+                    log::info!("[API DEBUG] Notifying position changed: {}", position);
+                    self.base.notify_position_changed(position);
+                }
+            }
+            
+            // Notify about shuffle changes
+            if shuffle_changed {
+                log::info!("[API DEBUG] Notifying shuffle changed: {}", player_state.shuffle);
+                self.base.notify_random_changed(player_state.shuffle);
+            }
+            
+            // Notify about loop mode changes
+            if loop_mode_changed {
+                log::info!("[API DEBUG] Notifying loop mode changed: {:?}", player_state.loop_mode);
+                self.base.notify_loop_mode_changed(player_state.loop_mode);
+            }
+            
+            // Update the stored state
+            *current_state = player_state;
         } else {
             warn!("[API DEBUG] Failed to acquire lock on current state");
         }
@@ -627,12 +666,18 @@ impl PlayerController for LibrespotPlayerController {
     }
 
     fn supports_api_events(&self) -> bool {
-        true
+        self.enable_api_updates
     }
     
     fn process_api_event(&self, event_data: &serde_json::Value) -> bool {
         log::info!("[DEBUG] Librespot process_api_event called with: {}", event_data);
         debug!("Processing API event for Librespot player: {}", event_data);
+        
+        // Check if API updates are enabled
+        if !self.enable_api_updates {
+            log::info!("[DEBUG] Librespot API updates disabled, ignoring event");
+            return false;
+        }
         
         // Check if this is a Librespot-specific event format (with "event" field)
         if event_data.get("event").is_some() {
@@ -662,6 +707,12 @@ impl PlayerController for LibrespotPlayerController {
     }
 
     fn receive_update(&self, update: PlayerUpdate) -> bool {
+        // Check if API updates are enabled
+        if !self.enable_api_updates {
+            log::info!("[DEBUG] Librespot API updates disabled, ignoring update");
+            return false;
+        }
+        
         // Convert PlayerUpdate to serde_json::Value and forward to process_api_event
         match serde_json::to_value(&update) {
             Ok(json_val) => self.process_api_event(&json_val),

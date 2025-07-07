@@ -127,11 +127,17 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty()); // Filter out empty strings
                 
+                // Check if enable_api_updates parameter is specified in the JSON
+                let enable_api_updates = config_obj.get("enable_api_updates")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true); // Default to true if not specified
+                
                 let player = LibrespotPlayerController::with_full_config(
                     event_source, 
                     process_name, 
                     reopen, 
-                    systemd_unit
+                    systemd_unit,
+                    enable_api_updates
                 );
                 Ok(Box::new(player))
             },

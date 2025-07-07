@@ -19,48 +19,62 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Update song information and optionally playback state
+    /// 
+    /// Example: audiocontrol_send_update player1 song --title "Song Title" --artist "Artist Name" --album "Album Name"
     Song {
-        #[clap(long)]
+        #[clap(long, help = "Artist name")]
         artist: Option<String>,
 
-        #[clap(long)]
+        #[clap(long, help = "Song title")]
         title: Option<String>,
 
-        #[clap(long)]
+        #[clap(long, help = "Album name")]
         album: Option<String>,
 
-        #[clap(long)]
+        #[clap(long, help = "Song duration in seconds")]
         length: Option<f64>, // Duration in seconds
 
-        #[clap(long)]
+        #[clap(long, help = "Stream URI or track identifier")]
         uri: Option<String>, // Stream URI
 
         /// Playback state to set with the song (default: Playing)
-        #[clap(long, default_value = "Playing")]
+        #[clap(long, default_value = "Playing", help = "Playback state (Playing, Paused, Stopped, etc.)")]
         state: PlaybackState,
     },
 
     /// Update playback state
+    /// 
+    /// Example: audiocontrol_send_update player1 state Playing
     State {
         /// Playback state (Playing, Paused, Stopped, etc.)
+        #[clap(help = "Playback state (Playing, Paused, Stopped, Killed, Disconnected, Unknown)")]
         state: PlaybackState,
     },
 
     /// Update shuffle setting
+    /// 
+    /// Example: audiocontrol_send_update player1 shuffle true
     Shuffle {
-        /// Enable or disable shuffle
-        enabled: bool,
+        /// Enable or disable shuffle (true/false)
+        #[clap(help = "Enable shuffle (true) or disable shuffle (false)")]
+        enabled: String,
     },
 
     /// Update loop mode
+    /// 
+    /// Example: audiocontrol_send_update player1 loop Playlist
     Loop {
         /// Loop mode (None, Track, Playlist)
+        #[clap(help = "Loop mode: None (no looping), Track (repeat current track), Playlist (repeat playlist)")]
         mode: LoopMode,
     },
 
     /// Update playback position
+    /// 
+    /// Example: audiocontrol_send_update player1 position 45.5
     Position {
         /// Current playback position in seconds
+        #[clap(help = "Playback position in seconds (e.g., 45.5 for 45.5 seconds)")]
         position: f64,
     },
 }
@@ -134,9 +148,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         Commands::Shuffle { enabled } => {
+            let enabled_bool = enabled.to_lowercase() == "true";
             let event = json!({
                 "type": "shuffle_changed",
-                "shuffle": enabled
+                "enabled": enabled_bool
             });
 
             send_event(&client, &args.baseurl, &args.player_name, &event)?;

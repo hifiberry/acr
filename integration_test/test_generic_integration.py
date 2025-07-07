@@ -49,6 +49,9 @@ def test_player_state_events(generic_server):
     response = generic_server.send_player_event("test_player", event)
     assert response is not None
     
+    # Check if the tool call was successful
+    assert response.get("success", False), f"Tool call failed: {response.get('message', 'Unknown error')}"
+    
     # Small delay to allow state to propagate
     time.sleep(1.0)  # Increase delay to ensure event propagation
     

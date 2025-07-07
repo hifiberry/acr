@@ -6,19 +6,22 @@ AudioControl REST (ACR) includes several command-line tools for interacting with
 
 ### acr_send_update
 
-The `acr_send_update` tool allows you to send player state updates to the AudioControl API from the command line.
+The `acr_send_update` tool allows you to send player state updates to the AudioControl API from the command line using a subcommand-based interface.
 
 [Detailed Documentation](acr_send_update.md)
 
 **Key Features:**
-- Update song information (artist, title, album, duration)
+
+- Subcommand-based interface for precise control
+- Update song information (artist, title, album, duration, URI)
 - Update playback state and position
 - Update loop mode and shuffle settings
 - Send updates to any ACR instance
 
 **Example:**
+
 ```bash
-audiocontrol_send_update --artist "Pink Floyd" --title "Comfortably Numb" --state Playing generic
+audiocontrol_send_update generic song --artist "Pink Floyd" --title "Comfortably Numb" --state Playing
 ```
 
 ### acr_dumpcache

@@ -309,16 +309,20 @@ class AudioControlTestServer:
         
         # Build the command to call audiocontrol_send_update
         cmd = ["cargo", "run", "--bin", "audiocontrol_send_update", "--"]
+        cmd.extend(["--baseurl", f"http://localhost:{self.port}/api"])
         cmd.append(player_name)
-        cmd.extend(["--audiocontrol-host", f"http://localhost:{self.port}"])
         
-        # Convert event_data to acr_send_update arguments
+        # Convert event_data to acr_send_update arguments based on new subcommand structure
         event_type = event_data.get("type", "unknown")
         
         if event_type == "state_changed":
-            state = event_data.get("state", "stopped")
-            cmd.extend(["--state", state])
+            state = event_data.get("state", "Stopped")
+            # Convert lowercase to PascalCase for enum
+            state = state.capitalize()
+            cmd.extend(["state", state])
+            
         elif event_type == "metadata_changed" or event_type == "song_changed":
+            cmd.append("song")
             metadata = event_data.get("metadata", event_data.get("song", {}))
             if metadata.get("title"):
                 cmd.extend(["--title", metadata["title"]])
@@ -328,36 +332,45 @@ class AudioControlTestServer:
                 cmd.extend(["--album", metadata["album"]])
             if metadata.get("duration"):
                 cmd.extend(["--length", str(metadata["duration"])])
+            if metadata.get("uri"):
+                cmd.extend(["--uri", metadata["uri"]])
+            # Add state if specified, otherwise defaults to Playing
+            if "state" in event_data:
+                state = event_data["state"].capitalize()
+                cmd.extend(["--state", state])
+                
         elif event_type == "position_changed":
             position = event_data.get("position", 0.0)
-            cmd.extend(["--position", str(position)])
+            cmd.extend(["position", str(position)])
+            
         elif event_type == "shuffle_changed":
             shuffle = event_data.get("enabled", event_data.get("shuffle", False))
-            cmd.extend(["--shuffle", str(shuffle).lower()])
+            cmd.extend(["shuffle", str(shuffle).lower()])
+            
         elif event_type == "loop_mode_changed":
-            mode = event_data.get("mode", "none")
+            mode = event_data.get("mode", "None")
             # Convert mode names to match Rust enum
             if mode == "all" or mode == "playlist":
-                mode = "playlist"
+                mode = "Playlist"
             elif mode == "one" or mode == "track":
-                mode = "track"
+                mode = "Track"
             else:
-                mode = "none"
-            cmd.extend(["--loop-mode", mode])
+                mode = "None"
+            cmd.extend(["loop", mode])
         else:
-            # For unknown event types, try to extract common fields
-            print(f"Unknown event type '{event_type}', attempting to extract common fields")
-            if "state" in event_data:
-                cmd.extend(["--state", event_data["state"]])
-            if "position" in event_data:
-                cmd.extend(["--position", str(event_data["position"])])
+            # For unknown event types, default to state change
+            print(f"Unknown event type '{event_type}', defaulting to state change")
+            state = event_data.get("state", "Stopped").capitalize()
+            cmd.extend(["state", state])
         
         # Debug output
         print(f"Calling audiocontrol_send_update with command: {' '.join(cmd)}")
         
         # Execute the command
         try:
-            result = subprocess.run(cmd, cwd=self.base_dir, capture_output=True, text=True, timeout=30)
+            # Use the parent directory (project root) as working directory
+            project_root = Path(__file__).parent.parent
+            result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=30)
             
             if result.returncode == 0:
                 print(f"audiocontrol_send_update output: {result.stdout}")

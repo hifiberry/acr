@@ -3,7 +3,7 @@
 audiocontrol_send_update \- send player state updates to audiocontrol
 .SH SYNOPSIS
 .B audiocontrol_send_update
-[\fIOPTIONS\fR] \fIPLAYER_NAME\fR
+[\fIOPTIONS\fR] \fIPLAYER_NAME\fR \fICOMMAND\fR
 .SH DESCRIPTION
 .B audiocontrol_send_update
 is a utility for sending player state updates to the audiocontrol daemon.
@@ -13,7 +13,25 @@ audiocontrol of playback changes, track information, or other status updates.
 The utility communicates with the audiocontrol daemon via its API interface
 to ensure real-time synchronization of player state across all connected
 clients and services.
+.PP
+The tool uses a subcommand-based interface where each command corresponds to
+a specific type of update. This ensures that only the relevant event is sent
+for each update type, providing more precise control over player state changes.
 .SH OPTIONS
+.TP
+.BR \-\-baseurl " " \fIURL\fR
+Set the base URL for the audiocontrol API (default: http://localhost:1080/api)
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit
+.TP
+.BR \-V ", " \-\-version
+Display version information and exit
+.SH COMMANDS
+.TP
+.BR song " " [\fIOPTIONS\fR]
+Update song information and optionally set playback state
+.RS
 .TP
 .BR \-\-artist " " \fIARTIST\fR
 Set the artist name for the current track
@@ -27,43 +45,50 @@ Set the album name for the current track
 .BR \-\-length " " \fIDURATION\fR
 Set the track duration in seconds
 .TP
-.BR \-\-position " " \fIPOSITION\fR
-Set the current playback position in seconds
+.BR \-\-uri " " \fIURI\fR
+Set the stream URI for the current track
 .TP
 .BR \-\-state " " \fISTATE\fR
-Set the playback state (Playing, Paused, Stopped)
+Set the playback state (default: Playing)
+.RE
 .TP
-.BR \-\-loop\-mode " " \fIMODE\fR
-Set the loop mode (None, Track, Playlist)
+.BR state " " \fISTATE\fR
+Update playback state (Playing, Paused, Stopped, Killed, Disconnected, Unknown)
 .TP
-.BR \-\-shuffle " " \fISHUFFLE\fR
-Set the shuffle state (true or false)
+.BR shuffle " " \fIENABLED\fR
+Update shuffle setting (true or false)
 .TP
-.BR \-\-baseurl " " \fIURL\fR
-Set the base URL for the audiocontrol API (default: http://localhost:1080/api)
+.BR loop " " \fIMODE\fR
+Update loop mode (None, Track, Playlist)
 .TP
-.BR \-h ", " \-\-help
-Display help information and exit
-.TP
-.BR \-V ", " \-\-version
-Display version information and exit
+.BR position " " \fIPOSITION\fR
+Update current playback position in seconds
 .SH ARGUMENTS
 .TP
 .I PLAYER_NAME
 The name of the player to send updates for
 .SH EXAMPLES
 .TP
-Send track change update:
-.B audiocontrol_send_update \-\-artist "Artist Name" \-\-title "Song Title" generic
+Send song change with metadata:
+.B audiocontrol_send_update generic song \-\-artist "The Beatles" \-\-title "Let It Be" \-\-album "Let It Be"
+.TP
+Send song change with playback state:
+.B audiocontrol_send_update generic song \-\-artist "Queen" \-\-title "Bohemian Rhapsody" \-\-state Playing
 .TP
 Send playback state update:
-.B audiocontrol_send_update \-\-state Playing generic
+.B audiocontrol_send_update generic state Playing
 .TP
-Send multiple updates:
-.B audiocontrol_send_update \-\-artist "Artist" \-\-title "Title" \-\-state Playing generic
+Send shuffle update:
+.B audiocontrol_send_update generic shuffle true
+.TP
+Send loop mode update:
+.B audiocontrol_send_update generic loop Playlist
+.TP
+Send position update:
+.B audiocontrol_send_update generic position 120.5
 .TP
 Send update to remote server:
-.B audiocontrol_send_update \-\-baseurl http://192.168.1.100:1080/api \-\-artist "Artist" generic
+.B audiocontrol_send_update \-\-baseurl http://192.168.1.100:1080/api generic song \-\-artist "Artist"
 .SH SEE ALSO
 .BR audiocontrol (1),
 .BR audiocontrol_dump_cache (1),

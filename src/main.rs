@@ -10,6 +10,7 @@ use audiocontrol::helpers::lastfm;
 use audiocontrol::helpers::spotify;
 use audiocontrol::helpers::security_store::SecurityStore;
 use audiocontrol::logging;
+use audiocontrol::secrets;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
 use audiocontrol::players::lms::lmsaudio::LMSAudioController;
@@ -32,6 +33,18 @@ fn main() {
     
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
+    
+    // Check for --help option first
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print_help();
+        return;
+    }
+    
+    // Check for --check-secrets option first (exit early if present)
+    if args.iter().any(|arg| arg == "--check-secrets") {
+        check_secrets_status();
+        return;
+    }
     
     // Look for config file path in command line arguments (-c option)
     let config_file_path = find_config_file_in_args(&args);
@@ -444,4 +457,114 @@ fn find_log_config_in_args(args: &[String]) -> Option<PathBuf> {
     }
     
     None
+}
+
+/// Check and display the status of compiled secrets
+fn check_secrets_status() {
+    println!("AudioControl - Compiled Secrets Status");
+    println!("=====================================");
+    
+    // Get all compiled secrets
+    let secrets_map = secrets::get_all_secrets_obfuscated();
+    
+    if secrets_map.is_empty() {
+        println!("❌ No secrets compiled into binary");
+        println!("   This binary was compiled without any secrets configured.");
+        println!("   External API integrations will not work unless configured at runtime.");
+        return;
+    }
+    
+    println!("✅ Secrets compiled into binary: {}", secrets_map.len());
+    println!();
+    
+    // Check specific known secrets
+    let known_secrets = vec![
+        ("LASTFM_APIKEY", "Last.fm API integration"),
+        ("LASTFM_API_KEY", "Last.fm API integration"),
+        ("LASTFM_APISECRET", "Last.fm API secret"),
+        ("LASTFM_API_SECRET", "Last.fm API secret"),
+        ("ARTISTDB_APIKEY", "TheAudioDB API integration"),
+        ("THEAUDIODB_APIKEY", "TheAudioDB API integration"),
+        ("THEAUDIODB_API_KEY", "TheAudioDB API integration"),
+        ("SECRETS_ENCRYPTION_KEY", "Security store encryption"),
+        ("SECURITY_KEY", "Security store encryption"),
+        ("SPOTIFY_OAUTH_URL", "Spotify OAuth integration"),
+        ("SPOTIFY_PROXY_SECRET", "Spotify proxy authentication"),
+    ];
+    
+    println!("Known Integration Status:");
+    println!("------------------------");
+    
+    let mut found_any = false;
+    for (key, description) in known_secrets {
+        if secrets_map.contains_key(key) {
+            println!("✅ {} - {}", key, description);
+            found_any = true;
+        }
+    }
+    
+    if !found_any {
+        println!("⚠️  No known integration secrets found");
+        println!("   Available keys: {}", secrets_map.keys().cloned().collect::<Vec<_>>().join(", "));
+    }
+    
+    println!();
+    println!("API Service Status:");
+    println!("------------------");
+    
+    // Test specific service functions
+    let lastfm_key = secrets::lastfm_api_key();
+    let audiodb_key = secrets::artistdb_api_key();
+    let encryption_key = secrets::secrets_encryption_key();
+    let spotify_oauth = secrets::spotify_oauth_url();
+    let spotify_secret = secrets::spotify_proxy_secret();
+    
+    println!("🔑 Last.fm API: {}", if lastfm_key != "unknown" { "✅ Available" } else { "❌ Not configured" });
+    println!("🔑 TheAudioDB API: {}", if audiodb_key != "unknown" { "✅ Available" } else { "❌ Not configured" });
+    println!("🔑 Security Store: {}", if encryption_key != "unknown" { "✅ Available" } else { "❌ Not configured" });
+    println!("🔑 Spotify OAuth: {}", if spotify_oauth != "unknown" { "✅ Available" } else { "❌ Not configured" });
+    println!("🔑 Spotify Proxy: {}", if spotify_secret != "unknown" { "✅ Available" } else { "❌ Not configured" });
+    
+    println!();
+    println!("Note: This shows compile-time secrets only. Runtime configuration");
+    println!("      may override these values or provide additional secrets.");
+}
+
+/// Print help information for command line usage
+fn print_help() {
+    println!("AudioControl Player Controller");
+    println!("==============================");
+    println!();
+    println!("USAGE:");
+    println!("    audiocontrol [OPTIONS]");
+    println!();
+    println!("OPTIONS:");
+    println!("    -c <FILE>                   Specify configuration file path");
+    println!("                                (default: audiocontrol.json)");
+    println!();
+    println!("    --log-config <FILE>         Specify logging configuration file");
+    println!("    --logging-config <FILE>     (alternative form)");
+    println!("                                Defaults searched in order:");
+    println!("                                - /etc/audiocontrol/logging.json");
+    println!("                                - logging.json");
+    println!("                                - config/logging.json");
+    println!();
+    println!("    -d, --debug                 Enable debug logging (if no log config)");
+    println!();
+    println!("    -h, --help                  Show this help message");
+    println!();
+    println!("EXAMPLES:");
+    println!("    audiocontrol");
+    println!("        Start with default configuration");
+    println!();
+    println!("    audiocontrol -c /etc/audiocontrol/config.json");
+    println!("        Start with specific configuration file");
+    println!();
+    println!("    audiocontrol --log-config /etc/audiocontrol/logging.json");
+    println!("        Start with specific logging configuration");
+    println!();
+    println!("    audiocontrol --debug");
+    println!("        Start with debug logging enabled");
+    println!();
+    println!("For more information, see the documentation in the doc/ directory.");
 }

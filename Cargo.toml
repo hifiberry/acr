@@ -100,3 +100,7 @@ path = "src/tools/acr_dump_store.rs"
 [[bin]]
 name = "audiocontrol_player_event_client"
 path = "src/tools/acr_player_event_client.rs"
+
+[[bin]]
+name = "audiocontrol_notify_librespot"
+path = "src/tools/acr_notify_librespot.rs"

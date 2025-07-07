@@ -152,6 +152,172 @@ audiocontrol_send_update --baseurl http://192.168.1.100:1080/api \
   spotify song --title "Imagine" --artist "John Lennon"
 ```
 
+### audiocontrol_notify_librespot
+
+The `audiocontrol_notify_librespot` tool is designed to be called by librespot on player events. It reads event information from environment variables and sends corresponding updates to the audiocontrol API.
+
+**Key Features:**
+
+- Processes librespot player events automatically
+- Reads event data from environment variables
+- Sends structured updates to audiocontrol API
+- Supports all major librespot event types
+- Configurable output verbosity
+- Automatic event type detection
+
+**Usage:**
+
+```bash
+audiocontrol_notify_librespot [OPTIONS]
+```
+
+**Options:**
+
+- `--baseurl <URL>` - API base URL (default: `http://127.0.0.1:1080/api`)
+- `--player-name <NAME>` - Player name for API calls (default: `librespot`)
+- `--verbose, -v` - Enable verbose output with full request details
+- `--quiet, -q` - Suppress all output
+- `--help` - Show help information
+
+**Supported Events:**
+
+- `track_changed` - New song/track information
+- `playing` - Playback started
+- `paused` - Playback paused
+- `seeked` - Playback position changed
+- `shuffle_changed` - Shuffle mode changed
+- `repeat_changed` - Repeat/loop mode changed
+
+**Environment Variables:**
+
+The tool reads the following environment variables set by librespot:
+
+- `PLAYER_EVENT` - Event type
+- `NAME` - Track title
+- `ARTISTS` - Track artist(s)
+- `ALBUM` - Album name
+- `DURATION_MS` - Track duration in milliseconds
+- `URI` - Spotify URI
+- `POSITION_MS` - Current playback position in milliseconds
+- `SHUFFLE` - Shuffle state ("true"/"false")
+- `REPEAT` - Repeat enabled ("true"/"false")
+- `REPEAT_TRACK` - Track repeat enabled ("true"/"false")
+
+**Librespot Configuration:**
+
+To use this tool with librespot, configure it as the onevent handler:
+
+```bash
+librespot --onevent /usr/bin/audiocontrol_notify_librespot [other options]
+```
+
+Or in librespot configuration file:
+
+```ini
+onevent = "/usr/bin/audiocontrol_notify_librespot"
+```
+
+**Example Output:**
+
+```bash
+# Normal output (default)
+audiocontrol_notify_librespot
+# Output: Received event: track_changed
+
+# Verbose output
+audiocontrol_notify_librespot --verbose
+# Output: 
+# Received event: track_changed
+# Sending event to: http://127.0.0.1:1080/api/player/librespot/update
+# Payload: {
+#   "type": "song_changed",
+#   "song": {
+#     "title": "Teenage Kicks",
+#     "artist": "The Undertones",
+#     "album": "The Undertones",
+#     "duration": 148.16,
+#     "uri": "spotify:track:5TZcyH9biCPfH8WDiPk8WA"
+#   }
+# }
+# Event sent successfully. Status: 200
+
+# Quiet output (no output)
+audiocontrol_notify_librespot --quiet
+# (no output)
+```
+
+**Integration Examples:**
+
+```bash
+# Use with custom API endpoint
+audiocontrol_notify_librespot --baseurl http://192.168.1.100:1080/api
+
+# Use with custom player name
+audiocontrol_notify_librespot --player-name spotify-connect
+
+# Debugging with verbose output
+audiocontrol_notify_librespot --verbose > /var/log/librespot-events.log
+```
+
+**Testing Examples with Environment Variables:**
+
+You can test the tool manually by setting environment variables:
+
+```bash
+# Test track changed event
+export PLAYER_EVENT="track_changed"
+export NAME="Teenage Kicks"
+export ARTISTS="The Undertones"
+export ALBUM="The Undertones"
+export DURATION_MS="148160"
+export URI="spotify:track:5TZcyH9biCPfH8WDiPk8WA"
+export NUMBER="5"
+export DISC_NUMBER="1"
+export COVERS="https://i.scdn.co/image/ab67616d0000b27340c0d9f7af61bf0543eaf75c"
+audiocontrol_notify_librespot --verbose
+
+# Test playing event
+export PLAYER_EVENT="playing"
+export POSITION_MS="0"
+export TRACK_ID="5TZcyH9biCPfH8WDiPk8WA"
+audiocontrol_notify_librespot --verbose
+
+# Test paused event
+export PLAYER_EVENT="paused"
+export POSITION_MS="72434"
+export TRACK_ID="5TZcyH9biCPfH8WDiPk8WA"
+audiocontrol_notify_librespot --verbose
+
+# Test seeked event
+export PLAYER_EVENT="seeked"
+export POSITION_MS="106192"
+export TRACK_ID="5TZcyH9biCPfH8WDiPk8WA"
+audiocontrol_notify_librespot --verbose
+
+# Test shuffle changed event
+export PLAYER_EVENT="shuffle_changed"
+export SHUFFLE="true"
+audiocontrol_notify_librespot --verbose
+
+# Test repeat changed event (track repeat)
+export PLAYER_EVENT="repeat_changed"
+export REPEAT="true"
+export REPEAT_TRACK="true"
+audiocontrol_notify_librespot --verbose
+
+# Test repeat changed event (playlist repeat)
+export PLAYER_EVENT="repeat_changed"
+export REPEAT="true"
+export REPEAT_TRACK="false"
+audiocontrol_notify_librespot --verbose
+
+# Test repeat disabled
+export PLAYER_EVENT="repeat_changed"
+export REPEAT="false"
+export REPEAT_TRACK="false"
+audiocontrol_notify_librespot --verbose
+```
+
 ### acr_dumpcache
 
 The `acr_dumpcache` tool allows you to inspect and manage the ACR caching system.

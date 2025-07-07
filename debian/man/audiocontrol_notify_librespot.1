@@ -1,0 +1,193 @@
+.TH AUDIOCONTROL_NOTIFY_LIBRESPOT 1 "July 2025" "audiocontrol" "User Commands"
+.SH NAME
+audiocontrol_notify_librespot \- Send librespot events to audiocontrol API
+.SH SYNOPSIS
+.B audiocontrol_notify_librespot
+[\fIOPTION\fR]...
+.SH DESCRIPTION
+.B audiocontrol_notify_librespot
+is a tool designed to be called by librespot on player events. It reads event information from environment variables and sends corresponding updates to the audiocontrol API.
+
+This tool is typically configured as the \fBonevent\fR handler in librespot configuration and processes the following event types:
+.IP \(bu 2
+\fBtrack_changed\fR - New song/track information
+.IP \(bu 2
+\fBplaying\fR - Playback started
+.IP \(bu 2
+\fBpaused\fR - Playback paused
+.IP \(bu 2
+\fBseeked\fR - Playback position changed
+.IP \(bu 2
+\fBshuffle_changed\fR - Shuffle mode changed
+.IP \(bu 2
+\fBrepeat_changed\fR - Repeat/loop mode changed
+
+.SH OPTIONS
+.TP
+\fB\-\-baseurl\fR \fIURL\fR
+Base URL for the audiocontrol API (default: http://127.0.0.1:1080/api)
+.TP
+\fB\-\-player\-name\fR \fINAME\fR
+Player name to use in API calls (default: librespot)
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Enable verbose output with full request details
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress all output
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help information
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version information
+
+.SH ENVIRONMENT VARIABLES
+The tool reads the following environment variables set by librespot:
+
+.TP
+\fBPLAYER_EVENT\fR
+Type of player event (track_changed, playing, paused, seeked, shuffle_changed, repeat_changed)
+.TP
+\fBNAME\fR
+Track title (for track_changed events)
+.TP
+\fBARTISTS\fR
+Track artist(s) (for track_changed events)
+.TP
+\fBALBUM\fR
+Album name (for track_changed events)
+.TP
+\fBDURATION_MS\fR
+Track duration in milliseconds (for track_changed events)
+.TP
+\fBURI\fR
+Spotify URI (for track_changed events)
+.TP
+\fBNUMBER\fR
+Track number (for track_changed events)
+.TP
+\fBDISC_NUMBER\fR
+Disc number (for track_changed events)
+.TP
+\fBCOVERS\fR
+Cover art URLs, separated by newlines (for track_changed events)
+.TP
+\fBPOSITION_MS\fR
+Current playback position in milliseconds (for playing/paused/seeked events)
+.TP
+\fBSHUFFLE\fR
+Shuffle state: "true" or "false" (for shuffle_changed events)
+.TP
+\fBREPEAT\fR
+Repeat enabled: "true" or "false" (for repeat_changed events)
+.TP
+\fBREPEAT_TRACK\fR
+Track repeat enabled: "true" or "false" (for repeat_changed events)
+
+.SH EXAMPLES
+.TP
+Basic usage (typically called by librespot):
+.B audiocontrol_notify_librespot
+
+.TP
+Use custom API endpoint:
+.B audiocontrol_notify_librespot \-\-baseurl http://192.168.1.100:1080/api
+
+.TP
+Use custom player name:
+.B audiocontrol_notify_librespot \-\-player\-name spotify
+
+.TP
+Verbose output for debugging:
+.B audiocontrol_notify_librespot \-\-verbose
+
+.TP
+Quiet mode (no output):
+.B audiocontrol_notify_librespot \-\-quiet
+
+.SH LIBRESPOT CONFIGURATION
+To use this tool with librespot, configure it as the onevent handler:
+
+.EX
+librespot \-\-onevent /usr/bin/audiocontrol_notify_librespot [other options]
+.EE
+
+Or in librespot configuration file:
+.EX
+onevent = "/usr/bin/audiocontrol_notify_librespot"
+.EE
+
+.SH API EVENTS
+The tool sends the following JSON events to the audiocontrol API:
+
+.TP
+\fBSong Changed\fR
+.EX
+{
+  "type": "song_changed",
+  "song": {
+    "title": "Song Title",
+    "artist": "Artist Name",
+    "album": "Album Name",
+    "duration": 148.16,
+    "uri": "spotify:track:...",
+    "track_number": "5",
+    "disc_number": "1",
+    "cover_url": "https://..."
+  }
+}
+.EE
+
+.TP
+\fBState Changed\fR
+.EX
+{
+  "type": "state_changed",
+  "state": "playing",
+  "position": 72.434
+}
+.EE
+
+.TP
+\fBShuffle Changed\fR
+.EX
+{
+  "type": "shuffle_changed",
+  "enabled": true
+}
+.EE
+
+.TP
+\fBLoop Mode Changed\fR
+.EX
+{
+  "type": "loop_mode_changed",
+  "loop_mode": "track"
+}
+.EE
+
+.TP
+\fBPosition Changed\fR
+.EX
+{
+  "type": "position_changed",
+  "position": 106.192
+}
+.EE
+
+.SH EXIT STATUS
+.TP
+0
+Success
+.TP
+1
+Error occurred
+
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_send_update (1),
+.BR librespot (1)
+
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>

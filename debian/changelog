@@ -1,3 +1,15 @@
+hifiberry-audiocontrol (0.4.5) stable; urgency=medium
+
+  * Refactored audiocontrol_send_update CLI tool to use explicit subcommands
+  * Added --quiet and --verbose output options to audiocontrol_send_update
+  * Enhanced librespot player with configurable API event support
+  * Added enable_api_updates configuration option for librespot player
+  * Improved event propagation and notification handling in librespot
+  * Updated CLI documentation with new subcommand usage examples
+  * Fixed librespot event handling to preserve song info during state updates
+
+ -- HiFiBerry <info@hifiberry.com>  Mon, 07 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.4.4) stable; urgency=medium
 
   * Enhanced logging system with module-specific log level configuration

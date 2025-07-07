@@ -90,7 +90,7 @@ The Spotify tokens are stored in the ACR security store, which encrypts sensitiv
 
 ## Example Implementation
 
-An example implementation is provided in the `example-app/spotify.html` file. This web page demonstrates how to:
+An example implementation is provided in the `example/web/spotify.html` file. This web page demonstrates how to:
 
 1. Check authentication status
 2. Connect to Spotify using the OAuth flow

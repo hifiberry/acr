@@ -304,18 +304,27 @@ impl LibrespotPlayerController {
     fn update_from_event(&self, song: Song, player_state: PlayerState, 
                        capabilities: PlayerCapabilitySet, stream_details: StreamDetails) {
         log::info!("[API DEBUG] update_from_event called: state={:?}, song={:?}, capabilities={:?}, stream_details={:?}", player_state.state, song.title, capabilities, stream_details);
-        // Store the new song if different from current
+        
+        // Store the new song if different from current and if there's actual song data
         let mut song_to_notify: Option<Song> = None;
         {
             let mut current_song = self.current_song.write().unwrap();
-            let song_changed = match (&*current_song, &song) {
-                (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
-                (None, _) => true,
-            };
-            if song_changed {
-                debug!("[API DEBUG] Song changed: {:?} -> {:?}", current_song.as_ref().map(|s| &s.title), song.title);
-                *current_song = Some(song.clone());
-                song_to_notify = Some(song);
+            
+            // Only update song if the incoming song has meaningful data (title, artist, or album)
+            let has_song_data = song.title.is_some() || song.artist.is_some() || song.album.is_some();
+            
+            if has_song_data {
+                let song_changed = match (&*current_song, &song) {
+                    (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
+                    (None, _) => true,
+                };
+                if song_changed {
+                    debug!("[API DEBUG] Song changed: {:?} -> {:?}", current_song.as_ref().map(|s| &s.title), song.title);
+                    *current_song = Some(song.clone());
+                    song_to_notify = Some(song);
+                }
+            } else {
+                debug!("[API DEBUG] Ignoring song update with no meaningful data");
             }
         }
         

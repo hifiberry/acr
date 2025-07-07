@@ -1,6 +1,11 @@
 hifiberry-audiocontrol (0.4.4) stable; urgency=medium
 
   * Enhanced logging system with module-specific log level configuration
+  * Added API endpoint /api/audiodb/mbid/<mbid> for TheAudioDB integration testing
+  * Fixed unused import warnings in stream helper module
+  * Moved example web application from example-app/ to example/web/
+  * Updated Debian package configuration for new example directory structure
+  * Removed version numbers from man pages following best practices
 
  -- HiFiBerry <info@hifiberry.com>  Sun, 07 Jul 2025 12:00:00 +0000
 

@@ -1,5 +1,5 @@
 use crate::AudioController;
-use crate::api::{players, plugins, library, imagecache, events, lastfm, spotify};
+use crate::api::{players, plugins, library, imagecache, events, lastfm, spotify, theaudiodb};
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
 use crate::constants::API_PREFIX;
@@ -89,7 +89,11 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::get_artist_by_mbid,
         library::get_image,
         library::get_library_metadata,
-                library::get_library_metadata_key,
+        library::get_library_metadata_key,
+        
+        // TheAudioDB routes
+        theaudiodb::lookup_artist_by_mbid,
+        
         // WebSocket routes
         events::event_messages,
         events::player_event_messages,

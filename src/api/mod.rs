@@ -22,5 +22,8 @@ pub mod lastfm;
 // Export the spotify module
 pub mod spotify;
 
+// Export the theaudiodb module
+pub mod theaudiodb;
+
 // Export the server module
 pub mod server;

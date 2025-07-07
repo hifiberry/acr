@@ -27,6 +27,7 @@ TEST_PORTS = {
     'activemonitor': 3003,
     'raat': 3004,
     'mpd': 3005,
+    'theaudiodb': 3006,
 }
 
 # Path to static configuration file
@@ -263,6 +264,21 @@ class AudioControlTestServer:
             response = requests.post(url, json=data, timeout=10)
             response.raise_for_status()
             return response.json()
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+    
+    def api_request_with_error_handling(self, method: str, endpoint: str, data: Any = None) -> Any:
+        """Make an API request to the server with custom error handling"""
+        url = f"{self.server_url}/{endpoint.lstrip('/')}"
+        
+        if method.upper() == 'GET':
+            response = requests.get(url, timeout=10)
+            # Don't raise for HTTP errors - let the caller handle them
+            return response
+        elif method.upper() == 'POST':
+            response = requests.post(url, json=data, timeout=10)
+            # Don't raise for HTTP errors - let the caller handle them
+            return response
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
     

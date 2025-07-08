@@ -291,119 +291,6 @@ impl LibrespotPlayerController {
         // Mark the player as alive since we got data
         self.base.alive();
     }
-    
-    /// Convert generic API event format to Librespot event format
-    fn convert_generic_to_librespot_event(&self, event_data: &serde_json::Value) -> Option<serde_json::Value> {
-        log::info!("[API DEBUG] convert_generic_to_librespot_event called: event_data={:?}", event_data);
-        // Get the event type from the generic format
-        let event_type = event_data.get("type").and_then(|t| t.as_str())?;
-        
-        match event_type {
-            "ping" => {
-                // Special handling for ping - just return a valid event so the player is marked as alive
-                Some(json!({ "event": "ping" }))
-            },
-            "state_changed" => {
-                let state = event_data.get("state").and_then(|s| s.as_str())?;
-                let librespot_event = match state {
-                    "playing" => "playing",
-                    "paused" => "paused", 
-                    "stopped" => "stopped",
-                    _ => return None,
-                };
-                
-                let mut result = json!({ "event": librespot_event });
-                
-                // Add position if available
-                if let Some(position) = event_data.get("position").and_then(|p| p.as_f64()) {
-                    result["POSITION_MS"] = json!((position * 1000.0) as u64);
-                }
-                
-                Some(result)
-            },
-            "song_changed" => {
-                let mut result = json!({ "event": "track_changed" });
-                
-                if let Some(song) = event_data.get("song") {
-                    if let Some(title) = song.get("title").and_then(|t| t.as_str()) {
-                        result["NAME"] = json!(title);
-                    }
-                    if let Some(artist) = song.get("artist").and_then(|a| a.as_str()) {
-                        result["ARTISTS"] = json!(artist);
-                    }
-                    if let Some(album) = song.get("album").and_then(|a| a.as_str()) {
-                        result["ALBUM"] = json!(album);
-                    }
-                    if let Some(duration) = song.get("duration").and_then(|d| d.as_f64()) {
-                        result["DURATION_MS"] = json!((duration * 1000.0) as u64);
-                    }
-                    if let Some(track_number) = song.get("track_number").and_then(|t| t.as_i64()) {
-                        result["NUMBER"] = json!(track_number.to_string());
-                    }
-                    
-                    // Check for cover URL in either field name (cover_art_url or cover_url)
-                    let cover_url = song.get("cover_art_url")
-                        .and_then(|c| c.as_str())
-                        .or_else(|| song.get("cover_url").and_then(|c| c.as_str()));
-                    
-                    if let Some(cover) = cover_url {
-                        result["COVERS"] = json!(cover);
-                    }
-                    
-                    // Try to extract track_id from metadata
-                    if let Some(metadata) = song.get("metadata") {
-                        if let Some(track_id) = metadata.get("track_id").and_then(|t| t.as_str()) {
-                            result["TRACK_ID"] = json!(track_id);
-                        }
-                        if let Some(uri) = metadata.get("uri").and_then(|u| u.as_str()) {
-                            result["URI"] = json!(uri);
-                        }
-                    }
-                }
-                
-                Some(result)
-            },
-            "position_changed" => {
-                if let Some(position) = event_data.get("position").and_then(|p| p.as_f64()) {
-                    Some(json!({
-                        "event": "seeked",
-                        "POSITION_MS": (position * 1000.0) as u64
-                    }))
-                } else {
-                    None
-                }
-            },
-            "loop_mode_changed" => {
-                if let Some(mode) = event_data.get("mode").and_then(|m| m.as_str()) {
-                    let (repeat, repeat_track) = match mode {
-                        "song" | "track" => ("false", "true"),
-                        "playlist" | "all" => ("true", "false"),
-                        "none" => ("false", "false"),
-                        _ => return None,
-                    };
-                    
-                    Some(json!({
-                        "event": "repeat_changed",
-                        "REPEAT": repeat,
-                        "REPEAT_TRACK": repeat_track
-                    }))
-                } else {
-                    None
-                }
-            },
-            "shuffle_changed" => {
-                let shuffle = event_data.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false);
-                Some(json!({
-                    "event": "shuffle_changed",
-                    "SHUFFLE": if shuffle { "true" } else { "false" }
-                }))
-            },
-            _ => {
-                debug!("Unknown generic event type for Librespot conversion: {}", event_type);
-                None
-            }
-        }
-    }
 }
 
 impl PlayerController for LibrespotPlayerController {
@@ -606,31 +493,187 @@ impl PlayerController for LibrespotPlayerController {
         log::info!("[DEBUG] Librespot process_api_event called with: {}", event_data);
         debug!("Processing API event for Librespot player: {}", event_data);
         
-        // Check if this is a Librespot-specific event format (with "event" field)
-        if event_data.get("event").is_some() {
-            // This is the legacy Librespot format - process it directly
-            let json_str = event_data.to_string();
-            if let Some((song, player_state, capabilities, stream_details)) = 
-                super::event_common::LibrespotEventProcessor::parse_event_json(&json_str) {
-                log::info!("[DEBUG] Librespot parsed legacy event: state={:?}, song={:?}", player_state.state, song.title);
-                self.update_from_event(song, player_state, capabilities, stream_details);
-                return true;
-            }
-        } else {
-            // Try to convert from generic format to Librespot format
-            if let Some(librespot_event) = self.convert_generic_to_librespot_event(event_data) {
-                log::info!("[DEBUG] Librespot converted generic event to: {}", librespot_event);
-                let json_str = librespot_event.to_string();
-                if let Some((song, player_state, capabilities, stream_details)) = 
-                    super::event_common::LibrespotEventProcessor::parse_event_json(&json_str) {
-                    log::info!("[DEBUG] Librespot parsed converted event: state={:?}, song={:?}", player_state.state, song.title);
-                    self.update_from_event(song, player_state, capabilities, stream_details);
-                    return true;
-                }
+        // Check if this is a generic API event format (with "type" field)
+        if let Some(event_type) = event_data.get("type").and_then(|t| t.as_str()) {
+            return self.process_generic_api_event(event_type, event_data);
+        }
+        
+        log::warn!("[DEBUG] Librespot process_api_event: unknown event format - only 'type' field events are supported");
+        false
+    }
+
+    fn receive_update(&self, update: PlayerUpdate) -> bool {
+        
+        // Convert PlayerUpdate to serde_json::Value and forward to process_api_event
+        match serde_json::to_value(&update) {
+            Ok(json_val) => self.process_api_event(&json_val),
+            Err(e) => {
+                log::warn!("[DEBUG] Librespot receive_update: failed to convert PlayerUpdate to JSON: {}", e);
+                false
             }
         }
-        log::warn!("[DEBUG] Librespot process_api_event: event not processed");
-        false
+    }
+}
+
+impl LibrespotPlayerController {
+    /// Process generic API events directly without conversion
+    fn process_generic_api_event(&self, event_type: &str, event_data: &serde_json::Value) -> bool {
+        log::info!("[DEBUG] Processing generic API event: type={}", event_type);
+        
+        match event_type {
+            "ping" => {
+                // Mark player as alive
+                self.base.alive();
+                true
+            },
+            "state_changed" => {
+                if let Some(state_str) = event_data.get("state").and_then(|s| s.as_str()) {
+                    let state = match state_str {
+                        "playing" => PlaybackState::Playing,
+                        "paused" => PlaybackState::Paused,
+                        "stopped" => PlaybackState::Stopped,
+                        "killed" => PlaybackState::Killed,
+                        "disconnected" => PlaybackState::Disconnected,
+                        _ => PlaybackState::Unknown,
+                    };
+                    
+                    // Update internal state
+                    if let Ok(mut current_state) = self.current_state.write() {
+                        let state_changed = current_state.state != state;
+                        current_state.state = state;
+                        
+                        if state_changed {
+                            log::info!("[API DEBUG] State changed to: {:?}", state);
+                            self.base.notify_state_changed(state);
+                        }
+                    }
+                    
+                    // Update position if provided
+                    if let Some(position) = event_data.get("position").and_then(|p| p.as_f64()) {
+                        if let Ok(mut current_state) = self.current_state.write() {
+                            current_state.position = Some(position);
+                            log::info!("[API DEBUG] Position updated to: {}", position);
+                            self.base.notify_position_changed(position);
+                        }
+                    }
+                    
+                    self.base.alive();
+                    true
+                } else {
+                    false
+                }
+            },
+            "song_changed" => {
+                if let Some(song_data) = event_data.get("song") {
+                    let mut song = Song::default();
+                    
+                    if let Some(title) = song_data.get("title").and_then(|t| t.as_str()) {
+                        song.title = Some(title.to_string());
+                    }
+                    if let Some(artist) = song_data.get("artist").and_then(|a| a.as_str()) {
+                        song.artist = Some(artist.to_string());
+                    }
+                    if let Some(album) = song_data.get("album").and_then(|a| a.as_str()) {
+                        song.album = Some(album.to_string());
+                    }
+                    if let Some(duration) = song_data.get("duration").and_then(|d| d.as_f64()) {
+                        song.duration = Some(duration);
+                    }
+                    if let Some(uri) = song_data.get("uri").and_then(|u| u.as_str()) {
+                        song.stream_url = Some(uri.to_string());
+                    }
+                    if let Some(cover) = song_data.get("cover_art_url").and_then(|c| c.as_str()) {
+                        song.cover_art_url = Some(cover.to_string());
+                    }
+                    
+                    // Store metadata if present
+                    if let Some(metadata) = song_data.get("metadata").and_then(|m| m.as_object()) {
+                        for (key, value) in metadata {
+                            song.metadata.insert(key.clone(), value.clone());
+                        }
+                    }
+                    
+                    // Update internal song
+                    if let Ok(mut current_song) = self.current_song.write() {
+                        let song_changed = match (&*current_song, &song) {
+                            (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
+                            (None, _) => true,
+                        };
+                        
+                        if song_changed {
+                            log::info!("[API DEBUG] Song changed: {:?} - {:?}", song.artist, song.title);
+                            *current_song = Some(song.clone());
+                            self.base.notify_song_changed(Some(&song));
+                        }
+                    }
+                    
+                    self.base.alive();
+                    true
+                } else {
+                    false
+                }
+            },
+            "position_changed" => {
+                if let Some(position) = event_data.get("position").and_then(|p| p.as_f64()) {
+                    if let Ok(mut current_state) = self.current_state.write() {
+                        current_state.position = Some(position);
+                        log::info!("[API DEBUG] Position changed to: {}", position);
+                        self.base.notify_position_changed(position);
+                        self.base.alive();
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            },
+            "loop_mode_changed" => {
+                if let Some(mode_str) = event_data.get("mode").and_then(|m| m.as_str()) {
+                    let loop_mode = match mode_str {
+                        "song" | "track" => LoopMode::Track,
+                        "playlist" | "all" => LoopMode::Playlist,
+                        "none" => LoopMode::None,
+                        _ => return false,
+                    };
+                    
+                    if let Ok(mut current_state) = self.current_state.write() {
+                        let mode_changed = current_state.loop_mode != loop_mode;
+                        current_state.loop_mode = loop_mode;
+                        
+                        if mode_changed {
+                            log::info!("[API DEBUG] Loop mode changed to: {:?}", loop_mode);
+                            self.base.notify_loop_mode_changed(loop_mode);
+                        }
+                    }
+                    
+                    self.base.alive();
+                    true
+                } else {
+                    false
+                }
+            },
+            "shuffle_changed" => {
+                let shuffle = event_data.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false);
+                
+                if let Ok(mut current_state) = self.current_state.write() {
+                    let shuffle_changed = current_state.shuffle != shuffle;
+                    current_state.shuffle = shuffle;
+                    
+                    if shuffle_changed {
+                        log::info!("[API DEBUG] Shuffle changed to: {}", shuffle);
+                        self.base.notify_random_changed(shuffle);
+                    }
+                }
+                
+                self.base.alive();
+                true
+            },
+            _ => {
+                debug!("Unknown generic event type for Librespot: {}", event_type);
+                false
+            }
+        }
     }
 
     fn receive_update(&self, update: PlayerUpdate) -> bool {

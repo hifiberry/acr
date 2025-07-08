@@ -41,6 +41,11 @@ override_dh_auto_install:
 			chmod +x "debian/hifiberry-audiocontrol/usr/bin/$$tool"; \
 		fi; \
 	done
+	# Install Python now playing client
+	if [ -f example/python/audiocontrol_nowplaying.py ]; then \
+		cp example/python/audiocontrol_nowplaying.py debian/hifiberry-audiocontrol/usr/bin/audiocontrol_nowplaying; \
+		chmod +x debian/hifiberry-audiocontrol/usr/bin/audiocontrol_nowplaying; \
+	fi
 	# Install config samples
 	cp audiocontrol.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
 	# Install logging configuration sample

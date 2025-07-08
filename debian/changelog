@@ -1,3 +1,14 @@
+hifiberry-audiocontrol (0.4.7) stable; urgency=medium
+
+  * Added terminal now playing client (audiocontrol_nowplaying.py)
+  * Supports colorful ASCII frame display with progress bars
+  * Added WebSocket support for instant updates with --websocket option
+  * Configurable display size, update intervals, and custom API URLs
+  * Auto-refresh every second during playback for responsive progress updates
+  * Includes Python dependencies for websocket-client integration
+
+ -- HiFiBerry <info@hifiberry.com>  Tue, 08 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.4.6) stable; urgency=medium
 
   * Added new audiocontrol_notify_librespot tool for librespot integration
@@ -93,3 +104,9 @@ acr (0.2.0) unstable; urgency=medium
   * Added multiple player backend support (MPD, LMS)
 
  -- HiFiBerry <info@hifiberry.com>  Thu, 15 May 2025 00:00:00 +0000
+
+audiocontrol-nowplaying (1.0-1) unstable; urgency=medium
+
+* Add terminal now playing client (audiocontrol_nowplaying)
+
+ -- HiFiBerry <support@hifiberry.com>  Tue, 08 Jul 2025 12:00:00 +0000

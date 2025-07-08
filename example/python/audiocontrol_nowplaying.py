@@ -370,14 +370,14 @@ def main():
             else:
                 try:
                     terminal_width = os.get_terminal_size().columns
-                    terminal_height = os.get_terminal_size().lines
+                    terminal_height = os.get_terminal_size().lines-1
                 except (AttributeError, OSError, IOError):
                     try:
                         import subprocess
                         result = subprocess.run(['stty', 'size'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
                         if result.returncode == 0 and result.stdout.strip():
                             size_parts = result.stdout.strip().split()
-                            terminal_height = int(size_parts[0])
+                            terminal_height = int(size_parts[0])-1
                             terminal_width = int(size_parts[1])
                         else:
                             raise ValueError("Failed to get terminal size")

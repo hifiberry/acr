@@ -361,6 +361,7 @@ def main():
     time.sleep(1)  # Give user time to read the initial message
     
     def display_loop(refresh_event=None):
+        last_state = None
         while True:
             # Get terminal size or use custom size if specified
             if custom_width and custom_height:
@@ -368,11 +369,9 @@ def main():
                 terminal_height = custom_height
             else:
                 try:
-                    # On Windows, use os.get_terminal_size()
                     terminal_width = os.get_terminal_size().columns
                     terminal_height = os.get_terminal_size().lines
                 except (AttributeError, OSError, IOError):
-                    # Try to get size through stty command on Unix-like systems
                     try:
                         import subprocess
                         result = subprocess.run(['stty', 'size'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
@@ -383,10 +382,9 @@ def main():
                         else:
                             raise ValueError("Failed to get terminal size")
                     except (ImportError, ValueError, IndexError, FileNotFoundError):
-                        # Fallback if we can't get terminal size
                         terminal_width = 80
                         terminal_height = 24
-            
+
             # Fetch and format data
             now_playing_data = fetch_now_playing(api_base_url)
             formatted_data = format_now_playing(now_playing_data)
@@ -398,11 +396,18 @@ def main():
             # Clear screen and display frame
             clear_terminal()
             print("\n".join(frame))
+
+            # If player is in 'playing' state, auto-refresh every second
+            if formatted_data.get("state") == "playing":
+                sleep_time = 1
+            else:
+                sleep_time = update_interval
+
             if refresh_event:
                 refresh_event.clear()
-                refresh_event.wait()
+                refresh_event.wait(timeout=sleep_time)
             else:
-                time.sleep(update_interval)
+                time.sleep(sleep_time)
 
     if use_websocket:
         if websocket is None:

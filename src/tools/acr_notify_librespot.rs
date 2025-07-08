@@ -85,12 +85,22 @@ fn handle_track_changed(client: &ureq::Agent, args: &Args) -> Result<(), Box<dyn
 
     if let Ok(duration_ms) = env::var("DURATION_MS") {
         if let Ok(duration) = duration_ms.parse::<u64>() {
-            song["duration"] = json!(duration as f64 / 1000.0); // Convert to seconds
+            // Convert to seconds and ensure it's set
+            let duration_seconds = duration as f64 / 1000.0;
+            song["duration"] = json!(duration_seconds);
+            
+            // Log duration for debugging
+            if !args.quiet {
+                println!("Setting song duration: {} ms -> {} seconds", duration, duration_seconds);
+            }
         }
     }
 
     if let Ok(uri) = env::var("URI") {
         song["uri"] = json!(uri);
+        
+        // Also set stream_url for compatibility
+        song["stream_url"] = json!(uri);
     }
 
     // Add additional metadata if available
@@ -106,7 +116,15 @@ fn handle_track_changed(client: &ureq::Agent, args: &Args) -> Result<(), Box<dyn
         // Split covers by newline and take the first one
         let cover_urls: Vec<&str> = covers.lines().collect();
         if !cover_urls.is_empty() {
-            song["cover_url"] = json!(cover_urls[0]);
+            let cover_url = cover_urls[0];
+            // Set both field names to ensure compatibility
+            song["cover_url"] = json!(cover_url);
+            song["cover_art_url"] = json!(cover_url);
+            
+            // Log cover URL for debugging
+            if !args.quiet {
+                println!("Setting cover URL: {}", cover_url);
+            }
         }
     }
 

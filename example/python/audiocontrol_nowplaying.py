@@ -22,6 +22,11 @@ import json
 import urllib.request
 from urllib.error import URLError
 import argparse
+import threading
+try:
+    import websocket
+except ImportError:
+    websocket = None
 
 # Default configuration
 UPDATE_INTERVAL = 5  # seconds
@@ -55,11 +60,13 @@ def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='AudioControl Now Playing Display')
     parser.add_argument('--url', type=str, default='http://localhost:1080/api',
-                        help='Base URL of the AudioControl API (default: http://localhost:1080/api)')
+                        help='Base URL of the AudioControl API or WebSocket (default: http://localhost:1080/api)')
     parser.add_argument('--size', type=str, 
                         help='Custom display size in format widthxheight (e.g. 80x24). If not specified, uses terminal size')
     parser.add_argument('--interval', type=int, default=5,
                         help='Update interval in seconds (default: 5)')
+    parser.add_argument('--websocket', action='store_true',
+                        help='Enable WebSocket mode for instant updates (requires websocket-client, --url must be the WebSocket endpoint)')
     return parser.parse_args()
 
 
@@ -314,6 +321,7 @@ def main():
     args = parse_arguments()
     api_base_url = args.url
     update_interval = args.interval
+    use_websocket = args.websocket
     
     # Parse custom size if provided
     custom_width = None
@@ -352,7 +360,7 @@ def main():
     # Continue regardless of connection success (it will show error screen if needed)
     time.sleep(1)  # Give user time to read the initial message
     
-    try:
+    def display_loop(refresh_event=None):
         while True:
             # Get terminal size or use custom size if specified
             if custom_width and custom_height:
@@ -390,11 +398,49 @@ def main():
             # Clear screen and display frame
             clear_terminal()
             print("\n".join(frame))
-            
-            # Wait for next update
-            time.sleep(update_interval)
-    except KeyboardInterrupt:
-        print("\nExiting...")
+            if refresh_event:
+                refresh_event.clear()
+                refresh_event.wait()
+            else:
+                time.sleep(update_interval)
+
+    if use_websocket:
+        if websocket is None:
+            print("websocket-client package not installed. Please install it with 'pip install websocket-client'.")
+            sys.exit(1)
+        # Derive websocket URL from API URL, ensure it ends with /api/events
+        if api_base_url.startswith('http://'):
+            ws_url = api_base_url.replace('http://', 'ws://', 1)
+        elif api_base_url.startswith('https://'):
+            ws_url = api_base_url.replace('https://', 'wss://', 1)
+        else:
+            ws_url = api_base_url
+        # Ensure /api/events is present, but avoid double /api
+        ws_url = ws_url.rstrip('/')
+        if ws_url.endswith('/api'):
+            ws_url = ws_url[:-4]  # Remove trailing /api
+        if not ws_url.endswith('/api/events'):
+            ws_url = ws_url + '/api/events'
+        print(f"Connecting to WebSocket: {ws_url}")
+        refresh_event = threading.Event()
+        def on_message(ws, message):
+            refresh_event.set()
+        def on_error(ws, error):
+            print(f"WebSocket error: {error}")
+        def on_close(ws, close_status_code, close_msg):
+            print("WebSocket closed. Falling back to polling mode.")
+            refresh_event.set()
+        ws = websocket.WebSocketApp(ws_url, on_message=on_message, on_error=on_error, on_close=on_close)
+        # Start display loop in a thread
+        display_thread = threading.Thread(target=display_loop, args=(refresh_event,), daemon=True)
+        display_thread.start()
+        # Run websocket forever (triggers refresh_event on each message)
+        try:
+            ws.run_forever()
+        except KeyboardInterrupt:
+            print("\nExiting...")
+    else:
+        display_loop()
 
 
 if __name__ == "__main__":

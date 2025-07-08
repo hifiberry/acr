@@ -147,13 +147,47 @@ impl LibrespotEventProcessor {
             song.album_artist = Some(album_artist.to_string());
         }
         
-        // Track number and duration
+        // Track number
         if let Some(num) = json.get("NUMBER").and_then(|v| v.as_str()).and_then(|s| s.parse::<i32>().ok()) {
             song.track_number = Some(num);
         }
         
+        // Handle duration with detailed logging
+        let mut has_duration = false;
+        
         if let Some(duration_ms) = json.get("DURATION_MS").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()) {
-            song.duration = Some(duration_ms as f64 / 1000.0); // Convert ms to seconds
+            // Convert ms to seconds and store in song
+            let duration_seconds = duration_ms as f64 / 1000.0;
+            song.duration = Some(duration_seconds);
+            has_duration = true;
+            
+            log::debug!("Set song duration from DURATION_MS: {} ms -> {} seconds", duration_ms, duration_seconds);
+        } else {
+            log::warn!("No DURATION_MS found in track_changed event: {:?}", json);
+        }
+        
+        // Also create or update the metadata to include the duration
+        let mut metadata = song.metadata.clone();
+        
+        // If we have duration in the song field, make sure it's also in metadata
+        if has_duration {
+            if let Some(duration) = song.duration {
+                let duration_ms = (duration * 1000.0) as u64;
+                metadata.insert("DURATION_MS".to_string(), serde_json::Value::String(duration_ms.to_string()));
+                log::debug!("Added DURATION_MS to metadata: {}", duration_ms);
+            }
+        } 
+        // Otherwise try to extract duration from metadata
+        else if let Some(duration_ms) = json.get("DURATION_MS").and_then(|v| v.as_str()) {
+            metadata.insert("DURATION_MS".to_string(), serde_json::Value::String(duration_ms.to_string()));
+            log::debug!("Added raw DURATION_MS to metadata: {}", duration_ms);
+            
+            // Also try to set the duration field if we can parse it
+            if let Ok(ms) = duration_ms.parse::<u64>() {
+                let duration_seconds = ms as f64 / 1000.0;
+                song.duration = Some(duration_seconds);
+                log::debug!("Set song duration from metadata: {} seconds", duration_seconds);
+            }
         }
         
         // Cover art URL
@@ -161,27 +195,29 @@ impl LibrespotEventProcessor {
             song.cover_art_url = Some(covers.to_string());
         }
         
-        // Add track_id to song metadata
+        // Add track_id and URI to song metadata
         if let Some(track_id) = json.get("TRACK_ID").and_then(|v| v.as_str()) {
-            let mut metadata = HashMap::new();
             metadata.insert("track_id".to_string(), serde_json::Value::String(track_id.to_string()));
             metadata.insert("source".to_string(), serde_json::Value::String("spotify".to_string()));
-            
-            if let Some(uri) = json.get("URI").and_then(|v| v.as_str()) {
-                metadata.insert("uri".to_string(), serde_json::Value::String(uri.to_string()));
-            }
-            
-            if let Some(popularity) = json.get("POPULARITY").and_then(|v| v.as_str()).and_then(|s| s.parse::<i32>().ok()) {
-                metadata.insert("popularity".to_string(), serde_json::Value::Number(serde_json::Number::from(popularity)));
-            }
-            
-            if let Some(is_explicit) = json.get("IS_EXPLICIT").and_then(|v| v.as_str()) {
-                let explicit_bool = is_explicit.to_lowercase() == "true";
-                metadata.insert("explicit".to_string(), serde_json::Value::Bool(explicit_bool));
-            }
-            
-            song.metadata = metadata;
         }
+        
+        // Explicitly handle URI for both metadata and stream_url
+        if let Some(uri) = json.get("URI").and_then(|v| v.as_str()) {
+            metadata.insert("uri".to_string(), serde_json::Value::String(uri.to_string()));
+            song.stream_url = Some(uri.to_string());
+            log::debug!("Set URI/stream_url from event: {}", uri);
+        }
+        
+        if let Some(popularity) = json.get("POPULARITY").and_then(|v| v.as_str()).and_then(|s| s.parse::<i32>().ok()) {
+            metadata.insert("popularity".to_string(), serde_json::Value::Number(serde_json::Number::from(popularity)));
+        }
+        
+        if let Some(is_explicit) = json.get("IS_EXPLICIT").and_then(|v| v.as_str()) {
+            let explicit_bool = is_explicit.to_lowercase() == "true";
+            metadata.insert("explicit".to_string(), serde_json::Value::Bool(explicit_bool));
+        }
+        
+        song.metadata = metadata;
         
         // Set stream source as Spotify
         song.source = Some("spotify".to_string());

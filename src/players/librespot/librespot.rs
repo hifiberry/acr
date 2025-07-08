@@ -165,7 +165,8 @@ impl LibrespotPlayerController {
     /// Process event updates from the pipe reader
     fn update_from_event(&self, song: Song, player_state: PlayerState, 
                        capabilities: PlayerCapabilitySet, stream_details: StreamDetails) {
-        log::info!("[API DEBUG] update_from_event called: state={:?}, song={:?}, capabilities={:?}, stream_details={:?}", player_state.state, song.title, capabilities, stream_details);
+        log::debug!("update_from_event called: state={:?}, song={:?}, duration={:?}", 
+                  player_state.state, song.title, song.duration);
         
         // Store the new song if different from current and if there's actual song data
         let mut song_to_notify: Option<Song> = None;
@@ -181,12 +182,47 @@ impl LibrespotPlayerController {
                     (None, _) => true,
                 };
                 if song_changed {
-                    debug!("[API DEBUG] Song changed: {:?} -> {:?}", current_song.as_ref().map(|s| &s.title), song.title);
-                    *current_song = Some(song.clone());
-                    song_to_notify = Some(song);
+                    log::debug!("Song changed: title={:?}, artist={:?}, album={:?}, duration={:?}", 
+                              song.title, song.artist, song.album, song.duration);
+                    
+                    if let Some(ref metadata) = song.metadata.get("DURATION_MS") {
+                        log::debug!("Song has DURATION_MS in metadata: {:?}", metadata);
+                    }
+                    
+                    // Ensure we have a properly populated song object
+                    let mut enhanced_song = song.clone();
+                    
+                    // Make sure duration is set
+                    if enhanced_song.duration.is_none() {
+                        log::warn!("Song duration is missing in update_from_event!");
+                        
+                        // Check metadata for duration
+                        if let Some(duration_ms) = enhanced_song.metadata.get("DURATION_MS").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()) {
+                            let duration_seconds = duration_ms as f64 / 1000.0;
+                            log::debug!("Retrieved duration from metadata: {} ms -> {} seconds", duration_ms, duration_seconds);
+                            enhanced_song.duration = Some(duration_seconds);
+                        } else if let Some(duration_ms) = enhanced_song.metadata.get("duration_ms").and_then(|v| v.as_u64()) {
+                            let duration_seconds = duration_ms as f64 / 1000.0;
+                            log::debug!("Retrieved duration from metadata duration_ms: {} ms -> {} seconds", duration_ms, duration_seconds);
+                            enhanced_song.duration = Some(duration_seconds);
+                        }
+                    } else {
+                        // If duration is already set, make sure it's also in the metadata
+                        if let Some(duration) = enhanced_song.duration {
+                            if !enhanced_song.metadata.contains_key("DURATION_MS") {
+                                let duration_ms = (duration * 1000.0) as u64;
+                                log::debug!("Adding duration to metadata: {} seconds -> {} ms", duration, duration_ms);
+                                enhanced_song.metadata.insert("DURATION_MS".to_string(), json!(duration_ms.to_string()));
+                            }
+                        }
+                    }
+                    
+                    // Store the updated song
+                    *current_song = Some(enhanced_song.clone());
+                    song_to_notify = Some(enhanced_song);
                 }
             } else {
-                debug!("[API DEBUG] Ignoring song update with no meaningful data");
+                debug!("Ignoring song update with no meaningful data");
             }
         }
         
@@ -380,9 +416,61 @@ impl PlayerController for LibrespotPlayerController {
     
     fn get_song(&self) -> Option<Song> {
         debug!("Getting current song from stored value");
-        // Return a clone of the stored song
-        if let Ok(song) = self.current_song.read() {
-            song.clone()
+        // Return a clone of the stored song with enhanced metadata if needed
+        if let Ok(song_lock) = self.current_song.read() {
+            // Clone the song if it exists
+            if let Some(ref song) = *song_lock {
+                log::debug!("Original song data: title={:?}, artist={:?}, album={:?}, duration={:?}, cover={:?}", 
+                    song.title, song.artist, song.album, song.duration, song.cover_art_url);
+                
+                // Log the full metadata for debugging
+                log::debug!("Original song metadata: {:?}", song.metadata);
+                
+                // Create a new song object with the same fields
+                let mut enhanced_song = song.clone();
+                
+                // Make sure essential fields are populated, even if stored as metadata
+                if song.duration.is_none() {
+                    log::warn!("Song duration is missing, attempting to retrieve from metadata");
+                    
+                    // Try different metadata keys for duration
+                    if let Some(duration) = song.metadata.get("duration")
+                        .and_then(|v| v.as_f64()) {
+                        log::debug!("Found duration in metadata 'duration' field: {} seconds", duration);
+                        enhanced_song.duration = Some(duration);
+                    } else if let Some(duration_ms) = song.metadata.get("DURATION_MS")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<u64>().ok()) {
+                        let duration_sec = duration_ms as f64 / 1000.0;
+                        log::debug!("Found DURATION_MS in metadata: {} ms -> {} seconds", duration_ms, duration_sec);
+                        enhanced_song.duration = Some(duration_sec);
+                    } else if let Some(duration_ms) = song.metadata.get("duration_ms")
+                        .and_then(|v| v.as_u64()) {
+                        let duration_sec = duration_ms as f64 / 1000.0;
+                        log::debug!("Found duration_ms in metadata: {} ms -> {} seconds", duration_ms, duration_sec);
+                        enhanced_song.duration = Some(duration_sec);
+                    } else {
+                        log::warn!("No duration found in any metadata field");
+                    }
+                }
+
+                // If we don't have a source URI set but it's in the metadata, add it
+                if enhanced_song.stream_url.is_none() || enhanced_song.stream_url.as_ref().map_or(true, |url| url.trim().is_empty()) {
+                    if let Some(uri) = song.metadata.get("uri").and_then(|v| v.as_str()) {
+                        enhanced_song.stream_url = Some(uri.to_string());
+                        log::debug!("Found URI in metadata: {}", uri);
+                    }
+                }
+                
+                // Log the song details for debugging
+                log::debug!("Returning song: title={:?}, artist={:?}, album={:?}, duration={:?}, cover={:?}, uri={:?}", 
+                    enhanced_song.title, enhanced_song.artist, enhanced_song.album, 
+                    enhanced_song.duration, enhanced_song.cover_art_url, enhanced_song.stream_url);
+                
+                return Some(enhanced_song);
+            } else {
+                return None;
+            }
         } else {
             warn!("Failed to acquire read lock for current song");
             None

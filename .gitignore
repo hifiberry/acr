@@ -46,3 +46,4 @@ integration_test/__pycache__/*
 integration_test/test_cache_300*
 test_cache_1080/*
 integration_test/test_librespot_event_1080
+integration_test/test_cache_1080

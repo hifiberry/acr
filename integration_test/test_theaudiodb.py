@@ -11,7 +11,7 @@ from pathlib import Path
 from conftest import AudioControlTestServer, TEST_PORTS
 
 # Test configuration for TheAudioDB
-TEST_CONFIG_PATH = Path("test_config_theaudiodb.json")
+TEST_CONFIG_PATH = Path(__file__).parent / "test_config_theaudiodb.json"
 
 @pytest.fixture
 def theaudiodb_server():

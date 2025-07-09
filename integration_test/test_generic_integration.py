@@ -129,18 +129,46 @@ def test_player_position_events(generic_server):
     # Position is often not exposed directly via the player endpoint
     # but may be available in the now_playing response
     now_playing = generic_server.get_now_playing()
+    print(f"DEBUG: now_playing response: {now_playing}")
+    print(f"DEBUG: now_playing type: {type(now_playing)}")
     
     position_checked = False
     
-    # Check now_playing response
-    if 'song' in now_playing and 'position' in now_playing['song']:
-        position = now_playing['song']['position']
-        assert position == 42.5, f"Expected position 42.5, got {position}"
-        position_checked = True
+    # Handle None response
+    if now_playing is None:
+        print("DEBUG: now_playing is None, checking players endpoint instead")
+        players = generic_server.get_players()
+        print(f"DEBUG: players response: {players}")
+        if players and 'test_player' in players:
+            player = players['test_player']
+            if 'position' in player:
+                position = player['position']
+                assert position == 42.5, f"Expected position 42.5, got {position}"
+                position_checked = True
+            else:
+                print(f"DEBUG: position not in player object: {player}")
+    else:
+        # Check now_playing response
+        if 'song' in now_playing and now_playing['song'] is not None and 'position' in now_playing['song']:
+            position = now_playing['song']['position']
+            assert position == 42.5, f"Expected position 42.5, got {position}"
+            position_checked = True
+        
+        # Also check the top-level position in now_playing
+        if 'position' in now_playing:
+            position = now_playing['position']
+            assert position == 42.5, f"Expected position 42.5, got {position}"
+            position_checked = True
+        
+        # Also check the player object in now_playing
+        if 'player' in now_playing and 'position' in now_playing['player']:
+            position = now_playing['player']['position']
+            assert position == 42.5, f"Expected position 42.5, got {position}"
+            position_checked = True
     
     # Also check the player object
     players = generic_server.get_players()
-    if 'position' in players['test_player']:
+    if players and 'test_player' in players and 'position' in players['test_player']:
         position = players['test_player']['position']
         assert position == 42.5, f"Expected position 42.5, got {position}"
         position_checked = True

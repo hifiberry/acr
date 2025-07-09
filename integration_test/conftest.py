@@ -312,11 +312,23 @@ class AudioControlTestServer:
         if method.upper() == 'GET':
             response = requests.get(url, timeout=10)
             response.raise_for_status()
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                print(f"Error parsing JSON response from {url}: {e}")
+                print(f"Response status: {response.status_code}")
+                print(f"Response text: {response.text}")
+                return None
         elif method.upper() == 'POST':
             response = requests.post(url, json=data, timeout=10)
             response.raise_for_status()
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                print(f"Error parsing JSON response from {url}: {e}")
+                print(f"Response status: {response.status_code}")
+                print(f"Response text: {response.text}")
+                return None
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
     

@@ -21,9 +21,14 @@ def test_raat_player_initialization(raat_server):
     # Check the first player has expected structure
     first_player = players[player_names[0]]
     assert 'name' in first_player
-    assert 'display_name' in first_player
+    assert 'id' in first_player
     assert 'state' in first_player
-    assert 'capabilities' in first_player
+    assert 'is_active' in first_player
+    assert 'has_library' in first_player
+    assert 'supports_api_events' in first_player
+    assert 'last_seen' in first_player
+    assert 'shuffle' in first_player
+    assert 'loop_mode' in first_player
 
 def test_raat_server_responds(raat_server):
     """Test that the server responds to basic requests"""

@@ -1,3 +1,16 @@
+hifiberry-audiocontrol (0.4.8) stable; urgency=medium
+
+  * Added PlayerProgress for accurate real-time position tracking in librespot
+  * Implemented automatic position increment during playback with pause/resume support
+  * Enhanced shuffle and loop mode state tracking in librespot player
+  * Fixed librespot event handler to support both "mode" and "loop_mode" fields
+  * Added comprehensive Python integration tests for position tracking scenarios
+  * Added new process_helper module for process and systemd management
+  * Replaced direct system calls with unified process management functions
+  * Enhanced librespot player with better state synchronization and error handling
+
+ -- HiFiBerry <info@hifiberry.com>  Tue, 09 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.4.7) stable; urgency=medium
 
   * Added terminal now playing client (audiocontrol_nowplaying.py)

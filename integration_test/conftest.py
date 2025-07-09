@@ -360,7 +360,126 @@ class AudioControlTestServer:
         return self.api_request('GET', '/api/now-playing')
     
     def send_player_event(self, player_name: str, event_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Send an event to a player using the acr_send_update tool"""
+        """Send an event to a player using the appropriate tool based on player type"""
+        
+        # For librespot players, use audiocontrol_notify_librespot
+        if "librespot" in player_name.lower():
+            return self.send_librespot_player_event(player_name, event_data)
+        else:
+            # For other players, use audiocontrol_send_update
+            return self.send_generic_player_event(player_name, event_data)
+    
+    def send_librespot_player_event(self, player_name: str, event_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Send an event to a librespot player using audiocontrol_notify_librespot"""
+        import subprocess
+        import os
+        
+        # Check if we have an existing binary to use
+        tool_binary_path = self.get_tool_binary_path('audiocontrol_notify_librespot')
+        
+        if tool_binary_path:
+            # Use the existing binary directly
+            cmd = [str(tool_binary_path)]
+            print(f"Using existing binary: {tool_binary_path}")
+        else:
+            # Build the command to call audiocontrol_notify_librespot via cargo run
+            cmd = ["cargo", "run", "--bin", "audiocontrol_notify_librespot", "--"]
+            print("Using cargo run to build and execute audiocontrol_notify_librespot")
+        
+        cmd.extend(["--baseurl", f"http://localhost:{self.port}/api"])
+        cmd.extend(["--player-name", player_name])
+        
+        # Set up environment variables based on event type
+        env = os.environ.copy()
+        event_type = event_data.get("type", "unknown")
+        env_vars = {}
+        
+        if event_type == "state_changed":
+            state = event_data.get("state", "stopped").lower()
+            env["PLAYER_EVENT"] = state  # playing, paused, stopped
+            
+        elif event_type == "metadata_changed" or event_type == "song_changed":
+            env["PLAYER_EVENT"] = "track_changed"
+            metadata = event_data.get("metadata", event_data.get("song", {}))
+            
+            if metadata.get("title"):
+                env_vars["NAME"] = metadata["title"]
+            if metadata.get("artist"):
+                env_vars["ARTISTS"] = metadata["artist"]
+            if metadata.get("album"):
+                env_vars["ALBUM"] = metadata["album"]
+            if metadata.get("duration"):
+                # Convert to milliseconds
+                duration_ms = int(metadata["duration"] * 1000)
+                env_vars["DURATION_MS"] = str(duration_ms)
+            if metadata.get("uri"):
+                env_vars["URI"] = metadata["uri"]
+            if metadata.get("cover_art_url"):
+                env_vars["COVERS"] = metadata["cover_art_url"]
+                
+        elif event_type == "position_changed":
+            env["PLAYER_EVENT"] = "seeked"
+            position = event_data.get("position", 0.0)
+            # Convert to milliseconds
+            position_ms = int(position * 1000)
+            env_vars["POSITION_MS"] = str(position_ms)
+            
+        elif event_type == "shuffle_changed":
+            env["PLAYER_EVENT"] = "shuffle_changed"
+            shuffle = event_data.get("enabled", event_data.get("shuffle", False))
+            env_vars["SHUFFLE"] = str(shuffle).lower()
+            
+        elif event_type == "loop_mode_changed":
+            env["PLAYER_EVENT"] = "repeat_changed"
+            mode = event_data.get("mode", "none").lower()
+            
+            # Convert mode to repeat settings
+            if mode == "none":
+                env_vars["REPEAT"] = "false"
+                env_vars["REPEAT_TRACK"] = "false"
+            elif mode == "track" or mode == "song":
+                env_vars["REPEAT"] = "true"
+                env_vars["REPEAT_TRACK"] = "true"
+            elif mode == "playlist" or mode == "all":
+                env_vars["REPEAT"] = "true"
+                env_vars["REPEAT_TRACK"] = "false"
+            else:
+                env_vars["REPEAT"] = "false"
+                env_vars["REPEAT_TRACK"] = "false"
+                
+        else:
+            # For unknown event types, default to ping
+            env["PLAYER_EVENT"] = "preloading"
+        
+        # Add environment variables
+        env.update(env_vars)
+        
+        # Debug output
+        print(f"Calling audiocontrol_notify_librespot with command: {' '.join(cmd)}")
+        print(f"Environment: PLAYER_EVENT={env.get('PLAYER_EVENT')}")
+        for key, value in env_vars.items():
+            print(f"Environment: {key}={value}")
+        
+        # Execute the command
+        try:
+            # Use the parent directory (project root) as working directory
+            project_root = Path(__file__).parent.parent
+            result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=30, env=env)
+            
+            if result.returncode == 0:
+                print(f"audiocontrol_notify_librespot output: {result.stdout}")
+                return {"success": True, "message": "Update sent successfully"}
+            else:
+                print(f"audiocontrol_notify_librespot error: {result.stderr}")
+                return {"success": False, "message": f"Tool failed with exit code {result.returncode}: {result.stderr}"}
+                
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "Tool execution timed out"}
+        except Exception as e:
+            return {"success": False, "message": f"Tool execution failed: {str(e)}"}
+    
+    def send_generic_player_event(self, player_name: str, event_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Send an event to a generic player using audiocontrol_send_update"""
         import subprocess
         import json
         
@@ -450,7 +569,7 @@ class AudioControlTestServer:
             return {"success": False, "message": "Tool execution timed out"}
         except Exception as e:
             return {"success": False, "message": f"Tool execution failed: {str(e)}"}
-    
+
     def send_librespot_event(self, player_name: str, event_type: str, env_vars: Dict[str, str] = None) -> Dict[str, Any]:
         """Send an event to a player using the audiocontrol_notify_librespot tool"""
         import subprocess

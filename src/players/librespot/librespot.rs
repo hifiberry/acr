@@ -1,6 +1,7 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::stream_details::StreamDetails;
+use crate::helpers::PlayerProgress;
 use delegate::delegate;
 use std::sync::{Arc, RwLock};
 use log::{debug, info, warn, error, trace};
@@ -26,6 +27,9 @@ pub struct LibrespotPlayerController {
     /// Current stream details
     stream_details: Arc<RwLock<Option<StreamDetails>>>,
     
+    /// Playback progress tracker
+    progress: PlayerProgress,
+    
     /// What to do when receiving pause/stop commands: "systemd", "kill", or None
     on_pause_event: Option<String>,
 }
@@ -40,6 +44,7 @@ impl Clone for LibrespotPlayerController {
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
+            progress: self.progress.clone(),
             on_pause_event: self.on_pause_event.clone(),
         }
     }
@@ -63,6 +68,7 @@ impl LibrespotPlayerController {
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
+            progress: PlayerProgress::new(),
             on_pause_event: None,
         };
         
@@ -113,6 +119,7 @@ impl LibrespotPlayerController {
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
+            progress: PlayerProgress::new(),
             on_pause_event: None,
         };
         
@@ -185,6 +192,9 @@ impl LibrespotPlayerController {
                     log::debug!("Song changed: title={:?}, artist={:?}, album={:?}, duration={:?}", 
                               song.title, song.artist, song.album, song.duration);
                     
+                    // Reset position progress for new song
+                    self.progress.reset();
+                    
                     if let Some(ref metadata) = song.metadata.get("DURATION_MS") {
                         log::debug!("Song has DURATION_MS in metadata: {:?}", metadata);
                     }
@@ -236,6 +246,9 @@ impl LibrespotPlayerController {
             
             if state_changed {
                 log::info!("[API DEBUG] Librespot state change: {:?} -> {:?}", current_state.state, new_state);
+                
+                // Update progress playing state
+                self.progress.set_playing(new_state == PlaybackState::Playing);
             }
             if new_state == PlaybackState::Playing || state_changed {
                 log::info!("[API DEBUG] Notifying state changed: {:?}", new_state);
@@ -246,6 +259,8 @@ impl LibrespotPlayerController {
             if position_changed {
                 if let Some(position) = player_state.position {
                     log::info!("[API DEBUG] Notifying position changed: {}", position);
+                    // Update progress position
+                    self.progress.set_position(position);
                     self.base.notify_position_changed(position);
                 }
             }
@@ -388,17 +403,8 @@ impl PlayerController for LibrespotPlayerController {
     
     fn get_position(&self) -> Option<f64> {
         trace!("Getting current playback position");
-        // Try to get the position from the current state with a timeout
-        match self.current_state.try_read() {
-            Ok(state) => {
-                trace!("Got current position: {:?}", state.position);
-                return state.position;
-            },
-            Err(_) => {
-                warn!("Could not acquire immediate read lock for position, returning None");
-                return None;
-            }
-        }
+        // Get position from the progress tracker which handles automatic incrementing
+        Some(self.progress.get_position())
     }
     
     fn get_shuffle(&self) -> bool {
@@ -544,6 +550,8 @@ impl LibrespotPlayerController {
                         
                         if state_changed {
                             log::info!("[API DEBUG] State changed to: {:?}", state);
+                            // Update progress playing state
+                            self.progress.set_playing(state == PlaybackState::Playing);
                             self.base.notify_state_changed(state);
                         }
                     }
@@ -553,6 +561,8 @@ impl LibrespotPlayerController {
                         if let Ok(mut current_state) = self.current_state.write() {
                             current_state.position = Some(position);
                             log::info!("[API DEBUG] Position updated to: {}", position);
+                            // Update progress position
+                            self.progress.set_position(position);
                             self.base.notify_position_changed(position);
                         }
                     }
@@ -602,6 +612,8 @@ impl LibrespotPlayerController {
                         
                         if song_changed {
                             log::info!("[API DEBUG] Song changed: {:?} - {:?}", song.artist, song.title);
+                            // Reset position progress for new song
+                            self.progress.reset();
                             *current_song = Some(song.clone());
                             self.base.notify_song_changed(Some(&song));
                         }
@@ -618,6 +630,8 @@ impl LibrespotPlayerController {
                     if let Ok(mut current_state) = self.current_state.write() {
                         current_state.position = Some(position);
                         log::info!("[API DEBUG] Position changed to: {}", position);
+                        // Update progress position
+                        self.progress.set_position(position);
                         self.base.notify_position_changed(position);
                         self.base.alive();
                         true
@@ -725,5 +739,148 @@ impl LibrespotPlayerController {
             warn!("System process kill not implemented for this platform");
             return false;
         }
+    }
+}
+
+impl LibrespotPlayerController {
+    /// Get the current playback progress
+    pub fn get_progress(&self) -> &PlayerProgress {
+        &self.progress
+    }
+    
+    /// Get the current playback position from the progress tracker
+    pub fn get_tracked_position(&self) -> f64 {
+        self.progress.get_position()
+    }
+    
+    /// Check if the player is currently playing according to the progress tracker
+    pub fn is_playing(&self) -> bool {
+        self.progress.is_playing()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn test_librespot_progress_integration() {
+        let player = LibrespotPlayerController::new();
+        
+        // Initially position should be 0 and not playing
+        assert_eq!(player.get_tracked_position(), 0.0);
+        assert!(!player.is_playing());
+        
+        // Simulate a state change to playing
+        let event = json!({
+            "type": "state_changed",
+            "state": "playing",
+            "position": 10.0
+        });
+        
+        let result = player.process_api_event(&event);
+        assert!(result);
+        
+        // Position should be set to 10.0 and player should be playing
+        let current_position = player.get_tracked_position();
+        assert!(current_position >= 10.0); // Position might have incremented slightly
+        assert!(current_position < 10.1); // But not too much
+        assert!(player.is_playing());
+        
+        // Wait a bit and position should have incremented
+        thread::sleep(Duration::from_millis(100));
+        let position_after_wait = player.get_tracked_position();
+        assert!(position_after_wait > current_position);
+        assert!(position_after_wait < current_position + 1.0); // Should be less than 1 second later
+        
+        // Simulate a pause
+        let pause_event = json!({
+            "type": "state_changed",
+            "state": "paused"
+        });
+        
+        let result = player.process_api_event(&pause_event);
+        assert!(result);
+        
+        // Player should not be playing anymore
+        assert!(!player.is_playing());
+        
+        // Position should not increment while paused
+        let position_at_pause = player.get_tracked_position();
+        thread::sleep(Duration::from_millis(100));
+        let position_after_pause = player.get_tracked_position();
+        assert!((position_after_pause - position_at_pause).abs() < 0.01); // Should be approximately the same
+    }
+    
+    #[test]
+    fn test_librespot_song_change_resets_position() {
+        let player = LibrespotPlayerController::new();
+        
+        // Set some initial position and playing state
+        let event = json!({
+            "type": "state_changed",
+            "state": "playing",
+            "position": 30.0
+        });
+        player.process_api_event(&event);
+        
+        // Position should be 30.0 and player should be playing
+        let current_position = player.get_tracked_position();
+        assert!(current_position >= 30.0); // Position might have incremented slightly
+        assert!(current_position < 30.1); // But not too much
+        assert!(player.is_playing());
+        
+        // Simulate a song change
+        let song_event = json!({
+            "type": "song_changed",
+            "song": {
+                "title": "New Song",
+                "artist": "New Artist",
+                "album": "New Album",
+                "duration": 180.0
+            }
+        });
+        
+        let result = player.process_api_event(&song_event);
+        assert!(result);
+        
+        // Position should be reset to 0, but player should still be playing
+        assert_eq!(player.get_tracked_position(), 0.0);
+        assert!(!player.is_playing()); // Reset also sets playing to false
+    }
+    
+    #[test]
+    fn test_librespot_position_updates() {
+        let player = LibrespotPlayerController::new();
+        
+        // Set playing state first
+        let state_event = json!({
+            "type": "state_changed",
+            "state": "playing"
+        });
+        player.process_api_event(&state_event);
+        
+        // Send position update
+        let position_event = json!({
+            "type": "position_changed",
+            "position": 45.5
+        });
+        
+        let result = player.process_api_event(&position_event);
+        assert!(result);
+        
+        // Position should be updated
+        let current_position = player.get_tracked_position();
+        assert!(current_position >= 45.5); // Position might have incremented slightly
+        assert!(current_position < 45.6); // But not too much
+        assert!(player.is_playing());
+        
+        // Wait a bit and position should have incremented
+        thread::sleep(Duration::from_millis(100));
+        let position_after_wait = player.get_tracked_position();
+        assert!(position_after_wait > current_position);
+        assert!(position_after_wait < current_position + 1.0); // Should be less than 1 second later
     }
 }

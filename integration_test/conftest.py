@@ -32,7 +32,7 @@ TEST_PORTS = {
 # Path configurations for different test types
 TEST_CONFIGS = {
     'generic': Path(__file__).parent / "test_config_generic.json",
-    'librespot': Path(__file__).parent / "test_config_generic.json",
+    'librespot': Path(__file__).parent / "test_config_librespot.json",
     'activemonitor': Path(__file__).parent / "test_config_activemonitor.json",
     'raat': Path(__file__).parent / "test_config_generic.json",
     'theaudiodb': Path(__file__).parent / "test_config_theaudiodb.json",

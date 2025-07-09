@@ -208,78 +208,6 @@ def test_librespot_playback_control(librespot_server):
     elapsed = time.perf_counter() - start
     print(f"[TIMING] test_librespot_playback_control: {elapsed:.3f}s")
 
-def test_librespot_position_tracking(librespot_server):
-    start = time.perf_counter()
-    step = time.perf_counter()
-    players_response = librespot_server.get_players_raw()
-    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
-    
-    if "players" not in players_response or len(players_response["players"]) == 0:
-        pytest.skip("No players available for testing")
-        
-    # Find the librespot player
-    player = None
-    for p in players_response["players"]:
-        if "librespot" in p["id"].lower():
-            player = p
-            break
-    
-    if not player:
-        # Fall back to the first player
-        player = players_response["players"][0]
-        
-    player_id = player["id"]
-    print(f"Using player: {player_id}")
-    
-    step = time.perf_counter()
-    librespot_server.reset_player_state(player_id)
-    print(f"[TIMING] reset_player_state: {time.perf_counter() - step:.3f}s")
-    
-    # First set the state to playing to ensure position updates are processed
-    playing_event = {"type": "state_changed", "state": "playing"}
-    librespot_server.send_player_event(player_id, playing_event)
-    time.sleep(0.1)
-    
-    # For position tracking, we need to first send a metadata event
-    metadata_event = {
-        "type": "metadata_changed",
-        "metadata": {
-            "title": "Test Track for Position",
-            "artist": "Test Artist",
-            "album": "Test Album",
-            "duration": 300.0,
-            "uri": "spotify:track:test123"
-        }
-    }
-    librespot_server.send_player_event(player_id, metadata_event)
-    time.sleep(0.1)
-    
-    positions = [10.0, 25.5, 60.0, 120.7]
-    
-    for position in positions:
-        step = time.perf_counter()
-        event = {"type": "position_changed", "position": position}
-        response = librespot_server.send_player_event(player_id, event)
-        print(f"[TIMING] send_player_event: {time.perf_counter() - step:.3f}s")
-        assert response is not None
-        assert response.get("success", False) is True
-        
-        step = time.perf_counter()
-        time.sleep(0.1)  # Increased sleep time to ensure position change is registered
-        print(f"[TIMING] sleep after event: {time.perf_counter() - step:.3f}s")
-        
-        step = time.perf_counter()
-        now_playing = librespot_server.get_now_playing()
-        print(f"[TIMING] get_now_playing (after event): {time.perf_counter() - step:.3f}s")
-        
-        # Position might be rounded or slightly different due to timing - check if it's close enough
-        assert "position" in now_playing, "Position field missing in now_playing response"
-        if now_playing["position"] is not None:
-            assert abs(now_playing["position"] - position) < 1.0, f"Expected position {position}, got {now_playing['position']}"
-    
-    elapsed = time.perf_counter() - start
-    print(f"[TIMING] test_librespot_position_tracking: {elapsed:.3f}s")
-
 def test_librespot_shuffle_and_repeat(librespot_server):
     start = time.perf_counter()
     step = time.perf_counter()
@@ -575,66 +503,266 @@ def test_notify_librespot_playback_state_change(librespot_server):
     elapsed = time.perf_counter() - start
     print(f"[TIMING] test_notify_librespot_playback_state_change: {elapsed:.3f}s")
 
-def test_notify_librespot_position_update(librespot_server):
-    """Test audiocontrol_notify_librespot position update functionality"""
+
+
+def test_librespot_position_tracking_advanced(librespot_server):
+    """Test advanced position tracking scenarios with PlayerProgress integration"""
     start = time.perf_counter()
-    step = time.perf_counter()
     
-    # Get a player to use
     players_response = librespot_server.get_players_raw()
-    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
-    
     if "players" not in players_response or len(players_response["players"]) == 0:
         pytest.skip("No players available for testing")
+        
+    # Find the librespot player
+    player = None
+    for p in players_response["players"]:
+        if "librespot" in p["id"].lower():
+            player = p
+            break
     
-    player = players_response["players"][0]
+    if not player:
+        # Fall back to the first player
+        player = players_response["players"][0]
+        
     player_id = player["id"]
     print(f"Using player: {player_id}")
     
-    # Reset player state first
-    step = time.perf_counter()
     librespot_server.reset_player_state(player_id)
-    print(f"[TIMING] reset_player_state: {time.perf_counter() - step:.3f}s")
     
-    # First, set some song metadata so we have a track to seek in
-    step = time.perf_counter()
-    track_env_vars = {
-        "NAME": "Test Track for Position",
-        "ARTISTS": "Test Artist",
-        "ALBUM": "Test Album",
-        "DURATION_MS": "300000",  # 300 seconds
-        "URI": "spotify:track:position_test"
+    # Set up metadata first
+    metadata_event = {
+        "type": "metadata_changed",
+        "metadata": {
+            "title": "Test Track for Advanced Position",
+            "artist": "Test Artist",
+            "album": "Test Album",
+            "duration": 300.0,
+            "uri": "spotify:track:test123"
+        }
     }
-    response = librespot_server.send_librespot_event(player_id, "track_changed", track_env_vars)
-    assert response.get("success", False) is True
-    time.sleep(0.5)
-    print(f"[TIMING] setup track metadata: {time.perf_counter() - step:.3f}s")
+    librespot_server.send_player_event(player_id, metadata_event)
+    time.sleep(0.1)
     
-    # Test different position updates
-    positions_ms = [10000, 65500, 120700]  # 10s, 65.5s, 120.7s
-    positions_s = [10.0, 65.5, 120.7]
+    # Test 1: Set song position while playing, retrieve position (should be higher)
+    print("Test 1: Position tracking while playing")
     
-    for position_ms, expected_position_s in zip(positions_ms, positions_s):
-        step = time.perf_counter()
-        env_vars = {"POSITION_MS": str(position_ms)}
-        response = librespot_server.send_librespot_event(player_id, "seeked", env_vars)
-        print(f"[TIMING] send_librespot_event (position {expected_position_s}s): {time.perf_counter() - step:.3f}s")
-        assert response is not None
-        assert response.get("success", False) is True
-        
-        # Wait for the event to be processed
-        step = time.perf_counter()
-        time.sleep(0.5)
-        print(f"[TIMING] sleep after position update: {time.perf_counter() - step:.3f}s")
-        
-        # Check that position was updated
-        step = time.perf_counter()
-        now_playing = librespot_server.get_now_playing()
-        print(f"[TIMING] get_now_playing (after position update): {time.perf_counter() - step:.3f}s")
-        
-        assert "position" in now_playing
-        if now_playing["position"] is not None:
-            assert abs(now_playing["position"] - expected_position_s) < 1.0, f"Expected position {expected_position_s}, got {now_playing['position']}"
+    # Set playing state
+    playing_event = {"type": "state_changed", "state": "playing"}
+    librespot_server.send_player_event(player_id, playing_event)
+    time.sleep(0.1)
+    
+    # Set position
+    initial_position = 30.0
+    position_event = {"type": "position_changed", "position": initial_position}
+    librespot_server.send_player_event(player_id, position_event)
+    
+    # Wait a bit and then retrieve position - should be higher due to auto-increment
+    time.sleep(0.5)  # Wait 500ms
+    
+    now_playing = librespot_server.get_now_playing()
+    assert "position" in now_playing
+    current_position = now_playing["position"]
+    
+    # Position should be higher than initial due to auto-increment
+    assert current_position > initial_position, f"Expected position > {initial_position}, got {current_position}"
+    assert current_position < initial_position + 3.0, f"Position incremented too much: {current_position}"
+    print(f"✓ Position incremented from {initial_position} to {current_position}")
     
     elapsed = time.perf_counter() - start
-    print(f"[TIMING] test_notify_librespot_position_update: {elapsed:.3f}s")
+    print(f"[TIMING] test_librespot_position_tracking_advanced: {elapsed:.3f}s")
+
+def test_librespot_pause_position_tracking(librespot_server):
+    """Test position tracking when paused - position should not increment"""
+    start = time.perf_counter()
+    
+    players_response = librespot_server.get_players_raw()
+    if "players" not in players_response or len(players_response["players"]) == 0:
+        pytest.skip("No players available for testing")
+        
+    # Find the librespot player
+    player = None
+    for p in players_response["players"]:
+        if "librespot" in p["id"].lower():
+            player = p
+            break
+    
+    if not player:
+        player = players_response["players"][0]
+        
+    player_id = player["id"]
+    print(f"Using player: {player_id}")
+    
+    librespot_server.reset_player_state(player_id)
+    
+    # Set up metadata
+    metadata_event = {
+        "type": "metadata_changed",
+        "metadata": {
+            "title": "Test Track for Pause Position",
+            "artist": "Test Artist",
+            "album": "Test Album",
+            "duration": 300.0,
+            "uri": "spotify:track:test123"
+        }
+    }
+    librespot_server.send_player_event(player_id, metadata_event)
+    time.sleep(0.1)
+    
+    # Test 2: Pause, set position, read position (should be the same)
+    print("Test 2: Position tracking while paused")
+    
+    # Set to paused state
+    paused_event = {"type": "state_changed", "state": "paused"}
+    librespot_server.send_player_event(player_id, paused_event)
+    time.sleep(0.1)
+    
+    # Set position while paused
+    paused_position = 45.0
+    position_event = {"type": "position_changed", "position": paused_position}
+    librespot_server.send_player_event(player_id, position_event)
+    
+    # Wait and check position - should be the same since paused
+    time.sleep(0.5)
+    
+    now_playing = librespot_server.get_now_playing()
+    assert "position" in now_playing
+    current_position = now_playing["position"]
+    
+    # Position should be approximately the same since paused
+    assert abs(current_position - paused_position) < 0.1, f"Expected position ~{paused_position}, got {current_position}"
+    print(f"✓ Position remained stable while paused: {current_position}")
+    
+    elapsed = time.perf_counter() - start
+    print(f"[TIMING] test_librespot_pause_position_tracking: {elapsed:.3f}s")
+
+def test_librespot_pause_resume_position_tracking(librespot_server):
+    """Test position tracking: pause, set position, sleep, resume playing"""
+    start = time.perf_counter()
+    
+    players_response = librespot_server.get_players_raw()
+    if "players" not in players_response or len(players_response["players"]) == 0:
+        pytest.skip("No players available for testing")
+        
+    # Find the librespot player
+    player = None
+    for p in players_response["players"]:
+        if "librespot" in p["id"].lower():
+            player = p
+            break
+    
+    if not player:
+        player = players_response["players"][0]
+        
+    player_id = player["id"]
+    print(f"Using player: {player_id}")
+    
+    librespot_server.reset_player_state(player_id)
+    
+    # Set up metadata
+    metadata_event = {
+        "type": "metadata_changed",
+        "metadata": {
+            "title": "Test Track for Pause Resume",
+            "artist": "Test Artist",
+            "album": "Test Album",
+            "duration": 300.0,
+            "uri": "spotify:track:test123"
+        }
+    }
+    librespot_server.send_player_event(player_id, metadata_event)
+    time.sleep(0.1)
+    
+    # Test 3: Pause, set position, sleep 2 seconds, play (should be higher than set position)
+    print("Test 3: Position tracking after resume")
+    
+    # Set to paused state
+    paused_event = {"type": "state_changed", "state": "paused"}
+    librespot_server.send_player_event(player_id, paused_event)
+    time.sleep(0.1)
+    
+    # Set position while paused
+    resume_position = 60.0
+    position_event = {"type": "position_changed", "position": resume_position}
+    librespot_server.send_player_event(player_id, position_event)
+    
+    # Sleep for 2 seconds while paused (position should not increment)
+    time.sleep(2.0)
+    
+    # Resume playing
+    playing_event = {"type": "state_changed", "state": "playing"}
+    librespot_server.send_player_event(player_id, playing_event)
+    
+    # Wait a bit and check position - should be higher than resume_position
+    time.sleep(0.5)
+    
+    now_playing = librespot_server.get_now_playing()
+    assert "position" in now_playing
+    current_position = now_playing["position"]
+    
+    # Position should be higher than resume_position since we resumed playing
+    assert current_position > resume_position, f"Expected position > {resume_position}, got {current_position}"
+    assert current_position < resume_position + 3.0, f"Position incremented too much: {current_position}"
+    print(f"✓ Position incremented after resume from {resume_position} to {current_position}")
+    
+    elapsed = time.perf_counter() - start
+    print(f"[TIMING] test_librespot_pause_resume_position_tracking: {elapsed:.3f}s")
+
+def test_librespot_new_song_position_tracking(librespot_server):
+    """Test position tracking with new song - position should start from 0 and increment"""
+    start = time.perf_counter()
+    
+    players_response = librespot_server.get_players_raw()
+    if "players" not in players_response or len(players_response["players"]) == 0:
+        pytest.skip("No players available for testing")
+        
+    # Find the librespot player
+    player = None
+    for p in players_response["players"]:
+        if "librespot" in p["id"].lower():
+            player = p
+            break
+    
+    if not player:
+        player = players_response["players"][0]
+        
+    player_id = player["id"]
+    print(f"Using player: {player_id}")
+    
+    librespot_server.reset_player_state(player_id)
+    
+    # Test 4: New song as playing, read position (should be something <2s)
+    print("Test 4: New song position tracking")
+    
+    # Simulate a new song starting
+    new_song_event = {
+        "type": "song_changed",
+        "song": {
+            "title": "New Song for Position Test",
+            "artist": "New Artist",
+            "album": "New Album",
+            "duration": 180.0,
+            "uri": "spotify:track:newsong123"
+        }
+    }
+    librespot_server.send_player_event(player_id, new_song_event)
+    time.sleep(0.1)
+    
+    # Set to playing state
+    playing_event = {"type": "state_changed", "state": "playing"}
+    librespot_server.send_player_event(player_id, playing_event)
+    
+    # Wait less than 2 seconds and check position
+    time.sleep(0.5)
+    
+    now_playing = librespot_server.get_now_playing()
+    assert "position" in now_playing
+    current_position = now_playing["position"]
+    
+    # Position should be something less than 5 seconds (we only waited 0.5 seconds but there's processing time)
+    assert current_position >= 0.0, f"Position should be non-negative, got {current_position}"
+    assert current_position < 5.0, f"Position should be less than 5 seconds, got {current_position}"
+    assert current_position > 0.0, f"Position should have incremented from 0, got {current_position}"
+    print(f"✓ New song position tracking: {current_position} seconds")
+    
+    elapsed = time.perf_counter() - start
+    print(f"[TIMING] test_librespot_new_song_position_tracking: {elapsed:.3f}s")

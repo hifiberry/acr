@@ -16,6 +16,7 @@ pub mod spotify;
 pub mod retry;
 pub mod systemd;
 pub mod playback_progress;
+pub mod process_helper;
 
 use crate::data::artist::Artist;
 

@@ -6,8 +6,6 @@ use delegate::delegate;
 use std::sync::{Arc, RwLock};
 use log::{debug, info, warn, error, trace};
 use std::any::Any;
-use crate::data::PlayerUpdate;
-use serde_json::json;
 
 /// Librespot player controller implementation
 /// This controller interfaces with Spotify/librespot via API endpoints
@@ -68,7 +66,7 @@ impl LibrespotPlayerController {
         // Check systemd unit if specified
         if let Some(unit_name) = systemd_unit {
             if !unit_name.is_empty() {
-                match crate::helpers::systemd::SystemdHelper::new().is_unit_active(unit_name) {
+                match crate::helpers::process_helper::is_systemd_unit_active(unit_name) {
                     Ok(true) => {
                         debug!("Systemd unit '{}' is active", unit_name);
                     }
@@ -298,10 +296,14 @@ impl PlayerController for LibrespotPlayerController {
                     match action.as_str() {
                         "systemd" => {
                             info!("Received {} command, restarting librespot via systemd", command);
-                            match crate::helpers::systemd::SystemdHelper::new().restart_unit("librespot") {
-                                Ok(_) => {
+                            match crate::helpers::process_helper::systemd("librespot", crate::helpers::process_helper::SystemdAction::Restart) {
+                                Ok(true) => {
                                     info!("Successfully restarted librespot systemd unit");
                                     return true;
+                                }
+                                Ok(false) => {
+                                    error!("Failed to restart librespot systemd unit");
+                                    return false;
                                 }
                                 Err(e) => {
                                     error!("Failed to restart librespot systemd unit: {}", e);
@@ -574,36 +576,20 @@ impl LibrespotPlayerController {
     fn kill_process(&self) -> bool {
         info!("Attempting to kill Librespot process: {}", self.process_name);
         
-        // Use system kill command
-        #[cfg(unix)]
-        {
-            use std::process::Command;
-            
-            // Try to kill the process using pkill
-            match Command::new("pkill")
-                .arg("-f")
-                .arg(&self.process_name)
-                .status() {
-                    Ok(status) => {
-                        if status.success() {
-                            info!("Successfully killed Librespot process");
-                            return true;
-                        } else {
-                            warn!("Failed to kill Librespot process, exit code: {:?}", status.code());
-                            return false;
-                        }
-                    },
-                    Err(e) => {
-                        error!("Failed to execute kill command: {}", e);
-                        return false;
-                    }
-                }
-        }
-        
-        #[cfg(not(unix))]
-        {
-            warn!("System process kill not implemented for this platform");
-            return false;
+        // Use the process helper functions
+        match crate::helpers::process_helper::pkill(&self.process_name, false) {
+            Ok(true) => {
+                info!("Successfully killed Librespot process");
+                true
+            }
+            Ok(false) => {
+                warn!("No Librespot process found to kill");
+                false
+            }
+            Err(e) => {
+                error!("Failed to kill Librespot process: {}", e);
+                false
+            }
         }
     }
 }

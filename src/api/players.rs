@@ -35,6 +35,7 @@ pub struct PlayerInfo {
     last_seen: Option<String>, // ISO 8601 formatted timestamp of when the player was last seen
     shuffle: bool, // Whether shuffle is enabled
     loop_mode: LoopMode, // Loop mode (None, Track, Playlist)
+    position: Option<f64>, // Current playback position in seconds
 }
 
 /// Response for command execution
@@ -154,6 +155,7 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
                     last_seen,
                     shuffle: ctrl.get_shuffle(),
                     loop_mode: ctrl.get_loop_mode(),
+                    position: ctrl.get_position(),
                 }
             } else {
                 // Fallback for locked controllers
@@ -167,6 +169,7 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
                     last_seen: None,
                     shuffle: false,
                     loop_mode: LoopMode::None,
+                    position: None,
                 }
             }
         })
@@ -304,6 +307,7 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
             last_seen: None,
             shuffle: false,
             loop_mode: LoopMode::None,
+            position: None,
         },
         song: None,
         state: PlaybackState::Unknown,
@@ -361,8 +365,9 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
             has_library: player.has_library(),
             supports_api_events: player.supports_api_events(),
             last_seen,
-            shuffle: false, // TODO: Temporarily disabled - shuffle,
-            loop_mode: LoopMode::None, // TODO: Temporarily disabled - loop_mode,
+            shuffle,
+            loop_mode,
+            position,
         },
         song,
         state,

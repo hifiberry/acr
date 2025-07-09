@@ -22,16 +22,16 @@ import psutil
 
 # Test configuration
 TEST_PORTS = {
-    'generic': 3001,
-    'librespot': 3002,
-    'activemonitor': 3003,
-    'raat': 3004,
-    'mpd': 3005,
-    'theaudiodb': 3006,
+    'generic': 1080,
+    'librespot': 1080,
+    'activemonitor': 1080,
+    'raat': 1080,
+    'mpd': 1080,
+    'theaudiodb': 1080,
 }
 
 # Path to static configuration file
-STATIC_CONFIG_PATH = Path("test_config_generic.json")
+STATIC_CONFIG_PATH = Path(__file__).parent / "test_config_generic.json"
 
 # Global server processes
 _server_processes: Dict[str, subprocess.Popen] = {}
@@ -105,21 +105,32 @@ class AudioControlTestServer:
     
     def create_pipes(self):
         """Create test pipes for librespot and raat"""
-        if os.name == 'nt':  # Windows
-            # On Windows, we use regular files instead of pipes
-            # Use the current working directory instead of temp directory
-            librespot_pipe = Path(f"test_librespot_event_{self.port}")
-            raat_metadata_pipe = Path(f"test_raat_metadata_{self.port}")
-            raat_control_pipe = Path(f"test_raat_control_{self.port}")
-        else:  # Unix-like
-            librespot_pipe = Path(f"/tmp/test_librespot_event_{self.port}")
-            raat_metadata_pipe = Path(f"/tmp/test_raat_metadata_{self.port}")
-            raat_control_pipe = Path(f"/tmp/test_raat_control_{self.port}")
+        # Load the static configuration to see which players are actually configured
+        with open(STATIC_CONFIG_PATH, 'r') as f:
+            config = json.load(f)
         
-        # Create the files/pipes
-        for pipe_path in [librespot_pipe, raat_metadata_pipe, raat_control_pipe]:
-            pipe_path.touch()
-            print(f"Created pipe: {pipe_path.absolute()}")
+        # Only create pipes for players that are actually in the configuration
+        for player_config in config["players"]:
+            if "librespot" in player_config:
+                if os.name == 'nt':  # Windows
+                    librespot_pipe = Path(f"test_librespot_event_{self.port}")
+                else:  # Unix-like
+                    librespot_pipe = Path(f"/tmp/test_librespot_event_{self.port}")
+                librespot_pipe.touch()
+                print(f"Created pipe: {librespot_pipe.absolute()}")
+            
+            if "raat" in player_config:
+                if os.name == 'nt':  # Windows
+                    raat_metadata_pipe = Path(f"test_raat_metadata_{self.port}")
+                    raat_control_pipe = Path(f"test_raat_control_{self.port}")
+                else:  # Unix-like
+                    raat_metadata_pipe = Path(f"/tmp/test_raat_metadata_{self.port}")
+                    raat_control_pipe = Path(f"/tmp/test_raat_control_{self.port}")
+                
+                raat_metadata_pipe.touch()
+                raat_control_pipe.touch()
+                print(f"Created pipe: {raat_metadata_pipe.absolute()}")
+                print(f"Created pipe: {raat_control_pipe.absolute()}")
     
     def get_binary_path(self) -> Path:
         """Get the path to the audiocontrol binary"""
@@ -308,6 +319,10 @@ class AudioControlTestServer:
             return players_dict
         
         return response
+    
+    def get_players_raw(self) -> Dict[str, Any]:
+        """Get all players from the API in raw format"""
+        return self.api_request('GET', '/api/players')
     
     def get_now_playing(self) -> Dict[str, Any]:
         """Get now playing information"""

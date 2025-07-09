@@ -15,8 +15,11 @@ pub mod security_store;
 pub mod spotify;
 pub mod retry;
 pub mod systemd;
+pub mod playback_progress;
 
 use crate::data::artist::Artist;
+
+pub use playback_progress::PlayerProgress;
 
 /// Trait for services that can update artist metadata
 pub trait ArtistUpdater {

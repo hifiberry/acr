@@ -37,13 +37,8 @@ secrets/security_store.json
 # Test related temporary files
 test_config_*.json
 output.txt
-test_cache_300*/attributes/*
-test_librespot_event_300*
-test_raat_control_300*
-test_raat_metadata_300*
-test_librespot_event_300*
 integration_test/__pycache__/*
-integration_test/test_cache_300*
 test_cache_1080/*
 integration_test/test_librespot_event_1080
 integration_test/test_cache_1080
+test_librespot_event_1080

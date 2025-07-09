@@ -57,7 +57,7 @@ def test_raat_player_events(raat_server):
     
     # Test basic state change event
     event = {"type": "state_changed", "state": "playing"}
-    response = raat_server.send_player_event(player_name, event)
+    response = raat_server.send_generic_player_event(player_name, event)
     assert response is not None
     
     # Allow time for event processing
@@ -96,7 +96,7 @@ def test_raat_metadata_events(raat_server):
         }
     }
     
-    response = raat_server.send_player_event(player_name, event)
+    response = raat_server.send_generic_player_event(player_name, event)
     assert response is not None
     
     # Allow time for event processing
@@ -131,7 +131,7 @@ def test_raat_playback_control(raat_server):
     
     for state in states:
         event = {"type": "state_changed", "state": state}
-        response = raat_server.send_player_event(player_name, event)
+        response = raat_server.send_generic_player_event(player_name, event)
         assert response is not None
         
         # Allow time for event processing
@@ -170,7 +170,7 @@ def test_raat_audio_format_events(raat_server):
         }
     }
     
-    response = raat_server.send_player_event(player_name, event)
+    response = raat_server.send_generic_player_event(player_name, event)
     assert response is not None
     
     # Allow time for event processing

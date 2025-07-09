@@ -46,7 +46,7 @@ def test_player_state_events(generic_server):
     
     # Test play event
     event = {"type": "state_changed", "state": "playing"}
-    response = generic_server.send_player_event("test_player", event)
+    response = generic_server.send_generic_player_event("test_player", event)
     assert response is not None
     
     # Check if the tool call was successful
@@ -83,7 +83,7 @@ def test_player_shuffle_events(generic_server):
     
     # Test shuffle enable event
     event = {"type": "shuffle_changed", "enabled": True}
-    response = generic_server.send_player_event("test_player", event)
+    response = generic_server.send_generic_player_event("test_player", event)
     assert response is not None
     
     # Small delay to allow state to propagate
@@ -101,7 +101,7 @@ def test_player_loop_mode_events(generic_server):
     
     # Test loop mode change event
     event = {"type": "loop_mode_changed", "mode": "playlist"}
-    response = generic_server.send_player_event("test_player", event)
+    response = generic_server.send_generic_player_event("test_player", event)
     assert response is not None
     
     # Small delay to allow state to propagate
@@ -119,7 +119,7 @@ def test_player_position_events(generic_server):
     
     # Test position change event
     event = {"type": "position_changed", "position": 42.5}
-    response = generic_server.send_player_event("test_player", event)
+    response = generic_server.send_generic_player_event("test_player", event)
     assert response is not None
     
     # Small delay to allow state to propagate
@@ -162,7 +162,7 @@ def test_song_metadata_events(generic_server):
             "duration": 180.0
         }
     }
-    response = generic_server.send_player_event("test_player", event)
+    response = generic_server.send_generic_player_event("test_player", event)
     assert response is not None
     
     # Small delay to allow state to propagate
@@ -197,7 +197,7 @@ def test_multiple_events_sequence(generic_server):
     ]
     
     for event in events:
-        response = generic_server.send_player_event("test_player", event)
+        response = generic_server.send_generic_player_event("test_player", event)
         assert response is not None
         time.sleep(0.1)  # Small delay between events
     
@@ -255,7 +255,7 @@ def test_player_api_event_support(generic_server):
     # Let's try a simple event and see if it works
     print("\nTrying a simple state change event...")
     event = {"type": "state_changed", "state": "playing"}
-    response = generic_server.send_player_event(test_player['id'], event)
+    response = generic_server.send_generic_player_event(test_player['id'], event)
     print(f"API Response: {response}")
     
     assert response.get('success') != False, f"API event was not processed: {response.get('message', 'Unknown error')}"

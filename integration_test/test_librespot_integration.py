@@ -72,8 +72,8 @@ def test_librespot_event_handling(librespot_server):
     
     step = time.perf_counter()
     event = {"type": "state_changed", "state": "playing"}
-    response = librespot_server.send_player_event(player_id, event)
-    print(f"[TIMING] send_player_event: {time.perf_counter() - step:.3f}s")
+    response = librespot_server.send_librespot_player_event(player_id, event)
+    print(f"[TIMING] send_librespot_player_event: {time.perf_counter() - step:.3f}s")
     assert response is not None
     assert response.get("success", False) is True
     
@@ -131,8 +131,8 @@ def test_librespot_metadata_events(librespot_server):
             "uri": "spotify:track:test123"
         }
     }
-    response = librespot_server.send_player_event(player_id, event)
-    print(f"[TIMING] send_player_event: {time.perf_counter() - step:.3f}s")
+    response = librespot_server.send_librespot_player_event(player_id, event)
+    print(f"[TIMING] send_librespot_player_event: {time.perf_counter() - step:.3f}s")
     assert response is not None
     assert response.get("success", False) is True
     
@@ -191,8 +191,8 @@ def test_librespot_playback_control(librespot_server):
     
     for event, expected_state in zip(events, expected_states):
         step = time.perf_counter()
-        response = librespot_server.send_player_event(player_id, event)
-        print(f"[TIMING] send_player_event: {time.perf_counter() - step:.3f}s")
+        response = librespot_server.send_librespot_player_event(player_id, event)
+        print(f"[TIMING] send_librespot_player_event: {time.perf_counter() - step:.3f}s")
         assert response is not None
         assert response.get("success", False) is True
         
@@ -249,8 +249,8 @@ def test_librespot_shuffle_and_repeat(librespot_server):
     # Test shuffle change
     shuffle_event = {"type": "shuffle_changed", "enabled": True}
     step = time.perf_counter()
-    response = librespot_server.send_player_event(player_id, shuffle_event)
-    print(f"[TIMING] send_player_event (shuffle): {time.perf_counter() - step:.3f}s")
+    response = librespot_server.send_librespot_player_event(player_id, shuffle_event)
+    print(f"[TIMING] send_librespot_player_event (shuffle): {time.perf_counter() - step:.3f}s")
     
     # Don't require success response - some API implementations might not return it
     print(f"Shuffle response: {response}")
@@ -297,8 +297,8 @@ def test_librespot_shuffle_and_repeat(librespot_server):
     # Test loop mode change with softer assertions
     repeat_event = {"type": "loop_mode_changed", "mode": "all"}
     step = time.perf_counter()
-    response = librespot_server.send_player_event(player_id, repeat_event)
-    print(f"[TIMING] send_player_event (repeat): {time.perf_counter() - step:.3f}s")
+    response = librespot_server.send_librespot_player_event(player_id, repeat_event)
+    print(f"[TIMING] send_librespot_player_event (repeat): {time.perf_counter() - step:.3f}s")
     print(f"Loop mode response: {response}")
     
     step = time.perf_counter()
@@ -540,7 +540,7 @@ def test_librespot_position_tracking_advanced(librespot_server):
             "uri": "spotify:track:test123"
         }
     }
-    librespot_server.send_player_event(player_id, metadata_event)
+    librespot_server.send_librespot_player_event(player_id, metadata_event)
     time.sleep(0.1)
     
     # Test 1: Set song position while playing, retrieve position (should be higher)
@@ -548,13 +548,13 @@ def test_librespot_position_tracking_advanced(librespot_server):
     
     # Set playing state
     playing_event = {"type": "state_changed", "state": "playing"}
-    librespot_server.send_player_event(player_id, playing_event)
+    librespot_server.send_librespot_player_event(player_id, playing_event)
     time.sleep(0.1)
     
     # Set position
     initial_position = 30.0
     position_event = {"type": "position_changed", "position": initial_position}
-    librespot_server.send_player_event(player_id, position_event)
+    librespot_server.send_librespot_player_event(player_id, position_event)
     
     # Wait a bit and then retrieve position - should be higher due to auto-increment
     time.sleep(0.5)  # Wait 500ms
@@ -605,7 +605,7 @@ def test_librespot_pause_position_tracking(librespot_server):
             "uri": "spotify:track:test123"
         }
     }
-    librespot_server.send_player_event(player_id, metadata_event)
+    librespot_server.send_librespot_player_event(player_id, metadata_event)
     time.sleep(0.1)
     
     # Test 2: Pause, set position, read position (should be the same)
@@ -613,13 +613,13 @@ def test_librespot_pause_position_tracking(librespot_server):
     
     # Set to paused state
     paused_event = {"type": "state_changed", "state": "paused"}
-    librespot_server.send_player_event(player_id, paused_event)
+    librespot_server.send_librespot_player_event(player_id, paused_event)
     time.sleep(0.1)
     
     # Set position while paused
     paused_position = 45.0
     position_event = {"type": "position_changed", "position": paused_position}
-    librespot_server.send_player_event(player_id, position_event)
+    librespot_server.send_librespot_player_event(player_id, position_event)
     
     # Wait and check position - should be the same since paused
     time.sleep(0.5)
@@ -669,7 +669,7 @@ def test_librespot_pause_resume_position_tracking(librespot_server):
             "uri": "spotify:track:test123"
         }
     }
-    librespot_server.send_player_event(player_id, metadata_event)
+    librespot_server.send_librespot_player_event(player_id, metadata_event)
     time.sleep(0.1)
     
     # Test 3: Pause, set position, sleep 2 seconds, play (should be higher than set position)
@@ -677,20 +677,20 @@ def test_librespot_pause_resume_position_tracking(librespot_server):
     
     # Set to paused state
     paused_event = {"type": "state_changed", "state": "paused"}
-    librespot_server.send_player_event(player_id, paused_event)
+    librespot_server.send_librespot_player_event(player_id, paused_event)
     time.sleep(0.1)
     
     # Set position while paused
     resume_position = 60.0
     position_event = {"type": "position_changed", "position": resume_position}
-    librespot_server.send_player_event(player_id, position_event)
+    librespot_server.send_librespot_player_event(player_id, position_event)
     
     # Sleep for 2 seconds while paused (position should not increment)
     time.sleep(2.0)
     
     # Resume playing
     playing_event = {"type": "state_changed", "state": "playing"}
-    librespot_server.send_player_event(player_id, playing_event)
+    librespot_server.send_librespot_player_event(player_id, playing_event)
     
     # Wait a bit and check position - should be higher than resume_position
     time.sleep(0.5)
@@ -744,12 +744,12 @@ def test_librespot_new_song_position_tracking(librespot_server):
             "uri": "spotify:track:newsong123"
         }
     }
-    librespot_server.send_player_event(player_id, new_song_event)
+    librespot_server.send_librespot_player_event(player_id, new_song_event)
     time.sleep(0.1)
     
     # Set to playing state
     playing_event = {"type": "state_changed", "state": "playing"}
-    librespot_server.send_player_event(player_id, playing_event)
+    librespot_server.send_librespot_player_event(player_id, playing_event)
     
     # Wait less than 2 seconds and check position
     time.sleep(0.5)

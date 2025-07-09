@@ -45,6 +45,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         "paused" => {
             handle_playback_state(&client, &args, PlaybackState::Paused)?;
         }
+        "stopped" => {
+            handle_playback_state(&client, &args, PlaybackState::Stopped)?;
+        }
         "seeked" => {
             handle_position_changed(&client, &args)?;
         }

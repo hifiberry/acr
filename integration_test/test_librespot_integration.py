@@ -9,8 +9,8 @@ import time
 def test_librespot_player_initialization(librespot_server):
     start = time.perf_counter()
     step = time.perf_counter()
-    response = librespot_server.get_players()
-    print(f"[TIMING] get_players: {time.perf_counter() - step:.3f}s")
+    response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
     step = time.perf_counter()
     assert isinstance(response, dict)
     assert "players" in response
@@ -46,8 +46,8 @@ def test_librespot_server_responds(librespot_server):
 def test_librespot_event_handling(librespot_server):
     start = time.perf_counter()
     step = time.perf_counter()
-    players_response = librespot_server.get_players()
-    print(f"[TIMING] get_players: {time.perf_counter() - step:.3f}s")
+    players_response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
     
     if "players" not in players_response or len(players_response["players"]) == 0:
         pytest.skip("No players available for testing")
@@ -95,8 +95,8 @@ def test_librespot_event_handling(librespot_server):
 def test_librespot_metadata_events(librespot_server):
     start = time.perf_counter()
     step = time.perf_counter()
-    players_response = librespot_server.get_players()
-    print(f"[TIMING] get_players: {time.perf_counter() - step:.3f}s")
+    players_response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
     
     if "players" not in players_response or len(players_response["players"]) == 0:
         pytest.skip("No players available for testing")
@@ -158,8 +158,8 @@ def test_librespot_metadata_events(librespot_server):
 def test_librespot_playback_control(librespot_server):
     start = time.perf_counter()
     step = time.perf_counter()
-    players_response = librespot_server.get_players()
-    print(f"[TIMING] get_players: {time.perf_counter() - step:.3f}s")
+    players_response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
     
     if "players" not in players_response or len(players_response["players"]) == 0:
         pytest.skip("No players available for testing")
@@ -211,8 +211,8 @@ def test_librespot_playback_control(librespot_server):
 def test_librespot_position_tracking(librespot_server):
     start = time.perf_counter()
     step = time.perf_counter()
-    players_response = librespot_server.get_players()
-    print(f"[TIMING] get_players: {time.perf_counter() - step:.3f}s")
+    players_response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
     
     if "players" not in players_response or len(players_response["players"]) == 0:
         pytest.skip("No players available for testing")
@@ -283,8 +283,8 @@ def test_librespot_position_tracking(librespot_server):
 def test_librespot_shuffle_and_repeat(librespot_server):
     start = time.perf_counter()
     step = time.perf_counter()
-    players_response = librespot_server.get_players()
-    print(f"[TIMING] get_players: {time.perf_counter() - step:.3f}s")
+    players_response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
     
     if "players" not in players_response or len(players_response["players"]) == 0:
         pytest.skip("No players available for testing")

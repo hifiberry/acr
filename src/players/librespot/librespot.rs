@@ -51,35 +51,7 @@ impl Clone for LibrespotPlayerController {
 }
 
 
-
 impl LibrespotPlayerController {
-    /// Create a new Librespot player controller with default settings
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        debug!("Creating new LibrespotPlayerController with default settings");
-        let process = "/usr/bin/librespot"; // Default process path
-        
-        // Create a base controller with player name and ID
-        let base = BasePlayerController::with_player_info("spotify", "librespot");
-        
-        let player = Self {
-            base,
-            process_name: process.to_string(),
-            current_song: Arc::new(RwLock::new(None)),
-            current_state: Arc::new(RwLock::new(PlayerState::new())),
-            stream_details: Arc::new(RwLock::new(None)),
-            player_progress: Arc::new(RwLock::new(PlayerProgress::new())),
-            on_pause_event: None,
-        };
-        
-        // Set default capabilities - only Killable is available
-        player.set_default_capabilities();
-        
-        player
-    }
-    
-
-
     /// Create a new Librespot player controller with fully custom settings and systemd unit check
     pub fn with_config_and_systemd(process_name: &str, systemd_unit: Option<&str>) -> Self {
         Self::with_full_config(process_name, systemd_unit)
@@ -142,162 +114,27 @@ impl LibrespotPlayerController {
 
     
     /// Set the path to the librespot executable
-    #[allow(dead_code)]
     pub fn set_process_name(&mut self, process_name: &str) {
         debug!("Setting Librespot process name to: {}", process_name);
         self.process_name = process_name.to_string();
     }
     
     /// Get the path to the librespot executable
-    #[allow(dead_code)]
     pub fn get_process_name(&self) -> &str {
         &self.process_name
     }
     
     /// Set the on_pause_event action
-    #[allow(dead_code)]
     pub fn set_on_pause_event(&mut self, on_pause_event: Option<String>) {
         debug!("Setting Librespot on_pause_event to: {:?}", on_pause_event);
         self.on_pause_event = on_pause_event;
     }
     
     /// Get the on_pause_event action
-    #[allow(dead_code)]
     pub fn get_on_pause_event(&self) -> &Option<String> {
         &self.on_pause_event
     }
-
-
     
-    /// Process event updates from the pipe reader
-    fn update_from_event(&self, song: Song, player_state: PlayerState, 
-                       capabilities: PlayerCapabilitySet, stream_details: StreamDetails) {
-        log::debug!("update_from_event called: state={:?}, song={:?}, duration={:?}", 
-                  player_state.state, song.title, song.duration);
-        
-        // Store the new song if different from current and if there's actual song data
-        let mut song_to_notify: Option<Song> = None;
-        {
-            let mut current_song = self.current_song.write().unwrap();
-            
-            // Only update song if the incoming song has meaningful data (title, artist, or album)
-            let has_song_data = song.title.is_some() || song.artist.is_some() || song.album.is_some();
-            
-            if has_song_data {
-                let song_changed = match (&*current_song, &song) {
-                    (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
-                    (None, _) => true,
-                };
-                if song_changed {
-                    log::debug!("Song changed: title={:?}, artist={:?}, album={:?}, duration={:?}", 
-                              song.title, song.artist, song.album, song.duration);
-                    
-                    if let Some(ref metadata) = song.metadata.get("DURATION_MS") {
-                        log::debug!("Song has DURATION_MS in metadata: {:?}", metadata);
-                    }
-                    
-                    // Ensure we have a properly populated song object
-                    let mut enhanced_song = song.clone();
-                    
-                    // Make sure duration is set
-                    if enhanced_song.duration.is_none() {
-                        log::warn!("Song duration is missing in update_from_event!");
-                        
-                        // Check metadata for duration
-                        if let Some(duration_ms) = enhanced_song.metadata.get("DURATION_MS").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()) {
-                            let duration_seconds = duration_ms as f64 / 1000.0;
-                            log::debug!("Retrieved duration from metadata: {} ms -> {} seconds", duration_ms, duration_seconds);
-                            enhanced_song.duration = Some(duration_seconds);
-                        } else if let Some(duration_ms) = enhanced_song.metadata.get("duration_ms").and_then(|v| v.as_u64()) {
-                            let duration_seconds = duration_ms as f64 / 1000.0;
-                            log::debug!("Retrieved duration from metadata duration_ms: {} ms -> {} seconds", duration_ms, duration_seconds);
-                            enhanced_song.duration = Some(duration_seconds);
-                        }
-                    } else {
-                        // If duration is already set, make sure it's also in the metadata
-                        if let Some(duration) = enhanced_song.duration {
-                            if !enhanced_song.metadata.contains_key("DURATION_MS") {
-                                let duration_ms = (duration * 1000.0) as u64;
-                                log::debug!("Adding duration to metadata: {} seconds -> {} ms", duration, duration_ms);
-                                enhanced_song.metadata.insert("DURATION_MS".to_string(), json!(duration_ms.to_string()));
-                            }
-                        }
-                    }
-                    
-                    // Store the updated song
-                    *current_song = Some(enhanced_song.clone());
-                    song_to_notify = Some(enhanced_song);
-                }
-            } else {
-                debug!("Ignoring song update with no meaningful data");
-            }
-        }
-        
-        // Update stored player state
-        if let Ok(mut current_state) = self.current_state.write() {
-            let new_state = player_state.state;
-            let state_changed = current_state.state != new_state;
-            let position_changed = current_state.position != player_state.position;
-            let shuffle_changed = current_state.shuffle != player_state.shuffle;
-            let loop_mode_changed = current_state.loop_mode != player_state.loop_mode;
-            
-            if state_changed {
-                log::info!("[API DEBUG] Librespot state change: {:?} -> {:?}", current_state.state, new_state);
-            }
-            if new_state == PlaybackState::Playing || state_changed {
-                log::info!("[API DEBUG] Notifying state changed: {:?}", new_state);
-                self.base.notify_state_changed(new_state);
-            }
-            
-            // Notify about position changes
-            if position_changed {
-                if let Some(position) = player_state.position {
-                    log::info!("[API DEBUG] Notifying position changed: {}", position);
-                    self.base.notify_position_changed(position);
-                }
-            }
-            
-            // Notify about shuffle changes
-            if shuffle_changed {
-                log::info!("[API DEBUG] Notifying shuffle changed: {}", player_state.shuffle);
-                self.base.notify_random_changed(player_state.shuffle);
-            }
-            
-            // Notify about loop mode changes
-            if loop_mode_changed {
-                log::info!("[API DEBUG] Notifying loop mode changed: {:?}", player_state.loop_mode);
-                self.base.notify_loop_mode_changed(player_state.loop_mode);
-            }
-            
-            // Update the stored state
-            *current_state = player_state;
-        } else {
-            warn!("[API DEBUG] Failed to acquire lock on current state");
-        }
-        
-        // Update stored capabilities - although capabilities are fixed for Librespot
-        let capabilities_changed = self.base.set_capabilities_set(capabilities, false);
-        if capabilities_changed {
-            let current_caps = self.base.get_capabilities();
-            log::info!("[API DEBUG] Capabilities changed: {:?}", current_caps);
-            self.base.notify_capabilities_changed(&current_caps);
-        }
-        
-        // Update stored stream details
-        if let Ok(mut details) = self.stream_details.write() {
-            log::info!("[API DEBUG] Stream details updated: {:?}", stream_details);
-            *details = Some(stream_details);
-        }
-        
-        // Now notify listeners of song change if needed
-        if let Some(song) = song_to_notify {
-            log::info!("[API DEBUG] Notifying song changed: {:?}", song.title);
-            self.base.notify_song_changed(Some(&song));
-        }
-        
-        // Mark the player as alive since we got data
-        self.base.alive();
-    }
 }
 
 impl PlayerController for LibrespotPlayerController {
@@ -373,8 +210,17 @@ impl PlayerController for LibrespotPlayerController {
     
     fn get_loop_mode(&self) -> LoopMode {
         debug!("Getting current loop mode");
-        // Loop mode is not supported, always return None
-        LoopMode::None
+        // Return the actual loop mode from the stored state
+        match self.current_state.try_read() {
+            Ok(state) => {
+                debug!("Got current loop mode: {:?}", state.loop_mode);
+                state.loop_mode
+            },
+            Err(_) => {
+                warn!("Could not acquire immediate read lock for loop mode, returning None");
+                LoopMode::None
+            }
+        }
     }
     
     fn get_playback_state(&self) -> PlaybackState {
@@ -421,8 +267,17 @@ impl PlayerController for LibrespotPlayerController {
     
     fn get_shuffle(&self) -> bool {
         debug!("Getting current shuffle state");
-        // Shuffle is not supported for direct control
-        false
+        // Return the actual shuffle state from the stored state
+        match self.current_state.try_read() {
+            Ok(state) => {
+                debug!("Got current shuffle state: {}", state.shuffle);
+                state.shuffle
+            },
+            Err(_) => {
+                warn!("Could not acquire immediate read lock for shuffle state, returning false");
+                false
+            }
+        }
     }
     
     fn get_player_name(&self) -> String {
@@ -519,18 +374,6 @@ impl PlayerController for LibrespotPlayerController {
         log::warn!("[DEBUG] Librespot process_api_event: unknown event format - only 'type' field events are supported");
         false
     }
-
-    fn receive_update(&self, update: PlayerUpdate) -> bool {
-        
-        // Convert PlayerUpdate to serde_json::Value and forward to process_api_event
-        match serde_json::to_value(&update) {
-            Ok(json_val) => self.process_api_event(&json_val),
-            Err(e) => {
-                log::warn!("[DEBUG] Librespot receive_update: failed to convert PlayerUpdate to JSON: {}", e);
-                false
-            }
-        }
-    }
 }
 
 impl LibrespotPlayerController {
@@ -556,7 +399,7 @@ impl LibrespotPlayerController {
                     };
                     
                     // Update PlayerProgress playing state
-                    if let Ok(mut progress) = self.player_progress.write() {
+                    if let Ok(progress) = self.player_progress.write() {
                         let is_playing = state == PlaybackState::Playing;
                         progress.set_playing(is_playing);
                         log::info!("[API DEBUG] PlayerProgress playing state updated to: {}", is_playing);
@@ -581,7 +424,7 @@ impl LibrespotPlayerController {
                             self.base.notify_position_changed(position);
                         }
                         // Also update PlayerProgress position
-                        if let Ok(mut progress) = self.player_progress.write() {
+                        if let Ok(progress) = self.player_progress.write() {
                             progress.set_position(position);
                             log::info!("[API DEBUG] PlayerProgress position updated to: {}", position);
                         }
@@ -635,7 +478,7 @@ impl LibrespotPlayerController {
                             *current_song = Some(song.clone());
                             
                             // Reset PlayerProgress position for new song
-                            if let Ok(mut progress) = self.player_progress.write() {
+                            if let Ok(progress) = self.player_progress.write() {
                                 progress.set_position(0.0);
                                 log::info!("[API DEBUG] PlayerProgress position reset to 0.0 for new song");
                             }
@@ -658,7 +501,7 @@ impl LibrespotPlayerController {
                         self.base.notify_position_changed(position);
                         
                         // Also update PlayerProgress position
-                        if let Ok(mut progress) = self.player_progress.write() {
+                        if let Ok(progress) = self.player_progress.write() {
                             progress.set_position(position);
                             log::info!("[API DEBUG] PlayerProgress position updated to: {}", position);
                         }
@@ -673,7 +516,12 @@ impl LibrespotPlayerController {
                 }
             },
             "loop_mode_changed" => {
-                if let Some(mode_str) = event_data.get("mode").and_then(|m| m.as_str()) {
+                // Handle both "mode" and "loop_mode" field names for compatibility
+                let mode_str = event_data.get("mode")
+                    .or_else(|| event_data.get("loop_mode"))
+                    .and_then(|m| m.as_str());
+                    
+                if let Some(mode_str) = mode_str {
                     let loop_mode = match mode_str {
                         "song" | "track" => LoopMode::Track,
                         "playlist" | "all" => LoopMode::Playlist,
@@ -715,18 +563,6 @@ impl LibrespotPlayerController {
             },
             _ => {
                 debug!("Unknown generic event type for Librespot: {}", event_type);
-                false
-            }
-        }
-    }
-
-    fn receive_update(&self, update: PlayerUpdate) -> bool {
-        
-        // Convert PlayerUpdate to serde_json::Value and forward to process_api_event
-        match serde_json::to_value(&update) {
-            Ok(json_val) => self.process_api_event(&json_val),
-            Err(e) => {
-                log::warn!("[DEBUG] Librespot receive_update: failed to convert PlayerUpdate to JSON: {}", e);
                 false
             }
         }

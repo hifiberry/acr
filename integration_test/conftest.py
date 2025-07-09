@@ -151,6 +151,25 @@ class AudioControlTestServer:
             # Default to release path for error reporting
             return release_path
     
+    def get_tool_binary_path(self, tool_name: str) -> Path:
+        """Get the path to a command line tool binary (like audiocontrol_send_update)"""
+        # Get the project root (one level up from tests directory)
+        project_root = Path(__file__).parent.parent
+        target_dir = os.environ.get('CARGO_TARGET_DIR', 'target')
+        binary_name = f'{tool_name}.exe' if os.name == 'nt' else tool_name
+        
+        # Try release first, then debug
+        release_path = project_root / target_dir / 'release' / binary_name
+        debug_path = project_root / target_dir / 'debug' / binary_name
+        
+        if release_path.exists():
+            return release_path
+        elif debug_path.exists():
+            return debug_path
+        else:
+            # Return None to indicate we need to build
+            return None
+
     def start_server(self) -> bool:
         """Start the AudioControl server"""
         try:
@@ -333,8 +352,18 @@ class AudioControlTestServer:
         import subprocess
         import json
         
-        # Build the command to call audiocontrol_send_update
-        cmd = ["cargo", "run", "--bin", "audiocontrol_send_update", "--"]
+        # Check if we have an existing binary to use
+        tool_binary_path = self.get_tool_binary_path('audiocontrol_send_update')
+        
+        if tool_binary_path:
+            # Use the existing binary directly
+            cmd = [str(tool_binary_path)]
+            print(f"Using existing binary: {tool_binary_path}")
+        else:
+            # Build the command to call audiocontrol_send_update via cargo run
+            cmd = ["cargo", "run", "--bin", "audiocontrol_send_update", "--"]
+            print("Using cargo run to build and execute audiocontrol_send_update")
+        
         cmd.extend(["--baseurl", f"http://localhost:{self.port}/api"])
         cmd.append(player_name)
         

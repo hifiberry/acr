@@ -127,7 +127,18 @@ class AudioControlTestServer:
         project_root = Path(__file__).parent.parent
         target_dir = os.environ.get('CARGO_TARGET_DIR', 'target')
         binary_name = 'audiocontrol.exe' if os.name == 'nt' else 'audiocontrol'
-        return project_root / target_dir / 'debug' / binary_name
+        
+        # Try release first, then debug
+        release_path = project_root / target_dir / 'release' / binary_name
+        debug_path = project_root / target_dir / 'debug' / binary_name
+        
+        if release_path.exists():
+            return release_path
+        elif debug_path.exists():
+            return debug_path
+        else:
+            # Default to release path for error reporting
+            return release_path
     
     def start_server(self) -> bool:
         """Start the AudioControl server"""

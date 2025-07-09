@@ -26,11 +26,19 @@ TEST_PORTS = {
     'librespot': 1080,
     'activemonitor': 1080,
     'raat': 1080,
-    'mpd': 1080,
     'theaudiodb': 1080,
 }
 
-# Path to static configuration file
+# Path configurations for different test types
+TEST_CONFIGS = {
+    'generic': Path(__file__).parent / "test_config_generic.json",
+    'librespot': Path(__file__).parent / "test_config_generic.json",
+    'activemonitor': Path(__file__).parent / "test_config_generic.json",
+    'raat': Path(__file__).parent / "test_config_generic.json",
+    'theaudiodb': Path(__file__).parent / "test_config_theaudiodb.json",
+}
+
+# Default path to static configuration file
 STATIC_CONFIG_PATH = Path(__file__).parent / "test_config_generic.json"
 
 # Global server processes
@@ -60,11 +68,14 @@ class AudioControlTestServer:
         images_cache_dir = cache_dir / "images"
         images_cache_dir.mkdir(exist_ok=True)
         
+        # Choose the appropriate config file for this test type
+        config_file = TEST_CONFIGS.get(self.test_name, STATIC_CONFIG_PATH)
+        
         # Load static configuration file
-        if not STATIC_CONFIG_PATH.exists():
-            raise FileNotFoundError(f"Static configuration file not found at {STATIC_CONFIG_PATH}")
+        if not config_file.exists():
+            raise FileNotFoundError(f"Configuration file not found at {config_file}")
             
-        with open(STATIC_CONFIG_PATH, 'r') as f:
+        with open(config_file, 'r') as f:
             config = json.load(f)
         
         # Update configuration for this test instance
@@ -105,8 +116,9 @@ class AudioControlTestServer:
     
     def create_pipes(self):
         """Create test pipes for librespot and raat"""
-        # Load the static configuration to see which players are actually configured
-        with open(STATIC_CONFIG_PATH, 'r') as f:
+        # Load the appropriate configuration to see which players are actually configured
+        config_file = TEST_CONFIGS.get(self.test_name, STATIC_CONFIG_PATH)
+        with open(config_file, 'r') as f:
             config = json.load(f)
         
         # Only create pipes for players that are actually in the configuration
@@ -613,14 +625,6 @@ def raat_server():
     """Fixture for RAAT integration tests"""
     server = AudioControlTestServer("raat", TEST_PORTS['raat'])
     assert server.start_server(), "Failed to start RAAT test server"
-    yield server
-    server.stop_server()
-
-@pytest.fixture
-def mpd_server():
-    """Fixture for MPD integration tests"""
-    server = AudioControlTestServer("mpd", TEST_PORTS['mpd'])
-    assert server.start_server(), "Failed to start MPD test server"
     yield server
     server.stop_server()
 

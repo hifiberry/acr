@@ -8,7 +8,8 @@ Homepage: https://github.com/hifiberry/acr
 
 Package: hifiberry-audiocontrol
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, python3, python3-websocket
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Suggest: python3, python3-websocket
 Description: HiFiBerry AudioControl/Rust application
  A Rust application for audio control functionality.
  This package provides tools for managing audio playback
@@ -20,3 +21,6 @@ Description: HiFiBerry AudioControl/Rust application
   * audiocontrol_lms_client - Logitech Media Server client
   * audiocontrol_send_update - Player state update utility
   * audiocontrol_nowplaying - Terminal now playing display client
+ .
+ Python dependencies are optional and only needed for the 
+ audiocontrol_nowplaying example client.

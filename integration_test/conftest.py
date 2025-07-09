@@ -439,6 +439,58 @@ class AudioControlTestServer:
         except Exception as e:
             return {"success": False, "message": f"Tool execution failed: {str(e)}"}
     
+    def send_librespot_event(self, player_name: str, event_type: str, env_vars: Dict[str, str] = None) -> Dict[str, Any]:
+        """Send an event to a player using the audiocontrol_notify_librespot tool"""
+        import subprocess
+        import os
+        
+        # Check if we have an existing binary to use
+        tool_binary_path = self.get_tool_binary_path('audiocontrol_notify_librespot')
+        
+        if tool_binary_path:
+            # Use the existing binary directly
+            cmd = [str(tool_binary_path)]
+            print(f"Using existing binary: {tool_binary_path}")
+        else:
+            # Build the command to call audiocontrol_notify_librespot via cargo run
+            cmd = ["cargo", "run", "--bin", "audiocontrol_notify_librespot", "--"]
+            print("Using cargo run to build and execute audiocontrol_notify_librespot")
+        
+        cmd.extend(["--baseurl", f"http://localhost:{self.port}/api"])
+        cmd.extend(["--player-name", player_name])
+        
+        # Set up environment variables
+        env = os.environ.copy()
+        env["PLAYER_EVENT"] = event_type
+        
+        if env_vars:
+            env.update(env_vars)
+        
+        # Debug output
+        print(f"Calling audiocontrol_notify_librespot with command: {' '.join(cmd)}")
+        print(f"Environment: PLAYER_EVENT={event_type}")
+        if env_vars:
+            for key, value in env_vars.items():
+                print(f"Environment: {key}={value}")
+        
+        # Execute the command
+        try:
+            # Use the parent directory (project root) as working directory
+            project_root = Path(__file__).parent.parent
+            result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=30, env=env)
+            
+            if result.returncode == 0:
+                print(f"audiocontrol_notify_librespot output: {result.stdout}")
+                return {"success": True, "message": "Event sent successfully"}
+            else:
+                print(f"audiocontrol_notify_librespot error: {result.stderr}")
+                return {"success": False, "message": f"Tool failed with exit code {result.returncode}: {result.stderr}"}
+                
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "Tool execution timed out"}
+        except Exception as e:
+            return {"success": False, "message": f"Tool execution failed: {str(e)}"}
+
     def reset_player_state(self, player_id: str = "test_player"):
         """Reset a player to a known state"""
         reset_events = [

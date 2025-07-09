@@ -389,3 +389,252 @@ def test_librespot_shuffle_and_repeat(librespot_server):
     
     elapsed = time.perf_counter() - start
     print(f"[TIMING] test_librespot_shuffle_and_repeat: {elapsed:.3f}s")
+
+# New tests for audiocontrol_notify_librespot
+def test_notify_librespot_song_update(librespot_server):
+    """Test audiocontrol_notify_librespot song update functionality"""
+    start = time.perf_counter()
+    step = time.perf_counter()
+    
+    # Get a player to use
+    players_response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
+    
+    if "players" not in players_response or len(players_response["players"]) == 0:
+        pytest.skip("No players available for testing")
+    
+    player = players_response["players"][0]
+    player_id = player["id"]
+    print(f"Using player: {player_id}")
+    
+    # Reset player state first
+    step = time.perf_counter()
+    librespot_server.reset_player_state(player_id)
+    print(f"[TIMING] reset_player_state: {time.perf_counter() - step:.3f}s")
+    
+    # Send a track_changed event with metadata
+    step = time.perf_counter()
+    env_vars = {
+        "NAME": "Test Spotify Track",
+        "ARTISTS": "Test Artist Name",
+        "ALBUM": "Test Album Name",
+        "DURATION_MS": "234500",  # 234.5 seconds
+        "URI": "spotify:track:test123",
+        "NUMBER": "5",
+        "COVERS": "https://example.com/cover.jpg"
+    }
+    
+    response = librespot_server.send_librespot_event(player_id, "track_changed", env_vars)
+    print(f"[TIMING] send_librespot_event: {time.perf_counter() - step:.3f}s")
+    assert response is not None
+    assert response.get("success", False) is True
+    
+    # Wait for the event to be processed
+    step = time.perf_counter()
+    time.sleep(0.5)
+    print(f"[TIMING] sleep after event: {time.perf_counter() - step:.3f}s")
+    
+    # Check that the song information was updated
+    step = time.perf_counter()
+    now_playing = librespot_server.get_now_playing()
+    print(f"[TIMING] get_now_playing: {time.perf_counter() - step:.3f}s")
+    
+    assert "song" in now_playing and now_playing["song"] is not None
+    song = now_playing["song"]
+    assert song["title"] == "Test Spotify Track"
+    assert song["artist"] == "Test Artist Name"
+    assert song["album"] == "Test Album Name"
+    assert song["duration"] == 234.5
+    assert song["stream_url"] == "spotify:track:test123"
+    
+    # Also check that playback state was set to playing (track_changed sends both events)
+    assert now_playing["state"] == "playing"
+    
+    elapsed = time.perf_counter() - start
+    print(f"[TIMING] test_notify_librespot_song_update: {elapsed:.3f}s")
+
+def test_notify_librespot_shuffle_change(librespot_server):
+    """Test audiocontrol_notify_librespot shuffle change functionality"""
+    start = time.perf_counter()
+    step = time.perf_counter()
+    
+    # Get a player to use
+    players_response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
+    
+    if "players" not in players_response or len(players_response["players"]) == 0:
+        pytest.skip("No players available for testing")
+    
+    player = players_response["players"][0]
+    player_id = player["id"]
+    print(f"Using player: {player_id}")
+    
+    # Reset player state first
+    step = time.perf_counter()
+    librespot_server.reset_player_state(player_id)
+    print(f"[TIMING] reset_player_state: {time.perf_counter() - step:.3f}s")
+    
+    # Test enabling shuffle
+    step = time.perf_counter()
+    env_vars = {"SHUFFLE": "true"}
+    response = librespot_server.send_librespot_event(player_id, "shuffle_changed", env_vars)
+    print(f"[TIMING] send_librespot_event (shuffle on): {time.perf_counter() - step:.3f}s")
+    assert response is not None
+    assert response.get("success", False) is True
+    
+    # Wait for the event to be processed
+    step = time.perf_counter()
+    time.sleep(0.5)
+    print(f"[TIMING] sleep after shuffle on: {time.perf_counter() - step:.3f}s")
+    
+    # Check that shuffle was enabled
+    step = time.perf_counter()
+    now_playing = librespot_server.get_now_playing()
+    print(f"[TIMING] get_now_playing (after shuffle on): {time.perf_counter() - step:.3f}s")
+    assert now_playing.get("shuffle") is True
+    
+    # Test disabling shuffle
+    step = time.perf_counter()
+    env_vars = {"SHUFFLE": "false"}
+    response = librespot_server.send_librespot_event(player_id, "shuffle_changed", env_vars)
+    print(f"[TIMING] send_librespot_event (shuffle off): {time.perf_counter() - step:.3f}s")
+    assert response is not None
+    assert response.get("success", False) is True
+    
+    # Wait for the event to be processed
+    step = time.perf_counter()
+    time.sleep(0.5)
+    print(f"[TIMING] sleep after shuffle off: {time.perf_counter() - step:.3f}s")
+    
+    # Check that shuffle was disabled
+    step = time.perf_counter()
+    now_playing = librespot_server.get_now_playing()
+    print(f"[TIMING] get_now_playing (after shuffle off): {time.perf_counter() - step:.3f}s")
+    assert now_playing.get("shuffle") is False
+    
+    elapsed = time.perf_counter() - start
+    print(f"[TIMING] test_notify_librespot_shuffle_change: {elapsed:.3f}s")
+
+def test_notify_librespot_playback_state_change(librespot_server):
+    """Test audiocontrol_notify_librespot playback state change functionality"""
+    start = time.perf_counter()
+    step = time.perf_counter()
+    
+    # Get a player to use
+    players_response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
+    
+    if "players" not in players_response or len(players_response["players"]) == 0:
+        pytest.skip("No players available for testing")
+    
+    player = players_response["players"][0]
+    player_id = player["id"]
+    print(f"Using player: {player_id}")
+    
+    # Reset player state first
+    step = time.perf_counter()
+    librespot_server.reset_player_state(player_id)
+    print(f"[TIMING] reset_player_state: {time.perf_counter() - step:.3f}s")
+    
+    # Test changing to playing state
+    step = time.perf_counter()
+    response = librespot_server.send_librespot_event(player_id, "playing")
+    print(f"[TIMING] send_librespot_event (playing): {time.perf_counter() - step:.3f}s")
+    assert response is not None
+    assert response.get("success", False) is True
+    
+    # Wait for the event to be processed
+    step = time.perf_counter()
+    time.sleep(0.5)
+    print(f"[TIMING] sleep after playing: {time.perf_counter() - step:.3f}s")
+    
+    # Check that state was set to playing
+    step = time.perf_counter()
+    now_playing = librespot_server.get_now_playing()
+    print(f"[TIMING] get_now_playing (after playing): {time.perf_counter() - step:.3f}s")
+    assert now_playing["state"] == "playing"
+    
+    # Test changing to paused state
+    step = time.perf_counter()
+    response = librespot_server.send_librespot_event(player_id, "paused")
+    print(f"[TIMING] send_librespot_event (paused): {time.perf_counter() - step:.3f}s")
+    assert response is not None
+    assert response.get("success", False) is True
+    
+    # Wait for the event to be processed
+    step = time.perf_counter()
+    time.sleep(0.5)
+    print(f"[TIMING] sleep after paused: {time.perf_counter() - step:.3f}s")
+    
+    # Check that state was set to paused
+    step = time.perf_counter()
+    now_playing = librespot_server.get_now_playing()
+    print(f"[TIMING] get_now_playing (after paused): {time.perf_counter() - step:.3f}s")
+    assert now_playing["state"] == "paused"
+    
+    elapsed = time.perf_counter() - start
+    print(f"[TIMING] test_notify_librespot_playback_state_change: {elapsed:.3f}s")
+
+def test_notify_librespot_position_update(librespot_server):
+    """Test audiocontrol_notify_librespot position update functionality"""
+    start = time.perf_counter()
+    step = time.perf_counter()
+    
+    # Get a player to use
+    players_response = librespot_server.get_players_raw()
+    print(f"[TIMING] get_players_raw: {time.perf_counter() - step:.3f}s")
+    
+    if "players" not in players_response or len(players_response["players"]) == 0:
+        pytest.skip("No players available for testing")
+    
+    player = players_response["players"][0]
+    player_id = player["id"]
+    print(f"Using player: {player_id}")
+    
+    # Reset player state first
+    step = time.perf_counter()
+    librespot_server.reset_player_state(player_id)
+    print(f"[TIMING] reset_player_state: {time.perf_counter() - step:.3f}s")
+    
+    # First, set some song metadata so we have a track to seek in
+    step = time.perf_counter()
+    track_env_vars = {
+        "NAME": "Test Track for Position",
+        "ARTISTS": "Test Artist",
+        "ALBUM": "Test Album",
+        "DURATION_MS": "300000",  # 300 seconds
+        "URI": "spotify:track:position_test"
+    }
+    response = librespot_server.send_librespot_event(player_id, "track_changed", track_env_vars)
+    assert response.get("success", False) is True
+    time.sleep(0.5)
+    print(f"[TIMING] setup track metadata: {time.perf_counter() - step:.3f}s")
+    
+    # Test different position updates
+    positions_ms = [10000, 65500, 120700]  # 10s, 65.5s, 120.7s
+    positions_s = [10.0, 65.5, 120.7]
+    
+    for position_ms, expected_position_s in zip(positions_ms, positions_s):
+        step = time.perf_counter()
+        env_vars = {"POSITION_MS": str(position_ms)}
+        response = librespot_server.send_librespot_event(player_id, "seeked", env_vars)
+        print(f"[TIMING] send_librespot_event (position {expected_position_s}s): {time.perf_counter() - step:.3f}s")
+        assert response is not None
+        assert response.get("success", False) is True
+        
+        # Wait for the event to be processed
+        step = time.perf_counter()
+        time.sleep(0.5)
+        print(f"[TIMING] sleep after position update: {time.perf_counter() - step:.3f}s")
+        
+        # Check that position was updated
+        step = time.perf_counter()
+        now_playing = librespot_server.get_now_playing()
+        print(f"[TIMING] get_now_playing (after position update): {time.perf_counter() - step:.3f}s")
+        
+        assert "position" in now_playing
+        if now_playing["position"] is not None:
+            assert abs(now_playing["position"] - expected_position_s) < 1.0, f"Expected position {expected_position_s}, got {now_playing['position']}"
+    
+    elapsed = time.perf_counter() - start
+    print(f"[TIMING] test_notify_librespot_position_update: {elapsed:.3f}s")

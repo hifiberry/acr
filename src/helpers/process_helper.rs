@@ -1,4 +1,4 @@
-use log::{debug, info, warn, error};
+use log::{debug, info, warn};
 use std::process::Command;
 use std::io;
 
@@ -95,13 +95,6 @@ pub fn pkill(process_name: &str, force: bool) -> Result<bool, io::Error> {
                 return Ok(false);
             }
         }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        error!("Process killing not implemented for this platform");
-        Err(io::Error::new(io::ErrorKind::Unsupported, 
-                          "Process killing not supported on this platform"))
     }
 }
 

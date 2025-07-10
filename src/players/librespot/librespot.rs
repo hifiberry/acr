@@ -583,8 +583,10 @@ impl LibrespotPlayerController {
                 true
             }
             Ok(false) => {
-                warn!("No Librespot process found to kill");
-                false
+                info!("No Librespot process found to kill - command accepted");
+                // Return true because the command is valid and supported,
+                // even if no process was found to kill
+                true
             }
             Err(e) => {
                 error!("Failed to kill Librespot process: {}", e);

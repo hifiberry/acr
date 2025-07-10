@@ -70,8 +70,8 @@ named_pipe = "0.4"
 
 # Non-Windows dependencies (Linux, macOS, etc.)
 [target.'cfg(not(windows))'.dependencies]
-# For MPRIS media player interface (Linux/Unix only)
-mpris = "2.0.1"
+# For D-Bus communication and custom MPRIS implementation (Linux/Unix only)
+dbus = "0.9"
 
 # Build dependencies
 [build-dependencies]

@@ -1,9 +1,45 @@
 #![cfg(unix)]
 
 use std::env;
-use mpris::{PlayerFinder, Player};
 use log::info;
-use std::process::Command;
+use dbus::blocking::{Connection, Proxy};
+use dbus::{arg::RefArg};
+use std::collections::HashMap;
+use std::time::Duration;
+
+/// MPRIS player information
+#[derive(Debug, Clone)]
+pub struct MprisPlayer {
+    pub bus_name: String,
+    pub bus_type: BusType,
+    pub identity: Option<String>,
+    pub desktop_entry: Option<String>,
+    pub can_control: Option<bool>,
+    pub can_play: Option<bool>,
+    pub can_pause: Option<bool>,
+    pub can_seek: Option<bool>,
+    pub can_go_next: Option<bool>,
+    pub can_go_previous: Option<bool>,
+    pub playback_status: Option<String>,
+    pub current_track: Option<String>,
+    pub current_artist: Option<String>,
+}
+
+/// Bus type enumeration
+#[derive(Debug, Clone, PartialEq)]
+pub enum BusType {
+    Session,
+    System,
+}
+
+impl std::fmt::Display for BusType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BusType::Session => write!(f, "session"),
+            BusType::System => write!(f, "system"),
+        }
+    }
+}
 
 fn main() {
     env_logger::init();
@@ -19,15 +55,14 @@ fn main() {
     println!("==================================");
     
     // Find all MPRIS players on both session and system buses
-    let mut session_players = Vec::new();
-    let mut system_players = Vec::new();
+    let mut all_players = Vec::new();
     
     // Try session bus first (most common)
     println!("Scanning session bus for MPRIS players...");
-    match find_mpris_players_session() {
-        Ok(mut players) => {
+    match find_mpris_players(BusType::Session) {
+        Ok(players) => {
             println!("Found {} MPRIS player(s) on session bus", players.len());
-            session_players.append(&mut players);
+            all_players.extend(players);
         }
         Err(e) => {
             println!("Warning: Failed to scan session bus: {}", e);
@@ -36,47 +71,33 @@ fn main() {
     
     // Try system bus (for system services like ShairportSync)
     println!("Scanning system bus for MPRIS players...");
-    match find_mpris_players_system() {
-        Ok(mut players) => {
+    match find_mpris_players(BusType::System) {
+        Ok(players) => {
             println!("Found {} MPRIS player(s) on system bus", players.len());
-            system_players.append(&mut players);
+            all_players.extend(players);
         }
         Err(e) => {
             println!("Warning: Failed to scan system bus: {}", e);
         }
     }
     
-    let total_players = session_players.len() + system_players.len();
-    
-    if total_players == 0 {
+    if all_players.is_empty() {
         println!("\nNo MPRIS players found on either session or system bus.");
         println!("\nTip: Make sure media players that support MPRIS are running.");
         println!("Common MPRIS-enabled players include: VLC, Spotify, Rhythmbox, Audacious, etc.");
         return;
     }
     
-    println!("\nTotal: Found {} MPRIS player(s):\n", total_players);
+    println!("\nTotal: Found {} MPRIS player(s):\n", all_players.len());
     
-    let mut index = 1;
-    
-    // Display session bus players
-    for player in session_players.iter() {
-        print_player_info(index, player);
-        index += 1;
-    }
-    
-    // Display system bus players
-    for bus_name in system_players.iter() {
-        print_system_player_info(index, bus_name);
-        index += 1;
+    for (i, player) in all_players.iter().enumerate() {
+        print_player_info(i + 1, player);
     }
     
     println!("\nSample Configuration:");
     println!("====================");
-    if let Some(first_player) = session_players.first() {
+    if let Some(first_player) = all_players.first() {
         print_sample_config(first_player);
-    } else if let Some(first_system_player) = system_players.first() {
-        print_system_sample_config(first_system_player);
     }
 }
 
@@ -99,221 +120,259 @@ fn print_help() {
     println!("        List all available MPRIS players");
 }
 
-fn find_mpris_players_session() -> Result<Vec<Player>, Box<dyn std::error::Error>> {
-    info!("Scanning for MPRIS players on session bus");
+/// Find MPRIS players on the specified bus
+fn find_mpris_players(bus_type: BusType) -> Result<Vec<MprisPlayer>, Box<dyn std::error::Error>> {
+    info!("Scanning for MPRIS players on {} bus", bus_type);
     
-    let finder = PlayerFinder::new()
-        .map_err(|e| format!("Failed to create PlayerFinder for session bus: {}", e))?;
+    let conn = match bus_type {
+        BusType::Session => Connection::new_session()?,
+        BusType::System => Connection::new_system()?,
+    };
     
-    let players = finder.find_all()
-        .map_err(|e| format!("Failed to find MPRIS players on session bus: {}", e))?;
+    // Get list of all services on the bus
+    let proxy = Proxy::new("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_millis(5000), &conn);
+    let (services,): (Vec<String>,) = proxy.method_call("org.freedesktop.DBus", "ListNames", ())?;
     
-    info!("Found {} MPRIS players on session bus", players.len());
-    Ok(players)
-}
-
-fn find_mpris_players_system() -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    info!("Scanning for MPRIS players on system bus");
-    
-    // Use busctl to find MPRIS players on system bus
-    let output = Command::new("busctl")
-        .args(&["--system", "list", "--no-pager"])
-        .output()
-        .map_err(|e| format!("Failed to run busctl: {}", e))?;
-    
-    if !output.status.success() {
-        return Err(format!("busctl failed with exit code: {}", output.status).into());
-    }
-    
-    let output_str = String::from_utf8_lossy(&output.stdout);
     let mut players = Vec::new();
     
-    // Look for MPRIS players in the output
-    for line in output_str.lines() {
-        if line.contains("org.mpris.MediaPlayer2.") && !line.contains("org.mpris.MediaPlayer2 ") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if let Some(bus_name) = parts.first() {
-                if bus_name.starts_with("org.mpris.MediaPlayer2.") {
-                    info!("Found MPRIS player on system bus: {}", bus_name);
-                    players.push(bus_name.to_string());
+    // Filter for MPRIS players
+    for service in services {
+        if service.starts_with("org.mpris.MediaPlayer2.") && service != "org.mpris.MediaPlayer2" {
+            info!("Found potential MPRIS player: {}", service);
+            
+            match get_player_info(&conn, &service, bus_type.clone()) {
+                Ok(player) => players.push(player),
+                Err(e) => {
+                    info!("Failed to get info for player {}: {}", service, e);
+                    // Still add a basic entry even if we can't get full info
+                    players.push(MprisPlayer {
+                        bus_name: service,
+                        bus_type: bus_type.clone(),
+                        identity: None,
+                        desktop_entry: None,
+                        can_control: None,
+                        can_play: None,
+                        can_pause: None,
+                        can_seek: None,
+                        can_go_next: None,
+                        can_go_previous: None,
+                        playback_status: None,
+                        current_track: None,
+                        current_artist: None,
+                    });
                 }
             }
         }
     }
     
-    info!("Found {} MPRIS players on system bus", players.len());
+    info!("Found {} MPRIS players on {} bus", players.len(), bus_type);
     Ok(players)
 }
 
-fn print_player_info(index: usize, player: &Player) {
-    println!("{}. Player Information:", index);
-    println!("   Bus Name: {}", player.bus_name_player_name_part());
+/// Get detailed information about an MPRIS player
+fn get_player_info(conn: &Connection, bus_name: &str, bus_type: BusType) -> Result<MprisPlayer, Box<dyn std::error::Error>> {
+    let proxy = Proxy::new(bus_name, "/org/mpris/MediaPlayer2", Duration::from_millis(2000), conn);
     
-    // Try to get identity (player name)
-    let identity = player.identity();
-    println!("   Identity: {}", identity);
+    let mut player = MprisPlayer {
+        bus_name: bus_name.to_string(),
+        bus_type,
+        identity: None,
+        desktop_entry: None,
+        can_control: None,
+        can_play: None,
+        can_pause: None,
+        can_seek: None,
+        can_go_next: None,
+        can_go_previous: None,
+        playback_status: None,
+        current_track: None,
+        current_artist: None,
+    };
     
-    // Try to get desktop entry
-    match player.get_desktop_entry() {
-        Ok(Some(entry)) => println!("   Desktop Entry: {}", entry),
-        Ok(None) => println!("   Desktop Entry: <not set>"),
-        Err(_) => println!("   Desktop Entry: <not available>"),
+    // Get MediaPlayer2 properties
+    if let Ok((identity,)) = proxy.method_call::<(String,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2", "Identity")
+    ) {
+        player.identity = Some(identity);
     }
     
-    // Check capabilities
+    if let Ok((desktop_entry,)) = proxy.method_call::<(String,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2", "DesktopEntry")
+    ) {
+        player.desktop_entry = Some(desktop_entry);
+    }
+    
+    // Get Player properties
+    if let Ok((can_control,)) = proxy.method_call::<(bool,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2.Player", "CanControl")
+    ) {
+        player.can_control = Some(can_control);
+    }
+    
+    if let Ok((can_play,)) = proxy.method_call::<(bool,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2.Player", "CanPlay")
+    ) {
+        player.can_play = Some(can_play);
+    }
+    
+    if let Ok((can_pause,)) = proxy.method_call::<(bool,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2.Player", "CanPause")
+    ) {
+        player.can_pause = Some(can_pause);
+    }
+    
+    if let Ok((can_seek,)) = proxy.method_call::<(bool,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2.Player", "CanSeek")
+    ) {
+        player.can_seek = Some(can_seek);
+    }
+    
+    if let Ok((can_go_next,)) = proxy.method_call::<(bool,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2.Player", "CanGoNext")
+    ) {
+        player.can_go_next = Some(can_go_next);
+    }
+    
+    if let Ok((can_go_previous,)) = proxy.method_call::<(bool,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2.Player", "CanGoPrevious")
+    ) {
+        player.can_go_previous = Some(can_go_previous);
+    }
+    
+    if let Ok((playback_status,)) = proxy.method_call::<(String,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
+    ) {
+        player.playback_status = Some(playback_status);
+    }
+    
+    // Get metadata
+    if let Ok((metadata,)) = proxy.method_call::<(HashMap<String, dbus::arg::Variant<Box<dyn RefArg>>>,), _, _, _>(
+        "org.freedesktop.DBus.Properties", "Get", 
+        ("org.mpris.MediaPlayer2.Player", "Metadata")
+    ) {
+        if let Some(title_variant) = metadata.get("xesam:title") {
+            if let Some(title) = title_variant.as_str() {
+                player.current_track = Some(title.to_string());
+            }
+        }
+        
+        if let Some(artist_variant) = metadata.get("xesam:artist") {
+            if let Some(mut artists) = artist_variant.as_iter() {
+                if let Some(first_artist) = artists.next() {
+                    if let Some(artist) = first_artist.as_str() {
+                        player.current_artist = Some(artist.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(player)
+}
+
+fn print_player_info(index: usize, player: &MprisPlayer) {
+    println!("{}. Player Information:", index);
+    println!("   Bus Name: {}", player.bus_name);
+    println!("   Bus Type: {} bus", player.bus_type);
+    
+    // Extract player name from bus name
+    let player_name = player.bus_name.strip_prefix("org.mpris.MediaPlayer2.")
+        .unwrap_or("Unknown");
+    println!("   Player Name: {}", player_name);
+    
+    // Print identity
+    match &player.identity {
+        Some(identity) => println!("   Identity: {}", identity),
+        None => println!("   Identity: <not available>"),
+    }
+    
+    // Print desktop entry
+    match &player.desktop_entry {
+        Some(entry) => println!("   Desktop Entry: {}", entry),
+        None => println!("   Desktop Entry: <not available>"),
+    }
+    
+    // Print capabilities
     println!("   Capabilities:");
     
-    if let Ok(can_control) = player.can_control() {
+    if let Some(can_control) = player.can_control {
         println!("     - Can Control: {}", can_control);
     }
     
-    if let Ok(can_play) = player.can_play() {
+    if let Some(can_play) = player.can_play {
         println!("     - Can Play: {}", can_play);
     }
     
-    if let Ok(can_pause) = player.can_pause() {
+    if let Some(can_pause) = player.can_pause {
         println!("     - Can Pause: {}", can_pause);
     }
     
-    if let Ok(can_seek) = player.can_seek() {
+    if let Some(can_seek) = player.can_seek {
         println!("     - Can Seek: {}", can_seek);
     }
     
-    if let Ok(can_go_next) = player.can_go_next() {
+    if let Some(can_go_next) = player.can_go_next {
         println!("     - Can Go Next: {}", can_go_next);
     }
     
-    if let Ok(can_go_previous) = player.can_go_previous() {
+    if let Some(can_go_previous) = player.can_go_previous {
         println!("     - Can Go Previous: {}", can_go_previous);
     }
     
-    // Try to get current status
-    match player.get_playback_status() {
-        Ok(status) => println!("   Current Status: {:?}", status),
-        Err(_) => println!("   Current Status: <not available>"),
+    // Print current status
+    match &player.playback_status {
+        Some(status) => println!("   Current Status: {}", status),
+        None => println!("   Current Status: <not available>"),
     }
     
-    // Try to get current metadata
-    match player.get_metadata() {
-        Ok(metadata) => {
-            if let Some(title) = metadata.title() {
-                println!("   Current Track: {}", title);
-                if let Some(artists) = metadata.artists() {
-                    if !artists.is_empty() {
-                        println!("   Current Artist: {}", artists.join(", "));
-                    }
-                }
-            } else {
-                println!("   Current Track: <no track loaded>");
-            }
+    // Print current track info
+    match (&player.current_track, &player.current_artist) {
+        (Some(track), Some(artist)) => {
+            println!("   Current Track: {}", track);
+            println!("   Current Artist: {}", artist);
         }
-        Err(_) => println!("   Current Track: <metadata not available>"),
+        (Some(track), None) => println!("   Current Track: {}", track),
+        (None, _) => println!("   Current Track: <no track loaded>"),
+    }
+    
+    if player.bus_type == BusType::System {
+        println!("   Note: This player is on the system bus. Full MPRIS control");
+        println!("         may require special configuration or elevated privileges.");
     }
     
     println!();
 }
 
-fn print_sample_config(player: &Player) {
-    let bus_name = format!("org.mpris.MediaPlayer2.{}", player.bus_name_player_name_part());
-    
+fn print_sample_config(player: &MprisPlayer) {
     println!("{{");
     println!("  \"mpris\": {{");
     println!("    \"enable\": true,");
-    println!("    \"bus_name\": \"{}\"", bus_name);
+    println!("    \"bus_name\": \"{}\",", player.bus_name);
+    if player.bus_type == BusType::System {
+        println!("    \"bus_type\": \"system\"");
+    } else {
+        println!("    \"bus_type\": \"session\"");
+    }
     println!("  }}");
     println!("}}");
     println!();
     println!("Add this configuration to your audiocontrol.json players array to");
     println!("enable control of this MPRIS player through AudioControl.");
-}
-
-fn print_system_player_info(index: usize, bus_name: &str) {
-    println!("{}. System Bus Player Information:", index);
-    println!("   Bus Name: {}", bus_name);
     
-    // Extract player name from bus name
-    let player_name = bus_name.strip_prefix("org.mpris.MediaPlayer2.")
-        .unwrap_or("Unknown");
-    println!("   Player Name: {}", player_name);
-    println!("   Bus Type: System Bus");
-    
-    // Try to get basic information using dbus-send
-    println!("   Capabilities: <limited - use dbus-send for detailed inspection>");
-    
-    // Try to get identity using dbus-send
-    match get_system_player_property(bus_name, "Identity") {
-        Ok(identity) => println!("   Identity: {}", identity),
-        Err(_) => println!("   Identity: <not available>"),
+    if player.bus_type == BusType::System {
+        println!();
+        println!("Note: System bus MPRIS players may require special configuration");
+        println!("      and may not be fully supported by all MPRIS libraries.");
     }
-    
-    // Try to get current status
-    match get_system_player_property(bus_name, "PlaybackStatus") {
-        Ok(status) => println!("   Current Status: {}", status),
-        Err(_) => println!("   Current Status: <not available>"),
-    }
-    
-    println!("   Note: This player is on the system bus. Full MPRIS control");
-    println!("         may require special configuration or elevated privileges.");
-    println!();
-}
-
-fn get_system_player_property(bus_name: &str, property: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let output = Command::new("dbus-send")
-        .args(&[
-            "--system",
-            "--print-reply",
-            &format!("--dest={}", bus_name),
-            "/org/mpris/MediaPlayer2",
-            "org.freedesktop.DBus.Properties.Get",
-            "string:org.mpris.MediaPlayer2",
-            &format!("string:{}", property)
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run dbus-send: {}", e))?;
-    
-    if output.status.success() {
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        // Parse the dbus-send output to extract the property value
-        // This is a simple parser - in production you'd want something more robust
-        for line in output_str.lines() {
-            if line.trim().starts_with("variant") || line.trim().starts_with("string") {
-                if let Some(value) = extract_dbus_string_value(line) {
-                    return Ok(value);
-                }
-            }
-        }
-    }
-    
-    Err("Property not found or not accessible".into())
-}
-
-fn extract_dbus_string_value(line: &str) -> Option<String> {
-    // Extract string value from dbus-send output
-    // Look for patterns like: string "value" or variant string "value"
-    if let Some(start) = line.find('"') {
-        if let Some(end) = line.rfind('"') {
-            if start < end {
-                return Some(line[start + 1..end].to_string());
-            }
-        }
-    }
-    None
-}
-
-fn print_system_sample_config(bus_name: &str) {
-    println!("{{");
-    println!("  \"mpris\": {{");
-    println!("    \"enable\": true,");
-    println!("    \"bus_name\": \"{}\",", bus_name);
-    println!("    \"bus_type\": \"system\"");
-    println!("  }}");
-    println!("}}");
-    println!();
-    println!("Add this configuration to your audiocontrol.json players array to");
-    println!("enable control of this system bus MPRIS player through AudioControl.");
-    println!();
-    println!("Note: System bus MPRIS players may require special configuration");
-    println!("      and may not be fully supported by all MPRIS libraries.");
 }
 
 

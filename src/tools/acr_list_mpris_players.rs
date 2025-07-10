@@ -88,14 +88,13 @@ fn print_player_info(index: usize, player: &Player) {
     println!("   Bus Name: {}", player.bus_name_player_name_part());
     
     // Try to get identity (player name)
-    match player.identity() {
-        Ok(identity) => println!("   Identity: {}", identity),
-        Err(e) => println!("   Identity: <error getting identity: {}>", e),
-    }
+    let identity = player.identity();
+    println!("   Identity: {}", identity);
     
     // Try to get desktop entry
-    match player.desktop_entry() {
-        Ok(entry) => println!("   Desktop Entry: {}", entry),
+    match player.get_desktop_entry() {
+        Ok(Some(entry)) => println!("   Desktop Entry: {}", entry),
+        Ok(None) => println!("   Desktop Entry: <not set>"),
         Err(_) => println!("   Desktop Entry: <not available>"),
     }
     

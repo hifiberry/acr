@@ -1,12 +1,10 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::stream_details::StreamDetails;
-use delegate::delegate;
 use std::sync::{Arc, RwLock};
-use log::{debug, info, warn, error, trace};
+use log::{debug, info, warn, error};
 use std::any::Any;
 use mpris::{PlayerFinder, Player, PlaybackStatus, LoopStatus, Metadata};
-use std::time::Duration;
 
 /// MPRIS player controller implementation
 /// This controller interfaces with MPRIS-compatible media players via D-Bus
@@ -25,9 +23,6 @@ pub struct MprisPlayerController {
     
     /// Current stream details
     stream_details: Arc<RwLock<Option<StreamDetails>>>,
-    
-    /// Cached MPRIS player connection
-    mpris_player: Arc<RwLock<Option<Player>>>,
 }
 
 // Manually implement Clone for MprisPlayerController
@@ -40,7 +35,6 @@ impl Clone for MprisPlayerController {
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
-            mpris_player: Arc::clone(&self.mpris_player),
         }
     }
 }
@@ -60,7 +54,6 @@ impl MprisPlayerController {
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
-            mpris_player: Arc::new(RwLock::new(None)),
         };
         
         // Set capabilities based on what MPRIS typically supports
@@ -92,8 +85,8 @@ impl MprisPlayerController {
             PlayerCapability::Previous,
             PlayerCapability::Next,
             PlayerCapability::Seek,
-            PlayerCapability::SetPosition,
-            PlayerCapability::SetVolume,
+            PlayerCapability::Position,
+            PlayerCapability::Volume,
             PlayerCapability::Shuffle,
             PlayerCapability::Loop,
             PlayerCapability::Killable, // Can always try to kill via D-Bus
@@ -102,27 +95,12 @@ impl MprisPlayerController {
     
     /// Get or create an MPRIS player connection
     fn get_mpris_player(&self) -> Result<Player, String> {
-        // Try to use cached connection first
-        if let Ok(player_lock) = self.mpris_player.read() {
-            if let Some(ref player) = *player_lock {
-                // Test if the connection is still valid
-                if player.identity().is_ok() {
-                    return Ok(player.clone());
-                }
-            }
-        }
-        
-        // Create new connection
+        // Create new connection each time (no caching to avoid threading issues)
         debug!("Creating new MPRIS connection to {}", self.bus_name);
         let finder = PlayerFinder::new().map_err(|e| format!("Failed to create PlayerFinder: {}", e))?;
         
         let player = finder.find_by_name(&self.bus_name)
             .map_err(|e| format!("Failed to find MPRIS player '{}': {}", self.bus_name, e))?;
-        
-        // Cache the connection
-        if let Ok(mut player_lock) = self.mpris_player.write() {
-            *player_lock = Some(player.clone());
-        }
         
         info!("Connected to MPRIS player: {}", self.bus_name);
         Ok(player)
@@ -140,7 +118,7 @@ impl MprisPlayerController {
                 };
                 
                 if let Ok(mut current_state) = self.current_state.write() {
-                    current_state.playback_state = state;
+                    current_state.state = state;
                     current_state.shuffle = player.get_shuffle().unwrap_or(false);
                     
                     // Convert MPRIS LoopStatus to our LoopMode
@@ -172,46 +150,70 @@ impl MprisPlayerController {
     /// Convert MPRIS metadata to our Song struct
     fn convert_metadata_to_song(&self, metadata: &Metadata) -> Option<Song> {
         let title = metadata.title()?.to_string();
-        let artist = metadata.artists().and_then(|a| a.first()).map(|s| s.to_string()).unwrap_or_default();
+        let artist = metadata.artists()
+            .and_then(|artists| artists.first().map(|s| s.to_string()))
+            .unwrap_or_default();
         let album = metadata.album_name().map(|s| s.to_string()).unwrap_or_default();
         let duration = metadata.length().map(|d| d.as_secs_f64()).unwrap_or(0.0);
         let track_id = metadata.track_id().map(|s| s.to_string()).unwrap_or_default();
         
         Some(Song {
-            title,
-            artist,
-            album,
-            duration,
-            stream_url: track_id,
-            albumart_url: metadata.art_url().map(|s| s.to_string()),
+            title: Some(title),
+            artist: Some(artist),
+            album: Some(album),
+            duration: Some(duration),
+            stream_url: Some(track_id),
+            cover_art_url: metadata.art_url().map(|s| s.to_string()),
             track_number: metadata.track_number(),
+            album_artist: None,
+            total_tracks: None,
+            genre: None,
+            year: None,
+            source: Some("mpris".to_string()),
+            liked: None,
+            metadata: std::collections::HashMap::new(),
         })
     }
 }
 
 impl PlayerController for MprisPlayerController {
-    // Delegate most methods to the base controller
-    delegate! {
-        to self.base {
-            fn get_player_name(&self) -> String;
-            fn get_player_id(&self) -> String;
-            fn has_library(&self) -> bool;
-            fn supports_api_events(&self) -> bool;
-            fn get_last_seen(&self) -> Option<std::time::SystemTime>;
-            fn alive(&self);
-            fn get_capabilities(&self) -> PlayerCapabilitySet;
-            fn notify_event(&self, event: crate::data::PlayerEvent);
-            fn add_listener(&self, listener: Box<dyn crate::audiocontrol::EventListener + Send + Sync>);
-            fn remove_listeners(&self);
-            fn receive_update(&self, update: crate::data::PlayerUpdate) -> bool;
-            fn get_metadata(&self) -> Option<std::collections::HashMap<String, serde_json::Value>>;
-        }
+    fn get_capabilities(&self) -> PlayerCapabilitySet {
+        self.base.get_capabilities()
+    }
+    
+    fn get_player_name(&self) -> String {
+        self.base.get_player_name()
+    }
+    
+    fn get_player_id(&self) -> String {
+        self.base.get_player_id()
+    }
+    
+    fn has_library(&self) -> bool {
+        false // MPRIS players typically don't expose library functionality
+    }
+    
+    fn supports_api_events(&self) -> bool {
+        false // MPRIS doesn't support API events
+    }
+    
+    fn get_last_seen(&self) -> Option<std::time::SystemTime> {
+        self.base.get_last_seen()
+    }
+    
+    fn receive_update(&self, _update: crate::data::PlayerUpdate) -> bool {
+        false // MPRIS doesn't support receiving updates
+    }
+    
+    fn get_metadata(&self) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+        // MPRIS doesn't provide generic metadata access, return None
+        None
     }
     
     fn get_playback_state(&self) -> PlaybackState {
         self.update_state_from_mpris();
         if let Ok(state) = self.current_state.read() {
-            state.playback_state
+            state.state
         } else {
             PlaybackState::Unknown
         }
@@ -277,12 +279,9 @@ impl PlayerController for MprisPlayerController {
             PlayerCommand::Next => player.next(),
             PlayerCommand::Previous => player.previous(),
             PlayerCommand::Seek(offset) => {
-                let duration = Duration::from_secs_f64(offset);
-                player.seek(duration)
-            },
-            PlayerCommand::SetPosition(position) => {
-                let duration = Duration::from_secs_f64(position);
-                player.set_position(duration)
+                // MPRIS seek expects microseconds as i64
+                let microseconds = (offset * 1_000_000.0) as i64;
+                player.seek(microseconds)
             },
             PlayerCommand::SetRandom(enabled) => player.set_shuffle(enabled),
             PlayerCommand::SetLoopMode(mode) => {
@@ -293,7 +292,6 @@ impl PlayerController for MprisPlayerController {
                 };
                 player.set_loop_status(loop_status)
             },
-            PlayerCommand::SetVolume(volume) => player.set_volume(volume),
             PlayerCommand::Kill => {
                 // For MPRIS, we can't really "kill" the player, but we can try to quit
                 warn!("Kill command not supported for MPRIS players, ignoring");
@@ -342,12 +340,7 @@ impl PlayerController for MprisPlayerController {
     
     fn stop(&self) -> bool {
         info!("Stopping MPRIS player controller for {}", self.bus_name);
-        
-        // Clear cached connection
-        if let Ok(mut player_lock) = self.mpris_player.write() {
-            *player_lock = None;
-        }
-        
+        // No cached connection to clear since we create new connections on demand
         true
     }
 }

@@ -76,6 +76,7 @@ mpris = "2.0.1"
 # Build dependencies
 [build-dependencies]
 base64 = "0.21.0"
+md5 = "0.7.0"
 
 # Development dependencies for testing
 [dev-dependencies]

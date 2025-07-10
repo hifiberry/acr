@@ -9,6 +9,10 @@ pub mod lms;
 pub mod event_api;
 pub mod generic;
 
+// MPRIS support is only available on Unix-like systems (Linux, macOS)
+#[cfg(not(windows))]
+pub mod mpris;
+
 // Re-export the PlayerController trait and related components
 pub use player_controller::{PlayerController, BasePlayerController};
 pub use mpd::MPDPlayerController;
@@ -19,6 +23,9 @@ pub use raat::MetadataPipeReader;
 pub use librespot::LibrespotPlayerController;
 // Export the GenericPlayerController for use in player_factory
 pub use generic::GenericPlayerController;
+// Export the MprisPlayerController for use in player_factory (Unix only)
+#[cfg(not(windows))]
+pub use mpris::MprisPlayerController;
 // Export the event API components
 pub use event_api::{PlayerEventResponse, player_event_update};
 

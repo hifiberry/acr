@@ -1,0 +1,62 @@
+{
+  "services": {
+    "webserver": {
+      "enable": true,
+      "host": "0.0.0.0",
+      "port": 8080
+    },
+    "websocket": {
+      "enable": true
+    }
+  },
+  "players": [
+    {
+      "mpris": {
+        "enable": true,
+        "bus_name": "org.mpris.MediaPlayer2.vlc"
+      }
+    },
+    {
+      "mpris": {
+        "enable": true,
+        "bus_name": "org.mpris.MediaPlayer2.spotify"
+      }
+    },
+    {
+      "mpris": {
+        "enable": true,
+        "bus_name": "org.mpris.MediaPlayer2.rhythmbox"
+      }
+    }
+  ],
+  "plugins": [],
+  "cache": {
+    "attributes": {
+      "cache_directory": "/var/cache/audiocontrol/attributes",
+      "max_age_days": 30
+    },
+    "images": {
+      "cache_directory": "/var/cache/audiocontrol/images",
+      "max_age_days": 7,
+      "max_size_mb": 100
+    }
+  },
+  "enhance_metadata": {
+    "musicbrainz": {
+      "enable": true,
+      "cache_duration_hours": 168
+    },
+    "lastfm": {
+      "enable": true,
+      "cache_duration_hours": 168
+    },
+    "fanarttv": {
+      "enable": true,
+      "cache_duration_hours": 168
+    },
+    "theaudiodb": {
+      "enable": true,
+      "cache_duration_hours": 168
+    }
+  }
+}

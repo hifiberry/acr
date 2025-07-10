@@ -4,3 +4,4 @@ debian/man/audiocontrol_dump_store.1
 debian/man/audiocontrol_lms_client.1
 debian/man/audiocontrol_send_update.1
 debian/man/audiocontrol_notify_librespot.1
+debian/man/audiocontrol_list_mpris_players.1

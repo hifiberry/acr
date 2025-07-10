@@ -17,6 +17,8 @@ pub mod retry;
 pub mod systemd;
 pub mod playback_progress;
 pub mod process_helper;
+#[cfg(unix)]
+pub mod mpris;
 
 use crate::data::artist::Artist;
 

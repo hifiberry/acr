@@ -766,3 +766,85 @@ def test_librespot_new_song_position_tracking(librespot_server):
     
     elapsed = time.perf_counter() - start
     print(f"[TIMING] test_librespot_new_song_position_tracking: {elapsed:.3f}s")
+
+def test_librespot_capabilities_restricted(librespot_server):
+    """Test that librespot only supports stop/kill commands and rejects unsupported commands"""
+    start = time.perf_counter()
+    
+    # Get the players to find the librespot player
+    players_response = librespot_server.get_players_raw()
+    assert "players" in players_response
+    players = players_response["players"]
+    assert len(players) > 0
+    
+    # Find the librespot player
+    librespot_player = None
+    for player in players:
+        if player.get("name", "").lower() == "spotify" or player.get("id", "").lower() == "librespot":
+            librespot_player = player
+            break
+    
+    assert librespot_player is not None, "Could not find librespot player"
+    player_name = librespot_player.get("name", "spotify")
+    
+    # Test that unsupported commands fail
+    unsupported_commands = [
+        "play",           # Play command should not be supported
+        "pause",          # Pause might be handled as stop, but let's check
+        "next",           # Forward skipping should not be supported
+        "previous",       # Backward skipping should not be supported
+        "seek:30",        # Seeking should not be supported
+        "set_random:true", # Shuffle should not be supported
+        "set_loop:track", # Loop mode should not be supported
+    ]
+    
+    for command in unsupported_commands:
+        print(f"Testing unsupported command: {command}")
+        response = librespot_server.api_request_with_error_handling(
+            'POST', 
+            f'/api/player/{player_name}/command/{command}'
+        )
+        
+        # For unsupported commands, we expect either:
+        # 1. HTTP 400 (Bad Request) - command parsing failed
+        # 2. HTTP 500 (Internal Server Error) - command failed to execute
+        # 3. HTTP 200 with success=false - command was processed but failed
+        
+        if response.status_code == 200:
+            # If we get HTTP 200, check the response body
+            response_data = response.json()
+            # The response should indicate failure for unsupported commands
+            # Note: Some commands like pause/stop might be handled specially
+            if command not in ["pause", "stop"]:
+                # For clearly unsupported commands, expect failure
+                assert response_data.get("success") == False, f"Command {command} should not be supported but returned success=True"
+        else:
+            # For HTTP error codes, that's also acceptable - means the command was rejected
+            assert response.status_code in [400, 500], f"Command {command} returned unexpected status code: {response.status_code}"
+    
+    # Test that supported commands work (or at least don't fail due to capability issues)
+    supported_commands = [
+        "stop",           # Stop should be supported
+        "kill",           # Kill should be supported
+    ]
+    
+    for command in supported_commands:
+        print(f"Testing supported command: {command}")
+        response = librespot_server.api_request_with_error_handling(
+            'POST', 
+            f'/api/player/{player_name}/command/{command}'
+        )
+        
+        # For supported commands, we expect HTTP 200
+        # The actual execution might fail (e.g., no process to kill), but the command should be accepted
+        assert response.status_code == 200, f"Supported command {command} returned status code: {response.status_code}"
+        
+        if response.status_code == 200:
+            response_data = response.json()
+            # We don't assert success=True here because the command might fail due to no process running
+            # But we should get a proper response structure
+            assert "success" in response_data, f"Command {command} response missing 'success' field"
+            assert "message" in response_data, f"Command {command} response missing 'message' field"
+    
+    elapsed = time.perf_counter() - start
+    print(f"[TIMING] test_librespot_capabilities_restricted: {elapsed:.3f}s")

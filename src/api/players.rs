@@ -1,5 +1,5 @@
 use crate::AudioController;
-use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track, PlayerUpdate}; // Added PlayerUpdate
+use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track, PlayerUpdate, PlayerCapability}; // Added PlayerCapability
 use crate::players::PlayerController; // Fixed: Using the public re-export
 use rocket::serde::json::Json;
 use rocket::{get, post, State};
@@ -36,6 +36,7 @@ pub struct PlayerInfo {
     shuffle: bool, // Whether shuffle is enabled
     loop_mode: LoopMode, // Loop mode (None, Track, Playlist)
     position: Option<f64>, // Current playback position in seconds
+    capabilities: Vec<PlayerCapability>, // List of capabilities this player supports
 }
 
 /// Response for command execution
@@ -156,6 +157,7 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
                     shuffle: ctrl.get_shuffle(),
                     loop_mode: ctrl.get_loop_mode(),
                     position: ctrl.get_position(),
+                    capabilities: ctrl.get_capabilities().to_vec(),
                 }
             } else {
                 // Fallback for locked controllers
@@ -170,6 +172,7 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
                     shuffle: false,
                     loop_mode: LoopMode::None,
                     position: None,
+                    capabilities: vec![],
                 }
             }
         })
@@ -308,6 +311,7 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
             shuffle: false,
             loop_mode: LoopMode::None,
             position: None,
+            capabilities: vec![],
         },
         song: None,
         state: PlaybackState::Unknown,
@@ -368,6 +372,7 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
             shuffle,
             loop_mode,
             position,
+            capabilities: player.get_capabilities().to_vec(),
         },
         song,
         state,

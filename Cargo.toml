@@ -107,8 +107,7 @@ path = "src/tools/acr_player_event_client.rs"
 name = "audiocontrol_notify_librespot"
 path = "src/tools/acr_notify_librespot.rs"
 
-# MPRIS tools are only available on Unix-like systems, but we define them anyway
-# The actual compilation will be conditional based on cfg
+# MPRIS tools are only available on Unix-like systems
 [[bin]]
 name = "audiocontrol_list_mpris_players"
 path = "src/tools/acr_list_mpris_players.rs"

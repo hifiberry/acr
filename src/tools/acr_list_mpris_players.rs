@@ -1,13 +1,10 @@
-#[cfg(not(windows))]
+#![cfg(unix)]
+
 use std::env;
-#[cfg(not(windows))]
 use mpris::{PlayerFinder, Player};
-#[cfg(not(windows))]
 use log::info;
-#[cfg(not(windows))]
 use std::process::Command;
 
-#[cfg(not(windows))]
 fn main() {
     env_logger::init();
     
@@ -83,7 +80,6 @@ fn main() {
     }
 }
 
-#[cfg(not(windows))]
 fn print_help() {
     println!("AudioControl MPRIS Player Scanner");
     println!("");
@@ -103,7 +99,6 @@ fn print_help() {
     println!("        List all available MPRIS players");
 }
 
-#[cfg(not(windows))]
 fn find_mpris_players_session() -> Result<Vec<Player>, Box<dyn std::error::Error>> {
     info!("Scanning for MPRIS players on session bus");
     
@@ -117,7 +112,6 @@ fn find_mpris_players_session() -> Result<Vec<Player>, Box<dyn std::error::Error
     Ok(players)
 }
 
-#[cfg(not(windows))]
 fn find_mpris_players_system() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     info!("Scanning for MPRIS players on system bus");
     
@@ -151,7 +145,6 @@ fn find_mpris_players_system() -> Result<Vec<String>, Box<dyn std::error::Error>
     Ok(players)
 }
 
-#[cfg(not(windows))]
 fn print_player_info(index: usize, player: &Player) {
     println!("{}. Player Information:", index);
     println!("   Bus Name: {}", player.bus_name_player_name_part());
@@ -220,7 +213,6 @@ fn print_player_info(index: usize, player: &Player) {
     println!();
 }
 
-#[cfg(not(windows))]
 fn print_sample_config(player: &Player) {
     let bus_name = format!("org.mpris.MediaPlayer2.{}", player.bus_name_player_name_part());
     
@@ -235,7 +227,6 @@ fn print_sample_config(player: &Player) {
     println!("enable control of this MPRIS player through AudioControl.");
 }
 
-#[cfg(not(windows))]
 fn print_system_player_info(index: usize, bus_name: &str) {
     println!("{}. System Bus Player Information:", index);
     println!("   Bus Name: {}", bus_name);
@@ -266,7 +257,6 @@ fn print_system_player_info(index: usize, bus_name: &str) {
     println!();
 }
 
-#[cfg(not(windows))]
 fn get_system_player_property(bus_name: &str, property: &str) -> Result<String, Box<dyn std::error::Error>> {
     let output = Command::new("dbus-send")
         .args(&[
@@ -297,7 +287,6 @@ fn get_system_player_property(bus_name: &str, property: &str) -> Result<String, 
     Err("Property not found or not accessible".into())
 }
 
-#[cfg(not(windows))]
 fn extract_dbus_string_value(line: &str) -> Option<String> {
     // Extract string value from dbus-send output
     // Look for patterns like: string "value" or variant string "value"
@@ -311,7 +300,6 @@ fn extract_dbus_string_value(line: &str) -> Option<String> {
     None
 }
 
-#[cfg(not(windows))]
 fn print_system_sample_config(bus_name: &str) {
     println!("{{");
     println!("  \"mpris\": {{");
@@ -328,10 +316,4 @@ fn print_system_sample_config(bus_name: &str) {
     println!("      and may not be fully supported by all MPRIS libraries.");
 }
 
-#[cfg(windows)]
-fn main() {
-    eprintln!("Error: MPRIS support is not available on Windows.");
-    eprintln!("MPRIS is a Linux/Unix D-Bus based media player interface.");
-    eprintln!("This tool can only be used on Linux, macOS, and other Unix-like systems.");
-    std::process::exit(1);
-}
+

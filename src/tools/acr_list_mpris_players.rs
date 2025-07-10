@@ -189,88 +189,106 @@ fn get_player_info(conn: &Connection, bus_name: &str, bus_type: BusType) -> Resu
         current_artist: None,
     };
     
+    // Helper function to get a property safely
+    let get_property = |interface: &str, property: &str| -> Option<dbus::arg::Variant<Box<dyn RefArg>>> {
+        proxy.method_call("org.freedesktop.DBus.Properties", "Get", (interface, property))
+            .map(|(variant,): (dbus::arg::Variant<Box<dyn RefArg>>,)| variant)
+            .ok()
+    };
+    
     // Get MediaPlayer2 properties
-    if let Ok((identity,)) = proxy.method_call::<(String,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2", "Identity")
-    ) {
-        player.identity = Some(identity);
+    if let Some(identity_variant) = get_property("org.mpris.MediaPlayer2", "Identity") {
+        if let Some(identity) = identity_variant.as_str() {
+            player.identity = Some(identity.to_string());
+        }
     }
     
-    if let Ok((desktop_entry,)) = proxy.method_call::<(String,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2", "DesktopEntry")
-    ) {
-        player.desktop_entry = Some(desktop_entry);
+    if let Some(desktop_entry_variant) = get_property("org.mpris.MediaPlayer2", "DesktopEntry") {
+        if let Some(desktop_entry) = desktop_entry_variant.as_str() {
+            player.desktop_entry = Some(desktop_entry.to_string());
+        }
     }
     
-    // Get Player properties
-    if let Ok((can_control,)) = proxy.method_call::<(bool,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2.Player", "CanControl")
-    ) {
-        player.can_control = Some(can_control);
+    // Get Player properties  
+    if let Some(can_control_variant) = get_property("org.mpris.MediaPlayer2.Player", "CanControl") {
+        if let Some(can_control) = can_control_variant.as_u64().map(|v| v != 0)
+            .or_else(|| can_control_variant.as_i64().map(|v| v != 0)) {
+            player.can_control = Some(can_control);
+        }
     }
     
-    if let Ok((can_play,)) = proxy.method_call::<(bool,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2.Player", "CanPlay")
-    ) {
-        player.can_play = Some(can_play);
+    if let Some(can_play_variant) = get_property("org.mpris.MediaPlayer2.Player", "CanPlay") {
+        if let Some(can_play) = can_play_variant.as_u64().map(|v| v != 0)
+            .or_else(|| can_play_variant.as_i64().map(|v| v != 0)) {
+            player.can_play = Some(can_play);
+        }
     }
     
-    if let Ok((can_pause,)) = proxy.method_call::<(bool,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2.Player", "CanPause")
-    ) {
-        player.can_pause = Some(can_pause);
+    if let Some(can_pause_variant) = get_property("org.mpris.MediaPlayer2.Player", "CanPause") {
+        if let Some(can_pause) = can_pause_variant.as_u64().map(|v| v != 0)
+            .or_else(|| can_pause_variant.as_i64().map(|v| v != 0)) {
+            player.can_pause = Some(can_pause);
+        }
     }
     
-    if let Ok((can_seek,)) = proxy.method_call::<(bool,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2.Player", "CanSeek")
-    ) {
-        player.can_seek = Some(can_seek);
+    if let Some(can_seek_variant) = get_property("org.mpris.MediaPlayer2.Player", "CanSeek") {
+        if let Some(can_seek) = can_seek_variant.as_u64().map(|v| v != 0)
+            .or_else(|| can_seek_variant.as_i64().map(|v| v != 0)) {
+            player.can_seek = Some(can_seek);
+        }
     }
     
-    if let Ok((can_go_next,)) = proxy.method_call::<(bool,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2.Player", "CanGoNext")
-    ) {
-        player.can_go_next = Some(can_go_next);
+    if let Some(can_go_next_variant) = get_property("org.mpris.MediaPlayer2.Player", "CanGoNext") {
+        if let Some(can_go_next) = can_go_next_variant.as_u64().map(|v| v != 0)
+            .or_else(|| can_go_next_variant.as_i64().map(|v| v != 0)) {
+            player.can_go_next = Some(can_go_next);
+        }
     }
     
-    if let Ok((can_go_previous,)) = proxy.method_call::<(bool,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2.Player", "CanGoPrevious")
-    ) {
-        player.can_go_previous = Some(can_go_previous);
+    if let Some(can_go_previous_variant) = get_property("org.mpris.MediaPlayer2.Player", "CanGoPrevious") {
+        if let Some(can_go_previous) = can_go_previous_variant.as_u64().map(|v| v != 0)
+            .or_else(|| can_go_previous_variant.as_i64().map(|v| v != 0)) {
+            player.can_go_previous = Some(can_go_previous);
+        }
     }
     
-    if let Ok((playback_status,)) = proxy.method_call::<(String,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
-    ) {
-        player.playback_status = Some(playback_status);
+    if let Some(playback_status_variant) = get_property("org.mpris.MediaPlayer2.Player", "PlaybackStatus") {
+        if let Some(playback_status) = playback_status_variant.as_str() {
+            player.playback_status = Some(playback_status.to_string());
+        }
     }
     
     // Get metadata
-    if let Ok((metadata,)) = proxy.method_call::<(HashMap<String, dbus::arg::Variant<Box<dyn RefArg>>>,), _, _, _>(
-        "org.freedesktop.DBus.Properties", "Get", 
-        ("org.mpris.MediaPlayer2.Player", "Metadata")
-    ) {
-        if let Some(title_variant) = metadata.get("xesam:title") {
-            if let Some(title) = title_variant.as_str() {
-                player.current_track = Some(title.to_string());
+    if let Some(metadata_variant) = get_property("org.mpris.MediaPlayer2.Player", "Metadata") {
+        if let Some(metadata_iter) = metadata_variant.as_iter() {
+            let mut metadata_map = HashMap::new();
+            
+            // Parse the metadata dictionary
+            let mut iter = metadata_iter;
+            while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
+                if let Some(key_str) = key.as_str() {
+                    metadata_map.insert(key_str.to_string(), value);
+                }
             }
-        }
-        
-        if let Some(artist_variant) = metadata.get("xesam:artist") {
-            if let Some(mut artists) = artist_variant.as_iter() {
-                if let Some(first_artist) = artists.next() {
-                    if let Some(artist) = first_artist.as_str() {
-                        player.current_artist = Some(artist.to_string());
+            
+            // Extract title
+            if let Some(title_variant) = metadata_map.get("xesam:title") {
+                if let Some(title) = title_variant.as_str() {
+                    player.current_track = Some(title.to_string());
+                }
+            }
+            
+            // Extract artist (usually an array)
+            if let Some(artist_variant) = metadata_map.get("xesam:artist") {
+                if let Some(mut artists) = artist_variant.as_iter() {
+                    if let Some(first_artist) = artists.next() {
+                        if let Some(artist) = first_artist.as_str() {
+                            player.current_artist = Some(artist.to_string());
+                        }
                     }
+                } else if let Some(artist) = artist_variant.as_str() {
+                    // Some implementations might return a single string instead of array
+                    player.current_artist = Some(artist.to_string());
                 }
             }
         }
@@ -304,28 +322,34 @@ fn print_player_info(index: usize, player: &MprisPlayer) {
     // Print capabilities
     println!("   Capabilities:");
     
-    if let Some(can_control) = player.can_control {
-        println!("     - Can Control: {}", can_control);
+    match player.can_control {
+        Some(can_control) => println!("     - Can Control: {}", can_control),
+        None => println!("     - Can Control: <not available>"),
     }
     
-    if let Some(can_play) = player.can_play {
-        println!("     - Can Play: {}", can_play);
+    match player.can_play {
+        Some(can_play) => println!("     - Can Play: {}", can_play),
+        None => println!("     - Can Play: <not available>"),
     }
     
-    if let Some(can_pause) = player.can_pause {
-        println!("     - Can Pause: {}", can_pause);
+    match player.can_pause {
+        Some(can_pause) => println!("     - Can Pause: {}", can_pause),
+        None => println!("     - Can Pause: <not available>"),
     }
     
-    if let Some(can_seek) = player.can_seek {
-        println!("     - Can Seek: {}", can_seek);
+    match player.can_seek {
+        Some(can_seek) => println!("     - Can Seek: {}", can_seek),
+        None => println!("     - Can Seek: <not available>"),
     }
     
-    if let Some(can_go_next) = player.can_go_next {
-        println!("     - Can Go Next: {}", can_go_next);
+    match player.can_go_next {
+        Some(can_go_next) => println!("     - Can Go Next: {}", can_go_next),
+        None => println!("     - Can Go Next: <not available>"),
     }
     
-    if let Some(can_go_previous) = player.can_go_previous {
-        println!("     - Can Go Previous: {}", can_go_previous);
+    match player.can_go_previous {
+        Some(can_go_previous) => println!("     - Can Go Previous: {}", can_go_previous),
+        None => println!("     - Can Go Previous: <not available>"),
     }
     
     // Print current status

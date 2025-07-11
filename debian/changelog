@@ -1,3 +1,14 @@
+hifiberry-audiocontrol (0.4.9) stable; urgency=medium
+
+  * Added audiocontrol_get_mpris_state tool for MPRIS debugging and inspection
+  * Enhanced MPRIS metadata handling with proper array support for artists and genres
+  * Added helper functions for MPRIS metadata retrieval and Song object creation
+  * Improved Song struct with genres field supporting multiple genres
+  * Fixed MPRIS metadata parsing to correctly handle D-Bus dictionary structures
+  * Enhanced current song display in MPRIS state inspector tool
+
+ -- HiFiBerry <info@hifiberry.com>  Fri, 11 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.4.8) stable; urgency=medium
 
   * Added PlayerProgress for accurate real-time position tracking in librespot

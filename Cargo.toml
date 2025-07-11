@@ -111,3 +111,7 @@ path = "src/tools/acr_notify_librespot.rs"
 [[bin]]
 name = "audiocontrol_list_mpris_players"
 path = "src/tools/acr_list_mpris_players.rs"
+
+[[bin]]
+name = "audiocontrol_get_mpris_state"
+path = "src/tools/acr_get_mpris_state.rs"

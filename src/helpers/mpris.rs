@@ -4,7 +4,9 @@ use dbus::blocking::{Connection, Proxy};
 use dbus::arg::RefArg;
 use std::collections::HashMap;
 use std::time::Duration;
+use std::any::Any;
 use log::info;
+use crate::data::song::Song;
 
 /// MPRIS player information
 #[derive(Debug, Clone)]
@@ -363,5 +365,136 @@ pub fn find_player_by_name_or_first(bus_type: BusType, player_name: Option<&str>
     } else {
         // Return first available player
         Ok(players.into_iter().next())
+    }
+}
+
+/// Retrieve MPRIS metadata for a player
+pub fn retrieve_mpris_metadata(proxy: &Proxy<'_, &Connection>) -> Option<dbus::arg::Variant<Box<dyn RefArg>>> {
+    get_dbus_property(proxy, "org.mpris.MediaPlayer2.Player", "Metadata")
+}
+
+/// Extract song information from MPRIS metadata variant
+pub fn extract_song_from_mpris_metadata(metadata_variant: &dbus::arg::Variant<Box<dyn RefArg>>) -> Option<Song> {
+    let metadata = extract_metadata_robust(metadata_variant);
+    
+    if metadata.is_empty() {
+        return None;
+    }
+    
+    let mut song = Song::default();
+    
+    // Basic metadata
+    song.title = metadata.get("xesam:title").cloned();
+    song.artist = metadata.get("xesam:artist").cloned();
+    song.album = metadata.get("xesam:album").cloned();
+    song.album_artist = metadata.get("xesam:albumArtist").cloned();
+    song.cover_art_url = metadata.get("mpris:artUrl").cloned();
+    
+    // Track number
+    if let Some(track_str) = metadata.get("xesam:trackNumber") {
+        song.track_number = track_str.parse().ok();
+    }
+    
+    // Duration (convert from microseconds to seconds)
+    if let Some(duration_str) = metadata.get("mpris:length") {
+        if let Ok(duration_microseconds) = duration_str.parse::<i64>() {
+            song.duration = Some(duration_microseconds as f64 / 1_000_000.0);
+        }
+    }
+    
+    // Year
+    if let Some(year_str) = metadata.get("xesam:contentCreated") {
+        // Try to extract year from ISO date format
+        if let Some(year_part) = year_str.split('-').next() {
+            song.year = year_part.parse().ok();
+        }
+    }
+    
+    // Handle genres (can be single or multiple)
+    if let Some(genre_str) = metadata.get("xesam:genre") {
+        // If it looks like a comma-separated list or array, split it
+        if genre_str.contains(',') {
+            song.genres = genre_str.split(',').map(|g| g.trim().to_string()).collect();
+            song.genre = song.genres.first().cloned();
+        } else {
+            song.genre = Some(genre_str.clone());
+            song.genres = vec![genre_str.clone()];
+        }
+    }
+    
+    // Store all metadata in the metadata field for debugging/advanced use
+    for (key, value) in metadata {
+        if let Ok(json_value) = serde_json::to_value(&value) {
+            song.metadata.insert(key, json_value);
+        }
+    }
+    
+    Some(song)
+}
+
+/// Extract metadata from MPRIS D-Bus variant with robust parsing
+fn extract_metadata_robust(metadata_variant: &dbus::arg::Variant<Box<dyn RefArg>>) -> HashMap<String, String> {
+    let mut metadata = HashMap::new();
+    
+    // Try to get the inner value of the variant
+    let inner = metadata_variant.0.as_ref();
+    
+    // Try to cast to a HashMap first
+    if let Some(dict) = inner.as_any().downcast_ref::<HashMap<String, dbus::arg::Variant<Box<dyn RefArg>>>>() {
+        for (key, value) in dict {
+            let value_str = extract_variant_value(value.0.as_ref());
+            if !value_str.is_empty() {
+                metadata.insert(key.clone(), value_str);
+            }
+        }
+    } else {
+        // Fallback to iterator approach for other dictionary-like structures
+        if let Some(dict_iter) = inner.as_iter() {
+            let items: Vec<&dyn RefArg> = dict_iter.collect();
+            
+            // Process pairs of (key, value)
+            for chunk in items.chunks(2) {
+                if chunk.len() == 2 {
+                    if let Some(key_str) = chunk[0].as_str() {
+                        let value_str = extract_variant_value(chunk[1]);
+                        if !value_str.is_empty() {
+                            metadata.insert(key_str.to_string(), value_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    metadata
+}
+
+/// Extract the actual value from a D-Bus variant
+fn extract_variant_value(variant: &dyn RefArg) -> String {
+    // Handle different types of values that can be in the variant
+    if let Some(s) = variant.as_str() {
+        s.to_string()
+    } else if let Some(i) = variant.as_i64() {
+        i.to_string()
+    } else if let Some(u) = variant.as_u64() {
+        u.to_string()
+    } else if let Some(f) = variant.as_f64() {
+        f.to_string()
+    } else if let Some(array_iter) = variant.as_iter() {
+        // Handle arrays (like xesam:artist or xesam:genre which can be arrays)
+        let items: Vec<String> = array_iter
+            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+            .collect();
+        
+        if items.len() == 1 {
+            items[0].clone()
+        } else if items.is_empty() {
+            String::new()
+        } else {
+            items.join(", ")
+        }
+    } else {
+        // For object paths and other complex types, use debug format
+        format!("{:?}", variant)
     }
 }

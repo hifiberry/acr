@@ -29,6 +29,9 @@ pub struct Song {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
     
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub genres: Vec<String>,
+    
     #[serde(skip_serializing_if = "Option::is_none")]
     pub year: Option<i32>,
     

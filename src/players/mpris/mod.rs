@@ -1,6 +1,7 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::stream_details::StreamDetails;
+use crate::helpers::mpris::{retrieve_mpris_metadata, extract_song_from_mpris_metadata};
 use std::sync::{Arc, RwLock};
 use log::{debug, info, warn, error};
 use std::any::Any;
@@ -157,6 +158,14 @@ impl MprisPlayerController {
         let duration = metadata.length().map(|d| d.as_secs_f64()).unwrap_or(0.0);
         let track_id = metadata.track_id().map(|s| s.to_string()).unwrap_or_default();
         
+        // Handle genres - MPRIS can have multiple genres
+        let mut genres = Vec::new();
+        let mut genre = None;
+        
+        // Try to get genres from metadata (the mpris crate might expose this)
+        // For now, we'll leave this empty and rely on the helper functions for genre extraction
+        // The mpris crate doesn't seem to expose genre information directly
+        
         Some(Song {
             title: Some(title),
             artist: Some(artist),
@@ -167,7 +176,8 @@ impl MprisPlayerController {
             track_number: metadata.track_number(),
             album_artist: None,
             total_tracks: None,
-            genre: None,
+            genre,
+            genres,
             year: None,
             source: Some("mpris".to_string()),
             liked: None,

@@ -82,7 +82,9 @@
                 "port": 6600,
                 "load_on_startup": true,
                 "artist_separator": [",", "feat. "],
-                "enhance_metadata": true
+                "enhance_metadata": true,
+                "_comment": "max_reconnect_attempts: Maximum number of connection attempts before giving up (default: 5)",
+                "max_reconnect_attempts": 5
             }
         },
         {
@@ -113,7 +115,7 @@
             }
         },
         {
-            "_shairport": {
+            "shairport": {
                 "enable": true,
                 "poll_interval": 1.0,
                 "_comment": "systemd_service: Use when AirPlay 2 mode disables MPRIS controls",

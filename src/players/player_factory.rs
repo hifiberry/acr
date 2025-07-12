@@ -73,9 +73,15 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                             .collect::<Vec<String>>()
                     });
                 
+                // Check if max_reconnect_attempts is specified in the JSON
+                let max_reconnect_attempts = config_obj.get("max_reconnect_attempts")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(5) as u32; // Default to 5 attempts if not specified
+                
                 let mut player = MPDPlayerController::with_connection(host, port);
                 player.set_load_mpd_library(load_library);
                 player.set_enhance_metadata(enhance_metadata);
+                player.set_max_reconnect_attempts(max_reconnect_attempts);
                 
                 // Set custom artist separators if provided
                 if let Some(separators) = artist_separators {

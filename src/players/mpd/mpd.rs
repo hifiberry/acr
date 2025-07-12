@@ -50,6 +50,12 @@ pub struct MPDPlayerController {
     
     /// MPD library instance wrapped in Arc and Mutex for thread-safe access
     library: Arc<Mutex<Option<crate::players::mpd::library::MPDLibrary>>>,
+    
+    /// Maximum number of reconnection attempts before giving up
+    max_reconnect_attempts: u32,
+    
+    /// Current reconnection attempt counter
+    reconnect_attempts: Arc<Mutex<u32>>,
 }
 
 // Manually implement Clone for MPDPlayerController
@@ -66,6 +72,8 @@ impl Clone for MPDPlayerController {
             enhance_metadata: self.enhance_metadata,
             artist_separators: self.artist_separators.clone(),
             library: Arc::clone(&self.library),
+            max_reconnect_attempts: self.max_reconnect_attempts,
+            reconnect_attempts: Arc::clone(&self.reconnect_attempts),
         }
     }
 }
@@ -90,6 +98,8 @@ impl MPDPlayerController {
             enhance_metadata: true,
             artist_separators: None,
             library: Arc::new(Mutex::new(None)),
+            max_reconnect_attempts: 5, // Default value
+            reconnect_attempts: Arc::new(Mutex::new(0)),
         };
         
         // Set default capabilities
@@ -115,6 +125,8 @@ impl MPDPlayerController {
             enhance_metadata: true,
             artist_separators: None,
             library: Arc::new(Mutex::new(None)),
+            max_reconnect_attempts: 5, // Default value
+            reconnect_attempts: Arc::new(Mutex::new(0)),
         };
         
         // Set default capabilities
@@ -149,6 +161,7 @@ impl MPDPlayerController {
         match Client::connect(&addr) {
             Ok(_) => {
                 info!("Successfully reconnected to MPD at {}", addr);
+                self.reset_reconnect_attempts(); // Reset counter on successful connection
                 Ok(())
             },
             Err(e) => {
@@ -212,6 +225,34 @@ impl MPDPlayerController {
     /// Set whether to enhance metadata
     pub fn set_enhance_metadata(&mut self, enhance: bool) {
         self.enhance_metadata = enhance;
+    }
+    
+    /// Get the maximum number of reconnection attempts
+    pub fn get_max_reconnect_attempts(&self) -> u32 {
+        self.max_reconnect_attempts
+    }
+    
+    /// Set the maximum number of reconnection attempts before giving up
+    pub fn set_max_reconnect_attempts(&mut self, attempts: u32) {
+        debug!("Setting maximum reconnection attempts to {}", attempts);
+        self.max_reconnect_attempts = attempts;
+    }
+    
+    /// Reset the reconnection attempt counter
+    fn reset_reconnect_attempts(&self) {
+        if let Ok(mut counter) = self.reconnect_attempts.lock() {
+            *counter = 0;
+        }
+    }
+    
+    /// Increment the reconnection attempt counter and return the new value
+    fn increment_reconnect_attempts(&self) -> u32 {
+        if let Ok(mut counter) = self.reconnect_attempts.lock() {
+            *counter += 1;
+            *counter
+        } else {
+            1
+        }
     }
     
     /// Get a reference to the MPD library, if available
@@ -366,10 +407,22 @@ impl MPDPlayerController {
             let idle_client = match Client::connect(&idle_addr) {
                 Ok(client) => {
                     debug!("Connected to MPD for idle listening at {}", idle_addr);
+                    player_arc.reset_reconnect_attempts(); // Reset counter on successful connection
                     client
                 },
                 Err(e) => {
                     warn!("Failed to connect to MPD for idle mode: {}", e);
+                    
+                    // Increment attempt counter and check if we should give up
+                    let attempts = player_arc.increment_reconnect_attempts();
+                    let max_attempts = player_arc.get_max_reconnect_attempts();
+                    
+                    if attempts >= max_attempts {
+                        error!("Failed to connect to MPD after {} attempts, giving up", attempts);
+                        break; // Exit the loop and stop trying
+                    }
+                    
+                    info!("Will attempt to reconnect in 5 seconds (attempt {}/{})", attempts, max_attempts);
                     Self::wait_for_reconnect(&running);
                     continue;
                 }
@@ -380,6 +433,16 @@ impl MPDPlayerController {
             
             // If we get here, either there was a connection error or the connection was lost
             if running.load(Ordering::SeqCst) {
+                // Only wait for reconnect if we haven't exceeded the limit yet
+                let attempts = player_arc.increment_reconnect_attempts();
+                let max_attempts = player_arc.get_max_reconnect_attempts();
+                
+                if attempts >= max_attempts {
+                    error!("Connection lost and maximum reconnection attempts ({}) reached, giving up", max_attempts);
+                    break;
+                }
+                
+                info!("Connection lost, will attempt to reconnect in 5 seconds (attempt {}/{})", attempts, max_attempts);
                 Self::wait_for_reconnect(&running);
             }
         }
@@ -511,7 +574,6 @@ impl MPDPlayerController {
     
     /// Wait for a short period before attempting to reconnect
     fn wait_for_reconnect(running: &Arc<AtomicBool>) {
-        info!("Will attempt to reconnect in 5 seconds");
         for _ in 0..50 {
             if !running.load(Ordering::SeqCst) {
                 break;

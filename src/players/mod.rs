@@ -8,11 +8,11 @@ pub mod librespot;
 pub mod lms;
 pub mod event_api;
 pub mod generic;
+pub mod shairport;
 
 // MPRIS support is only available on Unix-like systems (Linux, macOS)
-// Temporarily commented out while implementing new dbus-based MPRIS controller
-//#[cfg(not(windows))]
-//pub mod mpris;
+#[cfg(not(windows))]
+pub mod mpris;
 
 // Re-export the PlayerController trait and related components
 pub use player_controller::{PlayerController, BasePlayerController};
@@ -24,10 +24,11 @@ pub use raat::MetadataPipeReader;
 pub use librespot::LibrespotPlayerController;
 // Export the GenericPlayerController for use in player_factory
 pub use generic::GenericPlayerController;
+// Export the ShairportSyncPlayerController for use in player_factory
+pub use shairport::ShairportSyncPlayerController;
 // Export the MprisPlayerController for use in player_factory (Unix only)
-// Temporarily commented out while implementing new dbus-based MPRIS controller
-//#[cfg(not(windows))]
-//pub use mpris::MprisPlayerController;
+#[cfg(not(windows))]
+pub use mpris::MprisPlayerController;
 // Export the event API components
 pub use event_api::{PlayerEventResponse, player_event_update};
 

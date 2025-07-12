@@ -3,7 +3,7 @@ use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, Playbac
 use crate::data::stream_details::StreamDetails;
 use crate::helpers::mpris::{
     retrieve_mpris_metadata, extract_song_from_mpris_metadata, create_connection, 
-    create_player_proxy, get_dbus_property, get_string_property, get_bool_property,
+    create_player_proxy, get_string_property, get_bool_property,
     get_i64_property, send_player_method, send_player_method_with_args, 
     set_player_property, bool_to_dbus_variant, BusType
 };
@@ -153,7 +153,7 @@ impl MprisPlayerController {
     }
     
     /// Get or create an MPRIS player connection
-    fn get_mpris_connection(&self) -> Result<(Connection, dbus::blocking::Proxy<'_, &Connection>), String> {
+    fn get_mpris_connection(&self) -> Result<Connection, String> {
         // Create new connection each time (no caching to avoid threading issues)
         debug!("Creating new MPRIS connection to {} on {} bus", self.bus_name, self.bus_type);
         
@@ -165,18 +165,17 @@ impl MprisPlayerController {
             return Err(format!("MPRIS player '{}' not found on {} bus", self.bus_name, self.bus_type));
         }
         
-        let proxy = create_player_proxy(&conn, &self.bus_name);
-        
         info!("Connected to MPRIS player: {} on {} bus", self.bus_name, self.bus_type);
-        Ok((conn, proxy))
+        Ok(conn)
     }
     
     /// Update internal state from MPRIS player
     fn update_state_from_mpris(&self) {
-        let Ok((_conn, proxy)) = self.get_mpris_connection() else {
+        let Ok(conn) = self.get_mpris_connection() else {
             debug!("Failed to connect to MPRIS player for state update");
             return;
         };
+        let proxy = create_player_proxy(&conn, &self.bus_name);
         
         // Update playback state
         if let Some(status) = get_string_property(&proxy, "org.mpris.MediaPlayer2.Player", "PlaybackStatus") {
@@ -412,7 +411,8 @@ impl PlayerController for MprisPlayerController {
     }
     
     fn get_position(&self) -> Option<f64> {
-        if let Ok((_conn, proxy)) = self.get_mpris_connection() {
+        if let Ok(conn) = self.get_mpris_connection() {
+            let proxy = create_player_proxy(&conn, &self.bus_name);
             if let Some(position_us) = get_i64_property(&proxy, "org.mpris.MediaPlayer2.Player", "Position") {
                 return Some(position_us as f64 / 1_000_000.0);
             }
@@ -423,13 +423,14 @@ impl PlayerController for MprisPlayerController {
     fn send_command(&self, command: PlayerCommand) -> bool {
         info!("Sending command to MPRIS player: {}", command);
         
-        let (_conn, proxy) = match self.get_mpris_connection() {
-            Ok(conn_proxy) => conn_proxy,
+        let conn = match self.get_mpris_connection() {
+            Ok(conn) => conn,
             Err(e) => {
                 error!("Failed to get MPRIS player connection: {}", e);
                 return false;
             }
         };
+        let proxy = create_player_proxy(&conn, &self.bus_name);
         
         let result = match command {
             PlayerCommand::Play => send_player_method(&proxy, "Play"),

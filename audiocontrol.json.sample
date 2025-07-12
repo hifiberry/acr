@@ -111,6 +111,19 @@
                 "reconnection_interval": 30,
                 "polling_interval": 30
             }
+        },
+        {
+            "_shairport": {
+                "enable": true,
+                "poll_interval": 1.0
+            }
+        },
+        {
+            "_mpris": {
+                "enable": true,
+                "bus_name": "org.mpris.MediaPlayer2.vlc",
+                "poll_interval": 1.0
+            }
         }
     ]
 }

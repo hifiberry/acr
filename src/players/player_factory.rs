@@ -1,9 +1,8 @@
-use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController, generic::GenericPlayerController};
+use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController, generic::GenericPlayerController, ShairportSyncPlayerController};
 
 // MPRIS support is only available on Unix-like systems
-// Temporarily commented out while implementing new dbus-based MPRIS controller
-//#[cfg(not(windows))]
-//use crate::players::mpris::MprisPlayerController;
+#[cfg(not(windows))]
+use crate::players::mpris::MprisPlayerController;
 use serde_json::Value;
 use std::error::Error;
 use std::fmt;
@@ -150,18 +149,30 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .map_err(|e| PlayerCreationError::ParseError(e))?;
                 Ok(Box::new(player))
             },
+            "shairport" | "shairportsync" => {
+                // Create ShairportSyncPlayerController with optional poll interval
+                let poll_interval = config_obj.get("poll_interval")
+                    .and_then(|v| v.as_f64())
+                    .map(|f| std::time::Duration::from_secs_f64(f))
+                    .unwrap_or_else(|| std::time::Duration::from_secs_f64(1.0));
+                
+                let player = ShairportSyncPlayerController::new_with_poll_interval(poll_interval);
+                Ok(Box::new(player))
+            },
             #[cfg(not(windows))]
             "mpris" => {
-                // MPRIS player temporarily disabled while implementing new dbus-based controller
-                return Err(PlayerCreationError::InvalidType("MPRIS player temporarily disabled".to_string()));
-                
                 // Create MprisPlayerController with config (Unix/Linux only)
-                //let bus_name = config_obj.get("bus_name")
-                //    .and_then(|v| v.as_str())
-                //    .ok_or_else(|| PlayerCreationError::MissingField("bus_name".to_string()))?;
+                let bus_name = config_obj.get("bus_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| PlayerCreationError::MissingField("bus_name".to_string()))?;
                 
-                //let player = MprisPlayerController::new(bus_name);
-                //Ok(Box::new(player))
+                let poll_interval = config_obj.get("poll_interval")
+                    .and_then(|v| v.as_f64())
+                    .map(|f| std::time::Duration::from_secs_f64(f))
+                    .unwrap_or_else(|| std::time::Duration::from_secs_f64(1.0));
+                
+                let player = MprisPlayerController::new_with_poll_interval(bus_name, poll_interval);
+                Ok(Box::new(player))
             },
             "null" => {
                 // Create NullPlayerController

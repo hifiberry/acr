@@ -2,14 +2,14 @@ Source: hifiberry-audiocontrol
 Section: utils
 Priority: optional
 Maintainer: HiFiBerry <info@hifiberry.com>
-Build-Depends: debhelper-compat (= 13), curl, ca-certificates, pkgconf, libssl-dev
+Build-Depends: debhelper-compat (= 13), curl, ca-certificates, pkgconf, libssl-dev, libdbus-1-dev
 Standards-Version: 4.5.1
 Homepage: https://github.com/hifiberry/acr
 
 Package: hifiberry-audiocontrol
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Suggest: python3, python3-websocket
+Depends: ${shlibs:Depends}, ${misc:Depends}, libdbus-1-3, python3
+Suggests: python3-websocket
 Description: HiFiBerry AudioControl/Rust application
  A Rust application for audio control functionality.
  This package provides tools for managing audio playback
@@ -17,10 +17,16 @@ Description: HiFiBerry AudioControl/Rust application
  .
  Includes command-line tools:
   * audiocontrol - Main audio control daemon
-  * audiocontrol_dumpcache - Cache inspection utility
+  * audiocontrol_dump_cache - Cache inspection utility
+  * audiocontrol_dump_store - Security store inspection utility
   * audiocontrol_lms_client - Logitech Media Server client
   * audiocontrol_send_update - Player state update utility
+  * audiocontrol_notify_librespot - Librespot event notification tool
+  * audiocontrol_player_event_client - Player event client utility
+  * audiocontrol_list_mpris_players - MPRIS player discovery tool
+  * audiocontrol_get_mpris_state - MPRIS player state inspector
+  * audiocontrol_monitor_mpris_state - Real-time MPRIS state monitor
   * audiocontrol_nowplaying - Terminal now playing display client
  .
- Python dependencies are optional and only needed for the 
- audiocontrol_nowplaying example client.
+ The audiocontrol_nowplaying client requires Python 3 and optionally
+ python3-websocket for WebSocket support.

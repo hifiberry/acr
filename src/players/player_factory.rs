@@ -150,13 +150,18 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                 Ok(Box::new(player))
             },
             "shairport" | "shairportsync" => {
-                // Create ShairportSyncPlayerController with optional poll interval
+                // Create ShairportSyncPlayerController with optional poll interval and systemd service
                 let poll_interval = config_obj.get("poll_interval")
                     .and_then(|v| v.as_f64())
                     .map(|f| std::time::Duration::from_secs_f64(f))
                     .unwrap_or_else(|| std::time::Duration::from_secs_f64(1.0));
                 
-                let player = ShairportSyncPlayerController::new_with_poll_interval(poll_interval);
+                let systemd_service = config_obj.get("systemd_service")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty()) // Filter out empty strings
+                    .map(|s| s.to_string());
+                
+                let player = ShairportSyncPlayerController::new_with_config(poll_interval, systemd_service);
                 Ok(Box::new(player))
             },
             #[cfg(not(windows))]

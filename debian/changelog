@@ -1,9 +1,9 @@
 hifiberry-audiocontrol (0.4.10) stable; urgency=medium
 
-  * Added audiocontrol_monitor_mpris_state tool for real-time MPRIS state monitoring
-  * Refactored MPRIS player controller to use internal helper functions instead of external crate
-  * Added configurable polling mechanism to MPRIS players (default 1.0s interval)
-  * Implemented ShairportSync-specific player controller extending MPRIS functionality
+  * Added audiocontrol_monitor_mpris_state tool for real-time MPRIS monitoring
+  * Refactored MPRIS player controller to use internal helper functions
+  * Added configurable polling mechanism to MPRIS players (default 1.0s)
+  * Implemented ShairportSync-specific player controller extending MPRIS
   * Added ShairportSync and MPRIS player configurations to sample JSON
   * Enhanced MPRIS player factory with poll_interval configuration support
   * Improved thread-based polling for better real-time state updates
@@ -11,7 +11,7 @@ hifiberry-audiocontrol (0.4.10) stable; urgency=medium
   * Fixed MPRIS controller lifecycle management with start/stop polling threads
   * Updated packaging to include new audiocontrol_monitor_mpris_state tool
 
- -- HiFiBerry <info@hifiberry.com>  Fri, 12 Jul 2025 12:00:00 +0000
+ -- HiFiBerry <info@hifiberry.com>  Sat, 12 Jul 2025 12:00:00 +0000
 
 hifiberry-audiocontrol (0.4.9) stable; urgency=medium
 
@@ -143,9 +143,3 @@ acr (0.2.0) unstable; urgency=medium
   * Added multiple player backend support (MPD, LMS)
 
  -- HiFiBerry <info@hifiberry.com>  Thu, 15 May 2025 00:00:00 +0000
-
-audiocontrol-nowplaying (1.0-1) unstable; urgency=medium
-
-* Add terminal now playing client (audiocontrol_nowplaying)
-
- -- HiFiBerry <support@hifiberry.com>  Tue, 08 Jul 2025 12:00:00 +0000

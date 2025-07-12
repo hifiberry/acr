@@ -1,0 +1,77 @@
+.TH AUDIOCONTROL_NOWPLAYING 1 "July 2025" "audiocontrol 0.4.10" "AudioControl Manual"
+.SH NAME
+audiocontrol_nowplaying \- terminal-based now playing display client
+.SH SYNOPSIS
+.B audiocontrol_nowplaying
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol_nowplaying
+is a Python-based terminal client that displays currently playing track information from an AudioControl server in a colorful, formatted ASCII interface.
+.PP
+The client connects to an AudioControl server via HTTP API or WebSocket and displays real-time information about the currently playing track, including title, artist, album, progress bar, and playback controls.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show help message and exit.
+.TP
+.BR \-\-host " " \fIHOST\fR
+AudioControl server hostname or IP address (default: localhost).
+.TP
+.BR \-\-port " " \fIPORT\fR
+AudioControl server port (default: 1080).
+.TP
+.BR \-\-websocket
+Use WebSocket connection for real-time updates instead of polling.
+.TP
+.BR \-\-interval " " \fISECONDS\fR
+Update interval in seconds when using HTTP polling (default: 1.0).
+.TP
+.BR \-\-width " " \fICOLUMNS\fR
+Display width in terminal columns (default: auto-detect).
+.TP
+.BR \-\-height " " \fIROWS\fR
+Display height in terminal rows (default: auto-detect).
+.TP
+.BR \-\-no\-color
+Disable colored output.
+.SH FEATURES
+.TP
+.B Real-time Updates
+Supports both HTTP polling and WebSocket connections for live track updates.
+.TP
+.B Progress Visualization
+Displays a progress bar showing current position within the track.
+.TP
+.B Responsive Layout
+Automatically adapts to terminal size and supports custom dimensions.
+.TP
+.B Colorful Interface
+Uses ANSI colors to create an attractive terminal display (can be disabled).
+.SH EXAMPLES
+.TP
+.B audiocontrol_nowplaying
+Connect to AudioControl on localhost:1080 using HTTP polling.
+.TP
+.B audiocontrol_nowplaying --host 192.168.1.100 --websocket
+Connect to remote AudioControl server using WebSocket for real-time updates.
+.TP
+.B audiocontrol_nowplaying --interval 0.5 --width 80
+Use 0.5-second polling interval with 80-column display width.
+.SH REQUIREMENTS
+This tool requires Python 3 and the following Python packages:
+.TP
+.B python3-websocket
+For WebSocket support (optional, only needed with --websocket).
+.PP
+Install requirements on Debian/Ubuntu:
+.br
+sudo apt install python3 python3-websocket
+.SH NOTES
+The tool will gracefully handle connection errors and server unavailability. Press Ctrl+C to exit.
+.PP
+WebSocket mode provides the most responsive experience but requires the AudioControl server to have WebSocket support enabled.
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_send_update (1)
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>

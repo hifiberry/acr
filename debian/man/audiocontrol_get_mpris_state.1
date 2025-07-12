@@ -1,0 +1,54 @@
+.TH AUDIOCONTROL_GET_MPRIS_STATE 1 "July 2025" "audiocontrol 0.4.10" "AudioControl Manual"
+.SH NAME
+audiocontrol_get_mpris_state \- MPRIS player state inspector and debugging tool
+.SH SYNOPSIS
+.B audiocontrol_get_mpris_state
+.I PLAYER_IDENTIFIER
+.SH DESCRIPTION
+.B audiocontrol_get_mpris_state
+is a command-line tool for inspecting the current state and properties of MPRIS (Media Player Remote Interfacing Specification) media players.
+.PP
+This tool connects to a specified MPRIS player via D-Bus and displays comprehensive information about the player's current state, including playback status, track metadata, capabilities, and all available MPRIS properties.
+.PP
+The tool is useful for debugging MPRIS player issues, understanding player capabilities, and inspecting metadata formatting.
+.SH ARGUMENTS
+.TP
+.I PLAYER_IDENTIFIER
+Bus name or partial name of the MPRIS player to inspect. Can be a full D-Bus name like "org.mpris.MediaPlayer2.vlc" or a partial name like "vlc" for convenience.
+.SH EXAMPLES
+.TP
+.B audiocontrol_get_mpris_state org.mpris.MediaPlayer2.vlc
+Inspect the VLC media player state and properties.
+.TP
+.B audiocontrol_get_mpris_state spotify
+Inspect Spotify player using partial name matching.
+.TP
+.B audiocontrol_get_mpris_state shairport
+Inspect Shairport Sync (AirPlay receiver) player state.
+.SH OUTPUT FORMAT
+The tool displays information in several sections:
+.PP
+.B Current Song
+- Basic track information including status, title, artist, album, and duration
+.PP
+.B MPRIS MediaPlayer2 Interface
+- Player identity, capabilities, and supported features
+.PP
+.B MPRIS MediaPlayer2.Player Interface
+- Playback controls, status, and player-specific properties
+.PP
+.B Current Track Metadata
+- Detailed metadata including structured song data and raw MPRIS properties
+.PP
+.B Additional Interfaces
+- TrackList and Playlists interfaces if supported by the player
+.SH NOTES
+This tool scans both session and system D-Bus for MPRIS players. System bus players may require appropriate permissions to access.
+.PP
+The tool provides both human-readable formatted output and raw MPRIS property dumps for debugging purposes.
+.SH SEE ALSO
+.BR audiocontrol_list_mpris_players (1),
+.BR audiocontrol_monitor_mpris_state (1),
+.BR audiocontrol (1)
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>

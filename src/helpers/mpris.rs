@@ -4,7 +4,6 @@ use dbus::blocking::{Connection, Proxy};
 use dbus::arg::RefArg;
 use std::collections::HashMap;
 use std::time::Duration;
-use std::any::Any;
 use log::info;
 use crate::data::song::Song;
 

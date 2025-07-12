@@ -1,7 +1,6 @@
 #![cfg(unix)]
 
 use std::env;
-use log::info;
 use audiocontrol::helpers::mpris::{find_mpris_players, BusType, MprisPlayer};
 
 fn main() {

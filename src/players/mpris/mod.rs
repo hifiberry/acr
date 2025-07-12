@@ -171,55 +171,112 @@ impl MprisPlayerController {
     
     /// Update internal state from MPRIS player
     fn update_state_from_mpris(&self) {
+        debug!("Updating state from MPRIS player: {}", self.bus_name);
+        
         let Ok(conn) = self.get_mpris_connection() else {
-            debug!("Failed to connect to MPRIS player for state update");
+            debug!("Failed to connect to MPRIS player {} for state update", self.bus_name);
             return;
         };
         let proxy = create_player_proxy(&conn, &self.bus_name);
         
         // Update playback state
         if let Some(status) = get_string_property(&proxy, "org.mpris.MediaPlayer2.Player", "PlaybackStatus") {
+            debug!("MPRIS PlaybackStatus for {}: {}", self.bus_name, status);
+            
             let state = match status.as_str() {
                 "Playing" => PlaybackState::Playing,
                 "Paused" => PlaybackState::Paused,
                 "Stopped" => PlaybackState::Stopped,
-                _ => PlaybackState::Unknown,
+                _ => {
+                    debug!("Unknown playback status '{}' for {}", status, self.bus_name);
+                    PlaybackState::Unknown
+                }
             };
             
             if let Ok(mut current_state) = self.current_state.write() {
+                let old_state = current_state.state;
                 current_state.state = state;
+                if old_state != state {
+                    debug!("MPRIS state changed for {}: {:?} -> {:?}", self.bus_name, old_state, state);
+                }
                 
                 // Update shuffle
-                current_state.shuffle = get_bool_property(&proxy, "org.mpris.MediaPlayer2.Player", "Shuffle")
+                let shuffle = get_bool_property(&proxy, "org.mpris.MediaPlayer2.Player", "Shuffle")
                     .unwrap_or(false);
+                if current_state.shuffle != shuffle {
+                    debug!("MPRIS shuffle changed for {}: {} -> {}", self.bus_name, current_state.shuffle, shuffle);
+                }
+                current_state.shuffle = shuffle;
                 
                 // Update loop mode
                 if let Some(loop_status) = get_string_property(&proxy, "org.mpris.MediaPlayer2.Player", "LoopStatus") {
-                    current_state.loop_mode = match loop_status.as_str() {
+                    debug!("MPRIS LoopStatus for {}: {}", self.bus_name, loop_status);
+                    
+                    let loop_mode = match loop_status.as_str() {
                         "None" => LoopMode::None,
                         "Track" => LoopMode::Track,
                         "Playlist" => LoopMode::Playlist,
-                        _ => LoopMode::None,
+                        _ => {
+                            debug!("Unknown loop status '{}' for {}", loop_status, self.bus_name);
+                            LoopMode::None
+                        }
                     };
+                    
+                    if current_state.loop_mode != loop_mode {
+                        debug!("MPRIS loop mode changed for {}: {:?} -> {:?}", self.bus_name, current_state.loop_mode, loop_mode);
+                    }
+                    current_state.loop_mode = loop_mode;
                 }
                 
                 // Update position (convert from microseconds to seconds)
                 if let Some(position_us) = get_i64_property(&proxy, "org.mpris.MediaPlayer2.Player", "Position") {
-                    current_state.position = Some(position_us as f64 / 1_000_000.0);
+                    let position_seconds = position_us as f64 / 1_000_000.0;
+                    debug!("MPRIS position for {}: {:.2}s ({}μs)", self.bus_name, position_seconds, position_us);
+                    current_state.position = Some(position_seconds);
+                } else {
+                    debug!("No position information available for {}", self.bus_name);
                 }
+            } else {
+                debug!("Failed to acquire write lock for current_state for {}", self.bus_name);
             }
+        } else {
+            debug!("No PlaybackStatus property available for {}", self.bus_name);
         }
         
         // Update song metadata using helper functions
         if let Some(metadata_variant) = retrieve_mpris_metadata(&proxy) {
+            debug!("Retrieved MPRIS metadata for {}", self.bus_name);
             let song = extract_song_from_mpris_metadata(&metadata_variant);
             if let Ok(mut current_song) = self.current_song.write() {
+                let song_changed = match (&*current_song, &song) {
+                    (Some(old), Some(new)) => old.title != new.title || old.artist != new.artist,
+                    (None, Some(_)) => true,
+                    (Some(_), None) => true,
+                    (None, None) => false,
+                };
+                
+                if song_changed {
+                    debug!("MPRIS song changed for {}: {:?} -> {:?}", 
+                           self.bus_name, 
+                           current_song.as_ref().map(|s| format!("{} - {}", 
+                               s.artist.as_deref().unwrap_or("Unknown Artist"),
+                               s.title.as_deref().unwrap_or("Unknown Title"))),
+                           song.as_ref().map(|s| format!("{} - {}", 
+                               s.artist.as_deref().unwrap_or("Unknown Artist"),
+                               s.title.as_deref().unwrap_or("Unknown Title"))));
+                }
+                
                 *current_song = song;
+            } else {
+                debug!("Failed to acquire write lock for current_song for {}", self.bus_name);
             }
+        } else {
+            debug!("No metadata available for {}", self.bus_name);
         }
         
         // Mark player as alive
         self.base.alive();
+        debug!("Completed state update for MPRIS player: {}", self.bus_name);
     }
     
     /// Start the polling thread

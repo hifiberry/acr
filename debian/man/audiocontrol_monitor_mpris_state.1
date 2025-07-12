@@ -1,0 +1,111 @@
+.TH audiocontrol_monitor_mpris_state 1 "December 2024" "audiocontrol 0.4.9" "User Commands"
+.SH NAME
+audiocontrol_monitor_mpris_state \- monitor MPRIS player state changes in real-time
+.SH SYNOPSIS
+.B audiocontrol_monitor_mpris_state
+.I PLAYER_IDENTIFIER
+.SH DESCRIPTION
+.B audiocontrol_monitor_mpris_state
+monitors MPRIS (Media Player Remote Interfacing Specification) property changes 
+for a specified media player in real-time. It displays changes to playback status, 
+track metadata, volume, position, and other player properties as they occur.
+.PP
+The tool works by polling the specified MPRIS player every 500ms and comparing 
+the current state with the previous state. When changes are detected, they are 
+displayed with timestamps showing what properties changed and their old and new values.
+.PP
+This tool is similar to running dbus-monitor with appropriate filters, but provides 
+formatted output and uses the same player selection mechanism as other audiocontrol 
+MPRIS tools.
+.SH ARGUMENTS
+.TP
+.I PLAYER_IDENTIFIER
+Bus name or partial name of the MPRIS player to monitor. This can be:
+.IP \(bu 2
+Full bus name (e.g., org.mpris.MediaPlayer2.vlc)
+.IP \(bu 2
+Partial bus name (e.g., vlc, spotify, shairport)
+.IP \(bu 2
+Player identity name (case-insensitive partial match)
+.SH OPTIONS
+.TP
+.B \-h, \-\-help
+Print help message and exit.
+.SH EXAMPLES
+Monitor VLC player using full bus name:
+.nf
+.RS
+audiocontrol_monitor_mpris_state org.mpris.MediaPlayer2.vlc
+.RE
+.fi
+.PP
+Monitor Spotify using partial name match:
+.nf
+.RS
+audiocontrol_monitor_mpris_state spotify
+.RE
+.fi
+.PP
+Monitor Shairport Sync player:
+.nf
+.RS
+audiocontrol_monitor_mpris_state shairport
+.RE
+.fi
+.SH OUTPUT
+The tool displays:
+.IP \(bu 2
+Initial player state when monitoring starts
+.IP \(bu 2
+Timestamps when changes are detected
+.IP \(bu 2
+Detailed change descriptions showing old → new values
+.IP \(bu 2
+Updated complete state after changes
+.PP
+Monitored properties include:
+.IP \(bu 2
+PlaybackStatus (Playing, Paused, Stopped)
+.IP \(bu 2
+Track metadata (Title, Artist, Album)
+.IP \(bu 2
+Position changes (when significant, >2 seconds)
+.IP \(bu 2
+Volume changes
+.IP \(bu 2
+Shuffle and Loop status
+.IP \(bu 2
+Player capabilities
+.SH SIGNALS
+.TP
+.B SIGINT (Ctrl+C)
+Gracefully stop monitoring and exit.
+.SH NOTES
+.IP \(bu 2
+This tool is only available on Unix-like systems that support D-Bus.
+.IP \(bu 2
+The tool uses polling rather than true D-Bus signal monitoring for better compatibility.
+.IP \(bu 2
+Position changes are only reported if they differ by more than 2 seconds to avoid spam during normal playback.
+.IP \(bu 2
+Some players may be on the system bus and require appropriate permissions.
+.SH EQUIVALENT dbus-monitor COMMAND
+This tool is equivalent to running:
+.nf
+.RS
+dbus-monitor --system "type='signal',\\
+  interface='org.freedesktop.DBus.Properties',\\
+  member='PropertiesChanged',\\
+  sender='org.mpris.MediaPlayer2.YourPlayer',\\
+  path='/org/mpris/MediaPlayer2'"
+.RE
+.fi
+.PP
+But with formatted output and convenient player selection.
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_list_mpris_players (1),
+.BR audiocontrol_get_mpris_state (1),
+.BR dbus-monitor (1)
+.SH AUTHOR
+HiFiBerry GmbH

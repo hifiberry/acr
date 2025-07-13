@@ -115,7 +115,7 @@
             }
         },
         {
-            "shairport": {
+            "shairport-mpris": {
                 "enable": true,
                 "poll_interval": 1.0,
                 "_comment": "systemd_service: Use when AirPlay 2 mode disables MPRIS controls",

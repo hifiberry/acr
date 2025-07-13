@@ -123,6 +123,11 @@ impl MprisPlayerController {
     
     /// Extract a friendly player name from the bus name
     fn extract_player_name(bus_name: &str) -> String {
+        // Special case for ShairportSync to use a more descriptive name
+        if bus_name == "org.mpris.MediaPlayer2.ShairportSync" {
+            return "shairport-mpris".to_string();
+        }
+        
         // Extract the last part of the bus name as the player name
         // e.g., "org.mpris.MediaPlayer2.vlc" -> "vlc"
         if let Some(last_part) = bus_name.split('.').last() {

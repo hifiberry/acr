@@ -1,4 +1,4 @@
-use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController, generic::GenericPlayerController, ShairportSyncPlayerController};
+use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController, generic::GenericPlayerController, ShairportMprisPlayerController};
 
 // MPRIS support is only available on Unix-like systems
 #[cfg(not(windows))]
@@ -155,8 +155,8 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .map_err(|e| PlayerCreationError::ParseError(e))?;
                 Ok(Box::new(player))
             },
-            "shairport" | "shairportsync" => {
-                // Create ShairportSyncPlayerController with optional poll interval and systemd service
+            "shairport-mpris" | "shairportsync" => {
+                // Create ShairportMprisPlayerController with optional poll interval and systemd service
                 let poll_interval = config_obj.get("poll_interval")
                     .and_then(|v| v.as_f64())
                     .map(|f| std::time::Duration::from_secs_f64(f))
@@ -167,7 +167,7 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .filter(|s| !s.is_empty()) // Filter out empty strings
                     .map(|s| s.to_string());
                 
-                let player = ShairportSyncPlayerController::new_with_config(poll_interval, systemd_service);
+                let player = ShairportMprisPlayerController::new_with_config(poll_interval, systemd_service);
                 Ok(Box::new(player))
             },
             #[cfg(not(windows))]

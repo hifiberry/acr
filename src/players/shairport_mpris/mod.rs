@@ -4,9 +4,9 @@ use crate::data::{PlayerCapabilitySet, PlayerCommand};
 use std::time::Duration;
 use log::{debug, info, warn, error};
 
-/// ShairportSync player controller implementation
+/// ShairportSync MPRIS player controller implementation
 /// This controller extends the MPRIS controller specifically for ShairportSync players
-pub struct ShairportSyncPlayerController {
+pub struct ShairportMprisPlayerController {
     /// Base MPRIS controller
     mpris_controller: MprisPlayerController,
     
@@ -14,20 +14,20 @@ pub struct ShairportSyncPlayerController {
     systemd_service: Option<String>,
 }
 
-impl ShairportSyncPlayerController {
-    /// Create a new ShairportSync player controller
+impl ShairportMprisPlayerController {
+    /// Create a new ShairportSync MPRIS player controller
     pub fn new() -> Self {
         Self::new_with_config(Duration::from_secs_f64(1.0), None)
     }
     
-    /// Create a new ShairportSync player controller with configurable polling interval
+    /// Create a new ShairportSync MPRIS player controller with configurable polling interval
     pub fn new_with_poll_interval(poll_interval: Duration) -> Self {
         Self::new_with_config(poll_interval, None)
     }
     
-    /// Create a new ShairportSync player controller with full configuration
+    /// Create a new ShairportSync MPRIS player controller with full configuration
     pub fn new_with_config(poll_interval: Duration, systemd_service: Option<String>) -> Self {
-        debug!("Creating new ShairportSyncPlayerController with poll interval: {:?}, systemd_service: {:?}", 
+        debug!("Creating new ShairportMprisPlayerController with poll interval: {:?}, systemd_service: {:?}", 
                poll_interval, systemd_service);
         
         // Create MPRIS controller with the ShairportSync bus name
@@ -44,7 +44,7 @@ impl ShairportSyncPlayerController {
         // Set ShairportSync-specific capabilities
         controller.set_shairport_capabilities();
         
-        info!("Created ShairportSync player controller with systemd_service: {:?}", systemd_service);
+        info!("Created ShairportSync MPRIS player controller with systemd_service: {:?}", systemd_service);
         controller
     }
     
@@ -97,7 +97,7 @@ impl ShairportSyncPlayerController {
 }
 
 // Implement Clone by delegating to the inner MPRIS controller
-impl Clone for ShairportSyncPlayerController {
+impl Clone for ShairportMprisPlayerController {
     fn clone(&self) -> Self {
         Self {
             mpris_controller: self.mpris_controller.clone(),
@@ -107,13 +107,13 @@ impl Clone for ShairportSyncPlayerController {
 }
 
 // Delegate all PlayerController methods to the inner MPRIS controller
-impl PlayerController for ShairportSyncPlayerController {
+impl PlayerController for ShairportMprisPlayerController {
     fn get_capabilities(&self) -> PlayerCapabilitySet {
         self.mpris_controller.get_capabilities()
     }
     
     fn get_player_name(&self) -> String {
-        "ShairportSync".to_string()
+        "shairport-mpris".to_string()
     }
     
     fn get_player_id(&self) -> String {
@@ -190,12 +190,12 @@ impl PlayerController for ShairportSyncPlayerController {
     }
     
     fn start(&self) -> bool {
-        info!("Starting ShairportSync player controller");
+        info!("Starting ShairportSync MPRIS player controller");
         self.mpris_controller.start()
     }
     
     fn stop(&self) -> bool {
-        info!("Stopping ShairportSync player controller");
+        info!("Stopping ShairportSync MPRIS player controller");
         self.mpris_controller.stop()
     }
 }

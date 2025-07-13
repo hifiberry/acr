@@ -8,7 +8,7 @@ pub mod librespot;
 pub mod lms;
 pub mod event_api;
 pub mod generic;
-pub mod shairport;
+pub mod shairport_mpris;
 
 // MPRIS support is only available on Unix-like systems (Linux, macOS)
 #[cfg(not(windows))]
@@ -24,8 +24,8 @@ pub use raat::MetadataPipeReader;
 pub use librespot::LibrespotPlayerController;
 // Export the GenericPlayerController for use in player_factory
 pub use generic::GenericPlayerController;
-// Export the ShairportSyncPlayerController for use in player_factory
-pub use shairport::ShairportSyncPlayerController;
+// Export the ShairportMprisPlayerController for use in player_factory
+pub use shairport_mpris::ShairportMprisPlayerController;
 // Export the MprisPlayerController for use in player_factory (Unix only)
 #[cfg(not(windows))]
 pub use mpris::MprisPlayerController;

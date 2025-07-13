@@ -171,7 +171,7 @@ fn lastfm_worker(
 
         // Periodic state check (e.g., every 30 seconds)
         if loop_count % 30 == 0 {
-            info!("LastFMWorker: Performing periodic state check.");
+            debug!("LastFMWorker: Performing periodic state check.");
             let audio_controller = AudioController::instance(); // Get global instance
             let actual_player_state = audio_controller.get_playback_state(); // Get state of active player
 

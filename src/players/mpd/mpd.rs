@@ -56,6 +56,9 @@ pub struct MPDPlayerController {
     
     /// Current reconnection attempt counter
     reconnect_attempts: Arc<Mutex<u32>>,
+    
+    /// Flag indicating if connection has been permanently disabled due to max attempts
+    connection_disabled: Arc<AtomicBool>,
 }
 
 // Manually implement Clone for MPDPlayerController
@@ -74,6 +77,7 @@ impl Clone for MPDPlayerController {
             library: Arc::clone(&self.library),
             max_reconnect_attempts: self.max_reconnect_attempts,
             reconnect_attempts: Arc::clone(&self.reconnect_attempts),
+            connection_disabled: Arc::clone(&self.connection_disabled),
         }
     }
 }
@@ -100,6 +104,7 @@ impl MPDPlayerController {
             library: Arc::new(Mutex::new(None)),
             max_reconnect_attempts: 5, // Default value
             reconnect_attempts: Arc::new(Mutex::new(0)),
+            connection_disabled: Arc::new(AtomicBool::new(false)),
         };
         
         // Set default capabilities
@@ -127,6 +132,7 @@ impl MPDPlayerController {
             library: Arc::new(Mutex::new(None)),
             max_reconnect_attempts: 5, // Default value
             reconnect_attempts: Arc::new(Mutex::new(0)),
+            connection_disabled: Arc::new(AtomicBool::new(false)),
         };
         
         // Set default capabilities
@@ -243,6 +249,8 @@ impl MPDPlayerController {
         if let Ok(mut counter) = self.reconnect_attempts.lock() {
             *counter = 0;
         }
+        // Re-enable connections when we successfully connect
+        self.connection_disabled.store(false, Ordering::Relaxed);
     }
     
     /// Increment the reconnection attempt counter and return the new value
@@ -253,6 +261,16 @@ impl MPDPlayerController {
         } else {
             1
         }
+    }
+    
+    /// Disable further connection attempts after max attempts reached
+    fn disable_connections(&self) {
+        self.connection_disabled.store(true, Ordering::Relaxed);
+    }
+    
+    /// Check if connections are disabled
+    fn are_connections_disabled(&self) -> bool {
+        self.connection_disabled.load(Ordering::Relaxed)
     }
     
     /// Get a reference to the MPD library, if available
@@ -419,6 +437,7 @@ impl MPDPlayerController {
                     
                     if attempts >= max_attempts {
                         error!("Failed to connect to MPD after {} attempts, giving up", attempts);
+                        player_arc.disable_connections(); // Mark connections as disabled
                         break; // Exit the loop and stop trying
                     }
                     
@@ -439,6 +458,7 @@ impl MPDPlayerController {
                 
                 if attempts >= max_attempts {
                     error!("Connection lost and maximum reconnection attempts ({}) reached, giving up", max_attempts);
+                    player_arc.disable_connections(); // Mark connections as disabled
                     break;
                 }
                 
@@ -607,12 +627,20 @@ impl MPDPlayerController {
     /// Create a fresh MPD client connection for sending commands
     /// This creates a new connection each time, rather than reusing an existing one
     fn get_fresh_client(&self) -> Option<Client<TcpStream>> {
+        // Check if connections have been disabled due to max reconnection attempts
+        if self.are_connections_disabled() {
+            debug!("MPD connections are disabled due to max reconnection attempts reached");
+            return None;
+        }
+        
         debug!("Creating fresh MPD command connection");
         let addr = format!("{}:{}", self.hostname, self.port);
         
         match Client::connect(&addr) {
             Ok(client) => {
                 debug!("Successfully created new MPD command connection");
+                // Reset connection attempts on successful connection
+                self.reset_reconnect_attempts();
                 Some(client)
             },
             Err(e) => {

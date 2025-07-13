@@ -14,10 +14,11 @@ RuntimeDirectory=audiocontrol
 RuntimeDirectoryMode=0755
 PIDFile=/var/run/audiocontrol/audiocontrol.pid
 
-# Environment variables for logging
-# Note: --log-config takes precedence over RUST_LOG
-Environment=RUST_LOG=info
-Environment=RUST_BACKTRACE=0
+# Timeout and kill settings
+TimeoutStopSec=10
+KillMode=mixed
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
 
 [Install]
 WantedBy=multi-user.target

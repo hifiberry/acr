@@ -234,107 +234,207 @@ fn parse_shairport_message(data: &[u8]) -> ShairportMessage {
         };
     }
     
-    // Try to parse as UTF-8 text
-    if let Ok(text) = std::str::from_utf8(data) {
-        let trimmed = text.trim();
+    // Extract command (first 8 bytes) and payload (rest)
+    if data.len() >= 8 {
+        let command = &data[0..8];
+        let payload = &data[8..];
         
-        // Control messages
-        match trimmed {
-            "ssncpaus" => return ShairportMessage::Control("PAUSE".to_string()),
-            "ssncpres" => return ShairportMessage::Control("RESUME".to_string()),
-            "ssncaend" => return ShairportMessage::Control("SESSION_END".to_string()),
-            "ssncabeg" => return ShairportMessage::Control("AUDIO_BEGIN".to_string()),
-            "ssncpbeg" => return ShairportMessage::Control("PLAYBACK_BEGIN".to_string()),
-            "ssncPICT" => return ShairportMessage::Control("PICTURE_REQUEST".to_string()),
-            _ => {
-                // Check for session start/end with IDs
-                if trimmed.starts_with("ssncpcst") {
-                    let session_id = &trimmed[8..]; // Remove "ssncpcst" prefix
+        // Handle commands that are exactly 8 bytes (no payload)
+        match command {
+            b"ssncpaus" => return ShairportMessage::Control("PAUSE".to_string()),
+            b"ssncpres" => return ShairportMessage::Control("RESUME".to_string()),
+            b"ssncaend" => return ShairportMessage::Control("SESSION_END".to_string()),
+            b"ssncabeg" => return ShairportMessage::Control("AUDIO_BEGIN".to_string()),
+            b"ssncpbeg" => return ShairportMessage::Control("PLAYBACK_BEGIN".to_string()),
+            b"ssncPICT" => return ShairportMessage::Control("PICTURE_REQUEST".to_string()),
+            _ => {}
+        }
+        
+        // Handle commands with payloads
+        match command {
+            // Session start/end with IDs
+            b"ssncpcst" => {
+                if let Ok(session_id) = std::str::from_utf8(payload) {
                     return ShairportMessage::SessionStart(session_id.to_string());
-                } else if trimmed.starts_with("ssncpcen") {
-                    let timestamp = &trimmed[8..]; // Remove "ssncpcen" prefix
+                }
+            },
+            b"ssncpcen" => {
+                if let Ok(timestamp) = std::str::from_utf8(payload) {
                     return ShairportMessage::SessionEnd(timestamp.to_string());
                 }
-                
-                // Parse other ShairportSync messages
-                if trimmed.len() >= 8 {
-                    let prefix = &trimmed[0..8];
-                    let content = &trimmed[8..];
-                    
-                    return match prefix {
-                        // Connection info
-                        "ssncdisc" => ShairportMessage::Control(format!("DISCOVERED: {}", content)),
-                        "ssncconn" => ShairportMessage::Control(format!("CONNECTED: {}", content)),
-                        "ssncclip" => ShairportMessage::Control(format!("CLIENT_IP: {}", content)),
-                        "ssncsvip" => ShairportMessage::Control(format!("SERVER_IP: {}", content)),
-                        "ssncsnam" => ShairportMessage::Control(format!("SERVER_NAME: {}", content)),
-                        "ssnccdid" => ShairportMessage::Control(format!("CLIENT_DEVICE_ID: {}", content)),
-                        "ssnccmod" => ShairportMessage::Control(format!("CLIENT_MODEL: {}", content)),
-                        "ssnccmac" => ShairportMessage::Control(format!("CLIENT_MAC: {}", content)),
-                        
-                        // Playback control
-                        "ssncpvol" => ShairportMessage::Control(format!("VOLUME: {}", content)),
-                        "ssncprgr" => ShairportMessage::Control(format!("PROGRESS: {}", content)),
-                        "ssncmdst" => ShairportMessage::Control(format!("METADATA_START: {}", content)),
-                        "ssncmden" => ShairportMessage::Control(format!("METADATA_END: {}", content)),
-                        
-                        // Metadata (using 'core' prefix for iTunes-style metadata)
-                        "coreasal" => ShairportMessage::Control(format!("ALBUM: {}", content)),
-                        "coreasar" => ShairportMessage::Control(format!("ARTIST: {}", content)),
-                        "coreminm" => ShairportMessage::Control(format!("TRACK: {}", content)),
-                        "coreascp" => ShairportMessage::Control("COMPOSER: (empty)".to_string()),
-                        "coreasgn" => ShairportMessage::Control("GENRE: (empty)".to_string()),
-                        
-                        _ => ShairportMessage::Unknown(data.to_vec()),
-                    };
+            },
+            
+            // Connection info (UTF-8 payload)
+            b"ssncdisc" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("DISCOVERED: {}", content));
                 }
-            }
+            },
+            b"ssncconn" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("CONNECTED: {}", content));
+                }
+            },
+            b"ssncclip" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("CLIENT_IP: {}", content));
+                }
+            },
+            b"ssncsvip" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("SERVER_IP: {}", content));
+                }
+            },
+            b"ssncsnam" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("SERVER_NAME: {}", content));
+                }
+            },
+            b"ssnccdid" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("CLIENT_DEVICE_ID: {}", content));
+                }
+            },
+            b"ssnccmod" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("CLIENT_MODEL: {}", content));
+                }
+            },
+            b"ssnccmac" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("CLIENT_MAC: {}", content));
+                }
+            },
+            
+            // Playback control (UTF-8 payload)
+            b"ssncpvol" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("VOLUME: {}", content));
+                }
+            },
+            b"ssncprgr" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("PROGRESS: {}", content));
+                }
+            },
+            b"ssncmdst" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("METADATA_START: {}", content));
+                }
+            },
+            b"ssncmden" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("METADATA_END: {}", content));
+                }
+            },
+            
+            // Metadata (UTF-8 payload)
+            b"coreasal" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("ALBUM: {}", content));
+                }
+            },
+            b"coreasar" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("ARTIST: {}", content));
+                }
+            },
+            b"coreminm" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("TRACK: {}", content));
+                }
+            },
+            b"coreascp" => return ShairportMessage::Control("COMPOSER: (empty)".to_string()),
+            b"coreasgn" => return ShairportMessage::Control("GENRE: (empty)".to_string()),
+            
+            // Client/session information (UTF-8 payload)
+            b"ssncsnua" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("USER_AGENT: {}", content));
+                }
+            },
+            b"ssncacre" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("ACTIVE_REMOTE: {}", content));
+                }
+            },
+            b"ssncdaid" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("DEVICE_ID: {}", content));
+                }
+            },
+            b"ssncflsr" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("FRAME_SEQUENCE_REFERENCE: {}", content));
+                }
+            },
+            b"ssncpfls" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("PREVIOUS_FRAME_SEQUENCE: {}", content));
+                }
+            },
+            
+            // Binary core metadata messages (binary payload)
+            b"coremper" => {
+                // Core MPEG duration/time - extract the 4-byte timestamp at the end
+                if payload.len() >= 4 {
+                    let timestamp = u32::from_be_bytes([payload[payload.len()-4], payload[payload.len()-3], payload[payload.len()-2], payload[payload.len()-1]]);
+                    return ShairportMessage::Control(format!("MPEG_DURATION: {}", timestamp));
+                }
+            },
+            b"corecaps" => {
+                // Core capabilities - usually 1 byte value at the end
+                if !payload.is_empty() {
+                    let capability = payload[0];
+                    return ShairportMessage::Control(format!("CAPABILITIES: {}", capability));
+                }
+            },
+            b"coreastm" => {
+                // Core MPEG start time - extract the 4-byte timestamp at the end
+                if payload.len() >= 4 {
+                    let timestamp = u32::from_be_bytes([payload[payload.len()-4], payload[payload.len()-3], payload[payload.len()-2], payload[payload.len()-1]]);
+                    return ShairportMessage::Control(format!("MPEG_START_TIME: {}", timestamp));
+                }
+            },
+            b"coreastn" => {
+                // Core track number - extract the value after null bytes
+                if payload.len() >= 2 {
+                    let track_num = u16::from_be_bytes([payload[0], payload[1]]);
+                    return ShairportMessage::Control(format!("TRACK_NUMBER: {}", track_num));
+                }
+            },
+            _ => {}
         }
     }
     
-    // If nothing else matches, it's unknown
+    // Try to parse as UTF-8 text for shorter messages or unknown formats
+    if let Ok(text) = std::str::from_utf8(data) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return ShairportMessage::Control(format!("UNKNOWN_TEXT: {}", trimmed));
+        }
+    }
+
+    // If nothing else matches, it's unknown binary data
     ShairportMessage::Unknown(data.to_vec())
 }
 
 fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
     match message {
         ShairportMessage::Control(action) => {
-            // Use different emojis based on the action type
-            let emoji = if action.starts_with("DISCOVERED") || action.starts_with("CONNECTED") {
-                "�"
-            } else if action.starts_with("CLIENT_") || action.starts_with("SERVER_") {
-                "📱"
-            } else if action.starts_with("VOLUME") {
-                "🔊"
-            } else if action.starts_with("PROGRESS") {
-                "⏱️"
-            } else if action.starts_with("METADATA_") {
-                "📋"
-            } else if action.starts_with("ALBUM") || action.starts_with("ARTIST") || action.starts_with("TRACK") {
-                "🎵"
-            } else if action.contains("BEGIN") {
-                "▶️"
-            } else if action.contains("PAUSE") {
-                "⏸️"
-            } else if action.contains("RESUME") {
-                "▶️"
-            } else {
-                "📻"
-            };
-            
-            println!("  {} {}", emoji, action);
+            println!("  {}", action);
         }
         
         ShairportMessage::SessionStart(session_id) => {
-            println!("  � SESSION START: {}", session_id);
+            println!("  SESSION START: {}", session_id);
         }
         
         ShairportMessage::SessionEnd(timestamp) => {
-            println!("  ⏹️  SESSION END: {}", timestamp);
+            println!("  SESSION END: {}", timestamp);
         }
         
         ShairportMessage::CompletePicture { data, format } => {
-            println!("  🖼️  COMPLETE PICTURE:");
+            println!("  COMPLETE PICTURE:");
             println!("     Format: {}", format);
             println!("     Size: {} bytes", data.len());
             println!("     Dimensions: {}", get_image_dimensions(data, format));
@@ -349,7 +449,7 @@ fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
         }
         
         ShairportMessage::ChunkData { chunk_id, total_chunks, data_type, data } => {
-            println!("  📦 CHUNK DATA:");
+            println!("  CHUNK DATA:");
             println!("     Type: {}", data_type.trim_end_matches('\0'));
             println!("     Chunk: {}/{}", chunk_id, total_chunks);
             
@@ -411,15 +511,13 @@ fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
             // Try to display as text if it looks like text
             if let Ok(text) = std::str::from_utf8(data) {
                 if text.chars().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace()) {
-                    println!("  ❓ UNKNOWN TEXT: {}", text.trim());
+                    println!("  UNKNOWN TEXT: {}", text.trim());
                     return;
                 }
             }
             
-            println!("  ❓ UNKNOWN BINARY DATA: {} bytes", data.len());
-            if show_hex {
-                print_hex_dump(data, "     ");
-            }
+            println!("  UNKNOWN BINARY DATA: {} bytes", data.len());
+            print_hex_dump(data, "     ");
         }
     }
 }

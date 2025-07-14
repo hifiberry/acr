@@ -1,17 +1,19 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController};
-use crate::data::{PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
+use crate::data::{PlayerCapabilitySet, PlayerCapability, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::helpers::shairportsync_messages::{
     ShairportMessage, ChunkCollector, parse_shairport_message, 
     detect_image_format,
     update_song_from_message, song_has_significant_metadata
 };
+use crate::helpers::imagecache;
 use std::sync::{Arc, Mutex};
 use log::{debug, info, warn, error, trace};
 use std::net::UdpSocket;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::any::Any;
+use md5;
 
 /// ShairportSync player controller implementation
 /// 
@@ -96,12 +98,11 @@ impl ShairportController {
     /// Set the default capabilities for this player
     fn set_default_capabilities(&self) {
         debug!("Setting default ShairportController capabilities");
-        // ShairportSync is a passive listener, so it has limited control capabilities
+        // ShairportSync is a passive listener that can provide metadata and album art
+        // but cannot control playback
         self.base.set_capabilities(vec![
-            // We can't actually control playback, but we can track state
-            // PlayerCapability::Play,
-            // PlayerCapability::Pause,
-            // PlayerCapability::Stop,
+            PlayerCapability::Metadata,
+            PlayerCapability::AlbumArt,
         ], false); // Don't notify on initialization
     }
     
@@ -192,32 +193,44 @@ impl ShairportController {
                     // Parse ShairportSync message
                     let mut message = parse_shairport_message(&buffer[..bytes_received]);
                     
-                    // Handle chunk collection for pictures (though we'll ignore artwork for now)
+                    // Handle chunk collection for pictures
                     if let ShairportMessage::ChunkData { chunk_id, total_chunks, data_type, data } = &message {
                         let clean_type = data_type.trim_end_matches('\0');
                         
-                        if clean_type == "ssncPICT" && *total_chunks > 1 {
-                            let mut collector_lock = picture_collector.lock().unwrap();
-                            
-                            // Initialize collector if needed
-                            if collector_lock.is_none() || 
-                               collector_lock.as_ref().unwrap().total_chunks != *total_chunks {
-                                *collector_lock = Some(ChunkCollector::new(*total_chunks, clean_type.to_string()));
-                            }
-                            
-                            // Add chunk to collector
-                            if let Some(ref mut collector) = *collector_lock {
-                                if let Some(complete_data) = collector.add_chunk(*chunk_id, data.clone()) {
-                                    // We have a complete picture, but we'll ignore it for now
-                                    let format = detect_image_format(&complete_data);
-                                    debug!("Assembled complete artwork: {} ({} bytes)", format, complete_data.len());
-                                    
-                                    message = ShairportMessage::CompletePicture {
-                                        data: complete_data,
-                                        format,
-                                    };
-                                    *collector_lock = None; // Reset for next picture
+                        if clean_type == "ssncPICT" {
+                            if *total_chunks > 1 {
+                                // Multi-chunk artwork
+                                let mut collector_lock = picture_collector.lock().unwrap();
+                                
+                                // Initialize collector if needed
+                                if collector_lock.is_none() || 
+                                   collector_lock.as_ref().unwrap().total_chunks != *total_chunks {
+                                    *collector_lock = Some(ChunkCollector::new(*total_chunks, clean_type.to_string()));
                                 }
+                                
+                                // Add chunk to collector
+                                if let Some(ref mut collector) = *collector_lock {
+                                    if let Some(complete_data) = collector.add_chunk(*chunk_id, data.clone()) {
+                                        // We have a complete picture, process and store it
+                                        let format = detect_image_format(&complete_data);
+                                        debug!("Assembled complete artwork: {} ({} bytes)", format, complete_data.len());
+                                        
+                                        message = ShairportMessage::CompletePicture {
+                                            data: complete_data,
+                                            format,
+                                        };
+                                        *collector_lock = None; // Reset for next picture
+                                    }
+                                }
+                            } else {
+                                // Single-chunk artwork - process directly
+                                let format = detect_image_format(data);
+                                debug!("Received single-chunk artwork: {} ({} bytes)", format, data.len());
+                                
+                                message = ShairportMessage::CompletePicture {
+                                    data: data.clone(),
+                                    format,
+                                };
                             }
                         }
                     }
@@ -314,9 +327,25 @@ impl ShairportController {
                     *song_lock = Some(song);
                 }
             }
-            ShairportMessage::CompletePicture { .. } => {
-                // Artwork completed but we're ignoring it for now
-                debug!("Artwork assembled but ignoring for now");
+            ShairportMessage::CompletePicture { data, format } => {
+                debug!("Processing complete artwork: {} ({} bytes)", format, data.len());
+                
+                // Process artwork and get URL
+                if let Some(artwork_url) = Self::process_artwork(data, format) {
+                    // Update current song with artwork URL
+                    let mut song_lock = current_song.lock().unwrap();
+                    let mut song = song_lock.take().unwrap_or_default();
+                    
+                    // Set the artwork URL in song metadata
+                    song.cover_art_url = Some(artwork_url.clone());
+                    debug!("Added artwork URL to song: {}", artwork_url);
+                    
+                    // Notify listeners of song change
+                    base.notify_song_changed(Some(&song));
+                    *song_lock = Some(song);
+                } else {
+                    error!("Failed to process artwork data");
+                }
             }
             ShairportMessage::SessionStart(session_id) => {
                 debug!("Session started: {}", session_id);
@@ -334,6 +363,54 @@ impl ShairportController {
             }
             ShairportMessage::Unknown(data) => {
                 trace!("Unknown message: {} bytes", data.len());
+            }
+        }
+    }
+    
+    /// Process artwork data and store it in the image cache
+    /// Returns the URL path to the cached image if successful
+    fn process_artwork(artwork_data: &[u8], format: &str) -> Option<String> {
+        if artwork_data.is_empty() {
+            debug!("Empty artwork data received");
+            return None;
+        }
+        
+        // Generate MD5 hash for unique filename
+        let digest = md5::compute(artwork_data);
+        let hash_string = format!("{:x}", digest);
+        
+        // Determine file extension from format
+        let extension = match format.to_lowercase().as_str() {
+            "jpeg" | "jpg" => "jpg",
+            "png" => "png",
+            "gif" => "gif",
+            "webp" => "webp",
+            "bmp" => "bmp",
+            _ => {
+                debug!("Unknown image format '{}', defaulting to jpg", format);
+                "jpg"
+            }
+        };
+        
+        // Create filename with hash and extension
+        let filename = format!("{}.{}", hash_string, extension);
+        let cache_path = format!("shairportsync/{}", filename);
+        
+        // Set expiry to 1 week from now
+        let expiry_time = SystemTime::now() + Duration::from_secs(7 * 24 * 60 * 60); // 7 days
+        
+        // Store in image cache with expiry
+        match imagecache::store_image_with_expiry(&cache_path, artwork_data, Some(expiry_time)) {
+            Ok(_) => {
+                info!("Stored artwork in cache: {} ({} bytes, expires in 1 week)", 
+                      cache_path, artwork_data.len());
+                
+                // Return URL path for accessing the image
+                Some(format!("/api/image/{}", cache_path))
+            }
+            Err(e) => {
+                error!("Failed to store artwork in cache: {}", e);
+                None
             }
         }
     }

@@ -23,15 +23,13 @@ pub enum ShairportMessage {
 pub struct ChunkCollector {
     chunks: HashMap<u32, Vec<u8>>, // chunk_id -> data
     pub total_chunks: u32,
-    data_type: String,
 }
 
 impl ChunkCollector {
-    pub fn new(total_chunks: u32, data_type: String) -> Self {
+    pub fn new(total_chunks: u32, _data_type: String) -> Self {
         Self {
             chunks: HashMap::new(),
             total_chunks,
-            data_type,
         }
     }
     

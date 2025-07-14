@@ -1,4 +1,30 @@
-hifiberry-audiocontrol (0.4.10) stable; urgency=medium
+hifiberry-audiocontrol (0.5.0) stable; urgency=medium
+
+  * Added full ShairportSync AirPlay metadata player controller
+  * Implemented UDP listener for ShairportSync metadata messages on port 5555
+  * Added comprehensive cover art support with MD5-based caching and 
+    multi-chunk assembly
+  * Implemented ShairportSync message parsing for playback control and 
+    metadata
+  * Added audiocontrol_listen_shairportsync tool for UDP packet monitoring 
+    and debugging
+  * Enhanced player filtering to skip configuration entries starting with 
+    underscore
+  * Fixed logging configuration parsing to ignore comment keys starting 
+    with underscore
+  * Added debug logging for ShairportSync play/pause, metadata, and cover 
+    art processing
+  * Integrated ShairportSync artwork storage in image cache with 1-week 
+    expiry
+  * Updated sample configuration to include enabled ShairportSync player 
+    by default
+  * Added man page documentation for ShairportSync listener tool
+  * Enhanced error handling for disabled/filtered players in 
+    AudioController
+
+ -- HiFiBerry <info@hifiberry.com>  Mon, 14 Jul 2025 13:15:00 +0000
+
+hifiberry-audiocontrol (0.4.11) stable; urgency=medium
 
   * Added audiocontrol_monitor_mpris_state tool for real-time MPRIS monitoring
   * Refactored MPRIS player controller to use internal helper functions

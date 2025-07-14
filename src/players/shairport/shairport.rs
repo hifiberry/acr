@@ -199,12 +199,16 @@ impl ShairportController {
                         
                         if clean_type == "ssncPICT" {
                             if *total_chunks > 1 {
+                                debug!("ShairportSync handler: Processing multi-chunk artwork - chunk {}/{}, size: {} bytes", 
+                                       chunk_id, total_chunks, data.len());
+                                
                                 // Multi-chunk artwork
                                 let mut collector_lock = picture_collector.lock().unwrap();
                                 
                                 // Initialize collector if needed
                                 if collector_lock.is_none() || 
                                    collector_lock.as_ref().unwrap().total_chunks != *total_chunks {
+                                    debug!("ShairportSync handler: Initializing new artwork collector for {} chunks", total_chunks);
                                     *collector_lock = Some(ChunkCollector::new(*total_chunks, clean_type.to_string()));
                                 }
                                 
@@ -213,19 +217,21 @@ impl ShairportController {
                                     if let Some(complete_data) = collector.add_chunk(*chunk_id, data.clone()) {
                                         // We have a complete picture, process and store it
                                         let format = detect_image_format(&complete_data);
-                                        debug!("Assembled complete artwork: {} ({} bytes)", format, complete_data.len());
+                                        debug!("ShairportSync handler: Assembled complete multi-chunk artwork: {} ({} bytes)", format, complete_data.len());
                                         
                                         message = ShairportMessage::CompletePicture {
                                             data: complete_data,
                                             format,
                                         };
                                         *collector_lock = None; // Reset for next picture
+                                    } else {
+                                        debug!("ShairportSync handler: Collected chunk {}/{}, waiting for more", chunk_id, total_chunks);
                                     }
                                 }
                             } else {
                                 // Single-chunk artwork - process directly
                                 let format = detect_image_format(data);
-                                debug!("Received single-chunk artwork: {} ({} bytes)", format, data.len());
+                                debug!("ShairportSync handler: Processing single-chunk artwork: {} ({} bytes)", format, data.len());
                                 
                                 message = ShairportMessage::CompletePicture {
                                     data: data.clone(),
@@ -265,21 +271,25 @@ impl ShairportController {
     ) {
         match message {
             ShairportMessage::Control(action) => {
-                debug!("Received control message: {}", action);
+                // Always log control messages in debug mode
+                debug!("ShairportSync handler: Processing control message: {}", action);
                 
                 // Handle playback control events
                 match action.as_str() {
                     "PAUSE" => {
+                        debug!("ShairportSync handler: Processing PAUSE command");
                         let mut state = current_state.lock().unwrap();
                         state.state = PlaybackState::Paused;
                         base.notify_state_changed(PlaybackState::Paused);
                     }
                     "RESUME" => {
+                        debug!("ShairportSync handler: Processing RESUME command");
                         let mut state = current_state.lock().unwrap();
                         state.state = PlaybackState::Playing;
                         base.notify_state_changed(PlaybackState::Playing);
                     }
                     "SESSION_END" => {
+                        debug!("ShairportSync handler: Processing SESSION_END command");
                         let mut state = current_state.lock().unwrap();
                         state.state = PlaybackState::Stopped;
                         base.notify_state_changed(PlaybackState::Stopped);
@@ -289,18 +299,39 @@ impl ShairportController {
                         base.notify_song_changed(None);
                     }
                     "AUDIO_BEGIN" | "PLAYBACK_BEGIN" => {
+                        debug!("ShairportSync handler: Processing {} command", action);
                         let mut state = current_state.lock().unwrap();
                         state.state = PlaybackState::Playing;
                         base.notify_state_changed(PlaybackState::Playing);
                     }
                     _ => {
-                        // Check if this is a metadata message and update song
+                        // Check if this is a metadata message
+                        if action.contains(": ") {
+                            let parts: Vec<&str> = action.splitn(2, ": ").collect();
+                            if parts.len() == 2 {
+                                let key = parts[0];
+                                let value = parts[1];
+                                
+                                // Log specific metadata types we're interested in
+                                match key {
+                                    "TRACK" | "ARTIST" | "ALBUM" | "GENRE" | "COMPOSER" | 
+                                    "ALBUM_ARTIST" | "SONG_ALBUM_ARTIST" | "TRACK_NUMBER" | "TRACK_COUNT" => {
+                                        debug!("ShairportSync handler: Processing metadata - {}: {}", key, value);
+                                    }
+                                    _ => {
+                                        debug!("ShairportSync handler: Processing other metadata - {}: {}", key, value);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Update song metadata
                         let mut song_lock = current_song.lock().unwrap();
                         let mut song = song_lock.take().unwrap_or_default();
                         
                         if update_song_from_message(&mut song, message) {
                             if song_has_significant_metadata(&song) {
-                                debug!("Updated song metadata: {}", song);
+                                debug!("ShairportSync handler: Updated song metadata: {}", song);
                                 base.notify_song_changed(Some(&song));
                             }
                             *song_lock = Some(song);
@@ -311,14 +342,18 @@ impl ShairportController {
                     }
                 }
             }
-            ShairportMessage::ChunkData { .. } => {
+            ShairportMessage::ChunkData { data_type, chunk_id, total_chunks, data } => {
+                let clean_type = data_type.trim_end_matches('\0');
+                debug!("ShairportSync handler: Processing chunk data - type: {}, chunk: {}/{}, size: {} bytes", 
+                       clean_type, chunk_id, total_chunks, data.len());
+                
                 // Handle chunk data for metadata updates
                 let mut song_lock = current_song.lock().unwrap();
                 let mut song = song_lock.take().unwrap_or_default();
                 
                 if update_song_from_message(&mut song, message) {
                     if song_has_significant_metadata(&song) {
-                        debug!("Updated song metadata from chunk: {}", song);
+                        debug!("ShairportSync handler: Updated song metadata from chunk: {}", song);
                         base.notify_song_changed(Some(&song));
                     }
                     *song_lock = Some(song);
@@ -328,7 +363,7 @@ impl ShairportController {
                 }
             }
             ShairportMessage::CompletePicture { data, format } => {
-                debug!("Processing complete artwork: {} ({} bytes)", format, data.len());
+                debug!("ShairportSync handler: Processing complete cover art - format: {}, size: {} bytes", format, data.len());
                 
                 // Process artwork and get URL
                 if let Some(artwork_url) = Self::process_artwork(data, format) {
@@ -338,13 +373,13 @@ impl ShairportController {
                     
                     // Set the artwork URL in song metadata
                     song.cover_art_url = Some(artwork_url.clone());
-                    debug!("Added artwork URL to song: {}", artwork_url);
+                    debug!("ShairportSync handler: Added cover art URL to song: {}", artwork_url);
                     
                     // Notify listeners of song change
                     base.notify_song_changed(Some(&song));
                     *song_lock = Some(song);
                 } else {
-                    error!("Failed to process artwork data");
+                    debug!("ShairportSync handler: Failed to process cover art data");
                 }
             }
             ShairportMessage::SessionStart(session_id) => {

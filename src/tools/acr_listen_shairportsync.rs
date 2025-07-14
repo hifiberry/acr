@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use audiocontrol::helpers::shairportsync_messages::{
     ShairportMessage, ChunkCollector, parse_shairport_message, 
-    display_shairport_message, detect_image_format
+    detect_image_format, get_image_dimensions, get_jpeg_dimensions, get_png_dimensions
 };
 
 #[derive(Parser)]
@@ -128,4 +128,144 @@ fn main() {
     }
     
     println!("Listener stopped. Total packets received: {}", packet_count);
+}
+
+fn print_hex_dump(data: &[u8], prefix: &str) {
+    for (i, chunk) in data.chunks(16).enumerate() {
+        print!("{}{:04x}: ", prefix, i * 16);
+        
+        // Print hex values
+        for (j, byte) in chunk.iter().enumerate() {
+            print!("{:02x} ", byte);
+            if j == 7 {
+                print!(" "); // Extra space in the middle
+            }
+        }
+        
+        // Pad if this chunk is less than 16 bytes
+        for j in chunk.len()..16 {
+            print!("   ");
+            if j == 7 {
+                print!(" ");
+            }
+        }
+        
+        print!(" |");
+        
+        // Print ASCII representation
+        for byte in chunk {
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                print!("{}", *byte as char);
+            } else {
+                print!(".");
+            }
+        }
+        
+        println!("|");
+    }
+}
+
+fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
+    match message {
+        ShairportMessage::Control(action) => {
+            println!("  {}", action);
+        }
+        
+        ShairportMessage::SessionStart(session_id) => {
+            println!("  SESSION START: {}", session_id);
+        }
+        
+        ShairportMessage::SessionEnd(timestamp) => {
+            println!("  SESSION END: {}", timestamp);
+        }
+        
+        ShairportMessage::CompletePicture { data, format } => {
+            println!("  COMPLETE PICTURE:");
+            println!("     Format: {}", format);
+            println!("     Size: {} bytes", data.len());
+            println!("     Dimensions: {}", get_image_dimensions(data, format));
+            
+            if show_hex && data.len() <= 256 {
+                println!("     Hex dump (header):");
+                print_hex_dump(data, "       ");
+            } else if show_hex {
+                println!("     Hex dump (first 256 bytes):");
+                print_hex_dump(&data[..256], "       ");
+            }
+        }
+        
+        ShairportMessage::ChunkData { chunk_id, total_chunks, data_type, data } => {
+            println!("  CHUNK DATA:");
+            println!("     Type: {}", data_type.trim_end_matches('\0'));
+            println!("     Chunk: {}/{}", chunk_id, total_chunks);
+            
+            if data.is_empty() {
+                println!("     Size: 0 bytes (header/padding only)");
+            } else {
+                println!("     Size: {} bytes", data.len());
+            }
+            
+            // Special handling for different data types
+            let clean_type = data_type.trim_end_matches('\0');
+            match clean_type {
+                "ssncPICT" => {
+                    if data.is_empty() {
+                        println!("     Content: Album artwork header (no data in this chunk)");
+                    } else {
+                        let format = detect_image_format(data);
+                        println!("     Content: Album artwork ({})", format);
+                        println!("     Format: {} detected", format);
+                        
+                        if format.contains("JPEG") {
+                            let dimensions = get_jpeg_dimensions(data);
+                            if dimensions != "Unknown" {
+                                println!("     Dimensions: {}", dimensions);
+                            }
+                        } else if format.contains("PNG") {
+                            let dimensions = get_png_dimensions(data);
+                            if dimensions != "Unknown" {
+                                println!("     Dimensions: {}", dimensions);
+                            }
+                        }
+                    }
+                }
+                "ssncminu" => println!("     Content: Metadata - Track info"),
+                "ssncasar" => println!("     Content: Metadata - Artist"),
+                "ssncasal" => println!("     Content: Metadata - Album"),
+                "ssncastn" => println!("     Content: Metadata - Track name"),
+                _ => {
+                    if clean_type.starts_with("ssnc") {
+                        println!("     Content: Metadata - {}", &clean_type[4..]);
+                    } else {
+                        println!("     Content: Unknown data type");
+                    }
+                }
+            }
+            
+            if !data.is_empty() && show_hex {
+                if data.len() <= 256 {
+                    println!("     Hex dump:");
+                    print_hex_dump(data, "       ");
+                } else {
+                    println!("     Hex dump (first 256 bytes):");
+                    print_hex_dump(&data[..256], "       ");
+                }
+            }
+        }
+        
+        ShairportMessage::Unknown(data) => {
+            // Try to display as text if it looks like text, but always show hex dump
+            if let Ok(text) = std::str::from_utf8(data) {
+                if text.chars().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace()) {
+                    println!("  UNKNOWN TEXT: {}", text.trim());
+                    println!("  Hex dump:");
+                    print_hex_dump(data, "     ");
+                    return;
+                }
+            }
+            
+            println!("  UNKNOWN BINARY DATA: {} bytes", data.len());
+            print_hex_dump(data, "     ");
+        }
+    }
 }

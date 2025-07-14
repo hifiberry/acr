@@ -104,15 +104,15 @@ pub fn parse_shairport_message(data: &[u8]) -> ShairportMessage {
         
         // Handle commands with payloads
         match command {
-            // Session start/end with IDs
-            b"ssncpcst" => {
-                if let Ok(session_id) = std::str::from_utf8(payload) {
-                    return ShairportMessage::SessionStart(session_id.to_string());
+            // Session start/end with IDs  
+            b"ssncmdst" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("METADATA_START: {}", content));
                 }
             },
-            b"ssncpcen" => {
-                if let Ok(timestamp) = std::str::from_utf8(payload) {
-                    return ShairportMessage::SessionEnd(timestamp.to_string());
+            b"ssncmden" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("METADATA_END: {}", content));
                 }
             },
             
@@ -142,21 +142,6 @@ pub fn parse_shairport_message(data: &[u8]) -> ShairportMessage {
                     return ShairportMessage::Control(format!("SERVER_NAME: {}", content));
                 }
             },
-            b"ssnccdid" => {
-                if let Ok(content) = std::str::from_utf8(payload) {
-                    return ShairportMessage::Control(format!("CLIENT_DEVICE_ID: {}", content));
-                }
-            },
-            b"ssnccmod" => {
-                if let Ok(content) = std::str::from_utf8(payload) {
-                    return ShairportMessage::Control(format!("CLIENT_MODEL: {}", content));
-                }
-            },
-            b"ssnccmac" => {
-                if let Ok(content) = std::str::from_utf8(payload) {
-                    return ShairportMessage::Control(format!("CLIENT_MAC: {}", content));
-                }
-            },
             
             // Playback control (UTF-8 payload)
             b"ssncpvol" => {
@@ -169,18 +154,8 @@ pub fn parse_shairport_message(data: &[u8]) -> ShairportMessage {
                     return ShairportMessage::Control(format!("PROGRESS: {}", content));
                 }
             },
-            b"ssncmdst" => {
-                if let Ok(content) = std::str::from_utf8(payload) {
-                    return ShairportMessage::Control(format!("METADATA_START: {}", content));
-                }
-            },
-            b"ssncmden" => {
-                if let Ok(content) = std::str::from_utf8(payload) {
-                    return ShairportMessage::Control(format!("METADATA_END: {}", content));
-                }
-            },
             
-            // Metadata (UTF-8 payload)
+            // Core metadata (UTF-8 payload) - from iTunes, etc.
             b"coreasal" => {
                 if let Ok(content) = std::str::from_utf8(payload) {
                     return ShairportMessage::Control(format!("ALBUM: {}", content));
@@ -196,25 +171,62 @@ pub fn parse_shairport_message(data: &[u8]) -> ShairportMessage {
                     return ShairportMessage::Control(format!("TRACK: {}", content));
                 }
             },
-            b"coreascp" => return ShairportMessage::Control("COMPOSER: (empty)".to_string()),
-            b"coreasgn" => return ShairportMessage::Control("GENRE: (empty)".to_string()),
+            b"coreascp" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("COMPOSER: {}", content));
+                } else {
+                    return ShairportMessage::Control("COMPOSER: (empty)".to_string());
+                }
+            },
+            b"coreasgn" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("GENRE: {}", content));
+                } else {
+                    return ShairportMessage::Control("GENRE: (empty)".to_string());
+                }
+            },
+            b"coreassl" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("ALBUM_ARTIST: {}", content));
+                }
+            },
+            b"coreascm" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("COMMENT: {}", content));
+                }
+            },
+            b"coreasdt" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("SONG_DESCRIPTION: {}", content));
+                }
+            },
+            b"coreasaa" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("SONG_ALBUM_ARTIST: {}", content));
+                }
+            },
+            b"coreassn" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("SORT_NAME: {}", content));
+                }
+            },
+            b"coreassa" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("SORT_ARTIST: {}", content));
+                }
+            },
+            b"coreassu" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("SORT_ALBUM: {}", content));
+                }
+            },
+            b"coreassc" => {
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("SORT_COMPOSER: {}", content));
+                }
+            },
             
             // Client/session information (UTF-8 payload)
-            b"ssncsnua" => {
-                if let Ok(content) = std::str::from_utf8(payload) {
-                    return ShairportMessage::Control(format!("USER_AGENT: {}", content));
-                }
-            },
-            b"ssncacre" => {
-                if let Ok(content) = std::str::from_utf8(payload) {
-                    return ShairportMessage::Control(format!("ACTIVE_REMOTE: {}", content));
-                }
-            },
-            b"ssncdaid" => {
-                if let Ok(content) = std::str::from_utf8(payload) {
-                    return ShairportMessage::Control(format!("DEVICE_ID: {}", content));
-                }
-            },
             b"ssncflsr" => {
                 if let Ok(content) = std::str::from_utf8(payload) {
                     return ShairportMessage::Control(format!("FRAME_SEQUENCE_REFERENCE: {}", content));
@@ -227,32 +239,129 @@ pub fn parse_shairport_message(data: &[u8]) -> ShairportMessage {
             },
             
             // Binary core metadata messages (binary payload)
+            b"coreasdk" => {
+                // Song Data Kind - single byte value
+                if !payload.is_empty() {
+                    let song_data_kind = payload[0];
+                    return ShairportMessage::Control(format!("SONG_DATA_KIND: {}", song_data_kind));
+                }
+            },
             b"coremper" => {
-                // Core MPEG duration/time - extract the 4-byte timestamp at the end
+                // Item ID - 64-bit value (8 bytes)
+                if payload.len() >= 8 {
+                    let high = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    let low = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                    let item_id = ((high as u64) << 32) | (low as u64);
+                    return ShairportMessage::Control(format!("ITEM_ID: {:016x}", item_id));
+                }
+            },
+            b"coreastm" => {
+                // Song Time in milliseconds - 32-bit value
                 if payload.len() >= 4 {
-                    let timestamp = u32::from_be_bytes([payload[payload.len()-4], payload[payload.len()-3], payload[payload.len()-2], payload[payload.len()-1]]);
-                    return ShairportMessage::Control(format!("MPEG_DURATION: {}", timestamp));
+                    let time_ms = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    return ShairportMessage::Control(format!("SONG_TIME_MS: {}", time_ms));
+                }
+            },
+            b"coreastn" => {
+                // Track number - 16-bit value
+                if payload.len() >= 2 {
+                    let track_num = u16::from_be_bytes([payload[0], payload[1]]);
+                    return ShairportMessage::Control(format!("TRACK_NUMBER: {}", track_num));
+                }
+            },
+            b"coreastc" => {
+                // Track count - 16-bit value (same format as track number)
+                if payload.len() >= 2 {
+                    let track_count = u16::from_be_bytes([payload[0], payload[1]]);
+                    return ShairportMessage::Control(format!("TRACK_COUNT: {}", track_count));
                 }
             },
             b"corecaps" => {
-                // Core capabilities - usually 1 byte value at the end
+                // Capabilities - single byte value
                 if !payload.is_empty() {
                     let capability = payload[0];
                     return ShairportMessage::Control(format!("CAPABILITIES: {}", capability));
                 }
             },
-            b"coreastm" => {
-                // Core MPEG start time - extract the 4-byte timestamp at the end
-                if payload.len() >= 4 {
-                    let timestamp = u32::from_be_bytes([payload[payload.len()-4], payload[payload.len()-3], payload[payload.len()-2], payload[payload.len()-1]]);
-                    return ShairportMessage::Control(format!("MPEG_START_TIME: {}", timestamp));
+            
+            // Additional DACP and ShairportSync message types
+            b"ssncdapo" => {
+                // DACP Port
+                if payload.len() >= 2 {
+                    let port = u16::from_be_bytes([payload[0], payload[1]]);
+                    return ShairportMessage::Control(format!("DACP_PORT: {}", port));
+                } else {
+                    return ShairportMessage::Control("DACP_PORT: (empty)".to_string());
                 }
             },
-            b"coreastn" => {
-                // Core track number - extract the value after null bytes
-                if payload.len() >= 2 {
-                    let track_num = u16::from_be_bytes([payload[0], payload[1]]);
-                    return ShairportMessage::Control(format!("TRACK_NUMBER: {}", track_num));
+            b"ssncdaid" => {
+                // DACP ID 
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("DACP_ID: {}", content));
+                }
+            },
+            b"ssncacre" => {
+                // Active Remote
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("ACTIVE_REMOTE: {}", content));
+                }
+            },
+            b"ssncsnua" => {
+                // User Agent
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("USER_AGENT: {}", content));
+                }
+            },
+            b"ssnccdid" => {
+                // Client Device ID
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("CLIENT_DEVICE_ID: {}", content));
+                }
+            },
+            b"ssnccmod" => {
+                // Client Model
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("CLIENT_MODEL: {}", content));
+                }
+            },
+            b"ssnccmac" => {
+                // Client MAC
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("CLIENT_MAC: {}", content));
+                }
+            },
+            b"ssncphbt" => {
+                // Frame position
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("FRAME_POSITION: {}", content));
+                }
+            },
+            b"ssncphb0" => {
+                // First frame position
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("FIRST_FRAME_POSITION: {}", content));
+                }
+            },
+            b"ssncstyp" => {
+                // Stream type
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("STREAM_TYPE: {}", content));
+                }
+            },
+            b"ssncpcst" => {
+                // Picture start
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("PICTURE_START: {}", content));
+                } else {
+                    return ShairportMessage::Control("PICTURE_START".to_string());
+                }
+            },
+            b"ssncpcen" => {
+                // Picture end
+                if let Ok(content) = std::str::from_utf8(payload) {
+                    return ShairportMessage::Control(format!("PICTURE_END: {}", content));
+                } else {
+                    return ShairportMessage::Control("PICTURE_END".to_string());
                 }
             },
             _ => {}
@@ -263,7 +372,9 @@ pub fn parse_shairport_message(data: &[u8]) -> ShairportMessage {
     if let Ok(text) = std::str::from_utf8(data) {
         let trimmed = text.trim();
         if !trimmed.is_empty() {
-            return ShairportMessage::Control(format!("UNKNOWN_TEXT: {}", trimmed));
+            // For unknown text, we'll still return it as Unknown with the raw data
+            // so the display layer can show both text and hex dump
+            return ShairportMessage::Unknown(data.to_vec());
         }
     }
 
@@ -340,143 +451,5 @@ pub fn get_png_dimensions(data: &[u8]) -> String {
         format!("{}x{}", width, height)
     } else {
         "Unknown".to_string()
-    }
-}
-
-pub fn print_hex_dump(data: &[u8], prefix: &str) {
-    for (i, chunk) in data.chunks(16).enumerate() {
-        print!("{}{:04x}: ", prefix, i * 16);
-        
-        // Print hex values
-        for (j, byte) in chunk.iter().enumerate() {
-            print!("{:02x} ", byte);
-            if j == 7 {
-                print!(" "); // Extra space in the middle
-            }
-        }
-        
-        // Pad if this chunk is less than 16 bytes
-        for j in chunk.len()..16 {
-            print!("   ");
-            if j == 7 {
-                print!(" ");
-            }
-        }
-        
-        print!(" |");
-        
-        // Print ASCII representation
-        for byte in chunk {
-            if byte.is_ascii_graphic() || *byte == b' ' {
-                print!("{}", *byte as char);
-            } else {
-                print!(".");
-            }
-        }
-        
-        println!("|");
-    }
-}
-
-pub fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
-    match message {
-        ShairportMessage::Control(action) => {
-            println!("  {}", action);
-        }
-        
-        ShairportMessage::SessionStart(session_id) => {
-            println!("  SESSION START: {}", session_id);
-        }
-        
-        ShairportMessage::SessionEnd(timestamp) => {
-            println!("  SESSION END: {}", timestamp);
-        }
-        
-        ShairportMessage::CompletePicture { data, format } => {
-            println!("  COMPLETE PICTURE:");
-            println!("     Format: {}", format);
-            println!("     Size: {} bytes", data.len());
-            println!("     Dimensions: {}", get_image_dimensions(data, format));
-            
-            if show_hex && data.len() <= 256 {
-                println!("     Hex dump (header):");
-                print_hex_dump(data, "       ");
-            } else if show_hex {
-                println!("     Hex dump (first 256 bytes):");
-                print_hex_dump(&data[..256], "       ");
-            }
-        }
-        
-        ShairportMessage::ChunkData { chunk_id, total_chunks, data_type, data } => {
-            println!("  CHUNK DATA:");
-            println!("     Type: {}", data_type.trim_end_matches('\0'));
-            println!("     Chunk: {}/{}", chunk_id, total_chunks);
-            
-            if data.is_empty() {
-                println!("     Size: 0 bytes (header/padding only)");
-            } else {
-                println!("     Size: {} bytes", data.len());
-            }
-            
-            // Special handling for different data types
-            let clean_type = data_type.trim_end_matches('\0');
-            match clean_type {
-                "ssncPICT" => {
-                    if data.is_empty() {
-                        println!("     Content: Album artwork header (no data in this chunk)");
-                    } else {
-                        let format = detect_image_format(data);
-                        println!("     Content: Album artwork ({})", format);
-                        println!("     Format: {} detected", format);
-                        
-                        if format.contains("JPEG") {
-                            let dimensions = get_jpeg_dimensions(data);
-                            if dimensions != "Unknown" {
-                                println!("     Dimensions: {}", dimensions);
-                            }
-                        } else if format.contains("PNG") {
-                            let dimensions = get_png_dimensions(data);
-                            if dimensions != "Unknown" {
-                                println!("     Dimensions: {}", dimensions);
-                            }
-                        }
-                    }
-                }
-                "ssncminu" => println!("     Content: Metadata - Track info"),
-                "ssncasar" => println!("     Content: Metadata - Artist"),
-                "ssncasal" => println!("     Content: Metadata - Album"),
-                "ssncastn" => println!("     Content: Metadata - Track name"),
-                _ => {
-                    if clean_type.starts_with("ssnc") {
-                        println!("     Content: Metadata - {}", &clean_type[4..]);
-                    } else {
-                        println!("     Content: Unknown data type");
-                    }
-                }
-            }
-            
-            if !data.is_empty() && show_hex {
-                if data.len() <= 256 {
-                    println!("     Hex dump:");
-                    print_hex_dump(data, "       ");
-                } else {
-                    println!("     Hex dump (first 256 bytes):");
-                    print_hex_dump(&data[..256], "       ");
-                }
-            }
-        }
-        
-        ShairportMessage::Unknown(data) => {
-            // Try to display as text if it looks like text
-            if let Ok(text) = std::str::from_utf8(data) {
-                if text.chars().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace()) {
-                    println!("  UNKNOWN TEXT: {}", text.trim());
-                    return;
-                }
-            }
-            
-            println!("  UNKNOWN BINARY DATA: {} bytes", data.len());
-            print_hex_dump(data, "     ");
-        }
     }
 }

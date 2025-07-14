@@ -6,6 +6,7 @@ use crate::helpers::shairportsync_messages::{
     update_song_from_message, song_has_significant_metadata
 };
 use crate::helpers::imagecache;
+use crate::helpers::process_helper::{systemd, SystemdAction};
 use std::sync::{Arc, Mutex};
 use log::{debug, info, warn, error, trace};
 use std::net::UdpSocket;
@@ -25,6 +26,9 @@ pub struct ShairportController {
     
     /// UDP port to listen on for ShairportSync messages
     port: u16,
+    
+    /// Optional systemd unit name for controlling the ShairportSync service
+    systemd_unit: Option<String>,
     
     /// Current song information (temporary storage until METADATA_END)
     current_song: Arc<Mutex<Option<Song>>>,
@@ -50,6 +54,7 @@ impl Clone for ShairportController {
         ShairportController {
             base: self.base.clone(),
             port: self.port,
+            systemd_unit: self.systemd_unit.clone(),
             current_song: Arc::clone(&self.current_song),
             pending_song: Arc::clone(&self.pending_song),
             current_state: Arc::clone(&self.current_state),
@@ -68,7 +73,12 @@ impl ShairportController {
     
     /// Create a new ShairportSync controller with custom port
     pub fn with_port(port: u16) -> Self {
-        debug!("Creating new ShairportController with port {}", port);
+        Self::with_config(port, None)
+    }
+    
+    /// Create a new ShairportSync controller with custom port and systemd unit
+    pub fn with_config(port: u16, systemd_unit: Option<String>) -> Self {
+        debug!("Creating new ShairportController with port {} and systemd unit {:?}", port, systemd_unit);
         
         // Create a base controller with player name and ID
         let base = BasePlayerController::with_player_info("shairport", &format!("udp:{}", port));
@@ -76,6 +86,7 @@ impl ShairportController {
         let controller = Self {
             base,
             port,
+            systemd_unit,
             current_song: Arc::new(Mutex::new(None)),
             pending_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
@@ -96,19 +107,34 @@ impl ShairportController {
             .and_then(|p| p.as_u64())
             .unwrap_or(5555) as u16;
         
-        debug!("Creating ShairportController from config with port {}", port);
-        Self::with_port(port)
+        let systemd_unit = config.get("systemd_unit")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+        
+        debug!("Creating ShairportController from config with port {} and systemd unit {:?}", port, systemd_unit);
+        Self::with_config(port, systemd_unit)
     }
     
     /// Set the default capabilities for this player
     fn set_default_capabilities(&self) {
         debug!("Setting default ShairportController capabilities");
         // ShairportSync is a passive listener that can provide metadata and album art
-        // but cannot control playback
-        self.base.set_capabilities(vec![
+        let mut capabilities = vec![
             PlayerCapability::Metadata,
             PlayerCapability::AlbumArt,
-        ], false); // Don't notify on initialization
+        ];
+        
+        // If systemd unit is configured, we can control playback
+        if self.systemd_unit.is_some() {
+            capabilities.extend_from_slice(&[
+                PlayerCapability::Play,
+                PlayerCapability::Pause,
+                PlayerCapability::Stop,
+            ]);
+            debug!("Added playback control capabilities due to systemd unit configuration");
+        }
+        
+        self.base.set_capabilities(capabilities, false); // Don't notify on initialization
     }
     
     /// Start the UDP listener thread
@@ -465,6 +491,44 @@ impl ShairportController {
             }
         }
     }
+    
+    /// Control systemd service for playback control
+    fn control_systemd_service(&self, action: &str) -> bool {
+        if let Some(ref unit_name) = self.systemd_unit {
+            debug!("Controlling systemd unit '{}' with action '{}'", unit_name, action);
+            
+            let systemd_action = match action {
+                "restart" => SystemdAction::Restart,
+                "stop" => SystemdAction::Stop,
+                "start" => SystemdAction::Start,
+                _ => {
+                    error!("Unknown systemd action: {}", action);
+                    return false;
+                }
+            };
+            
+            info!("Executing {} on systemd unit '{}'", systemd_action, unit_name);
+            
+            match systemd(unit_name, systemd_action) {
+                Ok(success) => {
+                    if success {
+                        info!("Successfully executed {} on systemd unit '{}'", action, unit_name);
+                        true
+                    } else {
+                        warn!("Systemd command completed but may not have been successful for unit '{}'", unit_name);
+                        false
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to {} systemd unit '{}': {}", action, unit_name, e);
+                    false
+                }
+            }
+        } else {
+            debug!("No systemd unit configured, cannot control service");
+            false
+        }
+    }
 }
 
 impl PlayerController for ShairportController {
@@ -513,9 +577,31 @@ impl PlayerController for ShairportController {
     }
     
     fn send_command(&self, command: PlayerCommand) -> bool {
-        // ShairportSync is a passive listener, it can't control playback
-        debug!("ShairportSync received command {:?} but cannot control playback", command);
-        false
+        // If systemd unit is configured, we can control playback via systemd
+        if self.systemd_unit.is_some() {
+            match command {
+                PlayerCommand::Play => {
+                    info!("ShairportSync received Play command, restarting systemd service");
+                    self.control_systemd_service("restart")
+                }
+                PlayerCommand::Pause => {
+                    info!("ShairportSync received Pause command, stopping systemd service");
+                    self.control_systemd_service("stop")
+                }
+                PlayerCommand::Stop => {
+                    info!("ShairportSync received Stop command, stopping systemd service");
+                    self.control_systemd_service("stop")
+                }
+                _ => {
+                    debug!("ShairportSync received unsupported command {:?}", command);
+                    false
+                }
+            }
+        } else {
+            // ShairportSync is a passive listener, it can't control playback without systemd
+            debug!("ShairportSync received command {:?} but no systemd unit configured", command);
+            false
+        }
     }
     
     fn as_any(&self) -> &dyn Any {

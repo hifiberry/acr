@@ -26,8 +26,11 @@ pub struct ShairportController {
     /// UDP port to listen on for ShairportSync messages
     port: u16,
     
-    /// Current song information
+    /// Current song information (temporary storage until METADATA_END)
     current_song: Arc<Mutex<Option<Song>>>,
+    
+    /// Temporary song being built from metadata
+    pending_song: Arc<Mutex<Option<Song>>>,
     
     /// Current player state
     current_state: Arc<Mutex<PlayerState>>,
@@ -48,6 +51,7 @@ impl Clone for ShairportController {
             base: self.base.clone(),
             port: self.port,
             current_song: Arc::clone(&self.current_song),
+            pending_song: Arc::clone(&self.pending_song),
             current_state: Arc::clone(&self.current_state),
             stop_listener: Arc::clone(&self.stop_listener),
             listener_thread: Arc::clone(&self.listener_thread),
@@ -73,6 +77,7 @@ impl ShairportController {
             base,
             port,
             current_song: Arc::new(Mutex::new(None)),
+            pending_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             stop_listener: Arc::new(AtomicBool::new(false)),
             listener_thread: Arc::new(Mutex::new(None)),
@@ -116,6 +121,7 @@ impl ShairportController {
         let port = self.port;
         let stop_flag = Arc::clone(&self.stop_listener);
         let current_song = Arc::clone(&self.current_song);
+        let pending_song = Arc::clone(&self.pending_song);
         let current_state = Arc::clone(&self.current_state);
         let picture_collector = Arc::clone(&self.picture_collector);
         let base = self.base.clone();
@@ -123,7 +129,7 @@ impl ShairportController {
         info!("Starting ShairportSync UDP listener on port {}", port);
         
         let handle = thread::spawn(move || {
-            Self::listener_loop(port, stop_flag, current_song, current_state, picture_collector, base);
+            Self::listener_loop(port, stop_flag, current_song, pending_song, current_state, picture_collector, base);
         });
         
         *self.listener_thread.lock().unwrap() = Some(handle);
@@ -158,6 +164,7 @@ impl ShairportController {
         port: u16,
         stop_flag: Arc<AtomicBool>,
         current_song: Arc<Mutex<Option<Song>>>,
+        pending_song: Arc<Mutex<Option<Song>>>,
         current_state: Arc<Mutex<PlayerState>>,
         picture_collector: Arc<Mutex<Option<ChunkCollector>>>,
         base: BasePlayerController,
@@ -242,7 +249,7 @@ impl ShairportController {
                     }
                     
                     // Process the message
-                    Self::process_message(&message, &current_song, &current_state, &base);
+                    Self::process_message(&message, &current_song, &pending_song, &current_state, &base);
                 }
                 Err(e) => {
                     match e.kind() {
@@ -266,6 +273,7 @@ impl ShairportController {
     fn process_message(
         message: &ShairportMessage,
         current_song: &Arc<Mutex<Option<Song>>>,
+        pending_song: &Arc<Mutex<Option<Song>>>,
         current_state: &Arc<Mutex<PlayerState>>,
         base: &BasePlayerController,
     ) {
@@ -296,6 +304,7 @@ impl ShairportController {
                         
                         // Clear current song on session end
                         *current_song.lock().unwrap() = None;
+                        *pending_song.lock().unwrap() = None;
                         base.notify_song_changed(None);
                     }
                     "AUDIO_BEGIN" | "PLAYBACK_BEGIN" => {
@@ -312,32 +321,51 @@ impl ShairportController {
                                 let key = parts[0];
                                 let value = parts[1];
                                 
-                                // Log specific metadata types we're interested in
+                                // Handle special control messages
                                 match key {
+                                    "METADATA_START" => {
+                                        debug!("ShairportSync handler: Starting metadata collection - {}", value);
+                                        // Initialize pending song or preserve existing one
+                                        let mut pending = pending_song.lock().unwrap();
+                                        if pending.is_none() {
+                                            *pending = Some(Song::default());
+                                        }
+                                        // Assume playing when metadata starts
+                                        let mut state = current_state.lock().unwrap();
+                                        state.state = PlaybackState::Playing;
+                                        base.notify_state_changed(PlaybackState::Playing);
+                                    }
+                                    "METADATA_END" => {
+                                        debug!("ShairportSync handler: Finalizing metadata collection - {}", value);
+                                        // Move pending song to current and notify
+                                        let mut pending = pending_song.lock().unwrap();
+                                        if let Some(song) = pending.take() {
+                                            if song_has_significant_metadata(&song) {
+                                                debug!("ShairportSync handler: Publishing complete song metadata: {}", song);
+                                                *current_song.lock().unwrap() = Some(song.clone());
+                                                base.notify_song_changed(Some(&song));
+                                            }
+                                        }
+                                    }
                                     "TRACK" | "ARTIST" | "ALBUM" | "GENRE" | "COMPOSER" | 
                                     "ALBUM_ARTIST" | "SONG_ALBUM_ARTIST" | "TRACK_NUMBER" | "TRACK_COUNT" => {
                                         debug!("ShairportSync handler: Processing metadata - {}: {}", key, value);
+                                        // Update pending song metadata
+                                        let mut pending = pending_song.lock().unwrap();
+                                        let mut song = pending.take().unwrap_or_default();
+                                        update_song_from_message(&mut song, message);
+                                        *pending = Some(song);
                                     }
                                     _ => {
                                         debug!("ShairportSync handler: Processing other metadata - {}: {}", key, value);
+                                        // Update pending song with other metadata
+                                        let mut pending = pending_song.lock().unwrap();
+                                        let mut song = pending.take().unwrap_or_default();
+                                        update_song_from_message(&mut song, message);
+                                        *pending = Some(song);
                                     }
                                 }
                             }
-                        }
-                        
-                        // Update song metadata
-                        let mut song_lock = current_song.lock().unwrap();
-                        let mut song = song_lock.take().unwrap_or_default();
-                        
-                        if update_song_from_message(&mut song, message) {
-                            if song_has_significant_metadata(&song) {
-                                debug!("ShairportSync handler: Updated song metadata: {}", song);
-                                base.notify_song_changed(Some(&song));
-                            }
-                            *song_lock = Some(song);
-                        } else if song_lock.is_some() {
-                            // Put the song back if no update occurred
-                            *song_lock = Some(song);
                         }
                     }
                 }
@@ -347,37 +375,23 @@ impl ShairportController {
                 debug!("ShairportSync handler: Processing chunk data - type: {}, chunk: {}/{}, size: {} bytes", 
                        clean_type, chunk_id, total_chunks, data.len());
                 
-                // Handle chunk data for metadata updates
-                let mut song_lock = current_song.lock().unwrap();
-                let mut song = song_lock.take().unwrap_or_default();
-                
-                if update_song_from_message(&mut song, message) {
-                    if song_has_significant_metadata(&song) {
-                        debug!("ShairportSync handler: Updated song metadata from chunk: {}", song);
-                        base.notify_song_changed(Some(&song));
-                    }
-                    *song_lock = Some(song);
-                } else if song_lock.is_some() {
-                    // Put the song back if no update occurred
-                    *song_lock = Some(song);
-                }
+                // Handle chunk data for metadata updates (but don't notify yet)
+                let mut pending = pending_song.lock().unwrap();
+                let mut song = pending.take().unwrap_or_default();
+                update_song_from_message(&mut song, message);
+                *pending = Some(song);
             }
             ShairportMessage::CompletePicture { data, format } => {
                 debug!("ShairportSync handler: Processing complete cover art - format: {}, size: {} bytes", format, data.len());
                 
                 // Process artwork and get URL
                 if let Some(artwork_url) = Self::process_artwork(data, format) {
-                    // Update current song with artwork URL
-                    let mut song_lock = current_song.lock().unwrap();
-                    let mut song = song_lock.take().unwrap_or_default();
-                    
-                    // Set the artwork URL in song metadata
+                    // Update pending song with artwork URL (preserve existing metadata)
+                    let mut pending = pending_song.lock().unwrap();
+                    let mut song = pending.take().unwrap_or_default();
                     song.cover_art_url = Some(artwork_url.clone());
-                    debug!("ShairportSync handler: Added cover art URL to song: {}", artwork_url);
-                    
-                    // Notify listeners of song change
-                    base.notify_song_changed(Some(&song));
-                    *song_lock = Some(song);
+                    debug!("ShairportSync handler: Added cover art URL to pending song: {}", artwork_url);
+                    *pending = Some(song);
                 } else {
                     debug!("ShairportSync handler: Failed to process cover art data");
                 }
@@ -386,6 +400,7 @@ impl ShairportController {
                 debug!("Session started: {}", session_id);
                 // Clear previous song data on new session
                 *current_song.lock().unwrap() = None;
+                *pending_song.lock().unwrap() = None;
             }
             ShairportMessage::SessionEnd(session_id) => {
                 debug!("Session ended: {}", session_id);
@@ -394,6 +409,7 @@ impl ShairportController {
                 base.notify_state_changed(PlaybackState::Stopped);
                 
                 *current_song.lock().unwrap() = None;
+                *pending_song.lock().unwrap() = None;
                 base.notify_song_changed(None);
             }
             ShairportMessage::Unknown(data) => {
@@ -441,7 +457,7 @@ impl ShairportController {
                       cache_path, artwork_data.len());
                 
                 // Return URL path for accessing the image
-                Some(format!("/api/image/{}", cache_path))
+                Some(format!("/api/imagecache/{}", cache_path))
             }
             Err(e) => {
                 error!("Failed to store artwork in cache: {}", e);

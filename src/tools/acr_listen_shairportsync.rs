@@ -4,6 +4,9 @@ use clap::Parser;
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::time::Instant;
 use chrono;
 
 use audiocontrol::helpers::shairportsync_messages::{
@@ -16,7 +19,7 @@ use audiocontrol::data::song::Song;
 #[derive(Parser)]
 #[command(name = "audiocontrol_listen_shairportsync")]
 #[command(about = "AudioControl ShairportSync UDP Listener")]
-#[command(long_about = "Listens for UDP packets on the specified port and displays their content.\n\nModes:\n- full: Shows all packets with detailed information (default)\n- player: Collects metadata and displays structured song information\n\nThis tool is useful for monitoring ShairportSync metadata or other\nUDP-based communication. Press Ctrl+C to stop listening.")]
+#[command(long_about = "Listens for UDP packets on the specified port and displays their content.\n\nModes:\n- full: Shows all packets with detailed information (default)\n- player: Collects metadata and displays structured song information\n- dump: Saves packets to binary file with relative timestamps for later analysis\n\nThis tool is useful for monitoring ShairportSync metadata or other\nUDP-based communication. Press Ctrl+C to stop listening.")]
 #[command(version)]
 struct Args {
     /// UDP port to listen on
@@ -30,6 +33,10 @@ struct Args {
     /// Display mode: full (all packets) or player (structured metadata)
     #[arg(long, value_enum, default_value_t = DisplayMode::Full)]
     mode: DisplayMode,
+    
+    /// Output file for dump mode (default: shairport_dump.bin)
+    #[arg(long, default_value = "shairport_dump.bin")]
+    output_file: String,
 }
 
 #[derive(Clone, clap::ValueEnum, PartialEq)]
@@ -38,6 +45,8 @@ enum DisplayMode {
     Full,
     /// Collect metadata and display structured song information
     Player,
+    /// Dump packets to file with timestamps for later use in tests
+    Dump,
 }
 
 fn main() {
@@ -54,6 +63,7 @@ fn main() {
     match mode {
         DisplayMode::Full => println!("Mode: Full (showing all packets)"),
         DisplayMode::Player => println!("Mode: Player (structured metadata display)"),
+        DisplayMode::Dump => println!("Mode: Dump (saving to file: {})", args.output_file),
     }
     println!("Press Ctrl+C to stop...");
     println!();
@@ -90,6 +100,24 @@ fn main() {
     let mut picture_collector: Option<ChunkCollector> = None;
     let mut current_song = Song::default();
     let mut metadata_updated = false;
+    
+    // Initialize dump file writer if in dump mode
+    let mut dump_writer = if mode == DisplayMode::Dump {
+        match File::create(&args.output_file) {
+            Ok(file) => {
+                println!("Created dump file: {}", args.output_file);
+                Some(BufWriter::new(file))
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to create dump file {}: {}", args.output_file, e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+    
+    let start_time = Instant::now();
     
     while running.load(Ordering::SeqCst) {
         match socket.recv_from(&mut buffer) {
@@ -205,6 +233,41 @@ fn main() {
                             }
                         }
                     }
+                    DisplayMode::Dump => {
+                        // Write packet to dump file with relative timestamp
+                        if let Some(ref mut writer) = dump_writer {
+                            let relative_time_ms = start_time.elapsed().as_millis() as u64;
+                            
+                            // Write header: timestamp (8 bytes) + packet_size (4 bytes)
+                            if let Err(e) = writer.write_all(&relative_time_ms.to_le_bytes()) {
+                                eprintln!("Error writing timestamp to dump file: {}", e);
+                                break;
+                            }
+                            if let Err(e) = writer.write_all(&(bytes_received as u32).to_le_bytes()) {
+                                eprintln!("Error writing packet size to dump file: {}", e);
+                                break;
+                            }
+                            
+                            // Write the actual packet data
+                            if let Err(e) = writer.write_all(&buffer[..bytes_received]) {
+                                eprintln!("Error writing packet data to dump file: {}", e);
+                                break;
+                            }
+                            
+                            // Flush periodically to ensure data is written
+                            if packet_count % 100 == 0 {
+                                if let Err(e) = writer.flush() {
+                                    eprintln!("Error flushing dump file: {}", e);
+                                    break;
+                                }
+                            }
+                            
+                            // Print progress every 1000 packets
+                            if packet_count % 1000 == 0 {
+                                println!("Dumped {} packets to {}", packet_count, args.output_file);
+                            }
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -219,9 +282,16 @@ fn main() {
                     }
                 }
             }
-        }
-    }
+        }    }
     
+    // Flush and close dump file if in dump mode
+    if let Some(mut writer) = dump_writer {
+        if let Err(e) = writer.flush() {
+            eprintln!("Error flushing dump file on exit: {}", e);
+        }
+        println!("Dump file {} closed.", args.output_file);
+    }
+
     println!("Listener stopped. Total packets received: {}", packet_count);
 }
 

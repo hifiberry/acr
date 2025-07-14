@@ -48,6 +48,8 @@ hex = "0.4.3"
 # For secure storage encryption
 aes-gcm = "0.10.2"
 rand = "0.8.5"
+# For filesystem notifications
+notify = "6.0"
 base64 = "0.21.0"
 # For testing
 tempfile = "3.8.1"

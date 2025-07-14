@@ -906,10 +906,6 @@ impl MPDPlayerController {
             source: Some("mpd".to_string()),
             liked: None,
             composer: None,
-            comment: None,
-            song_description: None,
-            artwork_format: None,
-            artwork_size: None,
             metadata: HashMap::new(),
         }
     }

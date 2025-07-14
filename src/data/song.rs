@@ -50,18 +50,6 @@ pub struct Song {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub composer: Option<String>,
     
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub comment: Option<String>,
-    
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub song_description: Option<String>,
-    
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub artwork_format: Option<String>,
-    
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub artwork_size: Option<usize>,
-    
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
 }

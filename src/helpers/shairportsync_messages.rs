@@ -495,14 +495,6 @@ pub fn update_song_from_message(song: &mut Song, message: &ShairportMessage) -> 
                         song.album_artist = Some(value.to_string());
                         true
                     }
-                    "SONG_DESCRIPTION" => {
-                        song.song_description = Some(value.to_string());
-                        true
-                    }
-                    "COMMENT" => {
-                        song.comment = Some(value.to_string());
-                        true
-                    }
                     "TRACK_NUMBER" => {
                         if let Ok(track_num) = value.parse::<i32>() {
                             song.track_number = Some(track_num);
@@ -586,13 +578,13 @@ pub fn update_song_from_message(song: &mut Song, message: &ShairportMessage) -> 
                         true
                     }
                     "ssncasdt" => {
-                        // Try to parse as year first, fall back to song description
+                        // Try to parse as year
                         if let Ok(year) = text.parse::<i32>() {
                             song.year = Some(year);
+                            true
                         } else {
-                            song.song_description = Some(text.to_string());
+                            false
                         }
-                        true
                     }
                     _ => {
                         // Store other text metadata, but filter out internal protocol messages
@@ -673,10 +665,9 @@ pub fn update_song_from_message(song: &mut Song, message: &ShairportMessage) -> 
                 }
             }
         }
-        ShairportMessage::CompletePicture { data, format } => {
-            song.artwork_format = Some(format.clone());
-            song.artwork_size = Some(data.len());
-            // Could potentially store artwork data as base64 in metadata if needed
+        ShairportMessage::CompletePicture { data: _, format: _ } => {
+            // Artwork has been processed and assembled, but we don't store it in the song
+            // The listener can still show the assembled artwork information
             true
         }
         _ => false
@@ -725,10 +716,6 @@ pub fn display_song_metadata(song: &Song) {
         let minutes = (duration / 60.0) as i32;
         let seconds = (duration % 60.0) as i32;
         println!("  │ Duration:  {}:{:02}", minutes, seconds);
-    }
-    
-    if let (Some(format), Some(size)) = (&song.artwork_format, song.artwork_size) {
-        println!("  │ Artwork:   {} ({} bytes)", format, size);
     }
     
     // Display additional metadata

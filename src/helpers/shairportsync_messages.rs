@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use base64::{Engine as _, engine::general_purpose};
 
 #[derive(Debug)]
 pub enum ShairportMessage {
@@ -21,7 +22,7 @@ pub enum ShairportMessage {
 #[derive(Debug)]
 pub struct ChunkCollector {
     chunks: HashMap<u32, Vec<u8>>, // chunk_id -> data
-    total_chunks: u32,
+    pub total_chunks: u32,
     data_type: String,
 }
 
@@ -452,4 +453,304 @@ pub fn get_png_dimensions(data: &[u8]) -> String {
     } else {
         "Unknown".to_string()
     }
+}
+
+use crate::data::song::Song;
+
+/// Update a Song object with metadata from a ShairportSync message
+/// Returns true if any field was updated
+pub fn update_song_from_message(song: &mut Song, message: &ShairportMessage) -> bool {
+    match message {
+        ShairportMessage::Control(action) => {
+            // Parse control messages for metadata
+            if let Some((key, value)) = action.split_once(": ") {
+                match key {
+                    "TRACK" => {
+                        song.title = Some(value.to_string());
+                        true
+                    }
+                    "ARTIST" => {
+                        song.artist = Some(value.to_string());
+                        true
+                    }
+                    "ALBUM" => {
+                        song.album = Some(value.to_string());
+                        true
+                    }
+                    "GENRE" => {
+                        song.genre = Some(value.to_string());
+                        // Also add to genres vec if not already present
+                        if !song.genres.contains(&value.to_string()) {
+                            song.genres.push(value.to_string());
+                        }
+                        true
+                    }
+                    "COMPOSER" => {
+                        if value != "(empty)" {
+                            song.composer = Some(value.to_string());
+                        }
+                        true
+                    }
+                    "ALBUM_ARTIST" | "SONG_ALBUM_ARTIST" => {
+                        song.album_artist = Some(value.to_string());
+                        true
+                    }
+                    "SONG_DESCRIPTION" => {
+                        song.song_description = Some(value.to_string());
+                        true
+                    }
+                    "COMMENT" => {
+                        song.comment = Some(value.to_string());
+                        true
+                    }
+                    "TRACK_NUMBER" => {
+                        if let Ok(track_num) = value.parse::<i32>() {
+                            song.track_number = Some(track_num);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    "TRACK_COUNT" => {
+                        if let Ok(track_count) = value.parse::<i32>() {
+                            song.total_tracks = Some(track_count);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    "SORT_NAME" | "SORT_ARTIST" | "SORT_ALBUM" | "SORT_COMPOSER" => {
+                        // Ignore sort fields
+                        false
+                    }
+                    "PICTURE_START" | "PICTURE_END" | "METADATA_START" | "METADATA_END" | 
+                    "ITEM_ID" | "SONG_DATA_KIND" | "FRAME_SEQUENCE_REFERENCE" | 
+                    "PREVIOUS_FRAME_SEQUENCE" | "CLIENT_IP" | "SERVER_IP" | "SERVER_NAME" |
+                    "DACP_PORT" | "DACP_ID" | "ACTIVE_REMOTE" | "PROGRESS" | "USER_AGENT" |
+                    "CLIENT_DEVICE_ID" | "CLIENT_MODEL" | "CLIENT_MAC" | "FRAME_POSITION" |
+                    "FIRST_FRAME_POSITION" | "STREAM_TYPE" | "SONG_TIME_MS" | "CAPABILITIES" |
+                    "DISCOVERED" | "CONNECTED" => {
+                        // Ignore internal protocol messages
+                        false
+                    }
+                    _ => {
+                        // Store other metadata in the metadata HashMap
+                        if !value.trim().is_empty() && value != "(empty)" {
+                            song.metadata.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+            } else {
+                false
+            }
+        }
+        ShairportMessage::ChunkData { data_type, data, .. } => {
+            let clean_type = data_type.trim_end_matches('\0');
+            
+            // Handle text metadata from chunk data
+            if let Ok(text) = std::str::from_utf8(data) {
+                let text = text.trim();
+                if text.is_empty() {
+                    return false;
+                }
+                
+                match clean_type {
+                    "ssncasar" => {
+                        song.artist = Some(text.to_string());
+                        true
+                    }
+                    "ssncasal" => {
+                        song.album = Some(text.to_string());
+                        true
+                    }
+                    "ssncastn" => {
+                        song.title = Some(text.to_string());
+                        true
+                    }
+                    "ssncascp" => {
+                        song.composer = Some(text.to_string());
+                        true
+                    }
+                    "ssncasaa" => {
+                        song.album_artist = Some(text.to_string());
+                        true
+                    }
+                    "ssncasgn" => {
+                        song.genre = Some(text.to_string());
+                        if !song.genres.contains(&text.to_string()) {
+                            song.genres.push(text.to_string());
+                        }
+                        true
+                    }
+                    "ssncasdt" => {
+                        // Try to parse as year first, fall back to song description
+                        if let Ok(year) = text.parse::<i32>() {
+                            song.year = Some(year);
+                        } else {
+                            song.song_description = Some(text.to_string());
+                        }
+                        true
+                    }
+                    _ => {
+                        // Store other text metadata, but filter out internal protocol messages
+                        if clean_type.starts_with("ssnc") && !text.is_empty() {
+                            let key = if clean_type.len() > 4 { &clean_type[4..] } else { clean_type };
+                            
+                            // Filter out internal protocol messages
+                            let should_skip = matches!(key,
+                                "pcst" | "pcen" | "mdst" | "mden" | // Picture/metadata start/end
+                                "dapo" | "daid" | "acre" | "prgr" | // DACP and progress
+                                "snua" | "cdid" | "cmod" | "cmac" | // Client info
+                                "phbt" | "phb0" | "styp" | "flsr" | "pfls" | // Frame/stream info
+                                "disc" | "conn" | "clip" | "svip" | "snam" // Connection info
+                            );
+                            
+                            if !should_skip {
+                                song.metadata.insert(key.to_string(), serde_json::Value::String(text.to_string()));
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                }
+            } else {
+                // Handle binary metadata (like track numbers)
+                match clean_type {
+                    "ssncastn" => {
+                        // Track number - binary u16
+                        if data.len() >= 2 {
+                            let track_num = u16::from_be_bytes([data[0], data[1]]);
+                            song.track_number = Some(track_num as i32);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    "ssncastc" => {
+                        // Track count - binary u16
+                        if data.len() >= 2 {
+                            let track_count = u16::from_be_bytes([data[0], data[1]]);
+                            song.total_tracks = Some(track_count as i32);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => {
+                        // Store binary metadata as base64, but filter out internal protocol messages
+                        if clean_type.starts_with("ssnc") && !data.is_empty() {
+                            let key = if clean_type.len() > 4 { &clean_type[4..] } else { clean_type };
+                            
+                            // Filter out internal protocol messages
+                            let should_skip = matches!(key,
+                                "pcst" | "pcen" | "mdst" | "mden" | // Picture/metadata start/end
+                                "dapo" | "daid" | "acre" | "prgr" | // DACP and progress
+                                "snua" | "cdid" | "cmod" | "cmac" | // Client info
+                                "phbt" | "phb0" | "styp" | "flsr" | "pfls" | // Frame/stream info
+                                "disc" | "conn" | "clip" | "svip" | "snam" // Connection info
+                            );
+                            
+                            if !should_skip {
+                                let base64_data = general_purpose::STANDARD.encode(data);
+                                song.metadata.insert(
+                                    format!("{}_binary", key), 
+                                    serde_json::Value::String(base64_data)
+                                );
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                }
+            }
+        }
+        ShairportMessage::CompletePicture { data, format } => {
+            song.artwork_format = Some(format.clone());
+            song.artwork_size = Some(data.len());
+            // Could potentially store artwork data as base64 in metadata if needed
+            true
+        }
+        _ => false
+    }
+}
+
+/// Check if a Song has significant metadata (title, artist, or album)
+pub fn song_has_significant_metadata(song: &Song) -> bool {
+    song.title.is_some() || song.artist.is_some() || song.album.is_some()
+}
+
+/// Display a formatted representation of the song metadata
+pub fn display_song_metadata(song: &Song) {
+    println!("♪ Current Track:");
+    println!("  ┌─────────────────────────────────────────────");
+    
+    if let Some(title) = &song.title {
+        println!("  │ Title:     {}", title);
+    }
+    if let Some(artist) = &song.artist {
+        println!("  │ Artist:    {}", artist);
+    }
+    if let Some(album) = &song.album {
+        println!("  │ Album:     {}", album);
+    }
+    if let Some(album_artist) = &song.album_artist {
+        println!("  │ Album Artist: {}", album_artist);
+    }
+    if let Some(composer) = &song.composer {
+        println!("  │ Composer:  {}", composer);
+    }
+    if let Some(genre) = &song.genre {
+        println!("  │ Genre:     {}", genre);
+    }
+    if let Some(year) = song.year {
+        println!("  │ Year:      {}", year);
+    }
+    if let Some(track_number) = song.track_number {
+        if let Some(total_tracks) = song.total_tracks {
+            println!("  │ Track:     {}/{}", track_number, total_tracks);
+        } else {
+            println!("  │ Track:     {}", track_number);
+        }
+    }
+    if let Some(duration) = song.duration {
+        let minutes = (duration / 60.0) as i32;
+        let seconds = (duration % 60.0) as i32;
+        println!("  │ Duration:  {}:{:02}", minutes, seconds);
+    }
+    
+    if let (Some(format), Some(size)) = (&song.artwork_format, song.artwork_size) {
+        println!("  │ Artwork:   {} ({} bytes)", format, size);
+    }
+    
+    // Display additional metadata
+    for (key, value) in &song.metadata {
+        if let Some(str_value) = value.as_str() {
+            // Filter out internal protocol messages from display
+            let should_skip = matches!(key.as_str(),
+                "PICTURE_START" | "PICTURE_END" | "METADATA_START" | "METADATA_END" | 
+                "ITEM_ID" | "SONG_DATA_KIND" | "FRAME_SEQUENCE_REFERENCE" | 
+                "PREVIOUS_FRAME_SEQUENCE" | "CLIENT_IP" | "SERVER_IP" | "SERVER_NAME" |
+                "DACP_PORT" | "DACP_ID" | "ACTIVE_REMOTE" | "PROGRESS" | "USER_AGENT" |
+                "CLIENT_DEVICE_ID" | "CLIENT_MODEL" | "CLIENT_MAC" | "FRAME_POSITION" |
+                "FIRST_FRAME_POSITION" | "STREAM_TYPE" | "SONG_TIME_MS" | "CAPABILITIES" |
+                "DISCOVERED" | "CONNECTED" | "SORT_NAME" | "SORT_ARTIST" | "SORT_ALBUM" | "SORT_COMPOSER"
+            );
+            
+            if !str_value.is_empty() && !key.ends_with("_binary") && !should_skip {
+                println!("  │ {}:  {}", key, str_value);
+            }
+        }
+    }
+    
+    println!("  └─────────────────────────────────────────────");
+    println!();
 }

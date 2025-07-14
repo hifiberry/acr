@@ -4,16 +4,19 @@ use clap::Parser;
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use chrono;
 
 use audiocontrol::helpers::shairportsync_messages::{
     ShairportMessage, ChunkCollector, parse_shairport_message, 
-    detect_image_format, get_image_dimensions, get_jpeg_dimensions, get_png_dimensions
+    detect_image_format, get_image_dimensions, get_jpeg_dimensions, get_png_dimensions,
+    update_song_from_message, song_has_significant_metadata, display_song_metadata
 };
+use audiocontrol::data::song::Song;
 
 #[derive(Parser)]
 #[command(name = "audiocontrol_listen_shairportsync")]
 #[command(about = "AudioControl ShairportSync UDP Listener")]
-#[command(long_about = "Listens for UDP packets on the specified port and displays their content.\nPackets are assumed to be text and will be displayed as such. If binary\ndata is received, it will be shown as a hex dump.\n\nThis tool is useful for monitoring ShairportSync metadata or other\nUDP-based communication. Press Ctrl+C to stop listening.")]
+#[command(long_about = "Listens for UDP packets on the specified port and displays their content.\n\nModes:\n- full: Shows all packets with detailed information (default)\n- player: Collects metadata and displays structured song information\n\nThis tool is useful for monitoring ShairportSync metadata or other\nUDP-based communication. Press Ctrl+C to stop listening.")]
 #[command(version)]
 struct Args {
     /// UDP port to listen on
@@ -23,6 +26,18 @@ struct Args {
     /// Show raw hex dump for binary data
     #[arg(long, default_value_t = false)]
     show_hex: bool,
+    
+    /// Display mode: full (all packets) or player (structured metadata)
+    #[arg(long, value_enum, default_value_t = DisplayMode::Full)]
+    mode: DisplayMode,
+}
+
+#[derive(Clone, clap::ValueEnum, PartialEq)]
+enum DisplayMode {
+    /// Show all packets with detailed information
+    Full,
+    /// Collect metadata and display structured song information
+    Player,
 }
 
 fn main() {
@@ -31,10 +46,15 @@ fn main() {
     let args = Args::parse();
     let port = args.port;
     let show_hex = args.show_hex;
+    let mode = args.mode;
     
     println!("AudioControl ShairportSync UDP Listener");
     println!("=====================================");
     println!("Listening on UDP port: {}", port);
+    match mode {
+        DisplayMode::Full => println!("Mode: Full (showing all packets)"),
+        DisplayMode::Player => println!("Mode: Player (structured metadata display)"),
+    }
     println!("Press Ctrl+C to stop...");
     println!();
     
@@ -68,28 +88,30 @@ fn main() {
     let mut buffer = [0; 4096]; // 4KB buffer for incoming packets
     let mut packet_count = 0;
     let mut picture_collector: Option<ChunkCollector> = None;
+    let mut current_song = Song::default();
+    let mut metadata_updated = false;
     
     while running.load(Ordering::SeqCst) {
         match socket.recv_from(&mut buffer) {
             Ok((bytes_received, sender_addr)) => {
                 packet_count += 1;
                 
-                // Get current timestamp
-                let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-                
-                println!("[{}] Packet #{} from {} ({} bytes):", 
-                         timestamp, packet_count, sender_addr, bytes_received);
-                
                 // Parse ShairportSync message
                 let mut message = parse_shairport_message(&buffer[..bytes_received]);
                 
-                // Handle chunk collection for pictures
+                // Handle chunk collection for pictures and binary data
                 if let ShairportMessage::ChunkData { chunk_id, total_chunks, data_type, data } = &message {
                     let clean_type = data_type.trim_end_matches('\0');
                     
-                    if clean_type == "ssncPICT" {
-                        // Initialize collector if this is the first chunk
-                        if picture_collector.is_none() {
+                    // Check if this might be picture data by looking at the data content or type
+                    let is_picture_data = clean_type == "ssncPICT" || 
+                                         clean_type.contains("PICT") ||
+                                         (!data.is_empty() && is_likely_image_data(data));
+                    
+                    if is_picture_data && *total_chunks > 1 {
+                        // Initialize collector if this is the first chunk or we don't have one
+                        if picture_collector.is_none() || 
+                           picture_collector.as_ref().unwrap().total_chunks != *total_chunks {
                             picture_collector = Some(ChunkCollector::new(*total_chunks, clean_type.to_string()));
                         }
                         
@@ -98,6 +120,12 @@ fn main() {
                             if let Some(complete_data) = collector.add_chunk(*chunk_id, data.clone()) {
                                 // We have a complete picture
                                 let format = detect_image_format(&complete_data);
+                                let dimensions = get_image_dimensions(&complete_data, &format);
+                                if mode == DisplayMode::Player {
+                                    println!("📷 Assembled complete artwork: {} ({} bytes, {})", 
+                                            format, complete_data.len(), dimensions);
+                                }
+                                
                                 message = ShairportMessage::CompletePicture {
                                     data: complete_data,
                                     format,
@@ -108,9 +136,76 @@ fn main() {
                     }
                 }
                 
-                display_shairport_message(&message, show_hex);
-                
-                println!(); // Empty line between packets
+                match mode {
+                    DisplayMode::Full => {
+                        // Get current timestamp
+                        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                        
+                        println!("[{}] Packet #{} from {} ({} bytes):", 
+                                 timestamp, packet_count, sender_addr, bytes_received);
+                        
+                        display_shairport_message(&message, show_hex);
+                        println!(); // Empty line between packets
+                    }
+                    DisplayMode::Player => {
+                        // Update metadata and show player events
+                        let updated = update_song_from_message(&mut current_song, &message);
+                        if updated {
+                            metadata_updated = true;
+                        }
+                        
+                        // Show control events and unknown messages immediately
+                        match &message {
+                            ShairportMessage::Control(action) => {
+                                let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                // Filter out metadata messages that we're handling separately
+                                if !action.contains(": ") || action.starts_with("PAUSE") || 
+                                   action.starts_with("RESUME") || action.starts_with("SESSION") ||
+                                   action.starts_with("PLAYBACK") || action.starts_with("AUDIO") ||
+                                   action.starts_with("VOLUME") || action.starts_with("PROGRESS") {
+                                    println!("[{}] ♫ {}", timestamp, action);
+                                }
+                            }
+                            ShairportMessage::SessionStart(session_id) => {
+                                let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                println!("[{}] 🎵 Session started: {}", timestamp, session_id);
+                                // Clear previous metadata on new session
+                                current_song = Song::default();
+                                metadata_updated = false;
+                            }
+                            ShairportMessage::SessionEnd(timestamp_str) => {
+                                let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                println!("[{}] 🎵 Session ended: {}", timestamp, timestamp_str);
+                                // Show final metadata if we have any
+                                if song_has_significant_metadata(&current_song) {
+                                    display_song_metadata(&current_song);
+                                }
+                                current_song = Song::default();
+                                metadata_updated = false;
+                            }
+                            ShairportMessage::Unknown(data) => {
+                                let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                if let Ok(text) = std::str::from_utf8(data) {
+                                    if text.chars().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace()) {
+                                        println!("[{}] ❓ Unknown text: {}", timestamp, text.trim());
+                                    } else {
+                                        println!("[{}] ❓ Unknown binary data: {} bytes", timestamp, data.len());
+                                    }
+                                } else {
+                                    println!("[{}] ❓ Unknown binary data: {} bytes", timestamp, data.len());
+                                }
+                            }
+                            _ => {
+                                // For metadata messages, we've already updated the current_song
+                                // Display updated metadata when we have significant changes
+                                if metadata_updated && song_has_significant_metadata(&current_song) {
+                                    display_song_metadata(&current_song);
+                                    metadata_updated = false;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 match e.kind() {
@@ -266,6 +361,31 @@ fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
             
             println!("  UNKNOWN BINARY DATA: {} bytes", data.len());
             print_hex_dump(data, "     ");
+        }
+    }
+}
+
+/// Check if data is likely to be image data based on magic bytes
+fn is_likely_image_data(data: &[u8]) -> bool {
+    if data.len() < 4 {
+        return false;
+    }
+    
+    // Check for common image format magic bytes
+    match &data[0..4] {
+        [0xFF, 0xD8, 0xFF, _] => true,           // JPEG
+        [0x89, 0x50, 0x4E, 0x47] => true,        // PNG
+        [0x47, 0x49, 0x46, 0x38] => true,        // GIF
+        [0x42, 0x4D, _, _] => true,              // BMP
+        _ => {
+            // Check for other formats
+            if data.len() >= 12 && &data[4..12] == b"ftypheic" {
+                true  // HEIC
+            } else if data.len() >= 8 && &data[0..8] == b"RIFF" {
+                true  // WEBP
+            } else {
+                false
+            }
         }
     }
 }

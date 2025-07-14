@@ -133,7 +133,7 @@ pub struct LoggingConfig {
     pub colors: bool,
     
     /// Subsystem-specific log levels
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_subsystems")]
     pub subsystems: HashMap<String, String>,
     
     /// Whether to include module paths in log output
@@ -171,6 +171,19 @@ fn default_module_path() -> bool {
 
 fn default_line_numbers() -> bool {
     false
+}
+
+/// Custom deserializer for subsystems that filters out keys starting with underscore
+fn deserialize_subsystems<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw_map = HashMap::<String, String>::deserialize(deserializer)?;
+    let filtered_map = raw_map
+        .into_iter()
+        .filter(|(key, _)| !key.starts_with('_'))
+        .collect();
+    Ok(filtered_map)
 }
 
 impl Default for LoggingConfig {

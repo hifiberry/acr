@@ -347,6 +347,9 @@ impl ShairportController {
         
         debug!("Watching directory for cover art files: {}", coverart_dir);
         
+        // Initial scan for existing cover art files
+        Self::scan_existing_coverart(&coverart_dir, &current_song, &pending_song, &base);
+        
         while !stop_flag.load(Ordering::SeqCst) {
             match rx.recv_timeout(Duration::from_millis(1000)) {
                 Ok(event) => {
@@ -688,6 +691,42 @@ impl ShairportController {
             }
             ShairportMessage::Unknown(data) => {
                 trace!("Unknown message: {} bytes", data.len());
+            }
+        }
+    }
+    
+    /// Scan the coverart directory for existing image files and set initial cover art
+    fn scan_existing_coverart(
+        coverart_dir: &str,
+        current_song: &Arc<Mutex<Option<Song>>>,
+        pending_song: &Arc<Mutex<Option<Song>>>,
+        base: &BasePlayerController,
+    ) {
+        let path = std::path::Path::new(coverart_dir);
+        let Ok(entries) = std::fs::read_dir(path) else {
+            debug!("scan_existing_coverart: Could not read directory: {}", coverart_dir);
+            return;
+        };
+        
+        debug!("scan_existing_coverart: Scanning directory {} for existing cover art", coverart_dir);
+        
+        for entry in entries.flatten() {
+            let file_path = entry.path();
+            if let Some(filename) = file_path.file_name().and_then(|f| f.to_str()) {
+                // Skip temporary files, hidden files, and non-image files
+                if filename.starts_with('.') || filename.starts_with("tmp") {
+                    continue;
+                }
+                
+                if Self::is_image_file(filename) {
+                    debug!("scan_existing_coverart: Found existing image file: {}", file_path.display());
+                    if let Some(artwork_url) = Self::process_cover_art_file(&file_path) {
+                        debug!("scan_existing_coverart: Setting initial cover art: {}", artwork_url);
+                        Self::update_song_cover_art(artwork_url, current_song, pending_song, base);
+                        // Only set the first valid image found
+                        break;
+                    }
+                }
             }
         }
     }

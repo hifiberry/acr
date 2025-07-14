@@ -37,6 +37,10 @@ struct Args {
     /// Output file for dump mode (default: shairport_dump.bin)
     #[arg(long, default_value = "shairport_dump.bin")]
     output_file: String,
+    
+    /// Save cover art to file (default: coverart.EXTENSION, empty = don't save)
+    #[arg(long, default_value = "coverart")]
+    save_coverart: String,
 }
 
 #[derive(Clone, clap::ValueEnum, PartialEq)]
@@ -56,6 +60,7 @@ fn main() {
     let port = args.port;
     let show_hex = args.show_hex;
     let mode = args.mode;
+    let save_coverart = args.save_coverart.clone();
     
     println!("AudioControl ShairportSync UDP Listener");
     println!("=====================================");
@@ -154,12 +159,87 @@ fn main() {
                                             format, complete_data.len(), dimensions);
                                 }
                                 
+                                // Save cover art if requested
+                                if !save_coverart.is_empty() {
+                                    match save_coverart_to_file(&complete_data, &format, &save_coverart) {
+                                        Ok(filename) => {
+                                            println!("💾 Cover art saved to: {}", filename);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("❌ Failed to save cover art: {}", e);
+                                        }
+                                    }
+                                }
+                                
                                 message = ShairportMessage::CompletePicture {
                                     data: complete_data,
                                     format,
                                 };
                                 picture_collector = None; // Reset for next picture
                             }
+                        }
+                    }
+                }
+                
+                // Handle chunked UDP messages (for large images that exceed UDP size limits)
+                // Format: "ssnc", "chnk", packet_ix, packet_counts, packet_tag, packet_type, chunked_data
+                if bytes_received >= 24 {  // minimum size for chunked message
+                    if &buffer[0..8] == b"ssncchnk" {
+                        // Parse chunked message
+                        let chunk_ix = u32::from_be_bytes([buffer[8], buffer[9], buffer[10], buffer[11]]);
+                        let chunk_total = u32::from_be_bytes([buffer[12], buffer[13], buffer[14], buffer[15]]);
+                        let packet_tag = u32::from_be_bytes([buffer[16], buffer[17], buffer[18], buffer[19]]);
+                        let packet_type = u32::from_be_bytes([buffer[20], buffer[21], buffer[22], buffer[23]]);
+                        
+                        let chunk_data = &buffer[24..bytes_received];
+                        
+                        if mode == DisplayMode::Full {
+                            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                            println!("[{}] Chunked UDP packet #{}: chunk {}/{}, tag: {}, type: {}, data: {} bytes", 
+                                     timestamp, packet_count, chunk_ix + 1, chunk_total, packet_tag, packet_type, chunk_data.len());
+                        }
+                        
+                        // Handle PICT chunked data
+                        if packet_tag == 0x50494354 { // "PICT" in big-endian
+                            // Initialize collector if this is the first chunk or we don't have one
+                            if picture_collector.is_none() || 
+                               picture_collector.as_ref().unwrap().total_chunks != chunk_total {
+                                picture_collector = Some(ChunkCollector::new(chunk_total, "PICT".to_string()));
+                            }
+                            
+                            // Add chunk to collector
+                            if let Some(ref mut collector) = picture_collector {
+                                if let Some(complete_data) = collector.add_chunk(chunk_ix + 1, chunk_data.to_vec()) {
+                                    // We have a complete picture from chunked UDP
+                                    let format = detect_image_format(&complete_data);
+                                    let dimensions = get_image_dimensions(&complete_data, &format);
+                                    
+                                    if mode == DisplayMode::Player {
+                                        println!("📷 Assembled complete artwork from UDP chunks: {} ({} bytes, {})", 
+                                                format, complete_data.len(), dimensions);
+                                    }
+                                    
+                                    // Save cover art if requested
+                                    if !save_coverart.is_empty() {
+                                        match save_coverart_to_file(&complete_data, &format, &save_coverart) {
+                                            Ok(filename) => {
+                                                println!("💾 Cover art saved to: {}", filename);
+                                            }
+                                            Err(e) => {
+                                                eprintln!("❌ Failed to save cover art: {}", e);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Create a synthetic complete picture message
+                                    message = ShairportMessage::CompletePicture {
+                                        data: complete_data,
+                                        format,
+                                    };
+                                    picture_collector = None; // Reset for next picture
+                                }
+                            }
+                            continue; // Skip normal processing for chunked messages
                         }
                     }
                 }
@@ -173,6 +253,21 @@ fn main() {
                                  timestamp, packet_count, sender_addr, bytes_received);
                         
                         display_shairport_message(&message, show_hex);
+                        
+                        // Save cover art if it's a complete picture and save_coverart is specified
+                        if !save_coverart.is_empty() {
+                            if let ShairportMessage::CompletePicture { data, format } = &message {
+                                match save_coverart_to_file(data, format, &save_coverart) {
+                                    Ok(filename) => {
+                                        println!("💾 Cover art saved to: {}", filename);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to save cover art: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        
                         println!(); // Empty line between packets
                     }
                     DisplayMode::Player => {
@@ -458,4 +553,32 @@ fn is_likely_image_data(data: &[u8]) -> bool {
             }
         }
     }
+}
+
+/// Save cover art to file with appropriate extension
+fn save_coverart_to_file(data: &[u8], format: &str, base_filename: &str) -> Result<String, std::io::Error> {
+    if base_filename.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Empty filename provided"
+        ));
+    }
+    
+    // Determine file extension based on format
+    let extension = match format.to_lowercase().as_str() {
+        format_str if format_str.contains("jpeg") || format_str.contains("jpg") => "jpg",
+        format_str if format_str.contains("png") => "png",
+        format_str if format_str.contains("gif") => "gif",
+        format_str if format_str.contains("bmp") => "bmp",
+        format_str if format_str.contains("webp") => "webp",
+        format_str if format_str.contains("heic") => "heic",
+        _ => "bin", // fallback for unknown formats
+    };
+    
+    let filename = format!("{}.{}", base_filename, extension);
+    
+    // Write the data to file
+    std::fs::write(&filename, data)?;
+    
+    Ok(filename)
 }

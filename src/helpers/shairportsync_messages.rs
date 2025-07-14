@@ -739,3 +739,64 @@ pub fn display_song_metadata(song: &Song) {
     println!("  └─────────────────────────────────────────────");
     println!();
 }
+
+/// Structure to handle chunked UDP messages from Shairport-Sync
+/// These are used when large data (like images) exceed UDP packet size limits
+#[derive(Debug)]
+pub struct ChunkedUdpCollector {
+    chunk_collectors: HashMap<u32, ChunkCollector>, // packet_tag -> collector
+}
+
+impl ChunkedUdpCollector {
+    pub fn new() -> Self {
+        Self {
+            chunk_collectors: HashMap::new(),
+        }
+    }
+    
+    /// Process a chunked UDP packet and return complete data if all chunks are received
+    /// Returns (packet_tag, complete_data) if a complete message is assembled
+    pub fn process_chunked_packet(&mut self, buffer: &[u8], bytes_received: usize) -> Option<(u32, Vec<u8>)> {
+        // Check if this is a chunked message: minimum size and "ssncchnk" header
+        if bytes_received < 24 || &buffer[0..8] != b"ssncchnk" {
+            return None;
+        }
+        
+        // Parse chunked message
+        let chunk_ix = u32::from_be_bytes([buffer[8], buffer[9], buffer[10], buffer[11]]);
+        let chunk_total = u32::from_be_bytes([buffer[12], buffer[13], buffer[14], buffer[15]]);
+        let packet_tag = u32::from_be_bytes([buffer[16], buffer[17], buffer[18], buffer[19]]);
+        let _packet_type = u32::from_be_bytes([buffer[20], buffer[21], buffer[22], buffer[23]]);
+        
+        let chunk_data = &buffer[24..bytes_received];
+        
+        // Get or create collector for this packet tag
+        if !self.chunk_collectors.contains_key(&packet_tag) {
+            self.chunk_collectors.insert(packet_tag, ChunkCollector::new(chunk_total, format!("tag_{:08x}", packet_tag)));
+        }
+        
+        if let Some(collector) = self.chunk_collectors.get_mut(&packet_tag) {
+            if let Some(complete_data) = collector.add_chunk(chunk_ix + 1, chunk_data.to_vec()) {
+                // Remove the collector since we're done with it
+                self.chunk_collectors.remove(&packet_tag);
+                return Some((packet_tag, complete_data));
+            }
+        }
+        
+        None
+    }
+    
+    /// Check if a buffer contains a chunked UDP message
+    pub fn is_chunked_message(buffer: &[u8], bytes_received: usize) -> bool {
+        bytes_received >= 24 && &buffer[0..8] == b"ssncchnk"
+    }
+    
+    /// Get packet tag from chunked message (for filtering)
+    pub fn get_packet_tag(buffer: &[u8], bytes_received: usize) -> Option<u32> {
+        if Self::is_chunked_message(buffer, bytes_received) {
+            Some(u32::from_be_bytes([buffer[16], buffer[17], buffer[18], buffer[19]]))
+        } else {
+            None
+        }
+    }
+}

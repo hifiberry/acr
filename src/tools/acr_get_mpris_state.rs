@@ -89,8 +89,8 @@ fn print_help() {
     println!("    audiocontrol_get_mpris_state spotify");
     println!("        Show MPRIS state for Spotify (partial name match)");
     println!("");
-    println!("    audiocontrol_get_mpris_state shairport");
-    println!("        Show MPRIS state for Shairport Sync player");
+    println!("    audiocontrol_get_mpris_state shairport-mpris");
+    println!("        Show MPRIS state for Shairport Sync MPRIS player");
 }
 
 fn find_player(identifier: &str) -> Option<PlayerInfo> {

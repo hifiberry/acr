@@ -119,3 +119,7 @@ path = "src/tools/acr_get_mpris_state.rs"
 [[bin]]
 name = "audiocontrol_monitor_mpris_state"
 path = "src/tools/acr_monitor_mpris_state.rs"
+
+[[bin]]
+name = "audiocontrol_listen_shairportsync"
+path = "src/tools/acr_listen_shairportsync.rs"

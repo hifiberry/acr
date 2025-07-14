@@ -19,6 +19,8 @@ pub mod playback_progress;
 pub mod process_helper;
 #[cfg(unix)]
 pub mod mpris;
+#[cfg(unix)]
+pub mod shairportsync_messages;
 
 use crate::data::artist::Artist;
 

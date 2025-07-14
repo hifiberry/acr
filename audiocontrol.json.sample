@@ -120,6 +120,14 @@
                 "bus_name": "org.mpris.MediaPlayer2.vlc",
                 "poll_interval": 1.0
             }
+        },
+        {
+            "_shairport": {
+                "enable": false,
+                "port": 5555,
+                "name": "ShairportSync AirPlay",
+                "_comment": "ShairportSync metadata listener for AirPlay streams. Requires shairport-sync to be configured with metadata UDP output."
+            }
         }
     ]
 }

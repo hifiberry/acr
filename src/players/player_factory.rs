@@ -1,4 +1,4 @@
-use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController, generic::GenericPlayerController};
+use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController, generic::GenericPlayerController, ShairportController};
 
 // MPRIS support is only available on Unix-like systems
 #[cfg(not(windows))]
@@ -153,6 +153,11 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                 // Create GenericPlayerController from config
                 let player = GenericPlayerController::from_config(config_obj)
                     .map_err(|e| PlayerCreationError::ParseError(e))?;
+                Ok(Box::new(player))
+            },
+            "shairport" => {
+                // Create ShairportController with config
+                let player = ShairportController::from_config(config_obj);
                 Ok(Box::new(player))
             },
             #[cfg(not(windows))]

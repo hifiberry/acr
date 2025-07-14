@@ -31,6 +31,13 @@ impl Error for PlayerCreationError {}
 pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerController>, PlayerCreationError> {
     // Expect a single key-value pair where key is the player type
     if let Some((player_type, config_obj)) = config.as_object().and_then(|obj| obj.iter().next()) {
+        // Filter out players that start with underscore (commented/disabled convention)
+        if player_type.starts_with('_') {
+            return Err(PlayerCreationError::ParseError(
+                format!("Player {} is ignored (starts with underscore)", player_type)
+            ));
+        }
+        
         // Check if the player is enabled (default to true if not specified)
         let enabled = config_obj.get("enable")
             .and_then(|v| v.as_bool())

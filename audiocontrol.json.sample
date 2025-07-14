@@ -122,8 +122,8 @@
             }
         },
         {
-            "_shairport": {
-                "enable": false,
+            "shairport": {
+                "enable": true,
                 "port": 5555,
                 "name": "ShairportSync AirPlay",
                 "_comment": "ShairportSync metadata listener for AirPlay streams. Requires shairport-sync to be configured with metadata UDP output."

@@ -2,6 +2,7 @@ use log::{debug, info, warn};
 use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 use crate::helpers::fanarttv;
+use crate::helpers::theaudiodb;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
 
@@ -114,11 +115,8 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         let mbid_opt = artist.metadata.as_ref().and_then(|meta| meta.mbid.first().cloned());
           if mbid_opt.is_some() {
             // Create a TheAudioDbUpdater and use it to update the artist
-            #[cfg(feature = "theaudiodb")]
-            {
-                let theaudiodb_updater = theaudiodb::TheAudioDbUpdater::new();
-                artist = theaudiodb_updater.update_artist(artist);
-            }
+            let theaudiodb_updater = theaudiodb::TheAudioDbUpdater::new();
+            artist = theaudiodb_updater.update_artist(artist);
             
             // Check if there's only a single MusicBrainz ID
             let mbid_count = artist.metadata.as_ref().map_or(0, |meta| meta.mbid.len());

@@ -1,3 +1,15 @@
+hifiberry-audiocontrol (0.5.1) stable; urgency=medium
+
+  * Added initial cover art scanning for ShairportSync player startup
+  * Fixed player ID to use simple "shairport" instead of "shairport-udp:5555"
+  * Implemented filesystem-based cover art monitoring using notify crate
+  * Added automatic detection of existing cover art files on player start
+  * Cleaned up excessive debug logging in ShairportSync module
+  * Enhanced cover art directory scanning with proper image file filtering
+  * Fixed ActiveMonitor player lookup issues with correct player naming
+
+ -- HiFiBerry <info@hifiberry.com>  Tue, 15 Jul 2025 10:00:00 +0000
+
 hifiberry-audiocontrol (0.5.0) stable; urgency=medium
 
   * Added full ShairportSync AirPlay metadata player controller

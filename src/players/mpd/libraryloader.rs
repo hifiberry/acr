@@ -248,7 +248,7 @@ impl MPDLibraryLoader {
         let artists = client.list(&mpd::Term::Tag("Artist".into()), &mpd::Query::new())
             .map_err(|e| LibraryError::ConnectionError(format!("Failed to list artists from MPD: {}", e)))?;
 
-        warn!("MPD list command returned {} artists", artists.len());
+        info!("MPD list command returned {} artists", artists.len());
         
         // Collect all artist names
         let mut albumartists = Vec::with_capacity(artists.len());
@@ -273,19 +273,28 @@ impl MPDLibraryLoader {
         
         // Step 1: Load all artists
         let artists = self.load_artists()?;
-        warn!("Found {} artists in MPD database", artists.len());
+        info!("Found {} artists in MPD database", artists.len());
         progress = 10.0; // Update progress to 10%
         
         // Send database update event to show initial progress
         // Note: We no longer need to pass the source parameter
         self.controller.notify_database_update(Some("Loading artists".to_string()), None, None, Some(progress));
+
+        info!("Sent notify - this is INFO level");
+        warn!("This is WARN level for testing");
+        error!("This is ERROR level for testing");
         
         debug!("Database loading progress: {:.1}%", progress);
 
         // Step 2: Load all songs for each album artist
         let mut all_songs = Vec::new();
         for artist in &artists {
-            debug!("Loading songs for album artist: {}", artist);
+            // more verbose logging for "real" artists
+            if artist.contains(",") {
+                debug!("Loading songs for artist: {}", artist);
+            } else {
+                info!("Loading songs for artist: {}", artist);
+            }
             
             // Fetch all songs for this artist
             let songs = self.fetch_all_songs_for_artist(artist)?;

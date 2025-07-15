@@ -231,11 +231,8 @@ fn main() {
                                         }
                                     }
                                     
-                                    // Create a synthetic complete picture message
-                                    message = ShairportMessage::CompletePicture {
-                                        data: complete_data,
-                                        format,
-                                    };
+                                    // Complete picture assembled but not processed in this path
+                                    // since we continue to next iteration
                                     picture_collector = None; // Reset for next picture
                                 }
                             }

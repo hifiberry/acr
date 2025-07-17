@@ -183,6 +183,16 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
     })
 }
 
+/// Request body for add_track command
+#[derive(serde::Deserialize)]
+pub struct AddTrackRequest {
+    uri: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    coverart_url: Option<String>,
+}
+
 /// Send a command to a specific player by name
 /// 
 /// If the player name is "active", the currently active player will be used.
@@ -194,12 +204,13 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
 ///   - set_loop:none|track|playlist - Sets loop mode
 ///   - seek:<seconds> - Seek to position in seconds
 ///   - set_random:true|false - Toggle shuffle mode
-///   - add_track:<uri> - Add a track to the queue
 ///   - remove_track:<uri> - Remove a track from the queue
-#[post("/player/<n>/command/<command>")]
+/// - add_track - Add a track to the queue (requires JSON body with uri field)
+#[post("/player/<n>/command/<command>", data = "<request_data>")]
 pub fn send_command_to_player_by_name(
     n: &str,
     command: &str,
+    request_data: Option<Json<serde_json::Value>>,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<CommandResponse>, Custom<Json<CommandResponse>>> {
     let audio_controller = controller.inner();
@@ -233,7 +244,7 @@ pub fn send_command_to_player_by_name(
     };
     
     // Parse the command string into a PlayerCommand
-    let parsed_command = match parse_player_command(command) {
+    let parsed_command = match parse_player_command(command, request_data.as_ref()) {
         Ok(cmd) => cmd,
         Err(e) => {
             return Err(Custom(
@@ -666,7 +677,7 @@ pub fn update_player_state(
 }
 
 /// Helper function to parse player commands
-fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
+fn parse_player_command(cmd_str: &str, request_data: Option<&Json<serde_json::Value>>) -> Result<PlayerCommand, String> {
     // Handle simple commands
     match cmd_str.to_lowercase().as_str() {
         "play" => return Ok(PlayerCommand::Play),
@@ -677,6 +688,21 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
         "previous" => return Ok(PlayerCommand::Previous),
         "kill" => return Ok(PlayerCommand::Kill),
         "clear_queue" => return Ok(PlayerCommand::ClearQueue),
+        "add_track" => {
+            // Parse URI from request body
+            if let Some(data) = request_data {
+                if let Ok(add_request) = serde_json::from_value::<AddTrackRequest>(data.0.clone()) {
+                    return Ok(PlayerCommand::QueueTracks {
+                        uris: vec![add_request.uri],
+                        insert_at_beginning: false
+                    });
+                } else {
+                    return Err("add_track command requires JSON body with 'uri' field".to_string());
+                }
+            } else {
+                return Err("add_track command requires JSON body with 'uri' field".to_string());
+            }
+        },
         _ => {} // continue to complex command parsing
     }
     
@@ -713,18 +739,6 @@ fn parse_player_command(cmd_str: &str) -> Result<PlayerCommand, String> {
                     _ => return Err(format!("Invalid random setting: {}", param))
                 }
             },
-            "add_track" => {
-                // Add a single track to the queue (helper command for add_track:<uri>)
-                // URL-decode the parameter to handle special characters correctly
-                let uri = match urlencoding::decode(param) {
-                    Ok(decoded) => decoded.into_owned(),
-                    Err(_) => return Err(format!("Failed to decode URI: {}", param))
-                };
-                return Ok(PlayerCommand::QueueTracks {
-                    uris: vec![uri],
-                    insert_at_beginning: false
-                });
-            },            
             "remove_track" => {
                 // Parse position as usize for track removal
                 match param.parse::<usize>() {

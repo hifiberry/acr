@@ -160,7 +160,7 @@ Sends a playback command to a specific player by name.
 - **Path Parameters**:
   - `player-name` (string): The name of the target player. You can use "active" to target the currently active player.
   - `command` (string): The command to send (same options as above, plus the following):    - Queue management commands:
-      - `add_track:<identifier>` - Adds a track to the queue. The identifier can be either a track ID or a track URI.
+      - `add_track` - Adds a track to the queue. Requires JSON body with `uri` field. Optional `title` and `coverart_url` fields for future use.
       - `remove_track:<position>` - Removes a track at the specified position from the queue.
       - `clear_queue` - Clears the entire queue.
       - `play_queue_index:<index>` - Plays the track at the specified index position in the queue.
@@ -178,11 +178,19 @@ curl -X POST http://<device-ip>:1080/api/player/raat/command/pause
 # Send a command to the currently active player (alternative to /api/player/active/send/)
 curl -X POST http://<device-ip>:1080/api/player/active/command/play
 
-# Add a track to the queue using track ID
-curl -X POST http://<device-ip>:1080/api/player/lms/command/add_track:12345
+# Add a track to the queue using JSON body
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "https://example.com/song.mp3"}'
 
-# Add a track to the queue using track URI
-curl -X POST http://<device-ip>:1080/api/player/lms/command/add_track:file%3A%2F%2F%2Fpath%2Fto%2Fsong.mp3
+# Add a track with optional metadata (future use)
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uri": "file:///path/to/song.mp3",
+    "title": "Custom Song Title",
+    "coverart_url": "https://example.com/cover.jpg"
+  }'
 
 # Remove a track from the queue at position 2
 curl -X POST http://<device-ip>:1080/api/player/lms/command/remove_track:2

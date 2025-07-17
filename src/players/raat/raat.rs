@@ -6,7 +6,7 @@ use delegate::delegate;
 use std::sync::{Arc, RwLock, Mutex};
 use log::{debug, info, warn, error, trace};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
@@ -33,6 +33,9 @@ pub struct RAATPlayerController {
     /// Current stream details
     stream_details: Arc<RwLock<Option<StreamDetails>>>,
     
+    /// Last update timestamp for timeout detection
+    last_update_time: Arc<RwLock<Instant>>,
+    
     /// Whether to reopen the metadata pipe when it's closed
     reopen_metadata_pipe: bool,
 }
@@ -48,6 +51,7 @@ impl Clone for RAATPlayerController {
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
+            last_update_time: Arc::clone(&self.last_update_time),
             reopen_metadata_pipe: self.reopen_metadata_pipe,
         }
     }
@@ -55,7 +59,8 @@ impl Clone for RAATPlayerController {
 
 /// Structure to store player state for each instance
 struct PlayerInstanceData {
-    running_flag: Arc<AtomicBool>
+    running_flag: Arc<AtomicBool>,
+    timeout_thread_flag: Arc<AtomicBool>,
 }
 
 /// A map to store running state for each player instance
@@ -82,6 +87,7 @@ impl RAATPlayerController {
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
+            last_update_time: Arc::new(RwLock::new(Instant::now())),
             reopen_metadata_pipe: true,
         };
         
@@ -107,6 +113,7 @@ impl RAATPlayerController {
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
+            last_update_time: Arc::new(RwLock::new(Instant::now())),
             reopen_metadata_pipe: reopen,
         };
         
@@ -148,6 +155,7 @@ impl RAATPlayerController {
             current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
+            last_update_time: Arc::new(RwLock::new(Instant::now())),
             reopen_metadata_pipe: reopen,
         };
         
@@ -268,6 +276,11 @@ impl RAATPlayerController {
     /// Process metadata updates from the pipe reader
     fn update_metadata(&self, song: Song, player_state: PlayerState, 
                        capabilities: PlayerCapabilitySet, stream_details: StreamDetails) {
+        // Update the last update timestamp
+        if let Ok(mut last_update) = self.last_update_time.write() {
+            *last_update = Instant::now();
+        }
+        
         // Store the new song if different from current
         let mut song_to_notify: Option<Song> = None;
         {
@@ -442,6 +455,62 @@ impl RAATPlayerController {
         debug!("Sending seek command to control pipe: seek to {:.1}s", position);
         self.write_to_control_pipe(&format!("seek {:.1}", position))
     }
+
+    /// Starts a background thread that monitors for timeouts when playing
+    /// If no updates are received for 10 seconds while playing, state becomes Unknown
+    fn start_timeout_monitor(&self, timeout_flag: Arc<AtomicBool>, self_arc: Arc<Self>) {
+        debug!("Starting RAAT timeout monitor thread");
+        
+        thread::spawn(move || {
+            debug!("RAAT timeout monitor thread started");
+            
+            while timeout_flag.load(Ordering::SeqCst) {
+                // Check timeout every second
+                thread::sleep(Duration::from_secs(1));
+                
+                if !timeout_flag.load(Ordering::SeqCst) {
+                    break;
+                }
+                
+                // Check if we're currently playing
+                let is_playing = {
+                    if let Ok(state) = self_arc.current_state.try_read() {
+                        state.state == PlaybackState::Playing
+                    } else {
+                        false
+                    }
+                };
+                
+                if is_playing {
+                    // Check if we've exceeded the timeout
+                    let last_update = {
+                        if let Ok(time) = self_arc.last_update_time.try_read() {
+                            *time
+                        } else {
+                            continue; // Skip this check if we can't get the time
+                        }
+                    };
+                    
+                    let elapsed = last_update.elapsed();
+                    if elapsed > Duration::from_secs(10) {
+                        warn!("RAAT player timeout: no updates for {} seconds while playing, setting state to Unknown", elapsed.as_secs());
+                        
+                        // Update state to Unknown
+                        if let Ok(mut state) = self_arc.current_state.write() {
+                            if state.state == PlaybackState::Playing {
+                                state.state = PlaybackState::Unknown;
+                                // Release lock before notifying
+                                drop(state);
+                                self_arc.base.notify_state_changed(PlaybackState::Unknown);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            debug!("RAAT timeout monitor thread shutting down");
+        });
+    }
 }
 
 impl PlayerController for RAATPlayerController {
@@ -454,6 +523,12 @@ impl PlayerController for RAATPlayerController {
 
     fn receive_update(&self, update: PlayerUpdate) -> bool {
         debug!("RAATPlayerController received update: {:?}", update); // It's good practice to log the received update for debugging.
+        
+        // Update the last update timestamp
+        if let Ok(mut last_update) = self.last_update_time.write() {
+            *last_update = Instant::now();
+        }
+        
         match update {
             PlayerUpdate::SongChanged(new_song) => {
                 let mut current_song_locked = self.current_song.write().unwrap();
@@ -619,23 +694,31 @@ impl PlayerController for RAATPlayerController {
         // Create a new Arc<Self> for thread-safe sharing of player instance
         let player_arc = Arc::new(self.clone());
         
-        // Create a new running flag
+        // Create new running flags
         let running = Arc::new(AtomicBool::new(true));
+        let timeout_flag = Arc::new(AtomicBool::new(true));
         
-        // Store the running flag in the player instance
+        // Store the running flags in the player instance
         if let Ok(mut state) = PLAYER_STATE.lock() {
             let instance_id = self as *const _ as usize;
             
             if let Some(data) = state.get(&instance_id) {
-                // Stop any existing thread
+                // Stop any existing threads
                 data.running_flag.store(false, Ordering::SeqCst);
+                data.timeout_thread_flag.store(false, Ordering::SeqCst);
             }
             
-            // Start a new listener thread
+            // Start the metadata listener thread
             self.start_metadata_listener(running.clone(), player_arc.clone());
             
-            // Store the running flag
-            state.insert(instance_id, PlayerInstanceData { running_flag: running });
+            // Start the timeout monitor thread
+            self.start_timeout_monitor(timeout_flag.clone(), player_arc.clone());
+            
+            // Store the running flags
+            state.insert(instance_id, PlayerInstanceData { 
+                running_flag: running,
+                timeout_thread_flag: timeout_flag,
+            });
             true
         } else {
             error!("Failed to acquire lock for player state");
@@ -646,18 +729,19 @@ impl PlayerController for RAATPlayerController {
     fn stop(&self) -> bool {
         info!("Stopping RAAT player controller");
         
-        // Signal the metadata listener thread to stop
+        // Signal both threads to stop
         if let Ok(mut state) = PLAYER_STATE.lock() {
             let instance_id = self as *const _ as usize;
             
             if let Some(data) = state.remove(&instance_id) {
                 data.running_flag.store(false, Ordering::SeqCst);
-                debug!("Signaled metadata listener thread to stop");
+                data.timeout_thread_flag.store(false, Ordering::SeqCst);
+                debug!("Signaled metadata listener and timeout monitor threads to stop");
                 return true;
             }
         }
         
-        debug!("No active metadata listener thread found");
+        debug!("No active threads found");
         false
     }
 

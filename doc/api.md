@@ -164,6 +164,14 @@ Sends a playback command to a specific player by name.
       - `remove_track:<position>` - Removes a track at the specified position from the queue.
       - `clear_queue` - Clears the entire queue.
       - `play_queue_index:<index>` - Plays the track at the specified index position in the queue.
+- **Request Body** (for `add_track` command):
+  ```json
+  {
+    "uri": "string (required)",
+    "title": "string (optional, future use)",
+    "coverart_url": "string (optional, future use)"
+  }
+  ```
 - **Response**: Same as "Send Command to Active Player"
 - **Error Response** (400 Bad Request, 404 Not Found, 500 Internal Server Error): Same structure as above
 
@@ -200,6 +208,18 @@ curl -X POST http://<device-ip>:1080/api/player/lms/command/clear_queue
 
 # Play the track at index 3 in the queue
 curl -X POST http://<device-ip>:1080/api/player/lms/command/play_queue_index:3
+
+# Error examples for add_track command:
+
+# Missing JSON body (returns 400 Bad Request)
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track
+# Response: {"success": false, "message": "Invalid command: add_track - add_track command requires JSON body with 'uri' field"}
+
+# Invalid JSON structure (returns 400 Bad Request)
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/song.mp3"}'
+# Response: {"success": false, "message": "Invalid command: add_track - add_track command requires JSON body with 'uri' field"}
 ```
 
 ### Player Event Update

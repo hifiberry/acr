@@ -1,3 +1,19 @@
+hifiberry-audiocontrol (0.6.0) stable; urgency=medium
+
+  * Enhanced FavouriteProvider trait with display_name() method for human-readable provider names
+  * Added display_name field to favourites API endpoint (LastFM: "Last.fm", SettingsDB: "User settings")
+  * Implemented comprehensive genre cleanup system with configurable mapping file
+  * Added genre.json configuration file with 87 ignore entries and 241 genre mappings
+  * Created genre cleanup helper module with global instance and case-insensitive processing
+  * Integrated genre cleanup into TheAudioDB metadata provider
+  * Updated build script to run all integration tests by default
+  * Added genre_cleanup service configuration to sample config file
+  * Installed genre.json to /etc/audiocontrol/ via Debian packaging
+  * Enhanced genre categorization to distinguish post-genres from base genres
+  * Added configurable genre cleanup with fallback to default paths
+
+ -- HiFiBerry <info@hifiberry.com>  Sun, 20 Jul 2025 15:00:00 +0000
+
 hifiberry-audiocontrol (0.5.2) stable; urgency=medium
 
   * Fixed UTF-8 string slicing panic in MusicBrainz module when handling

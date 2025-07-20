@@ -919,6 +919,212 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 - Testing external service rate limiting
 - Debugging TheAudioDB API configuration
 
+### Favourites API
+
+The Favourites API allows users to manage their favourite songs across multiple providers (LocalDB, Last.fm, etc.). The API supports adding, removing, and checking the favourite status of songs.
+
+#### List Favourite Providers
+
+Retrieves information about available and enabled favourite providers.
+
+- **Endpoint**: `/api/favourites/providers`
+- **Method**: GET
+- **Response** (200 OK):
+
+  ```json
+  {
+    "enabled_providers": ["settingsdb", "lastfm"],
+    "total_providers": 2,
+    "enabled_count": 2
+  }
+  ```
+
+**Example**:
+```bash
+curl http://<device-ip>:1080/api/favourites/providers
+```
+
+#### Check if Song is Favourite
+
+Checks whether a song is marked as favourite by any enabled provider.
+
+- **Endpoint**: `/api/favourites/is_favourite`
+- **Method**: GET
+- **Query Parameters**:
+  - `artist` (string, required): Artist name
+  - `title` (string, required): Song title
+- **Response** (200 OK):
+
+  ```json
+  {
+    "Ok": {
+      "is_favourite": true,
+      "providers": ["settingsdb", "lastfm"]
+    }
+  }
+  ```
+
+- **Response** (400 Bad Request):
+
+  ```json
+  {
+    "Err": {
+      "error": "Missing required parameters: artist and title"
+    }
+  }
+  ```
+
+**Example**:
+```bash
+curl "http://<device-ip>:1080/api/favourites/is_favourite?artist=The%20Beatles&title=Hey%20Jude"
+```
+
+#### Add Song to Favourites
+
+Adds a song to favourites across all enabled providers.
+
+- **Endpoint**: `/api/favourites/add`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Request Body**:
+
+  ```json
+  {
+    "artist": "The Beatles",
+    "title": "Hey Jude"
+  }
+  ```
+
+- **Response** (200 OK):
+
+  ```json
+  {
+    "Ok": {
+      "success": true,
+      "message": "Added 'Hey Jude' by 'The Beatles' to favourites",
+      "providers": ["settingsdb", "lastfm"],
+      "updated_providers": ["settingsdb", "lastfm"]
+    }
+  }
+  ```
+
+- **Response** (400 Bad Request):
+
+  ```json
+  {
+    "Err": {
+      "error": "Invalid song: Artist cannot be empty"
+    }
+  }
+  ```
+
+- **Response** (422 Unprocessable Entity):
+
+  ```json
+  {
+    "Err": {
+      "error": "Missing required fields: artist or title"
+    }
+  }
+  ```
+
+**Example**:
+```bash
+curl -X POST http://<device-ip>:1080/api/favourites/add \
+  -H "Content-Type: application/json" \
+  -d '{"artist": "The Beatles", "title": "Hey Jude"}'
+```
+
+#### Remove Song from Favourites
+
+Removes a song from favourites across all enabled providers.
+
+- **Endpoint**: `/api/favourites/remove`
+- **Method**: DELETE
+- **Content-Type**: `application/json`
+- **Request Body**:
+
+  ```json
+  {
+    "artist": "The Beatles",
+    "title": "Hey Jude"
+  }
+  ```
+
+- **Response** (200 OK):
+
+  ```json
+  {
+    "Ok": {
+      "success": true,
+      "message": "Removed 'Hey Jude' by 'The Beatles' from favourites",
+      "providers": ["settingsdb", "lastfm"],
+      "updated_providers": ["settingsdb"]
+    }
+  }
+  ```
+
+- **Response** (400 Bad Request):
+
+  ```json
+  {
+    "Err": {
+      "error": "Invalid song: Title cannot be empty"
+    }
+  }
+  ```
+
+**Example**:
+```bash
+curl -X DELETE http://<device-ip>:1080/api/favourites/remove \
+  -H "Content-Type: application/json" \
+  -d '{"artist": "The Beatles", "title": "Hey Jude"}'
+```
+
+#### Configuration Requirements
+
+The favourites API requires at least one provider to be configured. Available providers include:
+
+**SettingsDB Provider** (Local Storage):
+- Always available
+- Stores favourites in the local database
+- No additional configuration required
+
+**Last.fm Provider**:
+- Requires Last.fm API credentials and user authentication
+- Configuration example:
+
+```json
+{
+  "services": {
+    "lastfm": {
+      "enable": true,
+      "api_key": "your_lastfm_api_key",
+      "api_secret": "your_lastfm_api_secret",
+      "now_playing_enabled": true,
+      "scrobble": true
+    }
+  }
+}
+```
+
+#### Response Format Notes
+
+- All favourites API responses are wrapped in `Ok` for successful operations or `Err` for errors
+- The `updated_providers` field shows which providers actually processed the operation successfully
+- Case sensitivity depends on the provider implementation (SettingsDB is case-insensitive)
+- Unicode and special characters in artist/title names are supported
+
+#### Error Handling
+
+Common error scenarios:
+
+- **Missing Parameters**: HTTP 400 with error message
+- **Empty Strings**: HTTP 400 with validation error message  
+- **Invalid JSON**: HTTP 422 Unprocessable Entity
+- **Provider Errors**: Logged but don't prevent other providers from working
+- **No Providers Available**: Operations will complete but may have empty `updated_providers`
+
 ## Data Structures
 
 The following section describes the main data structures used in the API responses.

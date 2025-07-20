@@ -21,7 +21,7 @@ fn main() {
                 .value_name("FILE")
                 .help("Configuration file path")
                 .required(false)
-                .default_value("audiocontrol.json"),
+                .default_value("/etc/audiocontrol/audiocontrol.json"),
         )
         .arg(
             Arg::new("artist-name")

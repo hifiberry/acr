@@ -4,26 +4,6 @@ use std::path::PathBuf;
 use clap::{Arg, Command};
 use serde_json::Value;
 
-fn print_usage() {
-    println!("list-genres: Lists all genres from the artist metadata cache");
-    println!();
-    println!("Shows each genre with the number of artists that have it, sorted by");
-    println!("artist count in descending order. Comparison is case-insensitive.");
-    println!();
-    println!("Usage:");
-    println!("  audiocontrol_list_genres [OPTIONS]");
-    println!();
-    println!("Options:");
-    println!("  -c, --config <FILE>    Configuration file path");
-    println!("                         (default: /etc/audiocontrol/audiocontrol.json)");
-    println!("  -h, --help             Show this help message");
-    println!();
-    println!("Example output:");
-    println!("  hip-hop: 10");
-    println!("  metal: 20");
-    println!("  test: 4");
-}
-
 fn load_config(config_path: &str) -> Result<Value, Box<dyn std::error::Error>> {
     let config_content = fs::read_to_string(config_path)
         .map_err(|e| format!("Failed to read config file '{}': {}", config_path, e))?;

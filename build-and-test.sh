@@ -56,6 +56,7 @@ print_status "  - audiocontrol_list_mpris_players (Unix only)"
 print_status "  - audiocontrol_get_mpris_state (Unix only)"
 print_status "  - audiocontrol_monitor_mpris_state (Unix only)"
 print_status "  - audiocontrol_listen_shairportsync (Unix only)"
+print_status "  - audiocontrol_list_genres"
 
 # Build all binaries
 if cargo build --release --bins; then
@@ -101,25 +102,36 @@ if ! python -c "import pytest" 2>/dev/null; then
     fi
 fi
 
-# Check for test configuration files
+# Check for test configuration files and abort if any are missing
 print_status "Checking test configuration files..."
 if [ ! -f "integration_test/test_config_generic.json" ]; then
     print_error "Required test configuration file integration_test/test_config_generic.json not found"
     exit 1
 fi
 
-# Optional configuration files - warn if missing but don't fail
-OPTIONAL_CONFIGS=(
+# Check for required configuration files for full test suite
+REQUIRED_CONFIGS=(
+    "integration_test/test_config_generic.json"
     "integration_test/test_config_activemonitor.json"
     "integration_test/test_config_librespot.json" 
     "integration_test/test_config_theaudiodb.json"
 )
 
-for config in "${OPTIONAL_CONFIGS[@]}"; do
+missing_configs=0
+for config in "${REQUIRED_CONFIGS[@]}"; do
     if [ ! -f "$config" ]; then
-        print_warning "Optional configuration file $config not found - some tests may be skipped"
+        print_error "Required configuration file $config not found"
+        missing_configs=$((missing_configs + 1))
+    else
+        print_status "✓ Found configuration file $config"
     fi
 done
+
+if [ $missing_configs -gt 0 ]; then
+    print_error "Missing $missing_configs required configuration files"
+    print_error "All configuration files must be present to run the full test suite"
+    exit 1
+fi
 
 # Run integration tests
 print_status "Starting integration tests..."
@@ -136,12 +148,12 @@ fi
 
 # Optionally run all tests if requested
 if [ "$1" = "--all" ] || [ "$1" = "-a" ]; then
-    print_status "Running all integration tests (some may fail due to missing configs)..."
+    print_status "Running all integration tests..."
     if python -m pytest integration_test/ -v; then
         print_success "All integration tests passed!"
     else
-        print_warning "Some integration tests failed (likely due to missing configuration files)"
-        print_status "This is expected if you don't have all optional test configurations"
+        print_error "Some integration tests failed"
+        exit 1
     fi
 fi
 

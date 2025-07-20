@@ -1,7 +1,12 @@
 #!/bin/bash
 
 # build-and-test.sh - Build all cargo binaries and run unit and integration tests
-# This script ensures all audiocontrol binaries are built in release mode,
+# This script ensures all audiocontrol binaries are bprint_success "Build and test process completed successfully!"
+print_status "✓ All binaries built in release mode"
+print_status "✓ All unit tests passed"
+print_status "✓ All integration tests passed"
+print_status "Built binaries are available in target/release/"
+print_status "To run specific tests, use: python -m pytest integration_test/test_<name>.py -v" release mode,
 # runs unit tests, and then runs the integration tests
 
 set -e  # Exit on any error
@@ -136,25 +141,14 @@ fi
 # Run integration tests
 print_status "Starting integration tests..."
 
-# Run only the tests that should work with our current setup
-print_status "Running favourites and generic integration tests..."
+# Run all integration tests by default
+print_status "Running all integration tests..."
 
-if python -m pytest integration_test/test_favourites_integration.py integration_test/test_generic_integration.py -v; then
-    print_success "Core integration tests passed!"
+if python -m pytest integration_test/ -v; then
+    print_success "All integration tests passed!"
 else
-    print_error "Some core integration tests failed"
+    print_error "Some integration tests failed"
     exit 1
-fi
-
-# Optionally run all tests if requested
-if [ "$1" = "--all" ] || [ "$1" = "-a" ]; then
-    print_status "Running all integration tests..."
-    if python -m pytest integration_test/ -v; then
-        print_success "All integration tests passed!"
-    else
-        print_error "Some integration tests failed"
-        exit 1
-    fi
 fi
 
 print_success "Build and test process completed successfully!"

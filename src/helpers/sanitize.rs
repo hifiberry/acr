@@ -14,6 +14,7 @@ use deunicode;
 /// 
 /// # Example
 /// ```
+/// use audiocontrol::helpers::sanitize::safe_truncate;
 /// let truncated = safe_truncate("Hello, 世界!", 8);
 /// assert_eq!(truncated, "Hello, 世");
 /// ```

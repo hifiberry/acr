@@ -10,6 +10,10 @@
     "cache": "warn",
     "network": "error",
     "deps": "warn",
+
+    "audiocontrol::helpers::theaudiodb": "info",
+    "audiocontrol::helpers::lastfm": "info",
+    "audiocontrol::helpers::musicbrainz": "info",
     
     "_comment_specific": "Examples of specific module targeting:",
     "_audiocontrol::players::librespot::librespot": "debug",

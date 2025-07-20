@@ -10,7 +10,7 @@ use crate::helpers::imagecache;
 use crate::helpers::attributecache;
 use crate::helpers::ratelimit;
 use crate::data::artist::Artist;
-use crate::helpers::artistupdater::ArtistUpdater;
+use crate::helpers::ArtistUpdater;
 use crate::helpers::sanitize::filename_from_string;
 
 /// Global flag to indicate if TheAudioDB lookups are enabled

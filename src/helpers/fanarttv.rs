@@ -3,7 +3,7 @@ use log::{debug, warn, info};
 use crate::helpers::http_client;
 use crate::helpers::imagecache;
 use crate::data::artist::Artist;
-use crate::helpers::artistupdater::ArtistUpdater;
+use crate::helpers::ArtistUpdater;
 use crate::helpers::sanitize::filename_from_string;
 
 // API key for fanart.tv

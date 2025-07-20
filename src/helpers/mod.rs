@@ -32,9 +32,8 @@ pub trait ArtistUpdater {
     /// 
     /// # Arguments
     /// * `artist` - The artist to update
-    /// * `mbid` - The MusicBrainz ID to use for looking up artist information
     /// 
     /// # Returns
     /// The updated artist with additional metadata
-    fn update_artist(&self, artist: Artist, mbid: &str) -> Artist;
+    fn update_artist(&self, artist: Artist) -> Artist;
 }

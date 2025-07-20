@@ -211,6 +211,7 @@ dependencies = [
  "notify",
  "once_cell",
  "rand",
+ "regex",
  "reqwest",
  "rocket",
  "rocket_ws",

@@ -2,6 +2,7 @@ use crate::helpers::ratelimit;
 use log::{debug, info, error}; // Removed warn
 use md5;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{de::{self, Deserializer, Unexpected}, Deserialize, Serialize}; // Ensure full serde de import
 use std::collections::HashMap;
 use std::error::Error;
@@ -1003,7 +1004,8 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
                     // Add biography from Last.fm (use content, which is the full version)
                     if let Some(bio) = &artist_info.bio {
                         if !bio.content.is_empty() {
-                            meta.biography = Some(bio.content.clone());
+                            let cleaned_biography = cleanup_biography(&bio.content);
+                            meta.biography = Some(cleaned_biography);
                             updated_data.push("biography".to_string());
                             debug!("Added Last.fm biography for artist {}", artist.name);
                         }
@@ -1059,5 +1061,82 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
         }
         
         artist
+    }
+}
+
+/// Clean up Last.fm biography text by removing HTML links and unwanted text
+/// 
+/// This function removes Last.fm specific content like:
+/// - "<a href="https://www.last.fm/music/Artist">Read more on Last.fm</a>"
+/// - Other similar Last.fm promotional text
+pub fn cleanup_biography(biography: &str) -> String {
+    // Regex to match Last.fm links and "Read more" text
+    static LASTFM_LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"<a\s+href="https://www\.last\.fm/music/[^"]*">Read more on Last\.fm</a>"#)
+            .expect("Failed to compile Last.fm link regex")
+    });
+    
+    // Remove Last.fm links
+    let cleaned = LASTFM_LINK_REGEX.replace_all(biography, "");
+    
+    // Clean up any trailing whitespace and periods that may be left over
+    let cleaned = cleaned.trim_end();
+    
+    // Remove trailing period if it was immediately before the removed link
+    let cleaned = if biography.contains(r#". <a href="https://www.last.fm/music/"#) && cleaned.ends_with('.') {
+        cleaned.trim_end_matches('.')
+    } else {
+        cleaned
+    };
+    
+    cleaned.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cleanup_biography;
+
+    #[test]
+    fn test_cleanup_biography_removes_lastfm_links() {
+        let test_cases = vec![
+            (
+                r#"Metallica is an American heavy metal band. The band was formed in 1981 in Los Angeles by vocalist/guitarist James Hetfield and drummer Lars Ulrich. <a href="https://www.last.fm/music/Metallica">Read more on Last.fm</a>"#,
+                "Metallica is an American heavy metal band. The band was formed in 1981 in Los Angeles by vocalist/guitarist James Hetfield and drummer Lars Ulrich"
+            ),
+            (
+                r#"The Beatles were an English rock band formed in Liverpool in 1960. <a href="https://www.last.fm/music/The+Beatles">Read more on Last.fm</a>"#,
+                "The Beatles were an English rock band formed in Liverpool in 1960"
+            ),
+            (
+                "This is a biography without any Last.fm links.",
+                "This is a biography without any Last.fm links."
+            ),
+            (
+                r#"Pink Floyd were an English rock band. <a href="https://www.last.fm/music/Pink+Floyd">Read more on Last.fm</a>    "#,
+                "Pink Floyd were an English rock band"
+            ),
+            (
+                r#"Queen were a British rock band that achieved worldwide fame. <a href="https://www.last.fm/music/Queen">Read more on Last.fm</a>"#,
+                "Queen were a British rock band that achieved worldwide fame"
+            ),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = cleanup_biography(input);
+            assert_eq!(result, expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test] 
+    fn test_cleanup_biography_handles_empty_string() {
+        let result = cleanup_biography("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_cleanup_biography_handles_only_link() {
+        let input = r#"<a href="https://www.last.fm/music/TestArtist">Read more on Last.fm</a>"#;
+        let result = cleanup_biography(input);
+        assert_eq!(result, "");
     }
 }

@@ -79,6 +79,9 @@ pub trait FavouriteProvider {
     /// Get the name/identifier of this provider
     fn provider_name(&self) -> &'static str;
 
+    /// Get the human-readable display name of this provider
+    fn display_name(&self) -> &'static str;
+
     /// Check if this provider is currently enabled/configured
     fn is_enabled(&self) -> bool;
 
@@ -244,6 +247,7 @@ impl FavouriteManager {
             .map(|provider| {
                 serde_json::json!({
                     "name": provider.provider_name(),
+                    "display_name": provider.display_name(),
                     "enabled": provider.is_enabled(),
                     "active": provider.is_active(),
                     "favourite_count": provider.get_favourite_count()

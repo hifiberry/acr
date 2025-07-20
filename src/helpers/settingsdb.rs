@@ -551,6 +551,10 @@ impl crate::helpers::favourites::FavouriteProvider for SettingsDbFavouriteProvid
         "settingsdb"
     }
 
+    fn display_name(&self) -> &'static str {
+        "User settings"
+    }
+
     fn is_enabled(&self) -> bool {
         // Settings DB is always enabled if the database is accessible
         get_settings_db().enabled

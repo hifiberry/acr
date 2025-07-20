@@ -1365,6 +1365,10 @@ impl crate::helpers::favourites::FavouriteProvider for LastfmFavouriteProvider {
         "lastfm"
     }
 
+    fn display_name(&self) -> &'static str {
+        "Last.fm"
+    }
+
     fn is_enabled(&self) -> bool {
         // Check if Last.fm is configured and authenticated
         match LastfmClient::get_instance() {

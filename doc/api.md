@@ -939,12 +939,14 @@ Retrieves information about available and enabled favourite providers.
     "providers": [
       {
         "name": "settingsdb",
+        "display_name": "User settings",
         "enabled": true,
         "active": true,
         "favourite_count": 25
       },
       {
         "name": "lastfm",
+        "display_name": "Last.fm",
         "enabled": true,
         "active": false,
         "favourite_count": null
@@ -958,6 +960,7 @@ Retrieves information about available and enabled favourite providers.
   - `enabled_count`: Number of currently enabled providers  
   - `providers`: Detailed information for each provider
     - `name`: Provider identifier (e.g., "settingsdb", "lastfm")
+    - `display_name`: Human-readable name for the provider (e.g., "User settings", "Last.fm")
     - `enabled`: Whether the provider is currently enabled and available
     - `active`: Whether the provider is currently active (e.g., user logged in for remote providers)
     - `favourite_count`: Number of favorites stored by this provider (null if provider doesn't support counting)

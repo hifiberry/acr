@@ -31,6 +31,7 @@ def test_favourites_providers_endpoint(generic_server):
     settingsdb_provider = None
     for provider in response['providers']:
         assert 'name' in provider
+        assert 'display_name' in provider  # New field for human-readable name
         assert 'enabled' in provider
         assert 'active' in provider  # New field for active status
         assert 'favourite_count' in provider
@@ -42,6 +43,7 @@ def test_favourites_providers_endpoint(generic_server):
     assert settingsdb_provider is not None
     assert settingsdb_provider['enabled'] is True
     assert settingsdb_provider['active'] is True  # SettingsDB should always be active when enabled
+    assert settingsdb_provider['display_name'] == 'User settings'  # Check display name
     # Count should be a number (could be 0 or positive)
     assert isinstance(settingsdb_provider['favourite_count'], int)
     assert settingsdb_provider['favourite_count'] >= 0
@@ -292,6 +294,7 @@ def test_lastfm_provider_count_handling(generic_server):
         assert lastfm_provider['favourite_count'] is None
         assert 'enabled' in lastfm_provider
         assert 'active' in lastfm_provider
+        assert lastfm_provider['display_name'] == 'Last.fm'  # Check display name
         
         # Test the enabled/active relationship
         assert isinstance(lastfm_provider['enabled'], bool)
@@ -577,6 +580,7 @@ def test_provider_active_status(generic_server):
         # During integration tests, users are typically not logged in, so expect inactive
         assert isinstance(lastfm_provider['enabled'], bool)
         assert isinstance(lastfm_provider['active'], bool)
+        assert lastfm_provider['display_name'] == 'Last.fm'  # Check display name
         
         # If Last.fm is active, it should also be enabled
         if lastfm_provider['active']:

@@ -46,6 +46,9 @@
             "attribute_cache_path": "/var/lib/audiocontrol/cache/attributes",
             "image_cache_path": "/var/lib/audiocontrol/cache/images"
         },
+        "settingsdb": {
+            "path": "/var/lib/audiocontrol/db"
+        },
         "security_store": {
             "path": "/var/lib/audiocontrol/security_store.json"
         },

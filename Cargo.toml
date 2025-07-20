@@ -90,6 +90,10 @@ name = "audiocontrol_dump_cache"
 path = "src/tools/acr_dump_cache.rs"
 
 [[bin]]
+name = "audiocontrol_dump_settingsdb"
+path = "src/tools/acr_dump_settingsdb.rs"
+
+[[bin]]
 name = "audiocontrol_lms_client"
 path = "src/tools/acr_lms_client.rs"
 

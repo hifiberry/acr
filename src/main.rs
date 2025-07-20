@@ -5,6 +5,7 @@ use audiocontrol::helpers::imagecache::ImageCache;
 use audiocontrol::helpers::lastfm;
 use audiocontrol::helpers::musicbrainz;
 use audiocontrol::helpers::security_store::SecurityStore;
+use audiocontrol::helpers::settingsdb::SettingsDb;
 use audiocontrol::helpers::spotify;
 use audiocontrol::helpers::theaudiodb;
 use audiocontrol::logging;
@@ -193,6 +194,35 @@ fn main() {
 
     // Initialize the global image cache with the configured path from JSON
     initialize_image_cache(&image_cache_path);
+
+    // Get the settings database path from configuration
+    let settingsdb_path =
+        if let Some(settingsdb_config) = get_service_config(&controllers_config, "settingsdb") {
+            if let Some(db_path) = settingsdb_config
+                .get("path")
+                .and_then(|p| p.as_str())
+            {
+                info!("Using settings database path from config: {}", db_path);
+                db_path.to_string()
+            } else {
+                let default_path = "/var/lib/audiocontrol/db".to_string();
+                info!(
+                    "No path specified in settingsdb configuration, using default path: {}",
+                    default_path
+                );
+                default_path
+            }
+        } else {
+            let default_path = "/var/lib/audiocontrol/db".to_string();
+            info!(
+                "No settingsdb configuration found, using default path: {}",
+                default_path
+            );
+            default_path
+        };
+
+    // Initialize the global settings database with the configured path from JSON
+    initialize_settingsdb(&settingsdb_path);
     // Initialize MusicBrainz with the configuration
     initialize_musicbrainz(&controllers_config);
 
@@ -330,6 +360,14 @@ fn initialize_image_cache(image_cache_path: &str) {
     match ImageCache::initialize(image_cache_path) {
         Ok(_) => info!("Image cache initialized with path: {}", image_cache_path),
         Err(e) => warn!("Failed to initialize image cache: {}", e),
+    }
+}
+
+// Helper function to initialize the global settings database
+fn initialize_settingsdb(settingsdb_path: &str) {
+    match SettingsDb::initialize(settingsdb_path) {
+        Ok(_) => info!("Settings database initialized with path: {}", settingsdb_path),
+        Err(e) => warn!("Failed to initialize settings database: {}", e),
     }
 }
 

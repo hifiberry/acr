@@ -151,6 +151,47 @@ pub struct LastfmWiki {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+pub struct LastfmArtistImage {
+    #[serde(rename = "#text")]
+    pub url: String,
+    pub size: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmSimilarArtist {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub image: Vec<LastfmArtistImage>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmSimilar {
+    #[serde(default, rename = "artist")]
+    pub artists: Vec<LastfmSimilarArtist>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmArtistDetails {
+    pub name: String,
+    pub mbid: Option<String>,
+    pub url: String,
+    #[serde(default)]
+    pub image: Vec<LastfmArtistImage>,
+    pub streamable: String,
+    pub stats: Option<serde_json::Value>, // Contains playcount, listeners
+    pub similar: Option<LastfmSimilar>,
+    #[serde(rename = "tags")]
+    pub tags: Option<LastfmTopTags>,
+    pub bio: Option<LastfmWiki>,
+}
+
+#[derive(Deserialize, Debug)]
+struct LastfmArtistInfoResponse {
+    artist: LastfmArtistDetails,
+}
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct LastfmTrackInfoDetails {
     pub name: String,
     pub mbid: Option<String>,
@@ -685,6 +726,41 @@ impl LastfmClient {
         }
     }
 
+    /// Get artist information from Last.fm
+    /// 
+    /// # Arguments
+    /// * `artist` - The artist name.
+    ///
+    /// # Returns
+    /// Result containing `LastfmArtistDetails` or an error.
+    pub fn get_artist_info(&self, artist: &str) -> Result<LastfmArtistDetails, LastfmError> {
+        ratelimit::rate_limit("lastfm");
+
+        let params = vec![
+            ("method", "artist.getInfo"),
+            ("artist", artist),
+            ("autocorrect", "0"),       // Disable autocorrection
+            // api_key is added by make_api_request
+        ];
+
+        // This request does not need to be signed (no user-specific data)
+        debug!("Requesting artist.getInfo for artist: {}", artist);
+        let response_body = self.make_api_request(params.into_iter(), false)?;
+
+        match serde_json::from_str::<LastfmArtistInfoResponse>(&response_body) {
+            Ok(parsed_response) => Ok(parsed_response.artist),
+            Err(e) => {
+                error!(
+                    "Failed to parse artist.getInfo response for artist '{}'. Error: {}, Body: {}",
+                    artist, e, response_body
+                );
+                Err(LastfmError::ParsingError(format!(
+                    "Failed to parse artist.getInfo response: {}. Body: {}", e, response_body
+                )))
+            }
+        }
+    }
+
     /// Submit a track scrobble to Last.fm
     /// 
     /// # Arguments
@@ -872,4 +948,105 @@ pub struct LovedTrack {
     pub artist: LovedTrackArtist,
     pub image: Option<Vec<LastfmImage>>,
     // streamable can be complex, omitting for now unless needed
+}
+
+/// Last.fm Artist Updater
+/// 
+/// Implements the ArtistUpdater trait to fetch artist information from Last.fm
+pub struct LastfmUpdater;
+
+impl LastfmUpdater {
+    pub fn new() -> Self {
+        LastfmUpdater
+    }
+}
+
+impl crate::helpers::ArtistUpdater for LastfmUpdater {
+    /// Updates artist information using Last.fm service
+    /// 
+    /// This function fetches artist bio, tags, and images from Last.fm and adds them to the artist metadata.
+    /// Note: Last.fm doesn't require a MusicBrainz ID and works with just the artist name.
+    /// 
+    /// # Arguments
+    /// * `artist` - The artist to update
+    /// 
+    /// # Returns
+    /// The updated artist with Last.fm data
+    fn update_artist(&self, mut artist: crate::data::artist::Artist) -> crate::data::artist::Artist {
+        debug!("Updating artist {} with Last.fm data", artist.name);
+        
+        // Get the Last.fm client instance
+        let lastfm_client = {
+            let guard = LASTFM_CLIENT.lock().unwrap();
+            match guard.as_ref() {
+                Some(client) => client.clone(),
+                None => {
+                    debug!("Last.fm client not initialized, skipping Last.fm lookup for artist {}", artist.name);
+                    return artist;
+                }
+            }
+        };
+        
+        // Get artist info from Last.fm
+        match lastfm_client.get_artist_info(&artist.name) {
+            Ok(artist_info) => {
+                debug!("Successfully retrieved Last.fm data for artist {}", artist.name);
+                
+                // Ensure we have metadata
+                if artist.metadata.is_none() {
+                    artist.metadata = Some(crate::data::metadata::ArtistMeta::new());
+                }
+                
+                if let Some(meta) = &mut artist.metadata {
+                    // Add biography from Last.fm (use content, which is the full version)
+                    if let Some(bio) = &artist_info.bio {
+                        if !bio.content.is_empty() {
+                            meta.biography = Some(bio.content.clone());
+                            debug!("Added Last.fm biography for artist {}", artist.name);
+                        }
+                    }
+                    
+                    // Add tags/genres from Last.fm
+                    if let Some(tags) = &artist_info.tags {
+                        for tag in &tags.tags {
+                            meta.add_genre(tag.name.clone());
+                        }
+                        if !tags.tags.is_empty() {
+                            debug!("Added {} Last.fm tags for artist {}", tags.tags.len(), artist.name);
+                        }
+                    }
+                    
+                    // Add images from Last.fm (find the largest available image)
+                    if !artist_info.image.is_empty() {
+                        // Last.fm provides images in different sizes: small, medium, large, extralarge, mega
+                        // We want the largest available image
+                        let image_priorities = ["mega", "extralarge", "large", "medium", "small"];
+                        
+                        for size in &image_priorities {
+                            if let Some(image) = artist_info.image.iter().find(|img| img.size == *size) {
+                                if !image.url.is_empty() {
+                                    meta.thumb_url.push(image.url.clone());
+                                    debug!("Added Last.fm {} image for artist {}: {}", size, artist.name, image.url);
+                                    break; // Only add the largest available image
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Add MusicBrainz ID if available and not already present
+                    if let Some(mbid) = &artist_info.mbid {
+                        if !mbid.is_empty() && !meta.mbid.contains(mbid) {
+                            meta.add_mbid(mbid.clone());
+                            debug!("Added Last.fm MusicBrainz ID for artist {}: {}", artist.name, mbid);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Failed to get Last.fm data for artist {}: {}", artist.name, e);
+            }
+        }
+        
+        artist
+    }
 }

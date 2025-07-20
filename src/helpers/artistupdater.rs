@@ -3,20 +3,9 @@ use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 use crate::helpers::fanarttv;
 use crate::helpers::theaudiodb;
+use crate::helpers::ArtistUpdater;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
-
-/// Trait for services that can update artist metadata
-pub trait ArtistUpdater {
-    /// Update an artist with additional metadata from a service
-    /// 
-    /// # Arguments
-    /// * `artist` - The artist to update
-    /// 
-    /// # Returns
-    /// The updated artist with additional metadata
-    fn update_artist(&self, artist: Artist) -> Artist;
-}
 
 /// Looks up MusicBrainz IDs for an artist and returns them if found
 /// 
@@ -130,7 +119,15 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
                 artist = fanarttv_updater.update_artist(artist);
             }
         }
-    } else {
+    }
+    
+    // Always try to update with Last.fm (doesn't require MusicBrainz ID)
+    debug!("Updating artist {} with Last.fm", artist.name);
+    let lastfm_updater = crate::helpers::lastfm::LastfmUpdater::new();
+    artist = lastfm_updater.update_artist(artist);
+    
+    // Handle artists without MusicBrainz IDs but with existing thumbnails
+    if artist.metadata.as_ref().map_or(false, |meta| meta.mbid.is_empty()) {
         // Check if the artist has thumbnail images
         let has_thumbnails = match &artist.metadata {
             Some(meta) => !meta.thumb_url.is_empty(),

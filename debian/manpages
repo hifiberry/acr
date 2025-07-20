@@ -3,6 +3,7 @@ debian/man/audiocontrol_dump_cache.1
 debian/man/audiocontrol_dump_settingsdb.1
 debian/man/audiocontrol_dump_store.1
 debian/man/audiocontrol_lms_client.1
+debian/man/audiocontrol_musicbrainz_client.1
 debian/man/audiocontrol_send_update.1
 debian/man/audiocontrol_notify_librespot.1
 debian/man/audiocontrol_player_event_client.1

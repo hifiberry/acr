@@ -1,0 +1,74 @@
+.TH AUDIOCONTROL_MUSICBRAINZ_CLIENT 1 "July 2025" "audiocontrol" "Audio Control Manual"
+.SH NAME
+audiocontrol_musicbrainz_client \- MusicBrainz API client
+.SH SYNOPSIS
+.B audiocontrol_musicbrainz_client
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol_musicbrainz_client
+is a command-line client for making direct API calls to MusicBrainz. It provides various lookup methods for debugging and testing MusicBrainz integration without using any local caching.
+.SH OPTIONS
+.TP
+.BR \-c ", " \-\-config " " \fIFILE\fR
+Specify the configuration file path. Default: audiocontrol.json
+.TP
+.BR \-a ", " \-\-artist-name " " \fINAME\fR
+Look up artist by name using the MusicBrainz API
+.TP
+.BR \-m ", " \-\-artist-mbid " " \fIMBID\fR
+Look up artist by MusicBrainz ID (MBID)
+.TP
+.BR \-b ", " \-\-album-mbid " " \fIMBID\fR
+Look up album by MusicBrainz ID (MBID)
+.TP
+.BR \-s ", " \-\-split " " \fIARTIST_NAME\fR
+Check if artist name contains multiple artists (comma-separated or other separators)
+.TP
+.BR \-v ", " \-\-verbose
+Enable verbose output with additional debugging information
+.TP
+.BR \-h ", " \-\-help
+Display help information
+.TP
+.BR \-V ", " \-\-version
+Display version information
+.SH EXAMPLES
+.TP
+Look up artist by name:
+.B audiocontrol_musicbrainz_client --artist-name "The Beatles"
+.TP
+Look up artist by MusicBrainz ID:
+.B audiocontrol_musicbrainz_client --artist-mbid "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"
+.TP
+Look up album by MusicBrainz ID:
+.B audiocontrol_musicbrainz_client --album-mbid "5b11f4ce-a62d-471e-81fc-a69a8278c7da"
+.TP
+Check if artist name contains multiple artists:
+.B audiocontrol_musicbrainz_client --split "John Williams & London Symphony Orchestra"
+.TP
+Verbose output:
+.B audiocontrol_musicbrainz_client --artist-name "Queen" --verbose
+.TP
+Use custom config file:
+.B audiocontrol_musicbrainz_client --config /path/to/config.json --artist-name "Pink Floyd"
+.SH CONFIGURATION
+The tool reads the MusicBrainz configuration from the audiocontrol configuration file. MusicBrainz lookups must be enabled in the configuration for API operations to work. All operations make direct API calls without using any local caching.
+.SH EXIT STATUS
+.TP
+.B 0
+Success
+.TP
+.B 1
+Error (configuration loading failure, invalid arguments, etc.)
+.SH FILES
+.TP
+.I audiocontrol.json
+Default configuration file
+.SH SEE ALSO
+.BR audiocontrol (1)
+.PP
+MusicBrainz API documentation: https://musicbrainz.org/doc/Development/XML_Web_Service/Version_2
+.SH AUTHOR
+HifiBerry Audiocontrol Development Team
+.SH BUGS
+Report bugs to the HifiBerry development team.

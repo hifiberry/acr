@@ -98,6 +98,10 @@ name = "audiocontrol_lms_client"
 path = "src/tools/acr_lms_client.rs"
 
 [[bin]]
+name = "audiocontrol_musicbrainz_client"
+path = "src/tools/acr_musicbrainz_client.rs"
+
+[[bin]]
 name = "audiocontrol_send_update"
 path = "src/tools/acr_send_update.rs"
 

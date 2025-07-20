@@ -12,6 +12,7 @@ use once_cell::sync::{Lazy, OnceCell};
 use std::sync::Mutex;
 
 use crate::helpers::security_store::SecurityStore;
+use crate::helpers::sanitize;
 
 // Constants for token storage
 const SPOTIFY_ACCESS_TOKEN_KEY: &str = "spotify_access_token";
@@ -427,7 +428,8 @@ impl Spotify {
         ];
         if let Some(client_id) = self.get_client_id() {
             if !client_id.is_empty() {
-                debug!("Sending X-Spotify-Client-Id: {}... ({} chars)", &client_id[..std::cmp::min(6, client_id.len())], client_id.len());
+                debug!("Sending X-Spotify-Client-Id: {}... ({} chars)", 
+                       sanitize::safe_truncate(&client_id, 6), client_id.len());
                 headers.push(("X-Spotify-Client-Id", client_id.to_string()));
             } else {
                 debug!("Not sending X-Spotify-Client-Id: value is empty");
@@ -437,7 +439,8 @@ impl Spotify {
         }
         if let Some(client_secret) = self.get_client_secret() {
             if !client_secret.is_empty() {
-                debug!("Sending X-Spotify-Client-Secret: {}... ({} chars)", &client_secret[..std::cmp::min(6, client_secret.len())], client_secret.len());
+                debug!("Sending X-Spotify-Client-Secret: {}... ({} chars)", 
+                       sanitize::safe_truncate(&client_secret, 6), client_secret.len());
                 headers.push(("X-Spotify-Client-Secret", client_secret.to_string()));
             } else {
                 debug!("Not sending X-Spotify-Client-Secret: value is empty");

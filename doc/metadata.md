@@ -563,10 +563,6 @@ Enable debug logging for both core and enriched metadata operations:
 ### Planned Features
 
 1. **Spotify Integration**: Add Spotify as metadata source
-2. **Apple Music Integration**: Support for Apple Music metadata
-3. **User Preferences**: Allow users to customize metadata sources
-4. **Batch Processing**: Optimize bulk metadata operations
-5. **Image Processing**: Automatic image resizing and format conversion
 
 ### Data Extensions
 

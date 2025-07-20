@@ -1372,6 +1372,17 @@ impl crate::helpers::favourites::FavouriteProvider for LastfmFavouriteProvider {
             Err(_) => false,
         }
     }
+
+    fn is_active(&self) -> bool {
+        // For Last.fm, active means the user is currently logged in (authenticated)
+        // This is the same as is_enabled for now, but conceptually different:
+        // - is_enabled: provider is configured/available
+        // - is_active: provider is functional (user logged in)
+        match LastfmClient::get_instance() {
+            Ok(client) => client.is_authenticated(),
+            Err(_) => false,
+        }
+    }
 }
 
 #[cfg(test)]

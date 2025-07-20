@@ -81,6 +81,10 @@ pub trait FavouriteProvider {
 
     /// Check if this provider is currently enabled/configured
     fn is_enabled(&self) -> bool;
+
+    /// Check if this provider is currently active (e.g., user logged in for remote providers)
+    /// This is different from is_enabled - a provider can be enabled but not active
+    fn is_active(&self) -> bool;
 }
 
 /// Validate that a song has both artist and title
@@ -241,6 +245,7 @@ impl FavouriteManager {
                 serde_json::json!({
                     "name": provider.provider_name(),
                     "enabled": provider.is_enabled(),
+                    "active": provider.is_active(),
                     "favourite_count": provider.get_favourite_count()
                 })
             })

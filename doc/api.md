@@ -940,11 +940,13 @@ Retrieves information about available and enabled favourite providers.
       {
         "name": "settingsdb",
         "enabled": true,
+        "active": true,
         "favourite_count": 25
       },
       {
         "name": "lastfm",
         "enabled": true,
+        "active": false,
         "favourite_count": null
       }
     ]
@@ -957,6 +959,7 @@ Retrieves information about available and enabled favourite providers.
   - `providers`: Detailed information for each provider
     - `name`: Provider identifier (e.g., "settingsdb", "lastfm")
     - `enabled`: Whether the provider is currently enabled and available
+    - `active`: Whether the provider is currently active (e.g., user logged in for remote providers)
     - `favourite_count`: Number of favorites stored by this provider (null if provider doesn't support counting)
 
 **Example**:
@@ -1109,9 +1112,13 @@ The favourites API requires at least one provider to be configured. Available pr
 - Always available
 - Stores favourites in the local database
 - No additional configuration required
+- `enabled`: Always true when database is accessible
+- `active`: Always true when enabled (no authentication required)
 
 **Last.fm Provider**:
 - Requires Last.fm API credentials and user authentication
+- `enabled`: True when API credentials are configured
+- `active`: True when user is logged in/authenticated with Last.fm
 - Configuration example:
 
 ```json

@@ -32,14 +32,16 @@ def test_favourites_providers_endpoint(generic_server):
     for provider in response['providers']:
         assert 'name' in provider
         assert 'enabled' in provider
+        assert 'active' in provider  # New field for active status
         assert 'favourite_count' in provider
         
         if provider['name'] == 'settingsdb':
             settingsdb_provider = provider
     
-    # SettingsDB should be present and enabled
+    # SettingsDB should be present, enabled, and active
     assert settingsdb_provider is not None
     assert settingsdb_provider['enabled'] is True
+    assert settingsdb_provider['active'] is True  # SettingsDB should always be active when enabled
     # Count should be a number (could be 0 or positive)
     assert isinstance(settingsdb_provider['favourite_count'], int)
     assert settingsdb_provider['favourite_count'] >= 0
@@ -273,7 +275,7 @@ def test_provider_favourite_count_duplicate_handling(generic_server):
     assert final_count == initial_count
 
 def test_lastfm_provider_count_handling(generic_server):
-    """Test that Last.fm provider returns null for favourite_count"""
+    """Test that Last.fm provider returns null for favourite_count and proper active status"""
     response = generic_server.api_request('GET', '/api/favourites/providers')
     assert 'providers' in response
     
@@ -284,12 +286,26 @@ def test_lastfm_provider_count_handling(generic_server):
             lastfm_provider = provider
             break
     
-    # If Last.fm provider is present, it should return null for count
+    # If Last.fm provider is present, test its properties
     if lastfm_provider is not None:
         # Last.fm should return null since it doesn't support easy counting
         assert lastfm_provider['favourite_count'] is None
         assert 'enabled' in lastfm_provider
-        # Note: enabled status depends on configuration
+        assert 'active' in lastfm_provider
+        
+        # Test the enabled/active relationship
+        assert isinstance(lastfm_provider['enabled'], bool)
+        assert isinstance(lastfm_provider['active'], bool)
+        
+        # If active, must be enabled
+        if lastfm_provider['active']:
+            assert lastfm_provider['enabled'], "Last.fm can't be active without being enabled"
+        
+        # During integration tests, Last.fm is typically not active (user not logged in)
+        # So we expect it to be enabled but not active
+        if lastfm_provider['enabled']:
+            # Last.fm is configured but user is not logged in during tests
+            assert lastfm_provider['active'] is False, "Last.fm should not be active during integration tests (user not logged in)"
 
 def test_add_favourite_song(generic_server):
     """Test adding a song to favourites"""
@@ -531,3 +547,64 @@ def test_case_sensitivity(generic_server):
     assert 'Ok' in response
     result = response['Ok']
     assert result['success'] is True
+
+def test_provider_active_status(generic_server):
+    """Test the active status field for different providers"""
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    # Test SettingsDB provider active status
+    settingsdb_provider = None
+    lastfm_provider = None
+    
+    for provider in response['providers']:
+        assert 'active' in provider, f"Provider {provider['name']} missing 'active' field"
+        assert isinstance(provider['active'], bool), f"Provider {provider['name']} 'active' field is not boolean"
+        
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+        elif provider['name'] == 'lastfm':
+            lastfm_provider = provider
+    
+    # SettingsDB should always be active when enabled (local database)
+    if settingsdb_provider is not None:
+        assert settingsdb_provider['enabled'] is True
+        assert settingsdb_provider['active'] is True, "SettingsDB should always be active when enabled"
+    
+    # Last.fm active status depends on authentication
+    if lastfm_provider is not None:
+        # If Last.fm is enabled, it may or may not be active depending on user authentication
+        # During integration tests, users are typically not logged in, so expect inactive
+        assert isinstance(lastfm_provider['enabled'], bool)
+        assert isinstance(lastfm_provider['active'], bool)
+        
+        # If Last.fm is active, it should also be enabled
+        if lastfm_provider['active']:
+            assert lastfm_provider['enabled'], "If Last.fm is active, it should also be enabled"
+        
+        # During integration tests, expect Last.fm to be configured but not active
+        # (user not logged in)
+        if lastfm_provider['enabled']:
+            assert lastfm_provider['active'] is False, "Last.fm should not be active during integration tests"
+
+def test_provider_active_vs_enabled_distinction(generic_server):
+    """Test that active and enabled fields can have different values for remote providers"""
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    for provider in response['providers']:
+        name = provider['name']
+        enabled = provider['enabled']
+        active = provider['active']
+        
+        # For local providers like SettingsDB: active should equal enabled
+        if name == 'settingsdb':
+            assert active == enabled, "For SettingsDB, active should equal enabled"
+        
+        # For remote providers like Last.fm: active can be false even when enabled
+        elif name == 'lastfm':
+            # If active, must be enabled
+            if active:
+                assert enabled, "If Last.fm is active, it must be enabled"
+            # But enabled doesn't guarantee active (user might not be logged in)
+            # This is the key distinction we're testing

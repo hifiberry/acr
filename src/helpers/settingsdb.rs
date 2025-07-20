@@ -555,6 +555,12 @@ impl crate::helpers::favourites::FavouriteProvider for SettingsDbFavouriteProvid
         // Settings DB is always enabled if the database is accessible
         get_settings_db().enabled
     }
+
+    fn is_active(&self) -> bool {
+        // Settings DB is always active when enabled since it's a local database
+        // No authentication or external connectivity required
+        self.is_enabled() && get_settings_db().db.is_some()
+    }
 }
 
 #[cfg(test)]

@@ -499,9 +499,17 @@ impl ArtistUpdater for TheAudioDbUpdater {
                     if let Some(genre) = artist_data.get("strGenre").and_then(|v| v.as_str()) {
                         if !genre.is_empty() {
                             if let Some(meta) = &mut artist.metadata {
-                                meta.genres.push(genre.to_string());
-                                updated_data.push("genre".to_string());
-                                debug!("Added genre '{}' from TheAudioDB for artist {}", genre, artist.name);
+                                // Apply genre cleanup
+                                let genres_to_add = crate::helpers::genre_cleanup::clean_genres_global(vec![genre.to_string()]);
+                                for cleaned_genre in genres_to_add {
+                                    if !meta.genres.contains(&cleaned_genre) {
+                                        meta.genres.push(cleaned_genre.clone());
+                                        debug!("Added cleaned genre '{}' from TheAudioDB for artist {}", cleaned_genre, artist.name);
+                                    }
+                                }
+                                if !meta.genres.is_empty() {
+                                    updated_data.push("genre".to_string());
+                                }
                             }
                         }
                     }

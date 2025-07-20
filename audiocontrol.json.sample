@@ -46,6 +46,10 @@
             "attribute_cache_path": "/var/lib/audiocontrol/cache/attributes",
             "image_cache_path": "/var/lib/audiocontrol/cache/images"
         },
+        "genre_cleanup": {
+            "config_path": "/etc/audiocontrol/genre.json",
+            "_comment": "Genre cleanup configuration file. Maps genres to normalized forms and specifies which genres to ignore."
+        },
         "settingsdb": {
             "path": "/var/lib/audiocontrol/db"
         },

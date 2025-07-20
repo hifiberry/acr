@@ -239,6 +239,13 @@ fn main() {
     // Initialize favourite providers (Last.fm and SettingsDB)
     audiocontrol::helpers::favourites::initialize_favourite_providers();
 
+    // Initialize genre cleanup
+    if let Err(e) = audiocontrol::helpers::genre_cleanup::initialize_genre_cleanup() {
+        warn!("Failed to initialize genre cleanup: {}", e);
+    } else {
+        info!("Genre cleanup initialized successfully");
+    }
+
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();

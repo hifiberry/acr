@@ -1,8 +1,11 @@
 hifiberry-audiocontrol (0.5.1) stable; urgency=medium
 
-  * API Breaking Change: Modified add_track command to accept URI in JSON request body
-  * Added optional title and coverart_url fields to add_track request for future use
-  * Enhanced add_track API with structured JSON input instead of URL parameters
+  * API Breaking Change: Modified add_track command to accept URI in JSON
+    request body
+  * Added optional title and coverart_url fields to add_track request for
+    future use
+  * Enhanced add_track API with structured JSON input instead of URL
+    parameters
   * Updated API documentation with new add_track format and error examples
   * Added AddTrackRequest struct for better parameter validation
   * Improved REST API consistency following proper JSON body practices
@@ -53,7 +56,8 @@ hifiberry-audiocontrol (0.4.11) stable; urgency=medium
 hifiberry-audiocontrol (0.4.9) stable; urgency=medium
 
   * Added audiocontrol_get_mpris_state tool for MPRIS debugging and inspection
-  * Enhanced MPRIS metadata handling with proper array support for artists and genres
+  * Enhanced MPRIS metadata handling with proper array support for artists
+    and genres
   * Added helper functions for MPRIS metadata retrieval and Song object creation
   * Improved Song struct with genres field supporting multiple genres
   * Fixed MPRIS metadata parsing to correctly handle D-Bus dictionary structures
@@ -64,13 +68,15 @@ hifiberry-audiocontrol (0.4.9) stable; urgency=medium
 hifiberry-audiocontrol (0.4.8) stable; urgency=medium
 
   * Added PlayerProgress for accurate real-time position tracking in librespot
-  * Implemented automatic position increment during playback with pause/resume support
+  * Implemented automatic position increment during playback with pause/resume
+    support
   * Enhanced shuffle and loop mode state tracking in librespot player
   * Fixed librespot event handler to support both "mode" and "loop_mode" fields
   * Added comprehensive Python integration tests for position tracking scenarios
   * Added new process_helper module for process and systemd management
   * Replaced direct system calls with unified process management functions
-  * Enhanced librespot player with better state synchronization and error handling
+  * Enhanced librespot player with better state synchronization and error
+    handling
 
  -- HiFiBerry <info@hifiberry.com>  Tue, 09 Jul 2025 12:00:00 +0000
 
@@ -111,7 +117,8 @@ hifiberry-audiocontrol (0.4.5) stable; urgency=medium
 hifiberry-audiocontrol (0.4.4) stable; urgency=medium
 
   * Enhanced logging system with module-specific log level configuration
-  * Added API endpoint /api/audiodb/mbid/<mbid> for TheAudioDB integration testing
+  * Added API endpoint /api/audiodb/mbid/<mbid> for TheAudioDB integration
+    testing
   * Fixed unused import warnings in stream helper module
   * Moved example web application from example-app/ to example/web/
   * Updated Debian package configuration for new example directory structure

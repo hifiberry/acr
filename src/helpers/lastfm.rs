@@ -992,6 +992,8 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
             Ok(artist_info) => {
                 debug!("Successfully retrieved Last.fm data for artist {}", artist.name);
                 
+                let mut updated_data = Vec::new();
+                
                 // Ensure we have metadata
                 if artist.metadata.is_none() {
                     artist.metadata = Some(crate::data::metadata::ArtistMeta::new());
@@ -1002,16 +1004,18 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
                     if let Some(bio) = &artist_info.bio {
                         if !bio.content.is_empty() {
                             meta.biography = Some(bio.content.clone());
+                            updated_data.push("biography".to_string());
                             debug!("Added Last.fm biography for artist {}", artist.name);
                         }
                     }
                     
                     // Add tags/genres from Last.fm
                     if let Some(tags) = &artist_info.tags {
-                        for tag in &tags.tags {
-                            meta.add_genre(tag.name.clone());
-                        }
                         if !tags.tags.is_empty() {
+                            for tag in &tags.tags {
+                                meta.add_genre(tag.name.clone());
+                            }
+                            updated_data.push(format!("{} tags", tags.tags.len()));
                             debug!("Added {} Last.fm tags for artist {}", tags.tags.len(), artist.name);
                         }
                     }
@@ -1026,6 +1030,7 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
                             if let Some(image) = artist_info.image.iter().find(|img| img.size == *size) {
                                 if !image.url.is_empty() {
                                     meta.thumb_url.push(image.url.clone());
+                                    updated_data.push(format!("{} image", size));
                                     debug!("Added Last.fm {} image for artist {}: {}", size, artist.name, image.url);
                                     break; // Only add the largest available image
                                 }
@@ -1037,9 +1042,15 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
                     if let Some(mbid) = &artist_info.mbid {
                         if !mbid.is_empty() && !meta.mbid.contains(mbid) {
                             meta.add_mbid(mbid.clone());
+                            updated_data.push("MusicBrainz ID".to_string());
                             debug!("Added Last.fm MusicBrainz ID for artist {}: {}", artist.name, mbid);
                         }
                     }
+                }
+                
+                // Log successful update with summary of what was added
+                if !updated_data.is_empty() {
+                    info!("Updated artist '{}' with Last.fm data: {}", artist.name, updated_data.join(", "));
                 }
             }
             Err(e) => {

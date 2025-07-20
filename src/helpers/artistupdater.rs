@@ -83,7 +83,8 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
             artist.is_multi = true; // Mark as multi-artist entry
             artist.clear_metadata(); // Clear metadata for multi-artist entries
             debug!("Cleared metadata for multi-artist entry: {}", artist.name);
-        } else {
+        } else if mbid_count > 0 {
+            info!("Updated artist '{}' with MusicBrainz data: {} ID(s)", artist.name, mbid_count);
             debug!("Added MusicBrainz ID(s) to artist {}", artist.name);
         }
         

@@ -539,6 +539,14 @@ impl crate::helpers::favourites::FavouriteProvider for SettingsDbFavouriteProvid
         }
     }
 
+    fn get_favourite_count(&self) -> Option<usize> {
+        // Use the existing get_all_favourite_songs function to count favorites
+        match get_all_favourite_songs() {
+            Ok(songs) => Some(songs.len()),
+            Err(_) => None, // Return None if we can't access the database
+        }
+    }
+
     fn provider_name(&self) -> &'static str {
         "settingsdb"
     }
@@ -704,6 +712,68 @@ mod tests {
         
         assert!(remove("global_test").unwrap());
         assert!(!contains_key("global_test").unwrap());
+        
+        // Clean up
+        clear().ok();
+    }
+
+    #[test]
+    #[serial]
+    fn test_favourite_provider_count() {
+        use crate::helpers::favourites::FavouriteProvider;
+        use crate::data::song::Song;
+
+        // Initialize the global settings database with a temporary path for testing
+        let temp_dir = TempDir::new().unwrap();
+        let test_path = temp_dir.path().to_str().unwrap();
+        
+        // Initialize the global database
+        SettingsDb::initialize(test_path).ok();
+        
+        // Clear any existing data first
+        clear().ok(); // Ignore errors if not initialized
+        
+        let provider = SettingsDbFavouriteProvider::new();
+        
+        // Initially should have 0 favorites
+        assert_eq!(provider.get_favourite_count(), Some(0));
+        
+        // Create test songs
+        let mut song1 = Song::default();
+        song1.artist = Some("Test Artist 1".to_string());
+        song1.title = Some("Test Song 1".to_string());
+        
+        let mut song2 = Song::default();
+        song2.artist = Some("Test Artist 2".to_string());
+        song2.title = Some("Test Song 2".to_string());
+        
+        let mut song3 = Song::default();
+        song3.artist = Some("Test Artist 3".to_string());
+        song3.title = Some("Test Song 3".to_string());
+        
+        // Add first favorite
+        assert!(provider.add_favourite(&song1).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(1));
+        
+        // Add second favorite
+        assert!(provider.add_favourite(&song2).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(2));
+        
+        // Add third favorite
+        assert!(provider.add_favourite(&song3).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(3));
+        
+        // Remove one favorite
+        assert!(provider.remove_favourite(&song2).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(2));
+        
+        // Remove another favorite
+        assert!(provider.remove_favourite(&song1).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(1));
+        
+        // Remove last favorite
+        assert!(provider.remove_favourite(&song3).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(0));
         
         // Clean up
         clear().ok();

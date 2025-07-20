@@ -15,12 +15,281 @@ def test_favourites_providers_endpoint(generic_server):
     assert 'enabled_providers' in response
     assert 'total_providers' in response
     assert 'enabled_count' in response
+    assert 'providers' in response  # New field for detailed provider info
     
     # Should have at least settingsdb provider
     assert isinstance(response['enabled_providers'], list)
     assert 'settingsdb' in response['enabled_providers']
     assert response['total_providers'] >= 1
     assert response['enabled_count'] >= 1
+    
+    # Test the new providers field
+    assert isinstance(response['providers'], list)
+    assert len(response['providers']) >= 1
+    
+    # Check that at least one provider has the expected structure
+    settingsdb_provider = None
+    for provider in response['providers']:
+        assert 'name' in provider
+        assert 'enabled' in provider
+        assert 'favourite_count' in provider
+        
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+    
+    # SettingsDB should be present and enabled
+    assert settingsdb_provider is not None
+    assert settingsdb_provider['enabled'] is True
+    # Count should be a number (could be 0 or positive)
+    assert isinstance(settingsdb_provider['favourite_count'], int)
+    assert settingsdb_provider['favourite_count'] >= 0
+
+def test_provider_favourite_count_tracking(generic_server):
+    """Test that favourite counts are tracked correctly as songs are added/removed"""
+    # First, get the initial count
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    settingsdb_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+            break
+    
+    assert settingsdb_provider is not None
+    initial_count = settingsdb_provider['favourite_count']
+    assert isinstance(initial_count, int)
+    assert initial_count >= 0
+    
+    # Add a test song
+    test_song = {
+        "artist": "Count Test Artist",
+        "title": "Count Test Song"
+    }
+    
+    # Add the song to favourites
+    response = generic_server.api_request('POST', '/api/favourites/add', json=test_song)
+    assert 'Ok' in response
+    result = response['Ok']
+    assert result['success'] is True
+    assert 'settingsdb' in result['updated_providers']
+    
+    # Check that count increased by 1
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    settingsdb_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+            break
+    
+    assert settingsdb_provider is not None
+    after_add_count = settingsdb_provider['favourite_count']
+    assert after_add_count == initial_count + 1
+    
+    # Remove the song
+    response = generic_server.api_request('DELETE', '/api/favourites/remove', json=test_song)
+    assert 'Ok' in response
+    result = response['Ok']
+    assert result['success'] is True
+    assert 'settingsdb' in result['updated_providers']
+    
+    # Check that count decreased back to original
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    settingsdb_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+            break
+    
+    assert settingsdb_provider is not None
+    after_remove_count = settingsdb_provider['favourite_count']
+    assert after_remove_count == initial_count
+
+def test_provider_favourite_count_multiple_songs(generic_server):
+    """Test favourite count tracking with multiple songs"""
+    # Get initial count
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    settingsdb_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+            break
+    
+    assert settingsdb_provider is not None
+    initial_count = settingsdb_provider['favourite_count']
+    
+    # Add multiple test songs
+    test_songs = [
+        {"artist": "Count Test Artist 1", "title": "Count Test Song 1"},
+        {"artist": "Count Test Artist 2", "title": "Count Test Song 2"},
+        {"artist": "Count Test Artist 3", "title": "Count Test Song 3"},
+    ]
+    
+    # Add all songs
+    for i, song in enumerate(test_songs):
+        response = generic_server.api_request('POST', '/api/favourites/add', json=song)
+        assert 'Ok' in response
+        result = response['Ok']
+        assert result['success'] is True
+        assert 'settingsdb' in result['updated_providers']
+        
+        # Check count after each addition
+        response = generic_server.api_request('GET', '/api/favourites/providers')
+        assert 'providers' in response
+        
+        settingsdb_provider = None
+        for provider in response['providers']:
+            if provider['name'] == 'settingsdb':
+                settingsdb_provider = provider
+                break
+        
+        assert settingsdb_provider is not None
+        current_count = settingsdb_provider['favourite_count']
+        expected_count = initial_count + i + 1
+        assert current_count == expected_count
+    
+    # Remove all songs
+    for i, song in enumerate(test_songs):
+        response = generic_server.api_request('DELETE', '/api/favourites/remove', json=song)
+        assert 'Ok' in response
+        result = response['Ok']
+        assert result['success'] is True
+        assert 'settingsdb' in result['updated_providers']
+        
+        # Check count after each removal
+        response = generic_server.api_request('GET', '/api/favourites/providers')
+        assert 'providers' in response
+        
+        settingsdb_provider = None
+        for provider in response['providers']:
+            if provider['name'] == 'settingsdb':
+                settingsdb_provider = provider
+                break
+        
+        assert settingsdb_provider is not None
+        current_count = settingsdb_provider['favourite_count']
+        expected_count = initial_count + len(test_songs) - i - 1
+        assert current_count == expected_count
+    
+    # Final check - should be back to initial count
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    settingsdb_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+            break
+    
+    assert settingsdb_provider is not None
+    final_count = settingsdb_provider['favourite_count']
+    assert final_count == initial_count
+
+def test_provider_favourite_count_duplicate_handling(generic_server):
+    """Test that adding the same song twice doesn't double-count"""
+    # Get initial count
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    settingsdb_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+            break
+    
+    assert settingsdb_provider is not None
+    initial_count = settingsdb_provider['favourite_count']
+    
+    # Add a test song
+    test_song = {
+        "artist": "Duplicate Test Artist",
+        "title": "Duplicate Test Song"
+    }
+    
+    # Add the song first time
+    response = generic_server.api_request('POST', '/api/favourites/add', json=test_song)
+    assert 'Ok' in response
+    result = response['Ok']
+    assert result['success'] is True
+    
+    # Check count increased by 1
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    settingsdb_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+            break
+    
+    assert settingsdb_provider is not None
+    after_first_add_count = settingsdb_provider['favourite_count']
+    assert after_first_add_count == initial_count + 1
+    
+    # Add the same song again
+    response = generic_server.api_request('POST', '/api/favourites/add', json=test_song)
+    assert 'Ok' in response
+    result = response['Ok']
+    assert result['success'] is True
+    
+    # Check count didn't increase (no double counting)
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    settingsdb_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+            break
+    
+    assert settingsdb_provider is not None
+    after_second_add_count = settingsdb_provider['favourite_count']
+    assert after_second_add_count == after_first_add_count  # No increase
+    
+    # Clean up - remove the song
+    response = generic_server.api_request('DELETE', '/api/favourites/remove', json=test_song)
+    assert 'Ok' in response
+    result = response['Ok']
+    assert result['success'] is True
+    
+    # Check count decreased back to initial
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    settingsdb_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'settingsdb':
+            settingsdb_provider = provider
+            break
+    
+    assert settingsdb_provider is not None
+    final_count = settingsdb_provider['favourite_count']
+    assert final_count == initial_count
+
+def test_lastfm_provider_count_handling(generic_server):
+    """Test that Last.fm provider returns null for favourite_count"""
+    response = generic_server.api_request('GET', '/api/favourites/providers')
+    assert 'providers' in response
+    
+    # Look for Last.fm provider (might or might not be enabled/present)
+    lastfm_provider = None
+    for provider in response['providers']:
+        if provider['name'] == 'lastfm':
+            lastfm_provider = provider
+            break
+    
+    # If Last.fm provider is present, it should return null for count
+    if lastfm_provider is not None:
+        # Last.fm should return null since it doesn't support easy counting
+        assert lastfm_provider['favourite_count'] is None
+        assert 'enabled' in lastfm_provider
+        # Note: enabled status depends on configuration
 
 def test_add_favourite_song(generic_server):
     """Test adding a song to favourites"""

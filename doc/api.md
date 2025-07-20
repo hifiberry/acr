@@ -935,9 +935,29 @@ Retrieves information about available and enabled favourite providers.
   {
     "enabled_providers": ["settingsdb", "lastfm"],
     "total_providers": 2,
-    "enabled_count": 2
+    "enabled_count": 2,
+    "providers": [
+      {
+        "name": "settingsdb",
+        "enabled": true,
+        "favourite_count": 25
+      },
+      {
+        "name": "lastfm",
+        "enabled": true,
+        "favourite_count": null
+      }
+    ]
   }
   ```
+
+  - `enabled_providers`: List of provider names that are currently enabled
+  - `total_providers`: Total number of providers (enabled and disabled)
+  - `enabled_count`: Number of currently enabled providers  
+  - `providers`: Detailed information for each provider
+    - `name`: Provider identifier (e.g., "settingsdb", "lastfm")
+    - `enabled`: Whether the provider is currently enabled and available
+    - `favourite_count`: Number of favorites stored by this provider (null if provider doesn't support counting)
 
 **Example**:
 ```bash

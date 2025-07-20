@@ -1355,6 +1355,12 @@ impl crate::helpers::favourites::FavouriteProvider for LastfmFavouriteProvider {
         }
     }
 
+    fn get_favourite_count(&self) -> Option<usize> {
+        // Last.fm API doesn't provide an easy way to get the total count of loved tracks
+        // Would require paginating through all loved tracks, which is not efficient
+        None
+    }
+
     fn provider_name(&self) -> &'static str {
         "lastfm"
     }

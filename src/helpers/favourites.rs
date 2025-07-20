@@ -70,6 +70,12 @@ pub trait FavouriteProvider {
     /// `Ok(())` if successful, or an error
     fn remove_favourite(&self, song: &Song) -> Result<(), FavouriteError>;
 
+    /// Get the total number of favourite songs
+    /// 
+    /// # Returns
+    /// `Some(count)` if the provider supports counting, `None` if not supported
+    fn get_favourite_count(&self) -> Option<usize>;
+
     /// Get the name/identifier of this provider
     fn provider_name(&self) -> &'static str;
 
@@ -226,6 +232,20 @@ impl FavouriteManager {
     pub fn enabled_provider_count(&self) -> usize {
         self.providers.iter().filter(|p| p.is_enabled()).count()
     }
+
+    /// Get detailed provider information including favorite counts
+    pub fn get_provider_details(&self) -> Vec<serde_json::Value> {
+        self.providers
+            .iter()
+            .map(|provider| {
+                serde_json::json!({
+                    "name": provider.provider_name(),
+                    "enabled": provider.is_enabled(),
+                    "favourite_count": provider.get_favourite_count()
+                })
+            })
+            .collect()
+    }
 }
 
 impl Default for FavouriteManager {
@@ -281,4 +301,9 @@ pub fn get_enabled_providers() -> Vec<String> {
 pub fn get_provider_count() -> (usize, usize) {
     let manager = get_favourite_manager();
     (manager.provider_count(), manager.enabled_provider_count())
+}
+
+/// Get detailed provider information from the global manager
+pub fn get_provider_details() -> Vec<serde_json::Value> {
+    get_favourite_manager().get_provider_details()
 }

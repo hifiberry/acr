@@ -138,11 +138,13 @@ pub fn remove_favourite(request: Json<FavouriteRequest>) -> Json<Result<Favourit
 pub fn get_providers() -> Json<serde_json::Value> {
     let (total, enabled) = favourites::get_provider_count();
     let enabled_providers = favourites::get_enabled_providers();
+    let provider_details = favourites::get_provider_details();
     
     Json(serde_json::json!({
         "enabled_providers": enabled_providers,
         "total_providers": total,
-        "enabled_count": enabled
+        "enabled_count": enabled,
+        "providers": provider_details
     }))
 }
 

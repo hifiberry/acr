@@ -7,6 +7,7 @@ use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
 use std::str::FromStr; // Add this line to import FromStr trait
+use log::debug;
 
 /// Response struct for the current active player
 #[derive(serde::Serialize)]
@@ -692,6 +693,8 @@ fn parse_player_command(cmd_str: &str, request_data: Option<&Json<serde_json::Va
             // Parse URI from request body
             if let Some(data) = request_data {
                 if let Ok(add_request) = serde_json::from_value::<AddTrackRequest>(data.0.clone()) {
+                    debug!("Adding track to queue: uri={}, title={:?}, coverart_url={:?}", 
+                           add_request.uri, add_request.title, add_request.coverart_url);
                     return Ok(PlayerCommand::QueueTracks {
                         uris: vec![add_request.uri],
                         insert_at_beginning: false

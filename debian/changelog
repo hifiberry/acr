@@ -1,3 +1,15 @@
+hifiberry-audiocontrol (0.5.2) stable; urgency=medium
+
+  * Fixed UTF-8 string slicing panic in MusicBrainz module when handling
+    multi-byte characters (e.g., ¥, €) in artist names
+  * Added safe_truncate helper function in sanitize module for UTF-8-safe
+    string truncation
+  * Enhanced error handling in MusicBrainz API response processing
+  * Fixed similar UTF-8 issues in Spotify module debug logging
+  * Added comprehensive test suite for UTF-8 string handling
+
+ -- HiFiBerry <info@hifiberry.com>  Sun, 20 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.5.1) stable; urgency=medium
 
   * API Breaking Change: Modified add_track command to accept URI in JSON

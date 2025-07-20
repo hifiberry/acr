@@ -12,6 +12,7 @@ This directory contains documentation for various aspects of the HiFiBerry Audio
 - [Library Management](library.md) - How ACR manages music libraries
 - [External Links](links.md) - Links to external tools and documentation
 - [Logging](logging.md) - Logging configuration and management
+- [Metadata Management](metadata.md) - Artist metadata sources, lookup mechanisms, and processing
 - [MPD Integration](mpd.md) - Details about the Music Player Daemon integration
 - [MPRIS Integration](mpris.md) - Media Player Remote Interfacing Specification support
 - [Player Event Client](player_event_client.md) - Command-line tool for sending player events

@@ -1,0 +1,68 @@
+{
+    "action_plugins": [
+        {
+            "active-monitor": {
+                "enabled": true
+            }
+        },
+        {
+            "event-logger": {
+                "enabled": true,
+                "event_types": [
+                    "state",
+                    "song"
+                ],
+                "log_level": "info",
+                "only_active": false
+            }
+        }
+    ],
+    "services": {
+        "webserver": {
+            "enable": true,
+            "host": "127.0.0.1",
+            "port": 18080
+        },
+        "cache": {
+            "attribute_cache_path": "/tmp/test_cache/attributes",
+            "image_cache_path": "/tmp/test_cache/images"
+        },
+        "settingsdb": {
+            "path": "/tmp/test_db"
+        },
+        "security_store": {
+            "path": "/tmp/test_security_store.json"
+        },
+        "musicbrainz": {
+            "enable": false
+        },
+        "theaudiodb": {
+            "enable": false,
+            "api_key": "",
+            "rate_limit_ms": 500
+        },
+        "lastfm": {
+            "enable": false,
+            "api_key": "",
+            "api_secret": "",
+            "now_playing_enabled": false,
+            "scrobble": false
+        },
+        "spotify": {
+            "enable": false
+        }
+    },
+    "players": [
+        {
+            "generic": {
+                "name": "test_player",
+                "enable": true,
+                "supports_api_events": true,
+                "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop", "killable"],
+                "initial_state": "stopped",
+                "shuffle": false,
+                "loop_mode": "none"
+            }
+        }
+    ]
+}

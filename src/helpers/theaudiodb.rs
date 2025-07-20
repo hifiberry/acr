@@ -488,6 +488,7 @@ impl ArtistUpdater for TheAudioDbUpdater {
                         if !biography.is_empty() {
                             if let Some(meta) = &mut artist.metadata {
                                 meta.biography = Some(biography.to_string());
+                                meta.biography_source = Some("TheAudioDB".to_string());
                                 updated_data.push("biography".to_string());
                                 debug!("Added biography from TheAudioDB for artist {}", artist.name);
                             }

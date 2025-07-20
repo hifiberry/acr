@@ -1006,6 +1006,7 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
                         if !bio.content.is_empty() {
                             let cleaned_biography = cleanup_biography(&bio.content);
                             meta.biography = Some(cleaned_biography);
+                            meta.biography_source = Some("LastFM".to_string());
                             updated_data.push("biography".to_string());
                             debug!("Added Last.fm biography for artist {}", artist.name);
                         }

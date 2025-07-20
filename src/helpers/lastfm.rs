@@ -916,6 +916,57 @@ impl LastfmClient {
         Ok(())
     }
 
+    /// Love a track on Last.fm
+    pub fn love_track(&self, artist: &str, track: &str) -> Result<(), LastfmError> {
+        if !self.is_authenticated() {
+            return Err(LastfmError::AuthError("Authentication required to love tracks".to_string()));
+        }
+
+        let params = vec![
+            ("method", "track.love"),
+            ("artist", artist),
+            ("track", track),
+        ];
+
+        // This request needs to be signed
+        let _response = self.make_api_request(params, true)?;
+        
+        debug!("Track loved: {} - {}", artist, track);
+        Ok(())
+    }
+
+    /// Unlove a track on Last.fm
+    pub fn unlove_track(&self, artist: &str, track: &str) -> Result<(), LastfmError> {
+        if !self.is_authenticated() {
+            return Err(LastfmError::AuthError("Authentication required to unlove tracks".to_string()));
+        }
+
+        let params = vec![
+            ("method", "track.unlove"),
+            ("artist", artist),
+            ("track", track),
+        ];
+
+        // This request needs to be signed
+        let _response = self.make_api_request(params, true)?;
+        
+        debug!("Track unloved: {} - {}", artist, track);
+        Ok(())
+    }
+
+    /// Check if a track is loved on Last.fm
+    pub fn is_track_loved(&self, artist: &str, track: &str) -> Result<bool, LastfmError> {
+        if !self.is_authenticated() {
+            return Err(LastfmError::AuthError("Authentication required to check love status".to_string()));
+        }
+
+        // Use the existing get_track_info method which includes userloved status
+        match self.get_track_info(artist, track) {
+            Ok(track_info) => Ok(track_info.userloved),
+            Err(e) => Err(e),
+        }
+    }
+
 }
 
 
@@ -1208,6 +1259,113 @@ fn download_lastfm_artist_images(artist_name: &str, image_urls: &[String]) -> bo
     }
 
     api_success
+}
+
+/// Love a track on Last.fm
+/// 
+/// # Arguments
+/// * `artist` - The artist name
+/// * `track` - The track name
+/// 
+/// # Returns
+/// Result indicating success or failure
+pub fn love_track(artist: &str, track: &str) -> Result<(), LastfmError> {
+    let client = LastfmClient::get_instance()?;
+    client.love_track(artist, track)
+}
+
+/// Unlove a track on Last.fm
+/// 
+/// # Arguments
+/// * `artist` - The artist name
+/// * `track` - The track name
+/// 
+/// # Returns
+/// Result indicating success or failure
+pub fn unlove_track(artist: &str, track: &str) -> Result<(), LastfmError> {
+    let client = LastfmClient::get_instance()?;
+    client.unlove_track(artist, track)
+}
+
+/// Check if a track is loved on Last.fm
+/// 
+/// # Arguments
+/// * `artist` - The artist name
+/// * `track` - The track name
+/// 
+/// # Returns
+/// Result containing true if loved, false if not
+pub fn is_track_loved(artist: &str, track: &str) -> Result<bool, LastfmError> {
+    let client = LastfmClient::get_instance()?;
+    client.is_track_loved(artist, track)
+}
+
+/// Last.fm implementation of FavouriteProvider
+pub struct LastfmFavouriteProvider;
+
+impl LastfmFavouriteProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::helpers::favourites::FavouriteProvider for LastfmFavouriteProvider {
+    fn is_favourite(&self, song: &crate::data::song::Song) -> Result<bool, crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match is_track_loved(artist, title) {
+            Ok(loved) => Ok(loved),
+            Err(LastfmError::AuthError(msg)) => Err(crate::helpers::favourites::FavouriteError::AuthError(msg)),
+            Err(LastfmError::NetworkError(msg)) => Err(crate::helpers::favourites::FavouriteError::NetworkError(msg)),
+            Err(LastfmError::ConfigError(msg)) => Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg)),
+            Err(e) => Err(crate::helpers::favourites::FavouriteError::Other(e.to_string())),
+        }
+    }
+
+    fn add_favourite(&self, song: &crate::data::song::Song) -> Result<(), crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match love_track(artist, title) {
+            Ok(()) => Ok(()),
+            Err(LastfmError::AuthError(msg)) => Err(crate::helpers::favourites::FavouriteError::AuthError(msg)),
+            Err(LastfmError::NetworkError(msg)) => Err(crate::helpers::favourites::FavouriteError::NetworkError(msg)),
+            Err(LastfmError::ConfigError(msg)) => Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg)),
+            Err(e) => Err(crate::helpers::favourites::FavouriteError::Other(e.to_string())),
+        }
+    }
+
+    fn remove_favourite(&self, song: &crate::data::song::Song) -> Result<(), crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match unlove_track(artist, title) {
+            Ok(()) => Ok(()),
+            Err(LastfmError::AuthError(msg)) => Err(crate::helpers::favourites::FavouriteError::AuthError(msg)),
+            Err(LastfmError::NetworkError(msg)) => Err(crate::helpers::favourites::FavouriteError::NetworkError(msg)),
+            Err(LastfmError::ConfigError(msg)) => Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg)),
+            Err(e) => Err(crate::helpers::favourites::FavouriteError::Other(e.to_string())),
+        }
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "lastfm"
+    }
+
+    fn is_enabled(&self) -> bool {
+        // Check if Last.fm is configured and authenticated
+        match LastfmClient::get_instance() {
+            Ok(client) => client.is_authenticated(),
+            Err(_) => false,
+        }
+    }
 }
 
 #[cfg(test)]

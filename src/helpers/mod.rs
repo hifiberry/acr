@@ -18,6 +18,7 @@ pub mod retry;
 pub mod systemd;
 pub mod playback_progress;
 pub mod process_helper;
+pub mod favourites;
 #[cfg(unix)]
 pub mod mpris;
 #[cfg(unix)]

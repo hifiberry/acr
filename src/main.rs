@@ -236,6 +236,9 @@ fn main() {
     }
     initialize_spotify(&controllers_config);
 
+    // Initialize favourite providers (Last.fm and SettingsDB)
+    audiocontrol::helpers::favourites::initialize_favourite_providers();
+
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();

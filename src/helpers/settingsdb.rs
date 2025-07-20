@@ -441,6 +441,114 @@ pub fn is_empty() -> Result<bool, String> {
     get_settings_db().is_empty()
 }
 
+/// Add a song to favourites in the settings database
+pub fn add_favourite_song(artist: &str, title: &str) -> Result<(), String> {
+    let key = format!("favourite_song:{}:{}", sanitize_key_component(artist), sanitize_key_component(title));
+    set_bool(&key, true)
+}
+
+/// Remove a song from favourites in the settings database
+pub fn remove_favourite_song(artist: &str, title: &str) -> Result<(), String> {
+    let key = format!("favourite_song:{}:{}", sanitize_key_component(artist), sanitize_key_component(title));
+    remove(&key).map(|_| ()) // Convert Result<bool, String> to Result<(), String>
+}
+
+/// Check if a song is marked as favourite in the settings database
+pub fn is_favourite_song(artist: &str, title: &str) -> Result<bool, String> {
+    let key = format!("favourite_song:{}:{}", sanitize_key_component(artist), sanitize_key_component(title));
+    match get_bool(&key)? {
+        Some(value) => Ok(value),
+        None => Ok(false),
+    }
+}
+
+/// Get all favourite songs from the settings database
+pub fn get_all_favourite_songs() -> Result<Vec<(String, String)>, String> {
+    let all_keys = get_all_keys()?;
+    let mut favourite_songs = Vec::new();
+    
+    for key in all_keys {
+        if key.starts_with("favourite_song:") {
+            // Extract artist and title from the key
+            let parts: Vec<&str> = key.strip_prefix("favourite_song:").unwrap().splitn(2, ':').collect();
+            if parts.len() == 2 {
+                // Reverse the sanitization (basic approach - may not be perfect for all cases)
+                let artist = parts[0].replace("_", " ");
+                let title = parts[1].replace("_", " ");
+                favourite_songs.push((artist, title));
+            }
+        }
+    }
+    
+    Ok(favourite_songs)
+}
+
+/// Sanitize a key component by replacing problematic characters
+fn sanitize_key_component(input: &str) -> String {
+    input
+        .replace(":", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+        .replace(" ", "_")
+        .to_lowercase()
+}
+
+/// Settings DB implementation of FavouriteProvider
+pub struct SettingsDbFavouriteProvider;
+
+impl SettingsDbFavouriteProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::helpers::favourites::FavouriteProvider for SettingsDbFavouriteProvider {
+    fn is_favourite(&self, song: &crate::data::song::Song) -> Result<bool, crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match is_favourite_song(artist, title) {
+            Ok(is_fav) => Ok(is_fav),
+            Err(e) => Err(crate::helpers::favourites::FavouriteError::StorageError(e)),
+        }
+    }
+
+    fn add_favourite(&self, song: &crate::data::song::Song) -> Result<(), crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match add_favourite_song(artist, title) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(crate::helpers::favourites::FavouriteError::StorageError(e)),
+        }
+    }
+
+    fn remove_favourite(&self, song: &crate::data::song::Song) -> Result<(), crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match remove_favourite_song(artist, title) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(crate::helpers::favourites::FavouriteError::StorageError(e)),
+        }
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "settingsdb"
+    }
+
+    fn is_enabled(&self) -> bool {
+        // Settings DB is always enabled if the database is accessible
+        get_settings_db().enabled
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

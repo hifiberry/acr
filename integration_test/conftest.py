@@ -22,11 +22,11 @@ import psutil
 
 # Test configuration
 TEST_PORTS = {
-    'generic': 1080,
-    'librespot': 1080,
-    'activemonitor': 1080,
-    'raat': 1080,
-    'theaudiodb': 1080,
+    'generic': 18080,
+    'librespot': 18080,
+    'activemonitor': 18080,
+    'raat': 18080,
+    'theaudiodb': 18080,
 }
 
 # Path configurations for different test types
@@ -305,32 +305,44 @@ class AudioControlTestServer:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
     
-    def api_request(self, method: str, endpoint: str, data: Any = None) -> Any:
+    def api_request(self, method: str, endpoint: str, data: Any = None, json: Any = None, expect_error: bool = False) -> Any:
         """Make an API request to the server"""
         url = f"{self.server_url}/{endpoint.lstrip('/')}"
         
+        # Choose the data format
+        request_data = json if json is not None else data
+        
         if method.upper() == 'GET':
             response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            try:
-                return response.json()
-            except ValueError as e:
-                print(f"Error parsing JSON response from {url}: {e}")
-                print(f"Response status: {response.status_code}")
-                print(f"Response text: {response.text}")
-                return None
         elif method.upper() == 'POST':
-            response = requests.post(url, json=data, timeout=10)
-            response.raise_for_status()
-            try:
-                return response.json()
-            except ValueError as e:
-                print(f"Error parsing JSON response from {url}: {e}")
-                print(f"Response status: {response.status_code}")
-                print(f"Response text: {response.text}")
-                return None
+            response = requests.post(url, json=request_data, timeout=10)
+        elif method.upper() == 'DELETE':
+            response = requests.delete(url, json=request_data, timeout=10)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
+        
+        # Handle error cases
+        if expect_error:
+            if response.status_code >= 400:
+                try:
+                    return response.json()
+                except ValueError:
+                    return {"error": f"HTTP {response.status_code}: {response.text}"}
+            else:
+                # Expected an error but didn't get one
+                try:
+                    return response.json()
+                except ValueError:
+                    return {"unexpected_success": True, "status": response.status_code}
+        else:
+            response.raise_for_status()
+            try:
+                return response.json()
+            except ValueError as e:
+                print(f"Error parsing JSON response from {url}: {e}")
+                print(f"Response status: {response.status_code}")
+                print(f"Response text: {response.text}")
+                return None
     
     def api_request_with_error_handling(self, method: str, endpoint: str, data: Any = None) -> Any:
         """Make an API request to the server with custom error handling"""

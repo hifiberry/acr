@@ -1,5 +1,5 @@
 use crate::AudioController;
-use crate::api::{players, plugins, library, imagecache, events, lastfm, spotify, theaudiodb};
+use crate::api::{players, plugins, library, imagecache, events, lastfm, spotify, theaudiodb, favourites};
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
 use crate::constants::API_PREFIX;
@@ -148,6 +148,9 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     let imagecache_routes = routes![
         imagecache::get_image_from_cache
     ];
+    
+    // Favourites routes
+    let favourites_routes = favourites::routes();
       let mut rocket_builder = rocket::custom(config)
         .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting general api routes
         .mount(format!("{}/lastfm", API_PREFIX), lastfm_routes) // Mount Last.fm routes under /api/lastfm (or similar)
@@ -156,6 +159,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
             if spotify_api_enabled { spotify_full_routes } else { spotify_auth_routes }
         )
         .mount(format!("{}/imagecache", API_PREFIX), imagecache_routes) // Mount imagecache routes
+        .mount(format!("{}/favourites", API_PREFIX), favourites_routes) // Mount favourites routes
         .manage(controller)
         .manage(ws_manager); // Add WebSocket manager as managed state
       // Check for static file routes in the configuration

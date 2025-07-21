@@ -20,6 +20,7 @@ pub mod playback_progress;
 pub mod process_helper;
 pub mod favourites;
 pub mod genre_cleanup;
+pub mod volume;
 #[cfg(unix)]
 pub mod mpris;
 #[cfg(unix)]

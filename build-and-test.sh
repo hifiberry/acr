@@ -120,6 +120,7 @@ REQUIRED_CONFIGS=(
     "integration_test/test_config_activemonitor.json"
     "integration_test/test_config_librespot.json" 
     "integration_test/test_config_theaudiodb.json"
+    "integration_test/test_config_volume.json"
 )
 
 missing_configs=0

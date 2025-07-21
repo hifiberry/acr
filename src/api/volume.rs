@@ -1,7 +1,7 @@
 use crate::helpers::global_volume;
 use crate::helpers::volume::{VolumeControlInfo, DecibelRange};
 use rocket::serde::json::Json;
-use rocket::{get, post, put};
+use rocket::{get, post};
 use rocket::response::status::Custom;
 use rocket::http::Status;
 use serde::{Deserialize, Serialize};
@@ -179,7 +179,7 @@ pub fn get_volume_state() -> Result<Json<VolumeStateResponse>, Custom<Json<Volum
 }
 
 /// Set volume level
-#[put("/set", data = "<request>")]
+#[post("/set", data = "<request>")]
 pub fn set_volume(request: Json<SetVolumeRequest>) -> Json<VolumeOperationResponse> {
     debug!("API: Setting volume: {:?}", *request);
     

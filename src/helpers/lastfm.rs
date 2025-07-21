@@ -922,10 +922,16 @@ impl LastfmClient {
             return Err(LastfmError::AuthError("Authentication required to love tracks".to_string()));
         }
 
+        let session_key = self.credentials.session_key.as_ref().ok_or_else(|| {
+            error!("Session key not found for authenticated user while calling love_track.");
+            LastfmError::AuthError("Session key not found despite being authenticated.".to_string())
+        })?;
+
         let params = vec![
             ("method", "track.love"),
             ("artist", artist),
             ("track", track),
+            ("sk", session_key.as_str()),
         ];
 
         // This request needs to be signed
@@ -941,10 +947,16 @@ impl LastfmClient {
             return Err(LastfmError::AuthError("Authentication required to unlove tracks".to_string()));
         }
 
+        let session_key = self.credentials.session_key.as_ref().ok_or_else(|| {
+            error!("Session key not found for authenticated user while calling unlove_track.");
+            LastfmError::AuthError("Session key not found despite being authenticated.".to_string())
+        })?;
+
         let params = vec![
             ("method", "track.unlove"),
             ("artist", artist),
             ("track", track),
+            ("sk", session_key.as_str()),
         ];
 
         // This request needs to be signed

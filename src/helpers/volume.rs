@@ -1,5 +1,8 @@
 use std::error::Error;
 use std::fmt;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 /// Error types for volume control operations
 #[derive(Debug)]
@@ -32,6 +35,23 @@ impl fmt::Display for VolumeError {
 }
 
 impl Error for VolumeError {}
+
+/// Volume change event
+#[derive(Debug, Clone)]
+pub struct VolumeChangeEvent {
+    /// Control that changed
+    pub control_name: String,
+    /// New volume percentage
+    pub new_percentage: f64,
+    /// New volume in dB (if available)
+    pub new_db: Option<f64>,
+}
+
+/// Trait for receiving volume change notifications
+pub trait VolumeChangeListener {
+    /// Called when volume changes
+    fn on_volume_change(&self, event: VolumeChangeEvent);
+}
 
 /// Represents a decibel range for volume controls that support dB scale
 #[derive(Debug, Clone)]
@@ -138,6 +158,17 @@ pub trait VolumeControl {
 
     /// Set the raw value (implementation specific)
     fn set_raw_value(&self, value: i64) -> Result<(), VolumeError>;
+
+    /// Start monitoring for volume changes (if supported)
+    /// Returns a receiver for volume change events
+    fn start_change_monitoring(&self, _callback: Box<dyn Fn(VolumeChangeEvent) + Send + 'static>) -> Result<mpsc::Receiver<VolumeChangeEvent>, VolumeError> {
+        Err(VolumeError::NotSupported("Volume change monitoring not supported".to_string()))
+    }
+
+    /// Check if change monitoring is supported
+    fn supports_change_monitoring(&self) -> bool {
+        false
+    }
 }
 
 /// ALSA implementation of VolumeControl
@@ -348,6 +379,75 @@ impl VolumeControl for AlsaVolumeControl {
 
             Ok(())
         })
+    }
+
+    fn start_change_monitoring(&self, callback: Box<dyn Fn(VolumeChangeEvent) + Send + 'static>) -> Result<mpsc::Receiver<VolumeChangeEvent>, VolumeError> {
+        let (tx, rx) = mpsc::channel();
+        let device = self.device.clone();
+        let control_name = self.control_name.clone();
+
+        thread::spawn(move || {
+            // Simple polling-based implementation
+            // In a real implementation, you'd use ALSA's event system
+            let mut last_volume = None;
+            
+            loop {
+                // Check volume every 100ms
+                thread::sleep(Duration::from_millis(100));
+                
+                if let Ok(mixer) = alsa::mixer::Mixer::new(&device, false) {
+                    let selem_id = alsa::mixer::SelemId::new(&control_name, 0);
+                    
+                    if let Some(selem) = mixer.find_selem(&selem_id) {
+                        if selem.has_playback_volume() {
+                            if let Ok(volume_raw) = selem.get_playback_volume(alsa::mixer::SelemChannelId::mono()) {
+                                let (min_raw, max_raw) = selem.get_playback_volume_range();
+                                let volume_percent = if max_raw > min_raw {
+                                    ((volume_raw - min_raw) as f64 / (max_raw - min_raw) as f64) * 100.0
+                                } else {
+                                    0.0
+                                };
+                                
+                                // Only send event if volume actually changed
+                                if last_volume.map_or(true, |last: f64| (last - volume_percent).abs() > 0.1) {
+                                    last_volume = Some(volume_percent);
+                                    
+                                    // Try to get dB value
+                                    let db_value = if selem.has_playback_volume() {
+                                        let (min_db, max_db) = selem.get_playback_db_range();
+                                        let min_db_f = alsa::mixer::MilliBel::to_db(min_db) as f64;
+                                        let max_db_f = alsa::mixer::MilliBel::to_db(max_db) as f64;
+                                        let current_db = min_db_f + (volume_percent / 100.0) * (max_db_f - min_db_f);
+                                        Some(current_db)
+                                    } else {
+                                        None
+                                    };
+                                    
+                                    let event = VolumeChangeEvent {
+                                        control_name: control_name.clone(),
+                                        new_percentage: volume_percent,
+                                        new_db: db_value,
+                                    };
+                                    
+                                    // Call the callback
+                                    callback(event.clone());
+                                    
+                                    if tx.send(event).is_err() {
+                                        break; // Receiver dropped, exit thread
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    fn supports_change_monitoring(&self) -> bool {
+        true
     }
 }
 

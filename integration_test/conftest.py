@@ -27,6 +27,7 @@ TEST_PORTS = {
     'activemonitor': 18080,
     'raat': 18080,
     'theaudiodb': 18080,
+    'volume': 18080,
 }
 
 # Path configurations for different test types
@@ -36,6 +37,7 @@ TEST_CONFIGS = {
     'activemonitor': Path(__file__).parent / "test_config_activemonitor.json",
     'raat': Path(__file__).parent / "test_config_generic.json",
     'theaudiodb': Path(__file__).parent / "test_config_theaudiodb.json",
+    'volume': Path(__file__).parent / "test_config_volume.json",
 }
 
 # Default path to static configuration file

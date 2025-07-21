@@ -18,7 +18,6 @@ pub struct GenreConfig {
 
 /// Genre cleanup service that consolidates and normalizes genre tags
 pub struct GenreCleanup {
-    config: GenreConfig,
     ignore_set: HashSet<String>,
     mapping_lowercase: HashMap<String, String>,
 }
@@ -54,7 +53,6 @@ impl GenreCleanup {
                ignore_set.len(), mapping_lowercase.len());
         
         Ok(GenreCleanup {
-            config,
             ignore_set,
             mapping_lowercase,
         })

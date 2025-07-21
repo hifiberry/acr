@@ -236,6 +236,9 @@ fn main() {
     }
     initialize_spotify(&controllers_config);
 
+    // Initialize volume control with the configuration
+    audiocontrol::helpers::global_volume::initialize_volume_control(&controllers_config);
+
     // Initialize favourite providers (Last.fm and SettingsDB)
     audiocontrol::helpers::favourites::initialize_favourite_providers();
 

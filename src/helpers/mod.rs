@@ -21,6 +21,7 @@ pub mod process_helper;
 pub mod favourites;
 pub mod genre_cleanup;
 pub mod volume;
+pub mod global_volume;
 #[cfg(unix)]
 pub mod mpris;
 #[cfg(unix)]

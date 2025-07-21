@@ -75,6 +75,13 @@
             "api_enabled": false,
             "client_id": "",            
             "client_secret": ""
+        },
+        "volume": {
+            "enable": true,
+            "type": "dummy",
+            "device": "default",
+            "control_name": "Master",
+            "display_name": "Master Volume"
         }
     },
     "players": [

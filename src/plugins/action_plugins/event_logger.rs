@@ -101,6 +101,7 @@ impl EventLogger {
             PlayerEvent::QueueChanged { .. } => "queue_changed",
             PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
             PlayerEvent::ActivePlayerChanged { .. } => "active_player_changed",
+            PlayerEvent::VolumeChanged { .. } => "volume_changed",
         }
     }    
     
@@ -110,7 +111,10 @@ impl EventLogger {
         // Determine if this is from the active player
         let is_active_player = if let Some(controller) = self.base.get_controller() {
             // Get player ID from the event
-            let event_player_id = event.source().player_id();
+            let event_player_id = match event.source() {
+                Some(source) => source.player_id(),
+                None => "system",
+            };
             
             // Get ID of the active player from AudioController
             let active_player_id = controller.get_player_id();
@@ -293,6 +297,31 @@ impl EventLogger {
                         player_id
                     ),
                     is_active_player
+                );
+            },
+            PlayerEvent::VolumeChanged { control_name, display_name, percentage, decibels, raw_value } => {
+                let details = if let Some(db) = decibels {
+                    format!("{:.1}% ({:.1}dB)", percentage, db)
+                } else {
+                    format!("{:.1}%", percentage)
+                };
+                
+                let raw_info = if let Some(raw) = raw_value {
+                    format!(" [raw: {}]", raw)
+                } else {
+                    String::new()
+                };
+                
+                // Volume events are not associated with a specific player
+                self.log_message(
+                    &format!(
+                        "Volume control '{}' ({}) changed to {}{}",
+                        display_name,
+                        control_name,
+                        details,
+                        raw_info
+                    ),
+                    false // Volume events are system-wide, not player-specific
                 );
             },
         }

@@ -3,6 +3,10 @@ use std::fmt;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use std::sync::{Arc, RwLock};
+
+use crate::data::PlayerEvent;
+use crate::audiocontrol::eventbus::EventBus;
 
 /// Error types for volume control operations
 #[derive(Debug)]
@@ -35,6 +39,26 @@ impl fmt::Display for VolumeError {
 }
 
 impl Error for VolumeError {}
+
+/// Publish a volume change event to the global event bus
+fn publish_volume_change_event(
+    control_name: String,
+    display_name: String,
+    percentage: f64,
+    decibels: Option<f64>,
+    raw_value: Option<i64>,
+) {
+    let event = PlayerEvent::VolumeChanged {
+        control_name,
+        display_name,
+        percentage,
+        decibels,
+        raw_value,
+    };
+    
+    let event_bus = EventBus::instance();
+    event_bus.publish(event);
+}
 
 /// Volume change event
 #[derive(Debug, Clone)]
@@ -227,7 +251,22 @@ impl AlsaVolumeControl {
             // Convert from ALSA's millibel to dB (millibel = 1/100 dB)
             let min_db_f = MilliBel::to_db(min_db) as f64;
             let max_db_f = MilliBel::to_db(max_db) as f64;
-            return Ok(DecibelRange::new(min_db_f, max_db_f));
+            
+            // Validate and clamp dB values to reasonable ranges
+            // ALSA sometimes returns extreme values that don't make sense
+            let min_db_clamped = if min_db_f < -200.0 || min_db_f.is_infinite() || min_db_f.is_nan() {
+                -120.0 // Default minimum for digital volume controls
+            } else {
+                min_db_f.max(-200.0) // Don't go below -200dB
+            };
+            
+            let max_db_clamped = if max_db_f > 50.0 || max_db_f.is_infinite() || max_db_f.is_nan() {
+                0.0 // Default maximum
+            } else {
+                max_db_f.min(50.0) // Don't go above +50dB
+            };
+            
+            return Ok(DecibelRange::new(min_db_clamped, max_db_clamped));
         }
 
         // Check if capture volume dB range is available
@@ -236,7 +275,21 @@ impl AlsaVolumeControl {
             // Convert from ALSA's millibel to dB (millibel = 1/100 dB)
             let min_db_f = MilliBel::to_db(min_db) as f64;
             let max_db_f = MilliBel::to_db(max_db) as f64;
-            return Ok(DecibelRange::new(min_db_f, max_db_f));
+            
+            // Validate and clamp dB values to reasonable ranges
+            let min_db_clamped = if min_db_f < -200.0 || min_db_f.is_infinite() || min_db_f.is_nan() {
+                -120.0
+            } else {
+                min_db_f.max(-200.0)
+            };
+            
+            let max_db_clamped = if max_db_f > 50.0 || max_db_f.is_infinite() || max_db_f.is_nan() {
+                0.0
+            } else {
+                max_db_f.min(50.0)
+            };
+            
+            return Ok(DecibelRange::new(min_db_clamped, max_db_clamped));
         }
 
         Err(VolumeError::NotSupported("Decibel range not available for this control".to_string()))
@@ -299,7 +352,7 @@ impl VolumeControl for AlsaVolumeControl {
             return Err(VolumeError::InvalidRange(format!("Volume percentage {} is out of range (0-100)", percent)));
         }
 
-        self.with_mixer_element(|selem| {
+        let result = self.with_mixer_element(|selem| {
             // Try playback volume first, then capture volume
             if selem.has_playback_volume() {
                 let (min, max) = selem.get_playback_volume_range();
@@ -318,7 +371,23 @@ impl VolumeControl for AlsaVolumeControl {
             }
 
             Ok(())
-        })
+        });
+
+        // If the volume was set successfully, publish an event
+        if result.is_ok() {
+            let current_db = self.get_volume_db().ok();
+            let current_raw = self.get_raw_value().ok();
+            
+            publish_volume_change_event(
+                self.info.internal_name.clone(),
+                self.info.display_name.clone(),
+                percent,
+                current_db,
+                current_raw,
+            );
+        }
+
+        result
     }
 
     fn get_info(&self) -> VolumeControlInfo {
@@ -366,7 +435,7 @@ impl VolumeControl for AlsaVolumeControl {
     }
 
     fn set_raw_value(&self, value: i64) -> Result<(), VolumeError> {
-        self.with_mixer_element(|selem| {
+        let result = self.with_mixer_element(|selem| {
             if selem.has_playback_volume() {
                 selem.set_playback_volume_all(value)
                     .map_err(|e| VolumeError::AlsaError(format!("Failed to set playback volume: {}", e)))?;
@@ -378,7 +447,23 @@ impl VolumeControl for AlsaVolumeControl {
             }
 
             Ok(())
-        })
+        });
+
+        // If the volume was set successfully, publish an event
+        if result.is_ok() {
+            let current_percent = self.get_volume_percent().unwrap_or(0.0);
+            let current_db = self.get_volume_db().ok();
+            
+            publish_volume_change_event(
+                self.info.internal_name.clone(),
+                self.info.display_name.clone(),
+                current_percent,
+                current_db,
+                Some(value),
+            );
+        }
+
+        result
     }
 
     fn start_change_monitoring(&self, callback: Box<dyn Fn(VolumeChangeEvent) + Send + 'static>) -> Result<mpsc::Receiver<VolumeChangeEvent>, VolumeError> {
@@ -432,6 +517,15 @@ impl VolumeControl for AlsaVolumeControl {
                                     // Call the callback
                                     callback(event.clone());
                                     
+                                    // Publish to global event bus
+                                    publish_volume_change_event(
+                                        format!("alsa:{}:{}", device, control_name),
+                                        format!("ALSA {}", control_name),
+                                        volume_percent,
+                                        db_value,
+                                        Some(volume_raw),
+                                    );
+                                    
                                     if tx.send(event).is_err() {
                                         break; // Receiver dropped, exit thread
                                     }
@@ -457,7 +551,7 @@ impl VolumeControl for AlsaVolumeControl {
 /// It simulates a volume control with a range from -120dB to 0dB.
 pub struct DummyVolumeControl {
     info: VolumeControlInfo,
-    current_percent: f64,
+    current_percent: Arc<RwLock<f64>>,
     is_available: bool,
 }
 
@@ -475,7 +569,7 @@ impl DummyVolumeControl {
         
         Self {
             info,
-            current_percent: initial_percent.clamp(0.0, 100.0),
+            current_percent: Arc::new(RwLock::new(initial_percent.clamp(0.0, 100.0))),
             is_available: true,
         }
     }
@@ -496,7 +590,7 @@ impl DummyVolumeControl {
 
     /// Get the current volume percentage (for testing)
     pub fn get_current_percent(&self) -> f64 {
-        self.current_percent
+        *self.current_percent.read().unwrap()
     }
 }
 
@@ -505,7 +599,7 @@ impl VolumeControl for DummyVolumeControl {
         if !self.is_available {
             return Err(VolumeError::DeviceError("Dummy device not available".to_string()));
         }
-        Ok(self.current_percent)
+        Ok(*self.current_percent.read().unwrap())
     }
 
     fn set_volume_percent(&self, percent: f64) -> Result<(), VolumeError> {
@@ -517,9 +611,19 @@ impl VolumeControl for DummyVolumeControl {
             return Err(VolumeError::InvalidRange(format!("Volume percentage {} is out of range (0-100)", percent)));
         }
 
-        // In a real implementation, we'd use interior mutability (RefCell, Mutex, etc.)
-        // For this dummy implementation, we'll just pretend to set it
-        // The test will need to create a new instance to "set" a different value
+        // Update the current value
+        *self.current_percent.write().unwrap() = percent;
+        
+        // Publish volume change event
+        let db_value = self.get_volume_db().ok();
+        publish_volume_change_event(
+            self.info.internal_name.clone(),
+            self.info.display_name.clone(),
+            percent,
+            db_value,
+            Some(percent as i64),
+        );
+        
         Ok(())
     }
 
@@ -543,7 +647,7 @@ impl VolumeControl for DummyVolumeControl {
         if !self.is_available {
             return Err(VolumeError::DeviceError("Dummy device not available".to_string()));
         }
-        Ok(self.current_percent as i64)
+        Ok(*self.current_percent.read().unwrap() as i64)
     }
 
     fn set_raw_value(&self, value: i64) -> Result<(), VolumeError> {
@@ -555,7 +659,20 @@ impl VolumeControl for DummyVolumeControl {
             return Err(VolumeError::InvalidRange(format!("Raw value {} is out of range (0-100)", value)));
         }
 
-        // Similar to set_volume_percent, this is a dummy implementation
+        // Update the current value
+        let percent = value as f64;
+        *self.current_percent.write().unwrap() = percent;
+        
+        // Publish volume change event
+        let db_value = self.get_volume_db().ok();
+        publish_volume_change_event(
+            self.info.internal_name.clone(),
+            self.info.display_name.clone(),
+            percent,
+            db_value,
+            Some(value),
+        );
+        
         Ok(())
     }
 }

@@ -531,7 +531,10 @@ impl Lastfm {
         // First determine if this is from the active player
         let _is_active_player = if let Some(controller) = self.base.get_controller() {
             // Get player ID from the event
-            let event_player_id = event.source().player_id();
+            let event_player_id = match event.source() {
+                Some(source) => source.player_id(),
+                None => "system",
+            };
             
             // Get ID of the active player from AudioController
             let active_player_id = controller.get_player_id();

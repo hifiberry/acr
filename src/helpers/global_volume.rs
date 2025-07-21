@@ -89,11 +89,26 @@ pub fn initialize_volume_control(config: &Value) {
                 Box::new(dummy_control)
             }
             "dummy" => {
-                info!("Initialized dummy volume control for testing");
+                let internal_name = volume_config
+                    .get("internal_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("dummy");
+                
+                let display_name = volume_config
+                    .get("display_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Dummy Volume Control");
+                
+                let initial_percent = volume_config
+                    .get("initial_percent")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(50.0);
+                
+                info!("Initialized dummy volume control '{}' with initial volume {}%", display_name, initial_percent);
                 Box::new(DummyVolumeControl::new(
-                    "dummy".to_string(),
-                    "Dummy Volume Control".to_string(),
-                    50.0
+                    internal_name.to_string(),
+                    display_name.to_string(),
+                    initial_percent
                 ))
             }
             _ => {

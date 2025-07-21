@@ -65,8 +65,9 @@ regex = "1.10"
 crossbeam = "0.8.2"
 
 [features]
-default = []
+default = ["alsa"]
 theaudiodb = []
+alsa = ["dep:alsa"]
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
@@ -76,8 +77,8 @@ named_pipe = "0.4"
 [target.'cfg(not(windows))'.dependencies]
 # For D-Bus communication and custom MPRIS implementation (Linux/Unix only)
 dbus = "0.9"
-# For ALSA audio system volume control (Linux only)
-alsa = "0.9"
+# For ALSA audio system volume control (Linux only) - optional
+alsa = { version = "0.9", optional = true }
 
 # Build dependencies
 [build-dependencies]

@@ -141,12 +141,14 @@ pub trait VolumeControl {
 }
 
 /// ALSA implementation of VolumeControl
+#[cfg(all(feature = "alsa", not(windows)))]
 pub struct AlsaVolumeControl {
     device: String,
     control_name: String,
     info: VolumeControlInfo,
 }
 
+#[cfg(all(feature = "alsa", not(windows)))]
 impl AlsaVolumeControl {
     /// Create a new ALSA volume control
     /// 
@@ -228,6 +230,7 @@ impl AlsaVolumeControl {
     }
 }
 
+#[cfg(all(feature = "alsa", not(windows)))]
 impl VolumeControl for AlsaVolumeControl {
     fn get_volume_percent(&self) -> Result<f64, VolumeError> {
         self.with_mixer_element(|selem| {
@@ -466,6 +469,7 @@ impl VolumeControl for DummyVolumeControl {
 /// 
 /// # Returns
 /// A boxed VolumeControl trait object
+#[cfg(all(feature = "alsa", not(windows)))]
 pub fn create_alsa_volume_control(
     device: String, 
     control_name: String, 

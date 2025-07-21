@@ -1,4 +1,7 @@
-use crate::helpers::volume::{VolumeControl, AlsaVolumeControl, DummyVolumeControl};
+use crate::helpers::volume::VolumeControl;
+#[cfg(all(feature = "alsa", not(windows)))]
+use crate::helpers::volume::AlsaVolumeControl;
+use crate::helpers::volume::DummyVolumeControl;
 use std::sync::{Arc, Mutex};
 use once_cell::sync::OnceCell;
 use log::{info, warn, error};
@@ -40,6 +43,7 @@ pub fn initialize_volume_control(config: &Value) {
             .unwrap_or("dummy");
         
         let control: Box<dyn VolumeControl + Send + Sync> = match control_type {
+            #[cfg(all(feature = "alsa", not(windows)))]
             "alsa" => {
                 let device = volume_config
                     .get("device")
@@ -72,6 +76,17 @@ pub fn initialize_volume_control(config: &Value) {
                         Box::new(dummy_control)
                     }
                 }
+            }
+            #[cfg(not(all(feature = "alsa", not(windows))))]
+            "alsa" => {
+                warn!("ALSA volume control requested but ALSA support not compiled in. Falling back to dummy control.");
+                let mut dummy_control = DummyVolumeControl::new(
+                    "alsa_not_available".to_string(),
+                    "ALSA Not Available".to_string(),
+                    50.0
+                );
+                dummy_control.set_available(false);
+                Box::new(dummy_control)
             }
             "dummy" => {
                 info!("Initialized dummy volume control for testing");

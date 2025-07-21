@@ -985,10 +985,13 @@ Checks whether a song is marked as favourite by any enabled provider.
   {
     "Ok": {
       "is_favourite": true,
-      "providers": ["settingsdb", "lastfm"]
+      "providers": ["lastfm"]
     }
   }
   ```
+
+  - `is_favourite`: Boolean indicating if the song is marked as favourite by any enabled provider
+  - `providers`: Array of provider names where the song is actually marked as favourite
 
 - **Response** (400 Bad Request):
 

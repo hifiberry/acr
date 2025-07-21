@@ -35,12 +35,6 @@ pub struct ErrorResponse {
     error: String,
 }
 
-/// Create a favourite manager with all available providers
-fn create_favourite_manager() -> Vec<String> {
-    // Just return the enabled providers from the global manager
-    favourites::get_enabled_providers()
-}
-
 /// Check if a song is favourite
 #[get("/is_favourite?<artist>&<title>")]
 pub fn is_favourite(artist: String, title: String) -> Json<Result<FavouriteStatusResponse, ErrorResponse>> {
@@ -52,9 +46,8 @@ pub fn is_favourite(artist: String, title: String) -> Json<Result<FavouriteStatu
         ..Default::default()
     };
     
-    match favourites::is_favourite(&song) {
-        Ok(is_fav) => {
-            let providers = create_favourite_manager();
+    match favourites::get_favourite_providers(&song) {
+        Ok((is_fav, providers)) => {
             Json(Ok(FavouriteStatusResponse {
                 is_favourite: is_fav,
                 providers,

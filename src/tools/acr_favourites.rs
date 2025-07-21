@@ -116,24 +116,31 @@ fn check_favourite(args: &Args, artist: &str, title: &str) -> Result<(), Box<dyn
     
     let response: Value = serde_json::from_str(&response_text)?;
     
-    if let Some(result) = response.as_object() {
-        if let Some(is_favourite) = result.get("is_favourite").and_then(|v| v.as_bool()) {
-            if is_favourite {
-                print_info(args, &format!("✓ '{}' by '{}' is marked as favourite", title, artist));
-            } else {
-                print_info(args, &format!("✗ '{}' by '{}' is not marked as favourite", title, artist));
-            }
-            
-            if let Some(providers) = result.get("providers").and_then(|v| v.as_array()) {
-                print_verbose(args, &format!("Available providers: {:?}", providers));
-            }
-        } else if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
-            return Err(format!("API error: {}", error).into());
-        } else {
-            return Err("Unexpected response format".into());
-        }
+    // Handle both direct response and wrapped response formats
+    let result = if let Some(ok_result) = response.get("Ok").and_then(|v| v.as_object()) {
+        // Response is wrapped in "Ok" field
+        ok_result
+    } else if let Some(result) = response.as_object() {
+        // Direct response format
+        result
     } else {
         return Err("Invalid response format".into());
+    };
+    
+    if let Some(is_favourite) = result.get("is_favourite").and_then(|v| v.as_bool()) {
+        if is_favourite {
+            print_info(args, &format!("✓ '{}' by '{}' is marked as favourite", title, artist));
+        } else {
+            print_info(args, &format!("✗ '{}' by '{}' is not marked as favourite", title, artist));
+        }
+        
+        if let Some(providers) = result.get("providers").and_then(|v| v.as_array()) {
+            print_verbose(args, &format!("Available providers: {:?}", providers));
+        }
+    } else if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+        return Err(format!("API error: {}", error).into());
+    } else {
+        return Err("Unexpected response format".into());
     }
     
     Ok(())
@@ -155,30 +162,44 @@ fn add_favourite(args: &Args, artist: &str, title: &str) -> Result<(), Box<dyn E
     
     let response: Value = serde_json::from_str(&response_text)?;
     
-    if let Some(result) = response.as_object() {
-        if let Some(success) = result.get("success").and_then(|v| v.as_bool()) {
-            if success {
-                if let Some(message) = result.get("message").and_then(|v| v.as_str()) {
-                    print_info(args, &format!("✓ {}", message));
-                } else {
-                    print_info(args, &format!("✓ Successfully added '{}' by '{}' to favourites", title, artist));
-                }
-                
-                if let Some(updated_providers) = result.get("updated_providers").and_then(|v| v.as_array()) {
-                    if !updated_providers.is_empty() {
-                        print_verbose(args, &format!("Updated providers: {:?}", updated_providers));
-                    }
-                }
-            } else {
-                return Err("Failed to add favourite".into());
-            }
-        } else if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+    // Handle both direct response and wrapped response formats
+    let result = if let Some(ok_result) = response.get("Ok").and_then(|v| v.as_object()) {
+        // Response is wrapped in "Ok" field
+        ok_result
+    } else if let Some(result) = response.as_object() {
+        // Direct response format
+        result
+    } else if let Some(err_result) = response.get("Err").and_then(|v| v.as_object()) {
+        // Error response wrapped in "Err" field
+        if let Some(error) = err_result.get("error").and_then(|v| v.as_str()) {
             return Err(format!("API error: {}", error).into());
         } else {
-            return Err("Unexpected response format".into());
+            return Err("API returned error".into());
         }
     } else {
         return Err("Invalid response format".into());
+    };
+    
+    if let Some(success) = result.get("success").and_then(|v| v.as_bool()) {
+        if success {
+            if let Some(message) = result.get("message").and_then(|v| v.as_str()) {
+                print_info(args, &format!("✓ {}", message));
+            } else {
+                print_info(args, &format!("✓ Successfully added '{}' by '{}' to favourites", title, artist));
+            }
+            
+            if let Some(updated_providers) = result.get("updated_providers").and_then(|v| v.as_array()) {
+                if !updated_providers.is_empty() {
+                    print_verbose(args, &format!("Updated providers: {:?}", updated_providers));
+                }
+            }
+        } else {
+            return Err("Failed to add favourite".into());
+        }
+    } else if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+        return Err(format!("API error: {}", error).into());
+    } else {
+        return Err("Unexpected response format".into());
     }
     
     Ok(())
@@ -200,30 +221,44 @@ fn remove_favourite(args: &Args, artist: &str, title: &str) -> Result<(), Box<dy
     
     let response: Value = serde_json::from_str(&response_text)?;
     
-    if let Some(result) = response.as_object() {
-        if let Some(success) = result.get("success").and_then(|v| v.as_bool()) {
-            if success {
-                if let Some(message) = result.get("message").and_then(|v| v.as_str()) {
-                    print_info(args, &format!("✓ {}", message));
-                } else {
-                    print_info(args, &format!("✓ Successfully removed '{}' by '{}' from favourites", title, artist));
-                }
-                
-                if let Some(updated_providers) = result.get("updated_providers").and_then(|v| v.as_array()) {
-                    if !updated_providers.is_empty() {
-                        print_verbose(args, &format!("Updated providers: {:?}", updated_providers));
-                    }
-                }
-            } else {
-                return Err("Failed to remove favourite".into());
-            }
-        } else if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+    // Handle both direct response and wrapped response formats
+    let result = if let Some(ok_result) = response.get("Ok").and_then(|v| v.as_object()) {
+        // Response is wrapped in "Ok" field
+        ok_result
+    } else if let Some(result) = response.as_object() {
+        // Direct response format
+        result
+    } else if let Some(err_result) = response.get("Err").and_then(|v| v.as_object()) {
+        // Error response wrapped in "Err" field
+        if let Some(error) = err_result.get("error").and_then(|v| v.as_str()) {
             return Err(format!("API error: {}", error).into());
         } else {
-            return Err("Unexpected response format".into());
+            return Err("API returned error".into());
         }
     } else {
         return Err("Invalid response format".into());
+    };
+    
+    if let Some(success) = result.get("success").and_then(|v| v.as_bool()) {
+        if success {
+            if let Some(message) = result.get("message").and_then(|v| v.as_str()) {
+                print_info(args, &format!("✓ {}", message));
+            } else {
+                print_info(args, &format!("✓ Successfully removed '{}' by '{}' from favourites", title, artist));
+            }
+            
+            if let Some(updated_providers) = result.get("updated_providers").and_then(|v| v.as_array()) {
+                if !updated_providers.is_empty() {
+                    print_verbose(args, &format!("Updated providers: {:?}", updated_providers));
+                }
+            }
+        } else {
+            return Err("Failed to remove favourite".into());
+        }
+    } else if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+        return Err(format!("API error: {}", error).into());
+    } else {
+        return Err("Unexpected response format".into());
     }
     
     Ok(())
@@ -240,40 +275,47 @@ fn list_providers(args: &Args) -> Result<(), Box<dyn Error>> {
     
     let response: Value = serde_json::from_str(&response_text)?;
     
-    if let Some(result) = response.as_object() {
-        if let Some(enabled_count) = result.get("enabled_count").and_then(|v| v.as_u64()) {
-            if let Some(total_providers) = result.get("total_providers").and_then(|v| v.as_u64()) {
-                print_info(args, &format!("Favourite Providers: {} enabled out of {} total", enabled_count, total_providers));
-            }
+    // Handle both direct response and wrapped response formats
+    let result = if let Some(ok_result) = response.get("Ok").and_then(|v| v.as_object()) {
+        // Response is wrapped in "Ok" field
+        ok_result
+    } else if let Some(result) = response.as_object() {
+        // Direct response format (most likely for this endpoint)
+        result
+    } else {
+        return Err("Invalid response format".into());
+    };
+    
+    if let Some(enabled_count) = result.get("enabled_count").and_then(|v| v.as_u64()) {
+        if let Some(total_providers) = result.get("total_providers").and_then(|v| v.as_u64()) {
+            print_info(args, &format!("Favourite Providers: {} enabled out of {} total", enabled_count, total_providers));
         }
-        
-        if let Some(providers) = result.get("providers").and_then(|v| v.as_array()) {
-            print_info(args, "");
-            for provider in providers {
-                if let Some(provider_obj) = provider.as_object() {
-                    if let (Some(name), Some(display_name), Some(enabled)) = (
-                        provider_obj.get("name").and_then(|v| v.as_str()),
-                        provider_obj.get("display_name").and_then(|v| v.as_str()),
-                        provider_obj.get("enabled").and_then(|v| v.as_bool())
-                    ) {
-                        let status = if enabled { "✓ Enabled" } else { "✗ Disabled" };
-                        print_info(args, &format!("  {} ({}): {}", display_name, name, status));
-                        
-                        if let Some(favorite_count) = provider_obj.get("favorite_count").and_then(|v| v.as_u64()) {
-                            print_verbose(args, &format!("    Favourites: {}", favorite_count));
-                        }
+    }
+    
+    if let Some(providers) = result.get("providers").and_then(|v| v.as_array()) {
+        print_info(args, "");
+        for provider in providers {
+            if let Some(provider_obj) = provider.as_object() {
+                if let (Some(name), Some(display_name), Some(enabled)) = (
+                    provider_obj.get("name").and_then(|v| v.as_str()),
+                    provider_obj.get("display_name").and_then(|v| v.as_str()),
+                    provider_obj.get("enabled").and_then(|v| v.as_bool())
+                ) {
+                    let status = if enabled { "✓ Enabled" } else { "✗ Disabled" };
+                    print_info(args, &format!("  {} ({}): {}", display_name, name, status));
+                    
+                    if let Some(favorite_count) = provider_obj.get("favorite_count").and_then(|v| v.as_u64()) {
+                        print_verbose(args, &format!("    Favourites: {}", favorite_count));
                     }
                 }
             }
         }
-        
-        if let Some(enabled_providers) = result.get("enabled_providers").and_then(|v| v.as_array()) {
-            if !enabled_providers.is_empty() {
-                print_verbose(args, &format!("\nEnabled provider names: {:?}", enabled_providers));
-            }
+    }
+    
+    if let Some(enabled_providers) = result.get("enabled_providers").and_then(|v| v.as_array()) {
+        if !enabled_providers.is_empty() {
+            print_verbose(args, &format!("\nEnabled provider names: {:?}", enabled_providers));
         }
-    } else {
-        return Err("Invalid response format".into());
     }
     
     Ok(())

@@ -374,6 +374,142 @@ acr_lastfm_auth --api-key YOUR_API_KEY --api-secret YOUR_API_SECRET
 acr_lastfm_auth --use-saved
 ```
 
+### audiocontrol_favourites
+
+The `audiocontrol_favourites` tool provides a command-line interface for managing favourite songs across multiple providers (LocalDB, Last.fm, etc.). This tool interacts directly with the Favourites API.
+
+**Key Features:**
+
+- Check if songs are marked as favourites
+- Add songs to favourites across all enabled providers
+- Remove songs from favourites across all enabled providers
+- List available favourite providers and their status
+- Verbose output for debugging API interactions
+- Quiet mode for scripting
+
+**Usage:**
+
+```bash
+audiocontrol_favourites [OPTIONS] <COMMAND>
+```
+
+**Global Options:**
+
+- `--url <URL>` - AudioControl API base URL (default: `http://localhost:1080`)
+- `--verbose, -v` - Enable verbose output with API request/response details
+- `--quiet, -q` - Suppress all output except errors
+- `--help` - Show help information
+
+**Commands:**
+
+#### check
+
+Check if a song is marked as favourite:
+
+```bash
+# Check if a song is favourite
+audiocontrol_favourites check --artist "The Beatles" --title "Hey Jude"
+
+# With verbose output (shows API URL and JSON response)
+audiocontrol_favourites --verbose check --artist "Queen" --title "Bohemian Rhapsody"
+```
+
+**Output:**
+```
+✓ 'Hey Jude' by 'The Beatles' is marked as favourite
+```
+
+#### add
+
+Add a song to favourites across all enabled providers:
+
+```bash
+# Add a song to favourites
+audiocontrol_favourites add --artist "Pink Floyd" --title "Comfortably Numb"
+
+# With verbose output to see which providers were updated
+audiocontrol_favourites --verbose add --artist "Led Zeppelin" --title "Stairway to Heaven"
+```
+
+**Output:**
+```
+✓ Added 'Comfortably Numb' by 'Pink Floyd' to favourites
+```
+
+#### remove
+
+Remove a song from favourites across all enabled providers:
+
+```bash
+# Remove a song from favourites
+audiocontrol_favourites remove --artist "The Beatles" --title "Hey Jude"
+
+# Quiet mode for scripting (no output on success)
+audiocontrol_favourites --quiet remove --artist "Queen" --title "Bohemian Rhapsody"
+```
+
+**Output:**
+```
+✓ Removed 'Hey Jude' by 'The Beatles' from favourites
+```
+
+#### providers
+
+List available favourite providers and their status:
+
+```bash
+# List all providers
+audiocontrol_favourites providers
+
+# With verbose output to see additional details
+audiocontrol_favourites --verbose providers
+```
+
+**Output:**
+```
+Favourite Providers: 2 enabled out of 2 total
+
+  User settings (settingsdb): ✓ Enabled
+  Last.fm (lastfm): ✓ Enabled
+```
+
+**API Response Handling:**
+
+The tool automatically handles the API response format where successful responses are wrapped in `"Ok"` and errors in `"Err"`:
+
+- **Successful response**: `{"Ok": {"is_favourite": true, "providers": ["lastfm"]}}`
+- **Error response**: `{"Err": {"error": "Missing required parameters"}}`
+
+Note: The `providers` array contains only the providers where the song is actually marked as favourite, not all enabled providers.
+
+**Integration Examples:**
+
+```bash
+#!/bin/bash
+# Script to mark currently playing song as favourite
+
+# Get current song info (assumes you have a way to get this)
+ARTIST="The Beatles"
+TITLE="Hey Jude"
+
+# Add to favourites quietly (no output unless error)
+audiocontrol_favourites --quiet add --artist "$ARTIST" --title "$TITLE"
+
+if [ $? -eq 0 ]; then
+    echo "Successfully added to favourites"
+else
+    echo "Failed to add to favourites"
+fi
+```
+
+**Remote Server Usage:**
+
+```bash
+# Connect to remote AudioControl instance
+audiocontrol_favourites --url http://192.168.1.100:1080 \
+  check --artist "David Bowie" --title "Heroes"
+```
+
 ## Building the Tools
 
 All tools are built automatically when you build the ACR project:

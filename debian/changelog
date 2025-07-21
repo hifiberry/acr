@@ -1,3 +1,14 @@
+hifiberry-audiocontrol (0.6.1) stable; urgency=medium
+
+  * Added audiocontrol_favourites command line tool for favourites management
+  * Supports check, add, remove, and list providers operations via REST API
+  * Configurable AudioControl server URL (default: http://localhost:1080)
+  * Comprehensive command line interface with verbose and quiet modes
+  * Added man page documentation for audiocontrol_favourites tool
+  * Enhanced Debian packaging to include the new favourites CLI tool
+
+ -- HiFiBerry <info@hifiberry.com>  Sun, 21 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.6.0) stable; urgency=medium
 
   * Enhanced FavouriteProvider trait with display_name() method for human-readable provider names

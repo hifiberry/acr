@@ -305,6 +305,9 @@ pub fn initialize_favourite_providers() {
     // Add SettingsDB provider
     manager.add_provider(Box::new(crate::helpers::settingsdb::SettingsDbFavouriteProvider::new()));
     
+    // Add Spotify provider
+    manager.add_provider(Box::new(crate::helpers::spotify::SpotifyFavouriteProvider::new()));
+    
     log::info!("Initialized favourite providers: {} total, {} enabled", 
                manager.provider_count(), 
                manager.enabled_provider_count());

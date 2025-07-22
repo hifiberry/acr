@@ -947,9 +947,16 @@ impl crate::helpers::favourites::FavouriteProvider for SpotifyFavouriteProvider 
     }
 
     fn is_enabled(&self) -> bool {
-        // Check if Spotify client is configured and has valid tokens
+        // Check if Spotify client is configured and has valid tokens (with auto-refresh)
         match Spotify::get_instance() {
-            Ok(spotify) => spotify.has_valid_tokens(),
+            Ok(spotify) => {
+                // Try to ensure we have valid tokens, refreshing if necessary
+                // This will automatically refresh expired tokens
+                match spotify.ensure_valid_token() {
+                    Ok(_) => true,
+                    Err(_) => false,
+                }
+            },
             Err(_) => false,
         }
     }

@@ -29,6 +29,7 @@ override_dh_auto_install:
 	mkdir -p debian/hifiberry-audiocontrol/usr/bin
 	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol
 	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web
+	mkdir -p debian/hifiberry-audiocontrol/etc/audiocontrol
 	# Install main binary
 	if [ -f target/release/audiocontrol ]; then \
 		cp target/release/audiocontrol debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
@@ -53,6 +54,10 @@ override_dh_auto_install:
 	fi
 	# Install logging configuration sample
 	cp debian/logging.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
+	# Install genres configuration
+	if [ -f conf/genres.json ]; then \
+		cp conf/genres.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \
+	fi
 	# Install example app
 	if [ -d example/web ]; then \
 		cp -r example/web/* debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web/; \

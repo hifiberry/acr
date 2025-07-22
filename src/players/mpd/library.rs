@@ -5,8 +5,7 @@ use log::{debug, info, warn, error};
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
 use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
 use crate::helpers::sanitize;
-use crate::helpers::url_hash::UrlHashMapper;
-use urlencoding;
+use crate::helpers::url_encoding;
 
 /// MPD library interface that provides access to albums and artists
 #[derive(Clone)]
@@ -38,9 +37,6 @@ pub struct MPDLibrary {
     /// Flag to control metadata enhancement
     enhance_metadata: bool,
     
-    /// URL hash mapper for shortening long image URLs
-    url_hash_mapper: UrlHashMapper,
-    
     /// Reference to the MPDPlayerController that owns this library
     controller: Arc<MPDPlayerController>,
 }
@@ -63,7 +59,6 @@ impl MPDLibrary {
             loading_progress: Arc::new(Mutex::new(0.0)),
             artist_separators: Arc::new(Mutex::new(None)),
             enhance_metadata,
-            url_hash_mapper: UrlHashMapper::new(),
             controller,
         }
     }
@@ -114,20 +109,12 @@ impl MPDLibrary {
         }
     }
     
-    /// Create a short hash-based image URL for a file path
-    /// This shortens very long URL-encoded file paths to a simple 16-character hash
-    pub fn create_short_image_url(&self, file_path: &str) -> String {
-        match self.url_hash_mapper.get_or_create_hash(file_path) {
-            Ok(hash) => {
-                debug!("Created short URL hash '{}' for path: {}", hash, file_path);
-                format!("{}/{}", mpd_image_url(), hash)
-            }
-            Err(e) => {
-                warn!("Failed to create hash for path '{}': {}. Using long URL", file_path, e);
-                // Fallback to the original long URL
-                format!("{}/{}", mpd_image_url(), urlencoding::encode(file_path))
-            }
-        }
+    /// Create a URL-safe base64 encoded image URL for a file path
+    /// This shortens very long URL-encoded file paths to a URL-safe base64 encoded string
+    pub fn create_encoded_image_url(&self, file_path: &str) -> String {
+        let encoded_path = url_encoding::encode_url_safe(file_path);
+        debug!("Created URL-safe base64 encoded path '{}' for: {}", encoded_path, file_path);
+        format!("{}/{}", mpd_image_url(), encoded_path)
     }
     
     /// Retrieve album cover art for a specific URI using MPD's albumart command
@@ -843,16 +830,16 @@ impl LibraryInterface for MPDLibrary {
     fn get_image(&self, identifier: String) -> Option<(Vec<u8>, String)> {
         debug!("Retrieving image for identifier: {}", identifier);
         
-        // First check if the identifier is a hash that needs to be resolved
-        if UrlHashMapper::is_hash_format(&identifier) {
-            debug!("Detected hash format identifier: {}", identifier);
+        // First check if the identifier is a URL-safe base64 encoded string that needs to be decoded
+        if url_encoding::is_url_safe_base64(&identifier) {
+            debug!("Detected URL-safe base64 encoded identifier: {}", identifier);
             
-            if let Some(original_path) = self.url_hash_mapper.resolve_hash(&identifier) {
-                debug!("Resolved hash '{}' to path: {}", identifier, original_path);
-                // Use the resolved path as the identifier
+            if let Some(original_path) = url_encoding::decode_url_safe(&identifier) {
+                debug!("Decoded base64 '{}' to path: {}", identifier, original_path);
+                // Use the decoded path as the identifier
                 return self.get_image(original_path);
             } else {
-                warn!("Failed to resolve hash: {}", identifier);
+                warn!("Failed to decode base64 identifier: {}", identifier);
                 return None;
             }
         }

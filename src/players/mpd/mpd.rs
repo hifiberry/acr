@@ -869,12 +869,12 @@ impl MPDPlayerController {
     fn convert_mpd_song(mpd_song: mpd::Song, player_arc: Option<Arc<Self>>) -> Song {
         // Generate cover art URL using the file path/URI from MPD song
         let cover_url = if !mpd_song.file.is_empty() {
-            // Try to use short hash-based URL if library is available
+            // Try to use encoded URL if library is available
             if let Some(player) = &player_arc {
                 if let Ok(library_guard) = player.library.lock() {
                     if let Some(library) = library_guard.as_ref() {
-                        // Use the library's create_short_image_url method
-                        Some(library.create_short_image_url(&mpd_song.file))
+                        // Use the library's create_encoded_image_url method
+                        Some(library.create_encoded_image_url(&mpd_song.file))
                     } else {
                         // Fallback to long URL if library not available
                         Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))

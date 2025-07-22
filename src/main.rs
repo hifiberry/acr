@@ -261,8 +261,8 @@ fn main() {
     // Initialize favourite providers (Last.fm and SettingsDB)
     audiocontrol::helpers::favourites::initialize_favourite_providers();
 
-    // Initialize genre cleanup
-    if let Err(e) = audiocontrol::helpers::genre_cleanup::initialize_genre_cleanup() {
+    // Initialize genre cleanup with configuration
+    if let Err(e) = audiocontrol::helpers::genre_cleanup::initialize_genre_cleanup_with_config(Some(&controllers_config)) {
         warn!("Failed to initialize genre cleanup: {}", e);
     } else {
         info!("Genre cleanup initialized successfully");

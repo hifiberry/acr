@@ -170,6 +170,7 @@
                 <div class="event-type selected" data-event="capabilities_changed">Capabilities</div>
                 <div class="event-type selected" data-event="position_changed">Position</div>
                 <div class="event-type selected" data-event="database_updating">Database</div>
+                <div class="event-type selected" data-event="volume_changed">Volume Changed</div>
             </div>
             
             <button id="update-subscription-btn" disabled>Update Subscription</button>
@@ -291,6 +292,7 @@
                                 case 'capabilities_changed': displayEventType = 'Capabilities Changed'; break;
                                 case 'position_changed': displayEventType = 'Position Changed'; break;
                                 case 'database_updating': displayEventType = 'Database Updating'; break;
+                                case 'volume_changed': displayEventType = 'Volume Changed'; break;
                                 default: displayEventType = eventType; break;
                             }
                             
@@ -397,6 +399,20 @@
                                             <div style="width: ${percentage}%; background-color: #28a745; height: 6px; border-radius: 3px;"></div>
                                         </div>
                                     </div>`;
+                                    break;
+                                    
+                                case 'volume_changed':
+                                    message += `<div style="margin: 5px 0;">
+                                        <div><b>Control:</b> ${data.display_name || data.control_name || 'Unknown'}</div>
+                                        <div><b>Volume:</b> ${data.percentage ? data.percentage.toFixed(1) : '0'}%`;
+                                    if (data.decibels !== null && data.decibels !== undefined) {
+                                        message += ` (${data.decibels.toFixed(1)} dB)`;
+                                    }
+                                    message += `</div>`;
+                                    if (data.raw_value !== null && data.raw_value !== undefined) {
+                                        message += `<div><b>Raw Value:</b> ${data.raw_value}</div>`;
+                                    }
+                                    message += `</div>`;
                                     break;
                                     
                                 default:

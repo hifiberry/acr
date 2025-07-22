@@ -244,7 +244,10 @@ impl WebSocketManager {    /// Create a new WebSocket manager
     fn should_send_to_client(&self, event: &PlayerEvent, subscription: &ClientSubscription) -> bool {
         // Check player filter
         if let Some(players) = &subscription.players {
-            if !players.contains(event.player_name().unwrap_or("system")) {
+            let event_player = event.player_name().unwrap_or("system");
+            
+            // Allow "*" as wildcard for all players, or check if the specific player is in the list
+            if !players.contains("*") && !players.contains(event_player) {
                 return false;
             }
         }

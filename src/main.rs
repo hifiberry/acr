@@ -243,6 +243,25 @@ fn main() {
     // Initialize volume control with the configuration
     audiocontrol::helpers::global_volume::initialize_volume_control(&controllers_config);
 
+    // Start volume change monitoring if supported
+    if audiocontrol::helpers::global_volume::supports_volume_change_monitoring() {
+        info!("Starting volume change monitoring");
+        match audiocontrol::helpers::global_volume::start_volume_change_monitoring(|event| {
+            log::debug!("Volume change callback triggered: control='{}', {:.1}% ({} dB)",
+                       event.control_name, event.new_percentage,
+                       event.new_db.map(|db| format!("{:.1}", db)).unwrap_or_else(|| "N/A".to_string()));
+        }) {
+            Ok(_) => {
+                info!("Volume change monitoring started successfully");
+            },
+            Err(e) => {
+                warn!("Failed to start volume change monitoring: {}", e);
+            }
+        }
+    } else {
+        info!("Volume change monitoring not supported by current volume control");
+    }
+
     // Initialize favourite providers (Last.fm and SettingsDB)
     audiocontrol::helpers::favourites::initialize_favourite_providers();
 

@@ -21,10 +21,10 @@ pub fn initialize_volume_control(config: &Value) {
         let enabled = volume_config
             .get("enable")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(true);  // Default to enabled
         
         if !enabled {
-            info!("Volume control is disabled in configuration");
+            info!("Volume control is explicitly disabled in configuration");
             // Initialize with a dummy control that's not available
             let mut dummy_control = DummyVolumeControl::new(
                 "disabled".to_string(),
@@ -113,6 +113,8 @@ pub fn initialize_volume_control(config: &Value) {
                 match AlsaVolumeControl::new(final_device.clone(), final_control_name.clone(), display_name.to_string()) {
                     Ok(alsa_control) => {
                         info!("Successfully initialized ALSA volume control on device '{}', control '{}'", final_device, final_control_name);
+                        log::debug!("ALSA volume control supports change monitoring: {}", alsa_control.supports_change_monitoring());
+                        log::debug!("To start volume change monitoring, call start_volume_change_monitoring()");
                         Box::new(alsa_control)
                     }
                     Err(e) => {
@@ -180,16 +182,19 @@ pub fn initialize_volume_control(config: &Value) {
             info!("Global volume control initialized successfully");
         }
     } else {
-        info!("No volume configuration found, disabling volume control");
-        // Initialize with a dummy control that's not available
-        let mut dummy_control = DummyVolumeControl::new(
+        info!("No volume configuration found, using dummy volume control");
+        // Create a working dummy volume control
+        let dummy_control: Box<dyn VolumeControl + Send + Sync> = Box::new(DummyVolumeControl::new(
             "no_config".to_string(),
-            "No Config Volume Control".to_string(),
-            0.0
-        );
-        dummy_control.set_available(false);
-        let dummy_control: Box<dyn VolumeControl + Send + Sync> = Box::new(dummy_control);
-        let _ = GLOBAL_VOLUME_CONTROL.set(Arc::new(Mutex::new(dummy_control)));
+            "Default Volume Control".to_string(),
+            50.0
+        ));
+        
+        if GLOBAL_VOLUME_CONTROL.set(Arc::new(Mutex::new(dummy_control))).is_err() {
+            error!("Failed to set global volume control - already initialized");
+        } else {
+            info!("Dummy volume control initialized successfully");
+        }
     }
 }
 
@@ -294,8 +299,13 @@ pub fn start_volume_change_monitoring<F>(callback: F) -> Result<mpsc::Receiver<V
 where 
     F: Fn(VolumeChangeEvent) + Send + 'static,
 {
+    log::debug!("Starting global volume change monitoring");
     let control = get_global_volume_control()?;
     let control = control.lock().map_err(|e| format!("Failed to lock volume control: {}", e))?;
+    
+    let supports_monitoring = control.supports_change_monitoring();
+    log::debug!("Global volume control supports change monitoring: {}", supports_monitoring);
+    
     control.start_change_monitoring(Box::new(callback))
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }

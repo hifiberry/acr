@@ -48,6 +48,11 @@ fn publish_volume_change_event(
     decibels: Option<f64>,
     raw_value: Option<i64>,
 ) {
+    log::debug!("Publishing volume change event: {} ({}) -> {:.1}% ({} dB) [raw: {}]",
+               display_name, control_name, percentage,
+               decibels.map(|db| format!("{:.1}", db)).unwrap_or_else(|| "N/A".to_string()),
+               raw_value.map(|r| r.to_string()).unwrap_or_else(|| "N/A".to_string()));
+    
     let event = PlayerEvent::VolumeChanged {
         control_name,
         display_name,
@@ -378,6 +383,11 @@ impl VolumeControl for AlsaVolumeControl {
             let current_db = self.get_volume_db().ok();
             let current_raw = self.get_raw_value().ok();
             
+            log::debug!("ALSA volume set programmatically: {}:{} -> {:.1}% ({} dB) [raw: {}]",
+                       self.device, self.control_name, percent,
+                       current_db.map(|db| format!("{:.1}", db)).unwrap_or_else(|| "N/A".to_string()),
+                       current_raw.map(|r| r.to_string()).unwrap_or_else(|| "N/A".to_string()));
+            
             publish_volume_change_event(
                 self.info.internal_name.clone(),
                 self.info.display_name.clone(),
@@ -454,6 +464,11 @@ impl VolumeControl for AlsaVolumeControl {
             let current_percent = self.get_volume_percent().unwrap_or(0.0);
             let current_db = self.get_volume_db().ok();
             
+            log::debug!("ALSA volume set via raw value: {}:{} -> {:.1}% ({} dB) [raw: {}]",
+                       self.device, self.control_name, current_percent,
+                       current_db.map(|db| format!("{:.1}", db)).unwrap_or_else(|| "N/A".to_string()),
+                       value);
+            
             publish_volume_change_event(
                 self.info.internal_name.clone(),
                 self.info.display_name.clone(),
@@ -472,6 +487,8 @@ impl VolumeControl for AlsaVolumeControl {
         let control_name = self.control_name.clone();
 
         thread::spawn(move || {
+            log::debug!("Starting ALSA volume change monitoring for {}:{}", device, control_name);
+            
             // Simple polling-based implementation
             // In a real implementation, you'd use ALSA's event system
             let mut last_volume = None;
@@ -508,6 +525,11 @@ impl VolumeControl for AlsaVolumeControl {
                                         None
                                     };
                                     
+                                    log::debug!("ALSA volume change detected: {}:{} -> {:.1}% ({} dB) [raw: {}]",
+                                               device, control_name, volume_percent, 
+                                               db_value.map(|db| format!("{:.1}", db)).unwrap_or_else(|| "N/A".to_string()),
+                                               volume_raw);
+                                    
                                     let event = VolumeChangeEvent {
                                         control_name: control_name.clone(),
                                         new_percentage: volume_percent,
@@ -527,14 +549,20 @@ impl VolumeControl for AlsaVolumeControl {
                                     );
                                     
                                     if tx.send(event).is_err() {
+                                        log::debug!("ALSA volume monitoring receiver dropped for {}:{}, stopping thread", device, control_name);
                                         break; // Receiver dropped, exit thread
                                     }
                                 }
                             }
                         }
+                    } else {
+                        log::debug!("ALSA volume control {}:{} not found or unavailable, retrying...", device, control_name);
                     }
+                } else {
+                    log::debug!("ALSA mixer device {} unavailable, retrying...", device);
                 }
             }
+            log::debug!("ALSA volume change monitoring thread for {}:{} terminated", device, control_name);
         });
 
         Ok(rx)

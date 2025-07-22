@@ -246,11 +246,7 @@ fn main() {
     // Start volume change monitoring if supported
     if audiocontrol::helpers::global_volume::supports_volume_change_monitoring() {
         info!("Starting volume change monitoring");
-        match audiocontrol::helpers::global_volume::start_volume_change_monitoring(|event| {
-            log::debug!("Volume change callback triggered: control='{}', {:.1}% ({} dB)",
-                       event.control_name, event.new_percentage,
-                       event.new_db.map(|db| format!("{:.1}", db)).unwrap_or_else(|| "N/A".to_string()));
-        }) {
+        match audiocontrol::helpers::global_volume::start_volume_change_monitoring() {
             Ok(_) => {
                 info!("Volume change monitoring started successfully");
             },

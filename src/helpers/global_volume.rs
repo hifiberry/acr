@@ -3,7 +3,7 @@ use crate::helpers::volume::{VolumeControl, VolumeChangeEvent};
 use crate::helpers::volume::AlsaVolumeControl;
 use crate::helpers::volume::DummyVolumeControl;
 use crate::helpers::configurator;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use once_cell::sync::OnceCell;
 use log::{info, warn, error};
 use serde_json::Value;
@@ -286,19 +286,12 @@ pub fn get_volume_control_info() -> Option<crate::helpers::volume::VolumeControl
     Some(get_global_volume_control().ok()?.lock().ok()?.get_info())
 }
 
-/// Start monitoring volume changes and call the provided callback for each change
-/// 
-/// # Arguments
-/// 
-/// * `callback` - Function to call when volume changes are detected
+/// Start monitoring volume changes on the global volume control
 /// 
 /// # Returns
 /// 
-/// A receiver for volume change events, or an error if monitoring cannot be started
-pub fn start_volume_change_monitoring<F>(callback: F) -> Result<mpsc::Receiver<VolumeChangeEvent>, Box<dyn std::error::Error>>
-where 
-    F: Fn(VolumeChangeEvent) + Send + 'static,
-{
+/// Ok(()) if monitoring was started successfully, or an error if monitoring cannot be started
+pub fn start_volume_change_monitoring() -> Result<(), Box<dyn std::error::Error>> {
     log::debug!("Starting global volume change monitoring");
     let control = get_global_volume_control()?;
     let control = control.lock().map_err(|e| format!("Failed to lock volume control: {}", e))?;
@@ -306,7 +299,7 @@ where
     let supports_monitoring = control.supports_change_monitoring();
     log::debug!("Global volume control supports change monitoring: {}", supports_monitoring);
     
-    control.start_change_monitoring(Box::new(callback))
+    control.start_change_monitoring()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 

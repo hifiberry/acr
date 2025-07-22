@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fmt;
-use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, RwLock};
@@ -189,8 +188,7 @@ pub trait VolumeControl {
     fn set_raw_value(&self, value: i64) -> Result<(), VolumeError>;
 
     /// Start monitoring for volume changes (if supported)
-    /// Returns a receiver for volume change events
-    fn start_change_monitoring(&self, _callback: Box<dyn Fn(VolumeChangeEvent) + Send + 'static>) -> Result<mpsc::Receiver<VolumeChangeEvent>, VolumeError> {
+    fn start_change_monitoring(&self) -> Result<(), VolumeError> {
         Err(VolumeError::NotSupported("Volume change monitoring not supported".to_string()))
     }
 
@@ -481,8 +479,7 @@ impl VolumeControl for AlsaVolumeControl {
         result
     }
 
-    fn start_change_monitoring(&self, callback: Box<dyn Fn(VolumeChangeEvent) + Send + 'static>) -> Result<mpsc::Receiver<VolumeChangeEvent>, VolumeError> {
-        let (tx, rx) = mpsc::channel();
+    fn start_change_monitoring(&self) -> Result<(), VolumeError> {
         let device = self.device.clone();
         let control_name = self.control_name.clone();
 
@@ -530,15 +527,6 @@ impl VolumeControl for AlsaVolumeControl {
                                                db_value.map(|db| format!("{:.1}", db)).unwrap_or_else(|| "N/A".to_string()),
                                                volume_raw);
                                     
-                                    let event = VolumeChangeEvent {
-                                        control_name: control_name.clone(),
-                                        new_percentage: volume_percent,
-                                        new_db: db_value,
-                                    };
-                                    
-                                    // Call the callback
-                                    callback(event.clone());
-                                    
                                     // Publish to global event bus
                                     publish_volume_change_event(
                                         format!("alsa:{}:{}", device, control_name),
@@ -547,11 +535,6 @@ impl VolumeControl for AlsaVolumeControl {
                                         db_value,
                                         Some(volume_raw),
                                     );
-                                    
-                                    if tx.send(event).is_err() {
-                                        log::debug!("ALSA volume monitoring receiver dropped for {}:{}, stopping thread", device, control_name);
-                                        break; // Receiver dropped, exit thread
-                                    }
                                 }
                             }
                         }
@@ -562,10 +545,9 @@ impl VolumeControl for AlsaVolumeControl {
                     log::debug!("ALSA mixer device {} unavailable, retrying...", device);
                 }
             }
-            log::debug!("ALSA volume change monitoring thread for {}:{} terminated", device, control_name);
         });
 
-        Ok(rx)
+        Ok(())
     }
 
     fn supports_change_monitoring(&self) -> bool {

@@ -50,6 +50,10 @@
             "config_path": "/etc/audiocontrol/genre.json",
             "_comment": "Genre cleanup configuration file. Maps genres to normalized forms and specifies which genres to ignore."
         },
+        "configurator": {
+            "url": "http://localhost:1081",
+            "_comment": "HiFiBerry configurator API integration for system information"
+        },
         "settingsdb": {
             "path": "/var/lib/audiocontrol/db"
         },

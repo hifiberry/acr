@@ -228,6 +228,10 @@ fn main() {
 
     // Initialize TheAudioDB with the configuration
     initialize_theaudiodb(&controllers_config);
+    
+    // Initialize configurator with the configuration
+    initialize_configurator(&controllers_config);
+    
     // Initialize Last.fm with the configuration
     initialize_lastfm(&controllers_config);
     // Initialize Spotify with the configuration
@@ -394,6 +398,12 @@ fn initialize_musicbrainz(config: &serde_json::Value) {
 fn initialize_theaudiodb(config: &serde_json::Value) {
     theaudiodb::initialize_from_config(config);
     info!("TheAudioDB initialized successfully");
+}
+
+// Helper function to initialize configurator
+fn initialize_configurator(config: &serde_json::Value) {
+    audiocontrol::helpers::configurator::initialize_from_config(config);
+    info!("Configurator initialized successfully");
 }
 
 // Helper function to initialize Last.fm

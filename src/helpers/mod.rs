@@ -22,6 +22,7 @@ pub mod favourites;
 pub mod genre_cleanup;
 pub mod volume;
 pub mod global_volume;
+pub mod configurator;
 #[cfg(unix)]
 pub mod mpris;
 #[cfg(unix)]

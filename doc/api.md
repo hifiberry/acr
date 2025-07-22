@@ -402,6 +402,232 @@ curl http://<device-ip>:1080/api/player/mpd/meta/volume
 curl http://<device-ip>:1080/api/player/active/meta/volume
 ```
 
+## Volume Control API
+
+The Volume Control API provides system-wide hardware volume control when supported by the device. This API manages physical audio hardware volume controls (e.g., ALSA controls) rather than software volume levels within individual players.
+
+### Get Volume Information
+
+Retrieves information about the available volume control and current state.
+
+- **Endpoint**: `/api/volume/info`
+- **Method**: GET
+- **Response**:
+  ```json
+  {
+    "available": true,
+    "control_info": {
+      "internal_name": "hw:0,0",
+      "display_name": "Master Volume",
+      "decibel_range": {
+        "min_db": -96.0,
+        "max_db": 0.0
+      }
+    },
+    "current_state": {
+      "percentage": 75.0,
+      "decibels": -12.0,
+      "raw_value": 120
+    },
+    "supports_change_monitoring": true
+  }
+  ```
+
+#### Response Fields
+
+- `available` (boolean): Whether volume control is available on this device
+- `control_info` (object): Information about the volume control hardware
+  - `internal_name` (string): Internal system name for the volume control
+  - `display_name` (string): Human-readable name for the control
+  - `decibel_range` (object): Supported decibel range (if available)
+    - `min_db` (number): Minimum volume in decibels
+    - `max_db` (number): Maximum volume in decibels
+- `current_state` (object): Current volume state (if available)
+  - `percentage` (number): Current volume as percentage (0-100)
+  - `decibels` (number): Current volume in decibels (if supported)
+  - `raw_value` (number): Raw hardware control value (implementation specific)
+- `supports_change_monitoring` (boolean): Whether the system can monitor volume changes
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/volume/info
+```
+
+### Get Current Volume State
+
+Retrieves only the current volume state information.
+
+- **Endpoint**: `/api/volume/state`
+- **Method**: GET
+- **Response**:
+  ```json
+  {
+    "percentage": 75.0,
+    "decibels": -12.0,
+    "raw_value": 120
+  }
+  ```
+- **Error Response** (503 Service Unavailable):
+  ```json
+  {
+    "success": false,
+    "message": "Volume control not available",
+    "new_state": null
+  }
+  ```
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/volume/state
+```
+
+### Set Volume Level
+
+Sets the volume to a specific level using percentage, decibels, or raw value.
+
+- **Endpoint**: `/api/volume/set`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Request Body** (at least one value required):
+  ```json
+  {
+    "percentage": 75.0,
+    "decibels": -12.0,
+    "raw_value": 120
+  }
+  ```
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Volume set successfully",
+    "new_state": {
+      "percentage": 75.0,
+      "decibels": -12.0,
+      "raw_value": 120
+    }
+  }
+  ```
+- **Error Response** (400 Bad Request):
+  ```json
+  {
+    "success": false,
+    "message": "Volume percentage 150 is out of range (0-100)",
+    "new_state": null
+  }
+  ```
+
+#### Examples
+```bash
+# Set volume to 50%
+curl -X POST http://<device-ip>:1080/api/volume/set \
+  -H "Content-Type: application/json" \
+  -d '{"percentage": 50.0}'
+
+# Set volume to -20dB
+curl -X POST http://<device-ip>:1080/api/volume/set \
+  -H "Content-Type: application/json" \
+  -d '{"decibels": -20.0}'
+
+# Set volume using raw hardware value
+curl -X POST http://<device-ip>:1080/api/volume/set \
+  -H "Content-Type: application/json" \
+  -d '{"raw_value": 100}'
+```
+
+### Increase Volume
+
+Increases the volume by a specified percentage amount.
+
+- **Endpoint**: `/api/volume/increase?<amount>`
+- **Method**: POST
+- **Query Parameters**:
+  - `amount` (number, optional): Percentage to increase (default: 5.0)
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Volume increased to 80.0%",
+    "new_state": {
+      "percentage": 80.0,
+      "decibels": -9.5,
+      "raw_value": 128
+    }
+  }
+  ```
+
+#### Examples
+```bash
+# Increase volume by default amount (5%)
+curl -X POST http://<device-ip>:1080/api/volume/increase
+
+# Increase volume by 10%
+curl -X POST "http://<device-ip>:1080/api/volume/increase?amount=10.0"
+```
+
+### Decrease Volume
+
+Decreases the volume by a specified percentage amount.
+
+- **Endpoint**: `/api/volume/decrease?<amount>`
+- **Method**: POST
+- **Query Parameters**:
+  - `amount` (number, optional): Percentage to decrease (default: 5.0)
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Volume decreased to 70.0%",
+    "new_state": {
+      "percentage": 70.0,
+      "decibels": -14.5,
+      "raw_value": 112
+    }
+  }
+  ```
+
+#### Examples
+```bash
+# Decrease volume by default amount (5%)
+curl -X POST http://<device-ip>:1080/api/volume/decrease
+
+# Decrease volume by 15%
+curl -X POST "http://<device-ip>:1080/api/volume/decrease?amount=15.0"
+```
+
+### Toggle Mute
+
+Toggles between muted (0% volume) and unmuted (50% volume) states.
+
+- **Endpoint**: `/api/volume/mute`
+- **Method**: POST
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Volume muted at 0.0%",
+    "new_state": {
+      "percentage": 0.0,
+      "decibels": -96.0,
+      "raw_value": 0
+    }
+  }
+  ```
+
+#### Example
+```bash
+curl -X POST http://<device-ip>:1080/api/volume/mute
+```
+
+### Volume Control Notes
+
+- **Hardware Dependency**: Volume control availability depends on the underlying hardware and ALSA configuration
+- **System-Wide**: This controls the system's hardware volume, not individual player volumes
+- **Range Limits**: Volume values are automatically clamped to valid ranges (0-100% for percentage)
+- **Multiple Formats**: You can set volume using percentage (0-100), decibels (if supported), or raw hardware values
+- **Priority**: When multiple values are provided in a set request, percentage takes priority, followed by decibels, then raw value
+- **Monitoring**: Some systems support volume change monitoring to detect external volume changes (e.g., hardware volume buttons)
+
 ## Plugin API
 
 ### List Action Plugins

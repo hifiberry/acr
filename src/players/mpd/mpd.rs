@@ -866,11 +866,27 @@ impl MPDPlayerController {
             }
         }
     }    /// Convert an MPD song to our Song format
-    fn convert_mpd_song(mpd_song: mpd::Song) -> Song {
+    fn convert_mpd_song(mpd_song: mpd::Song, player_arc: Option<Arc<Self>>) -> Song {
         // Generate cover art URL using the file path/URI from MPD song
         let cover_url = if !mpd_song.file.is_empty() {
-            // Use the API endpoint for MPD images with the song URI
-            Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))
+            // Try to use short hash-based URL if library is available
+            if let Some(player) = &player_arc {
+                if let Ok(library_guard) = player.library.lock() {
+                    if let Some(library) = library_guard.as_ref() {
+                        // Use the library's create_short_image_url method
+                        Some(library.create_short_image_url(&mpd_song.file))
+                    } else {
+                        // Fallback to long URL if library not available
+                        Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))
+                    }
+                } else {
+                    // Fallback to long URL if can't access library
+                    Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))
+                }
+            } else {
+                // Fallback to long URL if no player provided
+                Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))
+            }
         } else {
             None
         };
@@ -920,7 +936,7 @@ impl MPDPlayerController {
             Ok(song_opt) => {
                 if let Some(mpd_song) = song_opt {
                     // Convert MPD song to our Song format
-                    let song = Self::convert_mpd_song(mpd_song);
+                    let song = Self::convert_mpd_song(mpd_song, Some(player.clone()));
                     
                     info!("Now playing: {} - {}", 
                         song.title.as_deref().unwrap_or("Unknown"),

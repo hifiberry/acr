@@ -46,11 +46,11 @@ pub fn is_favourite(artist: String, title: String) -> Json<Result<FavouriteStatu
         ..Default::default()
     };
     
-    match favourites::get_favourite_providers(&song) {
-        Ok((is_fav, providers)) => {
+    match favourites::get_favourite_providers_display_names(&song) {
+        Ok((is_fav, provider_display_names)) => {
             Json(Ok(FavouriteStatusResponse {
                 is_favourite: is_fav,
-                providers,
+                providers: provider_display_names,
             }))
         }
         Err(e) => {

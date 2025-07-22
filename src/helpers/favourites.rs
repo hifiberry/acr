@@ -149,12 +149,12 @@ impl FavouriteManager {
         Ok(false)
     }
 
-    /// Check which providers have the song marked as favourite
-    /// Returns a tuple of (is_favourite, list_of_providers_with_favourite)
-    pub fn get_favourite_providers(&self, song: &Song) -> Result<(bool, Vec<String>), FavouriteError> {
+    /// Check which providers have the song marked as favourite (with display names)
+    /// Returns a tuple of (is_favourite, list_of_provider_display_names_with_favourite)
+    pub fn get_favourite_providers_display_names(&self, song: &Song) -> Result<(bool, Vec<String>), FavouriteError> {
         validate_song(song)?;
 
-        let mut favourite_providers = Vec::new();
+        let mut favourite_provider_display_names = Vec::new();
 
         for provider in &self.providers {
             if !provider.is_enabled() {
@@ -163,7 +163,7 @@ impl FavouriteManager {
 
             match provider.is_favourite(song) {
                 Ok(true) => {
-                    favourite_providers.push(provider.provider_name().to_string());
+                    favourite_provider_display_names.push(provider.display_name().to_string());
                 }
                 Ok(false) => continue,
                 Err(e) => {
@@ -174,8 +174,8 @@ impl FavouriteManager {
             }
         }
 
-        let is_favourite = !favourite_providers.is_empty();
-        Ok((is_favourite, favourite_providers))
+        let is_favourite = !favourite_provider_display_names.is_empty();
+        Ok((is_favourite, favourite_provider_display_names))
     }
 
     /// Add a song as favourite in all enabled providers
@@ -323,9 +323,9 @@ pub fn is_favourite(song: &Song) -> Result<bool, FavouriteError> {
     get_favourite_manager().is_favourite(song)
 }
 
-/// Get which providers have the song marked as favourite using the global manager
-pub fn get_favourite_providers(song: &Song) -> Result<(bool, Vec<String>), FavouriteError> {
-    get_favourite_manager().get_favourite_providers(song)
+/// Get which providers have the song marked as favourite (with display names) using the global manager
+pub fn get_favourite_providers_display_names(song: &Song) -> Result<(bool, Vec<String>), FavouriteError> {
+    get_favourite_manager().get_favourite_providers_display_names(song)
 }
 
 /// Add a song to favourites using the global manager

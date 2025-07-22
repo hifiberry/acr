@@ -1159,8 +1159,8 @@ Retrieves information about available and enabled favourite providers.
 
   ```json
   {
-    "enabled_providers": ["settingsdb", "lastfm"],
-    "total_providers": 2,
+    "enabled_providers": ["settingsdb", "lastfm", "spotify"],
+    "total_providers": 3,
     "enabled_count": 2,
     "providers": [
       {
@@ -1176,6 +1176,13 @@ Retrieves information about available and enabled favourite providers.
         "enabled": true,
         "active": false,
         "favourite_count": null
+      },
+      {
+        "name": "spotify",
+        "display_name": "Spotify",
+        "enabled": false,
+        "active": false,
+        "favourite_count": null
       }
     ]
   }
@@ -1185,8 +1192,8 @@ Retrieves information about available and enabled favourite providers.
   - `total_providers`: Total number of providers (enabled and disabled)
   - `enabled_count`: Number of currently enabled providers  
   - `providers`: Detailed information for each provider
-    - `name`: Provider identifier (e.g., "settingsdb", "lastfm")
-    - `display_name`: Human-readable name for the provider (e.g., "User settings", "Last.fm")
+    - `name`: Provider identifier (e.g., "settingsdb", "lastfm", "spotify")
+    - `display_name`: Human-readable name for the provider (e.g., "User settings", "Last.fm", "Spotify")
     - `enabled`: Whether the provider is currently enabled and available
     - `active`: Whether the provider is currently active (e.g., user logged in for remote providers)
     - `favourite_count`: Number of favorites stored by this provider (null if provider doesn't support counting)
@@ -1211,13 +1218,13 @@ Checks whether a song is marked as favourite by any enabled provider.
   {
     "Ok": {
       "is_favourite": true,
-      "providers": ["lastfm"]
+      "providers": ["Last.fm", "Spotify"]
     }
   }
   ```
 
   - `is_favourite`: Boolean indicating if the song is marked as favourite by any enabled provider
-  - `providers`: Array of provider names where the song is actually marked as favourite
+  - `providers`: Array of provider display names where the song is actually marked as favourite
 
 - **Response** (400 Bad Request):
 
@@ -1367,12 +1374,23 @@ The favourites API requires at least one provider to be configured. Available pr
 }
 ```
 
+**Spotify Provider** (Read-Only):
+- Requires Spotify authentication via OAuth
+- Only supports checking if songs are favourites (read-only)
+- Adding/removing favourites must be done through the Spotify app
+- `enabled`: True when user has valid Spotify authentication tokens
+- `active`: True when enabled (same as enabled for Spotify)
+- Uses Spotify Web API to search for songs and check saved track status
+- No additional configuration required beyond OAuth authentication
+
 #### Response Format Notes
 
 - All favourites API responses are wrapped in `Ok` for successful operations or `Err` for errors
 - The `updated_providers` field shows which providers actually processed the operation successfully
+- The `providers` field in favourite status checks returns human-readable display names (e.g., "Last.fm", "Spotify") for better user experience
 - Case sensitivity depends on the provider implementation (SettingsDB is case-insensitive)
 - Unicode and special characters in artist/title names are supported
+- Spotify provider is read-only: it can check favourite status but cannot add/remove favourites
 
 #### Error Handling
 

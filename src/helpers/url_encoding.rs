@@ -23,6 +23,7 @@ use log::debug;
 /// 
 /// # Example
 /// ```
+/// use audiocontrol::helpers::url_encoding::encode_url_safe;
 /// let long_path = "Music/Some Artist/Some Album (2023)/01 - Track Name.mp3";
 /// let encoded = encode_url_safe(long_path);
 /// // encoded will be something like: "TXVzaWMvU29tZSBBcnRpc3QvU29tZSBBbGJ1bSAoMjAyMyk_LzAxIC0gVHJhY2sgTmFtZS5tcDM"
@@ -47,6 +48,7 @@ pub fn encode_url_safe(input: &str) -> String {
 /// 
 /// # Example
 /// ```
+/// use audiocontrol::helpers::url_encoding::decode_url_safe;
 /// let encoded = "TXVzaWMvU29tZSBBcnRpc3Q";
 /// if let Some(decoded) = decode_url_safe(encoded) {
 ///     println!("Decoded: {}", decoded);

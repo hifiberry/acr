@@ -3,6 +3,7 @@ use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, Playbac
 use crate::data::library::LibraryInterface;
 use crate::constants::API_PREFIX;
 use crate::helpers::retry::RetryHandler;
+use crate::helpers::url_encoding;
 use delegate::delegate;
 use std::sync::{Arc, Mutex};
 use log::{debug, info, warn, error, trace};
@@ -15,7 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
-use urlencoding;
 
 /// Constant for MPD image API URL prefix including API prefix
 pub fn mpd_image_url() -> String {
@@ -876,16 +876,16 @@ impl MPDPlayerController {
                         // Use the library's create_encoded_image_url method
                         Some(library.create_encoded_image_url(&mpd_song.file))
                     } else {
-                        // Fallback to long URL if library not available
-                        Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))
+                        // Fallback to base64 encoded URL if library not available
+                        Some(format!("{}/{}", mpd_image_url(), url_encoding::encode_url_safe(&mpd_song.file)))
                     }
                 } else {
-                    // Fallback to long URL if can't access library
-                    Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))
+                    // Fallback to base64 encoded URL if can't access library
+                    Some(format!("{}/{}", mpd_image_url(), url_encoding::encode_url_safe(&mpd_song.file)))
                 }
             } else {
-                // Fallback to long URL if no player provided
-                Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))
+                // Fallback to base64 encoded URL if no player provided
+                Some(format!("{}/{}", mpd_image_url(), url_encoding::encode_url_safe(&mpd_song.file)))
             }
         } else {
             None

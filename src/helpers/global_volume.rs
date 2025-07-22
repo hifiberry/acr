@@ -1,4 +1,4 @@
-use crate::helpers::volume::{VolumeControl, VolumeChangeEvent};
+use crate::helpers::volume::VolumeControl;
 #[cfg(all(feature = "alsa", not(windows)))]
 use crate::helpers::volume::AlsaVolumeControl;
 use crate::helpers::volume::DummyVolumeControl;

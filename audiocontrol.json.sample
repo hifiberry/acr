@@ -54,6 +54,14 @@
             "url": "http://localhost:1081",
             "_comment": "HiFiBerry configurator API integration for system information"
         },
+        "volume": {
+            "enable": true,
+            "type": "alsa",
+            "device": "",
+            "control_name": "",
+            "display_name": "Master Volume",
+            "_comment": "ALSA volume control configuration. Leave device and control_name empty for auto-detection via configurator API. Auto-detection uses hw:X format where X is the hardware index from the configurator API and selects the appropriate mixer control."
+        },
         "settingsdb": {
             "path": "/var/lib/audiocontrol/db"
         },

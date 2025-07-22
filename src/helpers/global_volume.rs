@@ -2,6 +2,7 @@ use crate::helpers::volume::{VolumeControl, VolumeChangeEvent};
 #[cfg(all(feature = "alsa", not(windows)))]
 use crate::helpers::volume::AlsaVolumeControl;
 use crate::helpers::volume::DummyVolumeControl;
+use crate::helpers::configurator;
 use std::sync::{Arc, Mutex, mpsc};
 use once_cell::sync::OnceCell;
 use log::{info, warn, error};
@@ -48,21 +49,70 @@ pub fn initialize_volume_control(config: &Value) {
                 let device = volume_config
                     .get("device")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("default");
+                    .unwrap_or("");
                 
                 let control_name = volume_config
                     .get("control_name")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("Master");
+                    .unwrap_or("");
                 
                 let display_name = volume_config
                     .get("display_name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Master Volume");
+
+                // Auto-detect device and control name from configurator API if not provided
+                let (final_device, final_control_name) = if device.is_empty() || control_name.is_empty() {
+                    info!("Auto-detecting ALSA volume settings from configurator API (device='{}', control_name='{}')", device, control_name);
+                    match configurator::get_system_info() {
+                        Ok(system_info) => {
+                            let auto_device = if device.is_empty() {
+                                if let Some(soundcard) = &system_info.soundcard {
+                                    if let Some(hw_index) = soundcard.hardware_index {
+                                        format!("hw:{}", hw_index)
+                                    } else {
+                                        "default".to_string()
+                                    }
+                                } else {
+                                    "default".to_string()
+                                }
+                            } else {
+                                device.to_string()
+                            };
+
+                            let auto_control_name = if control_name.is_empty() {
+                                if let Some(soundcard) = &system_info.soundcard {
+                                    if let Some(vol_control) = &soundcard.volume_control {
+                                        vol_control.clone()
+                                    } else {
+                                        "Master".to_string()
+                                    }
+                                } else {
+                                    "Master".to_string()
+                                }
+                            } else {
+                                control_name.to_string()
+                            };
+
+                            info!("Auto-detected ALSA volume settings from configurator API: device='{}', control='{}'", auto_device, auto_control_name);
+                            (auto_device, auto_control_name)
+                        }
+                        Err(e) => {
+                            warn!("Failed to get system info from configurator API: {}. Using fallback values.", e);
+                            let fallback_device = if device.is_empty() { "default".to_string() } else { device.to_string() };
+                            let fallback_control = if control_name.is_empty() { "Master".to_string() } else { control_name.to_string() };
+                            info!("Using fallback ALSA volume settings: device='{}', control='{}'", fallback_device, fallback_control);
+                            (fallback_device, fallback_control)
+                        }
+                    }
+                } else {
+                    info!("Using configured ALSA volume settings: device='{}', control='{}'", device, control_name);
+                    (device.to_string(), control_name.to_string())
+                };
                 
-                match AlsaVolumeControl::new(device.to_string(), control_name.to_string(), display_name.to_string()) {
+                match AlsaVolumeControl::new(final_device.clone(), final_control_name.clone(), display_name.to_string()) {
                     Ok(alsa_control) => {
-                        info!("Successfully initialized ALSA volume control on device '{}', control '{}'", device, control_name);
+                        info!("Successfully initialized ALSA volume control on device '{}', control '{}'", final_device, final_control_name);
                         Box::new(alsa_control)
                     }
                     Err(e) => {

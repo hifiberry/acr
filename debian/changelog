@@ -1,3 +1,14 @@
+hifiberry-audiocontrol (0.6.4) stable; urgency=medium
+
+  * Added Spotify favourite provider integration with OAuth authentication
+  * Spotify favourites provider automatically refreshes expired tokens
+  * Updated favourites API to return provider display names instead of internal names
+  * Added comprehensive Spotify favourite checking via Web API
+  * Fixed Debian packaging to properly install conf/genres.json configuration file
+  * Enhanced favourites provider system with better error handling and user feedback
+
+ -- HiFiBerry <info@hifiberry.com>  Tue, 22 Jul 2025 14:00:00 +0000
+
 hifiberry-audiocontrol (0.6.2) stable; urgency=medium
 
   * Enhanced ALSA volume control with auto-detection from configurator API
@@ -7,7 +18,7 @@ hifiberry-audiocontrol (0.6.2) stable; urgency=medium
   * Updated sample configuration to use auto-detection by default (empty device/control_name)
   * Improved volume control initialization with fallback handling when API unavailable
 
- -- HiFiBerry <info@hifiberry.com>  Mon, 22 Jul 2025 12:00:00 +0000
+ -- HiFiBerry <info@hifiberry.com>  Tue, 22 Jul 2025 12:00:00 +0000
 
 hifiberry-audiocontrol (0.6.1) stable; urgency=medium
 

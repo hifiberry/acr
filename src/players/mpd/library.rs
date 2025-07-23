@@ -5,7 +5,6 @@ use log::{debug, info, warn, error};
 use chrono::Datelike;
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
 use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
-use crate::helpers::sanitize;
 use crate::helpers::url_encoding;
 
 /// MPD library interface that provides access to albums and artists

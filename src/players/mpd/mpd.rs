@@ -56,6 +56,9 @@ pub struct MPDPlayerController {
     /// MPD music directory path (if empty, will attempt to read from /etc/mpd.conf)
     music_directory: String,
     
+    /// Cached effective music directory (to avoid parsing /etc/mpd.conf repeatedly)
+    effective_music_directory: Arc<Mutex<Option<String>>>,
+    
     /// MPD library instance wrapped in Arc and Mutex for thread-safe access
     library: Arc<Mutex<Option<crate::players::mpd::library::MPDLibrary>>>,
     
@@ -84,6 +87,7 @@ impl Clone for MPDPlayerController {
             extract_coverart: self.extract_coverart,
             artist_separators: self.artist_separators.clone(),
             music_directory: self.music_directory.clone(),
+            effective_music_directory: Arc::clone(&self.effective_music_directory),
             library: Arc::clone(&self.library),
             max_reconnect_attempts: self.max_reconnect_attempts,
             reconnect_attempts: Arc::clone(&self.reconnect_attempts),
@@ -113,6 +117,7 @@ impl MPDPlayerController {
             extract_coverart: true,
             artist_separators: None,
             music_directory: String::new(),
+            effective_music_directory: Arc::new(Mutex::new(None)),
             library: Arc::new(Mutex::new(None)),
             max_reconnect_attempts: 5, // Default value
             reconnect_attempts: Arc::new(Mutex::new(0)),
@@ -143,6 +148,7 @@ impl MPDPlayerController {
             extract_coverart: true,
             artist_separators: None,
             music_directory: String::new(),
+            effective_music_directory: Arc::new(Mutex::new(None)),
             library: Arc::new(Mutex::new(None)),
             max_reconnect_attempts: 5, // Default value
             reconnect_attempts: Arc::new(Mutex::new(0)),
@@ -266,20 +272,38 @@ impl MPDPlayerController {
     pub fn set_music_directory(&mut self, directory: String) {
         debug!("Setting music directory to: {}", directory);
         self.music_directory = directory;
+        // Clear the cached effective music directory so it will be recalculated
+        if let Ok(mut cached) = self.effective_music_directory.lock() {
+            *cached = None;
+        }
     }
     
     /// Get the effective music directory path
     /// If configured music_directory is empty, attempts to parse it from /etc/mpd.conf
     pub fn get_effective_music_directory(&self) -> Option<String> {
-        // If music_directory is configured in the JSON, use it
-        if !self.music_directory.is_empty() {
-            debug!("Using configured music directory: {}", self.music_directory);
-            return Some(self.music_directory.clone());
+        // First check if we have a cached result
+        if let Ok(cached) = self.effective_music_directory.lock() {
+            if let Some(ref cached_dir) = *cached {
+                return Some(cached_dir.clone());
+            }
         }
         
-        // Otherwise, try to parse it from /etc/mpd.conf
-        debug!("Music directory not configured, attempting to parse from /etc/mpd.conf");
-        self.parse_music_directory_from_config()
+        // If music_directory is configured in the JSON, use it
+        let effective_dir = if !self.music_directory.is_empty() {
+            debug!("Using configured music directory: {}", self.music_directory);
+            Some(self.music_directory.clone())
+        } else {
+            // Otherwise, try to parse it from /etc/mpd.conf
+            debug!("Music directory not configured, attempting to parse from /etc/mpd.conf");
+            self.parse_music_directory_from_config()
+        };
+        
+        // Cache the result
+        if let Ok(mut cached) = self.effective_music_directory.lock() {
+            *cached = effective_dir.clone();
+        }
+        
+        effective_dir
     }
     
     /// Parse the music directory from /etc/mpd.conf

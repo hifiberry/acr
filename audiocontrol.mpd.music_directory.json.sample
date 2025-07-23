@@ -15,5 +15,15 @@
   "webserver": {
     "host": "0.0.0.0",
     "port": 81
+  },
+  "_comments": {
+    "music_directory": "Optional: Specify the MPD music directory path for cover art extraction. If empty or not specified, audiocontrol will automatically detect it by parsing /etc/mpd.conf. This eliminates blocking TCP connections to MPD for directory detection.",
+    "music_directory_examples": [
+      "/var/lib/mpd/music",
+      "/music", 
+      "/home/user/Music",
+      "/srv/music"
+    ],
+    "music_directory_auto_detection": "When music_directory is not configured, audiocontrol will parse /etc/mpd.conf looking for the 'music_directory' setting and use that path automatically."
   }
 }

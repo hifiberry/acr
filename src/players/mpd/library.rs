@@ -6,6 +6,7 @@ use chrono::Datelike;
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
 use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
 use crate::helpers::url_encoding;
+use crate::helpers::lyrics::LyricsProvider;
 
 /// MPD library interface that provides access to albums and artists
 #[derive(Clone)]
@@ -1279,5 +1280,34 @@ impl LibraryInterface for MPDLibrary {
             "enhance_metadata" => Some(self.enhance_metadata.to_string()),
             _ => None,
         }
+    }
+}
+
+impl MPDLibrary {
+    /// Get lyrics for a song by its file path/URL
+    /// 
+    /// This method looks for .lrc files alongside the music files in the MPD music directory.
+    /// The LRC file should have the same name as the music file but with .lrc extension.
+    pub fn get_lyrics_by_url(&self, file_path: &str) -> crate::helpers::lyrics::LyricsResult<crate::helpers::lyrics::LyricsContent> {
+        // Get the music directory from the controller
+        let music_directory = self.controller.get_effective_music_directory()
+            .unwrap_or_else(|| "/var/lib/mpd/music".to_string());
+        
+        // Create an MPD lyrics provider
+        let provider = crate::helpers::lyrics::MPDLyricsProvider::new(music_directory);
+        
+        // Use the provider to get lyrics
+        provider.get_lyrics_by_url(file_path)
+    }
+    
+    /// Get lyrics for a song by metadata (artist, title, etc.)
+    /// 
+    /// This is a convenience method that attempts to find the song in the library
+    /// and then get lyrics for it. Currently not implemented as it would require
+    /// searching through all tracks to find matching metadata.
+    pub fn get_lyrics_by_metadata(&self, lookup: &crate::helpers::lyrics::LyricsLookup) -> crate::helpers::lyrics::LyricsResult<crate::helpers::lyrics::LyricsContent> {
+        // For now, return NotFound as we'd need to implement track search by metadata
+        log::debug!("Lyrics lookup by metadata not yet implemented for MPD: {} - {}", lookup.artist, lookup.title);
+        Err(crate::helpers::lyrics::LyricsError::NotFound)
     }
 }

@@ -1,0 +1,12 @@
+[ti:Invalid Format Test]
+[ar:Test Cases]
+
+This line has no timestamp
+[invalid timestamp] This won't parse
+[99:99.99] This timestamp is invalid
+[00:10] Missing centiseconds
+[00:05.123] Too many decimal places
+[10.5] No minutes separator
+[] Empty timestamp
+[00:15.50] This line should parse correctly
+Regular text without any brackets

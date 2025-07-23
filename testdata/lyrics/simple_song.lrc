@@ -1,0 +1,15 @@
+[ti:Simple Song]
+[ar:Folk Artist]
+[al:Acoustic Collection]
+
+[00:01.00] This is just a simple song
+[00:04.50] 
+[00:07.00] With some empty lines between
+[00:10.50] 
+[00:13.00] To test the parsing works
+[00:16.50] 
+[00:19.00] Even when there's nothing there
+[00:22.50] 
+[00:25.00] Just a timestamp and a pause
+[00:28.50] 
+[00:31.00] That's how LRC files work

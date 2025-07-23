@@ -25,6 +25,7 @@ pub mod volume;
 pub mod global_volume;
 pub mod url_encoding;
 pub mod configurator;
+pub mod lyrics;
 #[cfg(unix)]
 pub mod mpris;
 #[cfg(unix)]

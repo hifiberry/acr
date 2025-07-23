@@ -1,0 +1,162 @@
+.TH AUDIOCONTROL_LISTEN_SHAIRPORTSYNC 1 "July 2025" "AudioControl Manual" "User Commands"
+.SH NAME
+audiocontrol_listen_shairportsync \- listen for ShairportSync UDP metadata packets
+.SH SYNOPSIS
+.B audiocontrol_listen_shairportsync
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol_listen_shairportsync
+is a UDP packet listener for monitoring ShairportSync metadata messages.
+This tool provides multiple display modes for analyzing, debugging, and testing
+ShairportSync communication.
+.PP
+The utility listens on a UDP port for ShairportSync metadata packets and can
+display them in various formats, collect structured metadata, or dump packets
+to binary files for later analysis and testing.
+.PP
+This tool is particularly useful for:
+.IP \(bu 4
+Monitoring AirPlay stream metadata in real-time
+.IP \(bu 4
+Debugging ShairportSync communication issues
+.IP \(bu 4
+Creating test data for integration tests
+.IP \(bu 4
+Analyzing artwork and metadata transmission
+.SH OPTIONS
+.TP
+.BR \-\-port " " \fIPORT\fR
+UDP port to listen on (default: 5555)
+.TP
+.BR \-\-show\-hex
+Show raw hex dump for binary data (only used in full mode)
+.TP
+.BR \-\-mode " " \fIMODE\fR
+Display mode for processing packets. Available modes:
+.RS
+.TP
+.BR full
+Show all packets with detailed information (default)
+.TP
+.BR player
+Collect metadata and display structured song information
+.TP
+.BR dump
+Dump packets to file with timestamps for later use in tests
+.RE
+.TP
+.BR \-\-output\-file " " \fIFILE\fR
+Output file for dump mode (default: shairport_dump.bin)
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit
+.TP
+.BR \-V ", " \-\-version
+Display version information and exit
+.SH MODES
+.SS Full Mode
+In full mode, the tool displays all received packets with detailed information
+including timestamps, packet contents, and hex dumps (if requested). This mode
+is useful for debugging and understanding the complete ShairportSync protocol.
+.PP
+The output includes:
+.IP \(bu 4
+Packet number and source address
+.IP \(bu 4
+Parsed message type and content
+.IP \(bu 4
+Chunk information for multi-part data
+.IP \(bu 4
+Image format detection for artwork
+.IP \(bu 4
+Optional hex dumps of binary data
+.SS Player Mode
+Player mode focuses on metadata collection and displays a structured view
+of the current song information. This mode filters out internal protocol
+messages and presents only user-relevant information.
+.PP
+The output includes:
+.IP \(bu 4
+Session start/end notifications
+.IP \(bu 4
+Playback control events (play, pause, resume)
+.IP \(bu 4
+Structured song metadata display
+.IP \(bu 4
+Artwork assembly notifications
+.SS Dump Mode
+Dump mode saves all received packets to a binary file with relative timestamps.
+This mode is designed for creating test data that can be replayed later in
+integration tests.
+.PP
+The binary format includes:
+.IP \(bu 4
+8-byte relative timestamp (milliseconds from start)
+.IP \(bu 4
+4-byte packet size (little-endian)
+.IP \(bu 4
+Raw packet data
+.SH EXAMPLES
+.TP
+Listen on default port with full packet display:
+.B audiocontrol_listen_shairportsync
+.TP
+Monitor metadata in player-friendly format:
+.B audiocontrol_listen_shairportsync --mode player
+.TP
+Listen on custom port with hex dumps:
+.B audiocontrol_listen_shairportsync --port 6666 --show-hex
+.TP
+Dump packets to file for testing:
+.B audiocontrol_listen_shairportsync --mode dump --output-file test_data.bin
+.SH SHAIRPORTSYNC INTEGRATION
+This tool is designed to work with ShairportSync configured to send metadata
+via UDP. To use this tool, configure ShairportSync with the following options
+in your configuration file:
+.PP
+.EX
+metadata = {
+    enabled = "yes";
+    include_cover_art = "yes";
+    pipe_name = "/tmp/shairport-sync-metadata";
+    pipe_timeout = 5000;
+    socket_address = "127.0.0.1";
+    socket_port = 5555;
+    socket_msglength = 65000;
+};
+.EE
+.PP
+Ensure the socket_port matches the port specified with the --port option.
+.SH FILES
+.TP
+.I shairport_dump.bin
+Default output file for dump mode
+.SH PACKET FORMAT
+The tool understands ShairportSync's UDP metadata protocol, which includes:
+.IP \(bu 4
+Control messages (play, pause, resume, session events)
+.IP \(bu 4
+Metadata chunks (artist, title, album, artwork)
+.IP \(bu 4
+Binary data for track numbers, timestamps, and artwork
+.IP \(bu 4
+Multi-chunk artwork assembly for large images
+.SH SIGNALS
+.TP
+.BR SIGINT " (Ctrl+C)"
+Gracefully stop the listener and close any open dump files
+.SH EXIT STATUS
+.TP
+.B 0
+Success
+.TP
+.B 1
+Error (e.g., failed to bind to port, file creation error)
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_send_update (1),
+.BR shairport-sync (1)
+.SH AUTHORS
+Written as part of the AudioControl project.
+.SH REPORTING BUGS
+Report bugs to the AudioControl project maintainers.

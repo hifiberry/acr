@@ -46,6 +46,9 @@
             "attribute_cache_path": "/var/lib/audiocontrol/cache/attributes",
             "image_cache_path": "/var/lib/audiocontrol/cache/images"
         },
+        "settingsdb": {
+            "path": "/var/lib/audiocontrol/db"
+        },
         "security_store": {
             "path": "/var/lib/audiocontrol/security_store.json"
         },
@@ -72,6 +75,14 @@
             "api_enabled": false,
             "client_id": "",            
             "client_secret": ""
+        },
+        "volume": {
+            "_comment": "Digital is the control for HiFiBerry DAC+. For testing without ALSA hardware, use type: dummy, device: default, control_name: Master",
+            "enable": true,
+            "type": "alsa",
+            "device": "hw:0",
+            "control_name": "Digital",
+            "display_name": "HiFiBerry Volume"
         }
     },
     "players": [

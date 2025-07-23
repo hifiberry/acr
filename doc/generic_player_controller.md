@@ -189,7 +189,7 @@ cargo build --bin audiocontrol_player_event_client
 A dedicated command-line client tool is available for sending events to generic players:
 
 - **Binary name**: `audiocontrol_player_event_client`
-- **Documentation**: [Player Event Client Documentation](player-event-client.md)
+- **Documentation**: [Player Event Client Documentation](player_event_client.md)
 - **Location**: `src/tools/acr_player_event_client.rs`
 
 ## API Documentation

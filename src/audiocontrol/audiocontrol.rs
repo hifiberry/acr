@@ -490,10 +490,10 @@ impl AudioController {
                         controller_ref.add_controller(player);
                     },
                     Err(e) => {
-                        // Check if this is due to the player being disabled
+                        // Check if this is due to the player being disabled or filtered out
                         if let PlayerCreationError::ParseError(msg) = &e {
-                            if msg.contains("disabled in configuration") {
-                                debug!("Skipping disabled player {}: {}", idx, msg);
+                            if msg.contains("disabled in configuration") || msg.contains("ignored (starts with underscore)") {
+                                debug!("Skipping disabled/filtered player {}: {}", idx, msg);
                                 continue; // Skip this player and move on to the next one
                             }
                         }
@@ -519,10 +519,10 @@ impl AudioController {
                         controller_ref.add_controller(player);
                     },
                     Err(e) => {
-                        // Check if this is due to the player being disabled
+                        // Check if this is due to the player being disabled or filtered out
                         if let PlayerCreationError::ParseError(msg) = &e {
-                            if msg.contains("disabled in configuration") {
-                                debug!("Skipping disabled player {}: {}", idx, msg);
+                            if msg.contains("disabled in configuration") || msg.contains("ignored (starts with underscore)") {
+                                debug!("Skipping disabled/filtered player {}: {}", idx, msg);
                                 continue; // Skip this player and move on to the next one
                             }
                         }

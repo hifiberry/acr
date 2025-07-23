@@ -1,15 +1,25 @@
 #![cfg(unix)]
 
 use clap::Parser;
-use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::time::Instant;
+use chrono;
+
+use audiocontrol::helpers::shairportsync_messages::{
+    ShairportMessage, ChunkCollector, parse_shairport_message, 
+    detect_image_format, get_image_dimensions, get_jpeg_dimensions, get_png_dimensions,
+    update_song_from_message, song_has_significant_metadata, display_song_metadata
+};
+use audiocontrol::data::song::Song;
 
 #[derive(Parser)]
 #[command(name = "audiocontrol_listen_shairportsync")]
 #[command(about = "AudioControl ShairportSync UDP Listener")]
-#[command(long_about = "Listens for UDP packets on the specified port and displays their content.\nPackets are assumed to be text and will be displayed as such. If binary\ndata is received, it will be shown as a hex dump.\n\nThis tool is useful for monitoring ShairportSync metadata or other\nUDP-based communication. Press Ctrl+C to stop listening.")]
+#[command(long_about = "Listens for UDP packets on the specified port and displays their content.\n\nModes:\n- full: Shows all packets with detailed information (default)\n- player: Collects metadata and displays structured song information\n- dump: Saves packets to binary file with relative timestamps for later analysis\n\nThis tool is useful for monitoring ShairportSync metadata or other\nUDP-based communication. Press Ctrl+C to stop listening.")]
 #[command(version)]
 struct Args {
     /// UDP port to listen on
@@ -19,59 +29,28 @@ struct Args {
     /// Show raw hex dump for binary data
     #[arg(long, default_value_t = false)]
     show_hex: bool,
-}
-
-#[derive(Debug)]
-enum ShairportMessage {
-    Control(String),
-    SessionStart(String),
-    SessionEnd(String),
-    ChunkData {
-        chunk_id: u32,
-        total_chunks: u32,
-        data_type: String,
-        data: Vec<u8>,
-    },
-    CompletePicture {
-        data: Vec<u8>,
-        format: String,
-    },
-    Unknown(Vec<u8>),
-}
-
-#[derive(Debug)]
-struct ChunkCollector {
-    chunks: HashMap<u32, Vec<u8>>, // chunk_id -> data
-    total_chunks: u32,
-}
-
-impl ChunkCollector {
-    fn new(total_chunks: u32, _data_type: String) -> Self {
-        Self {
-            chunks: HashMap::new(),
-            total_chunks,
-        }
-    }
     
-    fn add_chunk(&mut self, chunk_id: u32, data: Vec<u8>) -> Option<Vec<u8>> {
-        self.chunks.insert(chunk_id, data);
-        
-        // Check if we have all chunks
-        if self.chunks.len() as u32 == self.total_chunks {
-            // Combine chunks in order
-            let mut combined = Vec::new();
-            for i in 0..self.total_chunks {
-                if let Some(chunk_data) = self.chunks.get(&i) {
-                    combined.extend_from_slice(chunk_data);
-                } else {
-                    return None; // Missing chunk
-                }
-            }
-            Some(combined)
-        } else {
-            None
-        }
-    }
+    /// Display mode: full (all packets) or player (structured metadata)
+    #[arg(long, value_enum, default_value_t = DisplayMode::Full)]
+    mode: DisplayMode,
+    
+    /// Output file for dump mode (default: shairport_dump.bin)
+    #[arg(long, default_value = "shairport_dump.bin")]
+    output_file: String,
+    
+    /// Save cover art to file (default: coverart.EXTENSION, empty = don't save)
+    #[arg(long, default_value = "coverart")]
+    save_coverart: String,
+}
+
+#[derive(Clone, clap::ValueEnum, PartialEq)]
+enum DisplayMode {
+    /// Show all packets with detailed information
+    Full,
+    /// Collect metadata and display structured song information
+    Player,
+    /// Dump packets to file with timestamps for later use in tests
+    Dump,
 }
 
 fn main() {
@@ -80,10 +59,17 @@ fn main() {
     let args = Args::parse();
     let port = args.port;
     let show_hex = args.show_hex;
+    let mode = args.mode;
+    let save_coverart = args.save_coverart.clone();
     
     println!("AudioControl ShairportSync UDP Listener");
     println!("=====================================");
     println!("Listening on UDP port: {}", port);
+    match mode {
+        DisplayMode::Full => println!("Mode: Full (showing all packets)"),
+        DisplayMode::Player => println!("Mode: Player (structured metadata display)"),
+        DisplayMode::Dump => println!("Mode: Dump (saving to file: {})", args.output_file),
+    }
     println!("Press Ctrl+C to stop...");
     println!();
     
@@ -117,28 +103,48 @@ fn main() {
     let mut buffer = [0; 4096]; // 4KB buffer for incoming packets
     let mut packet_count = 0;
     let mut picture_collector: Option<ChunkCollector> = None;
+    let mut current_song = Song::default();
+    let mut metadata_updated = false;
+    
+    // Initialize dump file writer if in dump mode
+    let mut dump_writer = if mode == DisplayMode::Dump {
+        match File::create(&args.output_file) {
+            Ok(file) => {
+                println!("Created dump file: {}", args.output_file);
+                Some(BufWriter::new(file))
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to create dump file {}: {}", args.output_file, e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+    
+    let start_time = Instant::now();
     
     while running.load(Ordering::SeqCst) {
         match socket.recv_from(&mut buffer) {
             Ok((bytes_received, sender_addr)) => {
                 packet_count += 1;
                 
-                // Get current timestamp
-                let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-                
-                println!("[{}] Packet #{} from {} ({} bytes):", 
-                         timestamp, packet_count, sender_addr, bytes_received);
-                
                 // Parse ShairportSync message
                 let mut message = parse_shairport_message(&buffer[..bytes_received]);
                 
-                // Handle chunk collection for pictures
+                // Handle chunk collection for pictures and binary data
                 if let ShairportMessage::ChunkData { chunk_id, total_chunks, data_type, data } = &message {
                     let clean_type = data_type.trim_end_matches('\0');
                     
-                    if clean_type == "ssncPICT" {
-                        // Initialize collector if this is the first chunk
-                        if picture_collector.is_none() {
+                    // Check if this might be picture data by looking at the data content or type
+                    let is_picture_data = clean_type == "ssncPICT" || 
+                                         clean_type.contains("PICT") ||
+                                         (!data.is_empty() && is_likely_image_data(data));
+                    
+                    if is_picture_data && *total_chunks > 1 {
+                        // Initialize collector if this is the first chunk or we don't have one
+                        if picture_collector.is_none() || 
+                           picture_collector.as_ref().unwrap().total_chunks != *total_chunks {
                             picture_collector = Some(ChunkCollector::new(*total_chunks, clean_type.to_string()));
                         }
                         
@@ -147,6 +153,24 @@ fn main() {
                             if let Some(complete_data) = collector.add_chunk(*chunk_id, data.clone()) {
                                 // We have a complete picture
                                 let format = detect_image_format(&complete_data);
+                                let dimensions = get_image_dimensions(&complete_data, &format);
+                                if mode == DisplayMode::Player {
+                                    println!("📷 Assembled complete artwork: {} ({} bytes, {})", 
+                                            format, complete_data.len(), dimensions);
+                                }
+                                
+                                // Save cover art if requested
+                                if !save_coverart.is_empty() {
+                                    match save_coverart_to_file(&complete_data, &format, &save_coverart) {
+                                        Ok(filename) => {
+                                            println!("💾 Cover art saved to: {}", filename);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("❌ Failed to save cover art: {}", e);
+                                        }
+                                    }
+                                }
+                                
                                 message = ShairportMessage::CompletePicture {
                                     data: complete_data,
                                     format,
@@ -157,9 +181,186 @@ fn main() {
                     }
                 }
                 
-                display_shairport_message(&message, show_hex);
+                // Handle chunked UDP messages (for large images that exceed UDP size limits)
+                // Format: "ssnc", "chnk", packet_ix, packet_counts, packet_tag, packet_type, chunked_data
+                if bytes_received >= 24 {  // minimum size for chunked message
+                    if &buffer[0..8] == b"ssncchnk" {
+                        // Parse chunked message
+                        let chunk_ix = u32::from_be_bytes([buffer[8], buffer[9], buffer[10], buffer[11]]);
+                        let chunk_total = u32::from_be_bytes([buffer[12], buffer[13], buffer[14], buffer[15]]);
+                        let packet_tag = u32::from_be_bytes([buffer[16], buffer[17], buffer[18], buffer[19]]);
+                        let packet_type = u32::from_be_bytes([buffer[20], buffer[21], buffer[22], buffer[23]]);
+                        
+                        let chunk_data = &buffer[24..bytes_received];
+                        
+                        if mode == DisplayMode::Full {
+                            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                            println!("[{}] Chunked UDP packet #{}: chunk {}/{}, tag: {}, type: {}, data: {} bytes", 
+                                     timestamp, packet_count, chunk_ix + 1, chunk_total, packet_tag, packet_type, chunk_data.len());
+                        }
+                        
+                        // Handle PICT chunked data
+                        if packet_tag == 0x50494354 { // "PICT" in big-endian
+                            // Initialize collector if this is the first chunk or we don't have one
+                            if picture_collector.is_none() || 
+                               picture_collector.as_ref().unwrap().total_chunks != chunk_total {
+                                picture_collector = Some(ChunkCollector::new(chunk_total, "PICT".to_string()));
+                            }
+                            
+                            // Add chunk to collector
+                            if let Some(ref mut collector) = picture_collector {
+                                if let Some(complete_data) = collector.add_chunk(chunk_ix + 1, chunk_data.to_vec()) {
+                                    // We have a complete picture from chunked UDP
+                                    let format = detect_image_format(&complete_data);
+                                    let dimensions = get_image_dimensions(&complete_data, &format);
+                                    
+                                    if mode == DisplayMode::Player {
+                                        println!("📷 Assembled complete artwork from UDP chunks: {} ({} bytes, {})", 
+                                                format, complete_data.len(), dimensions);
+                                    }
+                                    
+                                    // Save cover art if requested
+                                    if !save_coverart.is_empty() {
+                                        match save_coverart_to_file(&complete_data, &format, &save_coverart) {
+                                            Ok(filename) => {
+                                                println!("💾 Cover art saved to: {}", filename);
+                                            }
+                                            Err(e) => {
+                                                eprintln!("❌ Failed to save cover art: {}", e);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Complete picture assembled but not processed in this path
+                                    // since we continue to next iteration
+                                    picture_collector = None; // Reset for next picture
+                                }
+                            }
+                            continue; // Skip normal processing for chunked messages
+                        }
+                    }
+                }
                 
-                println!(); // Empty line between packets
+                match mode {
+                    DisplayMode::Full => {
+                        // Get current timestamp
+                        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                        
+                        println!("[{}] Packet #{} from {} ({} bytes):", 
+                                 timestamp, packet_count, sender_addr, bytes_received);
+                        
+                        display_shairport_message(&message, show_hex);
+                        
+                        // Save cover art if it's a complete picture and save_coverart is specified
+                        if !save_coverart.is_empty() {
+                            if let ShairportMessage::CompletePicture { data, format } = &message {
+                                match save_coverart_to_file(data, format, &save_coverart) {
+                                    Ok(filename) => {
+                                        println!("💾 Cover art saved to: {}", filename);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to save cover art: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        println!(); // Empty line between packets
+                    }
+                    DisplayMode::Player => {
+                        // Update metadata and show player events
+                        let updated = update_song_from_message(&mut current_song, &message);
+                        if updated {
+                            metadata_updated = true;
+                        }
+                        
+                        // Show control events and unknown messages immediately
+                        match &message {
+                            ShairportMessage::Control(action) => {
+                                let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                // Filter out metadata messages that we're handling separately
+                                if !action.contains(": ") || action.starts_with("PAUSE") || 
+                                   action.starts_with("RESUME") || action.starts_with("SESSION") ||
+                                   action.starts_with("PLAYBACK") || action.starts_with("AUDIO") ||
+                                   action.starts_with("VOLUME") || action.starts_with("PROGRESS") {
+                                    println!("[{}] ♫ {}", timestamp, action);
+                                }
+                            }
+                            ShairportMessage::SessionStart(session_id) => {
+                                let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                println!("[{}] 🎵 Session started: {}", timestamp, session_id);
+                                // Clear previous metadata on new session
+                                current_song = Song::default();
+                                metadata_updated = false;
+                            }
+                            ShairportMessage::SessionEnd(timestamp_str) => {
+                                let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                println!("[{}] 🎵 Session ended: {}", timestamp, timestamp_str);
+                                // Show final metadata if we have any
+                                if song_has_significant_metadata(&current_song) {
+                                    display_song_metadata(&current_song);
+                                }
+                                current_song = Song::default();
+                                metadata_updated = false;
+                            }
+                            ShairportMessage::Unknown(data) => {
+                                let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                if let Ok(text) = std::str::from_utf8(data) {
+                                    if text.chars().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace()) {
+                                        println!("[{}] ❓ Unknown text: {}", timestamp, text.trim());
+                                    } else {
+                                        println!("[{}] ❓ Unknown binary data: {} bytes", timestamp, data.len());
+                                    }
+                                } else {
+                                    println!("[{}] ❓ Unknown binary data: {} bytes", timestamp, data.len());
+                                }
+                            }
+                            _ => {
+                                // For metadata messages, we've already updated the current_song
+                                // Display updated metadata when we have significant changes
+                                if metadata_updated && song_has_significant_metadata(&current_song) {
+                                    display_song_metadata(&current_song);
+                                    metadata_updated = false;
+                                }
+                            }
+                        }
+                    }
+                    DisplayMode::Dump => {
+                        // Write packet to dump file with relative timestamp
+                        if let Some(ref mut writer) = dump_writer {
+                            let relative_time_ms = start_time.elapsed().as_millis() as u64;
+                            
+                            // Write header: timestamp (8 bytes) + packet_size (4 bytes)
+                            if let Err(e) = writer.write_all(&relative_time_ms.to_le_bytes()) {
+                                eprintln!("Error writing timestamp to dump file: {}", e);
+                                break;
+                            }
+                            if let Err(e) = writer.write_all(&(bytes_received as u32).to_le_bytes()) {
+                                eprintln!("Error writing packet size to dump file: {}", e);
+                                break;
+                            }
+                            
+                            // Write the actual packet data
+                            if let Err(e) = writer.write_all(&buffer[..bytes_received]) {
+                                eprintln!("Error writing packet data to dump file: {}", e);
+                                break;
+                            }
+                            
+                            // Flush periodically to ensure data is written
+                            if packet_count % 100 == 0 {
+                                if let Err(e) = writer.flush() {
+                                    eprintln!("Error flushing dump file: {}", e);
+                                    break;
+                                }
+                            }
+                            
+                            // Print progress every 1000 packets
+                            if packet_count % 1000 == 0 {
+                                println!("Dumped {} packets to {}", packet_count, args.output_file);
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 match e.kind() {
@@ -173,166 +374,70 @@ fn main() {
                     }
                 }
             }
-        }
-    }
+        }    }
     
+    // Flush and close dump file if in dump mode
+    if let Some(mut writer) = dump_writer {
+        if let Err(e) = writer.flush() {
+            eprintln!("Error flushing dump file on exit: {}", e);
+        }
+        println!("Dump file {} closed.", args.output_file);
+    }
+
     println!("Listener stopped. Total packets received: {}", packet_count);
 }
 
-fn detect_image_format(data: &[u8]) -> String {
-    if data.len() >= 4 {
-        match &data[0..4] {
-            [0xFF, 0xD8, 0xFF, _] => "JPEG".to_string(),
-            [0x89, 0x50, 0x4E, 0x47] => "PNG".to_string(), // PNG signature
-            [0x47, 0x49, 0x46, 0x38] => "GIF".to_string(), // GIF87a or GIF89a
-            [0x42, 0x4D, _, _] => "BMP".to_string(), // BMP
-            _ => {
-                if data.len() >= 12 && &data[4..12] == b"ftypheic" {
-                    "HEIC".to_string()
-                } else if data.len() >= 8 && &data[0..8] == b"RIFF" {
-                    "WEBP".to_string()
-                } else {
-                    "Unknown".to_string()
-                }
+fn print_hex_dump(data: &[u8], prefix: &str) {
+    for (i, chunk) in data.chunks(16).enumerate() {
+        print!("{}{:04x}: ", prefix, i * 16);
+        
+        // Print hex values
+        for (j, byte) in chunk.iter().enumerate() {
+            print!("{:02x} ", byte);
+            if j == 7 {
+                print!(" "); // Extra space in the middle
             }
         }
-    } else {
-        "Unknown".to_string()
-    }
-}
-
-fn parse_shairport_message(data: &[u8]) -> ShairportMessage {
-    // Try to parse binary chunk data first (this takes priority)
-    if data.len() >= 24 && &data[0..8] == b"ssncchnk" {
-        // Parse chunk header: "ssncchnk" + chunk_id (4 bytes) + total_chunks (4 bytes) + data_type (8 bytes)
-        let chunk_id = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-        let total_chunks = u32::from_be_bytes([data[12], data[13], data[14], data[15]]);
         
-        // Extract data type (next 8 bytes after header)
-        let data_type = String::from_utf8_lossy(&data[16..24]).to_string();
-        
-        // Skip null bytes in the payload to find actual data
-        let mut payload_start = 24;
-        while payload_start < data.len() && data[payload_start] == 0 {
-            payload_start += 1;
-        }
-        
-        let payload = if payload_start < data.len() {
-            data[payload_start..].to_vec()
-        } else {
-            // No actual data, just padding
-            Vec::new()
-        };
-        
-        return ShairportMessage::ChunkData {
-            chunk_id,
-            total_chunks,
-            data_type,
-            data: payload,
-        };
-    }
-    
-    // Try to parse as UTF-8 text
-    if let Ok(text) = std::str::from_utf8(data) {
-        let trimmed = text.trim();
-        
-        // Control messages
-        match trimmed {
-            "ssncpaus" => return ShairportMessage::Control("PAUSE".to_string()),
-            "ssncpres" => return ShairportMessage::Control("RESUME".to_string()),
-            "ssncaend" => return ShairportMessage::Control("SESSION_END".to_string()),
-            "ssncabeg" => return ShairportMessage::Control("AUDIO_BEGIN".to_string()),
-            "ssncpbeg" => return ShairportMessage::Control("PLAYBACK_BEGIN".to_string()),
-            "ssncPICT" => return ShairportMessage::Control("PICTURE_REQUEST".to_string()),
-            _ => {
-                // Check for session start/end with IDs
-                if trimmed.starts_with("ssncpcst") {
-                    let session_id = &trimmed[8..]; // Remove "ssncpcst" prefix
-                    return ShairportMessage::SessionStart(session_id.to_string());
-                } else if trimmed.starts_with("ssncpcen") {
-                    let timestamp = &trimmed[8..]; // Remove "ssncpcen" prefix
-                    return ShairportMessage::SessionEnd(timestamp.to_string());
-                }
-                
-                // Parse other ShairportSync messages
-                if trimmed.len() >= 8 {
-                    let prefix = &trimmed[0..8];
-                    let content = &trimmed[8..];
-                    
-                    return match prefix {
-                        // Connection info
-                        "ssncdisc" => ShairportMessage::Control(format!("DISCOVERED: {}", content)),
-                        "ssncconn" => ShairportMessage::Control(format!("CONNECTED: {}", content)),
-                        "ssncclip" => ShairportMessage::Control(format!("CLIENT_IP: {}", content)),
-                        "ssncsvip" => ShairportMessage::Control(format!("SERVER_IP: {}", content)),
-                        "ssncsnam" => ShairportMessage::Control(format!("SERVER_NAME: {}", content)),
-                        "ssnccdid" => ShairportMessage::Control(format!("CLIENT_DEVICE_ID: {}", content)),
-                        "ssnccmod" => ShairportMessage::Control(format!("CLIENT_MODEL: {}", content)),
-                        "ssnccmac" => ShairportMessage::Control(format!("CLIENT_MAC: {}", content)),
-                        
-                        // Playback control
-                        "ssncpvol" => ShairportMessage::Control(format!("VOLUME: {}", content)),
-                        "ssncprgr" => ShairportMessage::Control(format!("PROGRESS: {}", content)),
-                        "ssncmdst" => ShairportMessage::Control(format!("METADATA_START: {}", content)),
-                        "ssncmden" => ShairportMessage::Control(format!("METADATA_END: {}", content)),
-                        
-                        // Metadata (using 'core' prefix for iTunes-style metadata)
-                        "coreasal" => ShairportMessage::Control(format!("ALBUM: {}", content)),
-                        "coreasar" => ShairportMessage::Control(format!("ARTIST: {}", content)),
-                        "coreminm" => ShairportMessage::Control(format!("TRACK: {}", content)),
-                        "coreascp" => ShairportMessage::Control("COMPOSER: (empty)".to_string()),
-                        "coreasgn" => ShairportMessage::Control("GENRE: (empty)".to_string()),
-                        
-                        _ => ShairportMessage::Unknown(data.to_vec()),
-                    };
-                }
+        // Pad if this chunk is less than 16 bytes
+        for j in chunk.len()..16 {
+            print!("   ");
+            if j == 7 {
+                print!(" ");
             }
         }
+        
+        print!(" |");
+        
+        // Print ASCII representation
+        for byte in chunk {
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                print!("{}", *byte as char);
+            } else {
+                print!(".");
+            }
+        }
+        
+        println!("|");
     }
-    
-    // If nothing else matches, it's unknown
-    ShairportMessage::Unknown(data.to_vec())
 }
 
 fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
     match message {
         ShairportMessage::Control(action) => {
-            // Use different emojis based on the action type
-            let emoji = if action.starts_with("DISCOVERED") || action.starts_with("CONNECTED") {
-                "�"
-            } else if action.starts_with("CLIENT_") || action.starts_with("SERVER_") {
-                "📱"
-            } else if action.starts_with("VOLUME") {
-                "🔊"
-            } else if action.starts_with("PROGRESS") {
-                "⏱️"
-            } else if action.starts_with("METADATA_") {
-                "📋"
-            } else if action.starts_with("ALBUM") || action.starts_with("ARTIST") || action.starts_with("TRACK") {
-                "🎵"
-            } else if action.contains("BEGIN") {
-                "▶️"
-            } else if action.contains("PAUSE") {
-                "⏸️"
-            } else if action.contains("RESUME") {
-                "▶️"
-            } else {
-                "📻"
-            };
-            
-            println!("  {} {}", emoji, action);
+            println!("  {}", action);
         }
         
         ShairportMessage::SessionStart(session_id) => {
-            println!("  � SESSION START: {}", session_id);
+            println!("  SESSION START: {}", session_id);
         }
         
         ShairportMessage::SessionEnd(timestamp) => {
-            println!("  ⏹️  SESSION END: {}", timestamp);
+            println!("  SESSION END: {}", timestamp);
         }
         
         ShairportMessage::CompletePicture { data, format } => {
-            println!("  🖼️  COMPLETE PICTURE:");
+            println!("  COMPLETE PICTURE:");
             println!("     Format: {}", format);
             println!("     Size: {} bytes", data.len());
             println!("     Dimensions: {}", get_image_dimensions(data, format));
@@ -347,7 +452,7 @@ fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
         }
         
         ShairportMessage::ChunkData { chunk_id, total_chunks, data_type, data } => {
-            println!("  📦 CHUNK DATA:");
+            println!("  CHUNK DATA:");
             println!("     Type: {}", data_type.trim_end_matches('\0'));
             println!("     Chunk: {}/{}", chunk_id, total_chunks);
             
@@ -406,103 +511,71 @@ fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
         }
         
         ShairportMessage::Unknown(data) => {
-            // Try to display as text if it looks like text
+            // Try to display as text if it looks like text, but always show hex dump
             if let Ok(text) = std::str::from_utf8(data) {
                 if text.chars().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace()) {
-                    println!("  ❓ UNKNOWN TEXT: {}", text.trim());
+                    println!("  UNKNOWN TEXT: {}", text.trim());
+                    println!("  Hex dump:");
+                    print_hex_dump(data, "     ");
                     return;
                 }
             }
             
-            println!("  ❓ UNKNOWN BINARY DATA: {} bytes", data.len());
-            if show_hex {
-                print_hex_dump(data, "     ");
-            }
+            println!("  UNKNOWN BINARY DATA: {} bytes", data.len());
+            print_hex_dump(data, "     ");
         }
     }
 }
 
-fn get_image_dimensions(data: &[u8], format: &str) -> String {
-    match format {
-        "JPEG" => get_jpeg_dimensions(data),
-        "PNG" => get_png_dimensions(data),
-        _ => "Unknown".to_string(),
-    }
-}
-
-fn get_jpeg_dimensions(data: &[u8]) -> String {
-    let mut i = 2; // Skip initial 0xFF 0xD8
-    
-    while i + 4 < data.len() {
-        if data[i] == 0xFF {
-            let marker = data[i + 1];
-            
-            // SOF0, SOF1, SOF2 markers contain dimension info
-            if marker >= 0xC0 && marker <= 0xC3 {
-                if i + 9 < data.len() {
-                    let height = u16::from_be_bytes([data[i + 5], data[i + 6]]);
-                    let width = u16::from_be_bytes([data[i + 7], data[i + 8]]);
-                    return format!("{}x{}", width, height);
-                }
-            }
-            
-            // Skip this segment
-            if i + 3 < data.len() {
-                let length = u16::from_be_bytes([data[i + 2], data[i + 3]]);
-                i += length as usize + 2;
-            } else {
-                break;
-            }
-        } else {
-            i += 1;
-        }
+/// Check if data is likely to be image data based on magic bytes
+fn is_likely_image_data(data: &[u8]) -> bool {
+    if data.len() < 4 {
+        return false;
     }
     
-    "Unknown".to_string()
-}
-
-fn get_png_dimensions(data: &[u8]) -> String {
-    // PNG IHDR chunk starts at byte 8 and contains width/height at bytes 16-23
-    if data.len() >= 24 && &data[0..8] == b"\x89PNG\r\n\x1a\n" {
-        let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
-        let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
-        format!("{}x{}", width, height)
-    } else {
-        "Unknown".to_string()
-    }
-}
-
-fn print_hex_dump(data: &[u8], prefix: &str) {
-    for (i, chunk) in data.chunks(16).enumerate() {
-        print!("{}{:04x}: ", prefix, i * 16);
-        
-        // Print hex values
-        for (j, byte) in chunk.iter().enumerate() {
-            print!("{:02x} ", byte);
-            if j == 7 {
-                print!(" "); // Extra space in the middle
-            }
-        }
-        
-        // Pad if this chunk is less than 16 bytes
-        for j in chunk.len()..16 {
-            print!("   ");
-            if j == 7 {
-                print!(" ");
-            }
-        }
-        
-        print!(" |");
-        
-        // Print ASCII representation
-        for byte in chunk {
-            if byte.is_ascii_graphic() || *byte == b' ' {
-                print!("{}", *byte as char);
+    // Check for common image format magic bytes
+    match &data[0..4] {
+        [0xFF, 0xD8, 0xFF, _] => true,           // JPEG
+        [0x89, 0x50, 0x4E, 0x47] => true,        // PNG
+        [0x47, 0x49, 0x46, 0x38] => true,        // GIF
+        [0x42, 0x4D, _, _] => true,              // BMP
+        _ => {
+            // Check for other formats
+            if data.len() >= 12 && &data[4..12] == b"ftypheic" {
+                true  // HEIC
+            } else if data.len() >= 8 && &data[0..8] == b"RIFF" {
+                true  // WEBP
             } else {
-                print!(".");
+                false
             }
         }
-        
-        println!("|");
     }
+}
+
+/// Save cover art to file with appropriate extension
+fn save_coverart_to_file(data: &[u8], format: &str, base_filename: &str) -> Result<String, std::io::Error> {
+    if base_filename.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Empty filename provided"
+        ));
+    }
+    
+    // Determine file extension based on format
+    let extension = match format.to_lowercase().as_str() {
+        format_str if format_str.contains("jpeg") || format_str.contains("jpg") => "jpg",
+        format_str if format_str.contains("png") => "png",
+        format_str if format_str.contains("gif") => "gif",
+        format_str if format_str.contains("bmp") => "bmp",
+        format_str if format_str.contains("webp") => "webp",
+        format_str if format_str.contains("heic") => "heic",
+        _ => "bin", // fallback for unknown formats
+    };
+    
+    let filename = format!("{}.{}", base_filename, extension);
+    
+    // Write the data to file
+    std::fs::write(&filename, data)?;
+    
+    Ok(filename)
 }

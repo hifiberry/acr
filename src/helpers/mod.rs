@@ -13,13 +13,22 @@ pub mod http_client;
 pub mod ratelimit;
 pub mod lastfm;
 pub mod security_store;
+pub mod settingsdb;
 pub mod spotify;
 pub mod retry;
 pub mod systemd;
 pub mod playback_progress;
 pub mod process_helper;
+pub mod favourites;
+pub mod genre_cleanup;
+pub mod volume;
+pub mod global_volume;
+pub mod url_encoding;
+pub mod configurator;
 #[cfg(unix)]
 pub mod mpris;
+#[cfg(unix)]
+pub mod shairportsync_messages;
 
 use crate::data::artist::Artist;
 
@@ -31,9 +40,8 @@ pub trait ArtistUpdater {
     /// 
     /// # Arguments
     /// * `artist` - The artist to update
-    /// * `mbid` - The MusicBrainz ID to use for looking up artist information
     /// 
     /// # Returns
     /// The updated artist with additional metadata
-    fn update_artist(&self, artist: Artist, mbid: &str) -> Artist;
+    fn update_artist(&self, artist: Artist) -> Artist;
 }

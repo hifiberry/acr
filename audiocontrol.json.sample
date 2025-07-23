@@ -46,6 +46,25 @@
             "attribute_cache_path": "/var/lib/audiocontrol/cache/attributes",
             "image_cache_path": "/var/lib/audiocontrol/cache/images"
         },
+        "genre_cleanup": {
+            "config_path": "/etc/audiocontrol/genre.json",
+            "_comment": "Genre cleanup configuration file. Maps genres to normalized forms and specifies which genres to ignore."
+        },
+        "configurator": {
+            "url": "http://localhost:1081",
+            "_comment": "HiFiBerry configurator API integration for system information"
+        },
+        "volume": {
+            "enable": true,
+            "type": "alsa",
+            "device": "",
+            "control_name": "",
+            "display_name": "Master Volume",
+            "_comment": "ALSA volume control configuration. Leave device and control_name empty for auto-detection via configurator API. Auto-detection uses hw:X format where X is the hardware index from the configurator API and selects the appropriate mixer control."
+        },
+        "settingsdb": {
+            "path": "/var/lib/audiocontrol/db"
+        },
         "security_store": {
             "path": "/var/lib/audiocontrol/security_store.json"
         },
@@ -115,18 +134,21 @@
             }
         },
         {
-            "shairport-mpris": {
-                "enable": true,
-                "poll_interval": 1.0,
-                "_comment": "systemd_service: Use when AirPlay 2 mode disables MPRIS controls",
-                "systemd_service": "shairport-sync"
-            }
-        },
-        {
             "_mpris": {
                 "enable": true,
                 "bus_name": "org.mpris.MediaPlayer2.vlc",
                 "poll_interval": 1.0
+            }
+        },
+        {
+            "shairport": {
+                "enable": true,
+                "port": 5555,
+                "name": "ShairportSync AirPlay",
+                "_comment": "ShairportSync metadata listener for AirPlay streams. Requires shairport-sync to be configured with metadata UDP output.",
+                "systemd_unit": "shairport-sync",
+                "coverart_dir": "/tmp/shairport-sync/.cache/coverart",
+                "_coverart_comment": "Directory to monitor for new cover art files. The watcher will automatically detect new image files and use them as album art."
             }
         }
     ]

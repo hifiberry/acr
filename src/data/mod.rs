@@ -16,6 +16,7 @@ pub mod stream_details;
 pub mod library;
 pub mod track;
 pub mod metadata;
+pub mod system_event;
 
 use std::fmt;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
@@ -133,3 +134,4 @@ pub use stream_details::*;
 pub use library::*;
 pub use track::*;
 pub use metadata::*;
+pub use system_event::*;

@@ -47,6 +47,9 @@ pub struct Song {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liked: Option<bool>, // Indicates if the song is liked or favorited
     
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composer: Option<String>,
+    
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
 }

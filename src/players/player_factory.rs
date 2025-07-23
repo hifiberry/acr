@@ -1,4 +1,4 @@
-use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController, generic::GenericPlayerController, ShairportMprisPlayerController};
+use crate::players::{MPDPlayerController, NullPlayerController, PlayerController, raat::RAATPlayerController, librespot::LibrespotPlayerController, lms::lmsaudio::LMSAudioController, generic::GenericPlayerController, ShairportController};
 
 // MPRIS support is only available on Unix-like systems
 #[cfg(not(windows))]
@@ -31,6 +31,13 @@ impl Error for PlayerCreationError {}
 pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerController>, PlayerCreationError> {
     // Expect a single key-value pair where key is the player type
     if let Some((player_type, config_obj)) = config.as_object().and_then(|obj| obj.iter().next()) {
+        // Filter out players that start with underscore (commented/disabled convention)
+        if player_type.starts_with('_') {
+            return Err(PlayerCreationError::ParseError(
+                format!("Player {} is ignored (starts with underscore)", player_type)
+            ));
+        }
+        
         // Check if the player is enabled (default to true if not specified)
         let enabled = config_obj.get("enable")
             .and_then(|v| v.as_bool())
@@ -155,19 +162,9 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .map_err(|e| PlayerCreationError::ParseError(e))?;
                 Ok(Box::new(player))
             },
-            "shairport-mpris" | "shairportsync" => {
-                // Create ShairportMprisPlayerController with optional poll interval and systemd service
-                let poll_interval = config_obj.get("poll_interval")
-                    .and_then(|v| v.as_f64())
-                    .map(|f| std::time::Duration::from_secs_f64(f))
-                    .unwrap_or_else(|| std::time::Duration::from_secs_f64(1.0));
-                
-                let systemd_service = config_obj.get("systemd_service")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty()) // Filter out empty strings
-                    .map(|s| s.to_string());
-                
-                let player = ShairportMprisPlayerController::new_with_config(poll_interval, systemd_service);
+            "shairport" => {
+                // Create ShairportController with config
+                let player = ShairportController::from_config(config_obj);
                 Ok(Box::new(player))
             },
             #[cfg(not(windows))]

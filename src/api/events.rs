@@ -182,7 +182,7 @@ impl WebSocketManager {    /// Create a new WebSocket manager
             }
             
             debug!("Event queued: Player: {}, Type: {:?}, Queue size: {}", 
-                  event.player_name(), event_type_name(&event), events.len());
+                  event.player_name().unwrap_or("system"), event_type_name(&event), events.len());
         }
     }
     
@@ -221,7 +221,7 @@ impl WebSocketManager {    /// Create a new WebSocket manager
                     if *time > last_event_time {
                         let should_send = self.should_send_to_client(event, &sub);
                         debug!("Event check: Player: {}, Type: {:?}, Time: {:?} ago, Should send: {}", 
-                              event.player_name(), event_type_name(event), 
+                              event.player_name().unwrap_or("system"), event_type_name(event), 
                               Instant::now().duration_since(*time), should_send);
                         
                         if should_send {
@@ -244,7 +244,10 @@ impl WebSocketManager {    /// Create a new WebSocket manager
     fn should_send_to_client(&self, event: &PlayerEvent, subscription: &ClientSubscription) -> bool {
         // Check player filter
         if let Some(players) = &subscription.players {
-            if !players.contains(event.player_name()) {
+            let event_player = event.player_name().unwrap_or("system");
+            
+            // Allow "*" as wildcard for all players, or check if the specific player is in the list
+            if !players.contains("*") && !players.contains(event_player) {
                 return false;
             }
         }
@@ -335,7 +338,7 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
     // Extract source information
     let source = serde_json::json!({
         "player_name": event.player_name(),
-        "player_id": format!("{}:{}", event.player_name(), "6600") // Default port for MPD
+        "player_id": format!("{}:{}", event.player_name().unwrap_or("system"), "6600") // Default port for MPD
     });
       // Create event-specific data
     let event_data = match event {
@@ -421,6 +424,16 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
                 "new_player_id": player_id
             })
         },
+        PlayerEvent::VolumeChanged { control_name, display_name, percentage, decibels, raw_value } => {
+            serde_json::json!({
+                "type": "volume_changed",
+                "control_name": control_name,
+                "display_name": display_name,
+                "percentage": percentage,
+                "decibels": decibels,
+                "raw_value": raw_value
+            })
+        },
     };
     
     WebSocketMessage {
@@ -442,6 +455,7 @@ fn event_type_name(event: &PlayerEvent) -> &'static str {
         PlayerEvent::QueueChanged { .. } => "queue_changed",
         PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
         PlayerEvent::ActivePlayerChanged { .. } => "active_player_changed",
+        PlayerEvent::VolumeChanged { .. } => "volume_changed",
     }
 }
 
@@ -520,7 +534,7 @@ pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketMan
                             
                             if let Ok(json) = serde_json::to_string(&message) {
                                 debug!("sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
-                                      client_id, event.player_name(), event_type_name(&event), json.len());
+                                      client_id, event.player_name().unwrap_or("system"), event_type_name(&event), json.len());
                                 
                                 if let Err(e) = stream.send(Message::Text(json)).await {
                                     debug!("Error sending event to client {}: {}", client_id, e);
@@ -649,7 +663,7 @@ pub fn player_event_messages(ws: WebSocket, player_name: &str, ws_manager: &rock
                             
                             if let Ok(json) = serde_json::to_string(&message) {
                                 debug!("Sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
-                                      client_id, event.player_name(), event_type_name(&event), json.len());
+                                      client_id, event.player_name().unwrap_or("system"), event_type_name(&event), json.len());
                                 
                                 if let Err(e) = stream.send(Message::Text(json)).await {
                                     debug!("Error sending event to client {}: {}", client_id, e);

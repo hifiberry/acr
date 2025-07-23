@@ -7,13 +7,19 @@ This directory contains documentation for various aspects of the HiFiBerry Audio
 - [API Documentation](api.md) - REST API and WebSocket endpoints
 - [Caching](caching.md) - Information about the caching mechanisms used in ACR
 - [CLI Tools](cli_tools.md) - Command-line tools for interacting with ACR
+- [Generic Player Controller](generic_player_controller.md) - Configurable player implementation
 - [Last.fm Authentication](lastfm.md) - How to authenticate with Last.fm
-- [Spotify Integration](spotify.md) - How to connect to Spotify using OAuth
-- [CLI Tool Renaming](renaming_summary.md) - Summary of CLI tool renaming to acr_* pattern
 - [Library Management](library.md) - How ACR manages music libraries
 - [External Links](links.md) - Links to external tools and documentation
+- [Logging](logging.md) - Logging configuration and management
+- [Metadata Management](metadata.md) - Artist metadata sources, lookup mechanisms, and processing
 - [MPD Integration](mpd.md) - Details about the Music Player Daemon integration
+- [MPRIS Integration](mpris.md) - Media Player Remote Interfacing Specification support
+- [Player Event Client](player_event_client.md) - Command-line tool for sending player events
 - [Rate Limiting](rate_limiting.md) - How API rate limiting is implemented
+- [Spotify Integration](spotify.md) - How to connect to Spotify using OAuth
+- [ACR Send Update Tool](acr_send_update.md) - Tool for sending manual updates
+- [SystemD Integration](systemd_integration.md) - Running ACR as a system service
 - [WebSocket API](websocket.md) - Real-time communication via WebSockets
 
 ## HiFiBerry OS Documentation

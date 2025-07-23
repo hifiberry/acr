@@ -25,5 +25,11 @@ pub mod spotify;
 // Export the theaudiodb module
 pub mod theaudiodb;
 
+// Export the favourites module
+pub mod favourites;
+
+// Export the volume module
+pub mod volume;
+
 // Export the server module
 pub mod server;

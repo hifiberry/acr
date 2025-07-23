@@ -160,10 +160,18 @@ Sends a playback command to a specific player by name.
 - **Path Parameters**:
   - `player-name` (string): The name of the target player. You can use "active" to target the currently active player.
   - `command` (string): The command to send (same options as above, plus the following):    - Queue management commands:
-      - `add_track:<identifier>` - Adds a track to the queue. The identifier can be either a track ID or a track URI.
+      - `add_track` - Adds a track to the queue. Requires JSON body with `uri` field. Optional `title` and `coverart_url` fields for future use.
       - `remove_track:<position>` - Removes a track at the specified position from the queue.
       - `clear_queue` - Clears the entire queue.
       - `play_queue_index:<index>` - Plays the track at the specified index position in the queue.
+- **Request Body** (for `add_track` command):
+  ```json
+  {
+    "uri": "string (required)",
+    "title": "string (optional, future use)",
+    "coverart_url": "string (optional, future use)"
+  }
+  ```
 - **Response**: Same as "Send Command to Active Player"
 - **Error Response** (400 Bad Request, 404 Not Found, 500 Internal Server Error): Same structure as above
 
@@ -178,11 +186,19 @@ curl -X POST http://<device-ip>:1080/api/player/raat/command/pause
 # Send a command to the currently active player (alternative to /api/player/active/send/)
 curl -X POST http://<device-ip>:1080/api/player/active/command/play
 
-# Add a track to the queue using track ID
-curl -X POST http://<device-ip>:1080/api/player/lms/command/add_track:12345
+# Add a track to the queue using JSON body
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "https://example.com/song.mp3"}'
 
-# Add a track to the queue using track URI
-curl -X POST http://<device-ip>:1080/api/player/lms/command/add_track:file%3A%2F%2F%2Fpath%2Fto%2Fsong.mp3
+# Add a track with optional metadata (future use)
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uri": "file:///path/to/song.mp3",
+    "title": "Custom Song Title",
+    "coverart_url": "https://example.com/cover.jpg"
+  }'
 
 # Remove a track from the queue at position 2
 curl -X POST http://<device-ip>:1080/api/player/lms/command/remove_track:2
@@ -192,6 +208,18 @@ curl -X POST http://<device-ip>:1080/api/player/lms/command/clear_queue
 
 # Play the track at index 3 in the queue
 curl -X POST http://<device-ip>:1080/api/player/lms/command/play_queue_index:3
+
+# Error examples for add_track command:
+
+# Missing JSON body (returns 400 Bad Request)
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track
+# Response: {"success": false, "message": "Invalid command: add_track - add_track command requires JSON body with 'uri' field"}
+
+# Invalid JSON structure (returns 400 Bad Request)
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/song.mp3"}'
+# Response: {"success": false, "message": "Invalid command: add_track - add_track command requires JSON body with 'uri' field"}
 ```
 
 ### Player Event Update
@@ -373,6 +401,232 @@ curl http://<device-ip>:1080/api/player/mpd/meta/volume
 # Get specific metadata for the currently active player
 curl http://<device-ip>:1080/api/player/active/meta/volume
 ```
+
+## Volume Control API
+
+The Volume Control API provides system-wide hardware volume control when supported by the device. This API manages physical audio hardware volume controls (e.g., ALSA controls) rather than software volume levels within individual players.
+
+### Get Volume Information
+
+Retrieves information about the available volume control and current state.
+
+- **Endpoint**: `/api/volume/info`
+- **Method**: GET
+- **Response**:
+  ```json
+  {
+    "available": true,
+    "control_info": {
+      "internal_name": "hw:0,0",
+      "display_name": "Master Volume",
+      "decibel_range": {
+        "min_db": -96.0,
+        "max_db": 0.0
+      }
+    },
+    "current_state": {
+      "percentage": 75.0,
+      "decibels": -12.0,
+      "raw_value": 120
+    },
+    "supports_change_monitoring": true
+  }
+  ```
+
+#### Response Fields
+
+- `available` (boolean): Whether volume control is available on this device
+- `control_info` (object): Information about the volume control hardware
+  - `internal_name` (string): Internal system name for the volume control
+  - `display_name` (string): Human-readable name for the control
+  - `decibel_range` (object): Supported decibel range (if available)
+    - `min_db` (number): Minimum volume in decibels
+    - `max_db` (number): Maximum volume in decibels
+- `current_state` (object): Current volume state (if available)
+  - `percentage` (number): Current volume as percentage (0-100)
+  - `decibels` (number): Current volume in decibels (if supported)
+  - `raw_value` (number): Raw hardware control value (implementation specific)
+- `supports_change_monitoring` (boolean): Whether the system can monitor volume changes
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/volume/info
+```
+
+### Get Current Volume State
+
+Retrieves only the current volume state information.
+
+- **Endpoint**: `/api/volume/state`
+- **Method**: GET
+- **Response**:
+  ```json
+  {
+    "percentage": 75.0,
+    "decibels": -12.0,
+    "raw_value": 120
+  }
+  ```
+- **Error Response** (503 Service Unavailable):
+  ```json
+  {
+    "success": false,
+    "message": "Volume control not available",
+    "new_state": null
+  }
+  ```
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/volume/state
+```
+
+### Set Volume Level
+
+Sets the volume to a specific level using percentage, decibels, or raw value.
+
+- **Endpoint**: `/api/volume/set`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Request Body** (at least one value required):
+  ```json
+  {
+    "percentage": 75.0,
+    "decibels": -12.0,
+    "raw_value": 120
+  }
+  ```
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Volume set successfully",
+    "new_state": {
+      "percentage": 75.0,
+      "decibels": -12.0,
+      "raw_value": 120
+    }
+  }
+  ```
+- **Error Response** (400 Bad Request):
+  ```json
+  {
+    "success": false,
+    "message": "Volume percentage 150 is out of range (0-100)",
+    "new_state": null
+  }
+  ```
+
+#### Examples
+```bash
+# Set volume to 50%
+curl -X POST http://<device-ip>:1080/api/volume/set \
+  -H "Content-Type: application/json" \
+  -d '{"percentage": 50.0}'
+
+# Set volume to -20dB
+curl -X POST http://<device-ip>:1080/api/volume/set \
+  -H "Content-Type: application/json" \
+  -d '{"decibels": -20.0}'
+
+# Set volume using raw hardware value
+curl -X POST http://<device-ip>:1080/api/volume/set \
+  -H "Content-Type: application/json" \
+  -d '{"raw_value": 100}'
+```
+
+### Increase Volume
+
+Increases the volume by a specified percentage amount.
+
+- **Endpoint**: `/api/volume/increase?<amount>`
+- **Method**: POST
+- **Query Parameters**:
+  - `amount` (number, optional): Percentage to increase (default: 5.0)
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Volume increased to 80.0%",
+    "new_state": {
+      "percentage": 80.0,
+      "decibels": -9.5,
+      "raw_value": 128
+    }
+  }
+  ```
+
+#### Examples
+```bash
+# Increase volume by default amount (5%)
+curl -X POST http://<device-ip>:1080/api/volume/increase
+
+# Increase volume by 10%
+curl -X POST "http://<device-ip>:1080/api/volume/increase?amount=10.0"
+```
+
+### Decrease Volume
+
+Decreases the volume by a specified percentage amount.
+
+- **Endpoint**: `/api/volume/decrease?<amount>`
+- **Method**: POST
+- **Query Parameters**:
+  - `amount` (number, optional): Percentage to decrease (default: 5.0)
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Volume decreased to 70.0%",
+    "new_state": {
+      "percentage": 70.0,
+      "decibels": -14.5,
+      "raw_value": 112
+    }
+  }
+  ```
+
+#### Examples
+```bash
+# Decrease volume by default amount (5%)
+curl -X POST http://<device-ip>:1080/api/volume/decrease
+
+# Decrease volume by 15%
+curl -X POST "http://<device-ip>:1080/api/volume/decrease?amount=15.0"
+```
+
+### Toggle Mute
+
+Toggles between muted (0% volume) and unmuted (50% volume) states.
+
+- **Endpoint**: `/api/volume/mute`
+- **Method**: POST
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Volume muted at 0.0%",
+    "new_state": {
+      "percentage": 0.0,
+      "decibels": -96.0,
+      "raw_value": 0
+    }
+  }
+  ```
+
+#### Example
+```bash
+curl -X POST http://<device-ip>:1080/api/volume/mute
+```
+
+### Volume Control Notes
+
+- **Hardware Dependency**: Volume control availability depends on the underlying hardware and ALSA configuration
+- **System-Wide**: This controls the system's hardware volume, not individual player volumes
+- **Range Limits**: Volume values are automatically clamped to valid ranges (0-100% for percentage)
+- **Multiple Formats**: You can set volume using percentage (0-100), decibels (if supported), or raw hardware values
+- **Priority**: When multiple values are provided in a set request, percentage takes priority, followed by decibels, then raw value
+- **Monitoring**: Some systems support volume change monitoring to detect external volume changes (e.g., hardware volume buttons)
 
 ## Plugin API
 
@@ -890,6 +1144,263 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 - Validating artist MusicBrainz ID mappings
 - Testing external service rate limiting
 - Debugging TheAudioDB API configuration
+
+### Favourites API
+
+The Favourites API allows users to manage their favourite songs across multiple providers (LocalDB, Last.fm, etc.). The API supports adding, removing, and checking the favourite status of songs.
+
+#### List Favourite Providers
+
+Retrieves information about available and enabled favourite providers.
+
+- **Endpoint**: `/api/favourites/providers`
+- **Method**: GET
+- **Response** (200 OK):
+
+  ```json
+  {
+    "enabled_providers": ["settingsdb", "lastfm", "spotify"],
+    "total_providers": 3,
+    "enabled_count": 2,
+    "providers": [
+      {
+        "name": "settingsdb",
+        "display_name": "User settings",
+        "enabled": true,
+        "active": true,
+        "favourite_count": 25
+      },
+      {
+        "name": "lastfm",
+        "display_name": "Last.fm",
+        "enabled": true,
+        "active": false,
+        "favourite_count": null
+      },
+      {
+        "name": "spotify",
+        "display_name": "Spotify",
+        "enabled": false,
+        "active": false,
+        "favourite_count": null
+      }
+    ]
+  }
+  ```
+
+  - `enabled_providers`: List of provider names that are currently enabled
+  - `total_providers`: Total number of providers (enabled and disabled)
+  - `enabled_count`: Number of currently enabled providers  
+  - `providers`: Detailed information for each provider
+    - `name`: Provider identifier (e.g., "settingsdb", "lastfm", "spotify")
+    - `display_name`: Human-readable name for the provider (e.g., "User settings", "Last.fm", "Spotify")
+    - `enabled`: Whether the provider is currently enabled and available
+    - `active`: Whether the provider is currently active (e.g., user logged in for remote providers)
+    - `favourite_count`: Number of favorites stored by this provider (null if provider doesn't support counting)
+
+**Example**:
+```bash
+curl http://<device-ip>:1080/api/favourites/providers
+```
+
+#### Check if Song is Favourite
+
+Checks whether a song is marked as favourite by any enabled provider.
+
+- **Endpoint**: `/api/favourites/is_favourite`
+- **Method**: GET
+- **Query Parameters**:
+  - `artist` (string, required): Artist name
+  - `title` (string, required): Song title
+- **Response** (200 OK):
+
+  ```json
+  {
+    "Ok": {
+      "is_favourite": true,
+      "providers": ["Last.fm", "Spotify"]
+    }
+  }
+  ```
+
+  - `is_favourite`: Boolean indicating if the song is marked as favourite by any enabled provider
+  - `providers`: Array of provider display names where the song is actually marked as favourite
+
+- **Response** (400 Bad Request):
+
+  ```json
+  {
+    "Err": {
+      "error": "Missing required parameters: artist and title"
+    }
+  }
+  ```
+
+**Example**:
+```bash
+curl "http://<device-ip>:1080/api/favourites/is_favourite?artist=The%20Beatles&title=Hey%20Jude"
+```
+
+#### Add Song to Favourites
+
+Adds a song to favourites across all enabled providers.
+
+- **Endpoint**: `/api/favourites/add`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Request Body**:
+
+  ```json
+  {
+    "artist": "The Beatles",
+    "title": "Hey Jude"
+  }
+  ```
+
+- **Response** (200 OK):
+
+  ```json
+  {
+    "Ok": {
+      "success": true,
+      "message": "Added 'Hey Jude' by 'The Beatles' to favourites",
+      "providers": ["settingsdb", "lastfm"],
+      "updated_providers": ["settingsdb", "lastfm"]
+    }
+  }
+  ```
+
+- **Response** (400 Bad Request):
+
+  ```json
+  {
+    "Err": {
+      "error": "Invalid song: Artist cannot be empty"
+    }
+  }
+  ```
+
+- **Response** (422 Unprocessable Entity):
+
+  ```json
+  {
+    "Err": {
+      "error": "Missing required fields: artist or title"
+    }
+  }
+  ```
+
+**Example**:
+```bash
+curl -X POST http://<device-ip>:1080/api/favourites/add \
+  -H "Content-Type: application/json" \
+  -d '{"artist": "The Beatles", "title": "Hey Jude"}'
+```
+
+#### Remove Song from Favourites
+
+Removes a song from favourites across all enabled providers.
+
+- **Endpoint**: `/api/favourites/remove`
+- **Method**: DELETE
+- **Content-Type**: `application/json`
+- **Request Body**:
+
+  ```json
+  {
+    "artist": "The Beatles",
+    "title": "Hey Jude"
+  }
+  ```
+
+- **Response** (200 OK):
+
+  ```json
+  {
+    "Ok": {
+      "success": true,
+      "message": "Removed 'Hey Jude' by 'The Beatles' from favourites",
+      "providers": ["settingsdb", "lastfm"],
+      "updated_providers": ["settingsdb"]
+    }
+  }
+  ```
+
+- **Response** (400 Bad Request):
+
+  ```json
+  {
+    "Err": {
+      "error": "Invalid song: Title cannot be empty"
+    }
+  }
+  ```
+
+**Example**:
+```bash
+curl -X DELETE http://<device-ip>:1080/api/favourites/remove \
+  -H "Content-Type: application/json" \
+  -d '{"artist": "The Beatles", "title": "Hey Jude"}'
+```
+
+#### Configuration Requirements
+
+The favourites API requires at least one provider to be configured. Available providers include:
+
+**SettingsDB Provider** (Local Storage):
+- Always available
+- Stores favourites in the local database
+- No additional configuration required
+- `enabled`: Always true when database is accessible
+- `active`: Always true when enabled (no authentication required)
+
+**Last.fm Provider**:
+- Requires Last.fm API credentials and user authentication
+- `enabled`: True when API credentials are configured
+- `active`: True when user is logged in/authenticated with Last.fm
+- Configuration example:
+
+```json
+{
+  "services": {
+    "lastfm": {
+      "enable": true,
+      "api_key": "your_lastfm_api_key",
+      "api_secret": "your_lastfm_api_secret",
+      "now_playing_enabled": true,
+      "scrobble": true
+    }
+  }
+}
+```
+
+**Spotify Provider** (Read-Only):
+- Requires Spotify authentication via OAuth
+- Only supports checking if songs are favourites (read-only)
+- Adding/removing favourites must be done through the Spotify app
+- `enabled`: True when user has valid Spotify authentication tokens
+- `active`: True when enabled (same as enabled for Spotify)
+- Uses Spotify Web API to search for songs and check saved track status
+- No additional configuration required beyond OAuth authentication
+
+#### Response Format Notes
+
+- All favourites API responses are wrapped in `Ok` for successful operations or `Err` for errors
+- The `updated_providers` field shows which providers actually processed the operation successfully
+- The `providers` field in favourite status checks returns human-readable display names (e.g., "Last.fm", "Spotify") for better user experience
+- Case sensitivity depends on the provider implementation (SettingsDB is case-insensitive)
+- Unicode and special characters in artist/title names are supported
+- Spotify provider is read-only: it can check favourite status but cannot add/remove favourites
+
+#### Error Handling
+
+Common error scenarios:
+
+- **Missing Parameters**: HTTP 400 with error message
+- **Empty Strings**: HTTP 400 with validation error message  
+- **Invalid JSON**: HTTP 422 Unprocessable Entity
+- **Provider Errors**: Logged but don't prevent other providers from working
+- **No Providers Available**: Operations will complete but may have empty `updated_providers`
 
 ## Data Structures
 

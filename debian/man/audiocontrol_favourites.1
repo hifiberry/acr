@@ -1,0 +1,107 @@
+.TH AUDIOCONTROL_FAVOURITES 1 "July 2025" "AudioControl Manual" "User Commands"
+.SH NAME
+audiocontrol_favourites \- manage favourite songs via AudioControl API
+.SH SYNOPSIS
+.B audiocontrol_favourites
+[\fIOPTIONS\fR] \fICOMMAND\fR
+.SH DESCRIPTION
+.B audiocontrol_favourites
+is a command-line utility for managing favourite songs through the AudioControl
+REST API. It allows you to check, add, remove, and list favourite songs across
+all configured favourite providers (like Last.fm and local settings).
+.PP
+The tool communicates with a running AudioControl instance via HTTP REST API
+calls and supports multiple favourite providers simultaneously.
+.SH OPTIONS
+.TP
+.BR \-\-url " " \fIURL\fR
+AudioControl API base URL (default: http://localhost:1080)
+.TP
+.BR \-v ", " \-\-verbose
+Enable verbose output with detailed request/response information
+.TP
+.BR \-q ", " \-\-quiet
+Quiet mode - suppress all output except errors
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit
+.SH COMMANDS
+.TP
+.BR check " \-a " \fIARTIST\fR " \-t " \fITITLE\fR
+Check if a song is marked as favourite
+.TP
+.BR add " \-a " \fIARTIST\fR " \-t " \fITITLE\fR
+Add a song to favourites
+.TP
+.BR remove " \-a " \fIARTIST\fR " \-t " \fITITLE\fR
+Remove a song from favourites
+.TP
+.BR providers
+List available favourite providers and their status
+.SH COMMAND OPTIONS
+.TP
+.BR \-a ", " \-\-artist " " \fIARTIST\fR
+Artist name (required for check, add, and remove commands)
+.TP
+.BR \-t ", " \-\-title " " \fITITLE\fR
+Song title (required for check, add, and remove commands)
+.SH EXAMPLES
+.TP
+Check if a song is favourite:
+.B audiocontrol_favourites check --artist "The Beatles" --title "Hey Jude"
+.TP
+Add a song to favourites:
+.B audiocontrol_favourites add -a "Pink Floyd" -t "Wish You Were Here"
+.TP
+Remove a song from favourites:
+.B audiocontrol_favourites remove --artist "Queen" --title "Bohemian Rhapsody"
+.TP
+List available providers:
+.B audiocontrol_favourites providers
+.TP
+Use custom AudioControl URL:
+.B audiocontrol_favourites --url http://192.168.1.100:1080 providers
+.TP
+Verbose output for debugging:
+.B audiocontrol_favourites -v add --artist "Artist" --title "Song"
+.SH OUTPUT FORMAT
+.SS Check Command
+Shows whether the song is marked as favourite:
+.PP
+.nf
+✓ 'Hey Jude' by 'The Beatles' is marked as favourite
+✗ 'Song' by 'Artist' is not marked as favourite
+.fi
+.SS Add/Remove Commands
+Shows success or failure of the operation:
+.PP
+.nf
+✓ Added 'Wish You Were Here' by 'Pink Floyd' to favourites
+✓ Removed 'Bohemian Rhapsody' by 'Queen' from favourites
+.fi
+.SS Providers Command
+Lists available providers and their status:
+.PP
+.nf
+Favourite Providers: 2 enabled out of 2 total
+
+  Last.fm (lastfm): ✓ Enabled
+  User settings (settingsdb): ✓ Enabled
+.fi
+.SH EXIT STATUS
+.TP
+.B 0
+Success
+.TP
+.B 1
+Error (network failure, API error, invalid arguments, etc.)
+.SH NOTES
+This tool requires a running AudioControl instance accessible at the specified URL.
+The favourite providers (Last.fm, settings database) must be configured in AudioControl
+for the operations to work.
+.PP
+Artist and title parameters are case-sensitive and should match the metadata
+exactly as stored in AudioControl.
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_send_update (1)

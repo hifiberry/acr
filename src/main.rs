@@ -5,6 +5,7 @@ use audiocontrol::helpers::imagecache::ImageCache;
 use audiocontrol::helpers::lastfm;
 use audiocontrol::helpers::musicbrainz;
 use audiocontrol::helpers::security_store::SecurityStore;
+use audiocontrol::helpers::settingsdb::SettingsDb;
 use audiocontrol::helpers::spotify;
 use audiocontrol::helpers::theaudiodb;
 use audiocontrol::logging;
@@ -193,11 +194,44 @@ fn main() {
 
     // Initialize the global image cache with the configured path from JSON
     initialize_image_cache(&image_cache_path);
+
+    // Get the settings database path from configuration
+    let settingsdb_path =
+        if let Some(settingsdb_config) = get_service_config(&controllers_config, "settingsdb") {
+            if let Some(db_path) = settingsdb_config
+                .get("path")
+                .and_then(|p| p.as_str())
+            {
+                info!("Using settings database path from config: {}", db_path);
+                db_path.to_string()
+            } else {
+                let default_path = "/var/lib/audiocontrol/db".to_string();
+                info!(
+                    "No path specified in settingsdb configuration, using default path: {}",
+                    default_path
+                );
+                default_path
+            }
+        } else {
+            let default_path = "/var/lib/audiocontrol/db".to_string();
+            info!(
+                "No settingsdb configuration found, using default path: {}",
+                default_path
+            );
+            default_path
+        };
+
+    // Initialize the global settings database with the configured path from JSON
+    initialize_settingsdb(&settingsdb_path);
     // Initialize MusicBrainz with the configuration
     initialize_musicbrainz(&controllers_config);
 
     // Initialize TheAudioDB with the configuration
     initialize_theaudiodb(&controllers_config);
+    
+    // Initialize configurator with the configuration
+    initialize_configurator(&controllers_config);
+    
     // Initialize Last.fm with the configuration
     initialize_lastfm(&controllers_config);
     // Initialize Spotify with the configuration
@@ -205,6 +239,34 @@ fn main() {
         spotify::Spotify::set_global_config(spotify_config);
     }
     initialize_spotify(&controllers_config);
+
+    // Initialize volume control with the configuration
+    audiocontrol::helpers::global_volume::initialize_volume_control(&controllers_config);
+
+    // Start volume change monitoring if supported
+    if audiocontrol::helpers::global_volume::supports_volume_change_monitoring() {
+        info!("Starting volume change monitoring");
+        match audiocontrol::helpers::global_volume::start_volume_change_monitoring() {
+            Ok(_) => {
+                info!("Volume change monitoring started successfully");
+            },
+            Err(e) => {
+                warn!("Failed to start volume change monitoring: {}", e);
+            }
+        }
+    } else {
+        info!("Volume change monitoring not supported by current volume control");
+    }
+
+    // Initialize favourite providers (Last.fm and SettingsDB)
+    audiocontrol::helpers::favourites::initialize_favourite_providers();
+
+    // Initialize genre cleanup with configuration
+    if let Err(e) = audiocontrol::helpers::genre_cleanup::initialize_genre_cleanup_with_config(Some(&controllers_config)) {
+        warn!("Failed to initialize genre cleanup: {}", e);
+    } else {
+        info!("Genre cleanup initialized successfully");
+    }
 
     // Set up a shared flag for graceful shutdown
     let running = Arc::new(AtomicBool::new(true));
@@ -333,6 +395,14 @@ fn initialize_image_cache(image_cache_path: &str) {
     }
 }
 
+// Helper function to initialize the global settings database
+fn initialize_settingsdb(settingsdb_path: &str) {
+    match SettingsDb::initialize(settingsdb_path) {
+        Ok(_) => info!("Settings database initialized with path: {}", settingsdb_path),
+        Err(e) => warn!("Failed to initialize settings database: {}", e),
+    }
+}
+
 // Helper function to initialize MusicBrainz
 fn initialize_musicbrainz(config: &serde_json::Value) {
     musicbrainz::initialize_from_config(config);
@@ -343,6 +413,12 @@ fn initialize_musicbrainz(config: &serde_json::Value) {
 fn initialize_theaudiodb(config: &serde_json::Value) {
     theaudiodb::initialize_from_config(config);
     info!("TheAudioDB initialized successfully");
+}
+
+// Helper function to initialize configurator
+fn initialize_configurator(config: &serde_json::Value) {
+    audiocontrol::helpers::configurator::initialize_from_config(config);
+    info!("Configurator initialized successfully");
 }
 
 // Helper function to initialize Last.fm

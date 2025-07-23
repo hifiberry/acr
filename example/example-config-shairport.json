@@ -1,0 +1,8 @@
+{
+  "shairport": {
+    "type": "shairport",
+    "enable": true,
+    "port": 5555,
+    "name": "ShairportSync AirPlay"
+  }
+}

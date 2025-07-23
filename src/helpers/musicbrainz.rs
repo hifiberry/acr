@@ -1,5 +1,6 @@
 use crate::helpers::attributecache;
 use crate::helpers::ratelimit;
+use crate::helpers::sanitize;
 use crate::config::get_service_config;
 use log::{info, error, debug};
 use std::time::Duration;
@@ -463,8 +464,8 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
     };
       // Parse the JSON response
     debug!("Received MusicBrainz API response: {} chars", response.len());
-    // Print the first 200 chars of the response for debugging
-    debug!("Response starts with: {}", &response[..std::cmp::min(200, response.len())]);
+    // Print the first 200 chars of the response for debugging (UTF-8 safe)
+    debug!("Response starts with: {}", sanitize::safe_truncate(&response, 200));
     
     let search_result: Result<MusicBrainzArtistSearchResponse, _> = serde_json::from_str(&response);
     match search_result {
@@ -516,7 +517,8 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
             MusicBrainzSearchResult::NotFound
         },        Err(e) => {
             error!("Failed to parse MusicBrainz API response: {}", e);
-            error!("Response text: {}", &response[..std::cmp::min(500, response.len())]);
+            // Print error response safely (UTF-8 safe truncation)
+            error!("Response text: {}", sanitize::safe_truncate(&response, 500));
             debug!("Full response JSON: {}", response);
             // Add to negative cache before returning
             FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);

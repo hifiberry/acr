@@ -226,6 +226,6 @@ Example output on error:
 
 ## Related Documentation
 
-- [GenericPlayerController Documentation](../doc/GenericPlayerController.md)
+- [GenericPlayerController Documentation](generic_player_controller.md)
 - [API Documentation](../doc/api.md)
 - [AudioControl Configuration Guide](../README.md)

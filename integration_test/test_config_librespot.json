@@ -1,0 +1,69 @@
+{
+    "action_plugins": [
+        {
+            "active-monitor": {
+                "enabled": true
+            }
+        },
+        {
+            "event-logger": {
+                "enabled": true,
+                "event_types": [
+                    "state",
+                    "song"
+                ],
+                "log_level": "info",
+                "only_active": false
+            }
+        }
+    ],
+    "services": {
+        "webserver": {
+            "enable": true,
+            "host": "127.0.0.1",
+            "port": 18080
+        },
+        "cache": {
+            "attribute_cache_path": "/tmp/test_cache_librespot/attributes",
+            "image_cache_path": "/tmp/test_cache_librespot/images"
+        },
+        "settingsdb": {
+            "path": "/tmp/test_db_librespot"
+        },
+        "security_store": {
+            "path": "/tmp/test_security_store_librespot.json"
+        },
+        "musicbrainz": {
+            "enable": false
+        },
+        "theaudiodb": {
+            "enable": false,
+            "api_key": "",
+            "rate_limit_ms": 500
+        },
+        "lastfm": {
+            "enable": false,
+            "api_key": "",
+            "api_secret": "",
+            "now_playing_enabled": false,
+            "scrobble": false
+        },
+        "spotify": {
+            "enable": false
+        }
+    },
+    "players": [
+        {
+            "librespot": {
+                "name": "librespot_test",
+                "enable": true,
+                "device_name": "AudioControl Test Device",
+                "device_type": "computer",
+                "supports_api_events": true,
+                "initial_volume": 50,
+                "volume_normalisation": false,
+                "cache_credentials": false
+            }
+        }
+    ]
+}

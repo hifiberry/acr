@@ -1,0 +1,331 @@
+matuschd@development-office-cm5:~ $ sudo audiocontrol_list_genres
+hip-hop: 508
+rock: 493
+pop: 402
+folk: 319
+alternative rock: 299
+electronic: 293
+indie: 293
+seen live: 236
+composer: 222
+rap: 184
+female vocalists: 163
+classical: 156
+singer-songwriter: 155
+alternative: 141
+jazz: 138
+heavy metal: 136
+metal: 132
+experimental: 114
+ost: 112
+hip hop: 106
+indie rock: 93
+soul: 87
+thrash metal: 85
+instrumental: 83
+country: 80
+german: 77
+orchestra: 77
+soundtrack: 77
+ambient: 69
+pop-rock: 65
+power metal: 64
+progressive metal: 64
+classic rock: 57
+acoustic: 55
+blues: 55
+post-punk: 53
+punk rock: 53
+progressive rock: 52
+reggae: 52
+new wave: 50
+british: 47
+techno: 47
+industrial metal: 44
+hard rock: 43
+synthpop: 40
+singer songwriter: 39
+trip hop: 38
+conductor: 37
+french: 37
+dance: 34
+electronica: 34
+80s: 33
+nu metal: 33
+post-rock: 33
+house: 32
+metalcore: 32
+r&b: 32
+symphonic metal: 31
+contemporary classical: 30
+death metal: 30
+indie pop: 29
+hardcore: 27
+pianist: 27
+piano: 25
+rnb: 25
+chillout: 24
+composers: 24
+funk: 24
+alternative metal: 23
+underground hip-hop: 23
+chanson francaise: 22
+deutsch: 22
+downtempo: 22
+punk: 22
+alt-country: 20
+chanson: 20
+trip-hop: 20
+canadian: 19
+industrial: 19
+lounge: 18
+musical: 18
+trap: 18
+alternative hip-hop: 17
+americana: 17
+avant-garde: 16
+opera: 16
+psychedelic: 16
+lo-fi: 15
+psychedelic rock: 15
+rockabilly: 15
+speed metal: 15
+60s: 14
+american: 14
+comedy: 14
+noise: 14
+electro: 13
+folk rock: 13
+minimalism: 13
+rock & roll: 13
+world: 13
+australian: 12
+grunge: 12
+orchestral: 12
+score: 12
+italian: 11
+swing: 11
+violinist: 11
+deutschrock: 10
+dubstep: 10
+gangsta rap: 10
+guitar: 10
+minimal: 10
+new york: 10
+oldies: 10
+political: 10
+romantic: 10
+alternative country: 9
+black metal: 9
+ska: 9
+swedish: 9
+90s: 8
+baroque: 8
+classic: 8
+detroit: 8
+dirty south: 8
+dub: 8
+female fronted metal: 8
+garage rock: 8
+new age: 8
+ostrock: 8
+stoner rock: 8
+trance: 8
+wu-tang: 8
+70s: 7
+britpop: 7
+classic country: 7
+detroit techno: 7
+deutschrap: 7
+france: 7
+gothic metal: 7
+indie folk: 7
+industrial rock: 7
+irish: 7
+k-pop: 7
+latin: 7
+norwegian: 7
+old school: 7
+blues rock: 6
+breaks: 6
+contemporary jazz: 6
+disco: 6
+east coast rap: 6
+ecm: 6
+electro house: 6
+folk metal: 6
+francais: 6
+freak folk: 6
+garage: 6
+gothic: 6
+groove metal: 6
+proto-punk: 6
+rock and roll: 6
+rock n roll: 6
+acid jazz: 5
+atlanta: 5
+contemporary folk: 5
+country rock: 5
+drum & bass: 5
+french pop: 5
+hardcore punk: 5
+jazz vocal: 5
+liedermacher: 5
+melodic death metal: 5
+modern classical: 5
+pop rock: 5
+progressive: 5
+roots: 5
+soundtracks: 5
+swiss: 5
+symphonic: 5
+turntablism: 5
+all: 4
+alternative rap: 4
+argentina: 4
+austrian: 4
+big beat: 4
+cello: 4
+celtic: 4
+chamber pop: 4
+dark ambient: 4
+drone: 4
+drums: 4
+emo: 4
+film score: 4
+finnish: 4
+free jazz: 4
+glam rock: 4
+idm: 4
+industrial techno: 4
+jazz hop: 4
+krautrock: 4
+math rock: 4
+melodic metal: 4
+movie score composers: 4
+nwobhm: 4
+outlaw country: 4
+post-hardcore: 4
+spoken word: 4
+uk: 4
+usa: 4
+vocal jazz: 4
+west coast rap: 4
+world music: 4
+bass: 3
+belgium: 3
+broadway: 3
+children: 3
+drum and bass: 3
+easy listening: 3
+ebm: 3
+female vocalist: 3
+glitch: 3
+gospel: 3
+hiphop: 3
+icelandic: 3
+japanese: 3
+jewish: 3
+liszaj radio: 3
+minimalist: 3
+mistagged artist: 3
+new weird america: 3
+new zealand: 3
+noise rock: 3
+polish: 3
+pop punk: 3
+post-metal: 3
+producer: 3
+rhythm and blues: 3
+roots reggae: 3
+screamo: 3
+sludge: 3
+spanish: 3
+spotify: 3
+symphony: 3
+urban: 3
+50s: 2
+afrobeat: 2
+algerian: 2
+anarchist: 2
+aor: 2
+art pop: 2
+art rock: 2
+belgian: 2
+bluegrass: 2
+chanson française: 2
+choral: 2
+cloud rap: 2
+dancehall: 2
+ddr: 2
+dj: 2
+doom metal: 2
+dream pop: 2
+dub techno: 2
+dutch: 2
+electro-industrial: 2
+electropop: 2
+emo rap: 2
+epic metal: 2
+ethereal: 2
+eurovision: 2
+eurovision song contest: 2
+female: 2
+film music: 2
+film scores: 2
+flute: 2
+francophone: 2
+fusion: 2
+greek: 2
+gypsy: 2
+happy hardcore: 2
+honky tonk: 2
+hungarian: 2
+impressionist: 2
+indietronica: 2
+instrumental hip-hop: 2
+italy: 2
+jamaica: 2
+kanye west: 2
+kawaii metal: 2
+kickasstic: 2
+klezmer: 2
+math metal: 2
+mellow: 2
+mf doom: 2
+mike patton: 2
+minimal techno: 2
+neo-soul: 2
+neoclassical: 2
+new rave: 2
+ninja tune: 2
+northern soul: 2
+nu-metal: 2
+nueva cancion: 2
+old school hip hop: 2
+percussion: 2
+poetry: 2
+post rock: 2
+post-bop: 2
+post-grunge: 2
+power pop: 2
+progressive death metal: 2
+rai: 2
+russian: 2
+saddle creek: 2
+scottish: 2
+sesh: 2
+southern rap: 2
+spain: 2
+surf rock: 2
+switzerland: 2
+symphonic power metal: 2
+technical metal: 2
+trumpet: 2
+ukrainian: 2
+under 2000 listeners: 2
+united states: 2
+video game music: 2
+vocal: 2
+west coast: 2
+western swing: 2

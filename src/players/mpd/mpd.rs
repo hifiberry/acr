@@ -3,6 +3,7 @@ use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, Playbac
 use crate::data::library::LibraryInterface;
 use crate::constants::API_PREFIX;
 use crate::helpers::retry::RetryHandler;
+use crate::helpers::url_encoding;
 use delegate::delegate;
 use std::sync::{Arc, Mutex};
 use log::{debug, info, warn, error, trace};
@@ -15,7 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
-use urlencoding;
 
 /// Constant for MPD image API URL prefix including API prefix
 pub fn mpd_image_url() -> String {
@@ -866,11 +866,27 @@ impl MPDPlayerController {
             }
         }
     }    /// Convert an MPD song to our Song format
-    fn convert_mpd_song(mpd_song: mpd::Song) -> Song {
+    fn convert_mpd_song(mpd_song: mpd::Song, player_arc: Option<Arc<Self>>) -> Song {
         // Generate cover art URL using the file path/URI from MPD song
         let cover_url = if !mpd_song.file.is_empty() {
-            // Use the API endpoint for MPD images with the song URI
-            Some(format!("{}/{}", mpd_image_url(), urlencoding::encode(&mpd_song.file)))
+            // Try to use encoded URL if library is available
+            if let Some(player) = &player_arc {
+                if let Ok(library_guard) = player.library.lock() {
+                    if let Some(library) = library_guard.as_ref() {
+                        // Use the library's create_encoded_image_url method
+                        Some(library.create_encoded_image_url(&mpd_song.file))
+                    } else {
+                        // Fallback to base64 encoded URL if library not available
+                        Some(format!("{}/{}", mpd_image_url(), url_encoding::encode_url_safe(&mpd_song.file)))
+                    }
+                } else {
+                    // Fallback to base64 encoded URL if can't access library
+                    Some(format!("{}/{}", mpd_image_url(), url_encoding::encode_url_safe(&mpd_song.file)))
+                }
+            } else {
+                // Fallback to base64 encoded URL if no player provided
+                Some(format!("{}/{}", mpd_image_url(), url_encoding::encode_url_safe(&mpd_song.file)))
+            }
         } else {
             None
         };
@@ -905,6 +921,7 @@ impl MPDPlayerController {
             stream_url: Some(mpd_song.file.clone()),
             source: Some("mpd".to_string()),
             liked: None,
+            composer: None,
             metadata: HashMap::new(),
         }
     }
@@ -919,7 +936,7 @@ impl MPDPlayerController {
             Ok(song_opt) => {
                 if let Some(mpd_song) = song_opt {
                     // Convert MPD song to our Song format
-                    let song = Self::convert_mpd_song(mpd_song);
+                    let song = Self::convert_mpd_song(mpd_song, Some(player.clone()));
                     
                     info!("Now playing: {} - {}", 
                         song.title.as_deref().unwrap_or("Unknown"),

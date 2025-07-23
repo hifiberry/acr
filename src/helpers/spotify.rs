@@ -12,6 +12,7 @@ use once_cell::sync::{Lazy, OnceCell};
 use std::sync::Mutex;
 
 use crate::helpers::security_store::SecurityStore;
+use crate::helpers::sanitize;
 
 // Constants for token storage
 const SPOTIFY_ACCESS_TOKEN_KEY: &str = "spotify_access_token";
@@ -427,7 +428,8 @@ impl Spotify {
         ];
         if let Some(client_id) = self.get_client_id() {
             if !client_id.is_empty() {
-                debug!("Sending X-Spotify-Client-Id: {}... ({} chars)", &client_id[..std::cmp::min(6, client_id.len())], client_id.len());
+                debug!("Sending X-Spotify-Client-Id: {}... ({} chars)", 
+                       sanitize::safe_truncate(&client_id, 6), client_id.len());
                 headers.push(("X-Spotify-Client-Id", client_id.to_string()));
             } else {
                 debug!("Not sending X-Spotify-Client-Id: value is empty");
@@ -437,7 +439,8 @@ impl Spotify {
         }
         if let Some(client_secret) = self.get_client_secret() {
             if !client_secret.is_empty() {
-                debug!("Sending X-Spotify-Client-Secret: {}... ({} chars)", &client_secret[..std::cmp::min(6, client_secret.len())], client_secret.len());
+                debug!("Sending X-Spotify-Client-Secret: {}... ({} chars)", 
+                       sanitize::safe_truncate(&client_secret, 6), client_secret.len());
                 headers.push(("X-Spotify-Client-Secret", client_secret.to_string()));
             } else {
                 debug!("Not sending X-Spotify-Client-Secret: value is empty");
@@ -749,6 +752,219 @@ impl Spotify {
     pub fn build_login_url(&self, session_id: &str) -> String {
         let base_url = self.get_oauth_url();
         format!("{base_url}login/{session_id}")
+    }
+
+    /// Check if a song is in the user's favourites/saved tracks
+    /// 
+    /// This method searches for the song on Spotify using artist and title,
+    /// then checks if any of the found track IDs are in the user's saved tracks.
+    /// 
+    /// # Arguments
+    /// * `artist` - The artist name
+    /// * `title` - The song title
+    /// 
+    /// # Returns
+    /// * `Ok(Some(true))` - Song is in favourites
+    /// * `Ok(Some(false))` - Song is not in favourites
+    /// * `Ok(None)` - Song not found on Spotify
+    /// * `Err(...)` - API error occurred
+    pub fn is_song_favourite(&self, artist: &str, title: &str) -> Result<Option<bool>> {
+        debug!("Checking if song is favourite: '{}' by '{}'", title, artist);
+        
+        // First, search for the song on Spotify
+        let query = format!("track:\"{}\" artist:\"{}\"", title, artist);
+        let search_result = self.search(&query, &["track"], None)?;
+        
+        // Extract track IDs from search results
+        let mut track_ids = Vec::new();
+        if let Some(tracks) = search_result.get("tracks").and_then(|t| t.get("items")).and_then(|i| i.as_array()) {
+            for track in tracks {
+                if let Some(id) = track.get("id").and_then(|i| i.as_str()) {
+                    track_ids.push(id.to_string());
+                }
+            }
+        }
+        
+        debug!("Found {} track IDs on Spotify: {:?}", track_ids.len(), track_ids);
+        
+        if track_ids.is_empty() {
+            debug!("No tracks found on Spotify for '{}' by '{}'", title, artist);
+            return Ok(None);
+        }
+        
+        // Check if any of these track IDs are in the user's saved tracks
+        self.check_saved_tracks(&track_ids)
+    }
+    
+    /// Check if track IDs are in the user's saved tracks
+    /// 
+    /// Uses the Spotify Web API endpoint: https://developer.spotify.com/documentation/web-api/reference/check-users-saved-tracks
+    /// 
+    /// # Arguments
+    /// * `track_ids` - Vector of Spotify track IDs to check (max 50 per request)
+    /// 
+    /// # Returns
+    /// * `Ok(Some(true))` - At least one track ID is saved
+    /// * `Ok(Some(false))` - None of the track IDs are saved
+    /// * `Err(...)` - API error occurred
+    pub fn check_saved_tracks(&self, track_ids: &[String]) -> Result<Option<bool>> {
+        use crate::helpers::http_client::new_http_client;
+        
+        if track_ids.is_empty() {
+            return Ok(Some(false));
+        }
+        
+        // Spotify API allows max 50 IDs per request
+        let chunk_size = 50;
+        let mut any_saved = false;
+        
+        for chunk in track_ids.chunks(chunk_size) {
+            let access_token = self.ensure_valid_token()?;
+            let http_client = new_http_client(10);
+            
+            // Join track IDs with commas
+            let ids_param = chunk.join(",");
+            let url = format!("https://api.spotify.com/v1/me/tracks/contains?ids={}", 
+                             urlencoding::encode(&ids_param));
+            
+            debug!("Checking saved tracks for IDs: {:?}", chunk);
+            
+            let headers = [
+                ("Authorization", &format!("Bearer {}", access_token)[..]),
+                ("Content-Type", "application/json"),
+            ];
+            
+            let response = match http_client.get_json_with_headers(&url, &headers) {
+                Ok(value) => value,
+                Err(e) => {
+                    error!("Failed to check saved tracks: {}", e);
+                    return Err(SpotifyError::ApiError(format!("Failed to check saved tracks: {}", e)));
+                }
+            };
+            
+            debug!("Saved tracks API response: {}", response);
+            
+            // Response should be an array of booleans
+            if let Some(saved_array) = response.as_array() {
+                for (i, is_saved) in saved_array.iter().enumerate() {
+                    if let Some(saved) = is_saved.as_bool() {
+                        debug!("Track ID '{}' is saved: {}", chunk.get(i).unwrap_or(&"unknown".to_string()), saved);
+                        if saved {
+                            any_saved = true;
+                        }
+                    }
+                }
+            } else {
+                error!("Unexpected response format from saved tracks API: {}", response);
+                return Err(SpotifyError::ApiError("Unexpected response format".to_string()));
+            }
+        }
+        
+        debug!("Final result: at least one track is saved = {}", any_saved);
+        Ok(Some(any_saved))
+    }
+}
+
+/// Spotify Favourite Provider for integration with the favourites system
+pub struct SpotifyFavouriteProvider;
+
+impl SpotifyFavouriteProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::helpers::favourites::FavouriteProvider for SpotifyFavouriteProvider {
+    fn is_favourite(&self, song: &crate::data::song::Song) -> std::result::Result<bool, crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        debug!("Checking if Spotify favourite: '{}' by '{}'", title, artist);
+
+        match Spotify::get_instance() {
+            Ok(spotify) => {
+                match spotify.is_song_favourite(artist, title) {
+                    Ok(Some(is_favourite)) => {
+                        debug!("Spotify favourite check result: {}", is_favourite);
+                        Ok(is_favourite)
+                    },
+                    Ok(None) => {
+                        debug!("Song not found on Spotify: '{}' by '{}'", title, artist);
+                        // Song not found on Spotify - treat as not favourite
+                        Ok(false)
+                    },
+                    Err(SpotifyError::AuthError(msg)) => {
+                        debug!("Spotify authentication error: {}", msg);
+                        Err(crate::helpers::favourites::FavouriteError::AuthError(msg))
+                    },
+                    Err(SpotifyError::ApiError(msg)) => {
+                        debug!("Spotify API error: {}", msg);
+                        Err(crate::helpers::favourites::FavouriteError::NetworkError(msg))
+                    },
+                    Err(SpotifyError::ConfigError(msg)) => {
+                        debug!("Spotify configuration error: {}", msg);
+                        Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg))
+                    },
+                    Err(e) => {
+                        debug!("Other Spotify error: {}", e);
+                        Err(crate::helpers::favourites::FavouriteError::Other(e.to_string()))
+                    }
+                }
+            },
+            Err(e) => {
+                debug!("Failed to get Spotify instance: {}", e);
+                Err(crate::helpers::favourites::FavouriteError::NotConfigured("Spotify client not initialized".to_string()))
+            }
+        }
+    }
+
+    fn add_favourite(&self, _song: &crate::data::song::Song) -> std::result::Result<(), crate::helpers::favourites::FavouriteError> {
+        // Spotify Web API doesn't provide an endpoint to add songs to saved tracks programmatically
+        // The user would need to do this manually through the Spotify app or web player
+        Err(crate::helpers::favourites::FavouriteError::Other("Adding songs to Spotify favourites is not supported via API - use Spotify app".to_string()))
+    }
+
+    fn remove_favourite(&self, _song: &crate::data::song::Song) -> std::result::Result<(), crate::helpers::favourites::FavouriteError> {
+        // Spotify Web API doesn't provide an endpoint to remove songs from saved tracks programmatically  
+        // The user would need to do this manually through the Spotify app or web player
+        Err(crate::helpers::favourites::FavouriteError::Other("Removing songs from Spotify favourites is not supported via API - use Spotify app".to_string()))
+    }
+
+    fn get_favourite_count(&self) -> Option<usize> {
+        // Spotify API doesn't provide an efficient way to get total count of saved tracks
+        // Would require paginating through all saved tracks which could be thousands
+        None
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "spotify"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Spotify"
+    }
+
+    fn is_enabled(&self) -> bool {
+        // Check if Spotify client is configured and has valid tokens (with auto-refresh)
+        match Spotify::get_instance() {
+            Ok(spotify) => {
+                // Try to ensure we have valid tokens, refreshing if necessary
+                // This will automatically refresh expired tokens
+                match spotify.ensure_valid_token() {
+                    Ok(_) => true,
+                    Err(_) => false,
+                }
+            },
+            Err(_) => false,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        // For Spotify, active means we have valid authentication tokens and can make API calls
+        // This is the same as is_enabled for Spotify
+        self.is_enabled()
     }
 }
 

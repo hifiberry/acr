@@ -1,7 +1,8 @@
 use crate::helpers::ratelimit;
-use log::{debug, info, error}; // Removed warn
+use log::{debug, info, error, warn}; // Added warn back
 use md5;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{de::{self, Deserializer, Unexpected}, Deserialize, Serialize}; // Ensure full serde de import
 use std::collections::HashMap;
 use std::error::Error;
@@ -148,6 +149,47 @@ pub struct LastfmWiki {
     pub published: String,
     pub summary: String,
     pub content: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmArtistImage {
+    #[serde(rename = "#text")]
+    pub url: String,
+    pub size: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmSimilarArtist {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub image: Vec<LastfmArtistImage>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmSimilar {
+    #[serde(default, rename = "artist")]
+    pub artists: Vec<LastfmSimilarArtist>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LastfmArtistDetails {
+    pub name: String,
+    pub mbid: Option<String>,
+    pub url: String,
+    #[serde(default)]
+    pub image: Vec<LastfmArtistImage>,
+    pub streamable: String,
+    pub stats: Option<serde_json::Value>, // Contains playcount, listeners
+    pub similar: Option<LastfmSimilar>,
+    #[serde(rename = "tags")]
+    pub tags: Option<LastfmTopTags>,
+    pub bio: Option<LastfmWiki>,
+}
+
+#[derive(Deserialize, Debug)]
+struct LastfmArtistInfoResponse {
+    artist: LastfmArtistDetails,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -685,6 +727,41 @@ impl LastfmClient {
         }
     }
 
+    /// Get artist information from Last.fm
+    /// 
+    /// # Arguments
+    /// * `artist` - The artist name.
+    ///
+    /// # Returns
+    /// Result containing `LastfmArtistDetails` or an error.
+    pub fn get_artist_info(&self, artist: &str) -> Result<LastfmArtistDetails, LastfmError> {
+        ratelimit::rate_limit("lastfm");
+
+        let params = vec![
+            ("method", "artist.getInfo"),
+            ("artist", artist),
+            ("autocorrect", "0"),       // Disable autocorrection
+            // api_key is added by make_api_request
+        ];
+
+        // This request does not need to be signed (no user-specific data)
+        debug!("Requesting artist.getInfo for artist: {}", artist);
+        let response_body = self.make_api_request(params.into_iter(), false)?;
+
+        match serde_json::from_str::<LastfmArtistInfoResponse>(&response_body) {
+            Ok(parsed_response) => Ok(parsed_response.artist),
+            Err(e) => {
+                error!(
+                    "Failed to parse artist.getInfo response for artist '{}'. Error: {}, Body: {}",
+                    artist, e, response_body
+                );
+                Err(LastfmError::ParsingError(format!(
+                    "Failed to parse artist.getInfo response: {}. Body: {}", e, response_body
+                )))
+            }
+        }
+    }
+
     /// Submit a track scrobble to Last.fm
     /// 
     /// # Arguments
@@ -839,6 +916,69 @@ impl LastfmClient {
         Ok(())
     }
 
+    /// Love a track on Last.fm
+    pub fn love_track(&self, artist: &str, track: &str) -> Result<(), LastfmError> {
+        if !self.is_authenticated() {
+            return Err(LastfmError::AuthError("Authentication required to love tracks".to_string()));
+        }
+
+        let session_key = self.credentials.session_key.as_ref().ok_or_else(|| {
+            error!("Session key not found for authenticated user while calling love_track.");
+            LastfmError::AuthError("Session key not found despite being authenticated.".to_string())
+        })?;
+
+        let params = vec![
+            ("method", "track.love"),
+            ("artist", artist),
+            ("track", track),
+            ("sk", session_key.as_str()),
+        ];
+
+        // This request needs to be signed
+        let _response = self.make_api_request(params, true)?;
+        
+        debug!("Track loved: {} - {}", artist, track);
+        Ok(())
+    }
+
+    /// Unlove a track on Last.fm
+    pub fn unlove_track(&self, artist: &str, track: &str) -> Result<(), LastfmError> {
+        if !self.is_authenticated() {
+            return Err(LastfmError::AuthError("Authentication required to unlove tracks".to_string()));
+        }
+
+        let session_key = self.credentials.session_key.as_ref().ok_or_else(|| {
+            error!("Session key not found for authenticated user while calling unlove_track.");
+            LastfmError::AuthError("Session key not found despite being authenticated.".to_string())
+        })?;
+
+        let params = vec![
+            ("method", "track.unlove"),
+            ("artist", artist),
+            ("track", track),
+            ("sk", session_key.as_str()),
+        ];
+
+        // This request needs to be signed
+        let _response = self.make_api_request(params, true)?;
+        
+        debug!("Track unloved: {} - {}", artist, track);
+        Ok(())
+    }
+
+    /// Check if a track is loved on Last.fm
+    pub fn is_track_loved(&self, artist: &str, track: &str) -> Result<bool, LastfmError> {
+        if !self.is_authenticated() {
+            return Err(LastfmError::AuthError("Authentication required to check love status".to_string()));
+        }
+
+        // Use the existing get_track_info method which includes userloved status
+        match self.get_track_info(artist, track) {
+            Ok(track_info) => Ok(track_info.userloved),
+            Err(e) => Err(e),
+        }
+    }
+
 }
 
 
@@ -872,4 +1012,440 @@ pub struct LovedTrack {
     pub artist: LovedTrackArtist,
     pub image: Option<Vec<LastfmImage>>,
     // streamable can be complex, omitting for now unless needed
+}
+
+/// Last.fm Artist Updater
+/// 
+/// Implements the ArtistUpdater trait to fetch artist information from Last.fm
+pub struct LastfmUpdater;
+
+impl LastfmUpdater {
+    pub fn new() -> Self {
+        LastfmUpdater
+    }
+}
+
+impl crate::helpers::ArtistUpdater for LastfmUpdater {
+    /// Updates artist information using Last.fm service
+    /// 
+    /// This function fetches artist bio, tags, and images from Last.fm and adds them to the artist metadata.
+    /// Note: Last.fm doesn't require a MusicBrainz ID and works with just the artist name.
+    /// 
+    /// # Arguments
+    /// * `artist` - The artist to update
+    /// 
+    /// # Returns
+    /// The updated artist with Last.fm data
+    fn update_artist(&self, mut artist: crate::data::artist::Artist) -> crate::data::artist::Artist {
+        debug!("Updating artist {} with Last.fm data", artist.name);
+        
+        // Get the Last.fm client instance
+        let lastfm_client = {
+            let guard = LASTFM_CLIENT.lock().unwrap();
+            match guard.as_ref() {
+                Some(client) => client.clone(),
+                None => {
+                    debug!("Last.fm client not initialized, skipping Last.fm lookup for artist {}", artist.name);
+                    return artist;
+                }
+            }
+        };
+        
+        // Get artist info from Last.fm
+        match lastfm_client.get_artist_info(&artist.name) {
+            Ok(artist_info) => {
+                debug!("Successfully retrieved Last.fm data for artist {}", artist.name);
+                
+                let mut updated_data = Vec::new();
+                
+                // Ensure we have metadata
+                if artist.metadata.is_none() {
+                    artist.metadata = Some(crate::data::metadata::ArtistMeta::new());
+                }
+                
+                if let Some(meta) = &mut artist.metadata {
+                    // Add biography from Last.fm (use content, which is the full version)
+                    if let Some(bio) = &artist_info.bio {
+                        if !bio.content.is_empty() {
+                            let cleaned_biography = cleanup_biography(&bio.content);
+                            meta.biography = Some(cleaned_biography);
+                            meta.biography_source = Some("LastFM".to_string());
+                            updated_data.push("biography".to_string());
+                            debug!("Added Last.fm biography for artist {}", artist.name);
+                        }
+                    }
+                    
+                    // Add tags/genres from Last.fm
+                    if let Some(tags) = &artist_info.tags {
+                        if !tags.tags.is_empty() {
+                            for tag in &tags.tags {
+                                meta.add_genre(tag.name.clone());
+                            }
+                            updated_data.push(format!("{} tags", tags.tags.len()));
+                            debug!("Added {} Last.fm tags for artist {}", tags.tags.len(), artist.name);
+                        }
+                    }
+                    
+                    // Add images from Last.fm (find the largest available image)
+                    let mut downloaded_image_urls = Vec::new();
+                    if !artist_info.image.is_empty() {
+                        // Last.fm provides images in different sizes: small, medium, large, extralarge, mega
+                        // We want the largest available image
+                        let image_priorities = ["mega", "extralarge", "large", "medium", "small"];
+                        
+                        for size in &image_priorities {
+                            if let Some(image) = artist_info.image.iter().find(|img| img.size == *size) {
+                                if !image.url.is_empty() {
+                                    meta.thumb_url.push(image.url.clone());
+                                    downloaded_image_urls.push(image.url.clone());
+                                    updated_data.push(format!("{} image", size));
+                                    debug!("Added Last.fm {} image for artist {}: {}", size, artist.name, image.url);
+                                    break; // Only add the largest available image
+                                }
+                            }
+                        }
+                        
+                        // Download and cache the images
+                        if !downloaded_image_urls.is_empty() {
+                            if download_lastfm_artist_images(&artist.name, &downloaded_image_urls) {
+                                debug!("Successfully downloaded and cached Last.fm images for artist {}", artist.name);
+                            } else {
+                                debug!("Failed to download some Last.fm images for artist {}", artist.name);
+                            }
+                        }
+                    }
+                    
+                    // Add MusicBrainz ID if available and not already present
+                    if let Some(mbid) = &artist_info.mbid {
+                        if !mbid.is_empty() && !meta.mbid.contains(mbid) {
+                            meta.add_mbid(mbid.clone());
+                            updated_data.push("MusicBrainz ID".to_string());
+                            debug!("Added Last.fm MusicBrainz ID for artist {}: {}", artist.name, mbid);
+                        }
+                    }
+                }
+                
+                // Log successful update with summary of what was added
+                if !updated_data.is_empty() {
+                    info!("Updated artist '{}' with Last.fm data: {}", artist.name, updated_data.join(", "));
+                }
+            }
+            Err(e) => {
+                debug!("Failed to get Last.fm data for artist {}: {}", artist.name, e);
+            }
+        }
+        
+        artist
+    }
+}
+
+/// Clean up Last.fm biography text by removing HTML links and unwanted text
+/// 
+/// This function removes Last.fm specific content like:
+/// - "<a href="https://www.last.fm/music/Artist">Read more on Last.fm</a>"
+/// - Other similar Last.fm promotional text
+pub fn cleanup_biography(biography: &str) -> String {
+    // Regex to match Last.fm links and "Read more" text
+    static LASTFM_LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"<a\s+href="https://www\.last\.fm/music/[^"]*">Read more on Last\.fm</a>"#)
+            .expect("Failed to compile Last.fm link regex")
+    });
+    
+    // Remove Last.fm links
+    let cleaned = LASTFM_LINK_REGEX.replace_all(biography, "");
+    
+    // Clean up any trailing whitespace and periods that may be left over
+    let cleaned = cleaned.trim_end();
+    
+    // Remove trailing period if it was immediately before the removed link
+    let cleaned = if biography.contains(r#". <a href="https://www.last.fm/music/"#) && cleaned.ends_with('.') {
+        cleaned.trim_end_matches('.')
+    } else {
+        cleaned
+    };
+    
+    cleaned.to_string()
+}
+
+/// Download an image from a URL
+/// 
+/// # Arguments
+/// * `url` - URL of the image to download
+/// 
+/// # Returns
+/// * `Result<Vec<u8>, String>` - The image data if successful, otherwise an error message
+fn download_image(url: &str) -> Result<Vec<u8>, String> {
+    debug!("Downloading Last.fm image from URL: {}", url);
+    
+    // Create a client with appropriate timeout
+    let client = crate::helpers::http_client::new_http_client(10);
+    
+    // Execute the request
+    match client.get_binary(url) {
+        Ok((binary_data, _)) => {
+            // Return the binary data directly
+            Ok(binary_data)
+        },
+        Err(e) => Err(format!("Request failed: {}", e))
+    }
+}
+
+/// Extract file extension from a URL
+///
+/// # Arguments
+/// * `url` - URL to extract extension from
+///
+/// # Returns
+/// * `String` - The file extension (e.g., "jpg") or "jpg" as default
+fn extract_extension_from_url(url: &str) -> String {
+    url.split('.')
+        .last()
+        .and_then(|ext| {
+            // Remove any query parameters
+            let clean_ext = ext.split('?').next().unwrap_or(ext);
+            if clean_ext.len() <= 4 {
+                Some(clean_ext.to_lowercase())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("jpg".to_string())
+}
+
+/// Download and cache artist images from Last.fm
+/// 
+/// This function downloads the images that were added to the artist metadata
+/// and caches them locally using the naming convention:
+/// - artist.lastfm.0.xxx for the first image, etc.
+/// 
+/// # Arguments
+/// * `artist_name` - Name of the artist
+/// * `image_urls` - List of image URLs to download
+/// 
+/// # Returns
+/// * `bool` - true if download was successful (or no images to download), false if errors occurred
+fn download_lastfm_artist_images(artist_name: &str, image_urls: &[String]) -> bool {
+    if image_urls.is_empty() {
+        debug!("No Last.fm images to download for artist '{}'", artist_name);
+        return true;
+    }
+
+    let artist_basename = crate::helpers::sanitize::filename_from_string(artist_name);
+    let provider = "lastfm";
+    let mut api_success = true;
+
+    // Check if thumbnails already exist for this provider
+    let thumb_base_path = format!("artists/{}/artist", artist_basename);
+    let existing_thumbs = crate::helpers::imagecache::count_provider_files(&thumb_base_path, provider);
+    
+    if existing_thumbs > 0 {
+        debug!("Artist {} already has {} thumbnail(s) from {}, skipping download", 
+              artist_name, existing_thumbs, provider);
+        return true;
+    }
+
+    debug!("Downloading {} Last.fm image(s) for artist '{}'", image_urls.len(), artist_name);
+
+    // Download each image
+    for (i, url) in image_urls.iter().enumerate() {
+        let path = format!("artists/{}/artist.{}.{}.{}", 
+                           artist_basename,
+                           provider, 
+                           i,
+                           extract_extension_from_url(url));
+        
+        match download_image(url) {
+            Ok(image_data) => {
+                if let Err(e) = crate::helpers::imagecache::store_image(&path, &image_data) {
+                    warn!("Failed to store Last.fm artist thumbnail: {}", e);
+                    api_success = false;
+                } else {
+                    info!("Stored Last.fm artist thumbnail {} for '{}'", i, artist_name);
+                }
+            },
+            Err(e) => {
+                warn!("Failed to download Last.fm artist thumbnail: {}", e);
+                api_success = false;
+            }
+        }
+    }
+
+    api_success
+}
+
+/// Love a track on Last.fm
+/// 
+/// # Arguments
+/// * `artist` - The artist name
+/// * `track` - The track name
+/// 
+/// # Returns
+/// Result indicating success or failure
+pub fn love_track(artist: &str, track: &str) -> Result<(), LastfmError> {
+    let client = LastfmClient::get_instance()?;
+    client.love_track(artist, track)
+}
+
+/// Unlove a track on Last.fm
+/// 
+/// # Arguments
+/// * `artist` - The artist name
+/// * `track` - The track name
+/// 
+/// # Returns
+/// Result indicating success or failure
+pub fn unlove_track(artist: &str, track: &str) -> Result<(), LastfmError> {
+    let client = LastfmClient::get_instance()?;
+    client.unlove_track(artist, track)
+}
+
+/// Check if a track is loved on Last.fm
+/// 
+/// # Arguments
+/// * `artist` - The artist name
+/// * `track` - The track name
+/// 
+/// # Returns
+/// Result containing true if loved, false if not
+pub fn is_track_loved(artist: &str, track: &str) -> Result<bool, LastfmError> {
+    let client = LastfmClient::get_instance()?;
+    client.is_track_loved(artist, track)
+}
+
+/// Last.fm implementation of FavouriteProvider
+pub struct LastfmFavouriteProvider;
+
+impl LastfmFavouriteProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::helpers::favourites::FavouriteProvider for LastfmFavouriteProvider {
+    fn is_favourite(&self, song: &crate::data::song::Song) -> Result<bool, crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match is_track_loved(artist, title) {
+            Ok(loved) => Ok(loved),
+            Err(LastfmError::AuthError(msg)) => Err(crate::helpers::favourites::FavouriteError::AuthError(msg)),
+            Err(LastfmError::NetworkError(msg)) => Err(crate::helpers::favourites::FavouriteError::NetworkError(msg)),
+            Err(LastfmError::ConfigError(msg)) => Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg)),
+            Err(e) => Err(crate::helpers::favourites::FavouriteError::Other(e.to_string())),
+        }
+    }
+
+    fn add_favourite(&self, song: &crate::data::song::Song) -> Result<(), crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match love_track(artist, title) {
+            Ok(()) => Ok(()),
+            Err(LastfmError::AuthError(msg)) => Err(crate::helpers::favourites::FavouriteError::AuthError(msg)),
+            Err(LastfmError::NetworkError(msg)) => Err(crate::helpers::favourites::FavouriteError::NetworkError(msg)),
+            Err(LastfmError::ConfigError(msg)) => Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg)),
+            Err(e) => Err(crate::helpers::favourites::FavouriteError::Other(e.to_string())),
+        }
+    }
+
+    fn remove_favourite(&self, song: &crate::data::song::Song) -> Result<(), crate::helpers::favourites::FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match unlove_track(artist, title) {
+            Ok(()) => Ok(()),
+            Err(LastfmError::AuthError(msg)) => Err(crate::helpers::favourites::FavouriteError::AuthError(msg)),
+            Err(LastfmError::NetworkError(msg)) => Err(crate::helpers::favourites::FavouriteError::NetworkError(msg)),
+            Err(LastfmError::ConfigError(msg)) => Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg)),
+            Err(e) => Err(crate::helpers::favourites::FavouriteError::Other(e.to_string())),
+        }
+    }
+
+    fn get_favourite_count(&self) -> Option<usize> {
+        // Last.fm API doesn't provide an easy way to get the total count of loved tracks
+        // Would require paginating through all loved tracks, which is not efficient
+        None
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "lastfm"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Last.fm"
+    }
+
+    fn is_enabled(&self) -> bool {
+        // Check if Last.fm is configured and authenticated
+        match LastfmClient::get_instance() {
+            Ok(client) => client.is_authenticated(),
+            Err(_) => false,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        // For Last.fm, active means the user is currently logged in (authenticated)
+        // This is the same as is_enabled for now, but conceptually different:
+        // - is_enabled: provider is configured/available
+        // - is_active: provider is functional (user logged in)
+        match LastfmClient::get_instance() {
+            Ok(client) => client.is_authenticated(),
+            Err(_) => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cleanup_biography;
+
+    #[test]
+    fn test_cleanup_biography_removes_lastfm_links() {
+        let test_cases = vec![
+            (
+                r#"Metallica is an American heavy metal band. The band was formed in 1981 in Los Angeles by vocalist/guitarist James Hetfield and drummer Lars Ulrich. <a href="https://www.last.fm/music/Metallica">Read more on Last.fm</a>"#,
+                "Metallica is an American heavy metal band. The band was formed in 1981 in Los Angeles by vocalist/guitarist James Hetfield and drummer Lars Ulrich"
+            ),
+            (
+                r#"The Beatles were an English rock band formed in Liverpool in 1960. <a href="https://www.last.fm/music/The+Beatles">Read more on Last.fm</a>"#,
+                "The Beatles were an English rock band formed in Liverpool in 1960"
+            ),
+            (
+                "This is a biography without any Last.fm links.",
+                "This is a biography without any Last.fm links."
+            ),
+            (
+                r#"Pink Floyd were an English rock band. <a href="https://www.last.fm/music/Pink+Floyd">Read more on Last.fm</a>    "#,
+                "Pink Floyd were an English rock band"
+            ),
+            (
+                r#"Queen were a British rock band that achieved worldwide fame. <a href="https://www.last.fm/music/Queen">Read more on Last.fm</a>"#,
+                "Queen were a British rock band that achieved worldwide fame"
+            ),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = cleanup_biography(input);
+            assert_eq!(result, expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test] 
+    fn test_cleanup_biography_handles_empty_string() {
+        let result = cleanup_biography("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_cleanup_biography_handles_only_link() {
+        let input = r#"<a href="https://www.last.fm/music/TestArtist">Read more on Last.fm</a>"#;
+        let result = cleanup_biography(input);
+        assert_eq!(result, "");
+    }
 }

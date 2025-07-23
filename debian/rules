@@ -29,13 +29,14 @@ override_dh_auto_install:
 	mkdir -p debian/hifiberry-audiocontrol/usr/bin
 	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol
 	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web
+	mkdir -p debian/hifiberry-audiocontrol/etc/audiocontrol
 	# Install main binary
 	if [ -f target/release/audiocontrol ]; then \
 		cp target/release/audiocontrol debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
 		chmod +x debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
 	fi
 	# Install CLI tools if they exist
-	for tool in audiocontrol_dump_cache audiocontrol_lms_client audiocontrol_send_update audiocontrol_dump_store audiocontrol_notify_librespot audiocontrol_player_event_client audiocontrol_list_mpris_players audiocontrol_get_mpris_state audiocontrol_monitor_mpris_state; do \
+	for tool in audiocontrol_dump_cache audiocontrol_dump_settingsdb audiocontrol_lms_client audiocontrol_musicbrainz_client audiocontrol_send_update audiocontrol_dump_store audiocontrol_notify_librespot audiocontrol_player_event_client audiocontrol_list_mpris_players audiocontrol_get_mpris_state audiocontrol_monitor_mpris_state audiocontrol_listen_shairportsync audiocontrol_list_genres audiocontrol_favourites; do \
 		if [ -f "target/release/$$tool" ]; then \
 			cp "target/release/$$tool" "debian/hifiberry-audiocontrol/usr/bin/$$tool"; \
 			chmod +x "debian/hifiberry-audiocontrol/usr/bin/$$tool"; \
@@ -53,6 +54,10 @@ override_dh_auto_install:
 	fi
 	# Install logging configuration sample
 	cp debian/logging.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
+	# Install genres configuration
+	if [ -f conf/genres.json ]; then \
+		cp conf/genres.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \
+	fi
 	# Install example app
 	if [ -d example/web ]; then \
 		cp -r example/web/* debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web/; \

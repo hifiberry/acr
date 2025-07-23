@@ -1,6 +1,6 @@
 [package]
 name = "audiocontrol"
-version = "0.4.10"
+version = "0.6.4"
 edition = "2021"
 default-run = "audiocontrol"
 
@@ -48,6 +48,8 @@ hex = "0.4.3"
 # For secure storage encryption
 aes-gcm = "0.10.2"
 rand = "0.8.5"
+# For filesystem notifications
+notify = "6.0"
 base64 = "0.21.0"
 # For testing
 tempfile = "3.8.1"
@@ -57,6 +59,8 @@ async-trait = "0.1.77"
 ureq = "2.9"
 # For event bus messaging
 event-bus = "0.1.0" # Corrected version
+# For regular expressions
+regex = "1.10"
 # For concurrent data structures and channels
 crossbeam = "0.8.2"
 # For reading metadata from audio files
@@ -64,8 +68,9 @@ lofty = "0.18.0"
 walkdir = "2.4.0"
 
 [features]
-default = []
+default = ["alsa"]
 theaudiodb = []
+alsa = ["dep:alsa"]
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
@@ -75,6 +80,8 @@ named_pipe = "0.4"
 [target.'cfg(not(windows))'.dependencies]
 # For D-Bus communication and custom MPRIS implementation (Linux/Unix only)
 dbus = "0.9"
+# For ALSA audio system volume control (Linux only) - optional
+alsa = { version = "0.9", optional = true }
 
 # Build dependencies
 [build-dependencies]
@@ -91,8 +98,16 @@ name = "audiocontrol_dump_cache"
 path = "src/tools/acr_dump_cache.rs"
 
 [[bin]]
+name = "audiocontrol_dump_settingsdb"
+path = "src/tools/acr_dump_settingsdb.rs"
+
+[[bin]]
 name = "audiocontrol_lms_client"
 path = "src/tools/acr_lms_client.rs"
+
+[[bin]]
+name = "audiocontrol_musicbrainz_client"
+path = "src/tools/acr_musicbrainz_client.rs"
 
 [[bin]]
 name = "audiocontrol_send_update"
@@ -126,3 +141,11 @@ path = "src/tools/acr_monitor_mpris_state.rs"
 [[bin]]
 name = "audiocontrol_listen_shairportsync"
 path = "src/tools/acr_listen_shairportsync.rs"
+
+[[bin]]
+name = "audiocontrol_list_genres"
+path = "src/tools/acr_list_genres.rs"
+
+[[bin]]
+name = "audiocontrol_favourites"
+path = "src/tools/acr_favourites.rs"

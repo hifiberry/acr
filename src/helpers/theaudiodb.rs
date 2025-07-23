@@ -10,7 +10,7 @@ use crate::helpers::imagecache;
 use crate::helpers::attributecache;
 use crate::helpers::ratelimit;
 use crate::data::artist::Artist;
-use crate::helpers::artistupdater::ArtistUpdater;
+use crate::helpers::ArtistUpdater;
 use crate::helpers::sanitize::filename_from_string;
 
 /// Global flag to indicate if TheAudioDB lookups are enabled
@@ -439,6 +439,8 @@ impl ArtistUpdater for TheAudioDbUpdater {
                 Ok(artist_data) => {
                     debug!("Successfully retrieved artist data from TheAudioDB for {}", artist.name);
                     
+                    let mut updated_data = Vec::new();
+                    
                     // Extract the artist thumbnail URL
                     if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
                         if !thumb_url.is_empty() {
@@ -452,7 +454,8 @@ impl ArtistUpdater for TheAudioDbUpdater {
                             // Add the thumbnail URL to the artist metadata
                             if let Some(meta) = &mut artist.metadata {
                                 meta.thumb_url.push(thumb_url.to_string());
-                                info!("Added TheAudioDB thumbnail URL for artist {}", artist.name);
+                                updated_data.push("thumbnail".to_string());
+                                debug!("Added TheAudioDB thumbnail URL for artist {}", artist.name);
                             }
                             
                             // Download and cache the thumbnail
@@ -485,6 +488,8 @@ impl ArtistUpdater for TheAudioDbUpdater {
                         if !biography.is_empty() {
                             if let Some(meta) = &mut artist.metadata {
                                 meta.biography = Some(biography.to_string());
+                                meta.biography_source = Some("TheAudioDB".to_string());
+                                updated_data.push("biography".to_string());
                                 debug!("Added biography from TheAudioDB for artist {}", artist.name);
                             }
                         }
@@ -494,10 +499,24 @@ impl ArtistUpdater for TheAudioDbUpdater {
                     if let Some(genre) = artist_data.get("strGenre").and_then(|v| v.as_str()) {
                         if !genre.is_empty() {
                             if let Some(meta) = &mut artist.metadata {
-                                meta.genres.push(genre.to_string());
-                                debug!("Added genre '{}' from TheAudioDB for artist {}", genre, artist.name);
+                                // Apply genre cleanup
+                                let genres_to_add = crate::helpers::genre_cleanup::clean_genres_global(vec![genre.to_string()]);
+                                for cleaned_genre in genres_to_add {
+                                    if !meta.genres.contains(&cleaned_genre) {
+                                        meta.genres.push(cleaned_genre.clone());
+                                        debug!("Added cleaned genre '{}' from TheAudioDB for artist {}", cleaned_genre, artist.name);
+                                    }
+                                }
+                                if !meta.genres.is_empty() {
+                                    updated_data.push("genre".to_string());
+                                }
                             }
                         }
+                    }
+                    
+                    // Log successful update with summary of what was added
+                    if !updated_data.is_empty() {
+                        info!("Updated artist '{}' with TheAudioDB data: {}", artist.name, updated_data.join(", "));
                     }
                 },
                 Err(e) => {

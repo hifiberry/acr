@@ -1,4 +1,105 @@
-hifiberry-audiocontrol (0.4.10) stable; urgency=medium
+hifiberry-audiocontrol (0.6.4) stable; urgency=medium
+
+  * Added Spotify favourite provider integration with OAuth authentication
+  * Spotify favourites provider automatically refreshes expired tokens
+  * Updated favourites API to return provider display names instead of internal names
+  * Added comprehensive Spotify favourite checking via Web API
+  * Fixed Debian packaging to properly install conf/genres.json configuration file
+  * Enhanced favourites provider system with better error handling and user feedback
+
+ -- HiFiBerry <info@hifiberry.com>  Tue, 22 Jul 2025 14:00:00 +0000
+
+hifiberry-audiocontrol (0.6.2) stable; urgency=medium
+
+  * Enhanced ALSA volume control with auto-detection from configurator API
+  * Automatically detects hw:X device format using hardware index from configurator
+  * Auto-detects appropriate mixer control name from configurator soundcard info
+  * Added comprehensive logging for detected/configured volume settings
+  * Updated sample configuration to use auto-detection by default (empty device/control_name)
+  * Improved volume control initialization with fallback handling when API unavailable
+
+ -- HiFiBerry <info@hifiberry.com>  Tue, 22 Jul 2025 12:00:00 +0000
+
+hifiberry-audiocontrol (0.6.1) stable; urgency=medium
+
+  * Added audiocontrol_favourites command line tool for favourites management
+  * Supports check, add, remove, and list providers operations via REST API
+  * Configurable AudioControl server URL (default: http://localhost:1080)
+  * Comprehensive command line interface with verbose and quiet modes
+  * Added man page documentation for audiocontrol_favourites tool
+  * Enhanced Debian packaging to include the new favourites CLI tool
+
+ -- HiFiBerry <info@hifiberry.com>  Mon, 21 Jul 2025 12:00:00 +0000
+
+hifiberry-audiocontrol (0.6.0) stable; urgency=medium
+
+  * Enhanced FavouriteProvider trait with display_name() method for human-readable provider names
+  * Added display_name field to favourites API endpoint (LastFM: "Last.fm", SettingsDB: "User settings")
+  * Implemented comprehensive genre cleanup system with configurable mapping file
+  * Added genre.json configuration file with 87 ignore entries and 241 genre mappings
+  * Created genre cleanup helper module with global instance and case-insensitive processing
+  * Integrated genre cleanup into TheAudioDB metadata provider
+  * Updated build script to run all integration tests by default
+  * Added genre_cleanup service configuration to sample config file
+  * Installed genre.json to /etc/audiocontrol/ via Debian packaging
+  * Enhanced genre categorization to distinguish post-genres from base genres
+  * Added configurable genre cleanup with fallback to default paths
+
+ -- HiFiBerry <info@hifiberry.com>  Sun, 20 Jul 2025 15:00:00 +0000
+
+hifiberry-audiocontrol (0.5.2) stable; urgency=medium
+
+  * Fixed UTF-8 string slicing panic in MusicBrainz module when handling
+    multi-byte characters (e.g., ¥, €) in artist names
+  * Added safe_truncate helper function in sanitize module for UTF-8-safe
+    string truncation
+  * Enhanced error handling in MusicBrainz API response processing
+  * Fixed similar UTF-8 issues in Spotify module debug logging
+  * Added comprehensive test suite for UTF-8 string handling
+
+ -- HiFiBerry <info@hifiberry.com>  Sun, 20 Jul 2025 12:00:00 +0000
+
+hifiberry-audiocontrol (0.5.1) stable; urgency=medium
+
+  * API Breaking Change: Modified add_track command to accept URI in JSON
+    request body
+  * Added optional title and coverart_url fields to add_track request for
+    future use
+  * Enhanced add_track API with structured JSON input instead of URL
+    parameters
+  * Updated API documentation with new add_track format and error examples
+  * Added AddTrackRequest struct for better parameter validation
+  * Improved REST API consistency following proper JSON body practices
+
+ -- HiFiBerry <info@hifiberry.com>  Thu, 17 Jul 2025 10:00:00 +0000
+
+hifiberry-audiocontrol (0.5.0) stable; urgency=medium
+
+  * Added full ShairportSync AirPlay metadata player controller
+  * Implemented UDP listener for ShairportSync metadata messages on port 5555
+  * Added comprehensive cover art support with MD5-based caching and 
+    multi-chunk assembly
+  * Implemented ShairportSync message parsing for playback control and 
+    metadata
+  * Added audiocontrol_listen_shairportsync tool for UDP packet monitoring 
+    and debugging
+  * Enhanced player filtering to skip configuration entries starting with 
+    underscore
+  * Fixed logging configuration parsing to ignore comment keys starting 
+    with underscore
+  * Added debug logging for ShairportSync play/pause, metadata, and cover 
+    art processing
+  * Integrated ShairportSync artwork storage in image cache with 1-week 
+    expiry
+  * Updated sample configuration to include enabled ShairportSync player 
+    by default
+  * Added man page documentation for ShairportSync listener tool
+  * Enhanced error handling for disabled/filtered players in 
+    AudioController
+
+ -- HiFiBerry <info@hifiberry.com>  Mon, 14 Jul 2025 13:15:00 +0000
+
+hifiberry-audiocontrol (0.4.11) stable; urgency=medium
 
   * Added audiocontrol_monitor_mpris_state tool for real-time MPRIS monitoring
   * Refactored MPRIS player controller to use internal helper functions
@@ -16,7 +117,8 @@ hifiberry-audiocontrol (0.4.10) stable; urgency=medium
 hifiberry-audiocontrol (0.4.9) stable; urgency=medium
 
   * Added audiocontrol_get_mpris_state tool for MPRIS debugging and inspection
-  * Enhanced MPRIS metadata handling with proper array support for artists and genres
+  * Enhanced MPRIS metadata handling with proper array support for artists
+    and genres
   * Added helper functions for MPRIS metadata retrieval and Song object creation
   * Improved Song struct with genres field supporting multiple genres
   * Fixed MPRIS metadata parsing to correctly handle D-Bus dictionary structures
@@ -27,13 +129,15 @@ hifiberry-audiocontrol (0.4.9) stable; urgency=medium
 hifiberry-audiocontrol (0.4.8) stable; urgency=medium
 
   * Added PlayerProgress for accurate real-time position tracking in librespot
-  * Implemented automatic position increment during playback with pause/resume support
+  * Implemented automatic position increment during playback with pause/resume
+    support
   * Enhanced shuffle and loop mode state tracking in librespot player
   * Fixed librespot event handler to support both "mode" and "loop_mode" fields
   * Added comprehensive Python integration tests for position tracking scenarios
   * Added new process_helper module for process and systemd management
   * Replaced direct system calls with unified process management functions
-  * Enhanced librespot player with better state synchronization and error handling
+  * Enhanced librespot player with better state synchronization and error
+    handling
 
  -- HiFiBerry <info@hifiberry.com>  Tue, 09 Jul 2025 12:00:00 +0000
 
@@ -74,7 +178,8 @@ hifiberry-audiocontrol (0.4.5) stable; urgency=medium
 hifiberry-audiocontrol (0.4.4) stable; urgency=medium
 
   * Enhanced logging system with module-specific log level configuration
-  * Added API endpoint /api/audiodb/mbid/<mbid> for TheAudioDB integration testing
+  * Added API endpoint /api/audiodb/mbid/<mbid> for TheAudioDB integration
+    testing
   * Fixed unused import warnings in stream helper module
   * Moved example web application from example-app/ to example/web/
   * Updated Debian package configuration for new example directory structure

@@ -1,6 +1,6 @@
 [Unit]
 Description=HiFiBerry AudioControl - Audio Player Management Service
-After=network.target mpd.service raat.service shairport-sync.service librespot.service
+After=network.target mpd.service raat.service shairport-sync.service librespot.service config-server.service
 
 [Service]
 Type=simple

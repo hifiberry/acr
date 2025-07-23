@@ -106,32 +106,65 @@ pub enum PlayerEvent {
         player_id: String,
     },
 
+    /// Volume control has changed (system-wide event)
+    VolumeChanged {
+        /// Name of the volume control that changed
+        control_name: String,
+        /// Display name of the control
+        display_name: String,
+        /// New volume percentage (0-100)
+        percentage: f64,
+        /// New volume in decibels (if supported)
+        decibels: Option<f64>,
+        /// Raw control value (implementation specific)
+        raw_value: Option<i64>,
+    },
+
 }
 
-impl PlayerEvent {    /// Get the player source associated with this event
-    pub fn source(&self) -> &PlayerSource {
+impl PlayerEvent {
+    /// Get the player source associated with this event (if any)
+    pub fn source(&self) -> Option<&PlayerSource> {
         match self {
-            PlayerEvent::StateChanged { source, .. } => source,
-            PlayerEvent::SongChanged { source, .. } => source,
-            PlayerEvent::LoopModeChanged { source, .. } => source,
-            PlayerEvent::RandomChanged { source, .. } => source,
-            PlayerEvent::CapabilitiesChanged { source, .. } => source,
-            PlayerEvent::PositionChanged { source, .. } => source,
-            PlayerEvent::DatabaseUpdating { source, .. } => source,
-            PlayerEvent::QueueChanged { source } => source,
-            PlayerEvent::SongInformationUpdate { source, .. } => source,
-            PlayerEvent::ActivePlayerChanged { source, .. } => source,
+            PlayerEvent::StateChanged { source, .. } => Some(source),
+            PlayerEvent::SongChanged { source, .. } => Some(source),
+            PlayerEvent::LoopModeChanged { source, .. } => Some(source),
+            PlayerEvent::RandomChanged { source, .. } => Some(source),
+            PlayerEvent::CapabilitiesChanged { source, .. } => Some(source),
+            PlayerEvent::PositionChanged { source, .. } => Some(source),
+            PlayerEvent::DatabaseUpdating { source, .. } => Some(source),
+            PlayerEvent::QueueChanged { source } => Some(source),
+            PlayerEvent::SongInformationUpdate { source, .. } => Some(source),
+            PlayerEvent::ActivePlayerChanged { source, .. } => Some(source),
+            PlayerEvent::VolumeChanged { .. } => None, // Volume events are system-wide
         }
     }
     
-    /// Get the player name associated with this event
-    pub fn player_name(&self) -> &str {
-        self.source().player_name()
+    /// Get the player name associated with this event (if any)
+    pub fn player_name(&self) -> Option<&str> {
+        self.source().map(|s| s.player_name())
     }
     
-    /// Get the player ID associated with this event
-    pub fn player_id(&self) -> &str {
-        self.source().player_id()
+    /// Get the player ID associated with this event (if any)
+    pub fn player_id(&self) -> Option<&str> {
+        self.source().map(|s| s.player_id())
+    }
+    
+    /// Get the event type as a string
+    pub fn event_type(&self) -> &'static str {
+        match self {
+            PlayerEvent::StateChanged { .. } => "state_changed",
+            PlayerEvent::SongChanged { .. } => "song_changed",
+            PlayerEvent::LoopModeChanged { .. } => "loop_mode_changed",
+            PlayerEvent::RandomChanged { .. } => "random_changed",
+            PlayerEvent::CapabilitiesChanged { .. } => "capabilities_changed",
+            PlayerEvent::PositionChanged { .. } => "position_changed",
+            PlayerEvent::DatabaseUpdating { .. } => "database_updating",
+            PlayerEvent::QueueChanged { .. } => "queue_changed",
+            PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
+            PlayerEvent::ActivePlayerChanged { .. } => "active_player_changed",
+            PlayerEvent::VolumeChanged { .. } => "volume_changed",
+        }
     }
 }
 
@@ -183,6 +216,13 @@ impl fmt::Display for PlayerEvent {
             }
             PlayerEvent::ActivePlayerChanged { source, player_id } => {
                 write!(f, "Active player changed to {} (ID: {})", source, player_id)
+            }
+            PlayerEvent::VolumeChanged { control_name, percentage, decibels, .. } => {
+                if let Some(db) = decibels {
+                    write!(f, "Volume control '{}' changed to {:.1}% ({:.1}dB)", control_name, percentage, db)
+                } else {
+                    write!(f, "Volume control '{}' changed to {:.1}%", control_name, percentage)
+                }
             }
         }
     }

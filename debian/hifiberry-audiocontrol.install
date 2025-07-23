@@ -2,4 +2,5 @@
 # This file is kept for reference
 audiocontrol.json.sample usr/share/hifiberry-audiocontrol/
 debian/logging.json.sample usr/share/hifiberry-audiocontrol/
+conf/genres.json etc/audiocontrol/
 example/web/* usr/share/hifiberry-audiocontrol/sample-web/

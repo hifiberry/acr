@@ -68,7 +68,7 @@ impl LoggingSubsystem {
         match self {
             LoggingSubsystem::Main => "audiocontrol",
             LoggingSubsystem::Api => "audiocontrol::api",
-            LoggingSubsystem::Players => "audiocontrol::players",
+            LoggingSubsystem::Players => "audiocontrol::players,audiocontrol::players::mpd::libraryloader,audiocontrol::players::lms::libraryloader",
             LoggingSubsystem::Cache => "audiocontrol::helpers::attributecache,audiocontrol::helpers::imagecache",
             LoggingSubsystem::Metadata => "audiocontrol::helpers::musicbrainz,audiocontrol::helpers::theaudiodb,audiocontrol::helpers::lastfm",
             LoggingSubsystem::Spotify => "audiocontrol::helpers::spotify",
@@ -133,7 +133,7 @@ pub struct LoggingConfig {
     pub colors: bool,
     
     /// Subsystem-specific log levels
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_subsystems")]
     pub subsystems: HashMap<String, String>,
     
     /// Whether to include module paths in log output
@@ -171,6 +171,19 @@ fn default_module_path() -> bool {
 
 fn default_line_numbers() -> bool {
     false
+}
+
+/// Custom deserializer for subsystems that filters out keys starting with underscore
+fn deserialize_subsystems<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw_map = HashMap::<String, String>::deserialize(deserializer)?;
+    let filtered_map = raw_map
+        .into_iter()
+        .filter(|(key, _)| !key.starts_with('_'))
+        .collect();
+    Ok(filtered_map)
 }
 
 impl Default for LoggingConfig {
@@ -242,20 +255,84 @@ impl LoggingConfig {
         let global_level = &self.level;
         filter_parts.push(global_level.clone());
         
+        // Collect all filter entries first
+        let mut all_filters = Vec::new();
+        
         // Add subsystem-specific levels
         for (subsystem_name, level) in &self.subsystems {
             if let Some(subsystem) = self.parse_subsystem(subsystem_name) {
                 let module_prefixes = subsystem.module_prefix();
                 for prefix in module_prefixes.split(',') {
-                    filter_parts.push(format!("{}={}", prefix.trim(), level));
+                    all_filters.push((prefix.trim().to_string(), level.clone()));
                 }
             } else {
                 // Allow custom module specifications
-                filter_parts.push(format!("{}={}", subsystem_name, level));
+                all_filters.push((subsystem_name.clone(), level.clone()));
             }
         }
         
+        // Resolve conflicts: if same module path appears multiple times, use most verbose level
+        let resolved_filters = self.resolve_filter_conflicts(all_filters);
+        
+        // Sort by module path length (shorter first, so more specific paths come last)
+        let mut sorted_filters: Vec<_> = resolved_filters.into_iter().collect();
+        sorted_filters.sort_by_key(|(path, _)| path.len());
+        
+        // Add sorted filters to filter_parts
+        for (path, level) in sorted_filters {
+            filter_parts.push(format!("{}={}", path, level));
+        }
+        
         filter_parts.join(",")
+    }
+    
+    /// Resolve conflicts when the same module path has multiple log levels
+    /// Returns the most verbose (debug-like) level and warns about conflicts
+    fn resolve_filter_conflicts(&self, filters: Vec<(String, String)>) -> HashMap<String, String> {
+        let mut path_levels: HashMap<String, Vec<String>> = HashMap::new();
+        
+        // Group all levels for each path
+        for (path, level) in filters {
+            path_levels.entry(path).or_insert_with(Vec::new).push(level);
+        }
+        
+        let mut resolved = HashMap::new();
+        
+        for (path, levels) in path_levels {
+            if levels.len() > 1 {
+                // Multiple levels for same path - find most verbose
+                let most_verbose = self.find_most_verbose_level(&levels);
+                warn!("Conflicting log levels for module '{}': {:?}. Using most verbose: '{}'", 
+                      path, levels, most_verbose);
+                resolved.insert(path, most_verbose);
+            } else {
+                // Single level - use as is
+                resolved.insert(path, levels.into_iter().next().unwrap());
+            }
+        }
+        
+        resolved
+    }
+    
+    /// Find the most verbose (debug-like) log level from a list of levels
+    fn find_most_verbose_level(&self, levels: &[String]) -> String {
+        // Order from least to most verbose
+        let verbosity_order = ["off", "error", "warn", "info", "debug", "trace"];
+        
+        let mut most_verbose_index = 0;
+        let mut most_verbose_level = "off".to_string();
+        
+        for level in levels {
+            let level_lower = level.to_lowercase();
+            if let Some(index) = verbosity_order.iter().position(|&l| l == level_lower) {
+                if index >= most_verbose_index {
+                    most_verbose_index = index;
+                    most_verbose_level = level_lower.clone();
+                }
+            }
+        }
+        
+        most_verbose_level
     }
     
     /// Parse subsystem name to enum
@@ -300,18 +377,33 @@ impl LoggingConfig {
         // Set the filter directly
         builder.filter(None, Self::parse_log_level(&self.level));
         
+        // Collect all subsystem filters first
+        let mut all_filters = Vec::new();
+        
         // Add subsystem-specific filters
         for (subsystem_name, level) in &self.subsystems {
-            let level_filter = Self::parse_log_level(level);
             if let Some(subsystem) = self.parse_subsystem(subsystem_name) {
                 let module_prefixes = subsystem.module_prefix();
                 for prefix in module_prefixes.split(',') {
-                    builder.filter(Some(prefix.trim()), level_filter);
+                    all_filters.push((prefix.trim().to_string(), level.clone()));
                 }
             } else {
                 // Allow custom module specifications
-                builder.filter(Some(subsystem_name), level_filter);
+                all_filters.push((subsystem_name.clone(), level.clone()));
             }
+        }
+        
+        // Resolve conflicts: if same module path appears multiple times, use most verbose level
+        let resolved_filters = self.resolve_filter_conflicts(all_filters);
+        
+        // Sort by module path length (shorter first, so more specific paths are applied last)
+        let mut sorted_filters: Vec<_> = resolved_filters.into_iter().collect();
+        sorted_filters.sort_by_key(|(path, _)| path.len());
+        
+        // Apply sorted filters to builder
+        for (path, level) in sorted_filters {
+            let level_filter = Self::parse_log_level(&level);
+            builder.filter(Some(&path), level_filter);
         }
         
         // Configure timestamps

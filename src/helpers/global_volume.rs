@@ -98,7 +98,24 @@ pub fn initialize_volume_control(config: &Value) {
                             (auto_device, auto_control_name)
                         }
                         Err(e) => {
-                            warn!("Failed to get system info from configurator API: {}. Using fallback values.", e);
+                            warn!("Failed to get system info from configurator API: {}.", e);
+                            
+                            // If both device and control_name were empty (auto-detection requested)
+                            // and API fails, disable volume control instead of using unreliable fallback
+                            if device.is_empty() && control_name.is_empty() {
+                                warn!("Auto-detection failed and no manual configuration provided. Disabling volume control.");
+                                let mut dummy_control = DummyVolumeControl::new(
+                                    "auto_detection_failed".to_string(),
+                                    "Auto-detection Failed".to_string(),
+                                    0.0
+                                );
+                                dummy_control.set_available(false);
+                                let dummy_control: Box<dyn VolumeControl + Send + Sync> = Box::new(dummy_control);
+                                let _ = GLOBAL_VOLUME_CONTROL.set(Arc::new(Mutex::new(dummy_control)));
+                                return;
+                            }
+                            
+                            // Only use fallback if at least one value was explicitly configured
                             let fallback_device = if device.is_empty() { "default".to_string() } else { device.to_string() };
                             let fallback_control = if control_name.is_empty() { "Master".to_string() } else { control_name.to_string() };
                             info!("Using fallback ALSA volume settings: device='{}', control='{}'", fallback_device, fallback_control);

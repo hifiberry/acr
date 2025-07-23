@@ -60,7 +60,7 @@
             "device": "",
             "control_name": "",
             "display_name": "Master Volume",
-            "_comment": "ALSA volume control configuration. Leave device and control_name empty for auto-detection via configurator API. Auto-detection uses hw:X format where X is the hardware index from the configurator API and selects the appropriate mixer control."
+            "_comment": "ALSA volume control configuration. Leave device and control_name empty for auto-detection via configurator API. Auto-detection uses hw:X format where X is the hardware index from the configurator API and selects the appropriate mixer control. If auto-detection fails and no manual values are provided, volume control will be disabled."
         },
         "settingsdb": {
             "path": "/var/lib/audiocontrol/db"

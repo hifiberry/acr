@@ -100,6 +100,7 @@
                 "host": "localhost",
                 "port": 6600,
                 "load_on_startup": true,
+                "enable_library": true,
                 "artist_separator": [",", "feat. "],
                 "enhance_metadata": true,
                 "_comment": "max_reconnect_attempts: Maximum number of connection attempts before giving up (default: 5)",
@@ -130,7 +131,8 @@
                 "player_name": null,
                 "player_mac": [],
                 "reconnection_interval": 30,
-                "polling_interval": 30
+                "polling_interval": 30,
+                "enable_library": false
             }
         },
         {

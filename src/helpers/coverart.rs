@@ -15,36 +15,53 @@ pub fn extract_cover_from_music_files(dir_path: &str) -> Option<(Vec<u8>, String
         debug!("Directory does not exist: {}", dir_path);
         return None;
     }
-    
+
+    debug!("BLOCKING TRACE: About to start WalkDir::new()");
     // Walk through the directory looking for music files
     let walker = WalkDir::new(dir_path).max_depth(1).into_iter();
-    
+    debug!("BLOCKING TRACE: WalkDir::new() completed, starting iteration");
+
+    let mut file_count = 0;
+    let mut audio_file_count = 0;
+
     for entry in walker.filter_map(|e| e.ok()) {
         let path = entry.path();
+        file_count += 1;
+        debug!("BLOCKING TRACE: Processing path: {}", path.display());
         
         // Skip directories and non-music files
         if path.is_dir() || !is_audio_file(path) {
+            debug!("BLOCKING TRACE: Skipping non-audio file: {}", path.display());
             continue;
         }
+
+        audio_file_count += 1;
+        debug!("BLOCKING TRACE: About to check audio file #{} for cover art: {}", audio_file_count, path.display());
         
-        debug!("Checking file for cover art: {}", path.display());
-        
+        debug!("BLOCKING TRACE: About to call Probe::open() on {}", path.display());
         // Try to read tags from the file
-        let tagged_file = match Probe::open(path).and_then(|probe| probe.read()) {
-            Ok(file) => file,
+        let tagged_file = match Probe::open(path).and_then(|probe| {
+            debug!("BLOCKING TRACE: Probe::open() succeeded, calling probe.read() on {}", path.display());
+            probe.read()
+        }) {
+            Ok(file) => {
+                debug!("BLOCKING TRACE: probe.read() completed successfully on {}", path.display());
+                file
+            },
             Err(e) => {
-                debug!("Failed to read tags from file {}: {}", path.display(), e);
+                debug!("BLOCKING TRACE: Failed to read tags from file {}: {}", path.display(), e);
                 continue;
             }
         };
-        
+
+        debug!("BLOCKING TRACE: About to check for pictures in tags for {}", path.display());
         // Try to get picture from the primary tag
         let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
         
         if let Some(tag) = tag {
             // Look for pictures in the tag
             if let Some(picture) = tag.pictures().first() {
-                debug!("Found embedded cover art in file: {}", path.display());
+                debug!("BLOCKING TRACE: Found embedded cover art in file: {}", path.display());
                 
                 // Determine MIME type
                 let mime_type = if let Some(mime) = picture.mime_type() {
@@ -60,15 +77,22 @@ pub fn extract_cover_from_music_files(dir_path: &str) -> Option<(Vec<u8>, String
                 } else {
                     "application/octet-stream"
                 }.to_string();
-                
+
                 // Get the image data
                 let data = picture.data().to_vec();
                 
+                debug!("BLOCKING TRACE: Returning embedded cover art data, {} bytes", data.len());
                 return Some((data, mime_type));
+            } else {
+                debug!("BLOCKING TRACE: No pictures found in tags for {}", path.display());
             }
+        } else {
+            debug!("BLOCKING TRACE: No tags found for {}", path.display());
         }
     }
-    
+
+    debug!("BLOCKING TRACE: Finished processing audio files - checked {} total files, {} audio files", file_count, audio_file_count);
+    debug!("BLOCKING TRACE: No embedded cover art found, checking for standard cover files");
     // Also check for standard cover files in the directory
     let standard_covers = ["cover.jpg", "cover.png", "folder.jpg", "folder.png", "album.jpg", "album.png", "front.jpg", "front.png"];
     
@@ -76,14 +100,18 @@ pub fn extract_cover_from_music_files(dir_path: &str) -> Option<(Vec<u8>, String
         let cover_path = format!("{}/{}", dir_path, cover_name);
         let path = Path::new(&cover_path);
         
+        debug!("BLOCKING TRACE: Checking for standard cover file: {}", cover_path);
         if path.exists() && path.is_file() {
-            debug!("Found standard cover file: {}", cover_path);
+            debug!("BLOCKING TRACE: Found standard cover file: {}", cover_path);
             
+            debug!("BLOCKING TRACE: About to open file: {}", cover_path);
             // Read the file
             match File::open(path) {
                 Ok(mut file) => {
+                    debug!("BLOCKING TRACE: File opened successfully, about to read_to_end(): {}", cover_path);
                     let mut data = Vec::new();
                     if file.read_to_end(&mut data).is_ok() {
+                        debug!("BLOCKING TRACE: Successfully read {} bytes from {}", data.len(), cover_path);
                         // Determine MIME type based on file extension
                         let mime_type = if cover_name.ends_with(".jpg") || cover_name.ends_with(".jpeg") {
                             "image/jpeg"
@@ -94,13 +122,18 @@ pub fn extract_cover_from_music_files(dir_path: &str) -> Option<(Vec<u8>, String
                         }.to_string();
                         
                         return Some((data, mime_type));
+                    } else {
+                        debug!("BLOCKING TRACE: Failed to read data from {}", cover_path);
                     }
                 }
-                Err(e) => debug!("Failed to read cover file {}: {}", cover_path, e),
+                Err(e) => debug!("BLOCKING TRACE: Failed to open cover file {}: {}", cover_path, e),
             }
+        } else {
+            debug!("BLOCKING TRACE: Standard cover file does not exist: {}", cover_path);
         }
     }
     
+    debug!("BLOCKING TRACE: No cover art found, returning None");
     None
 }
 

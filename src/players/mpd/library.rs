@@ -794,120 +794,112 @@ impl MPDLibrary {
     
     /// Extract the album directory from a track URI
     fn get_album_directory(&self, uri: &str) -> Option<String> {
+        debug!("BLOCKING TRACE: get_album_directory called with URI: {}", uri);
         // MPD URIs are typically relative paths to the music directory
         // We need to determine the music directory structure
         
         // Remove the filename from the URI to get the directory
         let uri_path = std::path::Path::new(uri);
         if let Some(parent) = uri_path.parent() {
-            if parent.to_string_lossy().is_empty() {
+            let parent_str = parent.to_string_lossy().to_string();
+            if parent_str.is_empty() {
+                debug!("BLOCKING TRACE: Parent directory is empty, returning None");
                 return None;
             }
             
+            debug!("BLOCKING TRACE: Extracted album directory: {}", parent_str);
             // Return the parent directory path
-            return Some(parent.to_string_lossy().to_string());
+            return Some(parent_str);
         }
         
+        debug!("BLOCKING TRACE: No parent directory found, returning None");
         None
     }
     
     /// Extract cover art from music files in a directory
     fn extract_cover_from_music_files(&self, dir_path: &str) -> Option<(Vec<u8>, String)> {
-        // Try to get the MPD music directory
-        let music_dir = self.get_mpd_music_dir();
+        debug!("BLOCKING TRACE: extract_cover_from_music_files called with dir_path: {}", dir_path);
         
-        // Combine music_dir with dir_path to get the full path
-        let full_path = if let Some(base_dir) = music_dir {
-            format!("{}/{}", base_dir, dir_path)
-        } else {
-            // If we can't determine the MPD music directory, try using the path as is
-            dir_path.to_string()
-        };
+        // Get the music directory from configuration or /etc/mpd.conf
+        let mut base_paths = Vec::new();
         
-        debug!("Checking for audio files in: {}", full_path);
+        if let Some(music_dir) = self.controller.get_effective_music_directory() {
+            debug!("BLOCKING TRACE: Using configured music directory: {}", music_dir);
+            base_paths.push(music_dir);
+        }
         
-        // Use the coverart helper to extract cover art from the directory
-        crate::helpers::coverart::extract_cover_from_music_files(&full_path)
+        // Add fallback paths in case the configured path doesn't work
+        base_paths.extend([
+            "/var/lib/mpd/music".to_string(),   // Common default
+            "/music".to_string(),               // Common mount point  
+            "/home/mpd/music".to_string(),      // Another common path
+            "/srv/music".to_string(),           // Another common path
+            "".to_string(),                     // Use relative path as-is
+        ]);
+        
+        for base_path in base_paths {
+            let full_path = if base_path.is_empty() {
+                dir_path.to_string()
+            } else {
+                format!("{}/{}", base_path, dir_path)
+            };
+            
+            debug!("BLOCKING TRACE: Trying full path: {}", full_path);
+            
+            // Check if this path exists before trying to extract
+            if std::path::Path::new(&full_path).exists() {
+                debug!("BLOCKING TRACE: Path exists, attempting extraction: {}", full_path);
+                // Use the coverart helper to extract cover art from the directory
+                let result = crate::helpers::coverart::extract_cover_from_music_files(&full_path);
+                if result.is_some() {
+                    debug!("BLOCKING TRACE: Successfully extracted cover art from: {}", full_path);
+                    return result;
+                }
+            } else {
+                debug!("BLOCKING TRACE: Path does not exist: {}", full_path);
+            }
+        }
+        
+        debug!("BLOCKING TRACE: No valid path found for cover extraction");
+        None
     }
     
     /// Save cover art to the album directory as cover.jpg
     fn save_cover_to_album_dir(&self, dir_path: &str, data: &[u8]) -> bool {
-        // Try to get the MPD music directory
-        let music_dir = self.get_mpd_music_dir();
+        // Get the music directory from configuration or /etc/mpd.conf
+        let mut base_paths = Vec::new();
         
-        // Combine music_dir with dir_path to get the full path
-        let full_path = if let Some(base_dir) = music_dir {
-            format!("{}/{}", base_dir, dir_path)
-        } else {
-            // If we can't determine the MPD music directory, try using the path as is
-            dir_path.to_string()
-        };
-        
-        // Use the coverart helper to save the cover art
-        crate::helpers::coverart::save_cover_to_dir(&full_path, data)
-    }
-    
-    /// Try to determine the MPD music directory
-    fn get_mpd_music_dir(&self) -> Option<String> {
-        use std::io::{BufRead, BufReader, Write};
-        use std::net::TcpStream;
-        
-        // Connect to MPD server
-        let stream = match TcpStream::connect(format!("{}:{}", self.hostname, self.port)) {
-            Ok(s) => s,
-            Err(e) => {
-                debug!("Failed to connect to MPD server: {}", e);
-                return None;
-            }
-        };
-        
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut writer = stream;
-        
-        // Read the welcome message
-        let mut welcome = String::new();
-        if reader.read_line(&mut welcome).is_err() {
-            return None;
+        if let Some(music_dir) = self.controller.get_effective_music_directory() {
+            debug!("Using configured music directory for saving cover: {}", music_dir);
+            base_paths.push(music_dir);
         }
         
-        if !welcome.starts_with("OK") {
-            return None;
-        }
+        // Add fallback paths in case the configured path doesn't work
+        base_paths.extend([
+            "/var/lib/mpd/music".to_string(),   // Common default
+            "/music".to_string(),               // Common mount point  
+            "/home/mpd/music".to_string(),      // Another common path
+            "/srv/music".to_string(),           // Another common path
+            "".to_string(),                     // Use relative path as-is
+        ]);
         
-        // Send config command
-        if writer.write_all(b"config\n").is_err() {
-            return None;
-        }
-        
-        // Read the response line by line
-        let mut music_dir = None;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).is_err() {
-                break;
-            }
+        for base_path in base_paths {
+            let full_path = if base_path.is_empty() {
+                dir_path.to_string()
+            } else {
+                format!("{}/{}", base_path, dir_path)
+            };
             
-            let line = line.trim();
-            
-            if line == "OK" {
-                break;
-            }
-            
-            // Look for music_directory in the config
-            if line.starts_with("music_directory: ") {
-                let dir = line["music_directory: ".len()..].trim();
-                // Remove quotes if present
-                let dir = if dir.starts_with('"') && dir.ends_with('"') {
-                    &dir[1..dir.len()-1]
-                } else {
-                    dir
-                };
-                music_dir = Some(dir.to_string());
-                break;
+            // Check if the parent directory exists before trying to save
+            if std::path::Path::new(&full_path).exists() {
+                debug!("Trying to save cover art to: {}", full_path);
+                if crate::helpers::coverart::save_cover_to_dir(&full_path, data) {
+                    return true;
+                }
             }
         }
         
-        music_dir
+        false
     }
 }
 

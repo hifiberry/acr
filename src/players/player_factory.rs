@@ -90,11 +90,18 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_u64())
                     .unwrap_or(5) as u32; // Default to 5 attempts if not specified
                 
+                // Check if music_directory is specified in the JSON
+                let music_directory = config_obj.get("music_directory")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("") // Default to empty string if not specified
+                    .to_string();
+                
                 let mut player = MPDPlayerController::with_connection(host, port);
                 player.set_load_mpd_library(load_library);
                 player.set_enhance_metadata(enhance_metadata);
                 player.set_extract_coverart(extract_coverart);
                 player.set_max_reconnect_attempts(max_reconnect_attempts);
+                player.set_music_directory(music_directory);
                 
                 // Set custom artist separators if provided
                 if let Some(separators) = artist_separators {

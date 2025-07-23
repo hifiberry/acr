@@ -1,0 +1,19 @@
+{
+  "players": [
+    {
+      "name": "mpd",
+      "host": "localhost",
+      "port": 6600,
+      "load_mpd_library": true,
+      "enhance_metadata": true,
+      "extract_coverart": true,
+      "music_directory": "/var/lib/mpd/music",
+      "max_reconnect_attempts": 5,
+      "artist_separator": [", ", " feat. ", " ft. ", " & "]
+    }
+  ],
+  "webserver": {
+    "host": "0.0.0.0",
+    "port": 81
+  }
+}

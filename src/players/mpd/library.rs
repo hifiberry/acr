@@ -109,6 +109,11 @@ impl MPDLibrary {
         }
     }
     
+    /// Check if cover art extraction from music files is enabled
+    fn is_extract_coverart_enabled(&self) -> bool {
+        self.controller.get_extract_coverart().unwrap_or(true)
+    }
+    
     /// Create a URL-safe base64 encoded image URL for a file path
     /// This shortens very long URL-encoded file paths to a URL-safe base64 encoded string
     pub fn create_encoded_image_url(&self, file_path: &str) -> String {
@@ -716,7 +721,33 @@ impl MPDLibrary {
             return Some((data, mime_type));
         }
         
-        debug!("MPD did not provide cover art, attempting to extract from audio files");
+        debug!("MPD did not provide cover art, checking if extraction from audio files is enabled");
+        
+        // Check if cover art extraction from music files is enabled
+        if !self.is_extract_coverart_enabled() {
+            debug!("Cover art extraction from music files is disabled, skipping file extraction");
+            
+            // Fall back to the original track cover method
+            debug!("Falling back to get_track_cover for album {}", album.name);
+            
+            // Try to get track cover
+            if let Some((data, mime_type)) = self.get_track_cover(uri, None) {
+                // Store in image cache with artist and album info for future requests
+                let _ = crate::helpers::imagecache::store_album_cover(
+                    &artist_name,
+                    &album.name,
+                    year,
+                    data.clone(),
+                    mime_type.clone()
+                );
+                
+                return Some((data, mime_type));
+            }
+            
+            return None;
+        }
+        
+        debug!("Cover art extraction is enabled, attempting to extract from audio files");
         
         // Step 3: Find the directory of the album
         let album_dir = self.get_album_directory(uri);

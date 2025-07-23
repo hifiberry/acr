@@ -71,6 +71,11 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true); // Default to true if not specified
                 
+                // Check if extract_coverart parameter is specified in the JSON
+                let extract_coverart = config_obj.get("extract_coverart")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true); // Default to true if not specified
+                
                 // Check if artist_separator array is specified in the JSON
                 let artist_separators = config_obj.get("artist_separator")
                     .and_then(|v| v.as_array())
@@ -88,6 +93,7 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                 let mut player = MPDPlayerController::with_connection(host, port);
                 player.set_load_mpd_library(load_library);
                 player.set_enhance_metadata(enhance_metadata);
+                player.set_extract_coverart(extract_coverart);
                 player.set_max_reconnect_attempts(max_reconnect_attempts);
                 
                 // Set custom artist separators if provided

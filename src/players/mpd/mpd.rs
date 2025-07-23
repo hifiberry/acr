@@ -45,6 +45,9 @@ pub struct MPDPlayerController {
     /// Flag to control metadata enhancement
     enhance_metadata: bool,
     
+    /// Flag to control cover art extraction from music files
+    extract_coverart: bool,
+    
     /// Custom artist separators for splitting artist names
     artist_separators: Option<Vec<String>>,
     
@@ -73,6 +76,7 @@ impl Clone for MPDPlayerController {
             current_state: Arc::clone(&self.current_state),
             load_mpd_library: self.load_mpd_library,
             enhance_metadata: self.enhance_metadata,
+            extract_coverart: self.extract_coverart,
             artist_separators: self.artist_separators.clone(),
             library: Arc::clone(&self.library),
             max_reconnect_attempts: self.max_reconnect_attempts,
@@ -100,6 +104,7 @@ impl MPDPlayerController {
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             load_mpd_library: true,
             enhance_metadata: true,
+            extract_coverart: true,
             artist_separators: None,
             library: Arc::new(Mutex::new(None)),
             max_reconnect_attempts: 5, // Default value
@@ -128,6 +133,7 @@ impl MPDPlayerController {
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             load_mpd_library: true,
             enhance_metadata: true,
+            extract_coverart: true,
             artist_separators: None,
             library: Arc::new(Mutex::new(None)),
             max_reconnect_attempts: 5, // Default value
@@ -231,6 +237,16 @@ impl MPDPlayerController {
     /// Set whether to enhance metadata
     pub fn set_enhance_metadata(&mut self, enhance: bool) {
         self.enhance_metadata = enhance;
+    }
+    
+    /// Get whether to extract cover art from music files
+    pub fn get_extract_coverart(&self) -> Option<bool> {
+        Some(self.extract_coverart)
+    }
+
+    /// Set whether to extract cover art from music files
+    pub fn set_extract_coverart(&mut self, extract: bool) {
+        self.extract_coverart = extract;
     }
     
     /// Get the maximum number of reconnection attempts

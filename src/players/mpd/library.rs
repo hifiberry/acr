@@ -794,7 +794,7 @@ impl MPDLibrary {
     
     /// Extract the album directory from a track URI
     fn get_album_directory(&self, uri: &str) -> Option<String> {
-        debug!("BLOCKING TRACE: get_album_directory called with URI: {}", uri);
+        debug!("Extracting album directory from URI: {}", uri);
         // MPD URIs are typically relative paths to the music directory
         // We need to determine the music directory structure
         
@@ -803,28 +803,28 @@ impl MPDLibrary {
         if let Some(parent) = uri_path.parent() {
             let parent_str = parent.to_string_lossy().to_string();
             if parent_str.is_empty() {
-                debug!("BLOCKING TRACE: Parent directory is empty, returning None");
+                debug!("Parent directory is empty, returning None");
                 return None;
             }
             
-            debug!("BLOCKING TRACE: Extracted album directory: {}", parent_str);
+            debug!("Extracted album directory: {}", parent_str);
             // Return the parent directory path
             return Some(parent_str);
         }
         
-        debug!("BLOCKING TRACE: No parent directory found, returning None");
+        debug!("No parent directory found, returning None");
         None
     }
     
     /// Extract cover art from music files in a directory
     fn extract_cover_from_music_files(&self, dir_path: &str) -> Option<(Vec<u8>, String)> {
-        debug!("BLOCKING TRACE: extract_cover_from_music_files called with dir_path: {}", dir_path);
+        debug!("Extracting cover art from music files in directory: {}", dir_path);
         
         // Get the music directory from configuration or /etc/mpd.conf
         let mut base_paths = Vec::new();
         
         if let Some(music_dir) = self.controller.get_effective_music_directory() {
-            debug!("BLOCKING TRACE: Using configured music directory: {}", music_dir);
+            debug!("Using configured music directory: {}", music_dir);
             base_paths.push(music_dir);
         }
         
@@ -844,23 +844,23 @@ impl MPDLibrary {
                 format!("{}/{}", base_path, dir_path)
             };
             
-            debug!("BLOCKING TRACE: Trying full path: {}", full_path);
+            debug!("Trying extraction path: {}", full_path);
             
             // Check if this path exists before trying to extract
             if std::path::Path::new(&full_path).exists() {
-                debug!("BLOCKING TRACE: Path exists, attempting extraction: {}", full_path);
+                debug!("Path exists, attempting cover art extraction: {}", full_path);
                 // Use the coverart helper to extract cover art from the directory
                 let result = crate::helpers::coverart::extract_cover_from_music_files(&full_path);
                 if result.is_some() {
-                    debug!("BLOCKING TRACE: Successfully extracted cover art from: {}", full_path);
+                    debug!("Successfully extracted cover art from: {}", full_path);
                     return result;
                 }
             } else {
-                debug!("BLOCKING TRACE: Path does not exist: {}", full_path);
+                debug!("Path does not exist: {}", full_path);
             }
         }
         
-        debug!("BLOCKING TRACE: No valid path found for cover extraction");
+        debug!("No valid path found for cover extraction");
         None
     }
     

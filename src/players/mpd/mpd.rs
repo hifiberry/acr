@@ -306,7 +306,7 @@ impl MPDPlayerController {
                                 if let Some(end_quote) = trimmed.rfind('"') {
                                     if start_quote < end_quote {
                                         let directory = &trimmed[start_quote + 1..end_quote];
-                                        debug!("Found music directory in {}: {}", config_path, directory);
+                                        info!("Auto-detected MPD music directory from {}: {}", config_path, directory);
                                         return Some(directory.to_string());
                                     }
                                 }

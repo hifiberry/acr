@@ -150,7 +150,8 @@ pub fn initialize_genre_cleanup_with_config(config: Option<&serde_json::Value>) 
         }
     }
     
-    error!("No valid genre config file found in any of the configured or default locations");
+    warn!("No valid genre config file found in any of the configured or default locations");
+    warn!("Genre cleanup not initialized - genres will be returned without cleanup");
     Err("Genre cleanup configuration not found".into())
 }
 
@@ -166,7 +167,6 @@ pub fn clean_genres_global(genres: Vec<String>) -> Vec<String> {
             if let Some(ref cleanup) = *cleanup_guard {
                 cleanup.clean_genres(genres)
             } else {
-                warn!("Genre cleanup not initialized, returning original genres");
                 // Remove duplicates at least
                 let mut unique_genres: Vec<String> = genres.into_iter().collect::<HashSet<_>>().into_iter().collect();
                 unique_genres.sort();
@@ -190,7 +190,6 @@ pub fn clean_genre_global(genre: &str) -> Option<String> {
             if let Some(ref cleanup) = *cleanup_guard {
                 cleanup.clean_genre(genre)
             } else {
-                warn!("Genre cleanup not initialized, returning original genre");
                 Some(genre.trim().to_string())
             }
         }

@@ -1,8 +1,12 @@
 [package]
 name = "audiocontrol"
-version = "0.6.5"
+version = "0.6.6"
+authors = ["Daniel Matuschek <daniel@hifiberry.com>"]
 edition = "2021"
-default-run = "audiocontrol"
+description = "AudioControl server"
+homepage = "https://www.hifiberry.com"
+repository = "https://github.com/hifiberry/hifiberry-os"
+license = "MIT"
 
 [dependencies]
 serde = { version = "1.0.219", features = ["derive"] }

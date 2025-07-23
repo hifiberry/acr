@@ -1,3 +1,18 @@
+hifiberry-audiocontrol (0.6.6) stable; urgency=medium
+
+  * Added configuration-based MPD music directory detection to prevent server blocking
+  * Introduced music_directory configuration field in MPD player configuration
+  * Implemented automatic MPD config file parsing (/etc/mpd.conf) as fallback
+  * Added effective_music_directory caching to eliminate redundant file system access
+  * Fixed critical server blocking issue when accessing cover art without cover.jpg files
+  * Eliminated blocking TCP connections to MPD server during cover art extraction
+  * Enhanced cover art extraction to use configuration-based music directory paths
+  * Added sample configuration (audiocontrol.mpd.music_directory.json.sample) with documentation
+  * Improved cover art system stability and performance under load
+  * Fixed syntax errors and cleaned up debug trace messages in cover art processing
+
+ -- HiFiBerry <info@hifiberry.com>  Thu, 24 Jul 2025 14:00:00 +0000
+
 hifiberry-audiocontrol (0.6.5) stable; urgency=medium
 
   * Added comprehensive cover art extraction and caching system for albums

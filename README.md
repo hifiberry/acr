@@ -23,10 +23,11 @@ This Rust implementation addresses these issues through strong static typing, a 
 - Clean separation between audio player control and user interfaces
 - Last.fm integration for scrobbling and "now playing" updates
 - Secure credential storage with AES-GCM encryption
+- Lyrics support with LRC format parsing for synchronized lyrics (provider-based API for extensibility)
 
 ## TODO
 
-- Lyrics support
+- Additional lyrics providers (online services)
 
 ## Architecture
 

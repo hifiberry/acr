@@ -31,5 +31,8 @@ pub mod favourites;
 // Export the volume module
 pub mod volume;
 
+// Export the lyrics module
+pub mod lyrics;
+
 // Export the server module
 pub mod server;

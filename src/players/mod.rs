@@ -1,6 +1,6 @@
 /// Player management and functionality for AudioControl3
 mod player_controller;
-mod mpd;
+pub mod mpd;
 mod null_controller;
 pub mod player_factory;
 mod raat;

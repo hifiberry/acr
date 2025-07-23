@@ -1402,6 +1402,113 @@ Common error scenarios:
 - **Provider Errors**: Logged but don't prevent other providers from working
 - **No Providers Available**: Operations will complete but may have empty `updated_providers`
 
+## Lyrics API
+
+The Lyrics API provides endpoints to retrieve song lyrics for supported players. Currently, only MPD-based players are supported. The API is designed with provider-specific endpoints to allow for future expansion to other music sources.
+
+For detailed information about the lyrics system, supported formats, file structure, and examples, see the [Lyrics API documentation](lyrics_api.md).
+
+### Get Lyrics by Song ID
+
+Retrieve lyrics for a specific song using its provider-specific song ID.
+
+- **Endpoint**: `/api/lyrics/{provider}/{song_id}`
+- **Method**: GET
+- **Path Parameters**:
+  - `provider` (string): The lyrics provider (currently only "mpd" is supported)
+  - `song_id` (string): The provider-specific song ID (for MPD: numeric song ID)
+
+**Example Request:**
+```bash
+curl -X GET "http://localhost:1080/api/lyrics/mpd/42"
+```
+
+### Get Lyrics by Metadata
+
+Retrieve lyrics by providing song metadata (artist, title, etc.) for a specific provider.
+
+- **Endpoint**: `/api/lyrics/{provider}`
+- **Method**: POST
+- **Path Parameters**:
+  - `provider` (string): The lyrics provider (currently only "mpd" is supported)
+- **Request Body**:
+  ```json
+  {
+    "artist": "Artist Name",
+    "title": "Song Title",
+    "duration": 180.5,
+    "album": "Album Name"
+  }
+  ```
+
+**Required Fields:**
+- `artist`: Artist name (string)
+- `title`: Song title (string)
+
+**Optional Fields:**
+- `duration`: Song duration in seconds (number)
+- `album`: Album name (string)
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:1080/api/lyrics/mpd" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "artist": "Example Artist",
+    "title": "Example Song"
+  }'
+```
+
+**Response Format (both endpoints):**
+
+Success with timed lyrics:
+```json
+{
+  "found": true,
+  "lyrics": {
+    "type": "timed",
+    "lyrics": [
+      {
+        "timestamp": 0.0,
+        "text": "Verse 1 starts here"
+      },
+      {
+        "timestamp": 15.5,
+        "text": "Chorus begins"
+      }
+    ]
+  }
+}
+```
+
+Success with plain text:
+```json
+{
+  "found": true,
+  "lyrics": {
+    "type": "plain",
+    "text": "Complete song lyrics as plain text"
+  }
+}
+```
+
+Not found:
+```json
+{
+  "found": false,
+  "error": "Lyrics not found for this song"
+}
+```
+
+### MPD Integration
+
+When lyrics are available for the current song, the player metadata includes additional fields:
+
+- `lyrics_available`: Boolean indicating if lyrics exist
+- `lyrics_url`: Direct API endpoint for lyrics by song ID
+- `lyrics_metadata_url`: API endpoint for lyrics by metadata
+- `lyrics_metadata`: Object containing the metadata for POST requests
+
 ## Data Structures
 
 The following section describes the main data structures used in the API responses.

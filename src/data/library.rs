@@ -76,6 +76,9 @@ pub trait LibraryInterface {
         false
     }
     
+    /// Allow downcasting to concrete types
+    fn as_any(&self) -> &dyn std::any::Any;
+    
     /// Get an image by identifier
     /// the identifier has no specific format, it can be used differently 
     /// depending on the library implementation

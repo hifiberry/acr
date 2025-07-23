@@ -727,4 +727,8 @@ impl LibraryInterface for LMSLibrary {
             _ => None,
         }
     }
+    
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }

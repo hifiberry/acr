@@ -1281,9 +1281,18 @@ impl LibraryInterface for MPDLibrary {
             _ => None,
         }
     }
+    
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl MPDLibrary {
+    /// Get the effective music directory from the controller
+    pub fn get_music_directory(&self) -> Option<String> {
+        self.controller.get_effective_music_directory()
+    }
+    
     /// Get lyrics for a song by its file path/URL
     /// 
     /// This method looks for .lrc files alongside the music files in the MPD music directory.
@@ -1298,6 +1307,17 @@ impl MPDLibrary {
         
         // Use the provider to get lyrics
         provider.get_lyrics_by_url(file_path)
+    }
+    
+    /// Get lyrics for a song by its ID in the MPD database
+    /// 
+    /// This method retrieves the song information from MPD and then looks for lyrics.
+    /// Currently simplified - for full implementation, we'd need to match queue songs with IDs.
+    pub fn get_lyrics_by_id(&self, song_id: &str) -> crate::helpers::lyrics::LyricsResult<crate::helpers::lyrics::LyricsContent> {
+        // For now, return NotFound as the implementation would be complex
+        // In a full implementation, we'd need to query the current queue and match song IDs
+        log::debug!("Lyrics lookup by song ID not yet fully implemented for MPD: {}", song_id);
+        Err(crate::helpers::lyrics::LyricsError::NotFound)
     }
     
     /// Get lyrics for a song by metadata (artist, title, etc.)

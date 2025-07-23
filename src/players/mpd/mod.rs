@@ -3,7 +3,7 @@ mod mpd;
 pub use mpd::MPDPlayerController;
 
 // Export the MPD library interface
-mod library;
+pub mod library;
 
 // Export the MPD library loader
 mod libraryloader;

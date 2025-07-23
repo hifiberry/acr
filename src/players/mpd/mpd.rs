@@ -742,7 +742,7 @@ impl MPDPlayerController {
 
     /// Create a fresh MPD client connection for sending commands
     /// This creates a new connection each time, rather than reusing an existing one
-    fn get_fresh_client(&self) -> Option<Client<TcpStream>> {
+    pub fn get_fresh_client(&self) -> Option<Client<TcpStream>> {
         // Check if connections have been disabled due to max reconnection attempts
         if self.are_connections_disabled() {
             debug!("MPD connections are disabled due to max reconnection attempts reached");
@@ -844,6 +844,54 @@ impl MPDPlayerController {
                         
                         if let Some(song_pos) = status.song.map(|s| s.pos) {
                             metadata.insert("queue_position".to_string(), serde_json::Value::Number(serde_json::Number::from(song_pos)));
+                        }
+                        
+                        // Check for lyrics availability and add API links
+                        if let Some(library) = player.get_library() {
+                            if let Some(music_dir) = library.get_music_directory() {
+                                use crate::helpers::lyrics::{MPDLyricsProvider, LyricsProvider};
+                                let lyrics_provider = MPDLyricsProvider::new(music_dir);
+                                
+                                // Try to find lyrics by URL (file path) from stream_url
+                                let has_lyrics = if let Some(file_path) = &sng.stream_url {
+                                    lyrics_provider.get_lyrics_by_url(file_path).is_ok()
+                                } else {
+                                    false
+                                };
+                                
+                                if has_lyrics {
+                                    metadata.insert("lyrics_available".to_string(), serde_json::Value::Bool(true));
+                                    
+                                    // Add API endpoint for lyrics by ID if we have song_id
+                                    if let Some(song_id) = status.song.map(|s| s.id) {
+                                        let lyrics_url = format!("{}/lyrics/mpd/{}", crate::constants::API_PREFIX, song_id.0);
+                                        metadata.insert("lyrics_url".to_string(), serde_json::Value::String(lyrics_url));
+                                    }
+                                    
+                                    // Add API endpoint for lyrics by metadata
+                                    if let (Some(artist), Some(title)) = (&sng.artist, &sng.title) {
+                                        let lyrics_metadata_url = format!("{}/lyrics/mpd", crate::constants::API_PREFIX);
+                                        metadata.insert("lyrics_metadata_url".to_string(), serde_json::Value::String(lyrics_metadata_url));
+                                        
+                                        // Also add the metadata that can be used for the POST request
+                                        let mut lyrics_metadata = serde_json::Map::new();
+                                        lyrics_metadata.insert("artist".to_string(), serde_json::Value::String(artist.clone()));
+                                        lyrics_metadata.insert("title".to_string(), serde_json::Value::String(title.clone()));
+                                        
+                                        if let Some(duration) = sng.duration {
+                                            lyrics_metadata.insert("duration".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(duration).unwrap_or(serde_json::Number::from(0))));
+                                        }
+                                        
+                                        if let Some(album) = &sng.album {
+                                            lyrics_metadata.insert("album".to_string(), serde_json::Value::String(album.clone()));
+                                        }
+                                        
+                                        metadata.insert("lyrics_metadata".to_string(), serde_json::Value::Object(lyrics_metadata));
+                                    }
+                                } else {
+                                    metadata.insert("lyrics_available".to_string(), serde_json::Value::Bool(false));
+                                }
+                            }
                         }
                         
                         // Update metadata in state

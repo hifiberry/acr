@@ -1,7 +1,7 @@
 use crate::AudioController;
 use crate::data::{Album, Artist};
 use rocket::serde::json::Json;
-use rocket::{get, State};
+use rocket::{get, post, State};
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
@@ -641,7 +641,7 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
 /// 
 /// This endpoint tells the player to scan for new or changed files, which
 /// may trigger a media database update in the backend system.
-#[get("/library/<player_name>/update")]
+#[post("/library/<player_name>/update")]
 pub fn update_player_library(
     player_name: &str, 
     controller: &State<Arc<AudioController>>

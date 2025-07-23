@@ -1,3 +1,16 @@
+hifiberry-audiocontrol (0.6.5) stable; urgency=medium
+
+  * Added comprehensive cover art extraction and caching system for albums
+  * Enhanced MPD library integration with embedded cover art extraction from music files
+  * Added support for extracting cover art from FLAC, MP3, OGG, M4A and other audio formats
+  * Implemented automatic fallback to standard cover image files (cover.jpg, folder.jpg, album.jpg, etc.)
+  * Added cover art caching in image cache with album-specific cache keys
+  * Enhanced library scanning with automatic cover art detection and storage
+  * Added test album generation with sine wave tracks and cover art for testing
+  * Improved album metadata handling with cover art integration
+
+ -- HiFiBerry <info@hifiberry.com>  Wed, 23 Jul 2025 14:00:00 +0000
+
 hifiberry-audiocontrol (0.6.4) stable; urgency=medium
 
   * Added Spotify favourite provider integration with OAuth authentication

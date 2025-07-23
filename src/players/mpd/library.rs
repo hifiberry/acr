@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
+use chrono::Datelike;
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
 use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
-use crate::helpers::sanitize;
 
 /// MPD library interface that provides access to albums and artists
 #[derive(Clone)]
@@ -639,9 +639,13 @@ impl MPDLibrary {
         }
     }    /// Get album cover art using the album's identifier
     /// 
-    /// This function looks up the album in the library, extracts the URI of the first song,
-    /// and uses that to fetch the cover art. The cover art is also stored in the
-    /// imagecache under /albums/<artist>/<album>.
+    /// This function implements a multi-step approach to retrieve album cover art:
+    /// 1. Check if the cover art is already in the image cache
+    /// 2. Check if MPD delivers cover art via albumart command
+    /// 3. If it doesn't, locate the directory of the album and look for local files
+    /// 4. Attempt to extract cover art from music files in that directory
+    /// 5. Try to save the extracted art as cover.jpg in the album directory
+    /// 6. Store it in the imagecache for future requests
     /// 
     /// Returns a tuple of (binary data, mime-type) of the cover art if found, None otherwise
     pub fn get_album_cover(&self, id: &crate::data::Identifier) -> Option<(Vec<u8>, String)> {
@@ -649,12 +653,21 @@ impl MPDLibrary {
         let album = self.get_album_by_id(id)?;
         debug!("Found album with ID {}: {}", id, album.name);
 
-        // Use the sanitize::key_from_album function to generate a path key
-        let album_key = sanitize::key_from_album(&album);
+        // Get artist name to create a better identifier
+        let artist_name = match album.artists.lock() {
+            Ok(artists) if !artists.is_empty() => artists[0].clone(),
+            _ => "Unknown Artist".to_string(),
+        };
 
-        // Create the path for storing in imagecache
-        let cache_path = format!("albums/{}/cover", album_key);
+        // Get album year if available from release_date
+        let year = album.release_date.map(|date| date.year());
         
+        // Step 1: Try to get the cover art from the image cache first
+        if let Ok((data, mime_type)) = crate::helpers::imagecache::get_album_cover(&artist_name, &album.name, year) {
+            debug!("Found album cover in image cache for {}", album.name);
+            return Some((data, mime_type));
+        }
+
         // Get the URI of the first song in the album
         let uri = match album.tracks.lock() {
             Ok(tracks) => {
@@ -675,10 +688,186 @@ impl MPDLibrary {
             return None;
         }
 
-        debug!("Retrieving cover art for album {} using URI: {}", album.name, uri.as_deref().unwrap());
+        let uri = uri.as_deref().unwrap();
+        debug!("Attempting to retrieve cover art for album {} using URI: {}", album.name, uri);
         
-        // Use the get_track_cover method to retrieve and cache the image
-        self.get_track_cover(uri.as_deref().unwrap(), Some(&cache_path))
+        // Step 2: Try MPD's albumart command
+        if let Some((data, mime_type)) = self.cover_art(uri) {
+            debug!("Successfully retrieved cover art from MPD for album: {}", album.name);
+            
+            // Store the cover art in the imagecache with artist and album name
+            let _ = crate::helpers::imagecache::store_album_cover(
+                &artist_name, 
+                &album.name, 
+                year, 
+                data.clone(), 
+                mime_type.clone()
+            );
+            
+            return Some((data, mime_type));
+        }
+        
+        debug!("MPD did not provide cover art, attempting to extract from audio files");
+        
+        // Step 3: Find the directory of the album
+        let album_dir = self.get_album_directory(uri);
+        if let Some(dir_path) = album_dir {
+            // Step 4: Try to extract cover art from music files in the directory
+            if let Some((data, mime_type)) = self.extract_cover_from_music_files(&dir_path) {
+                debug!("Successfully extracted cover art from music files for album: {}", album.name);
+                
+                // Step 5: Try to save as cover.jpg in album directory
+                self.save_cover_to_album_dir(&dir_path, &data);
+                
+                // Step 6: Store in imagecache for future requests
+                let _ = crate::helpers::imagecache::store_album_cover(
+                    &artist_name,
+                    &album.name,
+                    year,
+                    data.clone(),
+                    mime_type.clone()
+                );
+                
+                return Some((data, mime_type));
+            }
+        }
+        
+        // Fall back to the original track cover method in case all else fails
+        debug!("Falling back to get_track_cover for album {}", album.name);
+        
+        // Try to get track cover
+        if let Some((data, mime_type)) = self.get_track_cover(uri, None) {
+            // Store in image cache with artist and album info for future requests
+            let _ = crate::helpers::imagecache::store_album_cover(
+                &artist_name,
+                &album.name,
+                year,
+                data.clone(),
+                mime_type.clone()
+            );
+            
+            Some((data, mime_type))
+        } else {
+            None
+        }
+    }
+    
+    /// Extract the album directory from a track URI
+    fn get_album_directory(&self, uri: &str) -> Option<String> {
+        // MPD URIs are typically relative paths to the music directory
+        // We need to determine the music directory structure
+        
+        // Remove the filename from the URI to get the directory
+        let uri_path = std::path::Path::new(uri);
+        if let Some(parent) = uri_path.parent() {
+            if parent.to_string_lossy().is_empty() {
+                return None;
+            }
+            
+            // Return the parent directory path
+            return Some(parent.to_string_lossy().to_string());
+        }
+        
+        None
+    }
+    
+    /// Extract cover art from music files in a directory
+    fn extract_cover_from_music_files(&self, dir_path: &str) -> Option<(Vec<u8>, String)> {
+        // Try to get the MPD music directory
+        let music_dir = self.get_mpd_music_dir();
+        
+        // Combine music_dir with dir_path to get the full path
+        let full_path = if let Some(base_dir) = music_dir {
+            format!("{}/{}", base_dir, dir_path)
+        } else {
+            // If we can't determine the MPD music directory, try using the path as is
+            dir_path.to_string()
+        };
+        
+        debug!("Checking for audio files in: {}", full_path);
+        
+        // Use the coverart helper to extract cover art from the directory
+        crate::helpers::coverart::extract_cover_from_music_files(&full_path)
+    }
+    
+    /// Save cover art to the album directory as cover.jpg
+    fn save_cover_to_album_dir(&self, dir_path: &str, data: &[u8]) -> bool {
+        // Try to get the MPD music directory
+        let music_dir = self.get_mpd_music_dir();
+        
+        // Combine music_dir with dir_path to get the full path
+        let full_path = if let Some(base_dir) = music_dir {
+            format!("{}/{}", base_dir, dir_path)
+        } else {
+            // If we can't determine the MPD music directory, try using the path as is
+            dir_path.to_string()
+        };
+        
+        // Use the coverart helper to save the cover art
+        crate::helpers::coverart::save_cover_to_dir(&full_path, data)
+    }
+    
+    /// Try to determine the MPD music directory
+    fn get_mpd_music_dir(&self) -> Option<String> {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        
+        // Connect to MPD server
+        let stream = match TcpStream::connect(format!("{}:{}", self.hostname, self.port)) {
+            Ok(s) => s,
+            Err(e) => {
+                debug!("Failed to connect to MPD server: {}", e);
+                return None;
+            }
+        };
+        
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        
+        // Read the welcome message
+        let mut welcome = String::new();
+        if reader.read_line(&mut welcome).is_err() {
+            return None;
+        }
+        
+        if !welcome.starts_with("OK") {
+            return None;
+        }
+        
+        // Send config command
+        if writer.write_all(b"config\n").is_err() {
+            return None;
+        }
+        
+        // Read the response line by line
+        let mut music_dir = None;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                break;
+            }
+            
+            let line = line.trim();
+            
+            if line == "OK" {
+                break;
+            }
+            
+            // Look for music_directory in the config
+            if line.starts_with("music_directory: ") {
+                let dir = line["music_directory: ".len()..].trim();
+                // Remove quotes if present
+                let dir = if dir.starts_with('"') && dir.ends_with('"') {
+                    &dir[1..dir.len()-1]
+                } else {
+                    dir
+                };
+                music_dir = Some(dir.to_string());
+                break;
+            }
+        }
+        
+        music_dir
     }
 }
 

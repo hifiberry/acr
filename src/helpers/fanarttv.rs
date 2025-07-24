@@ -5,6 +5,21 @@ use crate::helpers::imagecache;
 use crate::data::artist::Artist;
 use crate::helpers::ArtistUpdater;
 use crate::helpers::sanitize::filename_from_string;
+use moka::sync::Cache;
+use std::time::Duration;
+use lazy_static::lazy_static;
+
+// Using lazy_static for failed MBID cache with 24-hour expiry  
+lazy_static! {
+    static ref FAILED_MBID_CACHE: Cache<String, bool> = {
+        Cache::builder()
+            // Set a 24-hour time-to-live (TTL)
+            .time_to_live(Duration::from_secs(24 * 60 * 60))
+            // Set a maximum capacity for the cache
+            .max_capacity(1000) 
+            .build()
+    };
+}
 
 // API key for fanart.tv
 const APIKEY: &str = "749a8fca4f2d3b0462b287820ad6ab06";
@@ -25,6 +40,12 @@ fn http_client() -> Box<dyn http_client::HttpClient> {
 /// # Returns
 /// * `Vec<String>` - URLs of all available thumbnails, empty if none found
 pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Vec<String> {
+    // Check negative cache for failed lookups
+    if FAILED_MBID_CACHE.get(artist_mbid).is_some() {
+        debug!("MBID '{}' found in negative cache (previous FanArt.tv lookup failed)", artist_mbid);
+        return Vec::new();
+    }
+
     let max = max_images.unwrap_or(10);
     let url = format!(
         "http://webservice.fanart.tv/v3/music/{}?api_key={}", 
@@ -54,17 +75,27 @@ pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Ve
                         if !thumbnail_urls.is_empty() {
                             debug!("Found {} artist thumbnails on fanart.tv (limited to max {})", thumbnail_urls.len(), max);
                         } else {
-                            debug!("Found no artist thumbnails on fanart.tv");
+                            debug!("Found no artist thumbnails on fanart.tv for MBID {}", artist_mbid);
+                            // Add to negative cache if no thumbnails found
+                            FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
                         }
+                    } else {
+                        debug!("No artistthumb data found on fanart.tv for MBID {}", artist_mbid);
+                        // Add to negative cache if no artistthumb section found  
+                        FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to parse JSON from fanart.tv: {}", e);
+                    warn!("Failed to parse JSON from fanart.tv for MBID {}: {}", artist_mbid, e);
+                    // Add to negative cache on parse error
+                    FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
                 }
             }
         }
         Err(e) => {
-            debug!("Artist does not exist on fanart.tv or error occurred: {}", e);
+            debug!("GET request failed: {}: status code 404", e);
+            // Add to negative cache on request failure (includes 404)
+            FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
         }
     }
 
@@ -79,6 +110,12 @@ pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Ve
 /// # Returns
 /// * `Vec<String>` - URLs of all available banners, empty if none found
 pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
+    // Check negative cache for failed lookups
+    if FAILED_MBID_CACHE.get(artist_mbid).is_some() {
+        debug!("MBID '{}' found in negative cache (previous FanArt.tv lookup failed)", artist_mbid);
+        return Vec::new();
+    }
+
     let url = format!(
         "http://webservice.fanart.tv/v3/music/{}?api_key={}", 
         artist_mbid,
@@ -104,17 +141,27 @@ pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
                         if !banner_urls.is_empty() {
                             debug!("Found {} artist banners on fanart.tv", banner_urls.len());
                         } else {
-                            debug!("Found no artist banners on fanart.tv");
+                            debug!("Found no artist banners on fanart.tv for MBID {}", artist_mbid);
+                            // Add to negative cache if no banners found
+                            FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
                         }
+                    } else {
+                        debug!("No musicbanner data found on fanart.tv for MBID {}", artist_mbid);
+                        // Add to negative cache if no musicbanner section found
+                        FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to parse JSON from fanart.tv: {}", e);
+                    warn!("Failed to parse JSON from fanart.tv for MBID {}: {}", artist_mbid, e);
+                    // Add to negative cache on parse error
+                    FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
                 }
             }
         }
         Err(e) => {
-            debug!("Artist does not exist on fanart.tv or error occurred: {}", e);
+            debug!("GET request failed: {}: status code 404", e);
+            // Add to negative cache on request failure (includes 404)
+            FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
         }
     }
 

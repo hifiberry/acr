@@ -6,7 +6,7 @@
   "include_module_path": true,
   "include_line_numbers": false,
   "subsystems": {
-    "players": "debug",
+    "players": "info",
     "cache": "warn",
     "network": "error",
     "deps": "warn",

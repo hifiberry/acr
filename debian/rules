@@ -28,7 +28,6 @@ override_dh_auto_install:
 	# Create required directories
 	mkdir -p debian/hifiberry-audiocontrol/usr/bin
 	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol
-	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web
 	mkdir -p debian/hifiberry-audiocontrol/etc/audiocontrol
 	# Install main binary
 	if [ -f target/release/audiocontrol ]; then \
@@ -47,13 +46,6 @@ override_dh_auto_install:
 		cp example/python/audiocontrol_nowplaying.py debian/hifiberry-audiocontrol/usr/bin/audiocontrol_nowplaying; \
 		chmod +x debian/hifiberry-audiocontrol/usr/bin/audiocontrol_nowplaying; \
 	fi
-	# Install config samples
-	cp audiocontrol.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
-	if [ -f audiocontrol_mpris_sample.json ]; then \
-		cp audiocontrol_mpris_sample.json debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/; \
-	fi
-	# Install logging configuration sample
-	cp debian/logging.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
 	# Install default configuration files
 	if [ -f configs/audiocontrol.json ]; then \
 		cp configs/audiocontrol.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \
@@ -65,16 +57,16 @@ override_dh_auto_install:
 	if [ -f conf/genres.json ]; then \
 		cp conf/genres.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \
 	fi
-	# Install example app
-	if [ -d example/web ]; then \
-		cp -r example/web/* debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/sample-web/; \
-	fi
 
 override_dh_auto_clean:
 	dh_auto_clean
 	rm -rf target/
 	rm -rf $(CARGO_HOME)
 	rm -rf $(RUSTUP_HOME)
+	rm -rf debian/.debhelper/
+	rm -f debian/*.debhelper.log
+	rm -f debian/*.postrm.debhelper
+	rm -f debian/*.substvars
 
 override_dh_installsystemd:
 	dh_installsystemd --name=audiocontrol --restart-after-upgrade

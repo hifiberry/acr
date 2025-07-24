@@ -1088,11 +1088,13 @@ impl MPDPlayerController {
                             
                             if has_lyrics {
                                 song.metadata.insert("lyrics_available".to_string(), serde_json::Value::Bool(true));
+                                debug!("Added lyrics_available=true to song metadata");
                                 
                                 // Add API endpoint for lyrics by metadata
                                 if let (Some(artist), Some(title)) = (&song.artist, &song.title) {
                                     let lyrics_metadata_url = format!("{}/lyrics/mpd", crate::constants::API_PREFIX);
                                     song.metadata.insert("lyrics_metadata_url".to_string(), serde_json::Value::String(lyrics_metadata_url));
+                                    debug!("Added lyrics_metadata_url to song metadata");
                                     
                                     // Also add the metadata that can be used for the POST request
                                     let mut lyrics_metadata = serde_json::Map::new();
@@ -1108,9 +1110,11 @@ impl MPDPlayerController {
                                     }
                                     
                                     song.metadata.insert("lyrics_metadata".to_string(), serde_json::Value::Object(lyrics_metadata));
+                                    debug!("Added lyrics_metadata object to song metadata");
                                 }
                             } else {
                                 song.metadata.insert("lyrics_available".to_string(), serde_json::Value::Bool(false));
+                                debug!("Added lyrics_available=false to song metadata");
                             }
                         }
                     }
@@ -1118,6 +1122,8 @@ impl MPDPlayerController {
                     info!("Now playing: {} - {}", 
                         song.title.as_deref().unwrap_or("Unknown"),
                         song.artist.as_deref().unwrap_or("Unknown"));
+                    
+                    debug!("Song metadata contains {} entries: {:?}", song.metadata.len(), song.metadata.keys().collect::<Vec<_>>());
                     
                     // Log additional song details if available
                     if let Some(duration) = song.duration {
@@ -1215,7 +1221,13 @@ impl PlayerController for MPDPlayerController {
     fn get_song(&self) -> Option<Song> {
         debug!("Getting current song from stored value");
         // Return a clone of the stored song
-        self.current_song.lock().unwrap().clone()
+        let song_clone = self.current_song.lock().unwrap().clone();
+        if let Some(ref song) = song_clone {
+            debug!("Returning song with {} metadata entries: {:?}", song.metadata.len(), song.metadata.keys().collect::<Vec<_>>());
+        } else {
+            debug!("No current song available");
+        }
+        song_clone
     }
     
     fn get_loop_mode(&self) -> LoopMode {

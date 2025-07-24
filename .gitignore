@@ -46,3 +46,7 @@ test_cache_18080/attributes/db
 debian/hifiberry-audiocontrol/*
 debian/rustup_home/*
 debian/cargo_home/*
+debian/hifiberry-audiocontrol.debhelper.log
+debian/hifiberry-audiocontrol.install
+debian/hifiberry-audiocontrol.postrm.debhelper
+debian/hifiberry-audiocontrol.substvars

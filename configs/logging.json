@@ -14,6 +14,10 @@
     "audiocontrol::helpers::theaudiodb": "info",
     "audiocontrol::helpers::lastfm": "info",
     "audiocontrol::helpers::musicbrainz": "info",
+    "audiocontrol::helpers::spotify": "info",
+    "audiocontrol::helpers::settingsdb": "info",
+    "audiocontrol::helpers::global_volume": "warn",
+    "audiocontrol::helpers::lyrics": "warn",
     
     "_comment_specific": "Examples of specific module targeting:",
     "_audiocontrol::players::librespot::librespot": "debug",

@@ -54,6 +54,13 @@ override_dh_auto_install:
 	fi
 	# Install logging configuration sample
 	cp debian/logging.json.sample debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol/
+	# Install default configuration files
+	if [ -f configs/audiocontrol.json ]; then \
+		cp configs/audiocontrol.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \
+	fi
+	if [ -f configs/logging.json ]; then \
+		cp configs/logging.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \
+	fi
 	# Install genres configuration
 	if [ -f conf/genres.json ]; then \
 		cp conf/genres.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \

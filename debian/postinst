@@ -6,38 +6,6 @@ if [ -n "$BASH_VERSION" ]; then
     set -euo pipefail
 fi
 
-# Function to safely copy default config if none exists
-setup_config() {
-    # Check if we need to copy the sample config to the actual config file
-    if [ ! -f /etc/audiocontrol/audiocontrol.json ]; then
-        echo "No configuration file found, creating from sample..."
-        if [ -f /usr/share/hifiberry-audiocontrol/audiocontrol.json.sample ]; then
-            install -o audiocontrol -g audiocontrol -m 644 /usr/share/hifiberry-audiocontrol/audiocontrol.json.sample /etc/audiocontrol/audiocontrol.json
-            echo "Sample config copied to audiocontrol.json successfully"
-        else
-            echo "ERROR: No sample configuration file found"
-            echo "Cannot continue without a valid configuration file"
-            exit 1
-        fi
-    else
-        echo "Existing configuration file found, keeping it."
-    fi
-    
-    # Check if we need to copy the default logging config
-    if [ ! -f /etc/audiocontrol/logging.json ]; then
-        echo "No logging configuration file found, creating from sample..."
-        if [ -f /usr/share/hifiberry-audiocontrol/logging.json.sample ]; then
-            install -o audiocontrol -g audiocontrol -m 644 /usr/share/hifiberry-audiocontrol/logging.json.sample /etc/audiocontrol/logging.json
-            echo "Sample logging config copied to logging.json successfully"
-        else
-            echo "WARNING: No sample logging configuration file found"
-            echo "Logging will use fallback configuration"
-        fi
-    else
-        echo "Existing logging configuration file found, keeping it."
-    fi
-}
-
 # Function to create user, group and directory
 setup_user_and_dirs() {
     # Create audiocontrol group if it doesn't exist
@@ -77,7 +45,6 @@ setup_user_and_dirs() {
 case "$1" in
     configure)
         setup_user_and_dirs
-        setup_config
         ;;
 esac
 

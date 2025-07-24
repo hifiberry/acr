@@ -1406,6 +1406,11 @@ Common error scenarios:
 
 The Lyrics API provides endpoints to retrieve song lyrics for supported players. Currently, only MPD-based players are supported. The API is designed with provider-specific endpoints to allow for future expansion to other music sources.
 
+**Requirements for MPD:**
+- Lyrics files must be in `.lrc` format (plain text or timed lyrics)
+- Files must be placed alongside music files with the same name but `.lrc` extension
+- Both plain text and LRC timed format are supported
+
 For detailed information about the lyrics system, supported formats, file structure, and examples, see the [Lyrics API documentation](lyrics_api.md).
 
 ### Get Lyrics by Song ID
@@ -1416,12 +1421,14 @@ Retrieve lyrics for a specific song using its provider-specific song ID.
 - **Method**: GET
 - **Path Parameters**:
   - `provider` (string): The lyrics provider (currently only "mpd" is supported)
-  - `song_id` (string): The provider-specific song ID (for MPD: numeric song ID)
+  - `song_id` (string): The provider-specific song ID. For MPD: base64-encoded file path of the song
 
 **Example Request:**
 ```bash
-curl -X GET "http://localhost:1080/api/lyrics/mpd/42"
+curl -X GET "http://localhost:1080/api/lyrics/mpd/bXVzaWMvQXJ0aXN0L0FsYnVtL1NvbmcuZmxhYw"
 ```
+
+**Note**: For MPD, the `song_id` is a URL-safe base64-encoded version of the song's file path. This ID is automatically provided in the song metadata when lyrics are available.
 
 ### Get Lyrics by Metadata
 
@@ -1504,10 +1511,32 @@ Not found:
 
 When lyrics are available for the current song, the player metadata includes additional fields:
 
-- `lyrics_available`: Boolean indicating if lyrics exist
-- `lyrics_url`: Direct API endpoint for lyrics by song ID
-- `lyrics_metadata_url`: API endpoint for lyrics by metadata
-- `lyrics_metadata`: Object containing the metadata for POST requests
+- `lyrics_available`: Boolean indicating if lyrics exist for this song
+- `lyrics_url`: Direct API endpoint for lyrics by song ID (e.g., `/api/lyrics/mpd/{base64_encoded_path}`)
+- `lyrics_metadata`: Object containing the song metadata that can be used for POST requests to `/api/lyrics/mpd`
+
+**Example song metadata with lyrics:**
+```json
+{
+  "title": "Example Song",
+  "artist": "Example Artist",
+  "album": "Example Album",
+  "metadata": {
+    "lyrics_available": true,
+    "lyrics_url": "/api/lyrics/mpd/bXVzaWMvRXhhbXBsZSBBcnRpc3QvRXhhbXBsZSBBbGJ1bS9FeGFtcGxlIFNvbmcuZmxhYw",
+    "lyrics_metadata": {
+      "artist": "Example Artist",
+      "title": "Example Song",
+      "album": "Example Album",
+      "duration": 180.5
+    }
+  }
+}
+```
+
+**Usage:**
+- Use the `lyrics_url` for a direct GET request to retrieve lyrics for this specific song
+- Use the `lyrics_metadata` object as the request body for a POST to `/api/lyrics/mpd` to find lyrics by metadata
 
 ## Data Structures
 

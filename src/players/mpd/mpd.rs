@@ -775,8 +775,12 @@ impl MPDPlayerController {
     /// - Shuffle status
     /// - Current position
     /// - Available capabilities (Next/Previous/Seek)
-    fn update_state_and_capabilities_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>, song: Option<Song>) {
+    /// 
+    /// Returns an updated song with lyrics metadata if applicable
+    fn update_state_and_capabilities_from_mpd(client: &mut Client<TcpStream>, player: Arc<Self>, song: Option<Song>) -> Option<Song> {
         debug!("Updating player state and capabilities based on MPD status");
+        
+        let updated_song = song;
         
         // Try to get current status to determine playlist position and other state info
         match client.status() {
@@ -819,8 +823,8 @@ impl MPDPlayerController {
                         debug!("Updated position: {:.1}s", elapsed.as_secs_f64());
                     }
                     
-                    // Store current song information in metadata if available
-                    if let Some(sng) = &song {
+                    // Store current song information in player metadata if available
+                    if let Some(sng) = &updated_song {
                         let mut metadata = HashMap::new();
                         
                         if let Some(duration) = sng.duration {
@@ -844,54 +848,6 @@ impl MPDPlayerController {
                         
                         if let Some(song_pos) = status.song.map(|s| s.pos) {
                             metadata.insert("queue_position".to_string(), serde_json::Value::Number(serde_json::Number::from(song_pos)));
-                        }
-                        
-                        // Check for lyrics availability and add API links
-                        if let Some(library) = player.get_library() {
-                            if let Some(music_dir) = library.get_music_directory() {
-                                use crate::helpers::lyrics::{MPDLyricsProvider, LyricsProvider};
-                                let lyrics_provider = MPDLyricsProvider::new(music_dir);
-                                
-                                // Try to find lyrics by URL (file path) from stream_url
-                                let has_lyrics = if let Some(file_path) = &sng.stream_url {
-                                    lyrics_provider.get_lyrics_by_url(file_path).is_ok()
-                                } else {
-                                    false
-                                };
-                                
-                                if has_lyrics {
-                                    metadata.insert("lyrics_available".to_string(), serde_json::Value::Bool(true));
-                                    
-                                    // Add API endpoint for lyrics by ID if we have song_id
-                                    if let Some(song_id) = status.song.map(|s| s.id) {
-                                        let lyrics_url = format!("{}/lyrics/mpd/{}", crate::constants::API_PREFIX, song_id.0);
-                                        metadata.insert("lyrics_url".to_string(), serde_json::Value::String(lyrics_url));
-                                    }
-                                    
-                                    // Add API endpoint for lyrics by metadata
-                                    if let (Some(artist), Some(title)) = (&sng.artist, &sng.title) {
-                                        let lyrics_metadata_url = format!("{}/lyrics/mpd", crate::constants::API_PREFIX);
-                                        metadata.insert("lyrics_metadata_url".to_string(), serde_json::Value::String(lyrics_metadata_url));
-                                        
-                                        // Also add the metadata that can be used for the POST request
-                                        let mut lyrics_metadata = serde_json::Map::new();
-                                        lyrics_metadata.insert("artist".to_string(), serde_json::Value::String(artist.clone()));
-                                        lyrics_metadata.insert("title".to_string(), serde_json::Value::String(title.clone()));
-                                        
-                                        if let Some(duration) = sng.duration {
-                                            lyrics_metadata.insert("duration".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(duration).unwrap_or(serde_json::Number::from(0))));
-                                        }
-                                        
-                                        if let Some(album) = &sng.album {
-                                            lyrics_metadata.insert("album".to_string(), serde_json::Value::String(album.clone()));
-                                        }
-                                        
-                                        metadata.insert("lyrics_metadata".to_string(), serde_json::Value::Object(lyrics_metadata));
-                                    }
-                                } else {
-                                    metadata.insert("lyrics_available".to_string(), serde_json::Value::Bool(false));
-                                }
-                            }
                         }
                         
                         // Update metadata in state
@@ -944,13 +900,13 @@ impl MPDPlayerController {
                 );
 
                 // Check if the current song is seekable
-                let is_seekable = match song {
-                    Some(song) => {
+                let is_seekable = match &updated_song {
+                    Some(current_song) => {
                         // Check if the song has a duration
-                        if let Some(duration) = song.duration {
+                        if let Some(duration) = current_song.duration {
                             // Check if the file is not a streaming URL
                             // Common streaming URLs start with http://, https://, or contain specific keywords
-                            let file_path = song.stream_url.as_deref().unwrap_or("");
+                            let file_path = current_song.stream_url.as_deref().unwrap_or("");
                             let is_stream = file_path.starts_with("http://") ||
                                            file_path.starts_with("https://") ||
                                            file_path.contains("://") ;
@@ -1029,7 +985,11 @@ impl MPDPlayerController {
                 }
             }
         }
-    }    /// Convert an MPD song to our Song format
+        
+        updated_song
+    }
+    
+    /// Convert an MPD song to our Song format
     fn convert_mpd_song(mpd_song: mpd::Song, player_arc: Option<Arc<Self>>) -> Song {
         // Generate cover art URL using the file path/URI from MPD song
         let cover_url = if !mpd_song.file.is_empty() {
@@ -1100,7 +1060,60 @@ impl MPDPlayerController {
             Ok(song_opt) => {
                 if let Some(mpd_song) = song_opt {
                     // Convert MPD song to our Song format
-                    let song = Self::convert_mpd_song(mpd_song, Some(player.clone()));
+                    let mut song = Self::convert_mpd_song(mpd_song, Some(player.clone()));
+                    
+                    // Check for lyrics and add to song metadata
+                    if let Some(library) = player.get_library() {
+                        if let Some(music_dir) = library.get_music_directory() {
+                            use crate::helpers::lyrics::{MPDLyricsProvider, LyricsProvider};
+                            let lyrics_provider = MPDLyricsProvider::new(music_dir.clone());
+                            
+                            // Try to find lyrics by URL (file path) from stream_url
+                            let has_lyrics = if let Some(file_path) = &song.stream_url {
+                                debug!("Checking for lyrics for file: {}", file_path);
+                                match lyrics_provider.get_lyrics_by_url(file_path) {
+                                    Ok(_) => {
+                                        debug!("Found lyrics for: {}", file_path);
+                                        true
+                                    },
+                                    Err(e) => {
+                                        debug!("No lyrics found for {}: {:?}", file_path, e);
+                                        false
+                                    }
+                                }
+                            } else {
+                                debug!("No stream_url available for lyrics check");
+                                false
+                            };
+                            
+                            if has_lyrics {
+                                song.metadata.insert("lyrics_available".to_string(), serde_json::Value::Bool(true));
+                                
+                                // Add API endpoint for lyrics by metadata
+                                if let (Some(artist), Some(title)) = (&song.artist, &song.title) {
+                                    let lyrics_metadata_url = format!("{}/lyrics/mpd", crate::constants::API_PREFIX);
+                                    song.metadata.insert("lyrics_metadata_url".to_string(), serde_json::Value::String(lyrics_metadata_url));
+                                    
+                                    // Also add the metadata that can be used for the POST request
+                                    let mut lyrics_metadata = serde_json::Map::new();
+                                    lyrics_metadata.insert("artist".to_string(), serde_json::Value::String(artist.clone()));
+                                    lyrics_metadata.insert("title".to_string(), serde_json::Value::String(title.clone()));
+                                    
+                                    if let Some(duration) = song.duration {
+                                        lyrics_metadata.insert("duration".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(duration).unwrap_or(serde_json::Number::from(0))));
+                                    }
+                                    
+                                    if let Some(album) = &song.album {
+                                        lyrics_metadata.insert("album".to_string(), serde_json::Value::String(album.clone()));
+                                    }
+                                    
+                                    song.metadata.insert("lyrics_metadata".to_string(), serde_json::Value::Object(lyrics_metadata));
+                                }
+                            } else {
+                                song.metadata.insert("lyrics_available".to_string(), serde_json::Value::Bool(false));
+                            }
+                        }
+                    }
                     
                     info!("Now playing: {} - {}", 
                         song.title.as_deref().unwrap_or("Unknown"),
@@ -1114,23 +1127,20 @@ impl MPDPlayerController {
                         debug!("Position: {} in queue", track);
                     }
                     
-                    // Store the song for capability update
+                    // Store the song for capability update (with lyrics metadata already added)
                     obtained_song = Some(song.clone());
-                    
-                    // Update stored song and notify listeners
-                    player.update_current_song(Some(song));
                 } else {
                     info!("No song currently playing");
-                    
-                    // Clear stored song and notify listeners
-                    player.update_current_song(None);
                 }
             },
             Err(e) => warn!("Failed to get current song information: {}", e),
         }
         
         // Update player capabilities based on the current playlist state and the song we just got
-        Self::update_state_and_capabilities_from_mpd(client, player, obtained_song);
+        let final_song = Self::update_state_and_capabilities_from_mpd(client, player.clone(), obtained_song);
+        
+        // Update stored song and notify listeners with the final version
+        player.update_current_song(final_song);
     }
 
     /// Add a song URL to the MPD queue

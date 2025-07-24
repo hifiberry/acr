@@ -9,7 +9,7 @@ hifiberry-audiocontrol (0.6.7) stable; urgency=medium
   * Updated API documentation with comprehensive lyrics system examples and usage
   * Fixed compilation issues and improved module organization for lyrics functionality
 
- -- HiFiBerry <info@hifiberry.com>  Wed, 23 Jul 2025 12:00:00 +0000
+ -- HiFiBerry <info@hifiberry.com>  Wed, 24 Jul 2025 12:00:00 +0000
 
 hifiberry-audiocontrol (0.6.6) stable; urgency=medium
 

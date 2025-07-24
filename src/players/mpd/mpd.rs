@@ -1090,11 +1090,13 @@ impl MPDPlayerController {
                                 song.metadata.insert("lyrics_available".to_string(), serde_json::Value::Bool(true));
                                 debug!("Added lyrics_available=true to song metadata");
                                 
-                                // Add API endpoint for lyrics by metadata
-                                if let (Some(artist), Some(title)) = (&song.artist, &song.title) {
-                                    let lyrics_metadata_url = format!("{}/lyrics/mpd", crate::constants::API_PREFIX);
-                                    song.metadata.insert("lyrics_metadata_url".to_string(), serde_json::Value::String(lyrics_metadata_url));
-                                    debug!("Added lyrics_metadata_url to song metadata");
+                                // Add API endpoint for lyrics by song ID
+                                if let (Some(artist), Some(title), Some(file_path)) = (&song.artist, &song.title, &song.stream_url) {
+                                    // Use the encoded file path as the song ID for the lyrics API
+                                    let encoded_file_path = url_encoding::encode_url_safe(file_path);
+                                    let lyrics_url = format!("{}/lyrics/mpd/{}", crate::constants::API_PREFIX, encoded_file_path);
+                                    song.metadata.insert("lyrics_url".to_string(), serde_json::Value::String(lyrics_url));
+                                    debug!("Added lyrics_url with song ID to metadata: {}", encoded_file_path);
                                     
                                     // Also add the metadata that can be used for the POST request
                                     let mut lyrics_metadata = serde_json::Map::new();

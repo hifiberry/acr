@@ -98,26 +98,57 @@ pub fn get_lyrics_by_id(
                 if let Some(library) = ctrl.get_library() {
                     // Cast to MPDLibrary to access lyrics methods
                     if let Some(mpd_library) = library.as_any().downcast_ref::<crate::players::mpd::library::MPDLibrary>() {
-                        match mpd_library.get_lyrics_by_id(song_id) {
-                            Ok(lyrics) => {
-                                return Ok(Json(LyricsResponse {
-                                    found: true,
-                                    lyrics: Some(lyrics.into()),
-                                    error: None,
-                                }));
+                        // Try to decode the song_id as a base64-encoded file path first
+                        match crate::helpers::url_encoding::decode_url_safe(song_id) {
+                            Some(decoded_path) => {
+                                // Use the decoded file path to get lyrics
+                                match mpd_library.get_lyrics_by_url(&decoded_path) {
+                                    Ok(lyrics) => {
+                                        return Ok(Json(LyricsResponse {
+                                            found: true,
+                                            lyrics: Some(lyrics.into()),
+                                            error: None,
+                                        }));
+                                    }
+                                    Err(crate::helpers::lyrics::LyricsError::NotFound) => {
+                                        return Ok(Json(LyricsResponse {
+                                            found: false,
+                                            lyrics: None,
+                                            error: Some("Lyrics not found for this song".to_string()),
+                                        }));
+                                    }
+                                    Err(e) => {
+                                        return Err(Custom(
+                                            Status::InternalServerError,
+                                            format!("Error retrieving lyrics: {}", e),
+                                        ));
+                                    }
+                                }
                             }
-                            Err(crate::helpers::lyrics::LyricsError::NotFound) => {
-                                return Ok(Json(LyricsResponse {
-                                    found: false,
-                                    lyrics: None,
-                                    error: Some("Lyrics not found for this song".to_string()),
-                                }));
-                            }
-                            Err(e) => {
-                                return Err(Custom(
-                                    Status::InternalServerError,
-                                    format!("Error retrieving lyrics: {}", e),
-                                ));
+                            None => {
+                                // If decoding fails, fall back to treating it as a literal song ID
+                                match mpd_library.get_lyrics_by_id(song_id) {
+                                    Ok(lyrics) => {
+                                        return Ok(Json(LyricsResponse {
+                                            found: true,
+                                            lyrics: Some(lyrics.into()),
+                                            error: None,
+                                        }));
+                                    }
+                                    Err(crate::helpers::lyrics::LyricsError::NotFound) => {
+                                        return Ok(Json(LyricsResponse {
+                                            found: false,
+                                            lyrics: None,
+                                            error: Some("Lyrics not found for this song".to_string()),
+                                        }));
+                                    }
+                                    Err(e) => {
+                                        return Err(Custom(
+                                            Status::InternalServerError,
+                                            format!("Error retrieving lyrics: {}", e),
+                                        ));
+                                    }
+                                }
                             }
                         }
                     }

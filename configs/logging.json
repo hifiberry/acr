@@ -10,20 +10,19 @@
     "cache": "warn",
     "network": "error",
     "deps": "warn",
+    "database": "warn",
+    "http": "warn",
 
+    "_comment_specific": "Examples of specific module targeting:",
+    
     "audiocontrol::helpers::theaudiodb": "info",
     "audiocontrol::helpers::lastfm": "info",
     "audiocontrol::helpers::musicbrainz": "info",
     "audiocontrol::helpers::spotify": "info",
     "audiocontrol::helpers::settingsdb": "info",
     "audiocontrol::helpers::global_volume": "warn",
-    "audiocontrol::helpers::lyrics": "warn",
+    "audiocontrol::helpers::lyrics": "info",
     
-    "_comment_specific": "Examples of specific module targeting:",
-    "_audiocontrol::players::librespot::librespot": "debug",
-    "_audiocontrol::api::server": "info",
-    "database": "warn",
-    "http": "warn"
   },
   "env_overrides": {
     "RUST_BACKTRACE": "1"

@@ -29,6 +29,7 @@ pub mod configurator;
 pub mod lyrics;
 pub mod songtitlesplitter;
 pub mod songsplitmanager;
+pub mod m3u;
 #[cfg(unix)]
 pub mod mpris;
 #[cfg(unix)]

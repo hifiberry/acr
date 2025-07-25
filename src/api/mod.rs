@@ -37,5 +37,8 @@ pub mod volume;
 // Export the lyrics module
 pub mod lyrics;
 
+// Export the m3u module
+pub mod m3u;
+
 // Export the server module
 pub mod server;

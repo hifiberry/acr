@@ -7,9 +7,10 @@
 use crate::helpers::musicbrainz;
 use std::collections::HashMap;
 use log::{debug, info};
+use serde::{Serialize, Deserialize};
 
 /// Result of order detection
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
 pub enum OrderResult {
     /// First part is artist, second part is song
     ArtistSong,
@@ -126,17 +127,20 @@ pub fn detect_order(part1: &str, part2: &str) -> OrderResult {
 /// statistics about how many songs have been found in each order. After 20 songs,
 /// if one order type represents >95% of successful detections, it becomes the default.
 /// It also caches lookup results to avoid affecting counters for repeated lookups.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SongTitleSplitter {
     /// An identifier string (not the song title itself)
     id: String,
     /// Statistics of detected orders: (ArtistSong, SongArtist, Unknown, Undecided)
+    #[serde(skip)]
     order_stats: HashMap<OrderResult, u32>,
     /// Default order to use when pattern is established (>95% confidence after 20+ songs)
     default_order: Option<OrderResult>,
     /// Cache for MusicBrainz lookup results to avoid repeated API calls and counter updates
+    #[serde(skip)]
     lookup_cache: HashMap<String, OrderResult>,
     /// Maximum number of entries to keep in the lookup cache
+    #[serde(skip)]
     cache_size_limit: usize,
 }
 
@@ -508,6 +512,132 @@ impl SongTitleSplitter {
         self.default_order = None;
         self.lookup_cache.clear();
     }
+    
+    /// Serialize the SongTitleSplitter to a JSON string
+    /// 
+    /// This method saves only the essential state: ID and default order.
+    /// Statistics and cache are not serialized and will be reset when
+    /// the splitter is restored.
+    /// 
+    /// # Returns
+    /// A Result containing the JSON string representation on success, or an error on failure
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
+    /// 
+    /// let mut splitter = SongTitleSplitter::new("radio_station_url");
+    /// // ... use the splitter to analyze songs and establish default order ...
+    /// 
+    /// match splitter.to_json() {
+    ///     Ok(json) => {
+    ///         // Save the JSON string to a file or database
+    ///         println!("Saved splitter state: {}", json);
+    ///     },
+    ///     Err(e) => {
+    ///         eprintln!("Failed to serialize splitter: {}", e);
+    ///     }
+    /// }
+    /// ```
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+    
+    /// Deserialize a SongTitleSplitter from a JSON string
+    /// 
+    /// This method restores a previously saved splitter state including its
+    /// ID and default order. Statistics and cache are reset to empty.
+    /// 
+    /// # Arguments
+    /// * `json` - The JSON string representation to deserialize
+    /// 
+    /// # Returns
+    /// A Result containing the restored SongTitleSplitter on success, or an error on failure
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
+    /// 
+    /// let json = r#"{"id":"radio_station_url","default_order":null}"#;
+    /// 
+    /// match SongTitleSplitter::from_json(json) {
+    ///     Ok(mut splitter) => {
+    ///         println!("Restored splitter with ID: {}", splitter.get_id());
+    ///     },
+    ///     Err(e) => {
+    ///         eprintln!("Failed to deserialize splitter: {}", e);
+    ///     }
+    /// }
+    /// ```
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        let mut splitter: SongTitleSplitter = serde_json::from_str(json)?;
+        // Initialize the skipped fields with default values
+        splitter.order_stats = HashMap::new();
+        splitter.lookup_cache = HashMap::new();
+        splitter.cache_size_limit = 50; // Default cache size
+        Ok(splitter)
+    }
+    
+    /// Serialize the SongTitleSplitter to a compact JSON string
+    /// 
+    /// This is similar to `to_json()` but produces a more compact representation
+    /// without pretty formatting, suitable for storage in databases or network transmission.
+    /// Only ID and default order are included in the serialization.
+    /// 
+    /// # Returns
+    /// A Result containing the compact JSON string representation on success, or an error on failure
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
+    /// 
+    /// let splitter = SongTitleSplitter::new("radio_station_url");
+    /// 
+    /// match splitter.to_json_compact() {
+    ///     Ok(json) => {
+    ///         // Compact JSON is smaller for storage
+    ///         println!("Compact JSON: {}", json);
+    ///     },
+    ///     Err(e) => {
+    ///         eprintln!("Failed to serialize splitter: {}", e);
+    ///     }
+    /// }
+    /// ```
+    pub fn to_json_compact(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+    
+    /// Create a copy of this splitter with a new ID
+    /// 
+    /// This is useful when you want to use the learned statistics and cache
+    /// from one splitter as a starting point for another radio station.
+    /// 
+    /// # Arguments
+    /// * `new_id` - The new identifier for the cloned splitter
+    /// 
+    /// # Returns
+    /// A new SongTitleSplitter with the same state but different ID
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
+    /// 
+    /// let mut original = SongTitleSplitter::new("station_1");
+    /// // ... train the splitter with songs ...
+    /// 
+    /// // Create a new splitter for a similar station with the same learned patterns
+    /// let similar_station = original.clone_with_id("station_2");
+    /// assert_eq!(similar_station.get_id(), "station_2");
+    /// ```
+    pub fn clone_with_id(&self, new_id: &str) -> Self {
+        Self {
+            id: new_id.to_string(),
+            order_stats: self.order_stats.clone(),
+            default_order: self.default_order.clone(),
+            lookup_cache: self.lookup_cache.clone(),
+            cache_size_limit: self.cache_size_limit,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -797,5 +927,124 @@ mod tests {
         splitter.clear_cache();
         assert_eq!(splitter.get_cache_size(), 0);
         assert!(!splitter.is_cached("The Beatles - Hey Jude"));
+    }
+    
+    #[test]
+    fn test_song_title_splitter_serialization() {
+        let mut splitter = SongTitleSplitter::new("test_station");
+        
+        // Serialize empty splitter
+        let json = splitter.to_json().expect("Failed to serialize empty splitter");
+        assert!(json.contains("test_station"));
+        assert!(json.contains("default_order"));
+        // Should NOT contain the skipped fields
+        assert!(!json.contains("order_stats"));
+        assert!(!json.contains("lookup_cache"));
+        assert!(!json.contains("cache_size_limit"));
+        
+        // Test compact serialization
+        let compact_json = splitter.to_json_compact().expect("Failed to serialize compact");
+        assert!(compact_json.len() < json.len()); // Compact should be smaller
+        
+        // Deserialize and verify
+        let restored = SongTitleSplitter::from_json(&json).expect("Failed to deserialize");
+        assert_eq!(restored.get_id(), "test_station");
+        assert_eq!(restored.get_total_count(), 0); // Stats reset
+        assert_eq!(restored.get_cache_size(), 0); // Cache reset
+        assert!(!restored.has_default_order());
+        
+        // Test round-trip serialization with data
+        let _order = splitter.get_order("Artist - Song");
+        let json_with_data = splitter.to_json().expect("Failed to serialize with data");
+        let restored_with_data = SongTitleSplitter::from_json(&json_with_data)
+            .expect("Failed to deserialize with data");
+        
+        assert_eq!(restored_with_data.get_id(), splitter.get_id());
+        // Stats and cache are reset during deserialization
+        assert_eq!(restored_with_data.get_total_count(), 0);
+        assert_eq!(restored_with_data.get_cache_size(), 0);
+        // Only default order is preserved if it was set
+        assert_eq!(restored_with_data.get_default_order(), splitter.get_default_order());
+    }
+    
+    #[test]
+    fn test_song_title_splitter_clone_with_id() {
+        let mut original = SongTitleSplitter::new("original_station");
+        
+        // Add some data to the original
+        let _order = original.get_order("Artist - Song");
+        let original_stats = original.get_all_stats();
+        
+        // Clone with new ID
+        let cloned = original.clone_with_id("new_station");
+        
+        // Verify ID changed but data is preserved
+        assert_eq!(cloned.get_id(), "new_station");
+        assert_eq!(original.get_id(), "original_station");
+        
+        // Verify statistics are preserved
+        assert_eq!(cloned.get_all_stats(), original_stats);
+        assert_eq!(cloned.get_total_count(), original.get_total_count());
+        assert_eq!(cloned.get_cache_size(), original.get_cache_size());
+        assert_eq!(cloned.has_default_order(), original.has_default_order());
+        assert_eq!(cloned.get_cache_size_limit(), original.get_cache_size_limit());
+    }
+    
+    #[test]
+    fn test_serialization_error_handling() {
+        // Test deserializing invalid JSON
+        let invalid_json = "{ invalid json }";
+        let result = SongTitleSplitter::from_json(invalid_json);
+        assert!(result.is_err());
+        
+        // Test deserializing JSON with missing default_order field
+        let incomplete_json = r#"{"id":"test"}"#;
+        let result2 = SongTitleSplitter::from_json(incomplete_json);
+        assert!(result2.is_err());
+        
+        // Test deserializing valid minimal JSON (only required fields)
+        let minimal_json = r#"{
+            "id": "test_minimal",
+            "default_order": null
+        }"#;
+        let result3 = SongTitleSplitter::from_json(minimal_json);
+        assert!(result3.is_ok());
+        
+        let splitter = result3.unwrap();
+        assert_eq!(splitter.get_id(), "test_minimal");
+        assert_eq!(splitter.get_total_count(), 0);
+        assert_eq!(splitter.get_cache_size_limit(), 50); // Default value
+        assert!(!splitter.has_default_order());
+    }
+    
+    #[test]
+    fn test_serialization_with_complex_data() {
+        let mut splitter = SongTitleSplitter::with_cache_size("complex_test", 10);
+        
+        // Manually insert some statistics and set default order
+        splitter.order_stats.insert(OrderResult::ArtistSong, 15);
+        splitter.order_stats.insert(OrderResult::SongArtist, 2);
+        splitter.order_stats.insert(OrderResult::Unknown, 3);
+        splitter.default_order = Some(OrderResult::ArtistSong);
+        splitter.lookup_cache.insert("Test - Song".to_string(), OrderResult::ArtistSong);
+        
+        // Serialize and deserialize
+        let json = splitter.to_json().expect("Failed to serialize complex data");
+        let restored = SongTitleSplitter::from_json(&json)
+            .expect("Failed to deserialize complex data");
+        
+        // Verify ID and default order are preserved
+        assert_eq!(restored.get_id(), "complex_test");
+        assert!(restored.has_default_order());
+        assert_eq!(restored.get_default_order(), Some(OrderResult::ArtistSong));
+        
+        // Verify stats and cache are reset (not serialized)
+        assert_eq!(restored.get_artist_song_count(), 0);
+        assert_eq!(restored.get_song_artist_count(), 0);
+        assert_eq!(restored.get_unknown_count(), 0);
+        assert_eq!(restored.get_total_count(), 0);
+        assert_eq!(restored.get_cache_size(), 0);
+        assert_eq!(restored.get_cache_size_limit(), 50); // Default value
+        assert!(!restored.is_cached("Test - Song"));
     }
 }

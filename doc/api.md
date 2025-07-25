@@ -1761,3 +1761,192 @@ Each instance has its own API endpoint:
 
 - `POST /api/player/player_a/update`
 - `POST /api/player/player_b/update`
+
+## Cover Art API
+
+The Cover Art API provides endpoints to retrieve cover art from registered providers. All text parameters must be encoded using URL-safe base64 encoding.
+
+### URL-Safe Base64 Encoding
+
+Text parameters (artist names, song titles, album titles, URLs) must be encoded using URL-safe base64 encoding without padding. This ensures proper handling of special characters and Unicode text.
+
+**Example encoding:**
+```bash
+# Using command line tools
+echo -n "The Beatles" | base64 -w 0 | tr '+/' '-_' | tr -d '='
+# Result: VGhlIEJlYXRsZXM
+```
+
+### Get Cover Art for Artist
+
+Retrieves cover art URLs for a specific artist from all registered providers.
+
+- **Endpoint**: `/api/coverart/artist/<artist_b64>`
+- **Method**: GET
+- **Parameters**:
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+- **Response**:
+  ```json
+  {
+    "coverart_urls": ["url1", "url2", ...]
+  }
+  ```
+
+#### Example
+```bash
+# Get cover art for "The Beatles"
+curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM
+```
+
+### Get Cover Art for Song
+
+Retrieves cover art URLs for a specific song from all registered providers.
+
+- **Endpoint**: `/api/coverart/song/<title_b64>/<artist_b64>`
+- **Method**: GET
+- **Parameters**:
+  - `title_b64` (string, required): URL-safe base64 encoded song title
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+- **Response**:
+  ```json
+  {
+    "coverart_urls": ["url1", "url2", ...]
+  }
+  ```
+
+#### Example
+```bash
+# Get cover art for "Hey Jude" by "The Beatles"
+curl http://<device-ip>:1080/api/coverart/song/SGV5IEp1ZGU/VGhlIEJlYXRsZXM
+```
+
+### Get Cover Art for Album
+
+Retrieves cover art URLs for a specific album from all registered providers.
+
+- **Endpoint**: `/api/coverart/album/<title_b64>/<artist_b64>`
+- **Method**: GET
+- **Parameters**:
+  - `title_b64` (string, required): URL-safe base64 encoded album title
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+- **Response**:
+  ```json
+  {
+    "coverart_urls": ["url1", "url2", ...]
+  }
+  ```
+
+#### Example
+```bash
+# Get cover art for "Abbey Road" by "The Beatles"
+curl http://<device-ip>:1080/api/coverart/album/QWJiZXkgUm9hZA/VGhlIEJlYXRsZXM
+```
+
+### Get Cover Art for Album with Year
+
+Retrieves cover art URLs for a specific album with release year from all registered providers.
+
+- **Endpoint**: `/api/coverart/album/<title_b64>/<artist_b64>/<year>`
+- **Method**: GET
+- **Parameters**:
+  - `title_b64` (string, required): URL-safe base64 encoded album title
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+  - `year` (integer, required): Release year
+- **Response**:
+  ```json
+  {
+    "coverart_urls": ["url1", "url2", ...]
+  }
+  ```
+
+#### Example
+```bash
+# Get cover art for "Abbey Road" by "The Beatles" from 1969
+curl http://<device-ip>:1080/api/coverart/album/QWJiZXkgUm9hZA/VGhlIEJlYXRsZXM/1969
+```
+
+### Get Cover Art from URL
+
+Retrieves cover art URLs from a specific source URL from all registered providers.
+
+- **Endpoint**: `/api/coverart/url/<url_b64>`
+- **Method**: GET
+- **Parameters**:
+  - `url_b64` (string, required): URL-safe base64 encoded source URL
+- **Response**:
+  ```json
+  {
+    "coverart_urls": ["url1", "url2", ...]
+  }
+  ```
+
+#### Example
+```bash
+# Get cover art from a specific URL
+curl http://<device-ip>:1080/api/coverart/url/aHR0cHM6Ly9leGFtcGxlLmNvbS9hcnRpc3QvaW1hZ2U
+```
+
+### List Cover Art Methods and Providers
+
+Retrieves information about available cover art methods and the providers that support each method.
+
+- **Endpoint**: `/api/coverart/methods`
+- **Method**: GET
+- **Response**:
+  ```json
+  {
+    "methods": [
+      {
+        "method": "Artist",
+        "providers": ["LocalProvider", "OnlineProvider"]
+      },
+      {
+        "method": "Song", 
+        "providers": ["LocalProvider"]
+      },
+      {
+        "method": "Album",
+        "providers": ["LocalProvider", "OnlineProvider", "MusicDBProvider"]
+      },
+      {
+        "method": "Url",
+        "providers": ["OnlineProvider"]
+      }
+    ]
+  }
+  ```
+
+#### Example
+```bash
+# List all cover art methods and their providers
+curl http://<device-ip>:1080/api/coverart/methods
+```
+
+### Cover Art Response Format
+
+All cover art endpoints return URLs that can be:
+
+1. **HTTP/HTTPS URLs**: Direct links to online cover art images
+2. **Local file paths**: Paths to locally cached or extracted cover art files
+3. **Data URLs**: Base64-encoded image data (for small images)
+
+The client application should handle all these URL types appropriately.
+
+### Error Handling
+
+- **Invalid base64 encoding**: Returns empty `coverart_urls` array with warning logged
+- **No providers registered**: Returns empty `coverart_urls` array
+- **Provider errors**: Individual provider failures are handled gracefully; successful providers still return results
+
+### Provider Registration
+
+Cover art providers can be registered programmatically using the global cover art manager:
+
+```rust
+use crate::helpers::coverart::{get_coverart_manager, CoverartProvider};
+
+// Register a new provider
+let manager = get_coverart_manager();
+let mut manager_lock = manager.lock().unwrap();
+manager_lock.register_provider(Arc::new(my_provider));
+```

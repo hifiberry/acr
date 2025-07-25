@@ -2,7 +2,7 @@ use crate::helpers::attributecache;
 use crate::helpers::ratelimit;
 use crate::helpers::sanitize;
 use crate::config::get_service_config;
-use log::{info, error, debug};
+use log::{info, error, debug, warn};
 use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use deunicode::deunicode;
@@ -69,6 +69,40 @@ struct MusicBrainzAlias {
     alias_type: Option<String>,
     #[allow(dead_code)]
     locale: Option<String>,
+}
+
+/// Structs for recording (song) search responses
+#[derive(Debug, Deserialize)]
+pub struct MusicBrainzRecordingSearchResponse {
+    #[serde(rename = "count")]
+    pub count: u32,
+    #[serde(rename = "offset")]
+    #[allow(dead_code)]
+    pub offset: u32,
+    #[serde(rename = "recordings")]
+    pub recordings: Vec<MusicBrainzRecording>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicBrainzRecording {
+    id: String,
+    title: String,
+    #[serde(rename = "artist-credit")]
+    artist_credit: Option<Vec<MusicBrainzArtistCredit>>,
+    #[allow(dead_code)]
+    score: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicBrainzArtistCredit {
+    name: String,
+    artist: MusicBrainzArtistRef,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicBrainzArtistRef {
+    id: String,
+    name: String,
 }
 
 /// Initialize the MusicBrainz module from configuration
@@ -770,6 +804,66 @@ pub fn split_artist_names(artist_name: &str, cache_only: bool, custom_separators
             // No MBIDs found or error occurred, can't determine if multiple
             debug!("Couldn't determine if '{}' contains multiple artists", artist_name);
             None
+        }
+    }
+}
+
+/// Search for recordings (songs) by artist and title
+/// 
+/// Performs an exact match search for recordings in MusicBrainz.
+/// 
+/// # Arguments
+/// * `artist` - The artist name to search for
+/// * `title` - The recording title to search for
+/// 
+/// # Returns
+/// A result containing the search response or an error
+pub fn search_recording(artist: &str, title: &str) -> Result<MusicBrainzRecordingSearchResponse, String> {
+    debug!("Searching MusicBrainz for recording: artist='{}', title='{}'", artist, title);
+    
+    // Check if MusicBrainz lookups are enabled
+    if !is_enabled() {
+        debug!("MusicBrainz lookups are disabled, skipping recording search");
+        return Ok(MusicBrainzRecordingSearchResponse { 
+            recordings: Vec::new(), 
+            count: 0,
+            offset: 0,
+        });
+    }
+    
+    // Apply rate limiting before making the API request
+    ratelimit::rate_limit("musicbrainz");
+    
+    // Build query for exact match
+    let query = format!("artist:\"{}\" AND recording:\"{}\"", artist, title);
+    let url = format!("{}/recording/?query={}&fmt=json&limit=5", MUSICBRAINZ_API_BASE, urlencoding::encode(&query));
+    
+    // Execute the HTTP GET request
+    let response_text = match musicbrainz_api_get(&url) {
+        Ok(response_text) => response_text,
+        Err(e) => {
+            warn!("Failed to search MusicBrainz for recording: {}", e);
+            return Ok(MusicBrainzRecordingSearchResponse { 
+                recordings: Vec::new(), 
+                count: 0,
+                offset: 0,
+            });
+        }
+    };
+    
+    // Parse the JSON response
+    match serde_json::from_str::<MusicBrainzRecordingSearchResponse>(&response_text) {
+        Ok(data) => {
+            debug!("Found {} recordings for artist='{}', title='{}'", data.count, artist, title);
+            Ok(data)
+        },
+        Err(e) => {
+            warn!("Failed to parse MusicBrainz recording search response: {}", e);
+            Ok(MusicBrainzRecordingSearchResponse { 
+                recordings: Vec::new(), 
+                count: 0,
+                offset: 0,
+            })
         }
     }
 }

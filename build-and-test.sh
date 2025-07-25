@@ -49,8 +49,6 @@ print_status "Starting build and test process for audiocontrol..."
 print_status "Building all audiocontrol binaries in release mode..."
 print_status "This includes:"
 print_status "  - audiocontrol (main binary)"
-print_status "  - audiocontrol_dump_cache"
-print_status "  - audiocontrol_dump_settingsdb"  
 print_status "  - audiocontrol_lms_client"
 print_status "  - audiocontrol_musicbrainz_client"
 print_status "  - audiocontrol_send_update"
@@ -61,7 +59,6 @@ print_status "  - audiocontrol_list_mpris_players (Unix only)"
 print_status "  - audiocontrol_get_mpris_state (Unix only)"
 print_status "  - audiocontrol_monitor_mpris_state (Unix only)"
 print_status "  - audiocontrol_listen_shairportsync (Unix only)"
-print_status "  - audiocontrol_list_genres"
 
 # Build all binaries
 if cargo build --release --bins; then

@@ -12,4 +12,3 @@ debian/man/audiocontrol_get_mpris_state.1
 debian/man/audiocontrol_monitor_mpris_state.1
 debian/man/audiocontrol_nowplaying.1
 debian/man/audiocontrol_listen_shairportsync.1
-debian/man/audiocontrol_list_genres.1

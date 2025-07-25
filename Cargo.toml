@@ -139,9 +139,5 @@ name = "audiocontrol_listen_shairportsync"
 path = "src/tools/acr_listen_shairportsync.rs"
 
 [[bin]]
-name = "audiocontrol_list_genres"
-path = "src/tools/acr_list_genres.rs"
-
-[[bin]]
 name = "audiocontrol_favourites"
 path = "src/tools/acr_favourites.rs"

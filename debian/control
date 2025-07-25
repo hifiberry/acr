@@ -17,7 +17,6 @@ Description: HiFiBerry AudioControl/Rust application
  .
  Includes command-line tools:
   * audiocontrol - Main audio control daemon
-  * audiocontrol_dump_cache - Cache inspection utility
   * audiocontrol_dump_store - Security store inspection utility
   * audiocontrol_lms_client - Logitech Media Server client
   * audiocontrol_send_update - Player state update utility
@@ -26,6 +25,7 @@ Description: HiFiBerry AudioControl/Rust application
   * audiocontrol_list_mpris_players - MPRIS player discovery tool
   * audiocontrol_get_mpris_state - MPRIS player state inspector
   * audiocontrol_monitor_mpris_state - Real-time MPRIS state monitor
+  * audiocontrol_favourites - Favourites management tool
   * audiocontrol_nowplaying - Terminal now playing display client
  .
  The audiocontrol_nowplaying client requires Python 3 and optionally

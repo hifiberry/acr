@@ -1,6 +1,29 @@
 # ACR caching
 
-ACR uses external databases for many of its functionalities. As these can be time-consuming to query, it tries to cache lookups internally to improve performance.
+ACR us## Display cache contents
+
+ACR uses SQLite database engin### Attribute Cache
+
+The attribute cache is implemented using SQLite database with the following features:
+
+- **Two-tier Caching**: Uses both an in-memory cache for fast access and a persistent SQLite database for durability
+- **JSON Serialization**: All values are serialized to JSON before storage
+- **Thread Safety**: The global cache instance is protected by a mutex for thread-safe access
+- **Configurable Max Age**: Can be configured to automatically expire entries after a specified number of days
+- **Standard Tooling**: Compatible with all standard SQLite tools and browsers for inspection and debugginglement its attribute caching. To view the contents of the attribute cache, you can use standard SQLite tools:
+
+```bash
+# View all cached entries
+sqlite3 /var/lib/audiocontrol/cache/attributes/cache.db "SELECT key, value FROM cache;"
+
+# View cache schema
+sqlite3 /var/lib/audiocontrol/cache/attributes/cache.db ".schema"
+
+# Count total entries
+sqlite3 /var/lib/audiocontrol/cache/attributes/cache.db "SELECT COUNT(*) FROM cache;"
+```
+
+Alternatively, you can use any SQLite browser or viewer tool to inspect the database.bases for many of its functionalities. As these can be time-consuming to query, it tries to cache lookups internally to improve performance.
 
 ## Cache Types
 

@@ -125,9 +125,9 @@ Available log levels in order of verbosity:
 - **Typical Messages**: Socket operations, async I/O, connection management
 
 #### `database`
-- **Description**: Database operations (SQLite and legacy Sled databases)
-- **Modules**: `rusqlite`, `sled`
-- **Typical Messages**: Database transactions, SQL operations, file I/O, compaction
+- **Description**: Database operations (SQLite)
+- **Modules**: `rusqlite`
+- **Typical Messages**: Database transactions, SQL operations, file I/O
 
 #### `io`
 - **Description**: File and stream I/O operations

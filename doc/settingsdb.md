@@ -94,26 +94,25 @@ The settings database supports storing any JSON-serializable data:
 
 ## Tools
 
-### Dump Settings Database
+### Inspecting Settings Database
 
-View all settings in the database:
+Since the settings database uses SQLite, you can use standard SQLite tools to inspect and manage the database:
 
 ```bash
-audiocontrol_dump_settingsdb [path]
+# View all settings
+sqlite3 /var/lib/audiocontrol/db/settings.db "SELECT key, value FROM settings;"
+
+# View database schema
+sqlite3 /var/lib/audiocontrol/db/settings.db ".schema"
+
+# Count total settings
+sqlite3 /var/lib/audiocontrol/db/settings.db "SELECT COUNT(*) FROM settings;"
+
+# Search for specific settings
+sqlite3 /var/lib/audiocontrol/db/settings.db "SELECT key, value FROM settings WHERE key LIKE '%theme%';"
 ```
 
-If no path is specified, uses the default `/var/lib/audiocontrol/db`.
-
-Example output:
-```
-Settings database contents (key|value format):
-Database path: "/var/lib/audiocontrol/db"
-Total entries: 3
-
-user_theme|"dark"
-volume_level|75
-notifications_enabled|true
-```
+You can also use SQLite browser applications or any database management tool that supports SQLite for a graphical interface.
 
 ## Use Cases
 

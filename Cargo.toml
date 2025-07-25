@@ -32,8 +32,6 @@ urlencoding = "2.1.3"
 # For image cache
 reqwest = { version = "0.12.15", features = ["json", "blocking"] }
 bytes = "1.4"
-# Embedded database for legacy compatibility (being phased out)
-sled = "0.34.7"  # Keeping this at 0.34.7 as 1.0.0-alpha may have breaking changes
 # SQLite database for attribute cache and settings database
 rusqlite = { version = "0.32", features = ["bundled"] }
 # For transliterating non-ASCII characters to ASCII 
@@ -99,14 +97,6 @@ md5 = "0.7.0"
 serial_test = "3.0"
 
 # Binary targets
-[[bin]]
-name = "audiocontrol_dump_cache"
-path = "src/tools/acr_dump_cache.rs"
-
-[[bin]]
-name = "audiocontrol_dump_settingsdb"
-path = "src/tools/acr_dump_settingsdb.rs"
-
 [[bin]]
 name = "audiocontrol_lms_client"
 path = "src/tools/acr_lms_client.rs"

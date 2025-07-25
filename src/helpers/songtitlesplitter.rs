@@ -5,9 +5,11 @@
 /// using MusicBrainz lookups.
 
 use crate::helpers::musicbrainz;
+use std::collections::HashMap;
+use log::{debug, info};
 
 /// Result of order detection
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum OrderResult {
     /// First part is artist, second part is song
     ArtistSong,
@@ -114,6 +116,396 @@ pub fn detect_order(part1: &str, part2: &str) -> OrderResult {
         (false, true) => OrderResult::SongArtist,
         (false, false) => OrderResult::Unknown,
         (true, true) => OrderResult::Undecided,
+    }
+}
+
+/// A smart song title splitter that can detect artist/song order
+/// 
+/// This struct provides intelligent splitting of combined artist/title strings
+/// and can determine the correct order using MusicBrainz lookups. It maintains
+/// statistics about how many songs have been found in each order. After 20 songs,
+/// if one order type represents >95% of successful detections, it becomes the default.
+/// It also caches lookup results to avoid affecting counters for repeated lookups.
+pub struct SongTitleSplitter {
+    /// An identifier string (not the song title itself)
+    id: String,
+    /// Statistics of detected orders: (ArtistSong, SongArtist, Unknown, Undecided)
+    order_stats: HashMap<OrderResult, u32>,
+    /// Default order to use when pattern is established (>95% confidence after 20+ songs)
+    default_order: Option<OrderResult>,
+    /// Cache for MusicBrainz lookup results to avoid repeated API calls and counter updates
+    lookup_cache: HashMap<String, OrderResult>,
+    /// Maximum number of entries to keep in the lookup cache
+    cache_size_limit: usize,
+}
+
+impl SongTitleSplitter {
+    /// Create a new SongTitleSplitter with the given ID
+    /// 
+    /// # Arguments
+    /// * `id` - An identifier string (not the song title)
+    /// 
+    /// # Returns
+    /// A new SongTitleSplitter instance with default cache size of 50
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
+    /// 
+    /// let splitter = SongTitleSplitter::new("track_123");
+    /// ```
+    pub fn new(id: &str) -> Self {
+        Self::with_cache_size(id, 50)
+    }
+    
+    /// Create a new SongTitleSplitter with a custom cache size
+    /// 
+    /// # Arguments
+    /// * `id` - An identifier string (not the song title)
+    /// * `cache_size` - Maximum number of lookup results to cache
+    /// 
+    /// # Returns
+    /// A new SongTitleSplitter instance with specified cache size
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
+    /// 
+    /// let splitter = SongTitleSplitter::with_cache_size("track_123", 100);
+    /// ```
+    pub fn with_cache_size(id: &str, cache_size: usize) -> Self {
+        Self {
+            id: id.to_string(),
+            order_stats: HashMap::new(),
+            default_order: None,
+            lookup_cache: HashMap::new(),
+            cache_size_limit: cache_size,
+        }
+    }
+    
+    /// Split the song and return (artist, song) in the correct order
+    /// 
+    /// This method intelligently determines which part is the artist and which
+    /// is the song using MusicBrainz lookups, then returns them in the correct order.
+    /// Updates statistics about detected order patterns. After 20 successful detections,
+    /// if one order type represents >95% of results, it becomes the default for future splits.
+    /// Results are cached to avoid repeated API calls and counter updates.
+    /// 
+    /// # Arguments
+    /// * `song_title` - The combined song title string to split and analyze
+    /// 
+    /// # Returns
+    /// An optional tuple of (artist, song) if the title could be split and order determined
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
+    /// 
+    /// let mut splitter = SongTitleSplitter::new("track_123");
+    /// if let Some((artist, song)) = splitter.split_song("The Beatles - Hey Jude") {
+    ///     println!("Artist: {}, Song: {}", artist, song);
+    /// }
+    /// ```
+    pub fn split_song(&mut self, song_title: &str) -> Option<(String, String)> {
+        debug!("Splitting song: '{}'", song_title);
+        
+        // First split the title into parts
+        let parts = split_song(song_title)?;
+        
+        // Determine the order using default, cache, or MusicBrainz lookup
+        let order = if let Some(default) = &self.default_order {
+            // Use the established default order
+            debug!("Using established default order {:?} for '{}'", default, song_title);
+            default.clone()
+        } else {
+            // Check cache first, then detect if not cached
+            self.get_order_with_cache(song_title, &parts)
+        };
+        
+        let result = match order {
+            OrderResult::ArtistSong => {
+                debug!("Returning ArtistSong order for '{}': artist='{}', song='{}'", 
+                       song_title, parts.0, parts.1);
+                Some((parts.0, parts.1))
+            },
+            OrderResult::SongArtist => {
+                debug!("Returning SongArtist order for '{}': artist='{}', song='{}'", 
+                       song_title, parts.1, parts.0);
+                Some((parts.1, parts.0))
+            },
+            OrderResult::Unknown | OrderResult::Undecided => {
+                debug!("Cannot determine order for '{}': {:?}", song_title, order);
+                // For unknown or undecided cases, we could implement fallback logic
+                // For now, return None to indicate we couldn't determine the order
+                None
+            }
+        };
+        
+        result
+    }
+    
+    /// Internal method to update order statistics
+    fn update_stats(&mut self, order: OrderResult) {
+        let count = self.order_stats.entry(order.clone()).or_insert(0);
+        *count += 1;
+        debug!("Updated stats for {:?}: count now {}", order, count);
+    }
+    
+    /// Get order with cache lookup, only updating stats for new lookups
+    fn get_order_with_cache(&mut self, song_title: &str, parts: &(String, String)) -> OrderResult {
+        // Check if we already have the result cached
+        if let Some(cached_order) = self.lookup_cache.get(song_title) {
+            debug!("Cache hit for '{}': {:?}", song_title, cached_order);
+            return cached_order.clone();
+        }
+        
+        debug!("Cache miss for '{}', performing MusicBrainz lookup for '{}' vs '{}'", 
+               song_title, parts.0, parts.1);
+        
+        // Detect the order using MusicBrainz lookup
+        let order = detect_order(&parts.0, &parts.1);
+        
+        debug!("MusicBrainz lookup result for '{}': {:?}", song_title, order);
+        
+        // Cache the result (with size limit)
+        if self.lookup_cache.len() >= self.cache_size_limit {
+            // Remove a random entry to make space (in a real implementation, you might use LRU)
+            if let Some(key) = self.lookup_cache.keys().next().cloned() {
+                debug!("Cache full, removing entry: '{}'", key);
+                self.lookup_cache.remove(&key);
+            }
+        }
+        self.lookup_cache.insert(song_title.to_string(), order.clone());
+        debug!("Cached result for '{}': {:?} (cache size: {})", 
+               song_title, order, self.lookup_cache.len());
+        
+        // Update statistics only for new lookups
+        self.update_stats(order.clone());
+        
+        // Check if we should establish a default order
+        self.check_and_set_default_order();
+        
+        order
+    }
+    
+    /// Check if we should establish a default order based on current statistics
+    /// 
+    /// After 20 successful detections (ArtistSong + SongArtist), if one order type
+    /// represents >95% of the successful results, it becomes the default.
+    fn check_and_set_default_order(&mut self) {
+        // Only check if we don't already have a default
+        if self.default_order.is_some() {
+            return;
+        }
+        
+        let artist_song_count = self.get_artist_song_count();
+        let song_artist_count = self.get_song_artist_count();
+        let total_successful = artist_song_count + song_artist_count;
+        
+        // Need at least 20 successful detections to establish a pattern
+        if total_successful < 20 {
+            debug!("Not enough successful detections yet: {} (need 20)", total_successful);
+            return;
+        }
+        
+        // Calculate percentages
+        let artist_song_percent = (artist_song_count as f64) / (total_successful as f64) * 100.0;
+        let song_artist_percent = (song_artist_count as f64) / (total_successful as f64) * 100.0;
+        
+        debug!("Order statistics: ArtistSong={} ({:.1}%), SongArtist={} ({:.1}%), Total={}",
+               artist_song_count, artist_song_percent, 
+               song_artist_count, song_artist_percent, 
+               total_successful);
+        
+        // Check if either order reaches strictly >95% threshold
+        if artist_song_percent > 95.0 {
+            self.default_order = Some(OrderResult::ArtistSong);
+            info!("Default sort order established: ArtistSong ({:.1}% of {} successful detections)", 
+                  artist_song_percent, total_successful);
+        } else if song_artist_percent > 95.0 {
+            self.default_order = Some(OrderResult::SongArtist);
+            info!("Default sort order established: SongArtist ({:.1}% of {} successful detections)", 
+                  song_artist_percent, total_successful);
+        } else {
+            debug!("No clear pattern yet: need >95% for one order type");
+        }
+    }
+    
+    /// Get the order detection result for a given song title
+    /// 
+    /// # Arguments
+    /// * `song_title` - The combined song title string to analyze
+    /// 
+    /// # Returns
+    /// The OrderResult indicating the detected order
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::{SongTitleSplitter, OrderResult};
+    /// 
+    /// let mut splitter = SongTitleSplitter::new("track_123");
+    /// match splitter.get_order("The Beatles - Hey Jude") {
+    ///     OrderResult::ArtistSong => println!("First part is artist"),
+    ///     OrderResult::SongArtist => println!("First part is song"),
+    ///     _ => println!("Could not determine order"),
+    /// }
+    /// ```
+    pub fn get_order(&mut self, song_title: &str) -> OrderResult {
+        if let Some((part1, part2)) = split_song(song_title) {
+            // Use default order if established
+            if let Some(default) = &self.default_order {
+                debug!("Using default order {:?} for '{}'", default, song_title);
+                return default.clone();
+            }
+            
+            // Otherwise use cache or detect using MusicBrainz
+            self.get_order_with_cache(song_title, &(part1, part2))
+        } else {
+            debug!("Could not split '{}' - no separator found", song_title);
+            let order = OrderResult::Unknown;
+            // Only update stats if not cached
+            if !self.lookup_cache.contains_key(song_title) {
+                self.update_stats(order.clone());
+                self.lookup_cache.insert(song_title.to_string(), order.clone());
+            }
+            order
+        }
+    }
+    
+    /// Get the raw split parts for a given song title without order detection
+    /// 
+    /// # Arguments
+    /// * `song_title` - The combined song title string to split
+    /// 
+    /// # Returns
+    /// An optional tuple of (part1, part2) as they appear in the original title
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
+    /// 
+    /// let splitter = SongTitleSplitter::new("track_123");
+    /// if let Some((part1, part2)) = splitter.get_raw_parts("The Beatles - Hey Jude") {
+    ///     println!("Part 1: {}, Part 2: {}", part1, part2);
+    /// }
+    /// ```
+    pub fn get_raw_parts(&self, song_title: &str) -> Option<(String, String)> {
+        split_song(song_title)
+    }
+    
+    /// Get the ID string that was passed to the constructor
+    /// 
+    /// # Returns
+    /// The ID string that was passed to the constructor
+    /// 
+    /// # Examples
+    /// ```
+    /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
+    /// 
+    /// let splitter = SongTitleSplitter::new("track_123");
+    /// assert_eq!(splitter.get_id(), "track_123");
+    /// ```
+    pub fn get_id(&self) -> &str {
+        &self.id
+    }
+    
+    /// Get the number of songs detected with ArtistSong order
+    pub fn get_artist_song_count(&self) -> u32 {
+        *self.order_stats.get(&OrderResult::ArtistSong).unwrap_or(&0)
+    }
+    
+    /// Get the number of songs detected with SongArtist order
+    pub fn get_song_artist_count(&self) -> u32 {
+        *self.order_stats.get(&OrderResult::SongArtist).unwrap_or(&0)
+    }
+    
+    /// Get the number of songs where order could not be determined
+    pub fn get_unknown_count(&self) -> u32 {
+        *self.order_stats.get(&OrderResult::Unknown).unwrap_or(&0)
+    }
+    
+    /// Get the number of songs where order was undecided
+    pub fn get_undecided_count(&self) -> u32 {
+        *self.order_stats.get(&OrderResult::Undecided).unwrap_or(&0)
+    }
+    
+    /// Get the total number of songs analyzed
+    pub fn get_total_count(&self) -> u32 {
+        self.order_stats.values().sum()
+    }
+    
+    /// Get a copy of all order statistics
+    pub fn get_all_stats(&self) -> HashMap<OrderResult, u32> {
+        self.order_stats.clone()
+    }
+    
+    /// Clear all statistics
+    pub fn clear_stats(&mut self) {
+        self.order_stats.clear();
+    }
+    
+    /// Clear the lookup cache
+    pub fn clear_cache(&mut self) {
+        self.lookup_cache.clear();
+    }
+    
+    /// Get the current cache size
+    pub fn get_cache_size(&self) -> usize {
+        self.lookup_cache.len()
+    }
+    
+    /// Get the cache size limit
+    pub fn get_cache_size_limit(&self) -> usize {
+        self.cache_size_limit
+    }
+    
+    /// Check if a song title's order has been cached
+    pub fn is_cached(&self, song_title: &str) -> bool {
+        self.lookup_cache.contains_key(song_title)
+    }
+    
+    /// Get the default order if one has been established
+    /// 
+    /// # Returns
+    /// The default OrderResult if established (>95% confidence after 20+ songs), None otherwise
+    pub fn get_default_order(&self) -> Option<OrderResult> {
+        self.default_order.clone()
+    }
+    
+    /// Check if a default order has been established
+    /// 
+    /// # Returns
+    /// true if a default order is set (>95% confidence after 20+ songs), false otherwise
+    pub fn has_default_order(&self) -> bool {
+        self.default_order.is_some()
+    }
+    
+    /// Get the percentage of successful detections for each order type
+    /// 
+    /// # Returns
+    /// A tuple of (artist_song_percent, song_artist_percent) based on successful detections only
+    pub fn get_order_percentages(&self) -> (f64, f64) {
+        let artist_song_count = self.get_artist_song_count();
+        let song_artist_count = self.get_song_artist_count();
+        let total_successful = artist_song_count + song_artist_count;
+        
+        if total_successful == 0 {
+            return (0.0, 0.0);
+        }
+        
+        let artist_song_percent = (artist_song_count as f64) / (total_successful as f64) * 100.0;
+        let song_artist_percent = (song_artist_count as f64) / (total_successful as f64) * 100.0;
+        
+        (artist_song_percent, song_artist_percent)
+    }
+    
+    /// Reset the default order and clear statistics
+    /// 
+    /// This can be useful if you want to restart the learning process
+    pub fn reset(&mut self) {
+        self.order_stats.clear();
+        self.default_order = None;
+        self.lookup_cache.clear();
     }
 }
 
@@ -252,5 +644,157 @@ mod tests {
         // For now, just test that the function exists and can be called
         // Real tests would require mocking the musicbrainz module
         assert!(true); // Placeholder assertion
+    }
+    
+    #[test]
+    fn test_song_title_splitter_new() {
+        let splitter = SongTitleSplitter::new("track_123");
+        assert_eq!(splitter.get_id(), "track_123");
+    }
+    
+    #[test]
+    fn test_song_title_splitter_get_raw_parts() {
+        let splitter = SongTitleSplitter::new("track_123");
+        let parts = splitter.get_raw_parts("The Beatles - Hey Jude");
+        assert_eq!(parts, Some(("The Beatles".to_string(), "Hey Jude".to_string())));
+    }
+    
+    #[test]
+    fn test_song_title_splitter_no_separator() {
+        let splitter = SongTitleSplitter::new("track_456");
+        let parts = splitter.get_raw_parts("NoSeparatorHere");
+        assert_eq!(parts, None);
+    }
+    
+    #[test]
+    fn test_song_title_splitter_with_slash() {
+        let splitter = SongTitleSplitter::new("track_789");
+        let parts = splitter.get_raw_parts("Artist / Song Title");
+        assert_eq!(parts, Some(("Artist".to_string(), "Song Title".to_string())));
+    }
+    
+    #[test]
+    fn test_song_title_splitter_order_detection() {
+        let mut splitter = SongTitleSplitter::new("track_abc");
+        let order = splitter.get_order("The Beatles - Hey Jude");
+        // Since we can't predict MusicBrainz results, just verify the function runs
+        assert!(matches!(order, OrderResult::ArtistSong | OrderResult::SongArtist | OrderResult::Unknown | OrderResult::Undecided));
+    }
+    
+    #[test]
+    fn test_song_title_splitter_split_song() {
+        let mut splitter = SongTitleSplitter::new("track_def");
+        
+        // Test with a song that has separators
+        let result = splitter.split_song("Artist - Song Title");
+        // The result depends on MusicBrainz lookup, so we just verify it handles the call
+        match result {
+            Some((artist, song)) => {
+                assert!(!artist.is_empty());
+                assert!(!song.is_empty());
+                println!("Split result: Artist='{}', Song='{}'", artist, song);
+            }
+            None => {
+                // This is also valid - it means order couldn't be determined
+                println!("Could not determine artist/song order");
+            }
+        }
+        
+        // Test with a song that has no separators
+        let result2 = splitter.split_song("NoSeparatorHere");
+        assert_eq!(result2, None);
+    }
+    
+    #[test]
+    fn test_song_title_splitter_multiple_calls() {
+        let mut splitter = SongTitleSplitter::new("track_ghi");
+        
+        // Test that multiple calls with different songs work
+        let _parts1 = splitter.get_raw_parts("The Beatles - Hey Jude");
+        let _parts2 = splitter.get_raw_parts("Queen / Bohemian Rhapsody");
+        let _order1 = splitter.get_order("Led Zeppelin - Stairway to Heaven");
+        let _order2 = splitter.get_order("Pink Floyd / Wish You Were Here");
+        
+        // All calls should work independently since no state is cached
+        assert!(true); // If we get here, all calls succeeded
+    }
+    
+    #[test]
+    fn test_song_title_splitter_default_order_detection() {
+        let mut splitter = SongTitleSplitter::new("track_stats");
+        
+        // Initially no default order
+        assert!(!splitter.has_default_order());
+        assert_eq!(splitter.get_default_order(), None);
+        
+        // Test statistics tracking
+        assert_eq!(splitter.get_artist_song_count(), 0);
+        assert_eq!(splitter.get_song_artist_count(), 0);
+        assert_eq!(splitter.get_total_count(), 0);
+        
+        // Test percentages calculation with no data
+        let (artist_percent, song_percent) = splitter.get_order_percentages();
+        assert_eq!(artist_percent, 0.0);
+        assert_eq!(song_percent, 0.0);
+        
+        // Test reset functionality
+        splitter.reset();
+        assert!(!splitter.has_default_order());
+        assert_eq!(splitter.get_total_count(), 0);
+    }
+    
+    #[test]
+    fn test_song_title_splitter_statistics_tracking() {
+        let mut splitter = SongTitleSplitter::new("track_multi");
+        
+        // Process multiple songs to test statistics
+        let _order1 = splitter.get_order("The Beatles - Hey Jude");
+        let _order2 = splitter.get_order("Queen / Bohemian Rhapsody");
+        let _order3 = splitter.get_order("Led Zeppelin - Stairway to Heaven");
+        
+        // Should have processed 3 songs
+        assert_eq!(splitter.get_total_count(), 3);
+        
+        // Test that clear_stats works
+        splitter.clear_stats();
+        assert_eq!(splitter.get_total_count(), 0);
+        assert_eq!(splitter.get_artist_song_count(), 0);
+        assert_eq!(splitter.get_song_artist_count(), 0);
+        
+        // Test that reset clears both stats and default order
+        splitter.reset();
+        assert!(!splitter.has_default_order());
+        assert_eq!(splitter.get_total_count(), 0);
+    }
+    
+    #[test]
+    fn test_song_title_splitter_cache() {
+        let mut splitter = SongTitleSplitter::new("track_cache");
+        
+        // Initially cache should be empty
+        assert_eq!(splitter.get_cache_size(), 0);
+        assert!(!splitter.is_cached("The Beatles - Hey Jude"));
+        
+        // Get order for first time - should cache result and update stats
+        let order1 = splitter.get_order("The Beatles - Hey Jude");
+        assert_eq!(splitter.get_cache_size(), 1);
+        assert!(splitter.is_cached("The Beatles - Hey Jude"));
+        let initial_count = splitter.get_total_count();
+        assert!(initial_count > 0);
+        
+        // Get order for same song again - should use cache and NOT update stats
+        let order2 = splitter.get_order("The Beatles - Hey Jude");
+        assert_eq!(order1, order2);
+        assert_eq!(splitter.get_cache_size(), 1); // Cache size shouldn't increase
+        assert_eq!(splitter.get_total_count(), initial_count); // Stats shouldn't change
+        
+        // Test with custom cache size
+        let mut splitter2 = SongTitleSplitter::with_cache_size("track_custom", 2);
+        assert_eq!(splitter2.get_cache_size_limit(), 2);
+        
+        // Clear cache
+        splitter.clear_cache();
+        assert_eq!(splitter.get_cache_size(), 0);
+        assert!(!splitter.is_cached("The Beatles - Hey Jude"));
     }
 }

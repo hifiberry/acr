@@ -52,17 +52,6 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [MPD Integration](#mpd-integration)
 - [M3U Playlist API](#m3u-playlist-api)
   - [Parse M3U Playlist](#parse-m3u-playlist)
-- [Data Structures](#data-structures)
-  - [Album](#album)
-  - [Track](#track)
-  - [Artist](#artist)
-  - [Playlist](#playlist)
-  - [Genre](#genre)
-  - [File](#file)
-- [Generic Player Controller](#generic-player-controller)
-  - [Configuration](#configuration)
-  - [Event Handling](#event-handling)
-  - [Command Processing](#command-processing)
 - [Cover Art API](#cover-art-api)
   - [URL-Safe Base64 Encoding](#url-safe-base64-encoding)
   - [Get Cover Art for Artist](#get-cover-art-for-artist)
@@ -74,6 +63,17 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Cover Art Response Format](#cover-art-response-format)
   - [Error Handling](#error-handling)
   - [Provider Registration](#provider-registration)
+- [Generic Player Controller](#generic-player-controller)
+  - [Configuration](#configuration)
+  - [Event Handling](#event-handling)
+  - [Command Processing](#command-processing)
+- [Data Structures](#data-structures)
+  - [Album](#album)
+  - [Track](#track)
+  - [Artist](#artist)
+  - [Playlist](#playlist)
+  - [Genre](#genre)
+  - [File](#file)
 
 ## Base Information
 
@@ -1749,230 +1749,6 @@ curl -X POST "http://localhost:1080/api/m3u/parse" \
   }'
 ```
 
-## Data Structures
-
-The following section describes the main data structures used in the API responses.
-
-### Album
-
-An Album represents a collection of tracks/songs by one or more artists.
-
-```json
-{
-  "id": "12345678",
-  "name": "Album Name",
-  "artists": ["Artist 1", "Artist 2"],
-  "release_date": "2023-01-01",
-  "tracks_count": 12,
-  "tracks": [
-    // Track objects (if include_tracks=true)
-  ],
-  "cover_art": "/path/to/cover.jpg",
-  "uri": "file:///music/album/"
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | string | Unique identifier for the album (string representation of a 64-bit hash) |
-| name | string | Album name |
-| artists | array | List of artist names for this album |
-| release_date | string | ISO 8601 formatted date of album release (YYYY-MM-DD), may be null |
-| tracks_count | number | Number of tracks on the album |
-| tracks | array | Array of Track objects (only included when requested) |
-| cover_art | string | URL or path to album cover art image, may be null |
-| uri | string | URI/filename of the first song in the album, may be null |
-
-### Artist
-
-An Artist represents a musician or band in the music library.
-
-```json
-{
-  "id": "87654321",
-  "name": "Artist Name",
-  "is_multi": false,
-  "metadata": {
-    "mbid": ["musicbrainz-id-1", "musicbrainz-id-2"],
-    "thumb_url": ["/path/to/image1.jpg", "/path/to/image2.jpg"],
-    "banner_url": ["/path/to/banner.jpg"],
-    "biography": "Artist biography text...",
-    "genres": ["rock", "alternative"]
-  }
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | string | Unique identifier for the artist (string representation of a 64-bit hash) |
-| name | string | Artist name |
-| is_multi | boolean | Whether this is a multi-artist entry (e.g., "Artist1, Artist2") |
-| metadata | object | Optional metadata information, may be null |
-| metadata.mbid | array | List of MusicBrainz IDs for this artist |
-| metadata.thumb_url | array | List of thumbnail image URLs |
-| metadata.banner_url | array | List of banner image URLs |
-| metadata.biography | string | Artist biography, may be null |
-| metadata.genres | array | List of music genres associated with this artist |
-
-### Track
-
-A Track represents a single song on an album.
-
-```json
-{
-  "id": "12345",
-  "disc_number": "1",
-  "track_number": 5,
-  "name": "Track Name",
-  "artist": "Track Artist",
-  "uri": "file:///music/track.mp3"
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| id | string | Unique identifier for the track, may be null |
-| disc_number | string | Disc number as a string (to support formats like "1/2") |
-| track_number | number | Track number on the disc |
-| name | string | Track title |
-| artist | string | Track-specific artist (only included if different from album artist), may be null |
-| uri | string | URI/filename of the track, may be null |
-
-## Generic Player Controller
-
-The `GenericPlayerController` provides a configurable player that can be controlled entirely through the API events. It maintains internal state and can be used to represent external players or services that are controlled through the ACR API.
-
-### Configuration
-
-Multiple generic players can be configured in the JSON configuration file:
-
-```json
-{
-  "generic_player_1": {
-    "type": "generic",
-    "name": "generic_player_1",
-    "display_name": "Generic Player 1",
-    "enable": true,
-    "supports_api_events": true,
-    "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop"],
-    "initial_state": "stopped",
-    "shuffle": false,
-    "loop_mode": "none"
-  }
-}
-```
-
-### Configuration Options
-
-- `name`: Unique identifier for the player instance
-- `display_name`: Human-readable name for the player
-- `enable`: Whether the player is enabled (default: true)
-- `supports_api_events`: Whether the player accepts API events (default: true)
-- `capabilities`: Array of supported capabilities (default: ["play", "pause", "stop", "next", "previous"])
-- `initial_state`: Initial playback state ("playing", "paused", "stopped")
-- `shuffle`: Initial shuffle state (default: false)
-- `loop_mode`: Initial loop mode ("none", "song", "playlist")
-
-### Available Capabilities
-
-- `play`: Can start playback
-- `pause`: Can pause playback
-- `stop`: Can stop playback
-- `next`: Can skip to next track
-- `previous`: Can skip to previous track
-- `seek`: Can seek within track
-- `shuffle`: Can toggle shuffle mode
-- `loop`: Can set loop mode
-- `queue`: Can manage queue
-- `volume`: Can control volume
-
-### API Events
-
-The generic player responds to the standard player event API:
-
-```bash
-curl -X POST "http://localhost:3000/api/player/generic_player_1/update" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "song_changed",
-    "song": {
-      "title": "Song Title",
-      "artist": "Artist Name",
-      "album": "Album Name",
-      "duration": 240.5
-    }
-  }'
-```
-
-### Supported Event Types
-
-- `state_changed`: Update playback state
-- `song_changed`: Update current song
-- `position_changed`: Update playback position
-- `loop_mode_changed`: Update loop mode
-- `shuffle_changed`: Update shuffle state
-
-### Example API Events
-
-#### State Change
-
-```json
-{
-  "type": "state_changed",
-  "state": "playing"
-}
-```
-
-#### Song Change
-
-```json
-{
-  "type": "song_changed",
-  "song": {
-    "title": "Song Title",
-    "artist": "Artist Name",
-    "album": "Album Name",
-    "duration": 240.5,
-    "uri": "https://example.com/song.mp3"
-  }
-}
-```
-
-#### Position Change
-
-```json
-{
-  "type": "position_changed",
-  "position": 120.5
-}
-```
-
-### Multiple Instances
-
-Multiple generic players can be configured with different names and used independently:
-
-```json
-{
-  "player_a": {
-    "type": "generic",
-    "name": "player_a",
-    "display_name": "Player A",
-    "capabilities": ["play", "pause", "stop"]
-  },
-  "player_b": {
-    "type": "generic",
-    "name": "player_b", 
-    "display_name": "Player B",
-    "capabilities": ["play", "pause", "stop", "next", "previous", "seek"]
-  }
-}
-```
-
-Each instance has its own API endpoint:
-
-- `POST /api/player/player_a/update`
-- `POST /api/player/player_b/update`
-
 ## Cover Art API
 
 The Cover Art API provides endpoints to retrieve cover art from registered providers. All text parameters must be encoded using URL-safe base64 encoding.
@@ -2009,6 +1785,13 @@ Retrieves cover art URLs for a specific artist from all registered providers.
       },
       {
         "provider": {
+          "name": "spotify",
+          "display_name": "Spotify"
+        },
+        "urls": ["https://i.scdn.co/image/ab6761610000e5ebeb8b0e6ccea3b130a69c8d9c"]
+      },
+      {
+        "provider": {
           "name": "theaudiodb",
           "display_name": "TheAudioDB"
         },
@@ -2018,9 +1801,15 @@ Retrieves cover art URLs for a specific artist from all registered providers.
   }
   ```
 
-#### Example
+#### Examples
+
+**Get cover art for "The Beatles":**
 ```bash
-# Get cover art for "The Beatles"
+# First encode the artist name
+echo -n "The Beatles" | base64 -w 0 | tr '+/' '-_' | tr -d '='
+# Result: VGhlIEJlYXRsZXM
+
+# Then make the API request
 curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM
 ```
 
@@ -2055,9 +1844,23 @@ Retrieves cover art URLs for a specific song from all registered providers.
   }
   ```
 
-#### Example
+#### Examples
+
+**Get cover art for "Yellow Submarine" by "The Beatles":**
 ```bash
-# Get cover art for "Hey Jude" by "The Beatles"
+# First encode the song title and artist
+echo -n "Yellow Submarine" | base64 -w 0 | tr '+/' '-_' | tr -d '='
+# Result: WWVsbG93IFN1Ym1hcmluZQ
+
+echo -n "The Beatles" | base64 -w 0 | tr '+/' '-_' | tr -d '='
+# Result: VGhlIEJlYXRsZXM
+
+# Then make the API request
+curl http://<device-ip>:1080/api/coverart/song/WWVsbG93IFN1Ym1hcmluZQ/VGhlIEJlYXRsZXM
+```
+
+**Get cover art for "Hey Jude" by "The Beatles":**
+```bash
 curl http://<device-ip>:1080/api/coverart/song/SGV5IEp1ZGU/VGhlIEJlYXRsZXM
 ```
 
@@ -2313,3 +2116,227 @@ let manager = get_coverart_manager();
 let mut manager_lock = manager.lock().unwrap();
 manager_lock.register_provider(Arc::new(my_provider));
 ```
+
+## Generic Player Controller
+
+The `GenericPlayerController` provides a configurable player that can be controlled entirely through the API events. It maintains internal state and can be used to represent external players or services that are controlled through the ACR API.
+
+### Configuration
+
+Multiple generic players can be configured in the JSON configuration file:
+
+```json
+{
+  "generic_player_1": {
+    "type": "generic",
+    "name": "generic_player_1",
+    "display_name": "Generic Player 1",
+    "enable": true,
+    "supports_api_events": true,
+    "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop"],
+    "initial_state": "stopped",
+    "shuffle": false,
+    "loop_mode": "none"
+  }
+}
+```
+
+### Configuration Options
+
+- `name`: Unique identifier for the player instance
+- `display_name`: Human-readable name for the player
+- `enable`: Whether the player is enabled (default: true)
+- `supports_api_events`: Whether the player accepts API events (default: true)
+- `capabilities`: Array of supported capabilities (default: ["play", "pause", "stop", "next", "previous"])
+- `initial_state`: Initial playback state ("playing", "paused", "stopped")
+- `shuffle`: Initial shuffle state (default: false)
+- `loop_mode`: Initial loop mode ("none", "song", "playlist")
+
+### Available Capabilities
+
+- `play`: Can start playback
+- `pause`: Can pause playback
+- `stop`: Can stop playback
+- `next`: Can skip to next track
+- `previous`: Can skip to previous track
+- `seek`: Can seek within track
+- `shuffle`: Can toggle shuffle mode
+- `loop`: Can set loop mode
+- `queue`: Can manage queue
+- `volume`: Can control volume
+
+### API Events
+
+The generic player responds to the standard player event API:
+
+```bash
+curl -X POST "http://localhost:3000/api/player/generic_player_1/update" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "song_changed",
+    "song": {
+      "title": "Song Title",
+      "artist": "Artist Name",
+      "album": "Album Name",
+      "duration": 240.5
+    }
+  }'
+```
+
+### Supported Event Types
+
+- `state_changed`: Update playback state
+- `song_changed`: Update current song
+- `position_changed`: Update playback position
+- `loop_mode_changed`: Update loop mode
+- `shuffle_changed`: Update shuffle state
+
+### Example API Events
+
+#### State Change
+
+```json
+{
+  "type": "state_changed",
+  "state": "playing"
+}
+```
+
+#### Song Change
+
+```json
+{
+  "type": "song_changed",
+  "song": {
+    "title": "Song Title",
+    "artist": "Artist Name",
+    "album": "Album Name",
+    "duration": 240.5,
+    "uri": "https://example.com/song.mp3"
+  }
+}
+```
+
+#### Position Change
+
+```json
+{
+  "type": "position_changed",
+  "position": 120.5
+}
+```
+
+### Multiple Instances
+
+Multiple generic players can be configured with different names and used independently:
+
+```json
+{
+  "player_a": {
+    "type": "generic",
+    "name": "player_a",
+    "display_name": "Player A",
+    "capabilities": ["play", "pause", "stop"]
+  },
+  "player_b": {
+    "type": "generic",
+    "name": "player_b", 
+    "display_name": "Player B",
+    "capabilities": ["play", "pause", "stop", "next", "previous", "seek"]
+  }
+}
+```
+
+Each instance has its own API endpoint:
+
+- `POST /api/player/player_a/update`
+- `POST /api/player/player_b/update`
+
+## Data Structures
+
+The following section describes the main data structures used in the API responses.
+
+### Album
+
+An Album represents a collection of tracks/songs by one or more artists.
+
+```json
+{
+  "id": "12345678",
+  "name": "Album Name",
+  "artists": ["Artist 1", "Artist 2"],
+  "release_date": "2023-01-01",
+  "tracks_count": 12,
+  "tracks": [
+    // Track objects (if include_tracks=true)
+  ],
+  "cover_art": "/path/to/cover.jpg",
+  "uri": "file:///music/album/"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | string | Unique identifier for the album (string representation of a 64-bit hash) |
+| name | string | Album name |
+| artists | array | List of artist names for this album |
+| release_date | string | ISO 8601 formatted date of album release (YYYY-MM-DD), may be null |
+| tracks_count | number | Number of tracks on the album |
+| tracks | array | Array of Track objects (only included when requested) |
+| cover_art | string | URL or path to album cover art image, may be null |
+| uri | string | URI/filename of the first song in the album, may be null |
+
+### Artist
+
+An Artist represents a musician or band in the music library.
+
+```json
+{
+  "id": "87654321",
+  "name": "Artist Name",
+  "is_multi": false,
+  "metadata": {
+    "mbid": ["musicbrainz-id-1", "musicbrainz-id-2"],
+    "thumb_url": ["/path/to/image1.jpg", "/path/to/image2.jpg"],
+    "banner_url": ["/path/to/banner.jpg"],
+    "biography": "Artist biography text...",
+    "genres": ["rock", "alternative"]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | string | Unique identifier for the artist (string representation of a 64-bit hash) |
+| name | string | Artist name |
+| is_multi | boolean | Whether this is a multi-artist entry (e.g., "Artist1, Artist2") |
+| metadata | object | Optional metadata information, may be null |
+| metadata.mbid | array | List of MusicBrainz IDs for this artist |
+| metadata.thumb_url | array | List of thumbnail image URLs |
+| metadata.banner_url | array | List of banner image URLs |
+| metadata.biography | string | Artist biography, may be null |
+| metadata.genres | array | List of music genres associated with this artist |
+
+### Track
+
+A Track represents a single song on an album.
+
+```json
+{
+  "id": "12345",
+  "disc_number": "1",
+  "track_number": 5,
+  "name": "Track Name",
+  "artist": "Track Artist",
+  "uri": "file:///music/track.mp3"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | string | Unique identifier for the track, may be null |
+| disc_number | string | Disc number as a string (to support formats like "1/2") |
+| track_number | number | Track number on the disc |
+| name | string | Track title |
+| artist | string | Track-specific artist (only included if different from album artist), may be null |
+| uri | string | URI/filename of the track, may be null |

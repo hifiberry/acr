@@ -1538,6 +1538,144 @@ When lyrics are available for the current song, the player metadata includes add
 - Use the `lyrics_url` for a direct GET request to retrieve lyrics for this specific song
 - Use the `lyrics_metadata` object as the request body for a POST to `/api/lyrics/mpd` to find lyrics by metadata
 
+## M3U Playlist API
+
+The M3U Playlist API provides functionality to parse and extract URLs from M3U playlist files. The API can download playlists from remote URLs and parse both simple and extended M3U formats.
+
+**Supported M3U Formats:**
+- **Simple M3U**: Plain text format with one URL per line
+- **Extended M3U**: Format with metadata including `#EXTM3U` header and `#EXTINF` directives
+
+**Features:**
+- HTTP download of remote M3U playlists with configurable timeout
+- Parsing of both simple and extended M3U formats
+- Extraction of track metadata (title, duration) from extended format
+- URL validation and absolute URL resolution
+- Support for live streams (duration -1 converted to null)
+
+### Parse M3U Playlist
+
+Parse an M3U playlist from a remote URL and return the contained URLs with metadata.
+
+- **Endpoint**: `/api/m3u/parse`
+- **Method**: POST
+- **Request Body**:
+  ```json
+  {
+    "url": "http://example.com/playlist.m3u",
+    "timeout": 30
+  }
+  ```
+
+**Required Fields:**
+- `url`: URL of the M3U playlist to download and parse (string)
+
+**Optional Fields:**
+- `timeout`: Request timeout in seconds (number, default: 30)
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:1080/api/m3u/parse" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://example.com/playlist.m3u"
+  }'
+```
+
+**Response Format:**
+
+Success with simple M3U:
+```json
+{
+  "success": true,
+  "url": "http://example.com/playlist.m3u",
+  "timestamp": "2024-01-01T12:00:00Z",
+  "playlist": {
+    "is_extended": false,
+    "count": 3,
+    "entries": [
+      {
+        "url": "http://example.com/song1.mp3",
+        "title": null,
+        "duration": null
+      },
+      {
+        "url": "http://example.com/song2.mp3", 
+        "title": null,
+        "duration": null
+      },
+      {
+        "url": "http://example.com/song3.mp3",
+        "title": null,
+        "duration": null
+      }
+    ]
+  }
+}
+```
+
+Success with extended M3U:
+```json
+{
+  "success": true,
+  "url": "http://example.com/extended.m3u",
+  "timestamp": "2024-01-01T12:00:00Z",
+  "playlist": {
+    "is_extended": true,
+    "count": 2,
+    "entries": [
+      {
+        "url": "http://example.com/song1.mp3",
+        "title": "Artist - Song Title",
+        "duration": 180.5
+      },
+      {
+        "url": "http://example.com/stream.m3u8",
+        "title": "Live Radio Stream",
+        "duration": null
+      }
+    ]
+  }
+}
+```
+
+Error response:
+```json
+{
+  "success": false,
+  "error": "Failed to download playlist: connection timeout",
+  "url": "http://example.com/invalid.m3u",
+  "timestamp": "2024-01-01T12:00:00Z"
+}
+```
+
+**Common Error Cases:**
+- Invalid or malformed URLs
+- Network timeouts or connection failures
+- Empty or malformed M3U content
+- HTTP errors (404, 500, etc.)
+
+**Usage Examples:**
+
+Parse a simple internet radio station playlist:
+```bash
+curl -X POST "http://localhost:1080/api/m3u/parse" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://www.byte.fm/stream/bytefmhq.m3u"
+  }'
+```
+
+Parse with custom timeout:
+```bash
+curl -X POST "http://localhost:1080/api/m3u/parse" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://example.com/large-playlist.m3u",
+    "timeout": 60
+  }'
+```
+
 ## Data Structures
 
 The following section describes the main data structures used in the API responses.

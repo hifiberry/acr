@@ -2,21 +2,22 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::collections::HashMap;
 use lazy_static::lazy_static;
-use log::{info, error};
+use log::{info, error, debug};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
+use rusqlite::{Connection, params};
 
 // Global singleton for the attribute cache
 lazy_static! {
     static ref ATTRIBUTE_CACHE: Mutex<AttributeCache> = Mutex::new(AttributeCache::new());
 }
 
-/// A persistent attribute cache that stores key-value pairs using Sled database
+/// A persistent attribute cache that stores key-value pairs using SQLite database
 pub struct AttributeCache {
-    /// Path to the database directory
+    /// Path to the database file
     db_path: PathBuf,
-    /// Sled database instance
-    db: Option<sled::Db>,
+    /// SQLite database connection
+    db: Option<Connection>,
     /// Whether the cache is enabled
     enabled: bool,
     /// Max age of cached items in days
@@ -29,22 +30,45 @@ impl AttributeCache {
     /// Create a new attribute cache with default settings
     pub fn new() -> Self {
         // Using the default path that matches our cache.attribute_cache_path setting
-        let cache_dir = PathBuf::from("/var/lib/audiocontrol/cache/attributes");
-        Self::with_directory(cache_dir)
+        let cache_dir = PathBuf::from("/var/lib/audiocontrol/cache");
+        let db_file = cache_dir.join("attributes.db");
+        Self::with_database_file(db_file)
     }
 
-    /// Create a new attribute cache with a specific directory
-    pub fn with_directory<P: AsRef<Path>>(dir: P) -> Self {
-        let db_path = dir.as_ref().to_path_buf();
+    /// Create a new attribute cache with a specific database file
+    pub fn with_database_file<P: AsRef<Path>>(db_file: P) -> Self {
+        let db_path = db_file.as_ref().to_path_buf();
         
-        // Try to open the sled database
-        let db = match sled::open(&db_path) {
-            Ok(db) => {
+        // Try to ensure the directory exists
+        if let Some(parent) = db_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                error!("Failed to create directory for attribute cache: {}", e);
+            }
+        }
+        
+        // Try to open the SQLite database
+        let db = match Connection::open(&db_path) {
+            Ok(mut conn) => {
                 info!("Successfully opened attribute cache database at {:?}", db_path);
-                Some(db)
+                
+                // Create the cache table if it doesn't exist
+                if let Err(e) = conn.execute(
+                    "CREATE TABLE IF NOT EXISTS cache (
+                        key TEXT PRIMARY KEY,
+                        value BLOB NOT NULL,
+                        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+                    )",
+                    [],
+                ) {
+                    error!("Failed to create cache table: {}", e);
+                    None
+                } else {
+                    debug!("Cache table created or already exists");
+                    Some(conn)
+                }
             },
             Err(e) => {
-                error!("Failed to open sled database at {:?}: {}", db_path, e);
+                error!("Failed to open SQLite database at {:?}: {}", db_path, e);
                 None
             }
         };
@@ -80,27 +104,42 @@ impl AttributeCache {
     /// Reconfigure the attribute cache with a new directory
     /// This will close the existing database and open a new one
     fn reconfigure_with_directory<P: AsRef<Path>>(&mut self, dir: P) -> Result<(), String> {
-        let db_path = dir.as_ref().to_path_buf();
+        let cache_dir = dir.as_ref().to_path_buf();
+        let db_file = cache_dir.join("attributes.db");
         
         // Try to ensure the directory exists
-        if let Err(e) = std::fs::create_dir_all(&db_path) {
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
             return Err(format!("Failed to create directory for attribute cache: {}", e));
         }
         
-        // Try to open the new sled database
-        let db = match sled::open(&db_path) {
-            Ok(db) => {
-                info!("Successfully opened attribute cache database at {:?}", db_path);
-                Some(db)
+        // Try to open the new SQLite database
+        let db = match Connection::open(&db_file) {
+            Ok(mut conn) => {
+                info!("Successfully opened attribute cache database at {:?}", db_file);
+                
+                // Create the cache table if it doesn't exist
+                if let Err(e) = conn.execute(
+                    "CREATE TABLE IF NOT EXISTS cache (
+                        key TEXT PRIMARY KEY,
+                        value BLOB NOT NULL,
+                        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+                    )",
+                    [],
+                ) {
+                    return Err(format!("Failed to create cache table: {}", e));
+                }
+                
+                debug!("Cache table created or already exists");
+                Some(conn)
             },
             Err(e) => {
-                error!("Failed to open sled database at {:?}: {}", db_path, e);
-                return Err(format!("Failed to open sled database: {}", e));
+                error!("Failed to open SQLite database at {:?}: {}", db_file, e);
+                return Err(format!("Failed to open SQLite database: {}", e));
             }
         };
         
         // Update the instance
-        self.db_path = db_path;
+        self.db_path = db_file;
         self.db = db;
         self.memory_cache.clear(); // Clear memory cache as we have a new DB
         
@@ -136,18 +175,17 @@ impl AttributeCache {
         // Store in memory cache
         self.memory_cache.insert(key.to_string(), Arc::new(serialized.clone()));
 
-        // Store in sled database
-        match &self.db {
+        // Store in SQLite database
+        match &mut self.db {
             Some(db) => {
-                if let Err(e) = db.insert(key.as_bytes(), serialized) {
+                if let Err(e) = db.execute(
+                    "INSERT OR REPLACE INTO cache (key, value) VALUES (?1, ?2)",
+                    params![key, serialized],
+                ) {
                     return Err(format!("Failed to store in database: {}", e));
                 }
                 
-                // Flush to ensure persistence
-                if let Err(e) = db.flush() {
-                    return Err(format!("Failed to flush database: {}", e));
-                }
-                
+                debug!("Stored key '{}' in SQLite cache", key);
                 Ok(())
             },
             None => Err("Database not available".to_string()),
@@ -168,22 +206,30 @@ impl AttributeCache {
             };
         }
 
-        // Fall back to sled database
-        match &self.db {
+        // Fall back to SQLite database
+        match &mut self.db {
             Some(db) => {
-                match db.get(key.as_bytes()) {
-                    Ok(Some(data)) => {
+                let mut stmt = match db.prepare("SELECT value FROM cache WHERE key = ?1") {
+                    Ok(stmt) => stmt,
+                    Err(e) => return Err(format!("Failed to prepare SQL statement: {}", e)),
+                };
+                
+                match stmt.query_row(params![key], |row| {
+                    let data: Vec<u8> = row.get(0)?;
+                    Ok(data)
+                }) {
+                    Ok(data_vec) => {
                         // Store in memory cache for future access
-                        let data_vec = data.to_vec();
                         let result: T = match serde_json::from_slice(&data_vec) {
                             Ok(value) => value,
                             Err(e) => return Err(format!("Failed to deserialize from database: {}", e)),
                         };
                         
                         self.memory_cache.insert(key.to_string(), Arc::new(data_vec));
+                        debug!("Retrieved key '{}' from SQLite cache", key);
                         Ok(Some(result))
                     },
-                    Ok(None) => Ok(None),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                     Err(e) => Err(format!("Database error: {}", e)),
                 }
             },
@@ -201,11 +247,16 @@ impl AttributeCache {
         self.memory_cache.remove(key);
 
         // Remove from database
-        match &self.db {
+        match &mut self.db {
             Some(db) => {
-                match db.remove(key.as_bytes()) {
-                    Ok(Some(_)) => Ok(true),
-                    Ok(None) => Ok(false),
+                match db.execute("DELETE FROM cache WHERE key = ?1", params![key]) {
+                    Ok(affected_rows) => {
+                        let removed = affected_rows > 0;
+                        if removed {
+                            debug!("Removed key '{}' from SQLite cache", key);
+                        }
+                        Ok(removed)
+                    },
                     Err(e) => Err(format!("Failed to remove from database: {}", e)),
                 }
             },
@@ -223,10 +274,13 @@ impl AttributeCache {
         self.memory_cache.clear();
 
         // Clear database
-        match &self.db {
+        match &mut self.db {
             Some(db) => {
-                match db.clear() {
-                    Ok(_) => Ok(()),
+                match db.execute("DELETE FROM cache", []) {
+                    Ok(affected_rows) => {
+                        debug!("Cleared {} entries from SQLite cache", affected_rows);
+                        Ok(())
+                    },
                     Err(e) => Err(format!("Failed to clear database: {}", e)),
                 }
             },
@@ -236,9 +290,35 @@ impl AttributeCache {
 
     /// Clean up old entries that exceed the maximum age
     pub fn cleanup(&mut self) -> Result<usize, String> {
-        // TODO: Implement cleanup of old entries based on timestamps
-        // This will require storing timestamps with entries
-        Ok(0)
+        if !self.is_enabled() {
+            return Err("Cache is disabled".to_string());
+        }
+
+        match &mut self.db {
+            Some(db) => {
+                // Calculate the cutoff timestamp (current time - max_age_days)
+                let cutoff_timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| format!("Failed to get current time: {}", e))?
+                    .as_secs() as i64 - (self.max_age_days as i64 * 24 * 60 * 60);
+
+                match db.execute(
+                    "DELETE FROM cache WHERE created_at < ?1",
+                    params![cutoff_timestamp]
+                ) {
+                    Ok(affected_rows) => {
+                        if affected_rows > 0 {
+                            info!("Cleaned up {} old entries from attribute cache", affected_rows);
+                            // Clear memory cache as some entries might have been removed
+                            self.memory_cache.clear();
+                        }
+                        Ok(affected_rows)
+                    },
+                    Err(e) => Err(format!("Failed to cleanup database: {}", e)),
+                }
+            },
+            None => Err("Database not available".to_string()),
+        }
     }
 }
 

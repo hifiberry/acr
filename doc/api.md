@@ -64,9 +64,14 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Event Handling](#event-handling)
   - [Command Processing](#command-processing)
 - [Cover Art API](#cover-art-api)
-  - [Get Cover Art URLs](#get-cover-art-urls)
-  - [URL Format](#url-format)
-  - [Provider Types](#provider-types)
+  - [URL-Safe Base64 Encoding](#url-safe-base64-encoding)
+  - [Get Cover Art for Artist](#get-cover-art-for-artist)
+  - [Get Cover Art for Song](#get-cover-art-for-song)
+  - [Get Cover Art for Album](#get-cover-art-for-album)
+  - [Get Cover Art for Album with Year](#get-cover-art-for-album-with-year)
+  - [Get Cover Art from URL](#get-cover-art-from-url)
+  - [List Cover Art Methods and Providers](#list-cover-art-methods-and-providers)
+  - [Cover Art Response Format](#cover-art-response-format)
   - [Error Handling](#error-handling)
   - [Provider Registration](#provider-registration)
 
@@ -1994,7 +1999,22 @@ Retrieves cover art URLs for a specific artist from all registered providers.
 - **Response**:
   ```json
   {
-    "coverart_urls": ["url1", "url2", ...]
+    "results": [
+      {
+        "provider": {
+          "name": "local_files", 
+          "display_name": "Local Files"
+        },
+        "urls": ["file:///music/covers/artist1.jpg", "file:///music/covers/artist2.png"]
+      },
+      {
+        "provider": {
+          "name": "theaudiodb",
+          "display_name": "TheAudioDB"
+        },
+        "urls": ["https://www.theaudiodb.com/images/media/artist/thumb/the-beatles.jpg"]
+      }
+    ]
   }
   ```
 
@@ -2016,7 +2036,22 @@ Retrieves cover art URLs for a specific song from all registered providers.
 - **Response**:
   ```json
   {
-    "coverart_urls": ["url1", "url2", ...]
+    "results": [
+      {
+        "provider": {
+          "name": "local_files",
+          "display_name": "Local Files"
+        },
+        "urls": ["file:///music/artist/album/cover.jpg"]
+      },
+      {
+        "provider": {
+          "name": "musicbrainz",
+          "display_name": "MusicBrainz"
+        },
+        "urls": ["https://coverartarchive.org/release/12345/front-500.jpg"]
+      }
+    ]
   }
   ```
 
@@ -2038,7 +2073,29 @@ Retrieves cover art URLs for a specific album from all registered providers.
 - **Response**:
   ```json
   {
-    "coverart_urls": ["url1", "url2", ...]
+    "results": [
+      {
+        "provider": {
+          "name": "local_files",
+          "display_name": "Local Files"
+        },
+        "urls": ["file:///music/the-beatles/abbey-road/folder.jpg"]
+      },
+      {
+        "provider": {
+          "name": "theaudiodb",
+          "display_name": "TheAudioDB"
+        },
+        "urls": ["https://www.theaudiodb.com/images/media/album/thumb/abbey-road.jpg"]
+      },
+      {
+        "provider": {
+          "name": "musicbrainz",
+          "display_name": "MusicBrainz"
+        },
+        "urls": ["https://coverartarchive.org/release/67890/front.jpg"]
+      }
+    ]
   }
   ```
 
@@ -2061,7 +2118,22 @@ Retrieves cover art URLs for a specific album with release year from all registe
 - **Response**:
   ```json
   {
-    "coverart_urls": ["url1", "url2", ...]
+    "results": [
+      {
+        "provider": {
+          "name": "local_files",
+          "display_name": "Local Files"  
+        },
+        "urls": ["file:///music/the-beatles/abbey-road-1969/cover.jpg"]
+      },
+      {
+        "provider": {
+          "name": "theaudiodb",
+          "display_name": "TheAudioDB"
+        },
+        "urls": ["https://www.theaudiodb.com/images/media/album/thumb/abbey-road-1969.jpg"]
+      }
+    ]
   }
   ```
 
@@ -2082,7 +2154,22 @@ Retrieves cover art URLs from a specific source URL from all registered provider
 - **Response**:
   ```json
   {
-    "coverart_urls": ["url1", "url2", ...]
+    "results": [
+      {
+        "provider": {
+          "name": "url_resolver",
+          "display_name": "URL Resolver"
+        },
+        "urls": ["https://example.com/resolved-image.jpg", "https://example.com/alternative.png"]
+      },
+      {
+        "provider": {
+          "name": "metadata_extractor",
+          "display_name": "Metadata Extractor"
+        },
+        "urls": ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD..."]
+      }
+    ]
   }
   ```
 
@@ -2104,19 +2191,59 @@ Retrieves information about available cover art methods and the providers that s
     "methods": [
       {
         "method": "Artist",
-        "providers": ["LocalProvider", "OnlineProvider"]
+        "providers": [
+          {
+            "name": "local_files",
+            "display_name": "Local Files"
+          },
+          {
+            "name": "theaudiodb", 
+            "display_name": "TheAudioDB"
+          }
+        ]
       },
       {
         "method": "Song", 
-        "providers": ["LocalProvider"]
+        "providers": [
+          {
+            "name": "local_files",
+            "display_name": "Local Files"
+          },
+          {
+            "name": "musicbrainz",
+            "display_name": "MusicBrainz"
+          }
+        ]
       },
       {
         "method": "Album",
-        "providers": ["LocalProvider", "OnlineProvider", "MusicDBProvider"]
+        "providers": [
+          {
+            "name": "local_files",
+            "display_name": "Local Files"
+          },
+          {
+            "name": "theaudiodb",
+            "display_name": "TheAudioDB"
+          },
+          {
+            "name": "musicbrainz",
+            "display_name": "MusicBrainz"
+          }
+        ]
       },
       {
         "method": "Url",
-        "providers": ["OnlineProvider"]
+        "providers": [
+          {
+            "name": "url_resolver",
+            "display_name": "URL Resolver"
+          },
+          {
+            "name": "metadata_extractor",
+            "display_name": "Metadata Extractor"
+          }
+        ]
       }
     ]
   }
@@ -2130,19 +2257,49 @@ curl http://<device-ip>:1080/api/coverart/methods
 
 ### Cover Art Response Format
 
-All cover art endpoints return URLs that can be:
+All cover art endpoints return results grouped by provider, with each provider containing:
+
+- **Provider Information**:
+  - `name`: Internal provider identifier (string)
+  - `display_name`: Human-readable provider name (string)
+- **URLs**: Array of cover art URLs from that provider
+
+**URL Types**: Cover art URLs can be:
 
 1. **HTTP/HTTPS URLs**: Direct links to online cover art images
-2. **Local file paths**: Paths to locally cached or extracted cover art files
-3. **Data URLs**: Base64-encoded image data (for small images)
+2. **Local file paths**: Paths to locally cached or extracted cover art files (with `file://` prefix)
+3. **Data URLs**: Base64-encoded image data (for small images, with `data:image/` prefix)
 
-The client application should handle all these URL types appropriately.
+**Response Structure**:
+```json
+{
+  "results": [
+    {
+      "provider": {
+        "name": "provider_internal_name",
+        "display_name": "Human Readable Provider Name"
+      },
+      "urls": ["url1", "url2", ...]
+    }
+  ]
+}
+```
+
+The client application should handle all URL types appropriately and can choose to display provider information to users for transparency about cover art sources.
 
 ### Error Handling
 
-- **Invalid base64 encoding**: Returns empty `coverart_urls` array with warning logged
-- **No providers registered**: Returns empty `coverart_urls` array
+- **Invalid base64 encoding**: Returns empty `results` array with warning logged
+- **No providers registered**: Returns empty `results` array  
 - **Provider errors**: Individual provider failures are handled gracefully; successful providers still return results
+- **No results found**: Returns empty `results` array when no providers find cover art
+
+**Error Response Example**:
+```json
+{
+  "results": []
+}
+```
 
 ### Provider Registration
 

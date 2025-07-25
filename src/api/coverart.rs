@@ -1,23 +1,22 @@
 use rocket::get;
 use rocket::serde::json::Json;
 use rocket::serde::{Deserialize, Serialize};
-use crate::helpers::coverart::{get_coverart_manager, CoverartMethod};
+use crate::helpers::coverart::{get_coverart_manager, CoverartMethod, CoverartResult, ProviderInfo};
 use crate::helpers::url_encoding::decode_url_safe;
 
 #[derive(Serialize, Deserialize)]
 pub struct CoverartResponse {
-    pub coverart_urls: Vec<String>,
+    pub results: Vec<CoverartResult>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct CoverartMethodInfo {
     pub method: String,
-    pub provider_count: usize,
+    pub providers: Vec<ProviderInfo>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct CoverartProvidersResponse {
-    pub total_providers: usize,
+pub struct CoverartMethodsResponse {
     pub methods: Vec<CoverartMethodInfo>,
 }
 
@@ -32,16 +31,16 @@ pub fn get_artist_coverart(artist_b64: String) -> Json<CoverartResponse> {
         None => {
             log::warn!("Failed to decode artist parameter: {}", artist_b64);
             return Json(CoverartResponse {
-                coverart_urls: vec![],
+                results: vec![],
             });
         }
     };
 
     let manager = get_coverart_manager();
     let manager_lock = manager.lock().unwrap();
-    let coverart_urls = manager_lock.get_artist_coverart(&artist);
+    let results = manager_lock.get_artist_coverart(&artist);
 
-    Json(CoverartResponse { coverart_urls })
+    Json(CoverartResponse { results })
 }
 
 /// Get cover art for a song
@@ -56,7 +55,7 @@ pub fn get_song_coverart(title_b64: String, artist_b64: String) -> Json<Coverart
         None => {
             log::warn!("Failed to decode title parameter: {}", title_b64);
             return Json(CoverartResponse {
-                coverart_urls: vec![],
+                results: vec![],
             });
         }
     };
@@ -66,16 +65,16 @@ pub fn get_song_coverart(title_b64: String, artist_b64: String) -> Json<Coverart
         None => {
             log::warn!("Failed to decode artist parameter: {}", artist_b64);
             return Json(CoverartResponse {
-                coverart_urls: vec![],
+                results: vec![],
             });
         }
     };
 
     let manager = get_coverart_manager();
     let manager_lock = manager.lock().unwrap();
-    let coverart_urls = manager_lock.get_song_coverart(&title, &artist);
+    let results = manager_lock.get_song_coverart(&title, &artist);
 
-    Json(CoverartResponse { coverart_urls })
+    Json(CoverartResponse { results })
 }
 
 /// Get cover art for an album
@@ -102,7 +101,7 @@ pub fn get_album_coverart_with_year(title_b64: String, artist_b64: String, year:
         None => {
             log::warn!("Failed to decode title parameter: {}", title_b64);
             return Json(CoverartResponse {
-                coverart_urls: vec![],
+                results: vec![],
             });
         }
     };
@@ -112,16 +111,16 @@ pub fn get_album_coverart_with_year(title_b64: String, artist_b64: String, year:
         None => {
             log::warn!("Failed to decode artist parameter: {}", artist_b64);
             return Json(CoverartResponse {
-                coverart_urls: vec![],
+                results: vec![],
             });
         }
     };
 
     let manager = get_coverart_manager();
     let manager_lock = manager.lock().unwrap();
-    let coverart_urls = manager_lock.get_album_coverart(&title, &artist, year);
+    let results = manager_lock.get_album_coverart(&title, &artist, year);
 
-    Json(CoverartResponse { coverart_urls })
+    Json(CoverartResponse { results })
 }
 
 /// Get cover art from a URL
@@ -135,34 +134,40 @@ pub fn get_url_coverart(url_b64: String) -> Json<CoverartResponse> {
         None => {
             log::warn!("Failed to decode url parameter: {}", url_b64);
             return Json(CoverartResponse {
-                coverart_urls: vec![],
+                results: vec![],
             });
         }
     };
 
     let manager = get_coverart_manager();
     let manager_lock = manager.lock().unwrap();
-    let coverart_urls = manager_lock.get_url_coverart(&url);
+    let results = manager_lock.get_url_coverart(&url);
 
-    Json(CoverartResponse { coverart_urls })
+    Json(CoverartResponse { results })
 }
 
 /// Get information about available coverart methods and providers
-#[get("/providers")]
-pub fn get_coverart_providers() -> Json<CoverartProvidersResponse> {
+#[get("/methods")]
+pub fn get_coverart_methods() -> Json<CoverartMethodsResponse> {
     let manager = get_coverart_manager();
     let manager_lock = manager.lock().unwrap();
     let providers = manager_lock.get_providers();
     
-    let total_providers = providers.len();
-    
-    // Count providers for each method
-    let mut method_counts = std::collections::HashMap::new();
+    // Group providers by supported methods
+    let mut method_providers = std::collections::HashMap::new();
     
     for provider in providers {
         let supported_methods = provider.supported_methods();
+        let provider_info = ProviderInfo {
+            name: provider.name().to_string(),
+            display_name: provider.display_name().to_string(),
+        };
+        
         for method in supported_methods {
-            *method_counts.entry(method).or_insert(0) += 1;
+            method_providers
+                .entry(method)
+                .or_insert_with(Vec::new)
+                .push(provider_info.clone());
         }
     }
     
@@ -176,21 +181,18 @@ pub fn get_coverart_providers() -> Json<CoverartProvidersResponse> {
     .iter()
     .map(|method| {
         let method_name = match method {
-            CoverartMethod::Artist => "artist",
-            CoverartMethod::Song => "song", 
-            CoverartMethod::Album => "album",
-            CoverartMethod::Url => "url",
+            CoverartMethod::Artist => "Artist",
+            CoverartMethod::Song => "Song", 
+            CoverartMethod::Album => "Album",
+            CoverartMethod::Url => "Url",
         };
         
         CoverartMethodInfo {
             method: method_name.to_string(),
-            provider_count: method_counts.get(method).copied().unwrap_or(0),
+            providers: method_providers.get(method).cloned().unwrap_or_default(),
         }
     })
     .collect();
     
-    Json(CoverartProvidersResponse {
-        total_providers,
-        methods,
-    })
+    Json(CoverartMethodsResponse { methods })
 }

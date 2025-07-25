@@ -48,7 +48,7 @@ impl AttributeCache {
         
         // Try to open the SQLite database
         let db = match Connection::open(&db_path) {
-            Ok(mut conn) => {
+            Ok(conn) => {
                 info!("Successfully opened attribute cache database at {:?}", db_path);
                 
                 // Create the cache table if it doesn't exist
@@ -114,7 +114,7 @@ impl AttributeCache {
         
         // Try to open the new SQLite database
         let db = match Connection::open(&db_file) {
-            Ok(mut conn) => {
+            Ok(conn) => {
                 info!("Successfully opened attribute cache database at {:?}", db_file);
                 
                 // Create the cache table if it doesn't exist

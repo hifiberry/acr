@@ -851,7 +851,7 @@ impl MPDLibrary {
             if std::path::Path::new(&full_path).exists() {
                 debug!("Path exists, attempting cover art extraction: {}", full_path);
                 // Use the coverart helper to extract cover art from the directory
-                let result = crate::helpers::coverart::extract_cover_from_music_files(&full_path);
+                let result = crate::helpers::local_coverart::extract_cover_from_music_files(&full_path);
                 if result.is_some() {
                     debug!("Successfully extracted cover art from: {}", full_path);
                     return result;
@@ -894,7 +894,7 @@ impl MPDLibrary {
             // Check if the parent directory exists before trying to save
             if std::path::Path::new(&full_path).exists() {
                 debug!("Trying to save cover art to: {}", full_path);
-                if crate::helpers::coverart::save_cover_to_dir(&full_path, data) {
+                if crate::helpers::local_coverart::save_cover_to_dir(&full_path, data) {
                     return true;
                 }
             }

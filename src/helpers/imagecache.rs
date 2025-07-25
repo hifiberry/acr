@@ -576,7 +576,7 @@ pub fn get_image_with_mime_type<P: AsRef<Path>>(base_path: P) -> Result<(Vec<u8>
 /// # Returns
 /// * `Result<(Vec<u8>, String), String>` - Image data and MIME type, or error message
 pub fn get_album_cover(artist: &str, album_name: &str, year: Option<i32>) -> Result<(Vec<u8>, String), String> {
-    let cache_path = crate::helpers::coverart::album_cache_key(artist, album_name, year);
+    let cache_path = crate::helpers::local_coverart::album_cache_key(artist, album_name, year);
     get_image_cache().get_image_with_mime_type(format!("{}/cover", cache_path))
 }
 
@@ -592,7 +592,7 @@ pub fn get_album_cover(artist: &str, album_name: &str, year: Option<i32>) -> Res
 /// # Returns
 /// * `Result<(), String>` - Success or error message
 pub fn store_album_cover(artist: &str, album_name: &str, year: Option<i32>, data: Vec<u8>, mime_type: String) -> Result<(), String> {
-    let cache_path = crate::helpers::coverart::album_cache_key(artist, album_name, year);
+    let cache_path = crate::helpers::local_coverart::album_cache_key(artist, album_name, year);
     get_image_cache().store_image_from_data(format!("{}/cover", cache_path), data, mime_type)
 }
 

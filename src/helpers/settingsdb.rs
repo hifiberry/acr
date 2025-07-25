@@ -11,12 +11,12 @@ lazy_static! {
     static ref SETTINGS_DB: Mutex<SettingsDb> = Mutex::new(SettingsDb::new());
 }
 
-/// A persistent settings database that stores user settings as key-value pairs using Sled database
+/// A persistent settings database that stores user settings as key-value pairs using SQLite database
 pub struct SettingsDb {
-    /// Path to the database directory
+    /// Path to the database file
     db_path: PathBuf,
-    /// Sled database instance
-    db: Option<sled::Db>,
+    /// SQLite database connection
+    db: Option<rusqlite::Connection>,
     /// Whether the database is enabled
     enabled: bool,
     /// In-memory cache of recently accessed settings
@@ -33,16 +33,35 @@ impl SettingsDb {
 
     /// Create a new settings database with a specific directory
     pub fn with_directory<P: AsRef<Path>>(dir: P) -> Self {
-        let db_path = dir.as_ref().to_path_buf();
+        let db_dir = dir.as_ref().to_path_buf();
+        let db_path = db_dir.join("settings.db");
         
-        // Try to open the sled database
-        let db = match sled::open(&db_path) {
-            Ok(db) => {
+        // Try to ensure the directory exists
+        if let Err(e) = std::fs::create_dir_all(&db_dir) {
+            error!("Failed to create directory for settings database: {}", e);
+        }
+        
+        // Try to open the SQLite database
+        let db = match rusqlite::Connection::open(&db_path) {
+            Ok(conn) => {
                 info!("Successfully opened settings database at {:?}", db_path);
-                Some(db)
+                
+                // Create the settings table if it doesn't exist
+                if let Err(e) = conn.execute(
+                    "CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY,
+                        value BLOB NOT NULL
+                    )",
+                    [],
+                ) {
+                    error!("Failed to create settings table: {}", e);
+                    None
+                } else {
+                    Some(conn)
+                }
             },
             Err(e) => {
-                error!("Failed to open sled database at {:?}: {}", db_path, e);
+                error!("Failed to open SQLite database at {:?}: {}", db_path, e);
                 None
             }
         };
@@ -77,22 +96,35 @@ impl SettingsDb {
     /// Reconfigure the settings database with a new directory
     /// This will close the existing database and open a new one
     fn reconfigure_with_directory<P: AsRef<Path>>(&mut self, dir: P) -> Result<(), String> {
-        let db_path = dir.as_ref().to_path_buf();
+        let db_dir = dir.as_ref().to_path_buf();
+        let db_path = db_dir.join("settings.db");
         
         // Try to ensure the directory exists
-        if let Err(e) = std::fs::create_dir_all(&db_path) {
+        if let Err(e) = std::fs::create_dir_all(&db_dir) {
             return Err(format!("Failed to create directory for settings database: {}", e));
         }
         
-        // Try to open the new sled database
-        let db = match sled::open(&db_path) {
-            Ok(db) => {
+        // Try to open the new SQLite database
+        let db = match rusqlite::Connection::open(&db_path) {
+            Ok(conn) => {
                 info!("Successfully opened settings database at {:?}", db_path);
-                Some(db)
+                
+                // Create the settings table if it doesn't exist
+                if let Err(e) = conn.execute(
+                    "CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY,
+                        value BLOB NOT NULL
+                    )",
+                    [],
+                ) {
+                    return Err(format!("Failed to create settings table: {}", e));
+                }
+                
+                Some(conn)
             },
             Err(e) => {
-                error!("Failed to open sled database at {:?}: {}", db_path, e);
-                return Err(format!("Failed to open sled database: {}", e));
+                error!("Failed to open SQLite database at {:?}: {}", db_path, e);
+                return Err(format!("Failed to open SQLite database: {}", e));
             }
         };
         
@@ -128,16 +160,14 @@ impl SettingsDb {
         // Store in memory cache
         self.memory_cache.insert(key.to_string(), Arc::new(serialized.clone()));
 
-        // Store in sled database
-        match &self.db {
-            Some(db) => {
-                if let Err(e) = db.insert(key.as_bytes(), serialized) {
+        // Store in SQLite database
+        match &mut self.db {
+            Some(conn) => {
+                if let Err(e) = conn.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                    rusqlite::params![key, &serialized],
+                ) {
                     return Err(format!("Failed to store in database: {}", e));
-                }
-                
-                // Flush to ensure persistence
-                if let Err(e) = db.flush() {
-                    return Err(format!("Failed to flush database: {}", e));
                 }
                 
                 Ok(())
@@ -175,22 +205,29 @@ impl SettingsDb {
             };
         }
 
-        // Fall back to sled database
-        match &self.db {
-            Some(db) => {
-                match db.get(key.as_bytes()) {
-                    Ok(Some(data)) => {
+        // Fall back to SQLite database
+        match &mut self.db {
+            Some(conn) => {
+                let mut stmt = match conn.prepare("SELECT value FROM settings WHERE key = ?1") {
+                    Ok(stmt) => stmt,
+                    Err(e) => return Err(format!("Failed to prepare query: {}", e)),
+                };
+                
+                match stmt.query_row(rusqlite::params![key], |row| {
+                    let data: Vec<u8> = row.get(0)?;
+                    Ok(data)
+                }) {
+                    Ok(data) => {
                         // Store in memory cache for future access
-                        let data_vec = data.to_vec();
-                        let result: T = match serde_json::from_slice(&data_vec) {
+                        let result: T = match serde_json::from_slice(&data) {
                             Ok(value) => value,
                             Err(e) => return Err(format!("Failed to deserialize from database: {}", e)),
                         };
                         
-                        self.memory_cache.insert(key.to_string(), Arc::new(data_vec));
+                        self.memory_cache.insert(key.to_string(), Arc::new(data));
                         Ok(Some(result))
                     },
-                    Ok(None) => Ok(None),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                     Err(e) => Err(format!("Database error: {}", e)),
                 }
             },
@@ -247,11 +284,10 @@ impl SettingsDb {
         self.memory_cache.remove(key);
 
         // Remove from database
-        match &self.db {
-            Some(db) => {
-                match db.remove(key.as_bytes()) {
-                    Ok(Some(_)) => Ok(true),
-                    Ok(None) => Ok(false),
+        match &mut self.db {
+            Some(conn) => {
+                match conn.execute("DELETE FROM settings WHERE key = ?1", rusqlite::params![key]) {
+                    Ok(count) => Ok(count > 0),
                     Err(e) => Err(format!("Failed to remove from database: {}", e)),
                 }
             },
@@ -271,9 +307,14 @@ impl SettingsDb {
         }
 
         // Check database
-        match &self.db {
-            Some(db) => {
-                match db.contains_key(key.as_bytes()) {
+        match &mut self.db {
+            Some(conn) => {
+                let mut stmt = match conn.prepare("SELECT 1 FROM settings WHERE key = ?1 LIMIT 1") {
+                    Ok(stmt) => stmt,
+                    Err(e) => return Err(format!("Failed to prepare query: {}", e)),
+                };
+                
+                match stmt.exists(rusqlite::params![key]) {
                     Ok(exists) => Ok(exists),
                     Err(e) => Err(format!("Database error: {}", e)),
                 }
@@ -283,23 +324,30 @@ impl SettingsDb {
     }
 
     /// Get all keys from the settings database
-    pub fn get_all_keys(&self) -> Result<Vec<String>, String> {
+    pub fn get_all_keys(&mut self) -> Result<Vec<String>, String> {
         if !self.is_enabled() {
             return Err("Settings database is disabled".to_string());
         }
 
-        match &self.db {
-            Some(db) => {
+        match &mut self.db {
+            Some(conn) => {
+                let mut stmt = match conn.prepare("SELECT key FROM settings") {
+                    Ok(stmt) => stmt,
+                    Err(e) => return Err(format!("Failed to prepare query: {}", e)),
+                };
+                
+                let key_iter = match stmt.query_map([], |row| {
+                    Ok(row.get::<_, String>(0)?)
+                }) {
+                    Ok(iter) => iter,
+                    Err(e) => return Err(format!("Failed to query keys: {}", e)),
+                };
+                
                 let mut keys = Vec::new();
-                for item in db.iter() {
-                    match item {
-                        Ok((key, _)) => {
-                            match String::from_utf8(key.to_vec()) {
-                                Ok(key_str) => keys.push(key_str),
-                                Err(_) => continue, // Skip non-UTF8 keys
-                            }
-                        },
-                        Err(e) => return Err(format!("Database iteration error: {}", e)),
+                for key_result in key_iter {
+                    match key_result {
+                        Ok(key) => keys.push(key),
+                        Err(e) => return Err(format!("Error reading key: {}", e)),
                     }
                 }
                 Ok(keys)
@@ -318,9 +366,9 @@ impl SettingsDb {
         self.memory_cache.clear();
 
         // Clear database
-        match &self.db {
-            Some(db) => {
-                match db.clear() {
+        match &mut self.db {
+            Some(conn) => {
+                match conn.execute("DELETE FROM settings", []) {
                     Ok(_) => Ok(()),
                     Err(e) => Err(format!("Failed to clear database: {}", e)),
                 }
@@ -330,21 +378,29 @@ impl SettingsDb {
     }
 
     /// Get the number of settings in the database
-    pub fn len(&self) -> Result<usize, String> {
+    pub fn len(&mut self) -> Result<usize, String> {
         if !self.is_enabled() {
             return Err("Settings database is disabled".to_string());
         }
 
-        match &self.db {
-            Some(db) => {
-                Ok(db.len())
+        match &mut self.db {
+            Some(conn) => {
+                let mut stmt = match conn.prepare("SELECT COUNT(*) FROM settings") {
+                    Ok(stmt) => stmt,
+                    Err(e) => return Err(format!("Failed to prepare count query: {}", e)),
+                };
+                
+                match stmt.query_row([], |row| row.get::<_, i64>(0)) {
+                    Ok(count) => Ok(count as usize),
+                    Err(e) => Err(format!("Failed to count rows: {}", e)),
+                }
             },
             None => Err("Database not available".to_string()),
         }
     }
 
     /// Check if the settings database is empty
-    pub fn is_empty(&self) -> Result<bool, String> {
+    pub fn is_empty(&mut self) -> Result<bool, String> {
         Ok(self.len()? == 0)
     }
 }
@@ -1178,7 +1234,7 @@ mod tests {
         }
         
         // Verify final state
-        let db_guard = db.lock().unwrap();
+        let mut db_guard = db.lock().unwrap();
         let total_keys = db_guard.get_all_keys().unwrap().len();
         // Each thread creates 3 keys per iteration
         let expected_keys = num_threads * 20 * 3;

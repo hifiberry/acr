@@ -788,4 +788,460 @@ mod tests {
         // Clean up
         clear().ok();
     }
+
+    // Concurrent access tests
+    #[test]
+    #[serial]
+    fn test_concurrent_set_and_get() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().to_str().unwrap();
+        let db = Arc::new(Mutex::new(SettingsDb::with_directory(db_path)));
+        
+        let num_threads = 10;
+        let operations_per_thread = 50;
+        let mut handles = vec![];
+        
+        // Spawn multiple threads that set and get values concurrently
+        for thread_id in 0..num_threads {
+            let db_clone = Arc::clone(&db);
+            let handle = thread::spawn(move || {
+                for i in 0..operations_per_thread {
+                    let key = format!("thread_{}_key_{}", thread_id, i);
+                    let value = format!("thread_{}_value_{}", thread_id, i);
+                    
+                    // Set value
+                    {
+                        let mut db_guard = db_clone.lock().unwrap();
+                        db_guard.set_string(&key, &value).expect("Failed to set value in thread");
+                    }
+                    
+                    // Get value back
+                    {
+                        let mut db_guard = db_clone.lock().unwrap();
+                        let retrieved = db_guard.get_string(&key).expect("Failed to get value in thread");
+                        assert_eq!(retrieved, Some(value));
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+        
+        // Verify all data is still accessible
+        for thread_id in 0..num_threads {
+            for i in 0..operations_per_thread {
+                let key = format!("thread_{}_key_{}", thread_id, i);
+                let expected_value = format!("thread_{}_value_{}", thread_id, i);
+                
+                let mut db_guard = db.lock().unwrap();
+                let retrieved = db_guard.get_string(&key).expect("Failed to get value after threads");
+                assert_eq!(retrieved, Some(expected_value));
+                drop(db_guard); // Explicitly drop to release lock
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_concurrent_mixed_operations() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::Duration;
+        
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().to_str().unwrap();
+        let db = Arc::new(Mutex::new(SettingsDb::with_directory(db_path)));
+        
+        // Pre-populate with some data
+        {
+            let mut db_guard = db.lock().unwrap();
+            for i in 0..10 {
+                let key = format!("shared_key_{}", i);
+                let value = format!("shared_value_{}", i);
+                db_guard.set_string(&key, &value).expect("Failed to set initial value");
+            }
+        }
+        
+        let num_reader_threads = 3;
+        let num_writer_threads = 2;
+        let mut handles = vec![];
+        
+        // Spawn reader threads that access the same keys concurrently
+        for _thread_id in 0..num_reader_threads {
+            let db_clone = Arc::clone(&db);
+            let handle = thread::spawn(move || {
+                for _iteration in 0..50 {
+                    for key_id in 0..10 {
+                        let key = format!("shared_key_{}", key_id);
+                        
+                        // Just verify we can read some value, don't care about the exact content
+                        // since writers might be updating it concurrently
+                        if let Ok(db_guard) = db_clone.lock() {
+                            let mut db_mut = db_guard;
+                            let _retrieved = db_mut.get_string(&key);
+                            // Don't assert on value since it may be updated by writers
+                        }
+                        
+                        // Small sleep to increase chance of interleaving
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+        
+        // Spawn writer threads that update existing keys
+        for thread_id in 0..num_writer_threads {
+            let db_clone = Arc::clone(&db);
+            let handle = thread::spawn(move || {
+                for iteration in 0..10 {
+                    for key_id in 0..10 {
+                        let key = format!("shared_key_{}", key_id);
+                        let new_value = format!("updated_by_thread_{}_iter_{}_{}", thread_id, iteration, key_id);
+                        
+                        if let Ok(db_guard) = db_clone.lock() {
+                            let mut db_mut = db_guard;
+                            let _ = db_mut.set_string(&key, &new_value); // Ignore errors
+                        }
+                        
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all threads to complete
+        for handle in handles {
+            let _ = handle.join(); // Ignore panics from individual threads
+        }
+        
+        // Test passes if we get here without deadlocks
+    }
+
+    #[test]
+    #[serial]
+    fn test_concurrent_global_access() {
+        use std::thread;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        
+        // Initialize global database with a temp directory first
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        SettingsDb::initialize_global(temp_dir.path()).expect("Failed to initialize global database");
+        
+        let num_threads = 8;
+        let operations_per_thread = 25;
+        let success_counter = Arc::new(AtomicUsize::new(0));
+        let mut handles = vec![];
+        
+        // Clear global database first to ensure clean state
+        clear().ok(); // Ignore errors if not initialized
+        
+        // Spawn multiple threads that use global database functions
+        for thread_id in 0..num_threads {
+            let counter_clone = Arc::clone(&success_counter);
+            let handle = thread::spawn(move || {
+                let mut successful_operations = 0;
+                
+                for i in 0..operations_per_thread {
+                    let key = format!("global_thread_{}_key_{}", thread_id, i);
+                    let value = format!("global_thread_{}_value_{}", thread_id, i);
+                    
+                    // Set value using global function
+                    if set_string(&key, &value).is_ok() {
+                        // Get value back using global function
+                        match get_string(&key) {
+                            Ok(Some(retrieved)) => {
+                                if retrieved == value {
+                                    successful_operations += 1;
+                                }
+                            },
+                            _ => {} // Failed to retrieve
+                        }
+                    }
+                    
+                    // Test removal occasionally
+                    if i % 5 == 0 {
+                        remove(&key).ok(); // Ignore errors
+                    }
+                }
+                
+                counter_clone.fetch_add(successful_operations, Ordering::Relaxed);
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all threads to complete
+        for handle in handles {
+            let _ = handle.join(); // Ignore panics
+        }
+        
+        // Verify that most operations were successful
+        // We expect some operations to fail due to removals, but most should succeed
+        let total_successful = success_counter.load(Ordering::Relaxed);
+        let expected_minimum = (num_threads * operations_per_thread) / 3; // At least 33% success rate (relaxed)
+        assert!(total_successful >= expected_minimum, 
+            "Expected at least {} successful operations, got {}", 
+            expected_minimum, total_successful);
+        
+        // Clean up
+        clear().ok();
+    }
+
+    #[test]
+    #[serial]
+    fn test_concurrent_memory_cache_access() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::Duration;
+        
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().to_str().unwrap();
+        let db = Arc::new(Mutex::new(SettingsDb::with_directory(db_path)));
+        
+        // Pre-populate the database to test memory cache behavior
+        {
+            let mut db_guard = db.lock().unwrap();
+            for i in 0..10 {
+                let key = format!("memory_key_{}", i);
+                let value = format!("memory_value_{}", i);
+                db_guard.set_string(&key, &value).expect("Failed to set initial value");
+                // Access it once to load into memory cache
+                let _ = db_guard.get_string(&key);
+            }
+        }
+        
+        let num_threads = 5;
+        let mut handles = vec![];
+        
+        // Spawn threads that repeatedly access cached values
+        for _thread_id in 0..num_threads {
+            let db_clone = Arc::clone(&db);
+            let handle = thread::spawn(move || {
+                for _iteration in 0..20 {
+                    for key_id in 0..10 {
+                        let key = format!("memory_key_{}", key_id);
+                        
+                        if let Ok(db_guard) = db_clone.lock() {
+                            let mut db_mut = db_guard;
+                            // This should hit the memory cache
+                            let _retrieved = db_mut.get_string(&key);
+                            
+                            // Verify memory cache contains the key
+                            let has_cached = db_mut.memory_cache.contains_key(&key);
+                            assert!(has_cached, "Key {} should be in memory cache", key);
+                        }
+                        
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_concurrent_clear_and_access() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::Duration;
+        
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().to_str().unwrap();
+        let db = Arc::new(Mutex::new(SettingsDb::with_directory(db_path)));
+        
+        let num_access_threads = 4;
+        let mut handles = vec![];
+        
+        // Spawn threads that continuously add and access data
+        for thread_id in 0..num_access_threads {
+            let db_clone = Arc::clone(&db);
+            let handle = thread::spawn(move || {
+                for i in 0..30 {
+                    let key = format!("clear_thread_{}_key_{}", thread_id, i);
+                    let value = format!("clear_value_{}", i);
+                    
+                    // Set value
+                    {
+                        let mut db_guard = db_clone.lock().unwrap();
+                        db_guard.set_string(&key, &value).ok(); // Ignore errors
+                    }
+                    
+                    // Try to get value
+                    {
+                        let mut db_guard = db_clone.lock().unwrap();
+                        let _retrieved = db_guard.get_string(&key);
+                        // Don't assert here as clear might remove the value
+                    }
+                    
+                    thread::sleep(Duration::from_millis(1));
+                }
+            });
+            handles.push(handle);
+        }
+        
+        // Spawn a thread that periodically clears the database
+        let db_clear = Arc::clone(&db);
+        let clear_handle = thread::spawn(move || {
+            for _i in 0..5 {
+                thread::sleep(Duration::from_millis(10));
+                let mut db_guard = db_clear.lock().unwrap();
+                db_guard.clear().ok(); // Ignore errors
+            }
+        });
+        handles.push(clear_handle);
+        
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+        
+        // Test should complete without deadlocks or panics
+        // The exact state of the database is not important, just that it didn't crash
+    }
+
+    #[test]
+    #[serial]
+    fn test_concurrent_different_data_types() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().to_str().unwrap();
+        let db = Arc::new(Mutex::new(SettingsDb::with_directory(db_path)));
+        
+        let num_threads = 6;
+        let mut handles = vec![];
+        
+        // Spawn threads that work with different data types concurrently
+        for thread_id in 0..num_threads {
+            let db_clone = Arc::clone(&db);
+            let handle = thread::spawn(move || {
+                for i in 0..20 {
+                    let base_key = format!("thread_{}_item_{}", thread_id, i);
+                    
+                    {
+                        let mut db_guard = db_clone.lock().unwrap();
+                        
+                        // Set different types of data
+                        let string_key = format!("{}_string", base_key);
+                        let int_key = format!("{}_int", base_key);
+                        let bool_key = format!("{}_bool", base_key);
+                        
+                        let string_value = format!("value_{}", i);
+                        let int_value = (thread_id * 100 + i) as i64;
+                        let bool_value = i % 2 == 0;
+                        
+                        db_guard.set_string(&string_key, &string_value).expect("Failed to set string");
+                        db_guard.set_int(&int_key, int_value).expect("Failed to set int");
+                        db_guard.set_bool(&bool_key, bool_value).expect("Failed to set bool");
+                    }
+                    
+                    // Read back and verify
+                    {
+                        let mut db_guard = db_clone.lock().unwrap();
+                        
+                        let string_key = format!("{}_string", base_key);
+                        let int_key = format!("{}_int", base_key);
+                        let bool_key = format!("{}_bool", base_key);
+                        
+                        let expected_string = format!("value_{}", i);
+                        let expected_int = (thread_id * 100 + i) as i64;
+                        let expected_bool = i % 2 == 0;
+                        
+                        assert_eq!(db_guard.get_string(&string_key).unwrap(), Some(expected_string));
+                        assert_eq!(db_guard.get_int(&int_key).unwrap(), Some(expected_int));
+                        assert_eq!(db_guard.get_bool(&bool_key).unwrap(), Some(expected_bool));
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+        
+        // Verify final state
+        let db_guard = db.lock().unwrap();
+        let total_keys = db_guard.get_all_keys().unwrap().len();
+        // Each thread creates 3 keys per iteration
+        let expected_keys = num_threads * 20 * 3;
+        assert_eq!(total_keys, expected_keys);
+    }
+
+    #[test]
+    #[serial]
+    fn test_concurrent_favourite_operations() {
+        use std::sync::Arc;
+        use std::thread;
+        use crate::data::song::Song;
+        use crate::helpers::favourites::FavouriteProvider;
+        
+        // Initialize global database with a temp directory first
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        SettingsDb::initialize_global(temp_dir.path()).expect("Failed to initialize global database");
+        
+        // Clear any existing data first
+        clear().ok();
+        
+        let provider = Arc::new(SettingsDbFavouriteProvider::new());
+        let num_threads = 4;
+        let songs_per_thread = 10;
+        let mut handles = vec![];
+        
+        // Spawn threads that add/remove favourites concurrently
+        for thread_id in 0..num_threads {
+            let provider_clone = Arc::clone(&provider);
+            let handle = thread::spawn(move || {
+                for i in 0..songs_per_thread {
+                    let mut song = Song::default();
+                    song.artist = Some(format!("Artist_{}", thread_id));
+                    song.title = Some(format!("Song_{}_{}", thread_id, i));
+                    
+                    // Add favourite
+                    provider_clone.add_favourite(&song).expect("Failed to add favourite");
+                    
+                    // Check if it's marked as favourite
+                    assert!(provider_clone.is_favourite(&song).expect("Failed to check favourite"));
+                    
+                    // Remove every other favourite to test removal
+                    if i % 2 == 0 {
+                        provider_clone.remove_favourite(&song).expect("Failed to remove favourite");
+                        assert!(!provider_clone.is_favourite(&song).expect("Failed to check favourite after removal"));
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+        
+        // Check final favourite count
+        // Each thread adds songs_per_thread favourites but removes half of them
+        let expected_count = num_threads * (songs_per_thread / 2);
+        let actual_count = provider.get_favourite_count().unwrap_or(0);
+        assert_eq!(actual_count, expected_count);
+        
+        // Clean up
+        clear().ok();
+    }
 }

@@ -1079,6 +1079,12 @@ impl MPDPlayerController {
                 // Try to split the title using the manager
                 if let Some((artist, song)) = player.song_split_manager.split_song(splitter_id, title_str) {
                     debug!("Split title '{}' into artist='{}', song='{}'", title_str, artist, song);
+                    
+                    // Save the splitter state after successful split
+                    if let Err(e) = player.song_split_manager.save(splitter_id) {
+                        debug!("Failed to save splitter state for '{}': {}", splitter_id, e);
+                    }
+                    
                     (Some(song), Some(artist))
                 } else {
                     debug!("Could not split title '{}', keeping as-is", title_str);

@@ -215,6 +215,22 @@ impl SongSplitManager {
         self.max_splitters
     }
     
+    /// Save a specific splitter's state to persistent storage
+    /// 
+    /// # Arguments
+    /// * `splitter_id` - The ID of the splitter to save
+    /// 
+    /// # Returns
+    /// * `Result<(), String>` - Ok(()) if successful, Err with error message if failed
+    /// 
+    /// # Note
+    /// This is a placeholder function - implementation to be added later
+    pub fn save(&self, splitter_id: &str) -> Result<(), String> {
+        // TODO: Implement saving splitter state to persistent storage
+        // This should serialize the splitter and store it using the attribute cache
+        Err("Not implemented yet".to_string())
+    }
+    
     /// Set the maximum number of splitters to keep in memory
     /// 
     /// If the current number of splitters exceeds the new limit,

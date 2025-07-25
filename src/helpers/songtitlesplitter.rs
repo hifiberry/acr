@@ -126,6 +126,7 @@ pub fn detect_order(part1: &str, part2: &str) -> OrderResult {
 /// statistics about how many songs have been found in each order. After 20 songs,
 /// if one order type represents >95% of successful detections, it becomes the default.
 /// It also caches lookup results to avoid affecting counters for repeated lookups.
+#[derive(Clone)]
 pub struct SongTitleSplitter {
     /// An identifier string (not the song title itself)
     id: String,

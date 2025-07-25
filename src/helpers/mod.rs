@@ -27,6 +27,7 @@ pub mod url_encoding;
 pub mod configurator;
 pub mod lyrics;
 pub mod songtitlesplitter;
+pub mod songsplitmanager;
 #[cfg(unix)]
 pub mod mpris;
 #[cfg(unix)]

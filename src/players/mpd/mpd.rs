@@ -4,6 +4,7 @@ use crate::data::library::LibraryInterface;
 use crate::constants::API_PREFIX;
 use crate::helpers::retry::RetryHandler;
 use crate::helpers::url_encoding;
+use crate::helpers::songsplitmanager::SongSplitManager;
 use delegate::delegate;
 use std::sync::{Arc, Mutex};
 use std::fs;
@@ -70,6 +71,9 @@ pub struct MPDPlayerController {
     
     /// Flag indicating if connection has been permanently disabled due to max attempts
     connection_disabled: Arc<AtomicBool>,
+    
+    /// Song title splitter manager for radio stations that combine artist and song in title
+    song_split_manager: SongSplitManager,
 }
 
 // Manually implement Clone for MPDPlayerController
@@ -92,6 +96,7 @@ impl Clone for MPDPlayerController {
             max_reconnect_attempts: self.max_reconnect_attempts,
             reconnect_attempts: Arc::clone(&self.reconnect_attempts),
             connection_disabled: Arc::clone(&self.connection_disabled),
+            song_split_manager: self.song_split_manager.clone(),
         }
     }
 }
@@ -122,6 +127,7 @@ impl MPDPlayerController {
             max_reconnect_attempts: 5, // Default value
             reconnect_attempts: Arc::new(Mutex::new(0)),
             connection_disabled: Arc::new(AtomicBool::new(false)),
+            song_split_manager: SongSplitManager::new(),
         };
         
         // Set default capabilities
@@ -153,6 +159,7 @@ impl MPDPlayerController {
             max_reconnect_attempts: 5, // Default value
             reconnect_attempts: Arc::new(Mutex::new(0)),
             connection_disabled: Arc::new(AtomicBool::new(false)),
+            song_split_manager: SongSplitManager::new(),
         };
         
         // Set default capabilities
@@ -434,6 +441,36 @@ impl MPDPlayerController {
     /// Get the current custom artist separators if set
     pub fn get_artist_separators(&self) -> Option<&[String]> {
         self.artist_separators.as_deref()
+    }
+    
+    /// Clear all title splitters (useful for cleanup or configuration changes)
+    pub fn clear_title_splitters(&self) {
+        self.song_split_manager.clear_all_splitters();
+    }
+    
+    /// Get the number of active title splitters
+    pub fn get_title_splitter_count(&self) -> usize {
+        self.song_split_manager.get_splitter_count()
+    }
+    
+    /// Get statistics for a specific URL's title splitter
+    pub fn get_title_splitter_stats(&self, url: &str) -> Option<(u32, u32, u32, u32, bool)> {
+        self.song_split_manager.get_splitter_stats(url)
+    }
+    
+    /// Get all splitter IDs currently being managed
+    pub fn get_all_splitter_ids(&self) -> Vec<String> {
+        self.song_split_manager.get_splitter_ids()
+    }
+    
+    /// Get statistics for all active splitters
+    pub fn get_all_splitter_stats(&self) -> HashMap<String, (u32, u32, u32, u32, bool)> {
+        self.song_split_manager.get_all_splitter_stats()
+    }
+    
+    /// Remove a specific splitter (useful for cleanup)
+    pub fn remove_title_splitter(&self, url: &str) -> bool {
+        self.song_split_manager.remove_splitter(url)
     }
       /// Notify all registered listeners that the database is being updated
     pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>, 
@@ -1029,10 +1066,36 @@ impl MPDPlayerController {
         let genre = mpd_song.tags.iter()
             .find(|(tag, _)| tag == "Genre")
             .map(|(_, value)| value.clone());
+        
+        // Handle title splitting for radio stations
+        let (final_title, final_artist) = if mpd_song.artist.is_none() && mpd_song.title.is_some() {
+            // No artist but has title - try to split it (common for web radio)
+            let title_str = mpd_song.title.as_ref().unwrap();
+            
+            if let Some(player) = &player_arc {
+                // Use the song URL as the splitter ID for radio stations
+                let splitter_id = &mpd_song.file;
+                
+                // Try to split the title using the manager
+                if let Some((artist, song)) = player.song_split_manager.split_song(splitter_id, title_str) {
+                    debug!("Split title '{}' into artist='{}', song='{}'", title_str, artist, song);
+                    (Some(song), Some(artist))
+                } else {
+                    debug!("Could not split title '{}', keeping as-is", title_str);
+                    (mpd_song.title.clone(), mpd_song.artist.clone())
+                }
+            } else {
+                // No player reference, can't split
+                (mpd_song.title.clone(), mpd_song.artist.clone())
+            }
+        } else {
+            // Artist exists or no title, use as-is
+            (mpd_song.title.clone(), mpd_song.artist.clone())
+        };
             
         Song {
-            title: mpd_song.title,
-            artist: mpd_song.artist,
+            title: final_title,
+            artist: final_artist,
             album,
             album_artist,
             track_number: mpd_song.place.as_ref().map(|p| p.pos as i32),

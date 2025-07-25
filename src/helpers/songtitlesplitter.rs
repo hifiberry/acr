@@ -132,7 +132,6 @@ pub struct SongTitleSplitter {
     /// An identifier string (not the song title itself)
     id: String,
     /// Statistics of detected orders: (ArtistSong, SongArtist, Unknown, Undecided)
-    #[serde(skip)]
     order_stats: HashMap<OrderResult, u32>,
     /// Default order to use when pattern is established (>95% confidence after 20+ songs)
     default_order: Option<OrderResult>,
@@ -515,9 +514,8 @@ impl SongTitleSplitter {
     
     /// Serialize the SongTitleSplitter to a JSON string
     /// 
-    /// This method saves only the essential state: ID and default order.
-    /// Statistics and cache are not serialized and will be reset when
-    /// the splitter is restored.
+    /// This method saves the essential state: ID, default order, and statistics.
+    /// Cache is not serialized and will be reset when the splitter is restored.
     /// 
     /// # Returns
     /// A Result containing the JSON string representation on success, or an error on failure
@@ -546,7 +544,7 @@ impl SongTitleSplitter {
     /// Deserialize a SongTitleSplitter from a JSON string
     /// 
     /// This method restores a previously saved splitter state including its
-    /// ID and default order. Statistics and cache are reset to empty.
+    /// ID, default order, and statistics. Cache is reset to empty.
     /// 
     /// # Arguments
     /// * `json` - The JSON string representation to deserialize
@@ -558,7 +556,7 @@ impl SongTitleSplitter {
     /// ```
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
-    /// let json = r#"{"id":"radio_station_url","default_order":null}"#;
+    /// let json = r#"{"id":"radio_station_url","order_stats":{},"default_order":null}"#;
     /// 
     /// match SongTitleSplitter::from_json(json) {
     ///     Ok(mut splitter) => {
@@ -572,7 +570,6 @@ impl SongTitleSplitter {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut splitter: SongTitleSplitter = serde_json::from_str(json)?;
         // Initialize the skipped fields with default values
-        splitter.order_stats = HashMap::new();
         splitter.lookup_cache = HashMap::new();
         splitter.cache_size_limit = 50; // Default cache size
         Ok(splitter)
@@ -582,7 +579,7 @@ impl SongTitleSplitter {
     /// 
     /// This is similar to `to_json()` but produces a more compact representation
     /// without pretty formatting, suitable for storage in databases or network transmission.
-    /// Only ID and default order are included in the serialization.
+    /// ID, default order, and statistics are included in the serialization.
     /// 
     /// # Returns
     /// A Result containing the compact JSON string representation on success, or an error on failure
@@ -937,8 +934,8 @@ mod tests {
         let json = splitter.to_json().expect("Failed to serialize empty splitter");
         assert!(json.contains("test_station"));
         assert!(json.contains("default_order"));
+        assert!(json.contains("order_stats"));
         // Should NOT contain the skipped fields
-        assert!(!json.contains("order_stats"));
         assert!(!json.contains("lookup_cache"));
         assert!(!json.contains("cache_size_limit"));
         
@@ -949,7 +946,7 @@ mod tests {
         // Deserialize and verify
         let restored = SongTitleSplitter::from_json(&json).expect("Failed to deserialize");
         assert_eq!(restored.get_id(), "test_station");
-        assert_eq!(restored.get_total_count(), 0); // Stats reset
+        assert_eq!(restored.get_total_count(), 0); // Stats restored (empty)
         assert_eq!(restored.get_cache_size(), 0); // Cache reset
         assert!(!restored.has_default_order());
         
@@ -960,10 +957,10 @@ mod tests {
             .expect("Failed to deserialize with data");
         
         assert_eq!(restored_with_data.get_id(), splitter.get_id());
-        // Stats and cache are reset during deserialization
-        assert_eq!(restored_with_data.get_total_count(), 0);
-        assert_eq!(restored_with_data.get_cache_size(), 0);
-        // Only default order is preserved if it was set
+        // Stats are preserved during serialization
+        assert_eq!(restored_with_data.get_total_count(), splitter.get_total_count());
+        assert_eq!(restored_with_data.get_cache_size(), 0); // Cache still reset
+        // Default order is preserved if it was set
         assert_eq!(restored_with_data.get_default_order(), splitter.get_default_order());
     }
     
@@ -997,7 +994,7 @@ mod tests {
         let result = SongTitleSplitter::from_json(invalid_json);
         assert!(result.is_err());
         
-        // Test deserializing JSON with missing default_order field
+        // Test deserializing JSON with missing required fields
         let incomplete_json = r#"{"id":"test"}"#;
         let result2 = SongTitleSplitter::from_json(incomplete_json);
         assert!(result2.is_err());
@@ -1005,6 +1002,7 @@ mod tests {
         // Test deserializing valid minimal JSON (only required fields)
         let minimal_json = r#"{
             "id": "test_minimal",
+            "order_stats": {},
             "default_order": null
         }"#;
         let result3 = SongTitleSplitter::from_json(minimal_json);
@@ -1033,16 +1031,18 @@ mod tests {
         let restored = SongTitleSplitter::from_json(&json)
             .expect("Failed to deserialize complex data");
         
-        // Verify ID and default order are preserved
+        // Verify ID, default order, and stats are preserved
         assert_eq!(restored.get_id(), "complex_test");
         assert!(restored.has_default_order());
         assert_eq!(restored.get_default_order(), Some(OrderResult::ArtistSong));
         
-        // Verify stats and cache are reset (not serialized)
-        assert_eq!(restored.get_artist_song_count(), 0);
-        assert_eq!(restored.get_song_artist_count(), 0);
-        assert_eq!(restored.get_unknown_count(), 0);
-        assert_eq!(restored.get_total_count(), 0);
+        // Verify statistics are preserved (now serialized)
+        assert_eq!(restored.get_artist_song_count(), 15);
+        assert_eq!(restored.get_song_artist_count(), 2);
+        assert_eq!(restored.get_unknown_count(), 3);
+        assert_eq!(restored.get_total_count(), 20);
+        
+        // Verify cache is reset (not serialized)
         assert_eq!(restored.get_cache_size(), 0);
         assert_eq!(restored.get_cache_size_limit(), 50); // Default value
         assert!(!restored.is_cached("Test - Song"));

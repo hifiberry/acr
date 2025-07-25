@@ -13,6 +13,9 @@ pub mod library;
 // Export the imagecache module
 pub mod imagecache;
 
+// Export the coverart module
+pub mod coverart;
+
 // Export the event module
 pub mod events;
 

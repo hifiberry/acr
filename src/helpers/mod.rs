@@ -2,6 +2,7 @@ pub mod attributecache;
 pub mod imagecache;
 pub mod artistupdater;
 pub mod coverart;
+pub mod coverart_providers;
 pub mod local_coverart;
 pub mod fanarttv;
 pub mod memory_report;

@@ -312,6 +312,9 @@ fn main() {
         Err(e) => warn!("AudioController singleton initialization: {}", e),
     }
 
+    // Initialize cover art providers
+    audiocontrol::helpers::coverart_providers::register_all_providers();
+
     // Get a reference to the AudioController singleton
     let controller = AudioController::instance();
 

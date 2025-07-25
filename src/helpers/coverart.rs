@@ -104,54 +104,6 @@ pub trait CoverartProvider {
         }
     }
 
-    /// Get cover art for a song by title and artist
-    /// 
-    /// # Arguments
-    /// * `title` - The song title
-    /// * `artist` - The artist name
-    /// 
-    /// # Returns
-    /// * `Option<String>` - URL or local file path to cover art, or None if not found
-    fn get_song_coverart(&self, title: &str, artist: &str) -> Option<String> {
-        if self.supported_methods().contains(&CoverartMethod::Song) {
-            self.get_song_coverart_impl(title, artist)
-        } else {
-            None
-        }
-    }
-
-    /// Get cover art for an album by title, artist, and optional year
-    /// 
-    /// # Arguments
-    /// * `title` - The album title
-    /// * `artist` - The artist name
-    /// * `year` - Optional release year
-    /// 
-    /// # Returns
-    /// * `Option<String>` - URL or local file path to cover art, or None if not found
-    fn get_album_coverart(&self, title: &str, artist: &str, year: Option<i32>) -> Option<String> {
-        if self.supported_methods().contains(&CoverartMethod::Album) {
-            self.get_album_coverart_impl(title, artist, year)
-        } else {
-            None
-        }
-    }
-
-    /// Get cover art from a URL
-    /// 
-    /// # Arguments
-    /// * `url` - The URL to retrieve cover art from
-    /// 
-    /// # Returns
-    /// * `Option<String>` - URL or local file path to cover art, or None if not found
-    fn get_url_coverart(&self, url: &str) -> Option<String> {
-        if self.supported_methods().contains(&CoverartMethod::Url) {
-            self.get_url_coverart_impl(url)
-        } else {
-            None
-        }
-    }
-
     // Implementation methods that providers must implement for supported methods
     // These are called only if the method is marked as supported
 

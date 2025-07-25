@@ -24,6 +24,7 @@ This Rust implementation addresses these issues through strong static typing, a 
 - Last.fm integration for scrobbling and "now playing" updates
 - Secure credential storage with AES-GCM encryption
 - Lyrics support with LRC format parsing for synchronized lyrics (provider-based API for extensibility)
+- SQLite database architecture for reliable caching and user settings storage
 
 ## TODO
 
@@ -56,10 +57,11 @@ When installed as a system service:
 
 ### Cache Directories
 
-AudioControl uses these paths for caching data:
+AudioControl uses these paths for caching and persistent data:
 
-- `/var/lib/audiocontrol/cache/attributes` - For metadata and other attributes
+- `/var/lib/audiocontrol/cache/attributes` - For metadata and other attributes (SQLite database)
 - `/var/lib/audiocontrol/cache/images` - For image files like album covers
+- `/var/lib/audiocontrol/db` - For user settings and configuration (SQLite database)
 
 These paths are automatically created during installation with the correct permissions.
 
@@ -87,11 +89,22 @@ AudioControl supports the following command line options:
 
 ## Additional Documentation
 
+- [Database Architecture](#database-architecture)
 - [Last.fm Integration](doc/lastfm.md)
 - [API Documentation](doc/api.md)
 - [Caching](doc/caching.md)
+- [Settings Database](doc/settingsdb.md)
 - [Library Management](doc/library.md)
 - [WebSocket Support](doc/websocket.md)
+
+## Database Architecture
+
+AudioControl uses SQLite for all persistent storage needs:
+
+- **Attribute Cache** (`/var/lib/audiocontrol/cache/attributes/cache.db`) - Stores metadata and cached data from external services with in-memory optimization for high-performance operations
+- **Settings Database** (`/var/lib/audiocontrol/db/settings.db`) - Stores user settings and configuration data
+
+Both databases use SQLite for reliability, standards compliance, and excellent tooling support, while maintaining high performance through in-memory caching layers.
 
 ## License
 

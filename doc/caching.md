@@ -21,7 +21,7 @@ These paths can be customized in the configuration file.
 
 ## Display cache contents
 
-ACR uses the Sled database engine to implement its attribute caching. To view the contents of the attribute cache, a tool is provided:
+ACR uses SQLite database engine to implement its attribute caching. To view the contents of the attribute cache, a tool is provided:
 
 ```
 acr_dumpcache [PATH]
@@ -63,12 +63,13 @@ The attribute cache uses specific key formats for various types of data:
 
 ### Attribute Cache
 
-The attribute cache is implemented using the [Sled](https://github.com/spacejam/sled) embedded database with the following features:
+The attribute cache is implemented using the [SQLite](https://www.sqlite.org/) database with the following features:
 
-- **Two-tier Caching**: Uses both an in-memory cache for fast access and a persistent database for durability
+- **Two-tier Caching**: Uses both an in-memory cache for fast access and a persistent SQLite database for durability
 - **JSON Serialization**: All values are serialized to JSON before storage
 - **Thread Safety**: The global cache instance is protected by a mutex for thread-safe access
 - **Configurable Max Age**: Can be configured to automatically expire entries after a specified number of days
+- **SQL Interface**: Standard SQL database allows for easy inspection and debugging with SQLite tools
 
 ### TheArtistDB Caching Implementation
 

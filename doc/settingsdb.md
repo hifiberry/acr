@@ -1,6 +1,6 @@
 # Settings Database
 
-The ACR settings database provides a simple key-value store for persistent user settings. It uses the same Sled database backend as the cache system, providing reliable storage and performance.
+The ACR settings database provides a simple key-value store for persistent user settings. It uses SQLite as the backend database, providing reliable storage, performance, and standard SQL tooling support.
 
 ## Configuration
 
@@ -127,11 +127,12 @@ The settings database is ideal for storing:
 
 ## Implementation Notes
 
-- Built on top of Sled embedded database for reliability and performance
-- Uses JSON serialization for all values, making them readable and portable
+- Built on top of SQLite database for reliability, performance, and standard tooling support
+- Uses JSON serialization for all values, making them readable and portable  
 - Includes both in-memory caching and persistent storage
 - Thread-safe global singleton pattern for easy access throughout the application
-- Follows the same patterns as the existing cache system for consistency
+- Database schema: `CREATE TABLE settings (key TEXT PRIMARY KEY, value BLOB NOT NULL)`
+- Compatible with standard SQLite tools for inspection and debugging
 
 ## Error Handling
 

@@ -1,15 +1,33 @@
+hifiberry-audiocontrol (0.6.8) stable; urgency=medium
+
+  * Migrated settings database from Sled to SQLite for improved reliability
+  * Enhanced database operations with SQL interface and better tooling support
+  * Maintained full backward compatibility for existing configurations
+  * All unit tests pass with comprehensive concurrent access verification
+  * Fixed Debian packaging issues and updated changelog formatting
+
+ -- HiFiBerry <info@hifiberry.com>  Fri, 25 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.6.7) stable; urgency=medium
 
-  * Added comprehensive lyrics API with provider-based architecture for extensibility
-  * Implemented LRC format parsing with support for timed/synchronized lyrics
-  * Added MPD-based lyrics provider with automatic .lrc file detection alongside music files
-  * Enhanced player metadata to include lyrics availability and API endpoint information
-  * Added REST API endpoints: GET /api/lyrics/{provider}/{song_id} and POST /api/lyrics/{provider}
-  * Created provider-specific API structure to support future lyrics sources (Spotify, Apple Music, etc.)
-  * Updated API documentation with comprehensive lyrics system examples and usage
-  * Fixed compilation issues and improved module organization for lyrics functionality
+  * Added comprehensive lyrics API with provider-based architecture for 
+    extensibility
+  * Implemented LRC format parsing with support for timed/synchronized 
+    lyrics
+  * Added MPD-based lyrics provider with automatic .lrc file detection 
+    alongside music files
+  * Enhanced player metadata to include lyrics availability and API 
+    endpoint information
+  * Added REST API endpoints: GET /api/lyrics/{provider}/{song_id} and 
+    POST /api/lyrics/{provider}
+  * Created provider-specific API structure to support future lyrics 
+    sources (Spotify, Apple Music, etc.)
+  * Updated API documentation with comprehensive lyrics system examples 
+    and usage
+  * Fixed compilation issues and improved module organization for lyrics 
+    functionality
 
- -- HiFiBerry <info@hifiberry.com>  Wed, 24 Jul 2025 12:00:00 +0000
+ -- HiFiBerry <info@hifiberry.com>  Thu, 24 Jul 2025 12:00:00 +0000
 
 hifiberry-audiocontrol (0.6.6) stable; urgency=medium
 

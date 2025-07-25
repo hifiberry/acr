@@ -1,6 +1,6 @@
 [package]
 name = "audiocontrol"
-version = "0.6.7"
+version = "0.6.8"
 authors = ["Daniel Matuschek <daniel@hifiberry.com>"]
 edition = "2021"
 description = "AudioControl server"

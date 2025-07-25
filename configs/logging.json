@@ -22,7 +22,8 @@
     "audiocontrol::helpers::settingsdb": "info",
     "audiocontrol::helpers::global_volume": "warn",
     "audiocontrol::helpers::lyrics": "info",
-    "audiocontrol::helpers::songtitlesplitter": "debug"
+    "audiocontrol::helpers::songtitlesplitter": "debug",
+    "audiocontrol::helpers::songsplitmanager": "debug"
     
   },
   "env_overrides": {

@@ -1906,3 +1906,87 @@ impl PlayerController for MPDPlayerController {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use serde_json::Value;
+    use tempfile::TempDir;
+
+    /// Test that metadata is properly cached and retrieved using AttributeCache
+    #[test]
+    fn test_mpd_metadata_cache() {
+        // Create a temporary directory for the test cache
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        
+        // Initialize AttributeCache with the temporary directory
+        attributecache::AttributeCache::initialize_global(temp_dir.path()).expect("Failed to configure cache");
+        
+        let test_url = "http://example.com/test.mp3";
+        let cache_key = format!("mpd.urlmeta.{}", test_url);
+        
+        // Create test metadata
+        let mut metadata = HashMap::new();
+        metadata.insert("title".to_string(), Value::String("Test Song".to_string()));
+        metadata.insert("artist".to_string(), Value::String("Test Artist".to_string()));
+        metadata.insert("album".to_string(), Value::String("Test Album".to_string()));
+        metadata.insert("duration".to_string(), Value::Number(serde_json::Number::from(180)));
+        
+        // Store metadata using the same key format as the MPD player
+        attributecache::set(&cache_key, &metadata).expect("Failed to store metadata");
+        
+        // Retrieve metadata using the same key format
+        let retrieved: Option<HashMap<String, Value>> = attributecache::get(&cache_key)
+            .expect("Failed to retrieve metadata");
+        
+        // Verify the metadata was stored and retrieved correctly
+        assert!(retrieved.is_some());
+        let retrieved_metadata = retrieved.unwrap();
+        
+        assert_eq!(retrieved_metadata.get("title"), Some(&Value::String("Test Song".to_string())));
+        assert_eq!(retrieved_metadata.get("artist"), Some(&Value::String("Test Artist".to_string())));
+        assert_eq!(retrieved_metadata.get("album"), Some(&Value::String("Test Album".to_string())));
+        assert_eq!(retrieved_metadata.get("duration"), Some(&Value::Number(serde_json::Number::from(180))));
+        
+        // Test that a song with a stream URL gets enhanced with cached metadata
+        let mut song = Song::default();
+        song.stream_url = Some(test_url.to_string());
+        
+        // Create an MPD player controller (this doesn't require a real MPD connection for this test)
+        let player = MPDPlayerController::new();
+        
+        // Enhance the song with cached metadata
+        let enhanced_song = player.enhance_song_with_cache(song);
+        
+        // Verify that the cached metadata was added to the song
+        assert_eq!(enhanced_song.metadata.get("title"), Some(&Value::String("Test Song".to_string())));
+        assert_eq!(enhanced_song.metadata.get("artist"), Some(&Value::String("Test Artist".to_string())));
+        assert_eq!(enhanced_song.metadata.get("album"), Some(&Value::String("Test Album".to_string())));
+        assert_eq!(enhanced_song.metadata.get("duration"), Some(&Value::Number(serde_json::Number::from(180))));
+    }
+    
+    /// Test that songs without cached metadata are not affected
+    #[test]
+    fn test_mpd_no_cached_metadata() {
+        // Create a temporary directory for the test cache
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        
+        // Initialize AttributeCache with the temporary directory
+        attributecache::AttributeCache::initialize_global(temp_dir.path()).expect("Failed to configure cache");
+        
+        let mut song = Song::default();
+        song.stream_url = Some("http://example.com/not-cached.mp3".to_string());
+        song.metadata.insert("existing".to_string(), Value::String("data".to_string()));
+        
+        // Create an MPD player controller
+        let player = MPDPlayerController::new();
+        
+        // Enhance the song (should not find any cached metadata)
+        let enhanced_song = player.enhance_song_with_cache(song);
+        
+        // Verify that no cached metadata was added, but existing metadata is preserved
+        assert_eq!(enhanced_song.metadata.len(), 1);
+        assert_eq!(enhanced_song.metadata.get("existing"), Some(&Value::String("data".to_string())));
+    }
+}

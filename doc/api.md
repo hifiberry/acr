@@ -17,8 +17,10 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Player Event Update](#player-event-update)
   - [Get Now Playing Information](#get-now-playing-information)
   - [Get Player Queue](#get-player-queue)
+  - [Queue Management Commands](#queue-management-commands)
   - [Get Player Metadata](#get-player-metadata)
   - [Get Specific Player Metadata Key](#get-specific-player-metadata-key)
+  - [Player Capabilities and Support Matrix](#player-capabilities-and-support-matrix)
 - [Volume Control API](#volume-control-api)
   - [Get Volume Information](#get-volume-information)
   - [Get Current Volume State](#get-current-volume-state)
@@ -232,12 +234,14 @@ Sends a playback command to a specific player by name.
 - **Method**: POST
 - **Path Parameters**:
   - `player-name` (string): The name of the target player. You can use "active" to target the currently active player.
-  - `command` (string): The command to send (same options as above, plus the following):    - Queue management commands:
-      - `add_track` - Adds a track to the queue. Requires JSON body with `uri` field. Optional `title` and `coverart_url` fields for future use.
-      - `remove_track:<position>` - Removes a track at the specified position from the queue.
-      - `clear_queue` - Clears the entire queue.
-      - `play_queue_index:<index>` - Plays the track at the specified index position in the queue.
-- **Request Body** (for `add_track` command):
+  - `command` (string): The command to send. Supported commands include:
+    - **Basic playback**: `play`, `pause`, `playpause`, `stop`, `next`, `previous`, `kill`
+    - **Playback control**: `seek:<position>`, `set_loop:none|track|playlist`, `set_random:true|false`
+    - **Queue management**: `add_track`, `remove_track:<position>`, `clear_queue`, `play_queue_index:<index>`
+
+**Note**: Queue management commands are only supported by certain players (MPD, LMS, Generic Players). See the [Queue Management Commands](#queue-management-commands) section for detailed information about player support and usage.
+
+- **Request Body** (for `add_track` command only):
   ```json
   {
     "uri": "string (required)",
@@ -249,6 +253,8 @@ Sends a playback command to a specific player by name.
 - **Error Response** (400 Bad Request, 404 Not Found, 500 Internal Server Error): Same structure as above
 
 #### Examples
+
+**Basic playback commands:**
 ```bash
 # Play on a specific player
 curl -X POST http://<device-ip>:1080/api/player/spotify/command/play
@@ -259,21 +265,21 @@ curl -X POST http://<device-ip>:1080/api/player/raat/command/pause
 # Send a command to the currently active player (alternative to /api/player/active/send/)
 curl -X POST http://<device-ip>:1080/api/player/active/command/play
 
-# Add a track to the queue using JSON body
+# Set loop mode to playlist
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/set_loop:playlist
+
+# Seek to 2 minutes (120 seconds)
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/seek:120.0
+```
+
+**Queue management commands** (see [Queue Management Commands](#queue-management-commands) for full details):
+```bash
+# Add a track to the queue (requires JSON body)
 curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
   -H "Content-Type: application/json" \
-  -d '{"uri": "https://example.com/song.mp3"}'
+  -d '{"uri": "artist/album/song.mp3"}'
 
-# Add a track with optional metadata (future use)
-curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
-  -H "Content-Type: application/json" \
-  -d '{
-    "uri": "file:///path/to/song.mp3",
-    "title": "Custom Song Title",
-    "coverart_url": "https://example.com/cover.jpg"
-  }'
-
-# Remove a track from the queue at position 2
+# Remove a track from the queue at position 2  
 curl -X POST http://<device-ip>:1080/api/player/lms/command/remove_track:2
 
 # Clear the entire queue
@@ -281,18 +287,6 @@ curl -X POST http://<device-ip>:1080/api/player/lms/command/clear_queue
 
 # Play the track at index 3 in the queue
 curl -X POST http://<device-ip>:1080/api/player/lms/command/play_queue_index:3
-
-# Error examples for add_track command:
-
-# Missing JSON body (returns 400 Bad Request)
-curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track
-# Response: {"success": false, "message": "Invalid command: add_track - add_track command requires JSON body with 'uri' field"}
-
-# Invalid JSON structure (returns 400 Bad Request)
-curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com/song.mp3"}'
-# Response: {"success": false, "message": "Invalid command: add_track - add_track command requires JSON body with 'uri' field"}
 ```
 
 ### Player Event Update
@@ -404,20 +398,197 @@ Retrieves the current queue for a specific player.
   {
     "player": "player-name",
     "queue": [
-      // Track objects in the queue
+      {
+        "id": "track-id-1",
+        "name": "Track Title 1",
+        "artist": "Artist Name",
+        "album": "Album Name",
+        "uri": "file:///path/to/track1.mp3",
+        "disc_number": "1",
+        "track_number": 1
+      },
+      {
+        "id": "track-id-2", 
+        "name": "Track Title 2",
+        "artist": "Artist Name",
+        "album": "Album Name",
+        "uri": "https://example.com/stream/track2.mp3",
+        "disc_number": "1",
+        "track_number": 2
+      }
     ]
   }
   ```
-- **Error Response** (404 Not Found): Error message if player not found
-- **Note**: While some players will emit `QueueChanged` events when their queue is modified (such as when tracks are added, removed, or reordered), many player implementations might not actively inform about these updates. If you're building a UI that displays queue content, you may need to periodically poll this endpoint to ensure the display remains current.
+- **Error Response** (404 Not Found): 
+  ```json
+  {
+    "success": false,
+    "message": "Player 'player-name' not found"
+  }
+  ```
 
-#### Example
+**Player Support**: Queue retrieval is supported by most players, but the level of detail varies:
+- **MPD**: Full queue support with track metadata
+- **LMS (Logitech Media Server)**: Full queue support with detailed track information
+- **Generic Players**: Queue managed internally through API
+- **MPRIS**: Limited queue support (many MPRIS players don't expose queue)
+- **RAAT**: Returns empty queue (queue management handled externally)
+- **Spotify/Librespot**: Returns empty queue (managed by Spotify service)
+
+**Note**: While some players emit `QueueChanged` events when their queue is modified (such as when tracks are added, removed, or reordered), many player implementations might not actively inform about these updates. If you're building a UI that displays queue content, you may need to periodically poll this endpoint to ensure the display remains current.
+
+#### Examples
 ```bash
+# Get queue for MPD player
 curl http://<device-ip>:1080/api/player/mpd/queue
+
+# Get queue for LMS player
+curl http://<device-ip>:1080/api/player/lms/queue
 
 # Get queue for the currently active player
 curl http://<device-ip>:1080/api/player/active/queue
 ```
+
+### Queue Management Commands
+
+The following queue management commands can be sent to players using the command endpoints. Note that not all players support all queue operations.
+
+#### Add Track to Queue
+
+Adds a single track to the player's queue.
+
+- **Command**: `add_track`
+- **Method**: POST to `/api/player/<player-name>/command/add_track`
+- **Request Body** (JSON required):
+  ```json
+  {
+    "uri": "string (required)",
+    "title": "string (optional, for future use)",
+    "coverart_url": "string (optional, for future use)"
+  }
+  ```
+- **Supported URI Formats**:
+  - **Local files**: `file:///path/to/music/song.mp3`
+  - **HTTP streams**: `http://example.com/stream.mp3`
+  - **HTTPS streams**: `https://example.com/stream.mp3`
+  - **Relative paths**: `artist/album/song.mp3` (for MPD with music directory)
+
+**Player Support**:
+- **MPD**: ✅ Full support for all URI types within music directory
+- **LMS**: ✅ Full support for local files and streams
+- **Generic Players**: ✅ Stores track information for API-driven playback
+- **MPRIS**: ❌ Not supported (queue managed by external application)
+- **RAAT**: ❌ Not supported (queue managed by RAAT controller)
+- **Spotify**: ❌ Not supported (queue managed by Spotify service)
+
+#### Remove Track from Queue
+
+Removes a track at a specific position from the queue.
+
+- **Command**: `remove_track:<position>`
+- **Method**: POST to `/api/player/<player-name>/command/remove_track:<position>`
+- **Parameters**:
+  - `position` (integer): Zero-based index of the track to remove
+
+**Player Support**:
+- **MPD**: ✅ Removes track at specified position
+- **LMS**: ✅ Removes track at specified position  
+- **Generic Players**: ✅ Removes track from internal queue
+- **Others**: ❌ Not supported
+
+#### Clear Entire Queue
+
+Removes all tracks from the player's queue.
+
+- **Command**: `clear_queue`
+- **Method**: POST to `/api/player/<player-name>/command/clear_queue`
+
+**Player Support**:
+- **MPD**: ✅ Clears entire playlist/queue
+- **LMS**: ✅ Clears entire queue
+- **Generic Players**: ✅ Clears internal queue
+- **Others**: ❌ Not supported
+
+#### Play Track by Queue Position
+
+Starts playback of a track at a specific position in the queue.
+
+- **Command**: `play_queue_index:<index>`
+- **Method**: POST to `/api/player/<player-name>/command/play_queue_index:<index>`
+- **Parameters**:
+  - `index` (integer): Zero-based index of the track to play
+
+**Player Support**:
+- **MPD**: ✅ Switches to track at specified position
+- **LMS**: ✅ Plays track at specified position
+- **Generic Players**: ✅ Sets current track in internal queue
+- **Others**: ❌ Not supported
+
+#### Queue Management Examples
+
+```bash
+# Add a local file to MPD queue
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "artist/album/song.mp3"}'
+
+# Add an HTTP stream to LMS queue
+curl -X POST http://<device-ip>:1080/api/player/lms/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "https://stream.example.com/radio.mp3"}'
+
+# Add a track with metadata for future use
+curl -X POST http://<device-ip>:1080/api/player/generic_player_1/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uri": "file:///music/beatles/yellow_submarine.mp3",
+    "title": "Yellow Submarine",
+    "coverart_url": "https://example.com/covers/yellow_submarine.jpg"
+  }'
+
+# Remove track at position 2 from the queue
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/remove_track:2
+
+# Clear the entire queue
+curl -X POST http://<device-ip>:1080/api/player/lms/command/clear_queue
+
+# Play the track at index 3 in the queue (4th track)
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/play_queue_index:3
+
+# Error example: Missing required 'uri' field
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Some Song"}'
+# Response: {"success": false, "message": "Invalid command: add_track - add_track command requires JSON body with 'uri' field"}
+
+# Error example: Invalid position (negative index)
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/remove_track:-1
+# Response: {"success": false, "message": "Invalid command format"}
+
+# Error example: Trying queue operation on unsupported player
+curl -X POST http://<device-ip>:1080/api/player/spotify/command/add_track \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"}'
+# Response: {"success": false, "message": "Queue operations not supported by this player type"}
+```
+
+### Queue Events
+
+When queue operations are performed, players may emit events to notify about changes:
+
+- **`QueueChanged`**: Emitted when tracks are added, removed, or reordered
+- **`PlaylistChanged`**: Emitted when the current playlist/queue is replaced
+
+**Event Monitoring**: You can listen for these events through the WebSocket API or by polling the queue endpoint periodically.
+
+### Queue Position Indexing
+
+**Important**: Queue positions and indices are **zero-based** across all operations:
+- Position `0` = First track in queue
+- Position `1` = Second track in queue  
+- Position `n-1` = Last track in queue (where n = queue length)
+
+When removing tracks or playing by index, ensure you account for zero-based indexing to avoid off-by-one errors.
 
 ### Get Player Metadata
 
@@ -474,6 +645,100 @@ curl http://<device-ip>:1080/api/player/mpd/meta/volume
 # Get specific metadata for the currently active player
 curl http://<device-ip>:1080/api/player/active/meta/volume
 ```
+
+### Player Capabilities and Support Matrix
+
+Different player implementations support different sets of capabilities. Understanding these differences is important when building applications that work with multiple player types.
+
+#### Capability Overview
+
+The following table shows which capabilities are supported by each player type:
+
+| Capability | MPD | LMS | Generic | MPRIS | RAAT | Spotify | Description |
+|------------|-----|-----|---------|-------|------|---------|-------------|
+| **Basic Playback** | | | | | | | |
+| Play | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Start playback |
+| Pause | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Pause playback |
+| Stop | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | Stop playback |
+| Next | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Skip to next track |
+| Previous | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Skip to previous track |
+| **Advanced Playback** | | | | | | | |
+| Seek | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Seek within track |
+| Position | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Report current position |
+| Length | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Report track duration |
+| Shuffle | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Toggle shuffle mode |
+| Loop | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Set loop mode |
+| **Queue Management** | | | | | | | |
+| Queue | ✅ | ✅ | ✅ | ⚠️ | ❌ | ❌ | Manage playback queue |
+| Add Track | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | Add tracks to queue |
+| Remove Track | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | Remove tracks from queue |
+| Clear Queue | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | Clear entire queue |
+| **Audio Control** | | | | | | | |
+| Volume | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Control playback volume |
+| Mute | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Mute/unmute audio |
+| **Content & Metadata** | | | | | | | |
+| Metadata | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Provide track metadata |
+| Album Art | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Provide album artwork |
+| Browse | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Browse media library |
+| Search | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Search media library |
+| Playlists | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Manage playlists |
+
+**Legend**:
+- ✅ = Full support
+- ⚠️ = Limited support (MPRIS queue support varies by application)
+- ❌ = Not supported
+
+#### Player-Specific Notes
+
+**MPD (Music Player Daemon)**:
+- Most comprehensive feature support
+- Full library browsing and search capabilities
+- Robust queue management with playlist support
+- Local file playback with network stream support
+
+**LMS (Logitech Media Server)**:
+- Full-featured server with comprehensive API
+- Excellent queue management and playlist support
+- Strong network streaming capabilities
+- Multi-room audio support
+
+**Generic Players**:
+- API-driven players controlled entirely through ACR
+- Configurable capabilities in player configuration
+- Internal state management for queue and playback
+- No built-in library or content browsing
+
+**MPRIS (Media Player Remote Interfacing Specification)**:
+- Interface to external MPRIS-compliant applications
+- Queue support depends on the underlying application
+- Limited control over queue management
+- Good for integrating with desktop media players
+
+**RAAT (Roon Advanced Audio Transport)**:
+- Focused on high-quality audio transport
+- Queue management handled by Roon core
+- Limited local control capabilities
+- Optimized for audiophile use cases
+
+**Spotify/Librespot**:
+- Spotify Connect integration
+- Queue management handled by Spotify service
+- No local queue manipulation possible
+- Content controlled through Spotify applications
+
+#### Checking Player Capabilities
+
+You can query a player's capabilities programmatically:
+
+```bash
+# Get capabilities for a specific player (through metadata)
+curl http://<device-ip>:1080/api/player/mpd/meta
+
+# Check if a player supports queue operations before attempting them
+curl http://<device-ip>:1080/api/player/mpd/queue
+```
+
+When building applications, always check player capabilities before attempting operations to provide appropriate fallbacks or UI elements.
 
 ## Volume Control API
 

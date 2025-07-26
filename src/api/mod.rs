@@ -40,5 +40,8 @@ pub mod lyrics;
 // Export the m3u module
 pub mod m3u;
 
+// Export the settings module
+pub mod settings;
+
 // Export the server module
 pub mod server;

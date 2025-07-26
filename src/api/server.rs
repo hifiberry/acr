@@ -1,5 +1,5 @@
 use crate::AudioController;
-use crate::api::{players, plugins, library, imagecache, events, lastfm, spotify, theaudiodb, favourites, volume, lyrics, coverart, m3u};
+use crate::api::{players, plugins, library, imagecache, events, lastfm, spotify, theaudiodb, favourites, volume, lyrics, coverart, m3u, settings};
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
 use crate::constants::API_PREFIX;
@@ -182,6 +182,12 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     let m3u_routes = routes![
         m3u::parse_m3u_playlist,
     ];
+    
+    // Settings routes
+    let settings_routes = routes![
+        settings::get_setting,
+        settings::set_setting,
+    ];
       let mut rocket_builder = rocket::custom(config)
         .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting general api routes
         .mount(format!("{}/lastfm", API_PREFIX), lastfm_routes) // Mount Last.fm routes under /api/lastfm (or similar)
@@ -193,6 +199,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         .mount(format!("{}/favourites", API_PREFIX), favourites_routes) // Mount favourites routes
         .mount(format!("{}/lyrics", API_PREFIX), lyrics_routes) // Mount lyrics routes
         .mount(format!("{}/m3u", API_PREFIX), m3u_routes) // Mount M3U routes
+        .mount(format!("{}/settings", API_PREFIX), settings_routes) // Mount settings routes
         .mount(format!("{}/volume", API_PREFIX), volume_routes) // Mount volume routes
         .mount(format!("{}/coverart", API_PREFIX), coverart_routes) // Mount coverart routes
         .manage(controller)

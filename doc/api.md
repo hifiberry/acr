@@ -66,6 +66,13 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Cover Art Response Format](#cover-art-response-format)
   - [Error Handling](#error-handling)
   - [Provider Registration](#provider-registration)
+<!-- ========================================================================= -->
+<!-- IMPORTANT: Settings API should be placed just before Generic Player Controller and Data Structures -->
+<!-- Keep Generic Player Controller and Data Structures at the end of the documentation -->
+<!-- ========================================================================= -->
+- [Settings API](#settings-api)
+  - [Get Setting Value](#get-setting-value)
+  - [Set Setting Value](#set-setting-value)
 - [Generic Player Controller](#generic-player-controller)
   - [Configuration](#configuration)
   - [Event Handling](#event-handling)
@@ -2441,6 +2448,162 @@ let manager = get_coverart_manager();
 let mut manager_lock = manager.lock().unwrap();
 manager_lock.register_provider(Arc::new(my_provider));
 ```
+
+<!-- ========================================================================= -->
+<!-- IMPORTANT: Settings API should be placed just before Generic Player Controller and Data Structures -->
+<!-- Keep Generic Player Controller and Data Structures at the end of the documentation -->
+<!-- ========================================================================= -->
+
+## Settings API
+
+The Settings API provides access to the system's settings database, allowing you to get and set configuration values.
+
+### Get Setting Value
+
+Retrieves the value of a specific setting from the settings database.
+
+- **Endpoint**: `/api/settings/get`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Request Body**:
+  ```json
+  {
+    "key": "string (required)"
+  }
+  ```
+- **Response** (Success):
+  ```json
+  {
+    "success": true,
+    "key": "setting_key",
+    "value": "setting_value",
+    "exists": true
+  }
+  ```
+- **Response** (Key not found):
+  ```json
+  {
+    "success": true,
+    "key": "setting_key",
+    "value": null,
+    "exists": false
+  }
+  ```
+- **Response** (Error):
+  ```json
+  {
+    "success": false,
+    "message": "Error description"
+  }
+  ```
+
+#### Examples
+```bash
+# Get a simple setting
+curl -X POST http://<device-ip>:1080/api/settings/get \
+  -H "Content-Type: application/json" \
+  -d '{"key": "audio.volume.default"}'
+
+# Get a setting with non-ASCII characters
+curl -X POST http://<device-ip>:1080/api/settings/get \
+  -H "Content-Type: application/json" \
+  -d '{"key": "user.display_name.默认用户"}'
+
+# Get a setting that doesn't exist
+curl -X POST http://<device-ip>:1080/api/settings/get \
+  -H "Content-Type: application/json" \
+  -d '{"key": "nonexistent.setting"}'
+```
+
+### Set Setting Value
+
+Sets the value of a specific setting in the settings database.
+
+- **Endpoint**: `/api/settings/set`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Request Body**:
+  ```json
+  {
+    "key": "string (required)",
+    "value": "any (required) - The value to set (string, number, boolean, object, array)"
+  }
+  ```
+- **Response** (Success):
+  ```json
+  {
+    "success": true,
+    "key": "setting_key",
+    "value": "setting_value",
+    "previous_value": "previous_value_or_null"
+  }
+  ```
+- **Response** (Error):
+  ```json
+  {
+    "success": false,
+    "message": "Error description"
+  }
+  ```
+
+#### Examples
+```bash
+# Set a string value
+curl -X POST http://<device-ip>:1080/api/settings/set \
+  -H "Content-Type: application/json" \
+  -d '{"key": "audio.output.device", "value": "hw:0,0"}'
+
+# Set a numeric value
+curl -X POST http://<device-ip>:1080/api/settings/set \
+  -H "Content-Type: application/json" \
+  -d '{"key": "audio.volume.default", "value": 75}'
+
+# Set a boolean value
+curl -X POST http://<device-ip>:1080/api/settings/set \
+  -H "Content-Type: application/json" \
+  -d '{"key": "player.autostart", "value": true}'
+
+# Set an object value
+curl -X POST http://<device-ip>:1080/api/settings/set \
+  -H "Content-Type: application/json" \
+  -d '{"key": "ui.theme", "value": {"background": "#000000", "foreground": "#ffffff"}}'
+
+# Set a setting with non-ASCII characters
+curl -X POST http://<device-ip>:1080/api/settings/set \
+  -H "Content-Type: application/json" \
+  -d '{"key": "user.preferences.语言", "value": "中文"}'
+
+# Update an existing setting
+curl -X POST http://<device-ip>:1080/api/settings/set \
+  -H "Content-Type: application/json" \
+  -d '{"key": "audio.volume.default", "value": 85}'
+```
+
+### Settings API Notes
+
+**Key Format**: 
+- Settings keys can contain any UTF-8 characters including non-ASCII characters
+- Common convention is to use dot-separated hierarchical keys (e.g., `audio.volume.default`)
+- Keys are case-sensitive
+
+**Value Types**: 
+- The settings database supports any JSON-serializable value types:
+  - Strings: `"hello world"`
+  - Numbers: `42`, `3.14`
+  - Booleans: `true`, `false`
+  - Objects: `{"key": "value"}`
+  - Arrays: `[1, 2, 3]`
+  - Null: `null`
+
+**Persistence**: 
+- Settings are automatically persisted to the database
+- Changes take effect immediately
+- Some settings may require application restart to be fully applied
+
+**Security**: 
+- No authentication or authorization is currently implemented
+- All settings are accessible via the API
+- Consider network security when exposing the API
 
 ## Generic Player Controller
 

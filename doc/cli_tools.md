@@ -8,7 +8,7 @@ AudioControl REST (Audiocontrol) includes several command-line tools for interac
 
 The `audiocontrol_send_update` tool allows you to send player state updates to the AudioControl API from the command line using a subcommand-based interface.
 
-[Detailed Documentation](acr_send_update.md)
+[Detailed Documentation](audiocontrol_send_update.md)
 
 **Key Features:**
 
@@ -318,26 +318,9 @@ export REPEAT_TRACK="false"
 audiocontrol_notify_librespot --verbose
 ```
 
-### acr_dumpcache
+### audiocontrol_lms_client
 
-The `acr_dumpcache` tool allows you to inspect and manage the Audiocontrol caching system.
-
-**Key Features:**
-
-- List cached items
-- View cache metadata
-- Clear specific cache entries
-- Generate cache statistics
-
-**Example:**
-
-```bash
-acr_dumpcache --list-keys
-```
-
-### acr_lms_client
-
-The `acr_lms_client` tool provides a command-line interface for interacting with Logitech Media Server instances that are connected to Audiocontrol. It is mostly used to debug the connection to and database of the media server.
+The `audiocontrol_lms_client` tool provides a command-line interface for interacting with Logitech Media Server instances that are connected to Audiocontrol. It is mostly used to debug the connection to and database of the media server.
 
 **Key Features:**
 
@@ -349,29 +332,103 @@ The `acr_lms_client` tool provides a command-line interface for interacting with
 **Example:**
 
 ```bash
-acr_lms_client --server 192.168.1.100 --list-players
+audiocontrol_lms_client --server 192.168.1.100 --list-players
 ```
 
-### acr_lastfm_auth
+### audiocontrol_dump_store
 
-The `acr_lastfm_auth` tool provides a command-line interface for authenticating with Last.fm using their desktop authentication flow. This tool helps set up Last.fm integration for scrobbling and other Last.fm features.
-
-[Detailed Documentation](acr_lastfm_auth.md)
+The `audiocontrol_dump_store` tool allows you to inspect the contents of the Audiocontrol data store (settings database and other persistent data).
 
 **Key Features:**
 
-- Desktop authentication flow
-- Credential storage and management
-- Reuse of stored credentials
+- View stored settings and configuration data
+- Inspect database contents
+- Debug data storage issues
 
 **Example:**
 
 ```bash
-# Initial authentication
-acr_lastfm_auth --api-key YOUR_API_KEY --api-secret YOUR_API_SECRET
+audiocontrol_dump_store
+```
 
-# Using saved credentials
-acr_lastfm_auth --use-saved
+### audiocontrol_musicbrainz_client
+
+The `audiocontrol_musicbrainz_client` tool provides a command-line interface for querying the MusicBrainz database, which is used for music metadata enrichment.
+
+**Key Features:**
+
+- Query artist information from MusicBrainz
+- Test MusicBrainz API connectivity
+- Debug metadata lookup issues
+
+**Example:**
+
+```bash
+audiocontrol_musicbrainz_client --artist "The Beatles"
+```
+
+### audiocontrol_list_mpris_players
+
+The `audiocontrol_list_mpris_players` tool lists all available MPRIS (Media Player Remote Interfacing Specification) players on the system.
+
+**Key Features:**
+
+- Discover MPRIS-capable media players
+- Show player names and bus addresses
+- Test MPRIS connectivity
+
+**Example:**
+
+```bash
+audiocontrol_list_mpris_players
+```
+
+### audiocontrol_get_mpris_state
+
+The `audiocontrol_get_mpris_state` tool retrieves the current state of a specific MPRIS player.
+
+**Key Features:**
+
+- Get current playback state
+- Retrieve song metadata
+- Check player capabilities
+
+**Example:**
+
+```bash
+audiocontrol_get_mpris_state --player org.mpris.MediaPlayer2.spotify
+```
+
+### audiocontrol_monitor_mpris_state
+
+The `audiocontrol_monitor_mpris_state` tool continuously monitors MPRIS player state changes.
+
+**Key Features:**
+
+- Real-time monitoring of player state
+- Track song changes and playback events
+- Debug MPRIS integration issues
+
+**Example:**
+
+```bash
+audiocontrol_monitor_mpris_state --player org.mpris.MediaPlayer2.spotify
+```
+
+### audiocontrol_listen_shairportsync
+
+The `audiocontrol_listen_shairportsync` tool monitors Shairport Sync events for AirPlay integration.
+
+**Key Features:**
+
+- Listen for AirPlay connection events
+- Monitor metadata changes
+- Debug AirPlay integration
+
+**Example:**
+
+```bash
+audiocontrol_listen_shairportsync
 ```
 
 ### audiocontrol_favourites
@@ -518,7 +575,7 @@ All tools are built automatically when you build the Audiocontrol project:
 cargo build
 ```
 
-The compiled binaries will be available in the `target/debug/` or `target/release/` directory, depending on your build configuration. All tools follow the naming pattern `acr_*` for consistent identification.
+The compiled binaries will be available in the `target/debug/` or `target/release/` directory, depending on your build configuration. All tools follow the naming pattern `audiocontrol_*` for consistent identification.
 
 ## Integration Examples
 

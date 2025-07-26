@@ -190,7 +190,7 @@ A dedicated command-line client tool is available for sending events to generic 
 
 - **Binary name**: `audiocontrol_player_event_client`
 - **Documentation**: [Player Event Client Documentation](player_event_client.md)
-- **Location**: `src/tools/acr_player_event_client.rs`
+- **Location**: `src/tools/audiocontrol_player_event_client.rs`
 
 ## API Documentation
 

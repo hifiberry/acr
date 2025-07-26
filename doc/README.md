@@ -18,7 +18,7 @@ This directory contains documentation for various aspects of the HiFiBerry Audio
 - [Player Event Client](player_event_client.md) - Command-line tool for sending player events
 - [Rate Limiting](rate_limiting.md) - How API rate limiting is implemented
 - [Spotify Integration](spotify.md) - How to connect to Spotify using OAuth
-- [Audiocontrol Send Update Tool](acr_send_update.md) - Tool for sending manual updates
+- [Audiocontrol Send Update Tool](audiocontrol_send_update.md) - Tool for sending manual updates
 - [SystemD Integration](systemd_integration.md) - Running Audiocontrol as a system service
 - [WebSocket API](websocket.md) - Real-time communication via WebSockets
 

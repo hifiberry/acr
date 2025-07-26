@@ -1,6 +1,6 @@
-# Using acr_send_update Tool
+# Using audiocontrol_send_update Tool
 
-The `acr_send_update` tool is a command-line utility for sending player state updates to the AudioControl REST API. It provides a simple way to update the state of a player without writing any code or directly interacting with the API.
+The `audiocontrol_send_update` tool is a command-line utility for sending player state updates to the AudioControl REST API. It provides a simple way to update the state of a player without writing any code or directly interacting with the API.
 
 ## Overview
 
@@ -19,7 +19,7 @@ Updates are sent to the AudioControl API endpoint using HTTP POST requests.
 ## Usage
 
 ```bash
-acr_send_update [OPTIONS] <PLAYER_NAME> <COMMAND>
+audiocontrol_send_update [OPTIONS] <PLAYER_NAME> <COMMAND>
 ```
 
 ### Arguments
@@ -41,7 +41,7 @@ acr_send_update [OPTIONS] <PLAYER_NAME> <COMMAND>
 Updates the current song information and optionally sets the playback state.
 
 ```bash
-acr_send_update <PLAYER_NAME> song [OPTIONS]
+audiocontrol_send_update <PLAYER_NAME> song [OPTIONS]
 ```
 
 | Option | Description |
@@ -58,7 +58,7 @@ acr_send_update <PLAYER_NAME> song [OPTIONS]
 Updates the current playback state.
 
 ```bash
-acr_send_update <PLAYER_NAME> state <STATE>
+audiocontrol_send_update <PLAYER_NAME> state <STATE>
 ```
 
 Valid states: `Playing`, `Paused`, `Stopped`, `Killed`, `Disconnected`, `Unknown`
@@ -68,7 +68,7 @@ Valid states: `Playing`, `Paused`, `Stopped`, `Killed`, `Disconnected`, `Unknown
 Updates the shuffle setting.
 
 ```bash
-acr_send_update <PLAYER_NAME> shuffle <ENABLED>
+audiocontrol_send_update <PLAYER_NAME> shuffle <ENABLED>
 ```
 
 Values: `true` or `false`
@@ -78,7 +78,7 @@ Values: `true` or `false`
 Updates the loop mode.
 
 ```bash
-acr_send_update <PLAYER_NAME> loop <MODE>
+audiocontrol_send_update <PLAYER_NAME> loop <MODE>
 ```
 
 Valid modes: `None`, `Track`, `Playlist`
@@ -88,7 +88,7 @@ Valid modes: `None`, `Track`, `Playlist`
 Updates the current playback position.
 
 ```bash
-acr_send_update <PLAYER_NAME> position <POSITION>
+audiocontrol_send_update <PLAYER_NAME> position <POSITION>
 ```
 
 Position is specified in seconds.
@@ -98,7 +98,7 @@ Position is specified in seconds.
 ### Update Song Information
 
 ```bash
-acr_send_update my-player song --artist "The Beatles" --title "Let It Be" --album "Let It Be" --length 243.5
+audiocontrol_send_update my-player song --artist "The Beatles" --title "Let It Be" --album "Let It Be" --length 243.5
 ```
 
 This will update the current song information for the player "my-player".
@@ -106,7 +106,7 @@ This will update the current song information for the player "my-player".
 ### Update Song with Playback State
 
 ```bash
-acr_send_update my-player song --artist "Queen" --title "Bohemian Rhapsody" --state Playing
+audiocontrol_send_update my-player song --artist "Queen" --title "Bohemian Rhapsody" --state Playing
 ```
 
 This will update the song information and set the playback state to "Playing".
@@ -114,7 +114,7 @@ This will update the song information and set the playback state to "Playing".
 ### Update Playback State
 
 ```bash
-acr_send_update my-player state Playing
+audiocontrol_send_update my-player state Playing
 ```
 
 This will set the player state to "Playing".
@@ -122,7 +122,7 @@ This will set the player state to "Playing".
 ### Update Shuffle Setting
 
 ```bash
-acr_send_update my-player shuffle true
+audiocontrol_send_update my-player shuffle true
 ```
 
 This will enable shuffle mode.
@@ -130,7 +130,7 @@ This will enable shuffle mode.
 ### Update Loop Mode
 
 ```bash
-acr_send_update my-player loop Playlist
+audiocontrol_send_update my-player loop Playlist
 ```
 
 This will set the loop mode to "Playlist".
@@ -138,7 +138,7 @@ This will set the loop mode to "Playlist".
 ### Update Playback Position
 
 ```bash
-acr_send_update my-player position 120.5
+audiocontrol_send_update my-player position 120.5
 ```
 
 This will set the current playback position to 120.5 seconds.
@@ -146,7 +146,7 @@ This will set the current playback position to 120.5 seconds.
 ### Using a Different API Host
 
 ```bash
-acr_send_update --baseurl "http://192.168.1.100:1080/api" my-player state Paused
+audiocontrol_send_update --baseurl "http://192.168.1.100:1080/api" my-player state Paused
 ```
 
 This will send the update to a different AudioControl API host.
@@ -174,7 +174,7 @@ Note: The tool sends a single event for each command. Each subcommand generates 
 
 ## Integration with Other Systems
 
-The `acr_send_update` tool can be used in scripts or as part of other systems to integrate with the AudioControl API. For example:
+The `audiocontrol_send_update` tool can be used in scripts or as part of other systems to integrate with the AudioControl API. For example:
 
 ### Shell Script Integration
 
@@ -184,12 +184,12 @@ The `acr_send_update` tool can be used in scripts or as part of other systems to
 
 # Update song when a file is played
 function on_file_play() {
-    acr_send_update my-player song --artist "$1" --title "$2" --album "$3" --state Playing
+    audiocontrol_send_update my-player song --artist "$1" --title "$2" --album "$3" --state Playing
 }
 
 # Update playback state
 function on_state_change() {
-    acr_send_update my-player state "$1"
+    audiocontrol_send_update my-player state "$1"
 }
 
 # Call these functions from your application logic
@@ -200,7 +200,7 @@ on_file_play "Artist Name" "Song Title" "Album Name"
 
 ```bash
 # Update playback position every 10 seconds
-*/10 * * * * acr_send_update my-player position $(get_current_position_command)
+*/10 * * * * audiocontrol_send_update my-player position $(get_current_position_command)
 ```
 
 ## Error Handling

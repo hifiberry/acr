@@ -38,20 +38,20 @@ Alternatively, you can use any SQLite browser or viewer tool to inspect the data
 
 ## Cache Management Tools
 
-Audiocontrol provides tools to manage and inspect the cache:
+Audiocontrol uses SQLite database engine to implement its attribute caching. To view the contents of the attribute cache, you can use standard SQLite tools:
 
-```
-acr_dumpcache [PATH]
-```
+```bash
+# Connect to the cache database
+sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db
 
-The argument is the full path to the cache directory. If no path is specified, it defaults to `/var/lib/audiocontrol/cache/attributes`.
+# List all cache entries
+.mode column
+.headers on
+SELECT * FROM cache;
 
-Example:
+# Search for specific entries
+SELECT * FROM cache WHERE key LIKE '%lastfm%';
 ```
-audiocontrol_dump_cache /var/lib/audiocontrol/cache/attributes
-```
-
-This will output all key-value pairs in the cache in a `key|value` format.
 
 ## Managing the cache
 

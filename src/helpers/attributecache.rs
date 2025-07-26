@@ -89,10 +89,8 @@ impl AttributeCache {
                         Ok(row.get::<_, String>(1)?) // Column name is at index 1
                     }).unwrap();
                     
-                    println!("Checking existing columns:");
                     for column in column_iter {
                         let col_name = column.unwrap();
-                        println!("  Found column: {}", col_name);
                         match col_name.as_str() {
                             "created_at" => has_created_at = true,
                             "updated_at" => has_updated_at = true,
@@ -101,43 +99,39 @@ impl AttributeCache {
                     }
                 }
                 
-                println!("Migration status: has_created_at={}, has_updated_at={}", has_created_at, has_updated_at);
-                
         // Add timestamp columns if they don't exist
         let current_timestamp = Utc::now().timestamp();
         
         if !has_created_at {
-            println!("Adding created_at column");
             if let Err(e) = conn.execute(
                 "ALTER TABLE cache ADD COLUMN created_at INTEGER",
                 []
             ) {
-                println!("Failed to add created_at column: {}", e);
+                error!("Failed to add created_at column: {}", e);
             } else {
                 // Set current timestamp for all existing rows
                 if let Err(e) = conn.execute(
                     "UPDATE cache SET created_at = ? WHERE created_at IS NULL",
                     [current_timestamp]
                 ) {
-                    println!("Failed to set initial created_at values: {}", e);
+                    error!("Failed to set initial created_at values: {}", e);
                 }
             }
         }
         
         if !has_updated_at {
-            println!("Adding updated_at column");
             if let Err(e) = conn.execute(
                 "ALTER TABLE cache ADD COLUMN updated_at INTEGER",
                 []
             ) {
-                println!("Failed to add updated_at column: {}", e);
+                error!("Failed to add updated_at column: {}", e);
             } else {
                 // Set current timestamp for all existing rows
                 if let Err(e) = conn.execute(
                     "UPDATE cache SET updated_at = ? WHERE updated_at IS NULL",
                     [current_timestamp]
                 ) {
-                    println!("Failed to set initial updated_at values: {}", e);
+                    error!("Failed to set initial updated_at values: {}", e);
                 }
             }
         }                debug!("Cache table created or already exists");
@@ -1261,23 +1255,8 @@ mod tests {
         }
 
         // Create new cache - should trigger migration
-        println!("Creating cache with migration...");
         let mut cache = AttributeCache::with_database_file(&cache_file);
         
-        // Check the table structure
-        if let Some(ref conn) = cache.db {
-            let mut stmt = conn.prepare("PRAGMA table_info(cache)").unwrap();
-            let column_iter = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-            }).unwrap();
-            
-            println!("Table columns:");
-            for column in column_iter {
-                let (name, col_type) = column.unwrap();
-                println!("  {} ({})", name, col_type);
-            }
-        }
-
         // Check that old data is still there
         assert_eq!(cache.get::<String>("old_key").unwrap(), Some("old_value".to_string()));
 

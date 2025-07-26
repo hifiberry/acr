@@ -220,6 +220,15 @@ mod tests {
     
     /// Test helper to initialize Spotify for testing
     fn setup_spotify_for_test() -> Result<(), Box<dyn std::error::Error>> {
+        // Check if we're running with test credentials
+        let oauth_url = spotify::default_spotify_oauth_url();
+        let proxy_secret = spotify::default_spotify_proxy_secret();
+        
+        // Skip tests if we're using test credentials (they won't work with real Spotify API)
+        if oauth_url.contains("test.oauth.example.com") || proxy_secret == "test_proxy_secret" {
+            return Err("Skipping test - using test credentials".into());
+        }
+        
         // Initialize Spotify with test configuration
         match spotify::Spotify::initialize_with_defaults() {
             Ok(_) => Ok(()),

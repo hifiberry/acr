@@ -6,6 +6,7 @@ use log::{info, error, debug};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use rusqlite::{Connection, params};
+use chrono::Utc;
 
 // Global singleton for the attribute cache
 lazy_static! {
@@ -46,8 +47,21 @@ impl AttributeCache {
             }
         }
         
-        // Try to open the SQLite database
-        let db = match Connection::open(&db_path) {
+        let db = Self::setup_database(&db_path);
+
+        AttributeCache {
+            db_path,
+            db,
+            enabled: true,
+            max_age_days: 30, // Default to 30 days
+            memory_cache: HashMap::new(),
+        }
+    }
+
+    /// Setup and migrate the SQLite database
+    /// This is the single source of truth for database schema and migration logic
+    fn setup_database(db_path: &Path) -> Option<Connection> {
+        match Connection::open(db_path) {
             Ok(conn) => {
                 info!("Successfully opened attribute cache database at {:?}", db_path);
                 
@@ -56,29 +70,83 @@ impl AttributeCache {
                     "CREATE TABLE IF NOT EXISTS cache (
                         key TEXT PRIMARY KEY,
                         value BLOB NOT NULL,
-                        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+                        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
                     )",
                     [],
                 ) {
                     error!("Failed to create cache table: {}", e);
-                    None
-                } else {
-                    debug!("Cache table created or already exists");
-                    Some(conn)
+                    return None;
                 }
+                
+                // Check if timestamp columns exist and add them if needed
+                let mut has_created_at = false;
+                let mut has_updated_at = false;
+                
+                {
+                    let mut stmt = conn.prepare("PRAGMA table_info(cache)").unwrap();
+                    let column_iter = stmt.query_map([], |row| {
+                        Ok(row.get::<_, String>(1)?) // Column name is at index 1
+                    }).unwrap();
+                    
+                    println!("Checking existing columns:");
+                    for column in column_iter {
+                        let col_name = column.unwrap();
+                        println!("  Found column: {}", col_name);
+                        match col_name.as_str() {
+                            "created_at" => has_created_at = true,
+                            "updated_at" => has_updated_at = true,
+                            _ => {}
+                        }
+                    }
+                }
+                
+                println!("Migration status: has_created_at={}, has_updated_at={}", has_created_at, has_updated_at);
+                
+        // Add timestamp columns if they don't exist
+        let current_timestamp = Utc::now().timestamp();
+        
+        if !has_created_at {
+            println!("Adding created_at column");
+            if let Err(e) = conn.execute(
+                "ALTER TABLE cache ADD COLUMN created_at INTEGER",
+                []
+            ) {
+                println!("Failed to add created_at column: {}", e);
+            } else {
+                // Set current timestamp for all existing rows
+                if let Err(e) = conn.execute(
+                    "UPDATE cache SET created_at = ? WHERE created_at IS NULL",
+                    [current_timestamp]
+                ) {
+                    println!("Failed to set initial created_at values: {}", e);
+                }
+            }
+        }
+        
+        if !has_updated_at {
+            println!("Adding updated_at column");
+            if let Err(e) = conn.execute(
+                "ALTER TABLE cache ADD COLUMN updated_at INTEGER",
+                []
+            ) {
+                println!("Failed to add updated_at column: {}", e);
+            } else {
+                // Set current timestamp for all existing rows
+                if let Err(e) = conn.execute(
+                    "UPDATE cache SET updated_at = ? WHERE updated_at IS NULL",
+                    [current_timestamp]
+                ) {
+                    println!("Failed to set initial updated_at values: {}", e);
+                }
+            }
+        }                debug!("Cache table created or already exists");
+                Some(conn)
             },
             Err(e) => {
                 error!("Failed to open SQLite database at {:?}: {}", db_path, e);
                 None
             }
-        };
-
-        AttributeCache {
-            db_path,
-            db,
-            enabled: true,
-            max_age_days: 30, // Default to 30 days
-            memory_cache: HashMap::new(),
         }
     }
 
@@ -112,31 +180,11 @@ impl AttributeCache {
             return Err(format!("Failed to create directory for attribute cache: {}", e));
         }
         
-        // Try to open the new SQLite database
-        let db = match Connection::open(&db_file) {
-            Ok(conn) => {
-                info!("Successfully opened attribute cache database at {:?}", db_file);
-                
-                // Create the cache table if it doesn't exist
-                if let Err(e) = conn.execute(
-                    "CREATE TABLE IF NOT EXISTS cache (
-                        key TEXT PRIMARY KEY,
-                        value BLOB NOT NULL,
-                        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-                    )",
-                    [],
-                ) {
-                    return Err(format!("Failed to create cache table: {}", e));
-                }
-                
-                debug!("Cache table created or already exists");
-                Some(conn)
-            },
-            Err(e) => {
-                error!("Failed to open SQLite database at {:?}: {}", db_file, e);
-                return Err(format!("Failed to open SQLite database: {}", e));
-            }
-        };
+        // Use the centralized database setup logic
+        let db = Self::setup_database(&db_file);
+        if db.is_none() {
+            return Err("Failed to setup database".to_string());
+        }
         
         // Update the instance
         self.db_path = db_file;
@@ -162,7 +210,7 @@ impl AttributeCache {
     }
 
     /// Store a serializable value in the cache
-    pub fn set<T: Serialize>(&mut self, key: &str, value: &T) -> Result<(), String> {
+    pub fn set<T: Serialize + ?Sized>(&mut self, key: &str, value: &T) -> Result<(), String> {
         if !self.is_enabled() {
             return Err("Cache is disabled".to_string());
         }
@@ -178,8 +226,15 @@ impl AttributeCache {
         // Store in SQLite database
         match &mut self.db {
             Some(db) => {
+                // Use INSERT ... ON CONFLICT to properly handle timestamps
+                // For new records: set both created_at and updated_at to current time
+                // For existing records: keep created_at, update only updated_at
                 if let Err(e) = db.execute(
-                    "INSERT OR REPLACE INTO cache (key, value) VALUES (?1, ?2)",
+                    "INSERT INTO cache (key, value, created_at, updated_at) 
+                     VALUES (?1, ?2, strftime('%s', 'now'), strftime('%s', 'now'))
+                     ON CONFLICT(key) DO UPDATE SET 
+                         value = excluded.value,
+                         updated_at = strftime('%s', 'now')",
                     params![key, serialized],
                 ) {
                     return Err(format!("Failed to store in database: {}", e));
@@ -320,6 +375,64 @@ impl AttributeCache {
             None => Err("Database not available".to_string()),
         }
     }
+
+    /// Get the created_at and updated_at timestamps for a key
+    /// Returns (created_at, updated_at) as Unix timestamps, or None if key doesn't exist
+    pub fn get_timestamps(&mut self, key: &str) -> Result<Option<(i64, i64)>, String> {
+        if !self.is_enabled() {
+            return Err("Cache is disabled".to_string());
+        }
+
+        match &mut self.db {
+            Some(db) => {
+                let mut stmt = match db.prepare("SELECT created_at, updated_at FROM cache WHERE key = ?1") {
+                    Ok(stmt) => stmt,
+                    Err(e) => return Err(format!("Failed to prepare statement: {}", e)),
+                };
+
+                let result = stmt.query_row(params![key], |row| {
+                    let created_at: i64 = row.get(0)?;
+                    let updated_at: i64 = row.get(1)?;
+                    Ok((created_at, updated_at))
+                });
+
+                match result {
+                    Ok(timestamps) => Ok(Some(timestamps)),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(e) => Err(format!("Failed to query timestamps: {}", e)),
+                }
+            },
+            None => Err("Database not available".to_string()),
+        }
+    }
+
+    /// Check if a key exists and return its age in seconds (time since creation)
+    pub fn get_age(&mut self, key: &str) -> Result<Option<i64>, String> {
+        match self.get_timestamps(key)? {
+            Some((created_at, _)) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| format!("Failed to get current time: {}", e))?
+                    .as_secs() as i64;
+                Ok(Some(now - created_at))
+            },
+            None => Ok(None),
+        }
+    }
+
+    /// Check if a key was recently updated (time since last update)
+    pub fn get_last_updated_age(&mut self, key: &str) -> Result<Option<i64>, String> {
+        match self.get_timestamps(key)? {
+            Some((_, updated_at)) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| format!("Failed to get current time: {}", e))?
+                    .as_secs() as i64;
+                Ok(Some(now - updated_at))
+            },
+            None => Ok(None),
+        }
+    }
 }
 
 // Global functions to access the attribute cache singleton
@@ -330,7 +443,7 @@ pub fn get_attribute_cache() -> std::sync::MutexGuard<'static, AttributeCache> {
 }
 
 /// Store a value in the attribute cache
-pub fn set<T: Serialize>(key: &str, value: &T) -> Result<(), String> {
+pub fn set<T: Serialize + ?Sized>(key: &str, value: &T) -> Result<(), String> {
     get_attribute_cache().set(key, value)
 }
 
@@ -352,6 +465,22 @@ pub fn clear() -> Result<(), String> {
 /// Clean up old entries from the attribute cache
 pub fn cleanup() -> Result<usize, String> {
     get_attribute_cache().cleanup()
+}
+
+/// Get the created_at and updated_at timestamps for a key
+/// Returns (created_at, updated_at) as Unix timestamps, or None if key doesn't exist
+pub fn get_timestamps(key: &str) -> Result<Option<(i64, i64)>, String> {
+    get_attribute_cache().get_timestamps(key)
+}
+
+/// Check if a key exists and return its age in seconds (time since creation)
+pub fn get_age(key: &str) -> Result<Option<i64>, String> {
+    get_attribute_cache().get_age(key)
+}
+
+/// Check if a key was recently updated (time since last update)
+pub fn get_last_updated_age(key: &str) -> Result<Option<i64>, String> {
+    get_attribute_cache().get_last_updated_age(key)
 }
 
 #[cfg(test)]
@@ -614,7 +743,7 @@ mod tests {
         // Manually insert invalid JSON data into the database
         if let Some(ref mut db) = cache.db {
             db.execute(
-                "INSERT OR REPLACE INTO cache (key, value) VALUES (?1, ?2)",
+                "INSERT INTO cache (key, value, created_at, updated_at) VALUES (?1, ?2, strftime('%s', 'now'), strftime('%s', 'now'))",
                 params!["invalid_json", b"invalid json data"],
             ).expect("Failed to insert invalid data");
         }
@@ -980,5 +1109,181 @@ mod tests {
         
         // Test should complete without deadlocks or panics
         // The exact state of the cache is not important, just that it didn't crash
+    }
+
+    #[test]
+    fn test_timestamps_creation() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let key = "test_key";
+        let value = "test_value";
+
+        // Set a value and get timestamps
+        let before_set = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        cache.set(key, &value).unwrap();
+        let after_set = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+
+        let (created_at, updated_at) = cache.get_timestamps(key).unwrap().unwrap();
+        
+        // Timestamps should be within reasonable range
+        assert!(created_at >= before_set && created_at <= after_set);
+        assert!(updated_at >= before_set && updated_at <= after_set);
+        assert_eq!(created_at, updated_at); // Should be equal for new entries
+    }
+
+    #[test]
+    fn test_timestamps_update() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let key = "test_key";
+        let value1 = "test_value1";
+        let value2 = "test_value2";
+
+        // Set initial value
+        cache.set(key, &value1).unwrap();
+        let (created_at, initial_updated_at) = cache.get_timestamps(key).unwrap().unwrap();
+
+        // Wait a moment to ensure timestamp difference
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // Update the value
+        let before_update = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        cache.set(key, &value2).unwrap();
+        let after_update = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+
+        let (new_created_at, new_updated_at) = cache.get_timestamps(key).unwrap().unwrap();
+
+        // Created timestamp should remain the same
+        assert_eq!(created_at, new_created_at);
+        
+        // Updated timestamp should be newer
+        assert!(new_updated_at > initial_updated_at);
+        assert!(new_updated_at >= before_update && new_updated_at <= after_update);
+    }
+
+    #[test]
+    fn test_age_functions() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let key = "test_key";
+        let value = "test_value";
+
+        // Set a value
+        cache.set(key, &value).unwrap();
+
+        // Wait a moment
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // Check age functions
+        let age = cache.get_age(key).unwrap().unwrap();
+        let last_updated_age = cache.get_last_updated_age(key).unwrap().unwrap();
+
+        // Ages should be reasonable (at least some milliseconds)
+        assert!(age >= 0);
+        assert!(last_updated_age >= 0);
+        assert_eq!(age, last_updated_age); // Should be equal for newly created entries
+
+        // Update the value
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        cache.set(key, "updated_value").unwrap();
+
+        let new_age = cache.get_age(key).unwrap().unwrap();
+        let new_last_updated_age = cache.get_last_updated_age(key).unwrap().unwrap();
+
+        // Age should be older than last updated age now
+        assert!(new_age > new_last_updated_age);
+        assert!(new_age >= age); // Age should have increased
+        assert!(new_last_updated_age < last_updated_age); // Last updated should be more recent
+    }
+
+    #[test]
+    fn test_global_timestamp_functions() {
+        // Create a temporary cache for testing
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        
+        // Initialize the global cache with the temporary directory
+        super::AttributeCache::initialize(temp_dir.path()).unwrap();
+        
+        let key = "test_key";
+        let value = "test_value";
+
+        // Set a value using global function
+        set(key, &value).unwrap();
+
+        // Get timestamps using global functions
+        let (created_at, updated_at) = get_timestamps(key).unwrap().unwrap();
+        let age = get_age(key).unwrap().unwrap();
+        let last_updated_age = get_last_updated_age(key).unwrap().unwrap();
+
+        // Basic validation
+        assert!(created_at > 0);
+        assert!(updated_at > 0);
+        assert_eq!(created_at, updated_at);
+        assert!(age >= 0);
+        assert!(last_updated_age >= 0);
+        assert_eq!(age, last_updated_age);
+    }
+
+    #[test]
+    fn test_nonexistent_key_timestamps() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let nonexistent_key = "nonexistent";
+
+        // All timestamp functions should return None for nonexistent keys
+        assert_eq!(cache.get_timestamps(nonexistent_key).unwrap(), None);
+        assert_eq!(cache.get_age(nonexistent_key).unwrap(), None);
+        assert_eq!(cache.get_last_updated_age(nonexistent_key).unwrap(), None);
+    }
+
+    #[test]
+    fn test_database_migration() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let cache_file = temp_dir.path().join("test_cache.db");
+
+        // Create an old-style cache without timestamp columns
+        {
+            let conn = rusqlite::Connection::open(&cache_file).unwrap();
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS cache (
+                    key TEXT PRIMARY KEY,
+                    value BLOB NOT NULL
+                )",
+                [],
+            ).unwrap();
+            
+            // Use BLOB format like the real cache (JSON serialized)
+            let value_json = serde_json::to_vec("old_value").unwrap();
+            conn.execute(
+                "INSERT INTO cache (key, value) VALUES (?1, ?2)",
+                [&"old_key" as &dyn rusqlite::ToSql, &value_json],
+            ).unwrap();
+        }
+
+        // Create new cache - should trigger migration
+        println!("Creating cache with migration...");
+        let mut cache = AttributeCache::with_database_file(&cache_file);
+        
+        // Check the table structure
+        if let Some(ref conn) = cache.db {
+            let mut stmt = conn.prepare("PRAGMA table_info(cache)").unwrap();
+            let column_iter = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            }).unwrap();
+            
+            println!("Table columns:");
+            for column in column_iter {
+                let (name, col_type) = column.unwrap();
+                println!("  {} ({})", name, col_type);
+            }
+        }
+
+        // Check that old data is still there
+        assert_eq!(cache.get::<String>("old_key").unwrap(), Some("old_value".to_string()));
+
+        // Add new data - should work with timestamps
+        cache.set("new_key", "new_value").unwrap();
+        let timestamps = cache.get_timestamps("new_key").unwrap();
+        assert!(timestamps.is_some());
     }
 }

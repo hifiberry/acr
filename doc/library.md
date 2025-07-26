@@ -1,10 +1,10 @@
 # Library management
 
-ACR allows not just to control players, but also browse music libraries if the platforms supports this. The supported platforms today are mpd and LMS.
+Audiocontrol allows not just to control players, but also browse music libraries if the platforms supports this. The supported platforms today are mpd and LMS.
 
 ## Entity Relationships
 
-The ACR library system manages three primary entities and their relationships:
+The Audiocontrol library system manages three primary entities and their relationships:
 
 ```
 +-------------+       +-------------+       +-------------+

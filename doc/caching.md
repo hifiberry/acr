@@ -1,33 +1,10 @@
-# ACR caching
+# Audiocontrol Caching
 
-ACR us## Display cache contents
-
-ACR uses SQLite database engin### Attribute Cache
-
-The attribute cache is implemented using SQLite database with the following features:
-
-- **Two-tier Caching**: Uses both an in-memory cache for fast access and a persistent SQLite database for durability
-- **JSON Serialization**: All values are serialized to JSON before storage
-- **Thread Safety**: The global cache instance is protected by a mutex for thread-safe access
-- **Configurable Max Age**: Can be configured to automatically expire entries after a specified number of days
-- **Standard Tooling**: Compatible with all standard SQLite tools and browsers for inspection and debugginglement its attribute caching. To view the contents of the attribute cache, you can use standard SQLite tools:
-
-```bash
-# View all cached entries
-sqlite3 /var/lib/audiocontrol/cache/attributes/cache.db "SELECT key, value FROM cache;"
-
-# View cache schema
-sqlite3 /var/lib/audiocontrol/cache/attributes/cache.db ".schema"
-
-# Count total entries
-sqlite3 /var/lib/audiocontrol/cache/attributes/cache.db "SELECT COUNT(*) FROM cache;"
-```
-
-Alternatively, you can use any SQLite browser or viewer tool to inspect the database.bases for many of its functionalities. As these can be time-consuming to query, it tries to cache lookups internally to improve performance.
+Audiocontrol uses caching extensively to improve performance when accessing external services and databases. As these can be time-consuming to query, it caches lookups internally to improve performance.
 
 ## Cache Types
 
-ACR implements two types of caches:
+Audiocontrol implements two types of caches:
 
 1. **Attribute Cache**: Stores key-value pairs like metadata and IDs from external services
 2. **Image Cache**: Stores image files like album covers and artist images
@@ -44,7 +21,24 @@ These paths can be customized in the configuration file.
 
 ## Display cache contents
 
-ACR uses SQLite database engine to implement its attribute caching. To view the contents of the attribute cache, a tool is provided:
+Audiocontrol uses SQLite database engine to implement its attribute caching. To view the contents of the attribute cache, you can use standard SQLite tools:
+
+```bash
+# View all cached entries
+sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT key, value FROM cache;"
+
+# View cache schema
+sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db ".schema"
+
+# Count total entries
+sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT COUNT(*) FROM cache;"
+```
+
+Alternatively, you can use any SQLite browser or viewer tool to inspect the database.
+
+## Cache Management Tools
+
+Audiocontrol provides tools to manage and inspect the cache:
 
 ```
 acr_dumpcache [PATH]
@@ -65,7 +59,7 @@ This will output all key-value pairs in the cache in a `key|value` format.
 
 You can simply delete the cache directory to clear all cached data. The directory will be recreated automatically when needed. 
 
-Note that deleting the cache can significantly slow down operation, particularly during startup, as ACR will need to rebuild the cache by querying external services again. You should only delete the cache if there are incorrect or outdated entries.
+Note that deleting the cache can significantly slow down operation, particularly during startup, as Audiocontrol will need to rebuild the cache by querying external services again. You should only delete the cache if there are incorrect or outdated entries.
 
 ## Internal cache IDs
 

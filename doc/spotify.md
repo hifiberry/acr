@@ -1,10 +1,10 @@
-# Spotify Integration for ACR
+# Spotify Integration for Audiocontrol
 
-This document describes how to use the Spotify integration for AudioControl Rust (ACR).
+This document describes how to use the Spotify integration for AudioControl Rust (Audiocontrol).
 
 ## Overview
 
-The Spotify integration allows users to authenticate with Spotify and use their Spotify accounts with the ACR system. It leverages OAuth2 authentication using the [hifiberry/oauth-spotify](https://github.com/hifiberry/oauth-spotify) proxy to handle authorization with Spotify.
+The Spotify integration allows users to authenticate with Spotify and use their Spotify accounts with the Audiocontrol system. It leverages OAuth2 authentication using the [hifiberry/oauth-spotify](https://github.com/hifiberry/oauth-spotify) proxy to handle authorization with Spotify.
 
 ## Setup
 
@@ -32,7 +32,7 @@ The authentication flow follows these steps:
 4. After authorizing, Spotify redirects to the OAuth proxy
 5. The proxy handles the token exchange with Spotify
 6. The client polls the proxy for the authentication result
-7. When tokens are received, they're stored securely in the ACR security store
+7. When tokens are received, they're stored securely in the Audiocontrol security store
 
 ## API Endpoints
 
@@ -86,7 +86,7 @@ Clears all Spotify tokens and logs the user out.
 
 ## Security
 
-The Spotify tokens are stored in the ACR security store, which encrypts sensitive data using AES-256-GCM encryption. The encryption key is defined in the `secrets.txt` file.
+The Spotify tokens are stored in the Audiocontrol security store, which encrypts sensitive data using AES-256-GCM encryption. The encryption key is defined in the `secrets.txt` file.
 
 ## Example Implementation
 
@@ -104,7 +104,7 @@ To use this example, you must update the following variables in the JavaScript:
 
 ## Adding Spotify Support to Other Applications
 
-To add Spotify support to your own ACR-based applications, you'll need to:
+To add Spotify support to your own Audiocontrol-based applications, you'll need to:
 
 1. Import the `crate::helpers::spotify::Spotify` module
 2. Use the module's methods to check authentication, retrieve tokens, etc.

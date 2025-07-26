@@ -1,6 +1,6 @@
 # Settings Database
 
-The ACR settings database provides a simple key-value store for persistent user settings. It uses SQLite as the backend database, providing reliable storage, performance, and standard SQL tooling support.
+The Audiocontrol settings database provides a simple key-value store for persistent user settings. It uses SQLite as the backend database, providing reliable storage, performance, and standard SQL tooling support.
 
 ## Configuration
 

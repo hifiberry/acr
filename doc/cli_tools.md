@@ -1,6 +1,6 @@
 # CLI Tools
 
-AudioControl REST (ACR) includes several command-line tools for interacting with the system. These tools can be useful for debugging, testing, or integrating ACR with other systems.
+AudioControl REST (Audiocontrol) includes several command-line tools for interacting with the system. These tools can be useful for debugging, testing, or integrating Audiocontrol with other systems.
 
 ## Available Tools
 
@@ -16,7 +16,7 @@ The `audiocontrol_send_update` tool allows you to send player state updates to t
 - Update song information (artist, title, album, duration, URI)
 - Update playback state and position
 - Update loop mode and shuffle settings
-- Send updates to any ACR instance
+- Send updates to any Audiocontrol instance
 - Configurable output verbosity (quiet, normal, verbose)
 
 **Usage:**
@@ -320,7 +320,7 @@ audiocontrol_notify_librespot --verbose
 
 ### acr_dumpcache
 
-The `acr_dumpcache` tool allows you to inspect and manage the ACR caching system.
+The `acr_dumpcache` tool allows you to inspect and manage the Audiocontrol caching system.
 
 **Key Features:**
 
@@ -337,7 +337,7 @@ acr_dumpcache --list-keys
 
 ### acr_lms_client
 
-The `acr_lms_client` tool provides a command-line interface for interacting with Logitech Media Server instances that are connected to ACR. It is mostly used to debug the connection to and database of the media server.
+The `acr_lms_client` tool provides a command-line interface for interacting with Logitech Media Server instances that are connected to Audiocontrol. It is mostly used to debug the connection to and database of the media server.
 
 **Key Features:**
 
@@ -512,7 +512,7 @@ audiocontrol_favourites --url http://192.168.1.100:1080 \
 
 ## Building the Tools
 
-All tools are built automatically when you build the ACR project:
+All tools are built automatically when you build the Audiocontrol project:
 
 ```bash
 cargo build
@@ -522,7 +522,7 @@ The compiled binaries will be available in the `target/debug/` or `target/releas
 
 ## Integration Examples
 
-These tools can be integrated into scripts, cron jobs, or other systems to automate tasks or extend ACR functionality.
+These tools can be integrated into scripts, cron jobs, or other systems to automate tasks or extend Audiocontrol functionality.
 
 **Example Script:**
 
@@ -542,5 +542,5 @@ fi
 
 ## Additional Resources
 
-- [ACR API Documentation](api.md)
+- [Audiocontrol API Documentation](api.md)
 - [WebSocket Documentation](websocket.md) for real-time updates

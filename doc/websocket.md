@@ -1,6 +1,6 @@
 # WebSocket API
 
-The ACR provides a WebSocket interface for real-time updates about player state, playback, and other events. This allows clients to maintain synchronized state without constant polling.
+The Audiocontrol provides a WebSocket interface for real-time updates about player state, playback, and other events. This allows clients to maintain synchronized state without constant polling.
 
 ## Connection
 
@@ -11,7 +11,7 @@ ws://<host>:<port>/api/events
 ```
 
 Where:
-- `<host>` is the address of the ACR server
+- `<host>` is the address of the Audiocontrol server
 - `<port>` is the port number (default is 1080)
 
 ## Message Format

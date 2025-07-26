@@ -1,6 +1,6 @@
 # Last.fm Integration
 
-The ACR (AudioControl3) application now includes integration with Last.fm, allowing scrobbling and "now playing" updates for your music listening. This document explains how to set up and use the Last.fm integration.
+The Audiocontrol (AudioControl3) application now includes integration with Last.fm, allowing scrobbling and "now playing" updates for your music listening. This document explains how to set up and use the Last.fm integration.
 
 ## Features
 
@@ -12,7 +12,7 @@ The ACR (AudioControl3) application now includes integration with Last.fm, allow
 
 ## Configuration
 
-The Last.fm integration is controlled via the `acr.json` configuration file:
+The Last.fm integration is controlled via the `audiocontrol.json` configuration file:
 
 ```json
 {
@@ -24,7 +24,7 @@ The Last.fm integration is controlled via the `acr.json` configuration file:
 
 ## Security
 
-Last.fm credentials are securely stored using AES-GCM encryption in the security store. The path to the security store can be configured in the `acr.json` file:
+Last.fm credentials are securely stored using AES-GCM encryption in the security store. The path to the security store can be configured in the `audiocontrol.json` file:
 
 ```json
 {
@@ -44,12 +44,12 @@ To authenticate with Last.fm:
 3. **User Authorization at Last.fm**: Your frontend redirects the user's browser to the authorization URL provided by the backend.
    - The user will be prompted to log in to Last.fm (if not already logged in) and then asked to authorize your application (which should be registered with Last.fm to obtain an API key).
 4. **Handle Callback and Token Preparation**: After the user grants authorization, Last.fm redirects their browser back to a callback URL that you configured when you registered your application with Last.fm. Your frontend application at this callback URL must:
-   - Extract any necessary parameters from the callback (Last.fm typically appends the `token` to the callback URL, but this is the *same* request token from step 2, used for verification by Last.fm, not the one ACR needs for `prepare_complete_auth`).
+   - Extract any necessary parameters from the callback (Last.fm typically appends the `token` to the callback URL, but this is the *same* request token from step 2, used for verification by Last.fm, not the one Audiocontrol needs for `prepare_complete_auth`).
    - Take the *original temporary request token* (obtained in step 2 from `/api/lastfm/auth`) and send it to the backend via a `POST` request to `/api/lastfm/prepare_complete_auth`.
    - The backend's `prepare_complete_auth` handler stores this request token, marking it as ready to be exchanged for a session key.
 5. **Finalizing Authentication**: Your frontend then makes a `GET` request to `/api/lastfm/complete_auth`.
    - The backend's `complete_auth` handler uses the stored temporary request token to call Last.fm's `auth.getSession` method.
-   - If successful, Last.fm returns a permanent `session_key` and your `username`. These are stored securely by ACR.
+   - If successful, Last.fm returns a permanent `session_key` and your `username`. These are stored securely by Audiocontrol.
    - The frontend is notified of the successful authentication and updates the UI to show you as connected.
 
 ## Disconnection
@@ -100,4 +100,4 @@ To integrate Last.fm functionality into a custom web interface or application, d
 5. **Utilize Other Endpoints**:
    - Implement features to call `GET /api/lastfm/loved_tracks` and display the results as needed.
 
-The ACR backend provides the necessary API endpoints; the frontend is responsible for orchestrating the user interaction and API calls as described.
+The Audiocontrol backend provides the necessary API endpoints; the frontend is responsible for orchestrating the user interaction and API calls as described.

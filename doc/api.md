@@ -1,6 +1,6 @@
 # Audio Control REST API Documentation
 
-This document describes the REST API endpoints available in the Audio Control REST (ACR) service.
+This document describes the REST API endpoints available in the Audio Control REST (Audiocontrol) service.
 
 ## Table of Contents
 
@@ -94,7 +94,7 @@ This document describes the REST API endpoints available in the Audio Control RE
 
 ## Events
 
-The ACR system uses an event-based architecture to communicate state changes between components. Events can be monitored via WebSockets or server-sent events (SSE).
+The Audiocontrol system uses an event-based architecture to communicate state changes between components. Events can be monitored via WebSockets or server-sent events (SSE).
 
 For detailed information about WebSocket communication, message formats, and event types, see the [WebSocket API documentation](websocket.md).
 
@@ -770,7 +770,7 @@ The following table shows which capabilities are supported by each player type:
 - Multi-room audio support
 
 **Generic Players**:
-- API-driven players controlled entirely through ACR
+- API-driven players controlled entirely through Audiocontrol
 - Configurable capabilities in player configuration
 - Internal state management for queue and playback
 - No built-in library or content browsing
@@ -2607,7 +2607,7 @@ curl -X POST http://<device-ip>:1080/api/settings/set \
 
 ## Generic Player Controller
 
-The `GenericPlayerController` provides a configurable player that can be controlled entirely through the API events. It maintains internal state and can be used to represent external players or services that are controlled through the ACR API.
+The `GenericPlayerController` provides a configurable player that can be controlled entirely through the API events. It maintains internal state and can be used to represent external players or services that are controlled through the Audiocontrol API.
 
 ### Configuration
 

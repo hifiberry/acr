@@ -1,6 +1,6 @@
 # GenericPlayerController
 
-The `GenericPlayerController` is a configurable player implementation that can be controlled entirely through API events. It maintains internal state and can be used to represent external players or services that are controlled through the ACR API.
+The `GenericPlayerController` is a configurable player implementation that can be controlled entirely through API events. It maintains internal state and can be used to represent external players or services that are controlled through the Audiocontrol API.
 
 ## Features
 
@@ -27,7 +27,7 @@ The `GenericPlayerController` is a configurable player implementation that can b
 }
 ```
 
-2. **Start ACR with the configuration**:
+2. **Start Audiocontrol with the configuration**:
 ```bash
 ./audiocontrol --config generic_config.json
 ```
@@ -160,11 +160,11 @@ Each has its own API endpoint:
 
 ## Use Cases
 
-- **External Player Integration**: Control external media players through ACR
+- **External Player Integration**: Control external media players through Audiocontrol
 - **Custom Implementations**: Implement custom playback logic
 - **Testing**: Create mock players for testing
 - **Bridging**: Bridge between different audio systems
-- **Remote Control**: Control remote devices through ACR's API
+- **Remote Control**: Control remote devices through Audiocontrol's API
 
 ## Examples
 

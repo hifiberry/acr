@@ -4,7 +4,7 @@
 
 ### Basic Configuration
 
-The MPD backend can be configured in the ACR configuration file. Here is a minimal configuration example:
+The MPD backend can be configured in the Audiocontrol configuration file. Here is a minimal configuration example:
 
 ```json
 {
@@ -37,7 +37,7 @@ The MPD backend can be configured in the ACR configuration file. Here is a minim
 
 ### Playback Control
 
-ACR supports the following MPD playback controls:
+Audiocontrol supports the following MPD playback controls:
 
 - Play, pause, stop
 - Next/previous track
@@ -68,7 +68,7 @@ The MPD backend provides full access to the MPD library, allowing you to:
 ### Loading Process
 
 #### Startup
-When ACR starts, no library is loaded initially. The system will show that the MPD player exists but its library is not loaded yet.
+When Audiocontrol starts, no library is loaded initially. The system will show that the MPD player exists but its library is not loaded yet.
 
 **Example API Response** (http://127.0.0.1:1080/library/):
 ```json
@@ -86,7 +86,7 @@ When ACR starts, no library is loaded initially. The system will show that the M
 
 #### Initial Loading
 
-ACR then retrieves all artists, albums, and tracks from MPD. A key challenge is that MPD lists multiple artists as a single comma-separated string. Simple string splitting would fail with artist names like "Crosby, Stills & Nash". Therefore, when available, ACR uses the MusicBrainz database to properly identify artists.
+Audiocontrol then retrieves all artists, albums, and tracks from MPD. A key challenge is that MPD lists multiple artists as a single comma-separated string. Simple string splitting would fail with artist names like "Crosby, Stills & Nash". Therefore, when available, Audiocontrol uses the MusicBrainz database to properly identify artists.
 
 > **Note:** The initial loading process can be slow. However, as results are cached locally, subsequent startups will be significantly faster.
 
@@ -109,7 +109,7 @@ When the entire database has been loaded and processed, it sends a final databas
 
 #### Metadata Enhancement
 
-ACR uses various services to retrieve additional metadata, including artist images. Without this metadata enhancement, artists will appear in the API without thumbnail images:
+Audiocontrol uses various services to retrieve additional metadata, including artist images. Without this metadata enhancement, artists will appear in the API without thumbnail images:
 
 ```json
 [
@@ -182,11 +182,11 @@ The initial loading can be slow due to:
 2. MusicBrainz lookups for artist identification
 3. Metadata enrichment from external services
 
-Subsequent loads will be faster as ACR caches the results.
+Subsequent loads will be faster as Audiocontrol caches the results.
 
 ### Logging
 
-To get more information about MPD backend issues, increase the log level in your ACR configuration:
+To get more information about MPD backend issues, increase the log level in your Audiocontrol configuration:
 
 ```json
 {

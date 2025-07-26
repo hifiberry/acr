@@ -1116,7 +1116,7 @@ impl PlayerController for LMSAudioController {
                     }
                 }
             },
-            PlayerCommand::QueueTracks { uris, insert_at_beginning } => {
+            PlayerCommand::QueueTracks { uris, insert_at_beginning, metadata: _ } => {
                 debug!("Adding {} tracks to LMS player queue at {}", 
                       uris.len(), 
                       if insert_at_beginning { "beginning" } else { "end" });
@@ -1129,13 +1129,13 @@ impl PlayerController for LMSAudioController {
                 let mut all_success = true;
                 
                 // Process each URI
-                for uri in &uris {
+                for uri in uris {
                     // For LMS, we need to handle this differently based on URI format:
                     // If it looks like a track ID (numeric), use our add_to_queue method
                     // Otherwise, it might be a file path or URL
                       if uri.trim().parse::<u64>().is_ok() {
                         // Looks like a numeric track ID, use add_to_queue method with track_id
-                        match player.add_to_queue(uri, insert_at_beginning) {
+                        match player.add_to_queue(&uri, insert_at_beginning) {
                             Ok(_) => {
                                 debug!("Successfully added track ID {} to queue", uri);
                             },

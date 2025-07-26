@@ -189,9 +189,7 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
 pub struct AddTrackRequest {
     uri: String,
     #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    coverart_url: Option<String>,
+    metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Send a command to a specific player by name
@@ -693,11 +691,22 @@ fn parse_player_command(cmd_str: &str, request_data: Option<&Json<serde_json::Va
             // Parse URI from request body
             if let Some(data) = request_data {
                 if let Ok(add_request) = serde_json::from_value::<AddTrackRequest>(data.0.clone()) {
-                    debug!("Adding track to queue: uri={}, title={:?}, coverart_url={:?}", 
-                           add_request.uri, add_request.title, add_request.coverart_url);
+                    debug!("Adding track to queue: uri={}, metadata={:?}", 
+                           add_request.uri, add_request.metadata);
+                    
+                    // Create metadata if provided
+                    let metadata = if let Some(meta) = add_request.metadata {
+                        vec![Some(crate::data::player_command::QueueTrackMetadata {
+                            metadata: meta,
+                        })]
+                    } else {
+                        vec![None]
+                    };
+                    
                     return Ok(PlayerCommand::QueueTracks {
                         uris: vec![add_request.uri],
-                        insert_at_beginning: false
+                        insert_at_beginning: false,
+                        metadata,
                     });
                 } else {
                     return Err("add_track command requires JSON body with 'uri' field".to_string());

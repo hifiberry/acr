@@ -19,6 +19,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
 use lazy_static::lazy_static;
+use moka::sync::Cache;
+
+/// Cached metadata for URLs added to the queue
+#[derive(Debug, Clone)]
+struct UrlMetadata {
+    metadata: std::collections::HashMap<String, serde_json::Value>,
+}
 
 /// Constant for MPD image API URL prefix including API prefix
 pub fn mpd_image_url() -> String {
@@ -74,6 +81,9 @@ pub struct MPDPlayerController {
     
     /// Song title splitter manager for radio stations that combine artist and song in title
     song_split_manager: SongSplitManager,
+    
+    /// LRU cache for URL metadata (title and cover art) with max 1000 entries
+    url_metadata_cache: Arc<Cache<String, UrlMetadata>>,
 }
 
 // Manually implement Clone for MPDPlayerController
@@ -97,6 +107,7 @@ impl Clone for MPDPlayerController {
             reconnect_attempts: Arc::clone(&self.reconnect_attempts),
             connection_disabled: Arc::clone(&self.connection_disabled),
             song_split_manager: self.song_split_manager.clone(),
+            url_metadata_cache: Arc::clone(&self.url_metadata_cache),
         }
     }
 }
@@ -128,6 +139,7 @@ impl MPDPlayerController {
             reconnect_attempts: Arc::new(Mutex::new(0)),
             connection_disabled: Arc::new(AtomicBool::new(false)),
             song_split_manager: SongSplitManager::new(),
+            url_metadata_cache: Arc::new(Cache::new(1000)), // Max 1000 entries
         };
         
         // Set default capabilities
@@ -160,6 +172,7 @@ impl MPDPlayerController {
             reconnect_attempts: Arc::new(Mutex::new(0)),
             connection_disabled: Arc::new(AtomicBool::new(false)),
             song_split_manager: SongSplitManager::new(),
+            url_metadata_cache: Arc::new(Cache::new(1000)), // Max 1000 entries
         };
         
         // Set default capabilities
@@ -755,11 +768,32 @@ impl MPDPlayerController {
         }
     }
     
+    /// Enhance a song with cached metadata if available
+    fn enhance_song_with_cache(&self, mut song: Song) -> Song {
+        // Check if the song has a stream URL that might be in our cache
+        if let Some(ref stream_url) = song.stream_url {
+            if let Some(cached_metadata) = self.url_metadata_cache.get(stream_url) {
+                debug!("Found cached metadata for URL: {}", stream_url);
+                
+                // Add all cached metadata to the song's metadata
+                for (key, value) in &cached_metadata.metadata {
+                    song.metadata.insert(key.clone(), value.clone());
+                    debug!("Added cached metadata: {} = {:?}", key, value);
+                }
+            }
+        }
+        
+        song
+    }
+    
     /// Update the current song and notify listeners
     fn update_current_song(&self, song: Option<Song>) {
+        // Enhance the song with cached metadata if available
+        let enhanced_song = song.map(|s| self.enhance_song_with_cache(s));
+        
         // Store the new song
         let mut current_song = self.current_song.lock().unwrap();
-        let song_changed = match (&*current_song, &song) {
+        let song_changed = match (&*current_song, &enhanced_song) {
             (Some(old), Some(new)) => old.stream_url != new.stream_url || old.title != new.title,
             (None, Some(_)) => true,
             (Some(_), None) => true,
@@ -769,11 +803,11 @@ impl MPDPlayerController {
         if song_changed {
             debug!("Updating current song");
             // Update the stored song
-            *current_song = song.clone();
+            *current_song = enhanced_song.clone();
             
             // Notify listeners of the song change
             drop(current_song); // Release the lock before notifying
-            self.base.notify_song_changed(song.as_ref());
+            self.base.notify_song_changed(enhanced_song.as_ref());
         }
     }
 
@@ -1291,14 +1325,19 @@ impl PlayerController for MPDPlayerController {
     
     fn get_song(&self) -> Option<Song> {
         debug!("Getting current song from stored value");
-        // Return a clone of the stored song
+        // Return a clone of the stored song with any fresh cache enhancements
         let song_clone = self.current_song.lock().unwrap().clone();
-        if let Some(ref song) = song_clone {
-            debug!("Returning song with {} metadata entries: {:?}", song.metadata.len(), song.metadata.keys().collect::<Vec<_>>());
+        if let Some(song) = song_clone {
+            // Apply fresh cache enhancements in case cache was updated after the song was stored
+            let enhanced_song = self.enhance_song_with_cache(song);
+            debug!("Returning song with {} metadata entries: {:?}", 
+                   enhanced_song.metadata.len(), 
+                   enhanced_song.metadata.keys().collect::<Vec<_>>());
+            Some(enhanced_song)
         } else {
             debug!("No current song available");
+            None
         }
-        song_clone
     }
     
     fn get_loop_mode(&self) -> LoopMode {
@@ -1521,7 +1560,7 @@ impl PlayerController for MPDPlayerController {
                     }
                 },
                 
-                PlayerCommand::QueueTracks { uris, insert_at_beginning } => {
+                PlayerCommand::QueueTracks { uris, insert_at_beginning, metadata } => {
                     debug!("Adding {} tracks to MPD queue at {}", uris.len(), 
                           if insert_at_beginning { "beginning" } else { "end" });
                     
@@ -1531,8 +1570,23 @@ impl PlayerController for MPDPlayerController {
                     } else {
                         let mut all_success = true;
                         
-                        // Process each URI using our new queue_url function
-                        for uri in &uris {
+                        // Process each URI with its metadata using our new queue_url function
+                        for (i, uri) in uris.iter().enumerate() {
+                            // Get metadata for this URI if available
+                            let track_metadata = metadata.get(i).and_then(|m| m.as_ref());
+                            
+                            // Store metadata in cache if provided
+                            if let Some(meta) = track_metadata {
+                                if !meta.metadata.is_empty() {
+                                    debug!("Caching metadata for URI {}: {:?}", 
+                                           uri, meta.metadata);
+                                    let cache_entry = UrlMetadata {
+                                        metadata: meta.metadata.clone(),
+                                    };
+                                    self.url_metadata_cache.insert(uri.clone(), cache_entry);
+                                }
+                            }
+                            
                             let result = self.queue_url(uri, Some(insert_at_beginning));
                             if !result {
                                 all_success = false;

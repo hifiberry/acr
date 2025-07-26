@@ -3,6 +3,12 @@ use serde::{Serialize, Deserialize};
 use strum_macros::EnumString;
 use super::LoopMode;
 
+/// Metadata for tracks being added to the queue
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QueueTrackMetadata {
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, EnumString)]
 #[serde(rename_all = "lowercase")]
 pub enum PlayerCommand {
@@ -46,6 +52,9 @@ pub enum PlayerCommand {
         uris: Vec<String>,
         /// Whether to insert at beginning (true) or append at end (false)
         insert_at_beginning: bool,
+        /// Optional metadata for each URI (title and cover art URL)
+        #[serde(default)]
+        metadata: Vec<Option<QueueTrackMetadata>>,
     },
       #[serde(rename = "remove_track")]
     RemoveTrack(usize), // Changed from String to usize for position-based removal

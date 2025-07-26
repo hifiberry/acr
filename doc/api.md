@@ -18,6 +18,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Get Now Playing Information](#get-now-playing-information)
   - [Get Player Queue](#get-player-queue)
   - [Queue Management Commands](#queue-management-commands)
+    - [Queue Track Metadata Structure](#queue-track-metadata-structure)
   - [Get Player Metadata](#get-player-metadata)
   - [Get Specific Player Metadata Key](#get-specific-player-metadata-key)
   - [Player Capabilities and Support Matrix](#player-capabilities-and-support-matrix)
@@ -463,10 +464,28 @@ Adds a single track to the player's queue.
   ```json
   {
     "uri": "string (required)",
-    "title": "string (optional, for future use)",
-    "coverart_url": "string (optional, for future use)"
+    "metadata": {
+      "title": "string (optional)",
+      "artist": "string (optional)",
+      "album": "string (optional)",
+      "coverart_url": "string (optional)",
+      "duration": 180.5,
+      "genre": "string (optional)",
+      "year": 2024,
+      "custom_field": "any JSON value (optional)"
+    }
   }
   ```
+  
+  **Note**: The `metadata` field is a flexible object that can contain any key-value pairs. Common metadata fields include:
+  - `title`: Track title
+  - `artist`: Artist name
+  - `album`: Album name
+  - `coverart_url`: URL to cover art image
+  - `duration`: Track duration in seconds (number)
+  - `genre`: Music genre
+  - `year`: Release year (number)
+  - Any custom fields can be added as needed
 - **Supported URI Formats**:
   - **Local files**: `file:///path/to/music/song.mp3`
   - **HTTP streams**: `http://example.com/stream.mp3`
@@ -542,8 +561,15 @@ curl -X POST http://<device-ip>:1080/api/player/generic_player_1/command/add_tra
   -H "Content-Type: application/json" \
   -d '{
     "uri": "file:///music/beatles/yellow_submarine.mp3",
-    "title": "Yellow Submarine",
-    "coverart_url": "https://example.com/covers/yellow_submarine.jpg"
+    "metadata": {
+      "title": "Yellow Submarine",
+      "artist": "The Beatles",
+      "album": "Yellow Submarine",
+      "coverart_url": "https://example.com/covers/yellow_submarine.jpg",
+      "duration": 180.5,
+      "genre": "Rock",
+      "year": 1969
+    }
   }'
 
 # Remove track at position 2 from the queue
@@ -571,6 +597,40 @@ curl -X POST http://<device-ip>:1080/api/player/spotify/command/add_track \
   -d '{"uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"}'
 # Response: {"success": false, "message": "Queue operations not supported by this player type"}
 ```
+
+#### Queue Track Metadata Structure
+
+When adding tracks to the queue, you can provide optional metadata that will be cached by certain players (especially MPD). This metadata can enhance the song information when the track is played:
+
+```json
+{
+  "uri": "string (required)",
+  "metadata": {
+    "title": "string (optional) - Track title",
+    "artist": "string (optional) - Artist name", 
+    "album": "string (optional) - Album name",
+    "coverart_url": "string (optional) - URL to cover art image",
+    "duration": "number (optional) - Track duration in seconds",
+    "genre": "string (optional) - Music genre",
+    "year": "number (optional) - Release year",
+    "custom_field": "any (optional) - Any custom metadata field"
+  }
+}
+```
+
+**Metadata Usage**:
+- **MPD**: Stores metadata in an LRU cache (max 1000 entries) and automatically enhances songs when they match the cached URL
+- **LMS**: Stores metadata for API-driven playback enhancement
+- **Generic Players**: Uses metadata for display and tracking purposes
+- **Other Players**: Metadata may be ignored if not supported
+
+**Important Notes**:
+- **No Fixed Semantics**: The metadata has no enforced semantics or validation. Field names and values are suggestions only.
+- **Player-Specific Handling**: Each player implementation can choose to ignore metadata entirely, handle only specific fields, or process all fields according to their own logic.
+- **No Guarantees**: There is no guarantee that provided metadata will be used, stored, or displayed by any player.
+- **Best Effort**: Metadata should be considered "best effort" hints to improve the user experience when supported.
+
+**Flexible Schema**: The metadata object accepts any key-value pairs, allowing for custom fields beyond the common ones listed above. All values are stored as JSON values and can be strings, numbers, booleans, or complex objects.
 
 ### Queue Events
 

@@ -95,6 +95,7 @@ md5 = "0.7.0"
 # Development dependencies for testing
 [dev-dependencies]
 serial_test = "3.0"
+tempfile = "3.12"
 
 # Binary targets
 [[bin]]

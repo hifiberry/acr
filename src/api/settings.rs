@@ -1,24 +1,24 @@
 use rocket::serde::json::Json;
-use rocket::{post, State};
+use rocket::post;
 use serde::{Deserialize, Serialize};
 use log::{debug, warn, error};
 use crate::helpers::settingsdb;
 
 /// Request structure for getting a setting value
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct GetSettingRequest {
     pub key: String,
 }
 
 /// Request structure for setting a setting value
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SetSettingRequest {
     pub key: String,
     pub value: serde_json::Value,
 }
 
 /// Response structure for successful get operations
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct GetSettingResponse {
     pub success: bool,
     pub key: String,
@@ -27,7 +27,7 @@ pub struct GetSettingResponse {
 }
 
 /// Response structure for successful set operations
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SetSettingResponse {
     pub success: bool,
     pub key: String,
@@ -36,7 +36,7 @@ pub struct SetSettingResponse {
 }
 
 /// Response structure for error operations
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub success: bool,
     pub message: String,
@@ -112,5 +112,188 @@ pub fn set_setting(request: Json<SetSettingRequest>) -> Json<serde_json::Value> 
             };
             Json(serde_json::to_value(response).unwrap())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::TempDir;
+    use crate::helpers::settingsdb;
+
+    /// Setup a temporary directory for testing and initialize the database
+    /// Returns a temporary directory that will clean up when dropped
+    fn setup_test_env() -> TempDir {
+        use std::sync::{Once, Mutex};
+        static INIT: Once = Once::new();
+        static COUNTER: Mutex<u32> = Mutex::new(0);
+        
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        
+        // Initialize the global settings database with a unique subdirectory for this test
+        INIT.call_once(|| {
+            // First test gets to initialize
+        });
+        
+        // Create a unique subdirectory for this test to avoid conflicts
+        let mut counter = COUNTER.lock().unwrap();
+        *counter += 1;
+        let test_subdir = temp_dir.path().join(format!("test_{}", *counter));
+        std::fs::create_dir_all(&test_subdir).expect("Failed to create test subdirectory");
+        
+        // Initialize the global settings database with the test-specific directory
+        settingsdb::SettingsDb::initialize_global(&test_subdir)
+            .expect("Failed to initialize test database");
+            
+        temp_dir
+    }
+
+    // Serialization tests - these test the data structures without database or HTTP
+
+    #[test]
+    fn test_get_setting_request_serialization() {
+        let request = GetSettingRequest {
+            key: "test_key".to_string(),
+        };
+        
+        let json_str = serde_json::to_string(&request).unwrap();
+        assert!(json_str.contains("test_key"));
+        
+        let deserialized: GetSettingRequest = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.key, "test_key");
+    }
+
+    #[test]
+    fn test_set_setting_request_serialization() {
+        let request = SetSettingRequest {
+            key: "test_key".to_string(),
+            value: json!("test_value"),
+        };
+        
+        let json_str = serde_json::to_string(&request).unwrap();
+        assert!(json_str.contains("test_key"));
+        assert!(json_str.contains("test_value"));
+        
+        let deserialized: SetSettingRequest = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.key, "test_key");
+        assert_eq!(deserialized.value, json!("test_value"));
+    }
+
+    #[test]
+    fn test_get_setting_response_serialization() {
+        let response = GetSettingResponse {
+            success: true,
+            key: "test_key".to_string(),
+            value: Some(json!("test_value")),
+            exists: true,
+        };
+        
+        let json_str = serde_json::to_string(&response).unwrap();
+        assert!(json_str.contains("test_key"));
+        assert!(json_str.contains("test_value"));
+        assert!(json_str.contains("\"success\":true"));
+        assert!(json_str.contains("\"exists\":true"));
+        
+        let deserialized: GetSettingResponse = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.key, "test_key");
+        assert_eq!(deserialized.value, Some(json!("test_value")));
+        assert!(deserialized.success);
+        assert!(deserialized.exists);
+    }
+
+    #[test]
+    fn test_set_setting_response_serialization() {
+        let response = SetSettingResponse {
+            success: true,
+            key: "test_key".to_string(),
+            value: json!("new_value"),
+            previous_value: Some(json!("old_value")),
+        };
+        
+        let json_str = serde_json::to_string(&response).unwrap();
+        assert!(json_str.contains("test_key"));
+        assert!(json_str.contains("new_value"));
+        assert!(json_str.contains("old_value"));
+        assert!(json_str.contains("\"success\":true"));
+        
+        let deserialized: SetSettingResponse = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.key, "test_key");
+        assert_eq!(deserialized.value, json!("new_value"));
+        assert_eq!(deserialized.previous_value, Some(json!("old_value")));
+        assert!(deserialized.success);
+    }
+
+    #[test]
+    fn test_error_response_serialization() {
+        let response = ErrorResponse {
+            success: false,
+            message: "Test error message".to_string(),
+        };
+        
+        let json_str = serde_json::to_string(&response).unwrap();
+        assert!(json_str.contains("Test error message"));
+        assert!(json_str.contains("\"success\":false"));
+        
+        let deserialized: ErrorResponse = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.message, "Test error message");
+        assert!(!deserialized.success);
+    }
+
+    // Basic database functionality tests - test the settings database directly
+
+    #[test]
+    fn test_database_set_and_get_string_value() {
+        let _temp_dir = setup_test_env();
+        
+        let test_key = "test_string_key";
+        let test_value = json!("Hello, World!");
+        
+        // Test setting a value directly using the settings database
+        let result = settingsdb::get_settings_db().set(test_key, &test_value);
+        assert!(result.is_ok());
+        
+        // Test getting the value directly
+        let retrieved: Result<Option<serde_json::Value>, String> = settingsdb::get_settings_db().get(test_key);
+        assert!(retrieved.is_ok());
+        
+        let retrieved_value = retrieved.unwrap().unwrap();
+        assert_eq!(retrieved_value, test_value);
+    }
+
+    #[test]
+    fn test_database_nonexistent_key() {
+        let _temp_dir = setup_test_env();
+        
+        let test_key = "nonexistent_key_12345";
+        
+        // Test getting a nonexistent key
+        let retrieved: Result<Option<serde_json::Value>, String> = settingsdb::get_settings_db().get(test_key);
+        assert!(retrieved.is_ok());
+        assert!(retrieved.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_database_complex_value() {
+        let _temp_dir = setup_test_env();
+        
+        let test_key = "test_complex_key";
+        let test_value = json!({
+            "name": "test",
+            "count": 42,
+            "enabled": true,
+            "items": [1, 2, 3]
+        });
+        
+        // Test setting a complex value
+        let result = settingsdb::get_settings_db().set(test_key, &test_value);
+        assert!(result.is_ok());
+        
+        // Test getting the complex value
+        let retrieved: Result<Option<serde_json::Value>, String> = settingsdb::get_settings_db().get(test_key);
+        assert!(retrieved.is_ok());
+        
+        let retrieved_value = retrieved.unwrap().unwrap();
+        assert_eq!(retrieved_value, test_value);
     }
 }

@@ -1954,7 +1954,7 @@ mod tests {
         song.stream_url = Some(test_url.to_string());
         
         // Create an MPD player controller (this doesn't require a real MPD connection for this test)
-        let player = MPDPlayerController::new();
+        let player = MPDPlayerController::with_connection("localhost", 6600);
         
         // Enhance the song with cached metadata
         let enhanced_song = player.enhance_song_with_cache(song);
@@ -1980,7 +1980,7 @@ mod tests {
         song.metadata.insert("existing".to_string(), Value::String("data".to_string()));
         
         // Create an MPD player controller
-        let player = MPDPlayerController::new();
+        let player = MPDPlayerController::with_connection("localhost", 6600);
         
         // Enhance the song (should not find any cached metadata)
         let enhanced_song = player.enhance_song_with_cache(song);

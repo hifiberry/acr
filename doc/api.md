@@ -64,6 +64,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Get Cover Art from URL](#get-cover-art-from-url)
   - [List Cover Art Methods and Providers](#list-cover-art-methods-and-providers)
   - [Cover Art Response Format](#cover-art-response-format)
+  - [Image Grading System](imagegrading.md)
   - [Error Handling](#error-handling)
   - [Provider Registration](#provider-registration)
 <!-- ========================================================================= -->
@@ -2085,7 +2086,7 @@ curl -X POST "http://localhost:1080/api/m3u/parse" \
 
 The Cover Art API provides endpoints to retrieve cover art from registered providers with comprehensive image metadata. All text parameters must be encoded using URL-safe base64 encoding.
 
-**Enhanced Response Format**: The API returns image metadata including dimensions, file size, and format information for each cover art image, enabling clients to select the most appropriate image based on their requirements.
+**Enhanced Response Format**: The API returns image metadata including dimensions, file size, format information, and quality grading for each cover art image, enabling clients to select the most appropriate image based on their requirements. Images are automatically sorted by quality grade (highest quality first).
 
 ### URL-Safe Base64 Encoding
 
@@ -2121,14 +2122,16 @@ Retrieves cover art URLs for a specific artist from all registered providers.
             "width": 600,
             "height": 600,
             "size_bytes": 85432,
-            "format": "JPEG"
+            "format": "JPEG",
+            "grade": 3
           },
           {
             "url": "file:///music/covers/artist2.png",
             "width": 1000,
             "height": 1000,
             "size_bytes": 234567,
-            "format": "PNG"
+            "format": "PNG",
+            "grade": 3
           }
         ]
       },
@@ -2143,7 +2146,8 @@ Retrieves cover art URLs for a specific artist from all registered providers.
             "width": 640,
             "height": 640,
             "size_bytes": 123456,
-            "format": "JPEG"
+            "format": "JPEG",
+            "grade": 2
           }
         ]
       },
@@ -2158,7 +2162,8 @@ Retrieves cover art URLs for a specific artist from all registered providers.
             "width": 700,
             "height": 700,
             "size_bytes": 141677,
-            "format": "JPEG"
+            "format": "JPEG",
+            "grade": 4
           }
         ]
       }
@@ -2269,7 +2274,8 @@ Retrieves cover art URLs for a specific album from all registered providers.
             "width": 1200,
             "height": 1200,
             "size_bytes": 345678,
-            "format": "JPEG"
+            "format": "JPEG",
+            "grade": 5
           }
         ]
       },
@@ -2284,7 +2290,8 @@ Retrieves cover art URLs for a specific album from all registered providers.
             "width": 800,
             "height": 800,
             "size_bytes": 156789,
-            "format": "JPEG"
+            "format": "JPEG",
+            "grade": 4
           }
         ]
       },
@@ -2515,6 +2522,7 @@ All cover art endpoints return results grouped by provider, with each provider c
   - `height`: Image height in pixels (integer, optional) 
   - `size_bytes`: File size in bytes (integer, optional)
   - `format`: Image format (string, optional) - Common formats: "JPEG", "PNG", "GIF", "WebP", "BMP"
+  - `grade`: Image quality score (integer, optional) - Quality score based on provider reputation, file size, and resolution
 
 **URL Types**: Cover art URLs can be:
 
@@ -2537,7 +2545,8 @@ All cover art endpoints return results grouped by provider, with each provider c
           "width": 1000,
           "height": 1000,
           "size_bytes": 234567,
-          "format": "JPEG"
+          "format": "JPEG",
+          "grade": 4
         }
       ]
     }
@@ -2549,6 +2558,11 @@ All cover art endpoints return results grouped by provider, with each provider c
 - **Dimensions** (`width`, `height`): Enable selection based on resolution requirements
 - **File Size** (`size_bytes`): Useful for bandwidth-conscious applications
 - **Format** (`format`): Allows format-specific handling (e.g., preferring PNG for transparency)
+- **Grade** (`grade`): Quality score calculated from multiple factors to help select the best images
+
+**Image Grading**: The `grade` field contains an integer score (typically 0-6) that evaluates image quality based on provider reputation, file size, and image resolution. Higher scores indicate better quality. Images are automatically sorted by grade in descending order (best quality first).
+
+For detailed information about the grading system, scoring criteria, and implementation guidelines, see the [Image Grading System documentation](imagegrading.md).
 
 The client application should handle all URL types appropriately and can use the metadata to select optimal images for their use case.
 

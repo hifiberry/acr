@@ -7,6 +7,7 @@ use crate::helpers::coverart::{CoverartProvider, CoverartMethod};
 use crate::helpers::fanarttv::FanarttvCoverartProvider;
 use crate::helpers::spotify::{Spotify, SpotifyError};
 use crate::helpers::theaudiodb::TheAudioDbCoverartProvider;
+use crate::helpers::lastfm::{LastfmClient, LastfmError};
 use std::sync::Arc;
 
 /// Spotify Cover Art Provider
@@ -201,6 +202,80 @@ impl CoverartProvider for SpotifyCoverartProvider {
     }
 }
 
+/// LastFM Cover Art Provider
+/// Uses LastFM's Artist.getInfo API to find cover art for artists
+pub struct LastfmCoverartProvider {
+    name: String,
+    display_name: String,
+}
+
+impl LastfmCoverartProvider {
+    pub fn new() -> Self {
+        Self {
+            name: "lastfm".to_string(),
+            display_name: "Last.fm".to_string(),
+        }
+    }
+}
+
+impl Default for LastfmCoverartProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CoverartProvider for LastfmCoverartProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    
+    fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    
+    fn supported_methods(&self) -> HashSet<CoverartMethod> {
+        let mut methods = HashSet::new();
+        methods.insert(CoverartMethod::Artist);
+        methods
+    }
+    
+    fn get_artist_coverart_impl(&self, artist: &str) -> Vec<String> {
+        debug!("LastFM: Searching for artist images: {}", artist);
+        
+        let lastfm_client = match LastfmClient::get_instance() {
+            Ok(client) => client,
+            Err(LastfmError::ConfigError(_)) => {
+                debug!("LastFM: Client not initialized for artist search");
+                return Vec::new();
+            }
+            Err(e) => {
+                warn!("LastFM: Failed to get client for artist search: {}", e);
+                return Vec::new();
+            }
+        };
+        
+        let artist_info = match lastfm_client.get_artist_info(artist) {
+            Ok(info) => info,
+            Err(e) => {
+                warn!("LastFM: Failed to get artist info for '{}': {}", artist, e);
+                return Vec::new();
+            }
+        };
+        
+        // Extract image URLs from artist info
+        let mut urls = Vec::new();
+        for image in &artist_info.image {
+            if !image.url.is_empty() {
+                urls.push(image.url.clone());
+                debug!("LastFM: Found {} image for artist '{}': {}", image.size, artist, image.url);
+            }
+        }
+        
+        debug!("LastFM: Found {} artist images for '{}'", urls.len(), artist);
+        urls
+    }
+}
+
 /// Initialize and register all cover art providers
 pub fn register_all_providers() {
     use crate::helpers::coverart::get_coverart_manager;
@@ -218,6 +293,13 @@ pub fn register_all_providers() {
     info!("Registering Spotify coverart provider: {} ({})", spotify_coverart.name(), spotify_coverart.display_name());
     info!("Spotify coverart supported methods: {:?}", spotify_coverart.supported_methods());
     manager_lock.register_provider(spotify_coverart);
+    
+    // Register LastFM cover art provider
+    info!("Creating LastFM coverart provider...");
+    let lastfm_coverart = Arc::new(LastfmCoverartProvider::new());
+    info!("Registering LastFM coverart provider: {} ({})", lastfm_coverart.name(), lastfm_coverart.display_name());
+    info!("LastFM coverart supported methods: {:?}", lastfm_coverart.supported_methods());
+    manager_lock.register_provider(lastfm_coverart);
     
     // Register TheAudioDB cover art provider
     info!("Creating TheAudioDB coverart provider...");

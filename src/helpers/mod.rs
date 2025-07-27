@@ -1,6 +1,7 @@
 pub mod attributecache;
 pub mod imagecache;
 pub mod artistupdater;
+pub mod artistsplitter;
 pub mod coverart;
 pub mod coverart_providers;
 pub mod local_coverart;

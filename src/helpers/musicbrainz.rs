@@ -1,6 +1,7 @@
 use crate::helpers::attributecache;
 use crate::helpers::ratelimit;
 use crate::helpers::sanitize;
+use crate::helpers::artistsplitter;
 use crate::config::get_service_config;
 use log::{info, error, debug, warn};
 use std::time::Duration;
@@ -135,9 +136,6 @@ pub fn is_enabled() -> bool {
     MUSICBRAINZ_ENABLED.load(Ordering::SeqCst)
 }
 
-/// Separators used to split artist names into individual artists
-pub static ARTIST_SEPARATORS: &[&str] = &[",", "&", " feat ", " feat.", " featuring ", " with "];
-
 /// Result type for MusicBrainz artist search
 #[derive(Debug, Clone, PartialEq)]
 pub enum MusicBrainzSearchResult {
@@ -243,6 +241,9 @@ fn sanitize_artist_name_for_search(artist_name: &str) -> String {
 
 /// Split an artist name using custom separators
 /// 
+/// This function has been moved to artistsplitter module for better organization.
+/// Use `crate::helpers::artistsplitter::split_artist_with_separators` instead.
+/// 
 /// # Arguments
 /// * `artist_name` - The artist name to split
 /// * `separators` - The separators to use for splitting
@@ -250,51 +251,13 @@ fn sanitize_artist_name_for_search(artist_name: &str) -> String {
 /// # Returns
 /// * `Vec<String>` - Vector containing individual artist names
 fn split_artist_with_separators(artist_name: &str, separators: &[String]) -> Vec<String> {
-    debug!("Splitting artist name: '{}' with custom separators", artist_name);
-    
-    // Initial result will contain the full string
-    let mut result = vec![artist_name.to_string()];
-    
-    // Iteratively split by each separator
-    for separator in separators {
-        let mut new_result = Vec::new();
-        
-        for part in result {
-            // Skip empty parts
-            if part.trim().is_empty() {
-                continue;
-            }
-            
-            // For each existing part, split it by the current separator
-            if part.contains(separator) {
-                for sub_part in part.split(separator) {
-                    let trimmed = sub_part.trim();
-                    if !trimmed.is_empty() {
-                        new_result.push(trimmed.to_string());
-                    }
-                }
-            } else {
-                // If no separator in this part, keep it as is
-                new_result.push(part);
-            }
-        }
-        
-        // Update result for the next separator
-        result = new_result;
-    }
-    
-    // Filter out any "feat." prefixes and empty strings
-    result = result
-        .into_iter()
-        .map(|a| a.trim().to_string())
-        .filter(|a| !a.is_empty() && !a.to_lowercase().starts_with("feat."))
-        .collect();
-    
-    debug!("Split artist '{}' into: {:?}", artist_name, result);
-    result
+    artistsplitter::split_artist_with_separators(artist_name, separators)
 }
 
 /// Split an artist name that might contain multiple artists
+/// 
+/// This function has been moved to artistsplitter module for better organization.
+/// Use `crate::helpers::artistsplitter::split_artist` instead.
 /// 
 /// # Arguments
 /// * `artist_name` - The artist name to split
@@ -302,11 +265,7 @@ fn split_artist_with_separators(artist_name: &str, separators: &[String]) -> Vec
 /// # Returns
 /// * `Vec<String>` - Vector containing individual artist names
 pub fn split_artist(artist_name: &str) -> Vec<String> {
-    debug!("Splitting artist name: '{}'", artist_name);
-    
-    // Convert string slice array to string array for the internal function
-    let default_separators: Vec<String> = ARTIST_SEPARATORS.iter().map(|&s| s.to_string()).collect();
-    split_artist_with_separators(artist_name, &default_separators)
+    artistsplitter::split_artist(artist_name)
 }
 
 /// Compare two artist names to see if they match, using both exact normalized comparison
@@ -733,6 +692,9 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
 /// Check if an artist name contains multiple artists by looking up MBIDs
 /// and splitting the name if multiple MBIDs are found
 ///
+/// This function has been moved to artistsplitter module for better organization.
+/// Use `crate::helpers::artistsplitter::split_artist_names_with_mbid_lookup` instead.
+///
 /// # Arguments
 /// * `artist_name` - The name of the artist to check
 /// * `cache_only` - If true, only check the cache and don't make API calls (default: true)
@@ -741,71 +703,7 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
 /// # Returns
 /// * `Option<Vec<String>>` - None if single artist, or Some(Vec<String>) with split artist names if multiple
 pub fn split_artist_names(artist_name: &str, cache_only: bool, custom_separators: Option<&[String]>) -> Option<Vec<String>> {
-    debug!("Checking if '{}' contains multiple artists (cache_only: {})", artist_name, cache_only);
-    
-    // Determine which separators to use
-    let separators: Vec<&str> = match custom_separators {
-        Some(seps) => seps.iter().map(|s| s.as_str()).collect(), // Convert &[String] to Vec<&str>
-        None => ARTIST_SEPARATORS.to_vec(), // Convert &[&str] to Vec<&str>
-    };
-    
-    // First, quickly check if the string contains any separator
-    let contains_separator = separators.iter().any(|separator| artist_name.contains(*separator));
-    if !contains_separator {
-        debug!("'{}' doesn't contain any separators, assuming single artist", artist_name);
-        return None;
-    }
-
-    // if musicbrainz lookups are disabled, implement a "dumb" split using provided separators
-    if !is_enabled() {
-        debug!("MusicBrainz lookups are disabled, performing dumb split for '{}'", artist_name);
-        
-        // Convert string slices to Strings for processing
-        let string_separators: Vec<String> = separators.iter().map(|&s| s.to_string()).collect();
-        
-        // Call split_artist with our separators
-        let split_artists = split_artist_with_separators(artist_name, &string_separators);
-        
-        // Only return if we actually split into multiple parts
-        if split_artists.len() > 1 {
-            debug!("Split '{}' into multiple artists: {:?}", artist_name, split_artists);
-            return Some(split_artists);
-        } else {
-            debug!("'{}' appears to be a single artist", artist_name);
-            return None;
-        }
-    }
-    
-    // Look up MBIDs for the artist
-    match search_mbids_for_artist(artist_name, true, cache_only, false) {
-        MusicBrainzSearchResult::Found(mbids, _) => {
-            // If multiple MBIDs found, this might be a combined artist name
-            if mbids.len() > 1 {
-                debug!("Multiple MBIDs found for '{}', splitting artist name", artist_name);
-                
-                // Convert string slices to Strings for processing
-                let string_separators: Vec<String> = separators.iter().map(|&s| s.to_string()).collect();
-                
-                // Split using provided separators
-                let split_artists = split_artist_with_separators(artist_name, &string_separators);
-                
-                // Only return if we actually split into multiple parts
-                if split_artists.len() > 1 {
-                    debug!("Split '{}' into multiple artists: {:?}", artist_name, split_artists);
-                    return Some(split_artists);
-                }
-            }
-            
-            // Single MBID found or couldn't split into multiple parts
-            debug!("'{}' appears to be a single artist", artist_name);
-            None
-        },
-        _ => {
-            // No MBIDs found or error occurred, can't determine if multiple
-            debug!("Couldn't determine if '{}' contains multiple artists", artist_name);
-            None
-        }
-    }
+    artistsplitter::split_artist_names_with_mbid_lookup(artist_name, cache_only, custom_separators)
 }
 
 /// Search for recordings (songs) by artist and title

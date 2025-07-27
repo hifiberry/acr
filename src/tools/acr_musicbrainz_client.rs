@@ -4,7 +4,8 @@ use log::{error, info, warn};
 use serde_json;
 use std::fs;
 
-use audiocontrol::helpers::musicbrainz::{self, is_mbid, ARTIST_SEPARATORS};
+use audiocontrol::helpers::musicbrainz::{self, is_mbid};
+use audiocontrol::helpers::artistsplitter::DEFAULT_ARTIST_SEPARATORS;
 
 fn main() {
     // Initialize logging
@@ -143,14 +144,14 @@ fn lookup_artist_by_name(artist_name: &str, verbose: bool) {
     println!("Making direct API call to MusicBrainz...");
     
     if verbose {
-        println!("Artist separators checked: {:?}", ARTIST_SEPARATORS);
+        println!("Artist separators checked: {:?}", DEFAULT_ARTIST_SEPARATORS);
     }
     
     // Check if the artist name contains separators
-    let contains_separators = ARTIST_SEPARATORS.iter().any(|sep| artist_name.contains(sep));
+    let contains_separators = DEFAULT_ARTIST_SEPARATORS.iter().any(|sep| artist_name.contains(sep));
     if contains_separators {
         println!("Note: Artist name contains potential separators: {}", 
-                 ARTIST_SEPARATORS.iter()
+                 DEFAULT_ARTIST_SEPARATORS.iter()
                      .filter(|sep| artist_name.contains(*sep))
                      .map(|s| format!("'{}'", s))
                      .collect::<Vec<_>>()
@@ -243,14 +244,14 @@ fn split_artist_name(artist_name: &str, verbose: bool) {
     println!("Artist: {}", artist_name);
     
     // Check for separators
-    let found_separators: Vec<&str> = ARTIST_SEPARATORS.iter()
+    let found_separators: Vec<&str> = DEFAULT_ARTIST_SEPARATORS.iter()
         .filter(|sep| artist_name.contains(*sep))
         .cloned()
         .collect();
     
     if found_separators.is_empty() {
         println!("✓ No separators found in artist name");
-        println!("  Separators checked: {:?}", ARTIST_SEPARATORS);
+        println!("  Separators checked: {:?}", DEFAULT_ARTIST_SEPARATORS);
         return;
     }
     

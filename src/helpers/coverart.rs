@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use log::debug;
 
 /// Provider information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,7 +148,9 @@ impl CoverartManager {
 
     /// Register a new coverart provider
     pub fn register_provider(&mut self, provider: Arc<dyn CoverartProvider + Send + Sync>) {
+        debug!("Registering coverart provider: {} ({})", provider.name(), provider.display_name());
         self.providers.push(provider);
+        debug!("Total registered providers: {}", self.providers.len());
     }
 
     /// Get cover art for an artist from all registered providers
@@ -237,6 +240,11 @@ impl CoverartManager {
     /// Get all registered providers (for debugging/inspection)
     pub fn get_providers(&self) -> &Vec<Arc<dyn CoverartProvider + Send + Sync>> {
         &self.providers
+    }
+    
+    /// Get the number of registered providers
+    pub fn provider_count(&self) -> usize {
+        self.providers.len()
     }
 }
 

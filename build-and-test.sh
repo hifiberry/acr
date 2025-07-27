@@ -1,6 +1,12 @@
 #!/bin/bash
 
 # build-and-test.sh - Build all cargo binaries and run unit and integration tests
+# This script ensures all audiocontrol binaries are built in release mode,
+# runs unit tests, and then runs the integration tests
+
+set -e  # Exit on any error
+
+# Colors for output build-and-test.sh - Build all cargo binaries and run unit and integration tests
 # This script ensures all audiocontrol binaries are bprint_success "Build and test process completed successfully!"
 print_status "✓ All binaries built in release mode"
 print_status "✓ All unit tests passed"

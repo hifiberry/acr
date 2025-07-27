@@ -27,6 +27,7 @@ TEST_PORTS = {
     'activemonitor': 18080,
     'raat': 18080,
     'theaudiodb': 18080,
+    'fanarttv': 18080,
     'volume': 18080,
 }
 
@@ -37,6 +38,7 @@ TEST_CONFIGS = {
     'activemonitor': Path(__file__).parent / "test_config_activemonitor.json",
     'raat': Path(__file__).parent / "test_config_generic.json",
     'theaudiodb': Path(__file__).parent / "test_config_theaudiodb.json",
+    'fanarttv': Path(__file__).parent / "test_config_fanarttv.json",
     'volume': Path(__file__).parent / "test_config_volume.json",
 }
 

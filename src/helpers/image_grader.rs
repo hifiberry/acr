@@ -63,12 +63,14 @@ impl ImageGrader {
     /// * Spotify: +1
     /// * TheAudioDB: +2  
     /// * FanArt.tv: +3
+    /// * LastFM: 0
     /// * Unknown: 0
     fn grade_provider(&self, provider: &str) -> i32 {
         match provider.to_lowercase().as_str() {
             "spotify" => 1,
             "theaudiodb" => 2,
             "fanarttv" | "fanart.tv" => 3,
+            "lastfm" | "last.fm" => 0,
             _ => {
                 debug!("Unknown provider '{}', assigning score 0", provider);
                 0

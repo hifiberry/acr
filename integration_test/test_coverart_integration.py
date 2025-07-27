@@ -451,5 +451,95 @@ class TestCoverArtAPI:
         
         print(f"✓ Artist image update API working correctly for {artist_name}")
 
+    def test_coverart_lastfm_provider(self, coverart_server):
+        """Test that LastFM provider is working and returns images for Metallica"""
+        # Start the server
+        success = coverart_server.start_server()
+        assert success, "Failed to start audiocontrol server"
+        
+        # Test artist: Metallica (should have images on LastFM)
+        artist_name = "Metallica"
+        artist_b64 = base64.b64encode(artist_name.encode('utf-8')).decode('utf-8')
+        
+        print(f"Testing LastFM provider with artist: {artist_name}")
+        print(f"Base64 encoded artist: {artist_b64}")
+        
+        # Request cover art for Metallica
+        url = f"{coverart_server.server_url}/api/coverart/artist/{artist_b64}"
+        print(f"Requesting: {url}")
+        
+        response = requests.get(url, timeout=30)
+        print(f"Response status: {response.status_code}")
+        print(f"Response content length: {len(response.text)}")
+        
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        
+        data = response.json()
+        print(f"Response data keys: {list(data.keys())}")
+        
+        assert "results" in data, f"Response missing 'results' field: {data}"
+        results = data["results"]
+        print(f"Number of provider results: {len(results)}")
+        
+        # Should have at least one result
+        assert len(results) > 0, f"Expected at least one provider result, got {len(results)}"
+        
+        # Check if LastFM provider is in the results
+        lastfm_result = None
+        provider_names = []
+        
+        for result in results:
+            assert "provider" in result, f"Result missing 'provider' field: {result}"
+            assert "images" in result, f"Result missing 'images' field: {result}"
+            
+            provider_info = result["provider"]
+            provider_names.append(provider_info)
+            print(f"Provider: {provider_info}, Images: {len(result['images'])}")
+            
+            # Check if this is the LastFM provider (handle both dict and string formats)
+            if isinstance(provider_info, dict):
+                provider_name = provider_info.get("name", "")
+                provider_display = provider_info.get("display_name", "")
+            else:
+                provider_name = str(provider_info)
+                provider_display = provider_name
+                
+            if provider_name == "lastfm" or provider_display == "Last.fm":
+                lastfm_result = result
+                
+                # Print detailed LastFM result info
+                print(f"LastFM result found:")
+                print(f"  Provider: {lastfm_result['provider']}")
+                print(f"  Number of images: {len(lastfm_result['images'])}")
+                
+                for i, image in enumerate(lastfm_result['images']):
+                    print(f"  Image {i+1}: {image.get('url', 'No URL')[:80]}...")
+                    if 'grade' in image:
+                        print(f"    Grade: {image['grade']}")
+                    if 'size' in image:
+                        print(f"    Size: {image['size']}")
+        
+        print(f"All provider names found: {provider_names}")
+        
+        # Verify LastFM provider is present and has images
+        assert lastfm_result is not None, f"LastFM provider not found in results. Available providers: {provider_names}"
+        assert len(lastfm_result["images"]) > 0, f"LastFM provider returned no images for {artist_name}"
+        
+        # Verify LastFM images have required fields and valid URLs
+        for i, image in enumerate(lastfm_result["images"]):
+            assert "url" in image, f"LastFM image {i} missing 'url' field: {image}"
+            url = image["url"]
+            assert url and len(url) > 0, f"LastFM image {i} has empty URL: {image}"
+            assert url.startswith(("http://", "https://")), f"LastFM image {i} URL should start with http(s): {url}"
+            
+            # LastFM images should have grades assigned by the image grader
+            if "grade" in image:
+                grade = image["grade"]
+                assert isinstance(grade, int), f"LastFM image {i} grade should be integer: {grade}"
+                print(f"LastFM image {i+1} grade: {grade}")
+        
+        print(f"✓ LastFM provider working correctly for {artist_name}")
+        print(f"✓ Found {len(lastfm_result['images'])} images from LastFM")
+
 if __name__ == "__main__":
     pytest.main([__file__])

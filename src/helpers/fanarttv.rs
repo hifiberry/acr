@@ -538,12 +538,41 @@ impl FanarttvCoverartProvider {
     }
     
     /// Helper function to get artist MusicBrainz ID by name
-    /// This would typically integrate with a MusicBrainz lookup service
+    /// This integrates with the MusicBrainz lookup service
     fn get_artist_mbid(&self, artist_name: &str) -> Option<String> {
-        // Placeholder for MusicBrainz integration
-        // In a real implementation, this would lookup the artist MBID
-        debug!("FanArt.tv: Would lookup MusicBrainz ID for artist '{}'", artist_name);
-        None
+        debug!("FanArt.tv: Looking up MusicBrainz ID for artist '{}'", artist_name);
+        
+        // Use the MusicBrainz integration to find the MBID
+        match crate::helpers::musicbrainz::search_mbids_for_artist(artist_name, false, false, true) {
+            crate::helpers::musicbrainz::MusicBrainzSearchResult::Found(mbids, cached) => {
+                if let Some(mbid) = mbids.first() {
+                    debug!("FanArt.tv: Found MusicBrainz ID '{}' for artist '{}' (cached: {})", 
+                           mbid, artist_name, cached);
+                    Some(mbid.clone())
+                } else {
+                    debug!("FanArt.tv: Empty MBID list returned for artist '{}'", artist_name);
+                    None
+                }
+            },
+            crate::helpers::musicbrainz::MusicBrainzSearchResult::FoundPartial(mbids, cached) => {
+                if let Some(mbid) = mbids.first() {
+                    debug!("FanArt.tv: Found partial MusicBrainz ID '{}' for artist '{}' (cached: {})", 
+                           mbid, artist_name, cached);
+                    Some(mbid.clone())
+                } else {
+                    debug!("FanArt.tv: Empty partial MBID list returned for artist '{}'", artist_name);
+                    None
+                }
+            },
+            crate::helpers::musicbrainz::MusicBrainzSearchResult::NotFound => {
+                debug!("FanArt.tv: No MusicBrainz ID found for artist '{}'", artist_name);
+                None
+            },
+            crate::helpers::musicbrainz::MusicBrainzSearchResult::Error(err) => {
+                warn!("FanArt.tv: Error looking up MusicBrainz ID for artist '{}': {}", artist_name, err);
+                None
+            }
+        }
     }
 }
 

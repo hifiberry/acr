@@ -529,40 +529,6 @@ impl ArtistUpdater for FanarttvUpdater {
     }
 }
 
-/// Implement the CoverartProvider trait for FanArt.tv
-impl CoverartProvider for FanarttvUpdater {
-    /// Returns the internal name identifier for this provider
-    fn name(&self) -> &str {
-        "fanarttv"
-    }
-    
-    /// Returns the human-readable display name for this provider
-    fn display_name(&self) -> &str {
-        "FanArt.tv"
-    }
-    
-    /// Returns the set of cover art methods this provider supports
-    fn supported_methods(&self) -> HashSet<CoverartMethod> {
-        let mut methods = HashSet::new();
-        methods.insert(CoverartMethod::Artist);
-        methods
-    }
-    
-    /// Implementation for artist cover art retrieval
-    /// Returns thumbnail URLs for the given artist
-    fn get_artist_coverart_impl(&self, artist: &str) -> Vec<String> {
-        debug!("FanArt.tv: Getting cover art for artist '{}'", artist);
-        
-        // For FanArt.tv, we need the MusicBrainz ID to make API calls
-        // Since we only have the artist name, we can't directly query the API
-        // This would typically require a MusicBrainz lookup first
-        // For now, we'll return an empty vector and log a debug message
-        
-        debug!("FanArt.tv: Artist cover art retrieval requires MusicBrainz ID, not available from artist name alone");
-        Vec::new()
-    }
-}
-
 /// A dedicated CoverArt provider for FanArt.tv that includes MusicBrainz integration
 pub struct FanarttvCoverartProvider;
 

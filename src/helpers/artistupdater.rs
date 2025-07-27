@@ -2,7 +2,6 @@ use log::{debug, info, warn};
 use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 use crate::helpers::coverart::get_coverart_manager;
-use crate::helpers::ArtistUpdater;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
 use std::io::Read;

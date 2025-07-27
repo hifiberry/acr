@@ -4,8 +4,9 @@
 use std::collections::HashSet;
 use log::{debug, info, warn};
 use crate::helpers::coverart::{CoverartProvider, CoverartMethod};
-use crate::helpers::fanarttv::{FanarttvUpdater, FanarttvCoverartProvider};
+use crate::helpers::fanarttv::FanarttvCoverartProvider;
 use crate::helpers::spotify::{Spotify, SpotifyError};
+use crate::helpers::theaudiodb::TheAudioDbCoverartProvider;
 use std::sync::Arc;
 
 /// Spotify Cover Art Provider
@@ -211,14 +212,21 @@ pub fn register_all_providers() {
     
     info!("Manager lock acquired, current provider count: {}", manager_lock.provider_count());
     
-    // For now, register FanArt.tv providers unconditionally
-    // TODO: Make this configurable when we have access to configuration
-    info!("Creating FanArt.tv updater provider...");
-    let fanarttv_updater = Arc::new(FanarttvUpdater::new());
-    info!("Registering FanArt.tv updater provider: {} ({})", fanarttv_updater.name(), fanarttv_updater.display_name());
-    info!("FanArt.tv updater supported methods: {:?}", fanarttv_updater.supported_methods());
-    manager_lock.register_provider(fanarttv_updater);
+    // Register Spotify cover art provider
+    info!("Creating Spotify coverart provider...");
+    let spotify_coverart = Arc::new(SpotifyCoverartProvider::new());
+    info!("Registering Spotify coverart provider: {} ({})", spotify_coverart.name(), spotify_coverart.display_name());
+    info!("Spotify coverart supported methods: {:?}", spotify_coverart.supported_methods());
+    manager_lock.register_provider(spotify_coverart);
     
+    // Register TheAudioDB cover art provider
+    info!("Creating TheAudioDB coverart provider...");
+    let theaudiodb_coverart = Arc::new(TheAudioDbCoverartProvider::new());
+    info!("Registering TheAudioDB coverart provider: {} ({})", theaudiodb_coverart.name(), theaudiodb_coverart.display_name());
+    info!("TheAudioDB coverart supported methods: {:?}", theaudiodb_coverart.supported_methods());
+    manager_lock.register_provider(theaudiodb_coverart);
+    
+    // Register FanArt.tv cover art provider
     info!("Creating FanArt.tv coverart provider...");
     let fanarttv_coverart = Arc::new(FanarttvCoverartProvider::new());
     info!("Registering FanArt.tv coverart provider: {} ({})", fanarttv_coverart.name(), fanarttv_coverart.display_name());

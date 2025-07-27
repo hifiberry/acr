@@ -66,3 +66,4 @@ debian/hifiberry-audiocontrol.debhelper.log
 debian/hifiberry-audiocontrol.install
 debian/hifiberry-audiocontrol.postrm.debhelper
 debian/hifiberry-audiocontrol.substvars
+audiocontrol.json

@@ -277,5 +277,90 @@ class TestCoverArtAPI:
         assert "results" in data, f"Response missing 'results' field: {data}"
         assert len(data["results"]) == 0, "Expected empty results for invalid base64"
 
+    def test_coverart_album_metallica(self, coverart_server):
+        """Test retrieving cover art for a Metallica album"""
+        # Start the server
+        success = coverart_server.start_server()
+        assert success, "Failed to start audiocontrol server"
+        
+        # Test with a well-known Metallica album
+        album_title = "Master of Puppets"
+        artist_name = "Metallica"
+        
+        # Encode using URL-safe base64
+        title_b64 = base64.urlsafe_b64encode(album_title.encode()).decode().rstrip('=')
+        artist_b64 = base64.urlsafe_b64encode(artist_name.encode()).decode().rstrip('=')
+        
+        # Make API request
+        url = f"{coverart_server.server_url}/api/coverart/album/{title_b64}/{artist_b64}"
+        print(f"Making album cover art request to: {url}")
+        response = requests.get(url, timeout=30)
+        
+        # Check response
+        print(f"Response status: {response.status_code}")
+        print(f"Response text: {response.text}")
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+        
+        data = response.json()
+        print(f"Response data: {data}")
+        assert "results" in data, f"Response missing 'results' field: {data}"
+        
+        # Check that grading information is present if we get results
+        if len(data["results"]) > 0:
+            for result in data["results"]:
+                assert "provider" in result, "Result missing 'provider' field"
+                assert "images" in result, "Result missing 'images' field"
+                
+                for image in result["images"]:
+                    assert "url" in image, "Image missing 'url' field"
+                    assert "grade" in image, f"Image missing 'grade' field: {image}"
+                    assert isinstance(image["grade"], int), f"Grade should be integer, got {type(image['grade'])}: {image['grade']}"
+                    print(f"  ✓ Image grade: {image['grade']} for {image['url'][:50]}...")
+        
+        print(f"✓ Album cover art API working correctly for {album_title} by {artist_name}")
+
+    def test_coverart_album_with_year(self, coverart_server):
+        """Test retrieving cover art for an album with year"""
+        # Start the server
+        success = coverart_server.start_server()
+        assert success, "Failed to start audiocontrol server"
+        
+        # Test with a well-known album and year
+        album_title = "Master of Puppets"
+        artist_name = "Metallica"
+        year = 1986
+        
+        # Encode using URL-safe base64
+        title_b64 = base64.urlsafe_b64encode(album_title.encode()).decode().rstrip('=')
+        artist_b64 = base64.urlsafe_b64encode(artist_name.encode()).decode().rstrip('=')
+        
+        # Make API request
+        url = f"{coverart_server.server_url}/api/coverart/album/{title_b64}/{artist_b64}/{year}"
+        print(f"Making album cover art request with year to: {url}")
+        response = requests.get(url, timeout=30)
+        
+        # Check response
+        print(f"Response status: {response.status_code}")
+        print(f"Response text: {response.text}")
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+        
+        data = response.json()
+        print(f"Response data: {data}")
+        assert "results" in data, f"Response missing 'results' field: {data}"
+        
+        # Check that grading information is present if we get results
+        if len(data["results"]) > 0:
+            for result in data["results"]:
+                assert "provider" in result, "Result missing 'provider' field"
+                assert "images" in result, "Result missing 'images' field"
+                
+                for image in result["images"]:
+                    assert "url" in image, "Image missing 'url' field"
+                    assert "grade" in image, f"Image missing 'grade' field: {image}"
+                    assert isinstance(image["grade"], int), f"Grade should be integer, got {type(image['grade'])}: {image['grade']}"
+                    print(f"  ✓ Image grade: {image['grade']} for {image['url'][:50]}...")
+        
+        print(f"✓ Album cover art API with year working correctly for {album_title} by {artist_name} ({year})")
+
 if __name__ == "__main__":
     pytest.main([__file__])

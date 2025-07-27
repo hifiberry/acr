@@ -68,7 +68,7 @@ fn update_artist_with_coverart(mut artist: Artist) -> Artist {
             debug!("Found custom image URL for artist {}: {}", artist.name, custom_url);
             
             // Check if the image already exists in cache
-            let cache_path = format!("artists/{}/custom.jpg", crate::helpers::url_encoding::encode_url_safe(&artist.name));
+            let cache_path = format!("artists/{}/custom.jpg", crate::helpers::sanitize::filename_from_string(&artist.name));
             if let Ok(_) = std::fs::metadata(&cache_path) {
                 debug!("Custom image already cached for artist {}", artist.name);
                 
@@ -137,7 +137,7 @@ fn update_artist_with_coverart(mut artist: Artist) -> Artist {
         
         // Download and cache the best image
         if let Ok(image_data) = download_image(&best_image.url) {
-            let cache_path = format!("artists/{}/cover.jpg", crate::helpers::url_encoding::encode_url_safe(&artist.name));
+            let cache_path = format!("artists/{}/cover.jpg", crate::helpers::sanitize::filename_from_string(&artist.name));
             
             if let Err(e) = crate::helpers::imagecache::store_image(&cache_path, &image_data) {
                 warn!("Failed to store image for artist {}: {}", artist.name, e);
@@ -255,10 +255,8 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         artist = update_artist_with_coverart(artist);
     }
     
-    // Always try to update with Last.fm (doesn't require MusicBrainz ID)
-    debug!("Updating artist {} with Last.fm", artist.name);
-    let lastfm_updater = crate::helpers::lastfm::LastfmUpdater::new();
-    artist = lastfm_updater.update_artist(artist);
+    // Note: LastFM metadata is now handled by the unified coverart system
+    // No need for separate LastFM calls as the coverart system includes LastFM provider
     
     // Handle artists without MusicBrainz IDs but with existing thumbnails
     if artist.metadata.as_ref().map_or(false, |meta| meta.mbid.is_empty()) {

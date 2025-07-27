@@ -4,6 +4,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use log::debug;
 use crate::helpers::image_meta::{image_size, ImageMetadata};
+use crate::helpers::image_grader::{ImageGrader, ImageInfo as GraderImageInfo};
 
 /// Provider information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +25,8 @@ pub struct ImageInfo {
     pub size_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grade: Option<i32>,
 }
 
 impl ImageInfo {
@@ -35,6 +38,7 @@ impl ImageInfo {
             height: None,
             size_bytes: None,
             format: None,
+            grade: None,
         }
     }
 
@@ -46,6 +50,7 @@ impl ImageInfo {
             height: Some(metadata.height),
             size_bytes: Some(metadata.size_bytes),
             format: Some(metadata.format),
+            grade: None,
         }
     }
 
@@ -57,6 +62,11 @@ impl ImageInfo {
             self.size_bytes = Some(metadata.size_bytes);
             self.format = Some(metadata.format);
         }
+    }
+
+    /// Set the grade for this image
+    pub fn set_grade(&mut self, grade: i32) {
+        self.grade = Some(grade);
     }
 }
 
@@ -79,14 +89,36 @@ impl CoverartResult {
             images.push(image_info);
         }
         
-        Self {
-            provider,
-            images,
-        }
+        Self::with_images(provider, images)
     }
 
-    /// Create a new CoverartResult with pre-computed ImageInfo
-    pub fn with_images(provider: ProviderInfo, images: Vec<ImageInfo>) -> Self {
+    /// Create a new CoverartResult with pre-computed ImageInfo and apply grading
+    pub fn with_images(provider: ProviderInfo, mut images: Vec<ImageInfo>) -> Self {
+        // Apply grading to all images
+        let grader = ImageGrader::new();
+        
+        for image in &mut images {
+            // Convert to grader format
+            let grader_info = GraderImageInfo {
+                url: image.url.clone(),
+                width: image.width,
+                height: image.height,
+                size_bytes: image.size_bytes,
+                provider: provider.name.clone(),
+            };
+            
+            // Grade the image
+            let grade = grader.grade_image(&grader_info);
+            image.set_grade(grade.score);
+        }
+        
+        // Sort images by grade (highest first)
+        images.sort_by(|a, b| {
+            let grade_a = a.grade.unwrap_or(0);
+            let grade_b = b.grade.unwrap_or(0);
+            grade_b.cmp(&grade_a)
+        });
+        
         Self {
             provider,
             images,

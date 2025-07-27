@@ -1,3 +1,25 @@
+hifiberry-audiocontrol (0.6.9) stable; urgency=medium
+
+  * Refactored artist name splitting functionality into dedicated artistsplitter module
+  * Moved artist splitting logic from musicbrainz.rs to new artistsplitter.rs for better organization
+  * Enhanced artist splitting with comprehensive unit tests for complex multi-artist scenarios
+  * Added FanArt.tv cover art provider integration with MusicBrainz support
+  * Added TheAudioDB cover art provider implementation with caching
+  * Enhanced cover art API with multiple provider support and improved response structure
+  * Added M3U playlist parsing API for extracting URLs from playlists
+  * Added Settings API for retrieving and updating configuration values
+  * Enhanced song title splitting with separator preference and tracking
+  * Added SongSplitManager for managing song title splitters with persistent storage
+  * Improved metadata caching in MPDPlayerController with AttributeCache integration
+  * Enhanced track addition with flexible metadata structure and caching
+  * Added queue management commands and enhanced player capabilities
+  * Reorganized API documentation structure with table of contents
+  * Updated documentation to replace 'ACR' references with 'Audiocontrol' for consistency
+  * Improved code maintainability and separation of concerns
+  * All existing functionality preserved with backward compatibility
+
+ -- HiFiBerry <info@hifiberry.com>  Sun, 27 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.6.8) stable; urgency=medium
 
   * Migrated settings database from Sled to SQLite for improved reliability

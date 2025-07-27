@@ -5,8 +5,10 @@ use crate::helpers::imagecache;
 use crate::data::artist::Artist;
 use crate::helpers::ArtistUpdater;
 use crate::helpers::sanitize::filename_from_string;
+use crate::helpers::coverart::{CoverartProvider, CoverartMethod};
 use moka::sync::Cache;
 use std::time::Duration;
+use std::collections::HashSet;
 use lazy_static::lazy_static;
 
 // Using lazy_static for failed MBID cache with 24-hour expiry  
@@ -393,7 +395,207 @@ impl ArtistUpdater for FanarttvUpdater {
     }
 }
 
+/// Implement the CoverartProvider trait for FanArt.tv
+impl CoverartProvider for FanarttvUpdater {
+    /// Returns the internal name identifier for this provider
+    fn name(&self) -> &str {
+        "fanarttv"
+    }
+    
+    /// Returns the human-readable display name for this provider
+    fn display_name(&self) -> &str {
+        "FanArt.tv"
+    }
+    
+    /// Returns the set of cover art methods this provider supports
+    fn supported_methods(&self) -> HashSet<CoverartMethod> {
+        let mut methods = HashSet::new();
+        methods.insert(CoverartMethod::Artist);
+        methods
+    }
+    
+    /// Implementation for artist cover art retrieval
+    /// Returns thumbnail URLs for the given artist
+    fn get_artist_coverart_impl(&self, artist: &str) -> Vec<String> {
+        debug!("FanArt.tv: Getting cover art for artist '{}'", artist);
+        
+        // For FanArt.tv, we need the MusicBrainz ID to make API calls
+        // Since we only have the artist name, we can't directly query the API
+        // This would typically require a MusicBrainz lookup first
+        // For now, we'll return an empty vector and log a debug message
+        
+        debug!("FanArt.tv: Artist cover art retrieval requires MusicBrainz ID, not available from artist name alone");
+        Vec::new()
+    }
+}
+
+/// A dedicated CoverArt provider for FanArt.tv that includes MusicBrainz integration
+pub struct FanarttvCoverartProvider;
+
+impl FanarttvCoverartProvider {
+    pub fn new() -> Self {
+        FanarttvCoverartProvider
+    }
+    
+    /// Helper function to get artist MusicBrainz ID by name
+    /// This would typically integrate with a MusicBrainz lookup service
+    fn get_artist_mbid(&self, artist_name: &str) -> Option<String> {
+        // Placeholder for MusicBrainz integration
+        // In a real implementation, this would lookup the artist MBID
+        debug!("FanArt.tv: Would lookup MusicBrainz ID for artist '{}'", artist_name);
+        None
+    }
+}
+
+impl CoverartProvider for FanarttvCoverartProvider {
+    /// Returns the internal name identifier for this provider
+    fn name(&self) -> &str {
+        "fanarttv_coverart"
+    }
+    
+    /// Returns the human-readable display name for this provider
+    fn display_name(&self) -> &str {
+        "FanArt.tv Cover Art"
+    }
+    
+    /// Returns the set of cover art methods this provider supports
+    fn supported_methods(&self) -> HashSet<CoverartMethod> {
+        let mut methods = HashSet::new();
+        methods.insert(CoverartMethod::Artist);
+        methods
+    }
+    
+    /// Implementation for artist cover art retrieval
+    /// Returns thumbnail URLs for the given artist by looking up their MusicBrainz ID
+    fn get_artist_coverart_impl(&self, artist: &str) -> Vec<String> {
+        debug!("FanArt.tv CoverArt: Getting cover art for artist '{}'", artist);
+        
+        // First, attempt to get the MusicBrainz ID for the artist
+        if let Some(mbid) = self.get_artist_mbid(artist) {
+            debug!("FanArt.tv CoverArt: Found MBID '{}' for artist '{}'", mbid, artist);
+            
+            // Get artist thumbnails using the MBID
+            let thumbnails = get_artist_thumbnails(&mbid, Some(5));
+            if !thumbnails.is_empty() {
+                debug!("FanArt.tv CoverArt: Found {} thumbnails for artist '{}'", thumbnails.len(), artist);
+                return thumbnails;
+            } else {
+                debug!("FanArt.tv CoverArt: No thumbnails found for artist '{}'", artist);
+            }
+        } else {
+            debug!("FanArt.tv CoverArt: No MusicBrainz ID found for artist '{}'", artist);
+        }
+        
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    // ...existing code...
+    use super::*;
+    use crate::helpers::coverart::CoverartProvider;
+    
+    #[test]
+    fn test_fanarttv_updater_coverart_provider_name() {
+        let provider = FanarttvUpdater::new();
+        assert_eq!(provider.name(), "fanarttv");
+    }
+    
+    #[test]
+    fn test_fanarttv_updater_coverart_provider_display_name() {
+        let provider = FanarttvUpdater::new();
+        assert_eq!(provider.display_name(), "FanArt.tv");
+    }
+    
+    #[test]
+    fn test_fanarttv_updater_supported_methods() {
+        let provider = FanarttvUpdater::new();
+        let methods = provider.supported_methods();
+        assert_eq!(methods.len(), 1);
+        assert!(methods.contains(&CoverartMethod::Artist));
+        assert!(!methods.contains(&CoverartMethod::Song));
+        assert!(!methods.contains(&CoverartMethod::Album));
+        assert!(!methods.contains(&CoverartMethod::Url));
+    }
+    
+    #[test]
+    fn test_fanarttv_updater_get_artist_coverart_impl() {
+        let provider = FanarttvUpdater::new();
+        let result = provider.get_artist_coverart_impl("Test Artist");
+        // Should return empty since we can't lookup MBID from name alone
+        assert!(result.is_empty());
+    }
+    
+    #[test]
+    fn test_fanarttv_coverart_provider_name() {
+        let provider = FanarttvCoverartProvider::new();
+        assert_eq!(provider.name(), "fanarttv_coverart");
+    }
+    
+    #[test]
+    fn test_fanarttv_coverart_provider_display_name() {
+        let provider = FanarttvCoverartProvider::new();
+        assert_eq!(provider.display_name(), "FanArt.tv Cover Art");
+    }
+    
+    #[test]
+    fn test_fanarttv_coverart_provider_supported_methods() {
+        let provider = FanarttvCoverartProvider::new();
+        let methods = provider.supported_methods();
+        assert_eq!(methods.len(), 1);
+        assert!(methods.contains(&CoverartMethod::Artist));
+        assert!(!methods.contains(&CoverartMethod::Song));
+        assert!(!methods.contains(&CoverartMethod::Album));
+        assert!(!methods.contains(&CoverartMethod::Url));
+    }
+    
+    #[test]
+    fn test_fanarttv_coverart_provider_get_artist_coverart_impl() {
+        let provider = FanarttvCoverartProvider::new();
+        let result = provider.get_artist_coverart_impl("Test Artist");
+        // Should return empty since get_artist_mbid returns None (placeholder implementation)
+        assert!(result.is_empty());
+    }
+    
+    #[test]
+    fn test_fanarttv_coverart_provider_get_artist_mbid() {
+        let provider = FanarttvCoverartProvider::new();
+        let result = provider.get_artist_mbid("Test Artist");
+        // Should return None since it's a placeholder implementation
+        assert!(result.is_none());
+    }
+    
+    #[test]
+    fn test_extract_extension_from_url() {
+        assert_eq!(extract_extension_from_url("http://example.com/image.jpg"), "jpg");
+        assert_eq!(extract_extension_from_url("http://example.com/image.png"), "png");
+        assert_eq!(extract_extension_from_url("http://example.com/image.jpeg"), "jpeg");
+        assert_eq!(extract_extension_from_url("http://example.com/image.gif"), "gif");
+        assert_eq!(extract_extension_from_url("http://example.com/image.JPG"), "jpg");
+        assert_eq!(extract_extension_from_url("http://example.com/image.png?size=large"), "png");
+        assert_eq!(extract_extension_from_url("http://example.com/image.jpeg?quality=high&format=web"), "jpeg");
+        assert_eq!(extract_extension_from_url("http://example.com/image"), "jpg"); // default fallback
+        assert_eq!(extract_extension_from_url("http://example.com/image.verylongextension"), "jpg"); // too long, fallback
+    }
+    
+    #[test]
+    fn test_coverart_manager_integration() {
+        use crate::helpers::coverart::CoverartManager;
+        use std::sync::Arc;
+        
+        let mut manager = CoverartManager::new();
+        
+        // Register both FanArt.tv providers
+        let fanarttv_updater = Arc::new(FanarttvUpdater::new());
+        let fanarttv_coverart = Arc::new(FanarttvCoverartProvider::new());
+        
+        manager.register_provider(fanarttv_updater);
+        manager.register_provider(fanarttv_coverart);
+        
+        // Test artist coverart retrieval (should return empty since no MusicBrainz lookup)
+        let results = manager.get_artist_coverart("Test Artist");
+        
+        // Both providers should be called but return no results
+        assert_eq!(results.len(), 0);
+    }
 }

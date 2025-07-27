@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use log::debug;
+use crate::helpers::image_meta::{image_size, ImageMetadata};
 
 /// Provider information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,11 +12,86 @@ pub struct ProviderInfo {
     pub display_name: String,
 }
 
+/// Image information with URL and metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageInfo {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+impl ImageInfo {
+    /// Create a new ImageInfo with just a URL (no metadata)
+    pub fn new(url: String) -> Self {
+        Self {
+            url,
+            width: None,
+            height: None,
+            size_bytes: None,
+            format: None,
+        }
+    }
+
+    /// Create a new ImageInfo with URL and metadata
+    pub fn with_metadata(url: String, metadata: ImageMetadata) -> Self {
+        Self {
+            url,
+            width: Some(metadata.width),
+            height: Some(metadata.height),
+            size_bytes: Some(metadata.size_bytes),
+            format: Some(metadata.format),
+        }
+    }
+
+    /// Fetch and add metadata for this image
+    pub fn fetch_metadata(&mut self) {
+        if let Ok(metadata) = image_size(&self.url) {
+            self.width = Some(metadata.width);
+            self.height = Some(metadata.height);
+            self.size_bytes = Some(metadata.size_bytes);
+            self.format = Some(metadata.format);
+        }
+    }
+}
+
 /// Cover art result from a specific provider
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverartResult {
     pub provider: ProviderInfo,
-    pub urls: Vec<String>,
+    pub images: Vec<ImageInfo>,
+}
+
+impl CoverartResult {
+    /// Create a new CoverartResult from a provider and list of URLs
+    pub fn new(provider: ProviderInfo, urls: Vec<String>) -> Self {
+        let mut images = Vec::new();
+        
+        for url in &urls {
+            let mut image_info = ImageInfo::new(url.clone());
+            // Try to fetch metadata for each image
+            image_info.fetch_metadata();
+            images.push(image_info);
+        }
+        
+        Self {
+            provider,
+            images,
+        }
+    }
+
+    /// Create a new CoverartResult with pre-computed ImageInfo
+    pub fn with_images(provider: ProviderInfo, images: Vec<ImageInfo>) -> Self {
+        Self {
+            provider,
+            images,
+        }
+    }
 }
 
 /// Defines the types of cover art retrieval methods that a provider can support
@@ -160,13 +236,13 @@ impl CoverartManager {
             .filter_map(|provider| {
                 let urls = provider.get_artist_coverart(artist);
                 if !urls.is_empty() {
-                    Some(CoverartResult {
-                        provider: ProviderInfo {
+                    Some(CoverartResult::new(
+                        ProviderInfo {
                             name: provider.name().to_string(),
                             display_name: provider.display_name().to_string(),
                         },
                         urls,
-                    })
+                    ))
                 } else {
                     None
                 }
@@ -181,13 +257,13 @@ impl CoverartManager {
             .filter_map(|provider| {
                 let urls = provider.get_song_coverart(title, artist);
                 if !urls.is_empty() {
-                    Some(CoverartResult {
-                        provider: ProviderInfo {
+                    Some(CoverartResult::new(
+                        ProviderInfo {
                             name: provider.name().to_string(),
                             display_name: provider.display_name().to_string(),
                         },
                         urls,
-                    })
+                    ))
                 } else {
                     None
                 }
@@ -202,13 +278,13 @@ impl CoverartManager {
             .filter_map(|provider| {
                 let urls = provider.get_album_coverart(title, artist, year);
                 if !urls.is_empty() {
-                    Some(CoverartResult {
-                        provider: ProviderInfo {
+                    Some(CoverartResult::new(
+                        ProviderInfo {
                             name: provider.name().to_string(),
                             display_name: provider.display_name().to_string(),
                         },
                         urls,
-                    })
+                    ))
                 } else {
                     None
                 }
@@ -223,13 +299,13 @@ impl CoverartManager {
             .filter_map(|provider| {
                 let urls = provider.get_url_coverart(url);
                 if !urls.is_empty() {
-                    Some(CoverartResult {
-                        provider: ProviderInfo {
+                    Some(CoverartResult::new(
+                        ProviderInfo {
                             name: provider.name().to_string(),
                             display_name: provider.display_name().to_string(),
                         },
                         urls,
-                    })
+                    ))
                 } else {
                     None
                 }

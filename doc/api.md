@@ -2083,7 +2083,9 @@ curl -X POST "http://localhost:1080/api/m3u/parse" \
 
 ## Cover Art API
 
-The Cover Art API provides endpoints to retrieve cover art from registered providers. All text parameters must be encoded using URL-safe base64 encoding.
+The Cover Art API provides endpoints to retrieve cover art from registered providers with comprehensive image metadata. All text parameters must be encoded using URL-safe base64 encoding.
+
+**Enhanced Response Format**: The API returns image metadata including dimensions, file size, and format information for each cover art image, enabling clients to select the most appropriate image based on their requirements.
 
 ### URL-Safe Base64 Encoding
 
@@ -2113,21 +2115,52 @@ Retrieves cover art URLs for a specific artist from all registered providers.
           "name": "local_files", 
           "display_name": "Local Files"
         },
-        "urls": ["file:///music/covers/artist1.jpg", "file:///music/covers/artist2.png"]
+        "images": [
+          {
+            "url": "file:///music/covers/artist1.jpg",
+            "width": 600,
+            "height": 600,
+            "size_bytes": 85432,
+            "format": "JPEG"
+          },
+          {
+            "url": "file:///music/covers/artist2.png",
+            "width": 1000,
+            "height": 1000,
+            "size_bytes": 234567,
+            "format": "PNG"
+          }
+        ]
       },
       {
         "provider": {
           "name": "spotify",
           "display_name": "Spotify"
         },
-        "urls": ["https://i.scdn.co/image/ab6761610000e5ebeb8b0e6ccea3b130a69c8d9c"]
+        "images": [
+          {
+            "url": "https://i.scdn.co/image/ab6761610000e5ebeb8b0e6ccea3b130a69c8d9c",
+            "width": 640,
+            "height": 640,
+            "size_bytes": 123456,
+            "format": "JPEG"
+          }
+        ]
       },
       {
         "provider": {
           "name": "theaudiodb",
           "display_name": "TheAudioDB"
         },
-        "urls": ["https://www.theaudiodb.com/images/media/artist/thumb/the-beatles.jpg"]
+        "images": [
+          {
+            "url": "https://www.theaudiodb.com/images/media/artist/thumb/the-beatles.jpg",
+            "width": 700,
+            "height": 700,
+            "size_bytes": 141677,
+            "format": "JPEG"
+          }
+        ]
       }
     ]
   }
@@ -2163,14 +2196,30 @@ Retrieves cover art URLs for a specific song from all registered providers.
           "name": "local_files",
           "display_name": "Local Files"
         },
-        "urls": ["file:///music/artist/album/cover.jpg"]
+        "images": [
+          {
+            "url": "file:///music/artist/album/cover.jpg",
+            "width": 500,
+            "height": 500,
+            "size_bytes": 67890,
+            "format": "JPEG"
+          }
+        ]
       },
       {
         "provider": {
           "name": "musicbrainz",
           "display_name": "MusicBrainz"
         },
-        "urls": ["https://coverartarchive.org/release/12345/front-500.jpg"]
+        "images": [
+          {
+            "url": "https://coverartarchive.org/release/12345/front-500.jpg",
+            "width": 500,
+            "height": 500,
+            "size_bytes": 98765,
+            "format": "JPEG"
+          }
+        ]
       }
     ]
   }
@@ -2214,21 +2263,45 @@ Retrieves cover art URLs for a specific album from all registered providers.
           "name": "local_files",
           "display_name": "Local Files"
         },
-        "urls": ["file:///music/the-beatles/abbey-road/folder.jpg"]
+        "images": [
+          {
+            "url": "file:///music/the-beatles/abbey-road/folder.jpg",
+            "width": 1200,
+            "height": 1200,
+            "size_bytes": 345678,
+            "format": "JPEG"
+          }
+        ]
       },
       {
         "provider": {
           "name": "theaudiodb",
           "display_name": "TheAudioDB"
         },
-        "urls": ["https://www.theaudiodb.com/images/media/album/thumb/abbey-road.jpg"]
+        "images": [
+          {
+            "url": "https://www.theaudiodb.com/images/media/album/thumb/abbey-road.jpg",
+            "width": 800,
+            "height": 800,
+            "size_bytes": 156789,
+            "format": "JPEG"
+          }
+        ]
       },
       {
         "provider": {
           "name": "musicbrainz",
           "display_name": "MusicBrainz"
         },
-        "urls": ["https://coverartarchive.org/release/67890/front.jpg"]
+        "images": [
+          {
+            "url": "https://coverartarchive.org/release/67890/front.jpg",
+            "width": 1000,
+            "height": 1000,
+            "size_bytes": 234567,
+            "format": "JPEG"
+          }
+        ]
       }
     ]
   }
@@ -2259,14 +2332,30 @@ Retrieves cover art URLs for a specific album with release year from all registe
           "name": "local_files",
           "display_name": "Local Files"  
         },
-        "urls": ["file:///music/the-beatles/abbey-road-1969/cover.jpg"]
+        "images": [
+          {
+            "url": "file:///music/the-beatles/abbey-road-1969/cover.jpg",
+            "width": 1000,
+            "height": 1000,
+            "size_bytes": 278901,
+            "format": "JPEG"
+          }
+        ]
       },
       {
         "provider": {
           "name": "theaudiodb",
           "display_name": "TheAudioDB"
         },
-        "urls": ["https://www.theaudiodb.com/images/media/album/thumb/abbey-road-1969.jpg"]
+        "images": [
+          {
+            "url": "https://www.theaudiodb.com/images/media/album/thumb/abbey-road-1969.jpg",
+            "width": 700,
+            "height": 700,
+            "size_bytes": 145234,
+            "format": "JPEG"
+          }
+        ]
       }
     ]
   }
@@ -2295,14 +2384,37 @@ Retrieves cover art URLs from a specific source URL from all registered provider
           "name": "url_resolver",
           "display_name": "URL Resolver"
         },
-        "urls": ["https://example.com/resolved-image.jpg", "https://example.com/alternative.png"]
+        "images": [
+          {
+            "url": "https://example.com/resolved-image.jpg",
+            "width": 1920,
+            "height": 1080,
+            "size_bytes": 456789,
+            "format": "JPEG"
+          },
+          {
+            "url": "https://example.com/alternative.png",
+            "width": 800,
+            "height": 600,
+            "size_bytes": 123456,
+            "format": "PNG"
+          }
+        ]
       },
       {
         "provider": {
           "name": "metadata_extractor",
           "display_name": "Metadata Extractor"
         },
-        "urls": ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD..."]
+        "images": [
+          {
+            "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD...",
+            "width": 300,
+            "height": 300,
+            "size_bytes": 8192,
+            "format": "JPEG"
+          }
+        ]
       }
     ]
   }
@@ -2397,7 +2509,12 @@ All cover art endpoints return results grouped by provider, with each provider c
 - **Provider Information**:
   - `name`: Internal provider identifier (string)
   - `display_name`: Human-readable provider name (string)
-- **URLs**: Array of cover art URLs from that provider
+- **Images**: Array of cover art image objects, each containing:
+  - `url`: Direct URL or file path to the cover art image (string)
+  - `width`: Image width in pixels (integer, optional)
+  - `height`: Image height in pixels (integer, optional) 
+  - `size_bytes`: File size in bytes (integer, optional)
+  - `format`: Image format (string, optional) - Common formats: "JPEG", "PNG", "GIF", "WebP", "BMP"
 
 **URL Types**: Cover art URLs can be:
 
@@ -2414,13 +2531,26 @@ All cover art endpoints return results grouped by provider, with each provider c
         "name": "provider_internal_name",
         "display_name": "Human Readable Provider Name"
       },
-      "urls": ["url1", "url2", ...]
+      "images": [
+        {
+          "url": "https://example.com/image.jpg",
+          "width": 1000,
+          "height": 1000,
+          "size_bytes": 234567,
+          "format": "JPEG"
+        }
+      ]
     }
   ]
 }
 ```
 
-The client application should handle all URL types appropriately and can choose to display provider information to users for transparency about cover art sources.
+**Metadata Fields**: The optional metadata fields provide additional information to help clients select the most appropriate image:
+- **Dimensions** (`width`, `height`): Enable selection based on resolution requirements
+- **File Size** (`size_bytes`): Useful for bandwidth-conscious applications
+- **Format** (`format`): Allows format-specific handling (e.g., preferring PNG for transparency)
+
+The client application should handle all URL types appropriately and can use the metadata to select optimal images for their use case.
 
 ### Error Handling
 

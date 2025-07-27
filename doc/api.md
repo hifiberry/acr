@@ -63,6 +63,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Get Cover Art for Album with Year](#get-cover-art-for-album-with-year)
   - [Get Cover Art from URL](#get-cover-art-from-url)
   - [List Cover Art Methods and Providers](#list-cover-art-methods-and-providers)
+  - [Update Artist Image](#update-artist-image)
   - [Cover Art Response Format](#cover-art-response-format)
   - [Image Grading System](imagegrading.md)
   - [Error Handling](#error-handling)
@@ -2507,6 +2508,75 @@ Retrieves information about available cover art methods and the providers that s
 ```bash
 # List all cover art methods and their providers
 curl http://<device-ip>:1080/api/coverart/methods
+```
+
+### Update Artist Image
+
+Updates the custom image URL for a specific artist. The custom image will take priority over images from external providers when retrieving artist cover art.
+
+- **Endpoint**: `/api/coverart/artist/<artist_b64>/update`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Parameters**:
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+- **Request Body**:
+  ```json
+  {
+    "url": "string (required) - URL of the custom image to set for the artist"
+  }
+  ```
+- **Response** (Success):
+  ```json
+  {
+    "success": true,
+    "message": "Artist image URL updated successfully"
+  }
+  ```
+- **Response** (Error):
+  ```json
+  {
+    "success": false,
+    "message": "Error description (e.g., 'Invalid artist name encoding', 'Failed to update artist image: ...')"
+  }
+  ```
+
+**Important Notes**:
+- The custom image URL is stored persistently in the settings database with the key format: `artist.image.{artist_name}`
+- Custom images take priority over external provider images when retrieving artist cover art
+- Setting an empty URL (`""`) will clear the custom image for the artist
+- Cached images are automatically invalidated when a custom URL is updated
+- The system will attempt to download and cache the custom image on the next artist metadata update
+
+#### Examples
+
+```bash
+# Set a custom image for an artist
+# First, encode the artist name: "The Beatles" -> "VGhlIEJlYXRsZXM"
+curl -X POST http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/update \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/custom-beatles-image.jpg"}'
+
+# Response:
+# {
+#   "success": true,
+#   "message": "Artist image URL updated successfully"
+# }
+
+# Clear a custom image (set empty URL)
+curl -X POST http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/update \
+  -H "Content-Type: application/json" \
+  -d '{"url": ""}'
+
+# Invalid artist name encoding
+curl -X POST http://<device-ip>:1080/api/coverart/artist/invalid_encoding!/update \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/image.jpg"}'
+
+# Response:
+# {
+#   "success": false,
+#   "message": "Invalid artist name encoding"
+# }
 ```
 
 ### Cover Art Response Format

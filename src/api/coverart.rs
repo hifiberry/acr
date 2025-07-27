@@ -1,8 +1,11 @@
 use rocket::get;
+use rocket::post;
 use rocket::serde::json::Json;
 use rocket::serde::{Deserialize, Serialize};
+use log::debug;
 use crate::helpers::coverart::{get_coverart_manager, CoverartMethod, CoverartResult, ProviderInfo};
 use crate::helpers::url_encoding::decode_url_safe;
+use crate::helpers::settingsdb;
 
 #[derive(Serialize, Deserialize)]
 pub struct CoverartResponse {
@@ -15,9 +18,20 @@ pub struct CoverartMethodInfo {
     pub providers: Vec<ProviderInfo>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct CoverartMethodsResponse {
-    pub methods: Vec<CoverartMethodInfo>,
+#[derive(Serialize)]
+struct CoverartMethodsResponse {
+    methods: Vec<CoverartMethodInfo>,
+}
+
+#[derive(Deserialize)]
+struct UpdateImageRequest {
+    url: String,
+}
+
+#[derive(Serialize)]
+struct UpdateImageResponse {
+    success: bool,
+    message: String,
 }
 
 /// Get cover art for an artist
@@ -201,4 +215,44 @@ pub fn get_coverart_methods() -> Json<CoverartMethodsResponse> {
     .collect();
     
     Json(CoverartMethodsResponse { methods })
+}
+
+/// Update artist image with custom URL
+/// 
+/// # Parameters
+/// * `artist_b64` - Base64 encoded artist name
+/// * `request` - JSON request body containing the image URL
+#[post("/artist/<artist_b64>/update", data = "<request>")]
+pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>) -> Json<UpdateImageResponse> {
+    let artist_name = match decode_url_safe(&artist_b64) {
+        Some(name) => name,
+        None => {
+            return Json(UpdateImageResponse {
+                success: false,
+                message: "Invalid artist name encoding".to_string(),
+            });
+        }
+    };
+
+    // Store the custom URL in settings database
+    match settingsdb::set_string(&format!("artist.image.{}", artist_name), &request.url) {
+        Ok(_) => {
+            // Clear any cached image to force refresh
+            let cache_path = format!("artists/{}/cover.jpg", crate::helpers::url_encoding::encode_url_safe(&artist_name));
+            if let Ok(_) = std::fs::remove_file(&cache_path) {
+                debug!("Cleared cached image for artist: {}", artist_name);
+            }
+            
+            Json(UpdateImageResponse {
+                success: true,
+                message: "Artist image URL updated successfully".to_string(),
+            })
+        }
+        Err(e) => {
+            Json(UpdateImageResponse {
+                success: false,
+                message: format!("Failed to update artist image: {}", e),
+            })
+        }
+    }
 }

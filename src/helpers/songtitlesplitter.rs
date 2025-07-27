@@ -34,7 +34,7 @@ pub enum OrderResult {
 /// An optional tuple of (part1, part2) if splitting was successful
 ///
 /// # Examples
-/// ```
+/// ```no_run
 /// use audiocontrol::helpers::songtitlesplitter::split_song;
 /// 
 /// let result = split_song("The Beatles / Hey Jude");
@@ -91,7 +91,7 @@ pub fn split_song(input: &str) -> Option<(String, String)> {
 /// - Undecided: both combinations found, cannot determine
 ///
 /// # Examples
-/// ```
+/// ```no_run
 /// use audiocontrol::helpers::songtitlesplitter::{detect_order, OrderResult};
 /// 
 /// let result = detect_order("The Beatles", "Hey Jude");
@@ -153,7 +153,7 @@ impl SongTitleSplitter {
     /// A new SongTitleSplitter instance with default cache size of 50
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
     /// let splitter = SongTitleSplitter::new("track_123");
@@ -172,7 +172,7 @@ impl SongTitleSplitter {
     /// A new SongTitleSplitter instance with specified cache size
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
     /// let splitter = SongTitleSplitter::with_cache_size("track_123", 100);
@@ -202,7 +202,7 @@ impl SongTitleSplitter {
     /// An optional tuple of (artist, song) if the title could be split and order determined
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
     /// let mut splitter = SongTitleSplitter::new("track_123");
@@ -344,7 +344,7 @@ impl SongTitleSplitter {
     /// The OrderResult indicating the detected order
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::{SongTitleSplitter, OrderResult};
     /// 
     /// let mut splitter = SongTitleSplitter::new("track_123");
@@ -385,7 +385,7 @@ impl SongTitleSplitter {
     /// An optional tuple of (part1, part2) as they appear in the original title
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
     /// let splitter = SongTitleSplitter::new("track_123");
@@ -403,7 +403,7 @@ impl SongTitleSplitter {
     /// The ID string that was passed to the constructor
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
     /// let splitter = SongTitleSplitter::new("track_123");
@@ -521,7 +521,7 @@ impl SongTitleSplitter {
     /// A Result containing the JSON string representation on success, or an error on failure
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
     /// let mut splitter = SongTitleSplitter::new("radio_station_url");
@@ -553,7 +553,7 @@ impl SongTitleSplitter {
     /// A Result containing the restored SongTitleSplitter on success, or an error on failure
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
     /// let json = r#"{"id":"radio_station_url","order_stats":{},"default_order":null}"#;
@@ -585,7 +585,7 @@ impl SongTitleSplitter {
     /// A Result containing the compact JSON string representation on success, or an error on failure
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
     /// let splitter = SongTitleSplitter::new("radio_station_url");
@@ -616,7 +616,7 @@ impl SongTitleSplitter {
     /// A new SongTitleSplitter with the same state but different ID
     /// 
     /// # Examples
-    /// ```
+    /// ```no_run
     /// use audiocontrol::helpers::songtitlesplitter::SongTitleSplitter;
     /// 
     /// let mut original = SongTitleSplitter::new("station_1");

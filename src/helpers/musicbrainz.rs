@@ -85,10 +85,13 @@ pub struct MusicBrainzRecordingSearchResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct MusicBrainzRecording {
+pub struct MusicBrainzRecording {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     title: String,
     #[serde(rename = "artist-credit")]
+    #[allow(dead_code)]
     artist_credit: Option<Vec<MusicBrainzArtistCredit>>,
     #[allow(dead_code)]
     score: Option<u32>,
@@ -96,13 +99,17 @@ struct MusicBrainzRecording {
 
 #[derive(Debug, Deserialize)]
 struct MusicBrainzArtistCredit {
+    #[allow(dead_code)]
     name: String,
+    #[allow(dead_code)]
     artist: MusicBrainzArtistRef,
 }
 
 #[derive(Debug, Deserialize)]
 struct MusicBrainzArtistRef {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     name: String,
 }
 
@@ -247,13 +254,6 @@ fn sanitize_artist_name_for_search(artist_name: &str) -> String {
 /// # Arguments
 /// * `artist_name` - The artist name to split
 /// * `separators` - The separators to use for splitting
-/// 
-/// # Returns
-/// * `Vec<String>` - Vector containing individual artist names
-fn split_artist_with_separators(artist_name: &str, separators: &[String]) -> Vec<String> {
-    artistsplitter::split_artist_with_separators(artist_name, separators)
-}
-
 /// Split an artist name that might contain multiple artists
 /// 
 /// This function has been moved to artistsplitter module for better organization.

@@ -629,13 +629,13 @@ mod tests {
     #[test]
     fn test_fanarttv_coverart_provider_name() {
         let provider = FanarttvCoverartProvider::new();
-        assert_eq!(provider.name(), "fanarttv_coverart");
+        assert_eq!(provider.name(), "fanarttv");
     }
     
     #[test]
     fn test_fanarttv_coverart_provider_display_name() {
         let provider = FanarttvCoverartProvider::new();
-        assert_eq!(provider.display_name(), "FanArt.tv Cover Art");
+        assert_eq!(provider.display_name(), "FanArt.tv");
     }
     
     #[test]

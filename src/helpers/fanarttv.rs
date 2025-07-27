@@ -550,12 +550,12 @@ impl FanarttvCoverartProvider {
 impl CoverartProvider for FanarttvCoverartProvider {
     /// Returns the internal name identifier for this provider
     fn name(&self) -> &str {
-        "fanarttv_coverart"
+        "fanarttv"
     }
     
     /// Returns the human-readable display name for this provider
     fn display_name(&self) -> &str {
-        "FanArt.tv Cover Art"
+        "FanArt.tv"
     }
     
     /// Returns the set of cover art methods this provider supports

@@ -19,17 +19,17 @@ pub struct CoverartMethodInfo {
 }
 
 #[derive(Serialize)]
-struct CoverartMethodsResponse {
+pub struct CoverartMethodsResponse {
     methods: Vec<CoverartMethodInfo>,
 }
 
 #[derive(Deserialize)]
-struct UpdateImageRequest {
+pub struct UpdateImageRequest {
     url: String,
 }
 
 #[derive(Serialize)]
-struct UpdateImageResponse {
+pub struct UpdateImageResponse {
     success: bool,
     message: String,
 }

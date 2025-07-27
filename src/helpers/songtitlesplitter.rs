@@ -44,32 +44,84 @@ pub enum OrderResult {
 /// assert_eq!(result, Some(("Yesterday".to_string(), "The Beatles".to_string())));
 /// ```
 pub fn split_song(input: &str) -> Option<(String, String)> {
-    // Find the first occurrence of either "/" or "-"
+    split_song_with_separator(input, None)
+}
+
+/// Split a song title with optional preferred separator character
+///
+/// This function finds the first occurrence of supported separators: "-", "/", or ":"
+/// If a preferred separator is specified and found, it will be used first.
+/// Otherwise, it uses the first separator found in the string.
+///
+/// # Arguments
+/// * `input` - The combined song title string to split
+/// * `preferred_separator` - Optional preferred separator character to try first
+///
+/// # Returns
+/// An optional tuple of (part1, part2, separator_used) if splitting was successful
+pub fn split_song_with_separator_info(input: &str, preferred_separator: Option<char>) -> Option<(String, String, char)> {
+    // Find the first occurrence of each supported separator
     let dash_pos = input.find('-');
     let slash_pos = input.find('/');
+    let colon_pos = input.find(':');
     
-    // Determine which separator comes first (or if any exists)
-    let split_pos = match (dash_pos, slash_pos) {
-        (Some(dash), Some(slash)) => Some(dash.min(slash)),
-        (Some(dash), None) => Some(dash),
-        (None, Some(slash)) => Some(slash),
-        (None, None) => None,
+    // If we have a preferred separator and it exists in the string, use it first
+    let split_pos_and_char = if let Some(preferred) = preferred_separator {
+        match preferred {
+            '-' if dash_pos.is_some() => dash_pos.map(|pos| (pos, '-')),
+            '/' if slash_pos.is_some() => slash_pos.map(|pos| (pos, '/')),
+            ':' if colon_pos.is_some() => colon_pos.map(|pos| (pos, ':')),
+            _ => None,
+        }
+    } else {
+        None
     };
     
+    // If no preferred separator or preferred not found, find the first one that appears
+    let split_pos_and_char = split_pos_and_char.or_else(|| {
+        let positions = [
+            dash_pos.map(|pos| (pos, '-')),
+            slash_pos.map(|pos| (pos, '/')),
+            colon_pos.map(|pos| (pos, ':')),
+        ];
+        
+        // Find the earliest position
+        positions
+            .iter()
+            .filter_map(|&opt| opt)
+            .min_by_key(|(pos, _)| *pos)
+    });
+    
     // If we found a separator, split the string
-    if let Some(pos) = split_pos {
+    if let Some((pos, separator)) = split_pos_and_char {
         let part1 = input[..pos].trim().to_string();
         let part2 = input[pos + 1..].trim().to_string();
         
         // Only return if both parts are non-empty after trimming
         if !part1.is_empty() && !part2.is_empty() {
-            Some((part1, part2))
+            Some((part1, part2, separator))
         } else {
             None
         }
     } else {
         None
     }
+}
+
+/// Split a song title with optional preferred separator character
+///
+/// This function finds the first occurrence of supported separators: "-", "/", or ":"
+/// If a preferred separator is specified and found, it will be used first.
+/// Otherwise, it uses the first separator found in the string.
+///
+/// # Arguments
+/// * `input` - The combined song title string to split
+/// * `preferred_separator` - Optional preferred separator character to try first
+///
+/// # Returns
+/// An optional tuple of (part1, part2, separator_used) if splitting was successful
+pub fn split_song_with_separator(input: &str, preferred_separator: Option<char>) -> Option<(String, String)> {
+    split_song_with_separator_info(input, preferred_separator).map(|(part1, part2, _)| (part1, part2))
 }
 
 /// Detect the order of artist and song in split parts using MusicBrainz lookup
@@ -135,6 +187,10 @@ pub struct SongTitleSplitter {
     order_stats: HashMap<OrderResult, u32>,
     /// Default order to use when pattern is established (>95% confidence after 20+ songs)
     default_order: Option<OrderResult>,
+    /// Statistics of successful separator usage: character -> count
+    separator_stats: HashMap<char, u32>,
+    /// Default separator to use when pattern is established (>90% confidence after 10+ successful splits)
+    default_separator: Option<char>,
     /// Cache for MusicBrainz lookup results to avoid repeated API calls and counter updates
     #[serde(skip)]
     lookup_cache: HashMap<String, OrderResult>,
@@ -182,6 +238,8 @@ impl SongTitleSplitter {
             id: id.to_string(),
             order_stats: HashMap::new(),
             default_order: None,
+            separator_stats: HashMap::new(),
+            default_separator: None,
             lookup_cache: HashMap::new(),
             cache_size_limit: cache_size,
         }
@@ -213,8 +271,15 @@ impl SongTitleSplitter {
     pub fn split_song(&mut self, song_title: &str) -> Option<(String, String)> {
         debug!("Splitting song: '{}'", song_title);
         
-        // First split the title into parts
-        let parts = split_song(song_title)?;
+        // First try to split the title into parts using our learned separator
+        let (parts, separator_used) = if let Some((part1, part2, sep)) = split_song_with_separator_info(song_title, self.default_separator) {
+            ((part1, part2), Some(sep))
+        } else if let Some((part1, part2)) = split_song(song_title) {
+            // Fallback to original function that doesn't track separator
+            ((part1, part2), None)
+        } else {
+            return None;
+        };
         
         // Determine the order using default, cache, or MusicBrainz lookup
         let order = if let Some(default) = &self.default_order {
@@ -225,6 +290,17 @@ impl SongTitleSplitter {
             // Check cache first, then detect if not cached
             self.get_order_with_cache(song_title, &parts)
         };
+        
+        // If we successfully determined the order and have a separator, track separator usage
+        if let Some(separator) = separator_used {
+            match order {
+                OrderResult::ArtistSong | OrderResult::SongArtist => {
+                    // Only track successful splits
+                    self.update_separator_stats(separator);
+                }
+                _ => {} // Don't track separator for failed detections
+            }
+        }
         
         let result = match order {
             OrderResult::ArtistSong => {
@@ -253,6 +329,70 @@ impl SongTitleSplitter {
         let count = self.order_stats.entry(order.clone()).or_insert(0);
         *count += 1;
         debug!("Updated stats for {:?}: count now {}", order, count);
+        
+        // Check if we should establish a default order (>95% confidence after 20+ songs)
+        self.check_and_set_default_order();
+    }
+    
+    /// Internal method to update separator statistics
+    fn update_separator_stats(&mut self, separator: char) {
+        let count = self.separator_stats.entry(separator).or_insert(0);
+        *count += 1;
+        debug!("Updated separator stats for '{}': count now {}", separator, count);
+        
+        // Check if we should establish a default separator (>90% confidence after 10+ successful splits)
+        self.check_and_set_default_separator();
+    }
+    
+    /// Check if we should establish a default separator based on statistics
+    fn check_and_set_default_separator(&mut self) {
+        // If we already have a default separator, keep it (once established, always used)
+        if self.default_separator.is_some() {
+            return;
+        }
+        
+        let total_successful_splits: u32 = self.separator_stats.values().sum();
+        
+        if total_successful_splits >= 10 {
+            // Find the separator with the highest count
+            if let Some((best_separator, best_count)) = self.separator_stats.iter()
+                .max_by_key(|(_, count)| *count) {
+                
+                let percentage = (*best_count as f64 / total_successful_splits as f64) * 100.0;
+                
+                if percentage >= 90.0 {
+                    info!("Setting default separator to '{}' based on {:.1}% confidence ({}/{} successful splits)", 
+                          best_separator, percentage, best_count, total_successful_splits);
+                    self.default_separator = Some(*best_separator);
+                }
+            }
+        }
+    }
+    
+    /// Check if we should establish a default order based on statistics  
+    fn check_and_set_default_order(&mut self) {
+        // Get successful detection counts (exclude Unknown and Undecided)
+        let artist_song_count = *self.order_stats.get(&OrderResult::ArtistSong).unwrap_or(&0);
+        let song_artist_count = *self.order_stats.get(&OrderResult::SongArtist).unwrap_or(&0);
+        let total_successful = artist_song_count + song_artist_count;
+        
+        if total_successful >= 20 {
+            let (best_order, best_count) = if artist_song_count > song_artist_count {
+                (OrderResult::ArtistSong, artist_song_count)
+            } else {
+                (OrderResult::SongArtist, song_artist_count)
+            };
+            
+            let percentage = (best_count as f64 / total_successful as f64) * 100.0;
+            
+            if percentage >= 95.0 {
+                if self.default_order != Some(best_order.clone()) {
+                    info!("Setting default order to {:?} based on {:.1}% confidence ({}/{} successful detections)", 
+                          best_order, percentage, best_count, total_successful);
+                    self.default_order = Some(best_order);
+                }
+            }
+        }
     }
     
     /// Get order with cache lookup, only updating stats for new lookups
@@ -290,49 +430,6 @@ impl SongTitleSplitter {
         self.check_and_set_default_order();
         
         order
-    }
-    
-    /// Check if we should establish a default order based on current statistics
-    /// 
-    /// After 20 successful detections (ArtistSong + SongArtist), if one order type
-    /// represents >95% of the successful results, it becomes the default.
-    fn check_and_set_default_order(&mut self) {
-        // Only check if we don't already have a default
-        if self.default_order.is_some() {
-            return;
-        }
-        
-        let artist_song_count = self.get_artist_song_count();
-        let song_artist_count = self.get_song_artist_count();
-        let total_successful = artist_song_count + song_artist_count;
-        
-        // Need at least 20 successful detections to establish a pattern
-        if total_successful < 20 {
-            debug!("Not enough successful detections yet: {} (need 20)", total_successful);
-            return;
-        }
-        
-        // Calculate percentages
-        let artist_song_percent = (artist_song_count as f64) / (total_successful as f64) * 100.0;
-        let song_artist_percent = (song_artist_count as f64) / (total_successful as f64) * 100.0;
-        
-        debug!("Order statistics: ArtistSong={} ({:.1}%), SongArtist={} ({:.1}%), Total={}",
-               artist_song_count, artist_song_percent, 
-               song_artist_count, song_artist_percent, 
-               total_successful);
-        
-        // Check if either order reaches strictly >95% threshold
-        if artist_song_percent > 95.0 {
-            self.default_order = Some(OrderResult::ArtistSong);
-            info!("Default sort order established: ArtistSong ({:.1}% of {} successful detections)", 
-                  artist_song_percent, total_successful);
-        } else if song_artist_percent > 95.0 {
-            self.default_order = Some(OrderResult::SongArtist);
-            info!("Default sort order established: SongArtist ({:.1}% of {} successful detections)", 
-                  song_artist_percent, total_successful);
-        } else {
-            debug!("No clear pattern yet: need >95% for one order type");
-        }
     }
     
     /// Get the order detection result for a given song title
@@ -438,6 +535,59 @@ impl SongTitleSplitter {
         self.order_stats.values().sum()
     }
     
+    /// Get the number of successful splits using a specific separator
+    pub fn get_separator_count(&self, separator: char) -> u32 {
+        *self.separator_stats.get(&separator).unwrap_or(&0)
+    }
+    
+    /// Get the total number of successful separator-based splits
+    pub fn get_total_separator_count(&self) -> u32 {
+        self.separator_stats.values().sum()
+    }
+    
+    /// Get a copy of all separator statistics
+    pub fn get_separator_stats(&self) -> HashMap<char, u32> {
+        self.separator_stats.clone()
+    }
+    
+    /// Get the default separator if one has been established
+    /// 
+    /// # Returns
+    /// The default separator character if established (>90% confidence after 10+ successful splits), None otherwise
+    pub fn get_default_separator(&self) -> Option<char> {
+        self.default_separator
+    }
+    
+    /// Check if a default separator has been established
+    /// 
+    /// # Returns
+    /// true if a default separator is set (>90% confidence after 10+ successful splits), false otherwise
+    pub fn has_default_separator(&self) -> bool {
+        self.default_separator.is_some()
+    }
+    
+    /// Get the percentage of successful splits for each separator type
+    /// 
+    /// # Returns
+    /// A vector of (separator, percentage) tuples sorted by usage
+    pub fn get_separator_percentages(&self) -> Vec<(char, f64)> {
+        let total_successful = self.get_total_separator_count();
+        
+        if total_successful == 0 {
+            return Vec::new();
+        }
+        
+        let mut percentages: Vec<(char, f64)> = self.separator_stats
+            .iter()
+            .map(|(sep, count)| (*sep, (*count as f64 / total_successful as f64) * 100.0))
+            .collect();
+        
+        // Sort by percentage (highest first)
+        percentages.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        
+        percentages
+    }
+    
     /// Get a copy of all order statistics
     pub fn get_all_stats(&self) -> HashMap<OrderResult, u32> {
         self.order_stats.clone()
@@ -509,6 +659,8 @@ impl SongTitleSplitter {
     pub fn reset(&mut self) {
         self.order_stats.clear();
         self.default_order = None;
+        self.separator_stats.clear();
+        self.default_separator = None;
         self.lookup_cache.clear();
     }
     
@@ -631,6 +783,8 @@ impl SongTitleSplitter {
             id: new_id.to_string(),
             order_stats: self.order_stats.clone(),
             default_order: self.default_order.clone(),
+            separator_stats: self.separator_stats.clone(),
+            default_separator: self.default_separator,
             lookup_cache: self.lookup_cache.clone(),
             cache_size_limit: self.cache_size_limit,
         }
@@ -1003,7 +1157,9 @@ mod tests {
         let minimal_json = r#"{
             "id": "test_minimal",
             "order_stats": {},
-            "default_order": null
+            "default_order": null,
+            "separator_stats": {},
+            "default_separator": null
         }"#;
         let result3 = SongTitleSplitter::from_json(minimal_json);
         assert!(result3.is_ok());
@@ -1026,6 +1182,11 @@ mod tests {
         splitter.default_order = Some(OrderResult::ArtistSong);
         splitter.lookup_cache.insert("Test - Song".to_string(), OrderResult::ArtistSong);
         
+        // Add separator statistics
+        splitter.separator_stats.insert('-', 12);
+        splitter.separator_stats.insert(':', 3);
+        splitter.default_separator = Some('-');
+        
         // Serialize and deserialize
         let json = splitter.to_json().expect("Failed to serialize complex data");
         let restored = SongTitleSplitter::from_json(&json)
@@ -1042,9 +1203,224 @@ mod tests {
         assert_eq!(restored.get_unknown_count(), 3);
         assert_eq!(restored.get_total_count(), 20);
         
+        // Verify separator statistics are preserved
+        assert_eq!(restored.get_separator_count('-'), 12);
+        assert_eq!(restored.get_separator_count(':'), 3);
+        assert_eq!(restored.get_total_separator_count(), 15);
+        assert!(restored.has_default_separator());
+        assert_eq!(restored.get_default_separator(), Some('-'));
+        
         // Verify cache is reset (not serialized)
         assert_eq!(restored.get_cache_size(), 0);
         assert_eq!(restored.get_cache_size_limit(), 50); // Default value
         assert!(!restored.is_cached("Test - Song"));
+    }
+
+    #[test]
+    fn test_split_with_colon() {
+        let title = "Artist: Song Title";
+        let result = split_song(title);
+        match result {
+            Some((artist, song)) => {
+                assert_eq!(artist, "Artist");
+                assert_eq!(song, "Song Title");
+            }
+            None => panic!("Expected successful split for colon separator"),
+        }
+    }
+
+    #[test]
+    fn test_split_first_separator_colon() {
+        // Colon should be chosen as the first separator when multiple are present
+        let title = "Artist: Song - Title";
+        let result = split_song_with_separator_info(title, None);
+        assert!(result.is_some());
+        let (artist, song, separator) = result.unwrap();
+        assert_eq!(artist, "Artist");
+        assert_eq!(song, "Song - Title");
+        assert_eq!(separator, ':');
+    }
+
+    #[test]
+    fn test_multiple_colons() {
+        // Should use the first colon
+        let title = "Artist: Song: Subtitle";
+        let result = split_song_with_separator_info(title, None);
+        assert!(result.is_some());
+        let (artist, song, separator) = result.unwrap();
+        assert_eq!(artist, "Artist");
+        assert_eq!(song, "Song: Subtitle");
+        assert_eq!(separator, ':');
+    }
+
+    #[test]
+    fn test_separator_preference_learning() {
+        let mut splitter = SongTitleSplitter::new("test_separator_learning");
+        
+        // Initially no separator preference
+        assert!(!splitter.has_default_separator());
+        assert_eq!(splitter.get_total_separator_count(), 0);
+        
+        // Add separators interleaved to avoid hitting the 90% threshold at 10 dashes
+        // Use dash separator 9 times
+        for _i in 0..9 {
+            splitter.update_separator_stats('-');
+        }
+        
+        // Add colon separator 1 time  
+        splitter.update_separator_stats(':');
+        
+        // Now 9 dash, 1 colon = 10 total, but dash is only 90% (exactly at threshold)
+        // This should trigger default separator since >= 90%
+        assert_eq!(splitter.get_total_separator_count(), 10);
+        assert!(splitter.has_default_separator()); // 9/10 = 90% (exactly at threshold)
+        assert_eq!(splitter.get_default_separator(), Some('-'));
+        
+        // Add more dashes and colons, but default should remain sticky
+        for _i in 0..6 {
+            splitter.update_separator_stats('-');
+        }
+        
+        splitter.update_separator_stats(':');
+        
+        // Now have 15 dash, 2 colon = 17 total
+        // Dash percentage = 15/17 = 88.24% which is < 90%
+        // BUT default separator should remain once established (sticky behavior)
+        assert_eq!(splitter.get_separator_count('-'), 15);
+        assert_eq!(splitter.get_separator_count(':'), 2);
+        assert_eq!(splitter.get_total_separator_count(), 17);
+        
+        // Get percentages
+        let percentages = splitter.get_separator_percentages();
+        let dash_percentage = percentages.iter()
+            .find(|(c, _)| *c == '-')
+            .map(|(_, p)| *p)
+            .unwrap_or(0.0);
+        let colon_percentage = percentages.iter()
+            .find(|(c, _)| *c == ':')
+            .map(|(_, p)| *p)
+            .unwrap_or(0.0);
+        
+        assert!((dash_percentage - 88.24f64).abs() < 0.1); // 15/17 ≈ 88.24%
+        assert!((colon_percentage - 11.76f64).abs() < 0.1); // 2/17 ≈ 11.76%
+        
+        // Default separator should remain since it's sticky once established
+        assert!(splitter.has_default_separator());
+        assert_eq!(splitter.get_default_separator(), Some('-'));
+    }
+
+    #[test]
+    fn test_separator_no_default_when_threshold_not_met() {
+        let mut splitter = SongTitleSplitter::new("test_no_default");
+        
+        // Add separators but never reach 90% threshold for any single separator
+        // Use dash separator 8 times
+        for _i in 0..8 {
+            splitter.update_separator_stats('-');
+        }
+        
+        // Use colon separator 3 times  
+        for _i in 0..3 {
+            splitter.update_separator_stats(':');
+        }
+        
+        // Use slash separator 2 times
+        for _i in 0..2 {
+            splitter.update_separator_stats('/');
+        }
+        
+        // Now have 8 dash, 3 colon, 2 slash = 13 total
+        // Dash percentage = 8/13 = 61.54% (< 90%)
+        // No separator should reach the 90% threshold
+        assert_eq!(splitter.get_total_separator_count(), 13);
+        assert!(!splitter.has_default_separator());
+        assert_eq!(splitter.get_default_separator(), None);
+        
+        // Verify counts
+        assert_eq!(splitter.get_separator_count('-'), 8);
+        assert_eq!(splitter.get_separator_count(':'), 3);
+        assert_eq!(splitter.get_separator_count('/'), 2);
+    }
+
+    #[test]
+    fn test_separator_learning_threshold() {
+        let mut splitter = SongTitleSplitter::new("test_threshold");
+        
+        // Add 9 dash separators (not enough for default - need 10 minimum)
+        for _ in 0..9 {
+            splitter.update_separator_stats('-');
+        }
+        
+        assert!(!splitter.has_default_separator()); // Less than 10 total
+        assert_eq!(splitter.get_separator_count('-'), 9);
+        
+        // Add one more (10 total, 100% dash) - should trigger default
+        splitter.update_separator_stats('-');
+        
+        assert!(splitter.has_default_separator()); // 10 total, 100% dash
+        assert_eq!(splitter.get_default_separator(), Some('-'));
+        assert_eq!(splitter.get_separator_count('-'), 10);
+        
+        // Add some colon separators to reduce percentage below 90%
+        for _ in 0..2 {
+            splitter.update_separator_stats(':');
+        }
+        
+        // Now have 10 dash, 2 colon = 12 total
+        // Dash percentage = 10/12 = 83.33% (< 90%)
+        // BUT default separator should remain once established (sticky behavior)
+        assert!(splitter.has_default_separator());
+        assert_eq!(splitter.get_default_separator(), Some('-'));
+        assert_eq!(splitter.get_total_separator_count(), 12);
+    }
+
+    #[test]
+    fn test_separator_reset() {
+        let mut splitter = SongTitleSplitter::new("test_reset");
+        
+        // Add some separator statistics
+        splitter.update_separator_stats('-');
+        splitter.update_separator_stats(':');
+        
+        assert_eq!(splitter.get_total_separator_count(), 2);
+        assert_eq!(splitter.get_separator_count('-'), 1);
+        assert_eq!(splitter.get_separator_count(':'), 1);
+        
+        // Reset should clear separator stats
+        splitter.reset();
+        
+        assert_eq!(splitter.get_total_separator_count(), 0);
+        assert_eq!(splitter.get_separator_count('-'), 0);
+        assert_eq!(splitter.get_separator_count(':'), 0);
+        assert!(!splitter.has_default_separator());
+        assert_eq!(splitter.get_default_separator(), None);
+    }
+
+    #[test]
+    fn test_separator_clone_with_id() {
+        let mut original = SongTitleSplitter::new("original");
+        
+        // Add separator data
+        for _ in 0..12 {
+            original.update_separator_stats('-');
+        }
+        for _ in 0..3 {
+            original.update_separator_stats(':');
+        }
+        
+        // Should have default separator (12/15 = 80%, but need 90%)
+        // Actually 12 is >= 10 and 12/12 = 100% when it was set, so should have it
+        let cloned = original.clone_with_id("cloned");
+        
+        // Verify separator data is preserved
+        assert_eq!(cloned.get_separator_count('-'), original.get_separator_count('-'));
+        assert_eq!(cloned.get_separator_count(':'), original.get_separator_count(':'));
+        assert_eq!(cloned.get_total_separator_count(), original.get_total_separator_count());
+        assert_eq!(cloned.has_default_separator(), original.has_default_separator());
+        assert_eq!(cloned.get_default_separator(), original.get_default_separator());
+        
+        // But ID should be different
+        assert_eq!(cloned.get_id(), "cloned");
+        assert_eq!(original.get_id(), "original");
     }
 }

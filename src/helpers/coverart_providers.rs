@@ -201,6 +201,7 @@ impl CoverartProvider for SpotifyCoverartProvider {
 /// Initialize and register all cover art providers
 pub fn register_all_providers() {
     use crate::helpers::coverart::get_coverart_manager;
+    use crate::helpers::theaudiodb::TheAudioDbCoverartProvider;
     use std::sync::Arc;
     
     let manager = get_coverart_manager();
@@ -209,6 +210,10 @@ pub fn register_all_providers() {
     // Register Spotify provider
     let spotify_provider = Arc::new(SpotifyCoverartProvider::new());
     manager_lock.register_provider(spotify_provider);
+    
+    // Register TheAudioDB provider
+    let theaudiodb_provider = Arc::new(TheAudioDbCoverartProvider::new());
+    manager_lock.register_provider(theaudiodb_provider);
     
     debug!("Registered all cover art providers");
 }

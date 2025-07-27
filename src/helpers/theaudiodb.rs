@@ -1098,6 +1098,41 @@ impl ArtistUpdater for TheAudioDbUpdater {
     }
 }
 
+/// Cover Art Provider implementation for TheAudioDB
+pub struct TheAudioDbCoverartProvider;
+
+impl TheAudioDbCoverartProvider {
+    pub fn new() -> Self {
+        TheAudioDbCoverartProvider
+    }
+}
+
+impl crate::helpers::coverart::CoverartProvider for TheAudioDbCoverartProvider {
+    fn name(&self) -> &str {
+        "theaudiodb"
+    }
+
+    fn display_name(&self) -> &str {
+        "TheAudioDB"
+    }
+
+    fn supported_methods(&self) -> std::collections::HashSet<crate::helpers::coverart::CoverartMethod> {
+        use crate::helpers::coverart::CoverartMethod;
+        let mut methods = std::collections::HashSet::new();
+        methods.insert(CoverartMethod::Artist);
+        methods.insert(CoverartMethod::Album);
+        methods
+    }
+
+    fn get_artist_coverart_impl(&self, artist: &str) -> Vec<String> {
+        get_artist_coverart(artist)
+    }
+
+    fn get_album_coverart_impl(&self, album: &str, artist: &str, year: Option<i32>) -> Vec<String> {
+        get_album_coverart(album, artist, year)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests for TheAudioDB functionality

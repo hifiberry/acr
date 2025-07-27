@@ -597,19 +597,19 @@ mod tests {
     
     #[test]
     fn test_fanarttv_updater_coverart_provider_name() {
-        let provider = FanarttvUpdater::new();
+        let provider = FanarttvCoverartProvider::new();
         assert_eq!(provider.name(), "fanarttv");
     }
     
     #[test]
     fn test_fanarttv_updater_coverart_provider_display_name() {
-        let provider = FanarttvUpdater::new();
+        let provider = FanarttvCoverartProvider::new();
         assert_eq!(provider.display_name(), "FanArt.tv");
     }
     
     #[test]
     fn test_fanarttv_updater_supported_methods() {
-        let provider = FanarttvUpdater::new();
+        let provider = FanarttvCoverartProvider::new();
         let methods = provider.supported_methods();
         assert_eq!(methods.len(), 1);
         assert!(methods.contains(&CoverartMethod::Artist));
@@ -620,7 +620,7 @@ mod tests {
     
     #[test]
     fn test_fanarttv_updater_get_artist_coverart_impl() {
-        let provider = FanarttvUpdater::new();
+        let provider = FanarttvCoverartProvider::new();
         let result = provider.get_artist_coverart_impl("Test Artist");
         // Should return empty since we can't lookup MBID from name alone
         assert!(result.is_empty());
@@ -685,17 +685,15 @@ mod tests {
         
         let mut manager = CoverartManager::new();
         
-        // Register both FanArt.tv providers
-        let fanarttv_updater = Arc::new(FanarttvUpdater::new());
+        // Register FanArt.tv coverart provider
         let fanarttv_coverart = Arc::new(FanarttvCoverartProvider::new());
         
-        manager.register_provider(fanarttv_updater);
         manager.register_provider(fanarttv_coverart);
         
         // Test artist coverart retrieval (should return empty since no MusicBrainz lookup)
         let results = manager.get_artist_coverart("Test Artist");
         
-        // Both providers should be called but return no results
+        // Provider should be called but return no results
         assert_eq!(results.len(), 0);
     }
 }

@@ -153,6 +153,12 @@ pub fn get_coverart_methods() -> Json<CoverartMethodsResponse> {
     let manager_lock = manager.lock().unwrap();
     let providers = manager_lock.get_providers();
     
+    log::debug!("API: Total providers found: {}", providers.len());
+    for (i, provider) in providers.iter().enumerate() {
+        log::debug!("API: Provider {}: {} ({})", i, provider.name(), provider.display_name());
+        log::debug!("API: Provider {} supported methods: {:?}", i, provider.supported_methods());
+    }
+    
     // Group providers by supported methods
     let mut method_providers = std::collections::HashMap::new();
     

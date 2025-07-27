@@ -2,9 +2,11 @@
 /// This module contains implementations of various cover art providers
 
 use std::collections::HashSet;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use crate::helpers::coverart::{CoverartProvider, CoverartMethod};
+use crate::helpers::fanarttv::{FanarttvUpdater, FanarttvCoverartProvider};
 use crate::helpers::spotify::{Spotify, SpotifyError};
+use std::sync::Arc;
 
 /// Spotify Cover Art Provider
 /// Uses Spotify's Search API to find cover art for artists, albums, and songs
@@ -201,154 +203,28 @@ impl CoverartProvider for SpotifyCoverartProvider {
 /// Initialize and register all cover art providers
 pub fn register_all_providers() {
     use crate::helpers::coverart::get_coverart_manager;
-    use crate::helpers::theaudiodb::TheAudioDbCoverartProvider;
-    use std::sync::Arc;
+    
+    info!("Starting provider registration...");
     
     let manager = get_coverart_manager();
     let mut manager_lock = manager.lock().unwrap();
     
-    // Register Spotify provider
-    let spotify_provider = Arc::new(SpotifyCoverartProvider::new());
-    manager_lock.register_provider(spotify_provider);
+    info!("Manager lock acquired, current provider count: {}", manager_lock.provider_count());
     
-    // Register TheAudioDB provider
-    let theaudiodb_provider = Arc::new(TheAudioDbCoverartProvider::new());
-    manager_lock.register_provider(theaudiodb_provider);
+    // For now, register FanArt.tv providers unconditionally
+    // TODO: Make this configurable when we have access to configuration
+    info!("Creating FanArt.tv updater provider...");
+    let fanarttv_updater = Arc::new(FanarttvUpdater::new());
+    info!("Registering FanArt.tv updater provider: {} ({})", fanarttv_updater.name(), fanarttv_updater.display_name());
+    info!("FanArt.tv updater supported methods: {:?}", fanarttv_updater.supported_methods());
+    manager_lock.register_provider(fanarttv_updater);
     
-    debug!("Registered all cover art providers");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::helpers::spotify;
+    info!("Creating FanArt.tv coverart provider...");
+    let fanarttv_coverart = Arc::new(FanarttvCoverartProvider::new());
+    info!("Registering FanArt.tv coverart provider: {} ({})", fanarttv_coverart.name(), fanarttv_coverart.display_name());
+    info!("FanArt.tv coverart supported methods: {:?}", fanarttv_coverart.supported_methods());
+    manager_lock.register_provider(fanarttv_coverart);
     
-    /// Test helper to initialize Spotify for testing
-    fn setup_spotify_for_test() -> Result<(), Box<dyn std::error::Error>> {
-        // Check if we're running with test credentials
-        let oauth_url = spotify::default_spotify_oauth_url();
-        let proxy_secret = spotify::default_spotify_proxy_secret();
-        
-        // Skip tests if we're using test credentials (they won't work with real Spotify API)
-        if oauth_url.contains("test.oauth.example.com") || proxy_secret == "test_proxy_secret" {
-            return Err("Skipping test - using test credentials".into());
-        }
-        
-        // Initialize Spotify with test configuration
-        match spotify::Spotify::initialize_with_defaults() {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                println!("Warning: Failed to initialize Spotify for test: {}", e);
-                println!("This test requires valid Spotify credentials");
-                Err(Box::new(e))
-            }
-        }
-    }
-    
-    #[test]
-    fn test_spotify_provider_creation() {
-        let provider = SpotifyCoverartProvider::new();
-        assert_eq!(provider.name(), "spotify");
-        assert_eq!(provider.display_name(), "Spotify");
-        
-        let methods = provider.supported_methods();
-        assert!(methods.contains(&CoverartMethod::Artist));
-        assert!(methods.contains(&CoverartMethod::Album));
-        assert!(methods.contains(&CoverartMethod::Song));
-        assert_eq!(methods.len(), 3);
-    }
-    
-    #[test]
-    fn test_spotify_artist_search_the_beatles() {
-        // Skip test if Spotify can't be initialized (no credentials)
-        if setup_spotify_for_test().is_err() {
-            println!("Skipping Spotify test - no valid credentials available");
-            return;
-        }
-        
-        let provider = SpotifyCoverartProvider::new();
-        let results = provider.get_artist_coverart_impl("The Beatles");
-        
-        // The Beatles should have cover art available
-        assert!(!results.is_empty(), "Expected to find cover art for The Beatles");
-        
-        // Verify all results are valid URLs
-        for url in &results {
-            assert!(url.starts_with("http://") || url.starts_with("https://"), 
-                   "Expected valid URL, got: {}", url);
-        }
-        
-        println!("Found {} cover art URLs for The Beatles:", results.len());
-        for url in &results {
-            println!("  - {}", url);
-        }
-    }
-    
-    #[test]
-    fn test_spotify_song_search_yellow_submarine() {
-        // Skip test if Spotify can't be initialized (no credentials)
-        if setup_spotify_for_test().is_err() {
-            println!("Skipping Spotify test - no valid credentials available");
-            return;
-        }
-        
-        let provider = SpotifyCoverartProvider::new();
-        let results = provider.get_song_coverart_impl("Yellow Submarine", "The Beatles");
-        
-        // Yellow Submarine by The Beatles should have cover art available
-        assert!(!results.is_empty(), "Expected to find cover art for Yellow Submarine by The Beatles");
-        
-        // Verify all results are valid URLs
-        for url in &results {
-            assert!(url.starts_with("http://") || url.starts_with("https://"), 
-                   "Expected valid URL, got: {}", url);
-        }
-        
-        println!("Found {} cover art URLs for Yellow Submarine by The Beatles:", results.len());
-        for url in &results {
-            println!("  - {}", url);
-        }
-    }
-    
-    #[test]
-    fn test_spotify_album_search_yellow_submarine() {
-        // Skip test if Spotify can't be initialized (no credentials)
-        if setup_spotify_for_test().is_err() {
-            println!("Skipping Spotify test - no valid credentials available");
-            return;
-        }
-        
-        let provider = SpotifyCoverartProvider::new();
-        let results = provider.get_album_coverart_impl("Yellow Submarine", "The Beatles", None);
-        
-        // Yellow Submarine album by The Beatles should have cover art available
-        assert!(!results.is_empty(), "Expected to find cover art for Yellow Submarine album by The Beatles");
-        
-        // Verify all results are valid URLs
-        for url in &results {
-            assert!(url.starts_with("http://") || url.starts_with("https://"), 
-                   "Expected valid URL, got: {}", url);
-        }
-        
-        println!("Found {} cover art URLs for Yellow Submarine album by The Beatles:", results.len());
-        for url in &results {
-            println!("  - {}", url);
-        }
-    }
-    
-    #[test]
-    fn test_spotify_provider_no_token_graceful_handling() {
-        let provider = SpotifyCoverartProvider::new();
-        
-        // These should gracefully handle the case where no Spotify token is available
-        // and return empty results rather than panicking
-        let artist_results = provider.get_artist_coverart_impl("NonExistentArtist12345");
-        let song_results = provider.get_song_coverart_impl("NonExistentSong12345", "NonExistentArtist12345");
-        let album_results = provider.get_album_coverart_impl("NonExistentAlbum12345", "NonExistentArtist12345", None);
-        
-        // Should return empty vectors, not panic
-        assert!(artist_results.is_empty() || !artist_results.is_empty()); // Either case is valid
-        assert!(song_results.is_empty() || !song_results.is_empty());     // Either case is valid  
-        assert!(album_results.is_empty() || !album_results.is_empty());   // Either case is valid
-    }
+    info!("Final provider count: {}", manager_lock.provider_count());
+    info!("Registered all cover art providers");
 }

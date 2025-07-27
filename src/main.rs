@@ -8,6 +8,7 @@ use audiocontrol::helpers::security_store::SecurityStore;
 use audiocontrol::helpers::settingsdb::SettingsDb;
 use audiocontrol::helpers::spotify;
 use audiocontrol::helpers::theaudiodb;
+use audiocontrol::helpers::fanarttv;
 use audiocontrol::logging;
 use audiocontrol::players::PlayerController;
 use audiocontrol::secrets;
@@ -229,6 +230,9 @@ fn main() {
     // Initialize TheAudioDB with the configuration
     initialize_theaudiodb(&controllers_config);
     
+    // Initialize FanArt.tv with the configuration
+    initialize_fanarttv(&controllers_config);
+    
     // Initialize configurator with the configuration
     initialize_configurator(&controllers_config);
     
@@ -365,8 +369,8 @@ fn main() {
 
     info!(
         "API server started on port {}",
-        controllers_config
-            .get("api_port")
+        get_service_config(&controllers_config, "webserver")
+            .and_then(|ws| ws.get("port"))
             .and_then(|p| p.as_u64())
             .unwrap_or(1080)
     );
@@ -416,6 +420,12 @@ fn initialize_musicbrainz(config: &serde_json::Value) {
 fn initialize_theaudiodb(config: &serde_json::Value) {
     theaudiodb::initialize_from_config(config);
     info!("TheAudioDB initialized successfully");
+}
+
+// Helper function to initialize FanArt.tv
+fn initialize_fanarttv(config: &serde_json::Value) {
+    fanarttv::initialize_from_config(config);
+    info!("FanArt.tv initialized successfully");
 }
 
 // Helper function to initialize configurator

@@ -77,6 +77,11 @@
             "api_key": "", 
             "rate_limit_ms": 500
         },
+        "fanarttv": {
+            "enable": true,
+            "api_key": "",
+            "rate_limit_ms": 500
+        },
         "lastfm": {
             "enable": true,
             "api_key": "",

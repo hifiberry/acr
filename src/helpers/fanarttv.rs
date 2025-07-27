@@ -1,5 +1,5 @@
 use serde_json::Value;
-use log::{debug, warn, info};
+use log::{debug, warn, info, error};
 use crate::helpers::http_client;
 use crate::helpers::imagecache;
 use crate::data::artist::Artist;
@@ -10,6 +10,112 @@ use moka::sync::Cache;
 use std::time::Duration;
 use std::collections::HashSet;
 use lazy_static::lazy_static;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use crate::config::get_service_config;
+use crate::helpers::ratelimit;
+
+/// Global flag to indicate if FanArt.tv lookups are enabled
+static FANARTTV_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// API key storage for FanArt.tv
+#[derive(Default)]
+struct FanarttvConfig {
+    api_key: String,
+}
+
+// Default API key for FanArt.tv
+pub fn default_fanarttv_api_key() -> String {
+    "749a8fca4f2d3b0462b287820ad6ab06".to_string()
+}
+
+// Global singleton for FanArt.tv configuration
+lazy_static! {
+    static ref FANARTTV_CONFIG: Mutex<FanarttvConfig> = Mutex::new(FanarttvConfig::default());
+}
+
+/// Initialize FanArt.tv module from configuration
+pub fn initialize_from_config(config: &serde_json::Value) {    
+    if let Some(fanarttv_config) = get_service_config(config, "fanarttv") {
+        // Check if enabled flag exists and is set to true
+        let enabled = fanarttv_config.get("enable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true); // Default to enabled if not specified
+        
+        FANARTTV_ENABLED.store(enabled, Ordering::SeqCst);
+        
+        // Get API key if provided
+        if let Some(api_key) = fanarttv_config.get("api_key").and_then(|v| v.as_str()) {
+            if let Ok(mut config) = FANARTTV_CONFIG.lock() {
+                debug!("Found FanArt.tv API key in config: {}", 
+                       if !api_key.is_empty() && api_key.len() > 4 { 
+                           format!("{}...", &api_key[0..4]) 
+                       } else { 
+                           "Empty".to_string() 
+                       });
+                
+                config.api_key = api_key.to_string();
+                if !api_key.is_empty() {
+                    info!("FanArt.tv API key configured");
+                } else {
+                    // Use the default key
+                    let default_key = default_fanarttv_api_key();
+                    config.api_key = default_key;
+                    info!("Using default FanArt.tv API key");
+                }
+            } else {
+                error!("Failed to acquire lock on FanArt.tv configuration");
+            }
+        } else {
+            // Use default API key if none provided
+            if let Ok(mut config) = FANARTTV_CONFIG.lock() {
+                let default_key = default_fanarttv_api_key();
+                config.api_key = default_key;
+                debug!("No API key found for FanArt.tv in configuration, using default");
+            }
+        }
+        
+        // Register rate limit - default to 2 requests per second (500ms)
+        let rate_limit_ms = fanarttv_config.get("rate_limit_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(500);
+            
+        ratelimit::register_service("fanarttv", rate_limit_ms);
+        info!("FanArt.tv rate limit set to {} ms", rate_limit_ms);
+        
+        let status = if enabled { "enabled" } else { "disabled" };
+        info!("FanArt.tv lookup {}", status);
+    } else {
+        // Default to enabled if not in config, with default API key
+        FANARTTV_ENABLED.store(true, Ordering::SeqCst);
+        if let Ok(mut config) = FANARTTV_CONFIG.lock() {
+            let default_key = default_fanarttv_api_key();
+            config.api_key = default_key;
+        }
+        debug!("FanArt.tv configuration not found, using defaults (enabled with default API key)");
+        
+        // Register default rate limit
+        ratelimit::register_service("fanarttv", 500);
+    }
+}
+
+/// Check if FanArt.tv lookups are enabled
+pub fn is_enabled() -> bool {
+    FANARTTV_ENABLED.load(Ordering::SeqCst)
+}
+
+/// Get the configured API key
+pub fn get_api_key() -> Option<String> {
+    if let Ok(config) = FANARTTV_CONFIG.lock() {
+        if !config.api_key.is_empty() {
+            Some(config.api_key.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
 
 // Using lazy_static for failed MBID cache with 24-hour expiry  
 lazy_static! {
@@ -23,8 +129,6 @@ lazy_static! {
     };
 }
 
-// API key for fanart.tv
-const APIKEY: &str = "749a8fca4f2d3b0462b287820ad6ab06";
 // Provider name for image naming
 const PROVIDER: &str = "fanarttv";
 
@@ -42,6 +146,21 @@ fn http_client() -> Box<dyn http_client::HttpClient> {
 /// # Returns
 /// * `Vec<String>` - URLs of all available thumbnails, empty if none found
 pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Vec<String> {
+    // Check if FanArt.tv is enabled
+    if !is_enabled() {
+        debug!("FanArt.tv lookups are disabled");
+        return Vec::new();
+    }
+
+    // Get the configured API key
+    let api_key = match get_api_key() {
+        Some(key) => key,
+        None => {
+            warn!("No FanArt.tv API key configured");
+            return Vec::new();
+        }
+    };
+
     // Check negative cache for failed lookups
     if FAILED_MBID_CACHE.get(artist_mbid).is_some() {
         debug!("MBID '{}' found in negative cache (previous FanArt.tv lookup failed)", artist_mbid);
@@ -52,7 +171,7 @@ pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Ve
     let url = format!(
         "http://webservice.fanart.tv/v3/music/{}?api_key={}", 
         artist_mbid,
-        APIKEY
+        api_key
     );
 
     let mut thumbnail_urls = Vec::new();
@@ -112,6 +231,21 @@ pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Ve
 /// # Returns
 /// * `Vec<String>` - URLs of all available banners, empty if none found
 pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
+    // Check if FanArt.tv is enabled
+    if !is_enabled() {
+        debug!("FanArt.tv lookups are disabled");
+        return Vec::new();
+    }
+
+    // Get the configured API key
+    let api_key = match get_api_key() {
+        Some(key) => key,
+        None => {
+            warn!("No FanArt.tv API key configured");
+            return Vec::new();
+        }
+    };
+
     // Check negative cache for failed lookups
     if FAILED_MBID_CACHE.get(artist_mbid).is_some() {
         debug!("MBID '{}' found in negative cache (previous FanArt.tv lookup failed)", artist_mbid);
@@ -121,7 +255,7 @@ pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
     let url = format!(
         "http://webservice.fanart.tv/v3/music/{}?api_key={}", 
         artist_mbid,
-        APIKEY
+        api_key
     );
 
     let mut banner_urls = Vec::new();

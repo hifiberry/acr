@@ -29,6 +29,7 @@ TEST_PORTS = {
     'theaudiodb': 18080,
     'fanarttv': 18080,
     'volume': 18080,
+    'coverart': 18080,
 }
 
 # Path configurations for different test types
@@ -40,6 +41,7 @@ TEST_CONFIGS = {
     'theaudiodb': Path(__file__).parent / "test_config_theaudiodb.json",
     'fanarttv': Path(__file__).parent / "test_config_fanarttv.json",
     'volume': Path(__file__).parent / "test_config_volume.json",
+    'coverart': Path(__file__).parent / "test_config_generic.json",
 }
 
 # Default path to static configuration file

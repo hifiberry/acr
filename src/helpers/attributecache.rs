@@ -1,12 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::collections::HashMap;
 use lazy_static::lazy_static;
 use log::{info, error, debug};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use rusqlite::{Connection, params};
 use chrono::Utc;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 
 /// Information about a cache entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,14 +33,14 @@ pub struct AttributeCache {
     enabled: bool,
     /// Max age of cached items in days
     max_age_days: u64,
-    /// In-memory cache of recently accessed items
-    memory_cache: HashMap<String, Arc<Vec<u8>>>,
+    /// In-memory LRU cache of recently accessed items (10k entries max)
+    memory_cache: LruCache<String, Arc<Vec<u8>>>,
 }
 
 impl AttributeCache {
     /// Create a new attribute cache with default settings
     pub fn new() -> Self {
-        // Using the default path that matches our cache.attribute_cache_path setting
+        // Using the default path that matches our datastore.attribute_cache.dbfile setting
         let cache_dir = PathBuf::from("/var/lib/audiocontrol/cache");
         let db_file = cache_dir.join("attributes.db");
         Self::with_database_file(db_file)
@@ -63,7 +64,7 @@ impl AttributeCache {
             db,
             enabled: true,
             max_age_days: 30, // Default to 30 days
-            memory_cache: HashMap::new(),
+            memory_cache: LruCache::new(NonZeroUsize::new(10_000).unwrap()),
         }
     }
 
@@ -224,7 +225,7 @@ impl AttributeCache {
         };
 
         // Store in memory cache
-        self.memory_cache.insert(key.to_string(), Arc::new(serialized.clone()));
+        self.memory_cache.put(key.to_string(), Arc::new(serialized.clone()));
 
         // Store in SQLite database
         match &mut self.db {
@@ -283,7 +284,7 @@ impl AttributeCache {
                             Err(e) => return Err(format!("Failed to deserialize from database: {}", e)),
                         };
                         
-                        self.memory_cache.insert(key.to_string(), Arc::new(data_vec));
+                        self.memory_cache.put(key.to_string(), Arc::new(data_vec));
                         debug!("Retrieved key '{}' from SQLite cache", key);
                         Ok(Some(result))
                     },
@@ -302,7 +303,7 @@ impl AttributeCache {
         }
 
         // Remove from memory cache
-        self.memory_cache.remove(key);
+        self.memory_cache.pop(key);
 
         // Remove from database
         match &mut self.db {
@@ -564,7 +565,7 @@ impl AttributeCache {
 
         // Remove from memory cache
         for key in &keys_to_remove {
-            self.memory_cache.remove(key);
+            self.memory_cache.pop(key);
         }
 
         // Remove from database
@@ -573,6 +574,52 @@ impl AttributeCache {
 
         debug!("Removed {} cache entries with prefix '{}'", deleted, prefix);
         Ok(deleted)
+    }
+
+    /// Preload all cache entries matching a prefix into the LRU memory cache
+    /// 
+    /// This function loads all database entries with the given prefix into the LRU cache
+    /// for faster subsequent access. This is useful for warming up the cache when you
+    /// know you'll be accessing many keys with the same prefix.
+    /// 
+    /// # Arguments
+    /// * `prefix` - The prefix to match for cache keys
+    /// 
+    /// # Returns
+    /// The number of entries loaded into memory cache
+    pub fn preload_prefix(&mut self, prefix: &str) -> Result<usize, String> {
+        if !self.enabled {
+            return Ok(0);
+        }
+
+        if self.db.is_none() {
+            return Err("Database connection is not available".to_string());
+        }
+
+        let pattern = format!("{}%", prefix);
+        let db = self.db.as_ref().unwrap();
+        
+        let mut stmt = db.prepare("SELECT key, value FROM cache WHERE key LIKE ?1")
+            .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
+        
+        let rows = stmt.query_map(params![pattern], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?
+            ))
+        }).map_err(|e| format!("Failed to execute select query: {}", e))?;
+
+        let mut loaded_count = 0;
+        for row in rows {
+            let (key, value) = row.map_err(|e| format!("Failed to read row: {}", e))?;
+            
+            // Store in memory cache
+            self.memory_cache.put(key, Arc::new(value));
+            loaded_count += 1;
+        }
+
+        debug!("Preloaded {} cache entries with prefix '{}' into memory cache", loaded_count, prefix);
+        Ok(loaded_count)
     }
 }
 
@@ -621,6 +668,21 @@ pub fn list_entries(prefix_filter: Option<&str>) -> Result<Vec<CacheEntry>, Stri
 /// Remove all cache entries matching a prefix
 pub fn remove_by_prefix(prefix: &str) -> Result<usize, String> {
     get_attribute_cache().remove_by_prefix(prefix)
+}
+
+/// Preload all cache entries matching a prefix into the LRU memory cache
+/// 
+/// This function loads all database entries with the given prefix into the LRU cache
+/// for faster subsequent access. This is useful for warming up the cache when you
+/// know you'll be accessing many keys with the same prefix.
+/// 
+/// # Arguments
+/// * `prefix` - The prefix to match for cache keys
+/// 
+/// # Returns
+/// The number of entries loaded into memory cache
+pub fn preload_prefix(prefix: &str) -> Result<usize, String> {
+    get_attribute_cache().preload_prefix(prefix)
 }
 
 /// Get the created_at and updated_at timestamps for a key
@@ -727,7 +789,7 @@ mod tests {
         assert_eq!(retrieved2, Some(value));
         
         // Verify memory cache contains the key
-        assert!(cache.memory_cache.contains_key(key));
+        assert!(cache.memory_cache.peek(key).is_some());
     }
 
     #[test]
@@ -753,7 +815,7 @@ mod tests {
         assert_eq!(retrieved_after_remove, None);
         
         // Verify memory cache is also cleared
-        assert!(!cache.memory_cache.contains_key(key));
+        assert!(cache.memory_cache.peek(key).is_none());
     }
 
     #[test]

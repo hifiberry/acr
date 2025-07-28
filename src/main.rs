@@ -1,6 +1,6 @@
 use audiocontrol::api::server;
 use audiocontrol::config::get_service_config;
-use audiocontrol::helpers::attributecache::AttributeCache;
+use audiocontrol::helpers::attributecache::{self, AttributeCache};
 use audiocontrol::helpers::imagecache::ImageCache;
 use audiocontrol::helpers::lastfm;
 use audiocontrol::helpers::musicbrainz;
@@ -137,37 +137,73 @@ fn main() {
             "Security store initialized successfully at {}",
             security_store_path.display()
         );
-    } // Get the attribute cache path from configuration
-    let attribute_cache_path = if let Some(cache_config) =
-        get_service_config(&controllers_config, "cache")
+    } // Get the attribute cache configuration from datastore
+    let (attribute_cache_path, preload_prefixes) = if let Some(datastore_config) =
+        get_service_config(&controllers_config, "datastore")
     {
-        if let Some(cache_path) = cache_config
-            .get("attribute_cache_path")
-            .and_then(|p| p.as_str())
-        {
-            info!("Using attribute cache path from config: {}", cache_path);
-            cache_path.to_string()
+        let attribute_cache_config = datastore_config.get("attribute_cache");
+        
+        let cache_path = if let Some(cache_config) = attribute_cache_config {
+            if let Some(cache_path) = cache_config
+                .get("dbfile")
+                .and_then(|p| p.as_str())
+            {
+                info!("Using attribute cache database file from config: {}", cache_path);
+                cache_path.to_string()
+            } else {
+                let default_path = "/var/lib/audiocontrol/cache/attributes.db".to_string();
+                info!(
+                    "No dbfile specified in attribute_cache configuration, using default path: {}",
+                    default_path
+                );
+                default_path
+            }
         } else {
-            let default_path = "/var/lib/audiocontrol/cache/attributes".to_string();
+            let default_path = "/var/lib/audiocontrol/cache/attributes.db".to_string();
             info!(
-                "No attribute_cache_path specified in cache configuration, using default path: {}",
+                "No attribute_cache configuration found in datastore, using default path: {}",
                 default_path
             );
             default_path
-        }
+        };
+
+        let prefixes = if let Some(cache_config) = attribute_cache_config {
+            if let Some(prefixes_value) = cache_config.get("preload_prefixes") {
+                if let Some(prefixes_array) = prefixes_value.as_array() {
+                    let mut prefixes = Vec::new();
+                    for prefix in prefixes_array {
+                        if let Some(prefix_str) = prefix.as_str() {
+                            prefixes.push(prefix_str.to_string());
+                        }
+                    }
+                    info!("Found {} preload prefixes in configuration", prefixes.len());
+                    prefixes
+                } else {
+                    info!("preload_prefixes is not an array, using empty list");
+                    Vec::new()
+                }
+            } else {
+                info!("No preload_prefixes specified in attribute_cache configuration");
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        (cache_path, prefixes)
     } else {
-        let default_path = "/var/lib/audiocontrol/cache/attributes".to_string();
+        let default_path = "/var/lib/audiocontrol/cache/attributes.db".to_string();
         info!(
-            "No cache configuration found, using default attribute cache path: {}",
+            "No datastore configuration found, using default attribute cache path: {}",
             default_path
         );
-        default_path
+        (default_path, Vec::new())
     };
 
     // Get the image cache path from configuration
     let image_cache_path =
-        if let Some(cache_config) = get_service_config(&controllers_config, "cache") {
-            if let Some(cache_path) = cache_config
+        if let Some(datastore_config) = get_service_config(&controllers_config, "datastore") {
+            if let Some(cache_path) = datastore_config
                 .get("image_cache_path")
                 .and_then(|p| p.as_str())
             {
@@ -176,7 +212,7 @@ fn main() {
             } else {
                 let default_path = "/var/lib/audiocontrol/cache/images".to_string();
                 info!(
-                    "No image_cache_path specified in cache configuration, using default path: {}",
+                    "No image_cache_path specified in datastore configuration, using default path: {}",
                     default_path
                 );
                 default_path
@@ -184,7 +220,7 @@ fn main() {
         } else {
             let default_path = "/var/lib/audiocontrol/cache/images".to_string();
             info!(
-                "No cache configuration found, using default image cache path: {}",
+                "No datastore configuration found, using default image cache path: {}",
                 default_path
             );
             default_path
@@ -192,6 +228,9 @@ fn main() {
 
     // Initialize the global attribute cache with the configured path from JSON
     initialize_attribute_cache(&attribute_cache_path);
+
+    // Preload configured prefixes into the attribute cache
+    preload_attribute_cache(&preload_prefixes);
 
     // Initialize the global image cache with the configured path from JSON
     initialize_image_cache(&image_cache_path);
@@ -407,6 +446,29 @@ fn initialize_settingsdb(settingsdb_path: &str) {
     match SettingsDb::initialize(settingsdb_path) {
         Ok(_) => info!("Settings database initialized with path: {}", settingsdb_path),
         Err(e) => warn!("Failed to initialize settings database: {}", e),
+    }
+}
+
+// Helper function to preload attribute cache prefixes
+fn preload_attribute_cache(prefixes: &[String]) {
+    if prefixes.is_empty() {
+        info!("No prefixes configured for attribute cache preloading");
+        return;
+    }
+
+    info!("Preloading {} prefix(es) into attribute cache", prefixes.len());
+    
+    for prefix in prefixes {
+        match attributecache::preload_prefix(prefix) {
+            Ok(count) => {
+                if count > 0 {
+                    info!("Preloaded {} entries with prefix '{}'", count, prefix);
+                } else {
+                    debug!("No entries found for prefix '{}'", prefix);
+                }
+            },
+            Err(e) => warn!("Failed to preload prefix '{}': {}", prefix, e),
+        }
     }
 }
 

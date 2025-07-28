@@ -43,7 +43,13 @@
             ]
         },
         "datastore": {
-            "attribute_cache_path": "/var/lib/audiocontrol/cache/attributes",
+            "attribute_cache": {
+                "dbfile": "/var/lib/audiocontrol/cache/attributes.db",
+                "preload_prefixes": [
+                    "artist::mbid",
+                    "image_meta:"
+                ]
+            },
             "image_cache_path": "/var/lib/audiocontrol/cache/images",
             "user_image_path": "/var/lib/audiocontrol/user/images",
             "artist_store": {

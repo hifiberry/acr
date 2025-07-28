@@ -258,7 +258,6 @@ impl ArtistStore {
 
         // If auto-download is disabled, return not found
         if !self.config.auto_download {
-            debug!("Auto-download disabled, not downloading image for artist: {}", artist_name);
             return ArtistImageResult::NotFound;
         }
 
@@ -289,7 +288,7 @@ impl ArtistStore {
 
         // Find the highest-rated image across all providers
         let mut best_image: Option<&crate::helpers::coverart::ImageInfo> = None;
-        let mut best_grade = -1;
+        let mut best_grade = -10; // Start lower to allow grade -1 images
 
         for result in &results {
             for image in &result.images {

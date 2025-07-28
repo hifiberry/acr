@@ -2,4 +2,4 @@
 # This file is kept for reference
 configs/audiocontrol.json etc/audiocontrol/
 configs/logging.json etc/audiocontrol/
-conf/genres.json etc/audiocontrol/
+configs/genres.json etc/audiocontrol/

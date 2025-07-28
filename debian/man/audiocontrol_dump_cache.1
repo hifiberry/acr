@@ -1,0 +1,90 @@
+.TH AUDIOCONTROL_DUMP_CACHE 1 "January 2025" "audiocontrol" "AudioControl Cache Manager"
+.SH NAME
+audiocontrol_dump_cache \- manage AudioControl cache database entries
+.SH SYNOPSIS
+.B audiocontrol_dump_cache
+[\fIOPTIONS\fR] \fICOMMAND\fR [\fICOMMAND_OPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol_dump_cache
+is a command-line tool for managing the AudioControl cache database. It allows you to list, clean, and analyze cache entries including artist data, images, and MusicBrainz metadata.
+.SH OPTIONS
+.TP
+.BR \-c ", " \-\-cache\-dir " " \fIDIR\fR
+Path to the cache database directory. If not specified, uses the default cache location.
+.TP
+.BR \-h ", " \-\-help
+Print help information and exit.
+.SH COMMANDS
+.TP
+.B list
+List cache entries. Use \fB\-\-help\fR for command-specific options.
+.TP
+.B clean
+Clean cache entries. Use \fB\-\-help\fR for command-specific options.
+.TP
+.B stats
+Show cache statistics. Use \fB\-\-help\fR for command-specific options.
+.SH LIST COMMAND
+.TP
+.BR \-p ", " \-\-prefix " " \fIPREFIX\fR
+Filter entries by prefix (e.g., "artist::", "theaudiodb::").
+.TP
+.BR \-d ", " \-\-detailed
+Show detailed information including size and timestamps.
+.TP
+.BR \-l ", " \-\-limit " " \fILIMIT\fR
+Limit number of results.
+.TP
+.B \-\-artistmbid
+Show artist MusicBrainz data (shortcut for \fB\-\-prefix "artist::mbid"\fR).
+.TP
+.B \-\-imagemeta
+Show image metadata (shortcut for \fB\-\-prefix "image_meta:"\fR).
+.SH CLEAN COMMAND
+.TP
+.BR \-p ", " \-\-prefix " " \fIPREFIX\fR
+Remove entries matching this prefix.
+.TP
+.B \-\-all
+Remove all entries (use with caution!).
+.TP
+.B \-\-older\-than\-days " " \fIDAYS\fR
+Remove entries older than specified days.
+.TP
+.B \-\-dry\-run
+Show what would be deleted without actually deleting.
+.TP
+.B \-\-artistmbid
+Clean artist MusicBrainz data (shortcut for \fB\-\-prefix "artist::mbid"\fR).
+.TP
+.B \-\-imagemeta
+Clean image metadata (shortcut for \fB\-\-prefix "image_meta:"\fR).
+.SH STATS COMMAND
+.TP
+.BR \-b ", " \-\-by\-prefix
+Group statistics by prefix.
+.SH EXAMPLES
+.TP
+List all cache entries:
+.B audiocontrol_dump_cache list
+.TP
+List artist images with details:
+.B audiocontrol_dump_cache list \-\-artistmbid \-\-detailed
+.TP
+Show what image metadata would be cleaned (dry run):
+.B audiocontrol_dump_cache clean \-\-imagemeta \-\-dry\-run
+.TP
+Clean all artist MusicBrainz data entries:
+.B audiocontrol_dump_cache clean \-\-artistmbid
+.TP
+Show cache statistics grouped by prefix:
+.B audiocontrol_dump_cache stats \-\-by\-prefix
+.SH FILES
+.TP
+.I ~/.local/share/audiocontrol/attributes.db
+Default cache database location.
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_dump_store (1)
+.SH AUTHORS
+HiFiBerry AudioControl development team.

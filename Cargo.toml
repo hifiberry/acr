@@ -39,6 +39,8 @@ deunicode = "1.4.1"
 strsim = "0.11.1"
 # For in-memory cache with expiry
 moka = { version = "0.12", features = ["sync"] }
+# LRU cache for fast access to frequently used data
+lru = "0.12"
 # For WebSocket support
 rocket_ws = "0.1.0"
 # For command line argument parsing
@@ -114,6 +116,10 @@ path = "src/tools/acr_send_update.rs"
 [[bin]]
 name = "audiocontrol_dump_store"
 path = "src/tools/acr_dump_store.rs"
+
+[[bin]]
+name = "audiocontrol_dump_cache"
+path = "src/tools/audiocontrol_dump_cache.rs"
 
 [[bin]]
 name = "audiocontrol_player_event_client"

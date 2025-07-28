@@ -98,7 +98,7 @@ impl ArtistStore {
     /// The local cache path for the artist's image
     pub fn get_artist_image_path(&self, artist_name: &str, image_type: &str) -> String {
         let sanitized_name = crate::helpers::sanitize::filename_from_string(artist_name);
-        format!("{}/artists/{}/{}.jpg", self.config.cache_dir, sanitized_name, image_type)
+        format!("{}/{}/{}.jpg", self.config.cache_dir, sanitized_name, image_type)
     }
 
     /// Get the user directory path for an artist's custom cover art
@@ -849,8 +849,8 @@ mod tests {
         let user_artist_dir = Path::new(&store.config.user_dir).join("artists").join(&sanitized_name);
         fs::create_dir_all(&user_artist_dir).expect("Failed to create user artist dir");
         
-        // Create cache directory structure
-        let cache_artist_dir = Path::new(&store.config.cache_dir).join("artists").join(&sanitized_name);
+        // Create cache directory structure (cache_dir already includes 'artists')
+        let cache_artist_dir = Path::new(&store.config.cache_dir).join(&sanitized_name);
         fs::create_dir_all(&cache_artist_dir).expect("Failed to create cache artist dir");
         
         // Create a dummy image in cache
@@ -881,7 +881,7 @@ mod tests {
         
         let cache_path = store.get_artist_image_path("Metallica", "cover");
         // Use the sanitized filename format (filename_from_string converts to lowercase)
-        assert!(cache_path.contains("/artists/metallica/cover.jpg"));
+        assert!(cache_path.contains("/metallica/cover.jpg"));
         assert!(cache_path.starts_with(&store.config.cache_dir));
         
         let user_path = store.get_artist_user_image_path("Metallica", "custom");
@@ -930,8 +930,8 @@ mod tests {
         // Use the sanitized name format
         let sanitized_name = crate::helpers::sanitize::filename_from_string(artist_name);
         
-        // Create cache directory structure
-        let cache_artist_dir = Path::new(&store.config.cache_dir).join("artists").join(&sanitized_name);
+        // Create cache directory structure (cache_dir already includes 'artists')
+        let cache_artist_dir = Path::new(&store.config.cache_dir).join(&sanitized_name);
         fs::create_dir_all(&cache_artist_dir).expect("Failed to create cache artist dir");
         
         // Create a dummy image

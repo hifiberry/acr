@@ -1,5 +1,5 @@
 use crate::helpers::ratelimit;
-use log::{debug, info, error, warn}; // Added warn back
+use log::{debug, info, error};
 use md5;
 use once_cell::sync::Lazy;
 use regex::Regex;

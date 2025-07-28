@@ -121,6 +121,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         coverart::get_url_coverart,
         coverart::get_coverart_methods,
         coverart::update_artist_image,
+        coverart::get_artist_image,
     ];
 
     // Define Last.fm specific routes

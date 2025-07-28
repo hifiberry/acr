@@ -256,3 +256,65 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
         }
     }
 }
+
+/// Get artist image directly
+/// 
+/// This endpoint serves the actual artist image file if available in cache.
+/// Returns a 404 if no image is found.
+/// 
+/// # Parameters
+/// * `artist_b64` - Base64 encoded artist name
+#[get("/artist/<artist_b64>/image")]
+pub fn get_artist_image(artist_b64: String) -> Result<(rocket::http::ContentType, Vec<u8>), rocket::response::status::Custom<String>> {
+    use rocket::http::Status;
+    use rocket::response::status::Custom;
+    
+    let artist_name = match decode_url_safe(&artist_b64) {
+        Some(decoded) => decoded,
+        None => {
+            log::warn!("Failed to decode artist parameter: {}", artist_b64);
+            return Err(Custom(
+                Status::BadRequest,
+                "Invalid artist name encoding".to_string(),
+            ));
+        }
+    };
+
+    // Try to get the cached image from the artist store
+    match crate::helpers::artist_store::get_or_download_artist_image(&artist_name) {
+        Some(cache_path) => {
+            // Read the image file
+            match std::fs::read(&cache_path) {
+                Ok(image_data) => {
+                    // Determine content type based on file extension
+                    let content_type = if cache_path.ends_with(".png") {
+                        rocket::http::ContentType::PNG
+                    } else if cache_path.ends_with(".gif") {
+                        rocket::http::ContentType::GIF
+                    } else if cache_path.ends_with(".webp") {
+                        rocket::http::ContentType::new("image", "webp")
+                    } else {
+                        rocket::http::ContentType::JPEG // Default to JPEG
+                    };
+                    
+                    debug!("Serving artist image for '{}' from cache: {}", artist_name, cache_path);
+                    Ok((content_type, image_data))
+                },
+                Err(e) => {
+                    log::warn!("Failed to read cached image for artist '{}' at '{}': {}", artist_name, cache_path, e);
+                    Err(Custom(
+                        Status::InternalServerError,
+                        format!("Failed to read cached image: {}", e),
+                    ))
+                }
+            }
+        },
+        None => {
+            debug!("No cached image found for artist: {}", artist_name);
+            Err(Custom(
+                Status::NotFound,
+                format!("No image found for artist '{}'", artist_name),
+            ))
+        }
+    }
+}

@@ -96,6 +96,17 @@ def coverart_server():
             if "rate_limit_ms" not in config["services"]["musicbrainz"]:
                 config["services"]["musicbrainz"]["rate_limit_ms"] = 1000
         
+        # Configure artist store settings to ensure auto-download is enabled
+        if "settings" not in config:
+            config["settings"] = {}
+        if "datastore" not in config["settings"]:
+            config["settings"]["datastore"] = {}
+        if "artist_store" not in config["settings"]["datastore"]:
+            config["settings"]["datastore"]["artist_store"] = {}
+        
+        # Explicitly enable auto-download for artist images
+        config["settings"]["datastore"]["artist_store"]["auto_download"] = True
+        
         # Create config file
         config_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
         json.dump(config, config_file, indent=2)
@@ -540,6 +551,145 @@ class TestCoverArtAPI:
         
         print(f"✓ LastFM provider working correctly for {artist_name}")
         print(f"✓ Found {len(lastfm_result['images'])} images from LastFM")
+
+    def test_artist_image_endpoint_metallica(self, coverart_server):
+        """Test the direct artist image endpoint for serving cached images"""
+        # Start the server
+        success = coverart_server.start_server()
+        assert success, "Failed to start audiocontrol server"
+        
+        # Explicitly enable auto-download via the settings API
+        print("Ensuring auto-download is enabled via settings API...")
+        settings_url = f"{coverart_server.server_url}/api/settings/datastore.artist_store.auto_download"
+        settings_response = requests.put(settings_url, json=True, timeout=10)
+        if settings_response.status_code == 200:
+            print("✓ Auto-download setting enabled successfully")
+        else:
+            print(f"Warning: Failed to set auto-download setting: {settings_response.status_code}")
+        
+        # Encode "Metallica" using URL-safe base64
+        artist_name = "Metallica"
+        artist_b64 = base64.urlsafe_b64encode(artist_name.encode()).decode().rstrip('=')
+        
+        # First, try to get artist coverart to trigger image caching
+        print(f"First requesting coverart metadata for {artist_name} to trigger caching...")
+        coverart_url = f"{coverart_server.server_url}/api/coverart/artist/{artist_b64}"
+        response = requests.get(coverart_url, timeout=30)
+        assert response.status_code == 200, f"Failed to get coverart metadata: {response.status_code}"
+        
+        coverart_data = response.json()
+        print(f"Coverart metadata response: {len(coverart_data.get('results', []))} provider(s)")
+        
+        # Verify we have at least one provider with images before expecting download to work
+        has_downloadable_images = False
+        for result in coverart_data.get('results', []):
+            for image in result.get('images', []):
+                if image.get('url', '').startswith(('http://', 'https://')):
+                    has_downloadable_images = True
+                    print(f"Found downloadable image: {image['url'][:80]}...")
+                    break
+            if has_downloadable_images:
+                break
+        
+        if not has_downloadable_images:
+            pytest.skip("No downloadable images found from cover art providers - skipping auto-download test")
+        
+        # Allow some time for potential background caching, then try the endpoint multiple times
+        # The first call to the image endpoint should trigger the download
+        print("Waiting 3 seconds for image caching, then trying image endpoint...")
+        time.sleep(3)
+        
+        # Now test the direct image endpoint - this should trigger download if not cached
+        image_url = f"{coverart_server.server_url}/api/coverart/artist/{artist_b64}/image"
+        print(f"Making request to artist image endpoint: {image_url}")
+        
+        # Try the endpoint - the first call should trigger download
+        image_response = requests.get(image_url, timeout=30)
+        print(f"Image endpoint response status: {image_response.status_code}")
+        
+        # If we get 404 on first try, wait a bit and try again - download might be in progress
+        if image_response.status_code == 404:
+            print("First attempt returned 404, waiting 5 seconds for download to complete...")
+            time.sleep(5)
+            image_response = requests.get(image_url, timeout=30)
+            print(f"Second attempt response status: {image_response.status_code}")
+        
+        # If still 404, try one more time with a longer wait
+        if image_response.status_code == 404:
+            print("Second attempt returned 404, waiting 10 seconds for download to complete...")
+            time.sleep(10)
+            image_response = requests.get(image_url, timeout=30)
+            print(f"Third attempt response status: {image_response.status_code}")
+        
+        if image_response.status_code == 200:
+            # We got an image successfully
+            print("✓ Successfully retrieved artist image from cache")
+            
+            # Check content type
+            content_type = image_response.headers.get('content-type', '')
+            print(f"Content-Type: {content_type}")
+            assert content_type.startswith('image/'), f"Expected image content type, got: {content_type}"
+            
+            # Check image size
+            image_data = image_response.content
+            assert len(image_data) > 0, "Image data should not be empty"
+            assert len(image_data) > 1024, "Image should be larger than 1KB"
+            assert len(image_data) < 10_000_000, "Image should be smaller than 10MB"
+            
+            print(f"✓ Image size: {len(image_data)} bytes ({len(image_data)/1024:.1f}KB)")
+            
+            # Verify it's actually image data by checking magic numbers
+            image_formats = {
+                b'\xFF\xD8\xFF': 'JPEG',
+                b'\x89PNG\r\n\x1a\n': 'PNG',
+                b'GIF87a': 'GIF87a',
+                b'GIF89a': 'GIF89a',
+                b'RIFF': 'WebP'  # WebP files start with RIFF
+            }
+            
+            detected_format = None
+            for magic, format_name in image_formats.items():
+                if image_data.startswith(magic):
+                    detected_format = format_name
+                    break
+            
+            assert detected_format is not None, f"Image data doesn't appear to be a valid image format. First 16 bytes: {image_data[:16]}"
+            print(f"✓ Detected image format: {detected_format}")
+            
+        elif image_response.status_code == 404:
+            # No cached image available - this test should fail since we expect auto-download to work
+            pytest.fail(f"Expected cached image for {artist_name} but got 404. Auto-download should have cached an image from the available providers. Check if auto-download is enabled and working properly.")
+            
+        else:
+            # Unexpected status code
+            pytest.fail(f"Unexpected status code {image_response.status_code}. Response: {image_response.text}")
+
+    def test_artist_image_endpoint_invalid_artist(self, coverart_server):
+        """Test the artist image endpoint with invalid artist name"""
+        # Start the server
+        success = coverart_server.start_server()
+        assert success, "Failed to start audiocontrol server"
+        
+        # Test with invalid base64 encoding
+        invalid_b64 = "invalid_base64_!@#"
+        image_url = f"{coverart_server.server_url}/api/coverart/artist/{invalid_b64}/image"
+        print(f"Testing invalid base64: {image_url}")
+        
+        response = requests.get(image_url, timeout=10)
+        print(f"Response status: {response.status_code}")
+        assert response.status_code == 400, f"Expected 400 for invalid base64, got {response.status_code}"
+        
+        # Test with valid base64 but non-existent artist
+        nonexistent_artist = "NonexistentArtistXYZ123"
+        artist_b64 = base64.urlsafe_b64encode(nonexistent_artist.encode()).decode().rstrip('=')
+        image_url = f"{coverart_server.server_url}/api/coverart/artist/{artist_b64}/image"
+        print(f"Testing non-existent artist: {image_url}")
+        
+        response = requests.get(image_url, timeout=10)
+        print(f"Response status: {response.status_code}")
+        assert response.status_code == 404, f"Expected 404 for non-existent artist, got {response.status_code}"
+        
+        print("✓ Artist image endpoint correctly handles invalid requests")
 
 if __name__ == "__main__":
     pytest.main([__file__])

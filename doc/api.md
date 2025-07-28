@@ -2184,6 +2184,49 @@ echo -n "The Beatles" | base64 -w 0 | tr '+/' '-_' | tr -d '='
 curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM
 ```
 
+### Get Artist Image File
+
+Directly serves the cached artist image file if available. This endpoint returns the actual image data with proper content-type headers, making it suitable for direct use in `<img>` tags or as image sources.
+
+- **Endpoint**: `/api/coverart/artist/<artist_b64>/image`
+- **Method**: GET
+- **Parameters**:
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+- **Response**: 
+  - **Success (200)**: Binary image data with appropriate `Content-Type` header (`image/jpeg`, `image/png`, `image/gif`, or `image/webp`)
+  - **Not Found (404)**: JSON error message if no cached image is available
+  - **Bad Request (400)**: JSON error message for invalid artist name encoding
+  - **Internal Server Error (500)**: JSON error message if image file cannot be read
+
+#### Examples
+
+**Get image file for "The Beatles":**
+```bash
+# First encode the artist name
+echo -n "The Beatles" | base64 -w 0 | tr '+/' '-_' | tr -d '='
+# Result: VGhlIEJlYXRsZXM
+
+# Get the image file directly (returns binary image data)
+curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image
+
+# Save image to file
+curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image -o beatles.jpg
+
+# Use in HTML
+# <img src="http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image" alt="The Beatles">
+```
+
+**Error responses:**
+```bash
+# Artist not found or no cached image
+curl http://<device-ip>:1080/api/coverart/artist/Tm9uZXhpc3RlbnQ/image
+# Returns: 404 with {"error": "No image found for artist 'Nonexistent'"}
+
+# Invalid encoding
+curl http://<device-ip>:1080/api/coverart/artist/invalid!/image  
+# Returns: 400 with {"error": "Invalid artist name encoding"}
+```
+
 ### Get Cover Art for Song
 
 Retrieves cover art URLs for a specific song from all registered providers.

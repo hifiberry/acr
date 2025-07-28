@@ -98,24 +98,25 @@ def test_fanarttv_artist_coverart_beatles(fanarttv_server):
     for result in results:
         assert isinstance(result, dict)
         assert 'provider' in result
-        assert 'urls' in result
-        assert isinstance(result['urls'], list)
+        assert 'images' in result
+        assert isinstance(result['images'], list)
         
         # Check for both possible FanArt.tv provider names
         provider_name = result['provider']['name'] if isinstance(result['provider'], dict) else result['provider']
         if provider_name.lower() in ['fanarttv', 'fanarttv_coverart', 'fanart.tv', 'fanart.tv cover art']:
-            fanarttv_results.extend(result['urls'])
-            print(f"FanArt.tv provider found {len(result['urls'])} URLs")
-            for i, url in enumerate(result['urls']):
-                print(f"  URL {i+1}: {url}")
+            fanarttv_results.extend(result['images'])
+            print(f"FanArt.tv provider found {len(result['images'])} images")
+            for i, image in enumerate(result['images']):
+                print(f"  Image {i+1}: {image.get('url', 'No URL')} (Grade: {image.get('grade', 'No grade')})")
     
     # We should have FanArt.tv results for The Beatles (if service is enabled and configured)
     if fanarttv_results:
-        # Verify URLs are valid HTTP URLs
-        for url in fanarttv_results:
-            assert url.startswith('http'), f"Invalid URL format: {url}"
+        # Verify image objects have URL field
+        for image in fanarttv_results:
+            assert 'url' in image, f"Image object missing URL: {image}"
+            assert image['url'].startswith('http'), f"Invalid URL format: {image['url']}"
         
-        print(f"✓ Successfully found {len(fanarttv_results)} FanArt.tv cover art URLs for {artist_name}")
+        print(f"✓ Successfully found {len(fanarttv_results)} FanArt.tv cover art images for {artist_name}")
     else:
         # If no results, the service might be disabled or misconfigured
         print(f"⚠ No FanArt.tv results found for {artist_name}")
@@ -272,31 +273,32 @@ def test_fanarttv_john_williams(fanarttv_server):
     for result in results:
         assert isinstance(result, dict)
         assert 'provider' in result
-        assert 'urls' in result
-        assert isinstance(result['urls'], list)
+        assert 'images' in result
+        assert isinstance(result['images'], list)
         
         # Check for both possible FanArt.tv provider names
         provider_name = result['provider']['name'] if isinstance(result['provider'], dict) else result['provider']
         if provider_name.lower() in ['fanarttv', 'fanarttv_coverart', 'fanart.tv', 'fanart.tv cover art']:
-            fanarttv_results.extend(result['urls'])
-            print(f"FanArt.tv provider found {len(result['urls'])} URLs")
-            for i, url in enumerate(result['urls']):
-                print(f"  URL {i+1}: {url}")
+            fanarttv_results.extend(result['images'])
+            print(f"FanArt.tv provider found {len(result['images'])} images")
+            for i, image in enumerate(result['images']):
+                print(f"  Image {i+1}: {image.get('url', 'No URL')} (Grade: {image.get('grade', 'No grade')})")
     
     # Check results
     if fanarttv_results:
-        # Verify URLs are valid HTTP URLs
-        for url in fanarttv_results:
-            assert url.startswith('http'), f"Invalid URL format: {url}"
+        # Verify image objects have URL field
+        for image in fanarttv_results:
+            assert 'url' in image, f"Image object missing URL: {image}"
+            assert image['url'].startswith('http'), f"Invalid URL format: {image['url']}"
         
-        print(f"✓ Successfully found {len(fanarttv_results)} FanArt.tv cover art URLs for {artist_name}")
+        print(f"✓ Successfully found {len(fanarttv_results)} FanArt.tv cover art images for {artist_name}")
     else:
         # If no results, this might be expected for John Williams (composer)
         print(f"⚠ No FanArt.tv results found for {artist_name}")
         print("This might be expected - John Williams (composer) may not have artist images on FanArt.tv")
         
         # Don't fail the test if other providers found results
-        total_urls = sum(len(result['urls']) for result in results)
+        total_images = sum(len(result['images']) for result in results)
         if total_urls > 0:
             print(f"Other providers found {total_urls} URLs total")
         else:
@@ -331,13 +333,13 @@ def test_fanarttv_coverart_integration_full_flow(fanarttv_server):
     artist_response = fanarttv_server.api_request('GET', f'/api/coverart/artist/{artist_b64}')
     
     assert 'results' in artist_response
-    artist_fanarttv_urls = 0
+    artist_fanarttv_images = 0
     for result in artist_response['results']:
         provider_name = result['provider']['name'] if isinstance(result['provider'], dict) else result['provider']
         if provider_name.lower() in ['fanarttv', 'fanarttv_coverart', 'fanart.tv', 'fanart.tv cover art']:
-            artist_fanarttv_urls += len(result['urls'])
+            artist_fanarttv_images += len(result['images'])
     
-    print(f"Step 2: Artist '{artist_name}' - FanArt.tv URLs found: {artist_fanarttv_urls}")
+    print(f"Step 2: Artist '{artist_name}' - FanArt.tv images found: {artist_fanarttv_images}")
     
     # Step 3: Test album cover art with Abbey Road
     album_name = "Abbey Road"
@@ -345,26 +347,26 @@ def test_fanarttv_coverart_integration_full_flow(fanarttv_server):
     album_response = fanarttv_server.api_request('GET', f'/api/coverart/album/{album_b64}/{artist_b64}')
     
     assert 'results' in album_response
-    album_fanarttv_urls = 0
+    album_fanarttv_images = 0
     for result in album_response['results']:
         provider_name = result['provider']['name'] if isinstance(result['provider'], dict) else result['provider']
         if provider_name.lower() in ['fanarttv', 'fanarttv_coverart', 'fanart.tv', 'fanart.tv cover art']:
-            album_fanarttv_urls += len(result['urls'])
+            album_fanarttv_images += len(result['images'])
     
-    print(f"Step 3: Album '{album_name}' by '{artist_name}' - FanArt.tv URLs found: {album_fanarttv_urls}")
+    print(f"Step 3: Album '{album_name}' by '{artist_name}' - FanArt.tv images found: {album_fanarttv_images}")
     
     # Step 4: Summary and assertions
-    total_urls = artist_fanarttv_urls + album_fanarttv_urls
+    total_images = artist_fanarttv_images + album_fanarttv_images
     print(f"\n=== Integration Test Summary ===")
     print(f"FanArt.tv provider available: {fanarttv_available}")
-    print(f"Total URLs found: {total_urls}")
-    print(f"  - Artist URLs: {artist_fanarttv_urls}")
-    print(f"  - Album URLs: {album_fanarttv_urls}")
+    print(f"Total images found: {total_images}")
+    print(f"  - Artist images: {artist_fanarttv_images}")
+    print(f"  - Album images: {album_fanarttv_images}")
     
     # For now, we'll accept that FanArt.tv might not return results due to missing MusicBrainz integration
     # But the provider must be registered and available
     # TODO: Once MusicBrainz integration is complete, we should expect actual results
-    if total_urls > 0:
+    if total_images > 0:
         print("✓ FanArt.tv cover art integration is working correctly with results")
     else:
         print("⚠ FanArt.tv is available but returned no results")

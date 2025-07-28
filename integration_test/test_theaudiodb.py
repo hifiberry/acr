@@ -321,31 +321,33 @@ def test_theaudiodb_artist_coverart_beatles(theaudiodb_server):
     for result in results:
         assert isinstance(result, dict)
         assert 'provider' in result
-        assert 'urls' in result
-        assert isinstance(result['urls'], list)
+        assert 'images' in result
+        assert isinstance(result['images'], list)
         
-        if result['provider'] == 'theaudiodb':
-            theaudiodb_results.extend(result['urls'])
-            print(f"TheAudioDB provider found {len(result['urls'])} URLs")
-            for i, url in enumerate(result['urls']):
-                print(f"  URL {i+1}: {url}")
+        provider_name = result['provider']['name'] if isinstance(result['provider'], dict) else result['provider']
+        if provider_name == 'theaudiodb':
+            theaudiodb_results.extend(result['images'])
+            print(f"TheAudioDB provider found {len(result['images'])} images")
+            for i, image in enumerate(result['images']):
+                print(f"  Image {i+1}: {image.get('url', 'No URL')} (Grade: {image.get('grade', 'No grade')})")
     
     # We should have TheAudioDB results for The Beatles (if service is enabled and configured)
     if theaudiodb_results:
-        # Verify URLs are valid HTTP URLs
-        for url in theaudiodb_results:
-            assert url.startswith('http'), f"Invalid URL format: {url}"
+        # Verify image objects have URL field
+        for image in theaudiodb_results:
+            assert 'url' in image, f"Image object missing URL: {image}"
+            assert image['url'].startswith('http'), f"Invalid URL format: {image['url']}"
         
-        print(f"✓ Successfully found {len(theaudiodb_results)} TheAudioDB cover art URLs for {artist_name}")
+        print(f"✓ Successfully found {len(theaudiodb_results)} TheAudioDB cover art images for {artist_name}")
     else:
         # If no results, the service might be disabled or misconfigured
         print(f"⚠ No TheAudioDB results found for {artist_name}")
         print("This might be expected if TheAudioDB is disabled or API key is missing")
         
         # Don't fail the test if other providers found results
-        total_urls = sum(len(result['urls']) for result in results)
-        if total_urls > 0:
-            print(f"Other providers found {total_urls} URLs total")
+        total_images = sum(len(result['images']) for result in results)
+        if total_images > 0:
+            print(f"Other providers found {total_images} images total")
         else:
             print("No cover art found from any provider")
 
@@ -388,22 +390,24 @@ def test_theaudiodb_album_coverart_beatles(theaudiodb_server):
         for result in results:
             assert isinstance(result, dict)
             assert 'provider' in result
-            assert 'urls' in result
-            assert isinstance(result['urls'], list)
+            assert 'images' in result
+            assert isinstance(result['images'], list)
             
-            if result['provider'] == 'theaudiodb':
-                theaudiodb_results.extend(result['urls'])
-                print(f"TheAudioDB provider found {len(result['urls'])} URLs")
-                for i, url in enumerate(result['urls']):
-                    print(f"  URL {i+1}: {url}")
+            provider_name = result['provider']['name'] if isinstance(result['provider'], dict) else result['provider']
+            if provider_name == 'theaudiodb':
+                theaudiodb_results.extend(result['images'])
+                print(f"TheAudioDB provider found {len(result['images'])} images")
+                for i, image in enumerate(result['images']):
+                    print(f"  Image {i+1}: {image.get('url', 'No URL')} (Grade: {image.get('grade', 'No grade')})")
         
         # Check results
         if theaudiodb_results:
-            # Verify URLs are valid HTTP URLs
-            for url in theaudiodb_results:
-                assert url.startswith('http'), f"Invalid URL format: {url}"
+            # Verify image objects have URL field
+            for image in theaudiodb_results:
+                assert 'url' in image, f"Image object missing URL: {image}"
+                assert image['url'].startswith('http'), f"Invalid URL format: {image['url']}"
             
-            print(f"✓ Successfully found {len(theaudiodb_results)} TheAudioDB album cover art URLs")
+            print(f"✓ Successfully found {len(theaudiodb_results)} TheAudioDB album cover art images")
             
             # For "Abbey Road", we should definitely find results if the service is working
             if album_name == "Abbey Road" and len(theaudiodb_results) > 0:
@@ -411,9 +415,9 @@ def test_theaudiodb_album_coverart_beatles(theaudiodb_server):
                 
         else:
             # If no TheAudioDB results, check if other providers found anything
-            total_urls = sum(len(result['urls']) for result in results)
-            if total_urls > 0:
-                print(f"⚠ No TheAudioDB results, but other providers found {total_urls} URLs")
+            total_images = sum(len(result['images']) for result in results)
+            if total_images > 0:
+                print(f"⚠ No TheAudioDB results, but other providers found {total_images} images")
             else:
                 print(f"⚠ No cover art found for '{album_name}' by '{artist_name}' from any provider")
             

@@ -6,18 +6,13 @@ use std::sync::Mutex;
 use serde_json::{Value};
 use crate::config::get_service_config;
 use crate::helpers::http_client;
-use crate::helpers::imagecache;
 use crate::helpers::attributecache;
 use crate::helpers::ratelimit;
 use crate::data::artist::Artist;
 use crate::helpers::ArtistUpdater;
-use crate::helpers::sanitize::filename_from_string;
 
 /// Global flag to indicate if TheAudioDB lookups are enabled
 static THEAUDIODB_ENABLED: AtomicBool = AtomicBool::new(false);
-
-// Provider name for image naming
-const PROVIDER: &str = "theaudiodb";
 
 /// Create a new HTTP client with a timeout of 10 seconds
 fn new_client() -> Box<dyn http_client::HttpClient> {
@@ -651,117 +646,6 @@ pub fn lookup_theaudiodb_album_by_name(artist_name: &str, album_name: &str) -> R
     }
 }
 
-/// Download artist thumbnail from TheAudioDB
-/// 
-/// This function downloads the artist thumbnail from TheAudioDB if available
-/// and stores it in the image cache following the naming convention:
-/// - artist.theaudiodb.0.xxx for the main thumbnail
-/// 
-/// # Arguments
-/// * `mbid` - MusicBrainz ID of the artist
-/// * `artist_name` - Name of the artist for caching
-/// 
-/// # Returns
-/// * `bool` - true if the download was successful, false otherwise
-pub fn download_theaudiodb_artist_thumbnail(mbid: &str, artist_name: &str) -> bool {
-    if !is_enabled() {
-        debug!("TheAudioDB lookups are disabled, skipping thumbnail download");
-        return false;
-    }
-    
-    // Create a cache key for tracking artists with no thumbnails
-    let no_thumbnail_cache_key = format!("theaudiodb::no_thumbnail::{}", mbid);
-    
-    // Check if we previously determined this artist has no thumbnail
-    match attributecache::get::<bool>(&no_thumbnail_cache_key) {
-        Ok(Some(true)) => {
-            debug!("Artist '{}' previously marked as having no thumbnail in cache", artist_name);
-            return false;
-        },
-        _ => {
-            // Continue with lookup if not marked as no thumbnail or error reading cache
-        }
-    }
-
-    let artist_basename = filename_from_string(artist_name);
-
-    // Check if the thumbnail already exists
-    let thumb_base_path = format!("artists/{}/artist", artist_basename);
-    let existing_thumbs = imagecache::count_provider_files(&thumb_base_path, PROVIDER);
-    
-    if existing_thumbs > 0 {
-        debug!("Artist already has {} thumbnails from {}, skipping download", existing_thumbs, PROVIDER);
-        return true;
-    }
-
-    debug!("Attempting to download TheAudioDB thumbnail for artist '{}'", artist_name);
-
-    // Lookup the artist by MBID to get the thumbnail URL
-    match lookup_theaudiodb_by_mbid(mbid) {
-        Ok(artist_data) => {
-            // Extract the thumbnail URL from the response
-            if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
-                if !thumb_url.is_empty() {
-                    debug!("Found thumbnail URL for artist {}: {}", artist_name, thumb_url);
-                    
-                    // Download the thumbnail using our helper function
-                    match crate::helpers::fanarttv::download_image(thumb_url) {
-                        Ok(image_data) => {
-                            // Determine the file extension
-                            let extension = crate::helpers::fanarttv::extract_extension_from_url(thumb_url);
-                            
-                            // Create the full path with extension using the new naming convention
-                            let full_path = format!("artists/{}/artist.{}.{}.{}", 
-                                                  artist_basename, 
-                                                  PROVIDER, 
-                                                  0,
-                                                  extension);
-                            
-                            // Store the image in the cache
-                            if let Err(e) = imagecache::store_image(&full_path, &image_data) {
-                                warn!("Failed to store TheAudioDB thumbnail for '{}': {}", artist_name, e);
-                                return false;
-                            } else {
-                                info!("Stored TheAudioDB thumbnail for '{}'", artist_name);
-                                return true;
-                            }
-                        },                        Err(e) => {
-                            warn!("Failed to download TheAudioDB thumbnail for '{}': {}", artist_name, e);
-                            // Don't cache this as a negative result since it might be a temporary network issue
-                            return false;
-                        }
-                    }
-                } else {
-                    debug!("Empty thumbnail URL for artist '{}' in TheAudioDB", artist_name);
-                    // Cache this as a negative result
-                    let no_thumbnail_cache_key = format!("theaudiodb::no_thumbnail::{}", mbid);
-                    if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
-                        debug!("Failed to cache no thumbnail result for artist '{}': {}", artist_name, e);
-                    } else {
-                        debug!("Cached no thumbnail result for artist '{}'", artist_name);
-                    }
-                    return false;
-                }
-            } else {
-                debug!("No thumbnail URL found for artist '{}' in TheAudioDB", artist_name);
-                // Cache this as a negative result
-                let no_thumbnail_cache_key = format!("theaudiodb::no_thumbnail::{}", mbid);
-                if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
-                    debug!("Failed to cache no thumbnail result for artist '{}': {}", artist_name, e);
-                } else {
-                    debug!("Cached no thumbnail result for artist '{}'", artist_name);
-                }
-                return false;
-            }
-        },
-        Err(e) => {
-            debug!("Failed to retrieve artist data from TheAudioDB for '{}': {}", artist_name, e);
-            // This error is likely already cached as a negative result in lookup_theaudiodb_by_mbid
-            return false;
-        }
-    }
-}
-
 /// Get artist cover art URLs from TheAudioDB
 /// 
 /// # Arguments
@@ -988,18 +872,6 @@ impl ArtistUpdater for TheAudioDbUpdater {
         if let Some(mbid) = mbid_opt {
             debug!("Looking up artist information in TheAudioDB for {} with MBID {}", artist.name, mbid);
             
-            // Check if we already know this artist has no thumbnail
-            let no_thumbnail_cache_key = format!("theaudiodb::no_thumbnail::{}", mbid);
-            match attributecache::get::<bool>(&no_thumbnail_cache_key) {
-                Ok(Some(true)) => {
-                    debug!("Artist '{}' previously marked as having no thumbnail in cache, skipping", artist.name);
-                    return artist;
-                },
-                _ => {
-                    // Continue with lookup if not marked as no thumbnail or error reading cache
-                }
-            }
-            
             // Lookup artist by MBID
             match lookup_theaudiodb_by_mbid(&mbid) {
                 Ok(artist_data) => {
@@ -1007,47 +879,7 @@ impl ArtistUpdater for TheAudioDbUpdater {
                     
                     let mut updated_data = Vec::new();
                     
-                    // Extract the artist thumbnail URL
-                    if let Some(thumb_url) = artist_data.get("strArtistThumb").and_then(|v| v.as_str()) {
-                        if !thumb_url.is_empty() {
-                            debug!("Found thumbnail URL for artist {}: {}", artist.name, thumb_url);
-                            
-                            // Ensure we have a metadata struct
-                            if artist.metadata.is_none() {
-                                artist.ensure_metadata();
-                            }
-                            
-                            // Add the thumbnail URL to the artist metadata
-                            if let Some(meta) = &mut artist.metadata {
-                                meta.thumb_url.push(thumb_url.to_string());
-                                updated_data.push("thumbnail".to_string());
-                                debug!("Added TheAudioDB thumbnail URL for artist {}", artist.name);
-                            }
-                            
-                            // Download and cache the thumbnail
-                            if download_theaudiodb_artist_thumbnail(&mbid, &artist.name) {
-                                debug!("Successfully downloaded and cached thumbnail for artist {}", artist.name);
-                            } else {
-                                debug!("Failed to download thumbnail for artist {}", artist.name);
-                            }
-                        } else {
-                            debug!("Empty thumbnail URL from TheAudioDB for artist {}", artist.name);
-                            // Cache that this artist has no thumbnail
-                            if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
-                                debug!("Failed to cache no thumbnail result for artist '{}': {}", artist.name, e);
-                            } else {
-                                debug!("Cached no thumbnail result for artist '{}'", artist.name);
-                            }
-                        }
-                    } else {
-                        debug!("No thumbnail available from TheAudioDB for artist {}", artist.name);
-                        // Cache that this artist has no thumbnail
-                        if let Err(e) = attributecache::set(&no_thumbnail_cache_key, &true) {
-                            debug!("Failed to cache no thumbnail result for artist '{}': {}", artist.name, e);
-                        } else {
-                            debug!("Cached no thumbnail result for artist '{}'", artist.name);
-                        }
-                    }
+
                     
                     // Extract additional artist metadata that could be useful
                     if let Some(biography) = artist_data.get("strBiographyEN").and_then(|v| v.as_str()) {
@@ -1547,15 +1379,6 @@ mod tests {
         
         let urls = get_album_coverart("ThisAlbumDoesNotExist12345", "NonExistentArtist", None);
         assert!(urls.is_empty());
-    }
-
-    #[test]
-    #[serial]
-    fn test_download_theaudiodb_artist_thumbnail_disabled() {
-        THEAUDIODB_ENABLED.store(false, Ordering::SeqCst);
-        
-        let result = download_theaudiodb_artist_thumbnail("a74b1b7f-71a5-4011-9441-d0b5e4122711", "Radiohead");
-        assert!(!result);
     }
 
     #[test]

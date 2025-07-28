@@ -133,9 +133,25 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     if needs_biography || needs_genres {
         debug!("Artist {} needs biography or genre data, calling individual service updaters", artist.name);
         
+        // Track what we had before updating
+        let had_biography_before = artist.metadata.as_ref().map_or(false, |meta| meta.biography.is_some());
+        let genres_count_before = artist.metadata.as_ref().map_or(0, |meta| meta.genres.len());
+        
         // Try LastFM first for biography and genres (usually has good data)
         let lastfm_updater = crate::helpers::lastfm::LastfmUpdater;
         artist = lastfm_updater.update_artist(artist);
+        
+        // Check what we got from LastFM
+        let has_biography_after_lastfm = artist.metadata.as_ref().map_or(false, |meta| meta.biography.is_some());
+        let genres_count_after_lastfm = artist.metadata.as_ref().map_or(0, |meta| meta.genres.len());
+        
+        if !had_biography_before && has_biography_after_lastfm {
+            info!("Downloaded biography for artist '{}' from LastFM", artist.name);
+        }
+        if genres_count_after_lastfm > genres_count_before {
+            let new_genres = genres_count_after_lastfm - genres_count_before;
+            info!("Downloaded {} genre(s) for artist '{}' from LastFM", new_genres, artist.name);
+        }
         
         // Check what we still need after LastFM
         let still_needs_biography = artist.metadata.as_ref().map_or(true, |meta| meta.biography.is_none());
@@ -145,15 +161,30 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         // If we still need data and have MusicBrainz ID, try TheAudioDB
         if (still_needs_biography || still_needs_genres) && has_mbid {
             debug!("Artist {} still needs biography or genres and has MBID, trying TheAudioDB", artist.name);
+            
+            // Track what we have before TheAudioDB
+            let had_biography_before_tadb = artist.metadata.as_ref().map_or(false, |meta| meta.biography.is_some());
+            let genres_count_before_tadb = artist.metadata.as_ref().map_or(0, |meta| meta.genres.len());
+            
             let theaudiodb_updater = crate::helpers::theaudiodb::TheAudioDbUpdater;
             artist = theaudiodb_updater.update_artist(artist);
+            
+            // Check what we got from TheAudioDB
+            let has_biography_after_tadb = artist.metadata.as_ref().map_or(false, |meta| meta.biography.is_some());
+            let genres_count_after_tadb = artist.metadata.as_ref().map_or(0, |meta| meta.genres.len());
+            
+            if !had_biography_before_tadb && has_biography_after_tadb {
+                info!("Downloaded biography for artist '{}' from TheAudioDB", artist.name);
+            }
+            if genres_count_after_tadb > genres_count_before_tadb {
+                let new_genres = genres_count_after_tadb - genres_count_before_tadb;
+                info!("Downloaded {} genre(s) for artist '{}' from TheAudioDB", new_genres, artist.name);
+            }
         }
         
-        // Also try FanArt.tv if we have MBID for additional metadata
+        // FanArt.tv updater no longer provides metadata - all image handling is done by CoverartProvider
         if has_mbid {
-            debug!("Artist {} has MBID, trying FanArt.tv for additional images", artist.name);
-            let fanarttv_updater = crate::helpers::fanarttv::FanarttvUpdater;
-            artist = fanarttv_updater.update_artist(artist);
+            debug!("Artist {} has MBID - FanArt.tv images will be handled by CoverartProvider", artist.name);
         }
     } else {
         debug!("Artist {} already has biography and genre data", artist.name);

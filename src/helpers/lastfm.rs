@@ -1086,35 +1086,6 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
                         }
                     }
                     
-                    // Add images from Last.fm (find the largest available image)
-                    let mut downloaded_image_urls = Vec::new();
-                    if !artist_info.image.is_empty() {
-                        // Last.fm provides images in different sizes: small, medium, large, extralarge, mega
-                        // We want the largest available image
-                        let image_priorities = ["mega", "extralarge", "large", "medium", "small"];
-                        
-                        for size in &image_priorities {
-                            if let Some(image) = artist_info.image.iter().find(|img| img.size == *size) {
-                                if !image.url.is_empty() {
-                                    meta.thumb_url.push(image.url.clone());
-                                    downloaded_image_urls.push(image.url.clone());
-                                    updated_data.push(format!("{} image", size));
-                                    debug!("Added Last.fm {} image for artist {}: {}", size, artist.name, image.url);
-                                    break; // Only add the largest available image
-                                }
-                            }
-                        }
-                        
-                        // Download and cache the images
-                        if !downloaded_image_urls.is_empty() {
-                            if download_lastfm_artist_images(&artist.name, &downloaded_image_urls) {
-                                debug!("Successfully downloaded and cached Last.fm images for artist {}", artist.name);
-                            } else {
-                                debug!("Failed to download some Last.fm images for artist {}", artist.name);
-                            }
-                        }
-                    }
-                    
                     // Add MusicBrainz ID if available and not already present
                     if let Some(mbid) = &artist_info.mbid {
                         if !mbid.is_empty() && !meta.mbid.contains(mbid) {
@@ -1167,111 +1138,7 @@ pub fn cleanup_biography(biography: &str) -> String {
     cleaned.to_string()
 }
 
-/// Download an image from a URL
-/// 
-/// # Arguments
-/// * `url` - URL of the image to download
-/// 
-/// # Returns
-/// * `Result<Vec<u8>, String>` - The image data if successful, otherwise an error message
-fn download_image(url: &str) -> Result<Vec<u8>, String> {
-    debug!("Downloading Last.fm image from URL: {}", url);
-    
-    // Create a client with appropriate timeout
-    let client = crate::helpers::http_client::new_http_client(10);
-    
-    // Execute the request
-    match client.get_binary(url) {
-        Ok((binary_data, _)) => {
-            // Return the binary data directly
-            Ok(binary_data)
-        },
-        Err(e) => Err(format!("Request failed: {}", e))
-    }
-}
 
-/// Extract file extension from a URL
-///
-/// # Arguments
-/// * `url` - URL to extract extension from
-///
-/// # Returns
-/// * `String` - The file extension (e.g., "jpg") or "jpg" as default
-fn extract_extension_from_url(url: &str) -> String {
-    url.split('.')
-        .last()
-        .and_then(|ext| {
-            // Remove any query parameters
-            let clean_ext = ext.split('?').next().unwrap_or(ext);
-            if clean_ext.len() <= 4 {
-                Some(clean_ext.to_lowercase())
-            } else {
-                None
-            }
-        })
-        .unwrap_or("jpg".to_string())
-}
-
-/// Download and cache artist images from Last.fm
-/// 
-/// This function downloads the images that were added to the artist metadata
-/// and caches them locally using the naming convention:
-/// - artist.lastfm.0.xxx for the first image, etc.
-/// 
-/// # Arguments
-/// * `artist_name` - Name of the artist
-/// * `image_urls` - List of image URLs to download
-/// 
-/// # Returns
-/// * `bool` - true if download was successful (or no images to download), false if errors occurred
-fn download_lastfm_artist_images(artist_name: &str, image_urls: &[String]) -> bool {
-    if image_urls.is_empty() {
-        debug!("No Last.fm images to download for artist '{}'", artist_name);
-        return true;
-    }
-
-    let artist_basename = crate::helpers::sanitize::filename_from_string(artist_name);
-    let provider = "lastfm";
-    let mut api_success = true;
-
-    // Check if thumbnails already exist for this provider
-    let thumb_base_path = format!("artists/{}/artist", artist_basename);
-    let existing_thumbs = crate::helpers::imagecache::count_provider_files(&thumb_base_path, provider);
-    
-    if existing_thumbs > 0 {
-        debug!("Artist {} already has {} thumbnail(s) from {}, skipping download", 
-              artist_name, existing_thumbs, provider);
-        return true;
-    }
-
-    debug!("Downloading {} Last.fm image(s) for artist '{}'", image_urls.len(), artist_name);
-
-    // Download each image
-    for (i, url) in image_urls.iter().enumerate() {
-        let path = format!("artists/{}/artist.{}.{}.{}", 
-                           artist_basename,
-                           provider, 
-                           i,
-                           extract_extension_from_url(url));
-        
-        match download_image(url) {
-            Ok(image_data) => {
-                if let Err(e) = crate::helpers::imagecache::store_image(&path, &image_data) {
-                    warn!("Failed to store Last.fm artist thumbnail: {}", e);
-                    api_success = false;
-                } else {
-                    info!("Stored Last.fm artist thumbnail {} for '{}'", i, artist_name);
-                }
-            },
-            Err(e) => {
-                warn!("Failed to download Last.fm artist thumbnail: {}", e);
-                api_success = false;
-            }
-        }
-    }
-
-    api_success
-}
 
 /// Love a track on Last.fm
 /// 

@@ -8,6 +8,15 @@ use std::sync::Arc;
 use rusqlite::{Connection, params};
 use chrono::Utc;
 
+/// Information about a cache entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEntry {
+    pub key: String,
+    pub size_bytes: usize,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 // Global singleton for the attribute cache
 lazy_static! {
     static ref ATTRIBUTE_CACHE: Mutex<AttributeCache> = Mutex::new(AttributeCache::new());
@@ -427,6 +436,144 @@ impl AttributeCache {
             None => Ok(None),
         }
     }
+
+    /// List all cache keys, optionally filtered by prefix
+    pub fn list_keys(&self, prefix_filter: Option<&str>) -> Result<Vec<String>, String> {
+        if self.db.is_none() {
+            return Err("Database connection is not available".to_string());
+        }
+
+        let db = self.db.as_ref().unwrap();
+        let mut keys = Vec::new();
+        
+        match prefix_filter {
+            Some(prefix) => {
+                let pattern = format!("{}%", prefix);
+                let mut stmt = db.prepare("SELECT key FROM cache WHERE key LIKE ?1 ORDER BY key")
+                    .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
+                
+                let rows = stmt.query_map(params![pattern], |row: &rusqlite::Row| {
+                    Ok(row.get::<_, String>(0)?)
+                }).map_err(|e| format!("Failed to execute list query: {}", e))?;
+                
+                for row in rows {
+                    let key = row.map_err(|e| format!("Failed to read row: {}", e))?;
+                    keys.push(key);
+                }
+            },
+            None => {
+                let mut stmt = db.prepare("SELECT key FROM cache ORDER BY key")
+                    .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
+                
+                let rows = stmt.query_map([], |row: &rusqlite::Row| {
+                    Ok(row.get::<_, String>(0)?)
+                }).map_err(|e| format!("Failed to execute list query: {}", e))?;
+                
+                for row in rows {
+                    let key = row.map_err(|e| format!("Failed to read row: {}", e))?;
+                    keys.push(key);
+                }
+            }
+        }
+
+        Ok(keys)
+    }
+
+    /// Get detailed information about cache entries, optionally filtered by prefix
+    pub fn list_entries(&mut self, prefix_filter: Option<&str>) -> Result<Vec<CacheEntry>, String> {
+        if !self.enabled {
+            return Ok(Vec::new());
+        }
+
+        if self.db.is_none() {
+            return Err("Database connection is not available".to_string());
+        }
+
+        let db = self.db.as_ref().unwrap();
+        let mut entries = Vec::new();
+
+        match prefix_filter {
+            Some(prefix) => {
+                let pattern = format!("{}%", prefix);
+                let mut stmt = db.prepare("SELECT key, LENGTH(value) as size, created_at, updated_at FROM cache WHERE key LIKE ?1 ORDER BY key")
+                    .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
+                
+                let rows = stmt.query_map(params![pattern], |row: &rusqlite::Row| {
+                    Ok(CacheEntry {
+                        key: row.get::<_, String>(0)?,
+                        size_bytes: row.get::<_, i64>(1)? as usize,
+                        created_at: row.get::<_, i64>(2)?,
+                        updated_at: row.get::<_, i64>(3)?,
+                    })
+                }).map_err(|e| format!("Failed to execute list query: {}", e))?;
+                
+                for row in rows {
+                    let entry = row.map_err(|e| format!("Failed to read row: {}", e))?;
+                    entries.push(entry);
+                }
+            },
+            None => {
+                let mut stmt = db.prepare("SELECT key, LENGTH(value) as size, created_at, updated_at FROM cache ORDER BY key")
+                    .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
+                
+                let rows = stmt.query_map([], |row: &rusqlite::Row| {
+                    Ok(CacheEntry {
+                        key: row.get::<_, String>(0)?,
+                        size_bytes: row.get::<_, i64>(1)? as usize,
+                        created_at: row.get::<_, i64>(2)?,
+                        updated_at: row.get::<_, i64>(3)?,
+                    })
+                }).map_err(|e| format!("Failed to execute list query: {}", e))?;
+                
+                for row in rows {
+                    let entry = row.map_err(|e| format!("Failed to read row: {}", e))?;
+                    entries.push(entry);
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Remove all cache entries matching a prefix
+    pub fn remove_by_prefix(&mut self, prefix: &str) -> Result<usize, String> {
+        if !self.enabled {
+            return Ok(0);
+        }
+
+        if self.db.is_none() {
+            return Err("Database connection is not available".to_string());
+        }
+
+        let pattern = format!("{}%", prefix);
+        let db = self.db.as_ref().unwrap();
+        
+        // First, get the keys to remove from memory cache
+        let mut stmt = db.prepare("SELECT key FROM cache WHERE key LIKE ?1")
+            .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
+        
+        let rows = stmt.query_map(params![pattern], |row| {
+            Ok(row.get::<_, String>(0)?)
+        }).map_err(|e| format!("Failed to execute select query: {}", e))?;
+
+        let mut keys_to_remove = Vec::new();
+        for row in rows {
+            let key = row.map_err(|e| format!("Failed to read row: {}", e))?;
+            keys_to_remove.push(key);
+        }
+
+        // Remove from memory cache
+        for key in &keys_to_remove {
+            self.memory_cache.remove(key);
+        }
+
+        // Remove from database
+        let deleted = db.execute("DELETE FROM cache WHERE key LIKE ?1", params![pattern])
+            .map_err(|e| format!("Failed to delete from database: {}", e))?;
+
+        debug!("Removed {} cache entries with prefix '{}'", deleted, prefix);
+        Ok(deleted)
+    }
 }
 
 // Global functions to access the attribute cache singleton
@@ -459,6 +606,21 @@ pub fn clear() -> Result<(), String> {
 /// Clean up old entries from the attribute cache
 pub fn cleanup() -> Result<usize, String> {
     get_attribute_cache().cleanup()
+}
+
+/// List all cache keys, optionally filtered by prefix
+pub fn list_keys(prefix_filter: Option<&str>) -> Result<Vec<String>, String> {
+    get_attribute_cache().list_keys(prefix_filter)
+}
+
+/// Get detailed information about cache entries, optionally filtered by prefix
+pub fn list_entries(prefix_filter: Option<&str>) -> Result<Vec<CacheEntry>, String> {
+    get_attribute_cache().list_entries(prefix_filter)
+}
+
+/// Remove all cache entries matching a prefix
+pub fn remove_by_prefix(prefix: &str) -> Result<usize, String> {
+    get_attribute_cache().remove_by_prefix(prefix)
 }
 
 /// Get the created_at and updated_at timestamps for a key

@@ -6,3 +6,4 @@ pub mod acr_musicbrainz_client;
 pub mod acr_notify_librespot;
 pub mod acr_player_event_client;
 pub mod acr_send_update;
+pub mod audiocontrol_dump_cache;

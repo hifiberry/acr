@@ -33,7 +33,7 @@ pub struct AttributeCache {
     enabled: bool,
     /// Max age of cached items in days
     max_age_days: u64,
-    /// In-memory LRU cache of recently accessed items (10k entries max)
+    /// In-memory LRU cache of recently accessed items
     memory_cache: LruCache<String, Arc<Vec<u8>>>,
 }
 
@@ -43,11 +43,16 @@ impl AttributeCache {
         // Using the default path that matches our datastore.attribute_cache.dbfile setting
         let cache_dir = PathBuf::from("/var/lib/audiocontrol/cache");
         let db_file = cache_dir.join("attributes.db");
-        Self::with_database_file(db_file)
+        Self::with_database_file_and_cache_size(db_file, 20_000)
     }
 
     /// Create a new attribute cache with a specific database file
     pub fn with_database_file<P: AsRef<Path>>(db_file: P) -> Self {
+        Self::with_database_file_and_cache_size(db_file, 20_000)
+    }
+
+    /// Create a new attribute cache with a specific database file and cache size
+    pub fn with_database_file_and_cache_size<P: AsRef<Path>>(db_file: P, cache_size: usize) -> Self {
         let db_path = db_file.as_ref().to_path_buf();
         
         // Try to ensure the directory exists
@@ -59,12 +64,19 @@ impl AttributeCache {
         
         let db = Self::setup_database(&db_path);
 
+        let cache_size = if cache_size > 0 {
+            cache_size
+        } else {
+            warn!("Invalid cache size {}, using default of 20,000", cache_size);
+            20_000
+        };
+
         AttributeCache {
             db_path,
             db,
             enabled: true,
             max_age_days: 30, // Default to 30 days
-            memory_cache: LruCache::new(NonZeroUsize::new(10_000).unwrap()),
+            memory_cache: LruCache::new(NonZeroUsize::new(cache_size).unwrap()),
         }
     }
 
@@ -168,9 +180,28 @@ impl AttributeCache {
         }
     }
     
-    /// Initialize the global attribute cache with a custom directory path as string
+    /// Initialize the global attribute cache with a custom directory path and cache size
+    pub fn initialize_global_with_cache_size<P: AsRef<Path>>(db_file: P, cache_size: usize) -> Result<(), String> {
+        match get_attribute_cache().reconfigure_with_file_and_cache_size(db_file, cache_size) {
+            Ok(_) => {
+                info!("Global attribute cache initialized successfully");
+                Ok(())
+            },
+            Err(e) => {
+                error!("Failed to initialize global attribute cache: {}", e);
+                Err(e)
+            }
+        }
+    }
+    
+    /// Initialize the global attribute cache with a custom directory path as string and cache size
+    pub fn initialize_with_cache_size<P: AsRef<Path>>(path: P, cache_size: usize) -> Result<(), String> {
+        Self::initialize_global_with_cache_size(path, cache_size)
+    }
+
+    /// Initialize the global attribute cache with a custom directory path as string (backward compatibility)
     pub fn initialize<P: AsRef<Path>>(path: P) -> Result<(), String> {
-        Self::initialize_global(path)
+        Self::initialize_with_cache_size(path, 20_000)
     }
 
     /// Reconfigure the attribute cache with a new directory
@@ -194,6 +225,41 @@ impl AttributeCache {
         self.db_path = db_file;
         self.db = db;
         self.memory_cache.clear(); // Clear memory cache as we have a new DB
+        
+        Ok(())
+    }
+
+    /// Reconfigure the attribute cache with a new database file and cache size
+    /// This will close the existing database and open a new one with a new memory cache
+    fn reconfigure_with_file_and_cache_size<P: AsRef<Path>>(&mut self, db_file: P, cache_size: usize) -> Result<(), String> {
+        let db_path = db_file.as_ref().to_path_buf();
+        
+        // Try to ensure the directory exists
+        if let Some(parent) = db_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return Err(format!("Failed to create directory for attribute cache: {}", e));
+            }
+        }
+        
+        // Use the centralized database setup logic
+        let db = Self::setup_database(&db_path);
+        if db.is_none() {
+            return Err("Failed to setup database".to_string());
+        }
+
+        let cache_size = if cache_size > 0 {
+            cache_size
+        } else {
+            warn!("Invalid cache size {}, using default of 20,000", cache_size);
+            20_000
+        };
+        
+        // Update the instance
+        self.db_path = db_path;
+        self.db = db;
+        self.memory_cache = LruCache::new(NonZeroUsize::new(cache_size).unwrap());
+        
+        info!("Attribute cache reconfigured with {} memory cache entries", cache_size);
         
         Ok(())
     }

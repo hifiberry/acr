@@ -138,7 +138,7 @@ fn main() {
             security_store_path.display()
         );
     } // Get the attribute cache configuration from datastore
-    let (attribute_cache_path, preload_prefixes) = if let Some(datastore_config) =
+    let (attribute_cache_path, preload_prefixes, cache_size) = if let Some(datastore_config) =
         get_service_config(&controllers_config, "datastore")
     {
         let attribute_cache_config = datastore_config.get("attribute_cache");
@@ -167,6 +167,28 @@ fn main() {
             default_path
         };
 
+        let cache_size = if let Some(cache_config) = attribute_cache_config {
+            if let Some(size_value) = cache_config.get("memory_cache_records") {
+                if let Some(size) = size_value.as_u64() {
+                    if size > 0 && size <= 1_000_000 {
+                        info!("Using attribute cache memory_cache_records from config: {}", size);
+                        size as usize
+                    } else {
+                        warn!("Invalid memory_cache_records {} in config (must be 1-1,000,000), using default of 20,000", size);
+                        20_000
+                    }
+                } else {
+                    warn!("memory_cache_records in config is not a number, using default of 20,000");
+                    20_000
+                }
+            } else {
+                info!("No memory_cache_records specified in attribute_cache configuration, using default of 20,000");
+                20_000
+            }
+        } else {
+            20_000
+        };
+
         let prefixes = if let Some(cache_config) = attribute_cache_config {
             if let Some(prefixes_value) = cache_config.get("preload_prefixes") {
                 if let Some(prefixes_array) = prefixes_value.as_array() {
@@ -190,14 +212,14 @@ fn main() {
             Vec::new()
         };
 
-        (cache_path, prefixes)
+        (cache_path, prefixes, cache_size)
     } else {
         let default_path = "/var/lib/audiocontrol/cache/attributes.db".to_string();
         info!(
             "No datastore configuration found, using default attribute cache path: {}",
             default_path
         );
-        (default_path, Vec::new())
+        (default_path, Vec::new(), 20_000)
     };
 
     // Get the image cache path from configuration
@@ -226,8 +248,8 @@ fn main() {
             default_path
         };
 
-    // Initialize the global attribute cache with the configured path from JSON
-    initialize_attribute_cache(&attribute_cache_path);
+    // Initialize the global attribute cache with the configured path and cache size from JSON
+    initialize_attribute_cache(&attribute_cache_path, cache_size);
 
     // Preload configured prefixes into the attribute cache
     preload_attribute_cache(&preload_prefixes);
@@ -423,11 +445,11 @@ fn main() {
 }
 
 // Helper function to initialize the global attribute cache
-fn initialize_attribute_cache(attribute_cache_path: &str) {
-    match AttributeCache::initialize(attribute_cache_path) {
+fn initialize_attribute_cache(attribute_cache_path: &str, cache_size: usize) {
+    match AttributeCache::initialize_with_cache_size(attribute_cache_path, cache_size) {
         Ok(_) => info!(
-            "Attribute cache initialized with path: {}",
-            attribute_cache_path
+            "Attribute cache initialized with path: {} and memory cache records: {}",
+            attribute_cache_path, cache_size
         ),
         Err(e) => warn!("Failed to initialize attribute cache: {}", e),
     }

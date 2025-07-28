@@ -93,10 +93,10 @@ impl MPDLibrary {
         // Add artist image URL if not present in thumb_url
         if let Some(ref mut metadata) = artist.metadata {
             if metadata.thumb_url.is_empty() {
-                // Create the artist image URL using URL encoding for the artist name
+                // Use the coverart API endpoint for artist images
                 let encoded_name = crate::helpers::url_encoding::encode_url_safe(&artist.name);
-                let image_url = format!("{}/artist:{}", mpd_image_url(), encoded_name);
-                metadata.thumb_url = vec![image_url];
+                let api_url = format!("{}/coverart/artist/{}/image", crate::constants::API_PREFIX, encoded_name);
+                metadata.thumb_url = vec![api_url];
             }
         }
     }

@@ -45,9 +45,9 @@
         "datastore": {
             "attribute_cache": {
                 "dbfile": "/var/lib/audiocontrol/cache/attributes.db",
+                "memory_cache_records": 20000,
                 "preload_prefixes": [
-                    "artist::mbid",
-                    "image_meta:"
+                    "artist::mbid"
                 ]
             },
             "image_cache_path": "/var/lib/audiocontrol/cache/images",

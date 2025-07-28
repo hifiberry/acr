@@ -130,7 +130,6 @@ pub fn initialize_genre_cleanup_with_config(config: Option<&serde_json::Value>) 
     // Fall back to default config paths
     let config_paths = [
         "/etc/audiocontrol/genres.json",
-
     ];
     
     for path in &config_paths {

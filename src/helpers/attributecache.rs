@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use lazy_static::lazy_static;
-use log::{info, error, debug};
+use log::{info, error, debug, warn};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use rusqlite::{Connection, params};

@@ -104,6 +104,7 @@ impl CoverartResult {
                 width: image.width,
                 height: image.height,
                 size_bytes: image.size_bytes,
+                format: image.format.clone(),
                 provider: provider.name.clone(),
             };
             

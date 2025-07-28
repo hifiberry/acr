@@ -42,9 +42,15 @@
                 }
             ]
         },
-        "cache": {
+        "datastore": {
             "attribute_cache_path": "/var/lib/audiocontrol/cache/attributes",
-            "image_cache_path": "/var/lib/audiocontrol/cache/images"
+            "image_cache_path": "/var/lib/audiocontrol/cache/images",
+            "user_image_path": "/var/lib/audiocontrol/user/images",
+            "artist_store": {
+                "cache_dir": "/var/lib/audiocontrol/cache/artists",
+                "enable_custom_images": true,
+                "auto_download": true
+            }
         },
         "genre_cleanup": {
             "config_path": "/etc/audiocontrol/genre.json",

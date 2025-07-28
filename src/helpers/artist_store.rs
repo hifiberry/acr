@@ -32,11 +32,32 @@ pub struct ArtistStoreConfig {
 
 impl Default for ArtistStoreConfig {
     fn default() -> Self {
+        // Read configuration from settings database with fallback defaults
+        let cache_dir = crate::helpers::settingsdb::get_string_with_default(
+            "datastore.artist_store.cache_dir", 
+            "/var/lib/audiocontrol/cache/artists"
+        ).unwrap_or_else(|_| "/var/lib/audiocontrol/cache/artists".to_string());
+        
+        let user_dir = crate::helpers::settingsdb::get_string_with_default(
+            "datastore.user_image_path", 
+            "/var/lib/audiocontrol/user/images"
+        ).unwrap_or_else(|_| "/var/lib/audiocontrol/user/images".to_string());
+        
+        let enable_custom_images = crate::helpers::settingsdb::get_bool_with_default(
+            "datastore.artist_store.enable_custom_images", 
+            true
+        ).unwrap_or(true);
+        
+        let auto_download = crate::helpers::settingsdb::get_bool_with_default(
+            "datastore.artist_store.auto_download", 
+            true
+        ).unwrap_or(true);
+
         Self {
-            cache_dir: "/var/lib/audiocontrol/cache/images".to_string(),
-            user_dir: "/var/lib/audiocontrol/user/images".to_string(),
-            enable_custom_images: true,
-            auto_download: true,
+            cache_dir,
+            user_dir,
+            enable_custom_images,
+            auto_download,
         }
     }
 }

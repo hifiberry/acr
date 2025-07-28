@@ -16,11 +16,12 @@
     "_comment_specific": "Helpers modules logging configuration (alphabetically sorted):",
     
     "audiocontrol::helpers::artistsplitter": "info",
+    "audiocontrol::helpers::artist_store": "debug",
     "audiocontrol::helpers::artistupdater": "info",
     "audiocontrol::helpers::attributecache": "debug",
     "audiocontrol::helpers::configurator": "info",
     "audiocontrol::helpers::coverart": "debug",
-    "audiocontrol::helpers::coverart_providers": "info",
+    "audiocontrol::helpers::coverart_providers": "debug",
     "audiocontrol::helpers::fanarttv": "info",
     "audiocontrol::helpers::favourites": "info",
     "audiocontrol::helpers::genre_cleanup": "info",

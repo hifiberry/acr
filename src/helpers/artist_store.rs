@@ -374,7 +374,7 @@ impl ArtistStore {
         debug!("Updating artist {} with cover art", artist.name);
 
         match self.get_or_download_artist_image(&artist.name) {
-            ArtistImageResult::Found { cache_path } => {
+            ArtistImageResult::Found { cache_path: _ } => {
                 // Initialize metadata if needed
                 if artist.metadata.is_none() {
                     artist.metadata = Some(crate::data::ArtistMeta::new());

@@ -156,8 +156,10 @@ impl AttributeCache {
                     error!("Failed to set initial updated_at values: {}", e);
                 }
             }
-        }                debug!("Cache table created or already exists");
-                Some(conn)
+        }
+        
+        debug!("Cache table created or already exists");
+        Some(conn)
             },
             Err(e) => {
                 error!("Failed to open SQLite database at {:?}: {}", db_path, e);
@@ -1484,9 +1486,10 @@ mod tests {
     fn test_global_timestamp_functions() {
         // Create a temporary cache for testing
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().join("cache.db");
         
-        // Initialize the global cache with the temporary directory
-        super::AttributeCache::initialize(temp_dir.path()).unwrap();
+        // Initialize the global cache with the temporary database file
+        super::AttributeCache::initialize(&db_path).unwrap();
         
         let key = "test_key";
         let value = "test_value";

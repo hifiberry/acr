@@ -80,6 +80,27 @@ impl MPDLibrary {
         }
     }
 
+    /// Populate calculated fields in artist objects
+    /// 
+    /// This adds derived fields like image URLs for artists that don't have them yet
+    /// These calculated fields are not stored, but only calculated on demand
+    pub fn populate_calculated_artist_fields(&self, artist: &mut Artist) {
+        // Initialize metadata if not present
+        if artist.metadata.is_none() {
+            artist.metadata = Some(crate::data::ArtistMeta::new());
+        }
+        
+        // Add artist image URL if not present in thumb_url
+        if let Some(ref mut metadata) = artist.metadata {
+            if metadata.thumb_url.is_empty() {
+                // Create the artist image URL using URL encoding for the artist name
+                let encoded_name = crate::helpers::url_encoding::encode_url_safe(&artist.name);
+                let image_url = format!("{}/artist:{}", mpd_image_url(), encoded_name);
+                metadata.thumb_url = vec![image_url];
+            }
+        }
+    }
+
     /// Get the current library loading progress (0.0 to 1.0)
     pub fn get_loading_progress(&self) -> f32 {
         if let Ok(progress) = self.loading_progress.lock() {
@@ -647,7 +668,12 @@ impl MPDLibrary {
     /// Get artist by name
     pub fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
         if let Ok(artists) = self.artists.read() {
-            artists.get(name).cloned()
+            if let Some(mut artist) = artists.get(name).cloned() {
+                self.populate_calculated_artist_fields(&mut artist);
+                Some(artist)
+            } else {
+                None
+            }
         } else {
             warn!("Failed to acquire read lock on artists");
             None
@@ -791,6 +817,69 @@ impl MPDLibrary {
         } else {
             None
         }
+    }
+    
+    /// Get artist cover art using the artist store
+    /// 
+    /// # Arguments
+    /// * `artist_name` - The name of the artist
+    /// 
+    /// # Returns
+    /// Option containing (image data, mime type) if found
+    pub fn get_artist_cover(&self, artist_name: &str) -> Option<(Vec<u8>, String)> {
+        debug!("Getting artist cover for: {}", artist_name);
+        
+        // Use the artist store to get the cached image path
+        if let Some(cache_path) = crate::helpers::artist_store::get_artist_cached_image(artist_name) {
+            debug!("Found cached artist image at: {}", cache_path);
+            
+            // Read the image data from the cache file
+            if let Ok(image_data) = std::fs::read(&cache_path) {
+                // Determine MIME type based on file extension
+                let mime_type = if cache_path.ends_with(".jpg") || cache_path.ends_with(".jpeg") {
+                    "image/jpeg".to_string()
+                } else if cache_path.ends_with(".png") {
+                    "image/png".to_string()
+                } else if cache_path.ends_with(".webp") {
+                    "image/webp".to_string()
+                } else {
+                    "image/jpeg".to_string() // Default to JPEG
+                };
+                
+                debug!("Successfully loaded artist image for {}: {} bytes, MIME: {}", 
+                       artist_name, image_data.len(), mime_type);
+                return Some((image_data, mime_type));
+            } else {
+                warn!("Failed to read cached artist image from: {}", cache_path);
+            }
+        }
+        
+        // If no cached image found, try to download one
+        if let Some(cache_path) = crate::helpers::artist_store::get_or_download_artist_image(artist_name) {
+            debug!("Downloaded new artist image at: {}", cache_path);
+            
+            // Read the newly downloaded image
+            if let Ok(image_data) = std::fs::read(&cache_path) {
+                let mime_type = if cache_path.ends_with(".jpg") || cache_path.ends_with(".jpeg") {
+                    "image/jpeg".to_string()
+                } else if cache_path.ends_with(".png") {
+                    "image/png".to_string()
+                } else if cache_path.ends_with(".webp") {
+                    "image/webp".to_string()
+                } else {
+                    "image/jpeg".to_string()
+                };
+                
+                debug!("Successfully loaded downloaded artist image for {}: {} bytes, MIME: {}", 
+                       artist_name, image_data.len(), mime_type);
+                return Some((image_data, mime_type));
+            } else {
+                warn!("Failed to read downloaded artist image from: {}", cache_path);
+            }
+        }
+        
+        debug!("No artist cover found for: {}", artist_name);
+        None
     }
     
     /// Extract the album directory from a track URI
@@ -1009,7 +1098,10 @@ impl LibraryInterface for MPDLibrary {
     
     fn get_artists(&self) -> Vec<Artist> {
         if let Ok(artists) = self.artists.read() {
-            artists.values().cloned().collect()
+            artists.values().cloned().map(|mut artist| {
+                self.populate_calculated_artist_fields(&mut artist);
+                artist
+            }).collect()
         } else {
             warn!("Failed to acquire read lock on artists");
             Vec::new()
@@ -1075,6 +1167,14 @@ impl LibraryInterface for MPDLibrary {
                     return None;
                 }
             }
+        }
+        
+        // Check if the identifier starts with "artist:"
+        if let Some(artist_name) = identifier.strip_prefix("artist:") {
+            debug!("Detected artist identifier: {}", artist_name);
+            
+            // Use get_artist_cover to retrieve the image
+            return self.get_artist_cover(artist_name);
         }
         
         // If we've reached here, the identifier format wasn't recognized

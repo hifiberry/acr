@@ -794,9 +794,9 @@ fn get_artist_internal(
 /// Retrieve an image from the library based on an identifier
 /// 
 /// This endpoint maps directly to the library's get_image function, allowing
-/// access to image data like album covers through the REST API.
+/// access to image data like album covers and artist images through the REST API.
 /// The identifier format depends on the library implementation, but typically
-/// supports formats like "album:123" for album covers.
+/// supports formats like "album:123" for album covers and "artist:Artist Name" for artist images.
 #[get("/library/<player_name>/image/<identifier>")]
 pub fn get_image(
     player_name: &str,

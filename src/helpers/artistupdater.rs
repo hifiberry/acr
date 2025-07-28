@@ -1,10 +1,8 @@
 use log::{debug, info, warn};
 use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
-use crate::helpers::coverart::get_coverart_manager;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
-use std::io::Read;
 
 /// Looks up MusicBrainz IDs for an artist and returns them if found
 /// 
@@ -48,148 +46,18 @@ pub fn lookup_artist_mbids(artist_name: &str) -> (Vec<String>, bool) {
 
 /// Download and cache artist images using the cover art system
 /// 
-/// This function retrieves artist images from all available cover art providers,
-/// selects the highest-rated image, downloads it, and stores it in the image cache.
-/// It also checks the settings database for custom artist images first.
+/// This function retrieves artist images using the new artist store module.
 /// 
 /// # Arguments
 /// * `artist` - The artist to update with cover art
 /// 
 /// # Returns
 /// The updated artist with image URLs in metadata
-fn update_artist_with_coverart(mut artist: Artist) -> Artist {
+fn update_artist_with_coverart(artist: Artist) -> Artist {
     debug!("Updating artist {} with cover art system", artist.name);
     
-    // First check if there's a custom image URL stored in settings
-    let custom_url_key = format!("artist.image.{}", artist.name);
-    if let Ok(Some(custom_url)) = crate::helpers::settingsdb::get_string(&custom_url_key) {
-        if !custom_url.is_empty() {
-            debug!("Found custom image URL for artist {}: {}", artist.name, custom_url);
-            
-            // Check if the image already exists in cache
-            let cache_path = format!("artists/{}/custom.jpg", crate::helpers::sanitize::filename_from_string(&artist.name));
-            if let Ok(_) = std::fs::metadata(&cache_path) {
-                debug!("Custom image already cached for artist {}", artist.name);
-                
-                // Add the custom image to the artist metadata
-                if artist.metadata.is_none() {
-                    artist.metadata = Some(crate::data::ArtistMeta::new());
-                }
-                if let Some(ref mut metadata) = artist.metadata {
-                    metadata.thumb_url = vec![format!("cache://{}", cache_path)];
-                }
-                return artist;
-            }
-            
-            // Download and cache the custom image
-            if let Ok(image_data) = download_image(&custom_url) {
-                if let Err(e) = crate::helpers::imagecache::store_image(&cache_path, &image_data) {
-                    warn!("Failed to store custom image for artist {}: {}", artist.name, e);
-                } else {
-                    info!("Downloaded and cached custom image for artist {}", artist.name);
-                    
-                    // Add the cached image to the artist metadata
-                    if artist.metadata.is_none() {
-                        artist.metadata = Some(crate::data::ArtistMeta::new());
-                    }
-                    if let Some(ref mut metadata) = artist.metadata {
-                        metadata.thumb_url = vec![format!("cache://{}", cache_path)];
-                    }
-                    return artist;
-                }
-            } else {
-                warn!("Failed to download custom image for artist {} from URL: {}", artist.name, custom_url);
-            }
-        }
-    }
-    
-    // Get cover art from all providers using the cover art system
-    let manager = get_coverart_manager();
-    let results = if let Ok(manager_guard) = manager.lock() {
-        manager_guard.get_artist_coverart(&artist.name)
-    } else {
-        warn!("Failed to acquire lock on cover art manager");
-        Vec::new()
-    };
-    
-    if results.is_empty() {
-        debug!("No cover art found for artist {}", artist.name);
-        return artist;
-    }
-    
-    // Find the highest-rated image across all providers
-    let mut best_image: Option<&crate::helpers::coverart::ImageInfo> = None;
-    let mut best_grade = -1;
-    
-    for result in &results {
-        for image in &result.images {
-            let grade = image.grade.unwrap_or(0);
-            if grade > best_grade {
-                best_grade = grade;
-                best_image = Some(image);
-            }
-        }
-    }
-    
-    if let Some(best_image) = best_image {
-        debug!("Found best image for artist {} with grade {}: {}", artist.name, best_grade, best_image.url);
-        
-        // Download and cache the best image
-        if let Ok(image_data) = download_image(&best_image.url) {
-            let cache_path = format!("artists/{}/cover.jpg", crate::helpers::sanitize::filename_from_string(&artist.name));
-            
-            if let Err(e) = crate::helpers::imagecache::store_image(&cache_path, &image_data) {
-                warn!("Failed to store image for artist {}: {}", artist.name, e);
-            } else {
-                info!("Downloaded and cached cover art for artist {} (grade: {})", artist.name, best_grade);
-                
-                // Update artist metadata with the cached image
-                if artist.metadata.is_none() {
-                    artist.metadata = Some(crate::data::ArtistMeta::new());
-                }
-                if let Some(ref mut metadata) = artist.metadata {
-                    metadata.thumb_url = vec![format!("cache://{}", cache_path)];
-                }
-            }
-        } else {
-            warn!("Failed to download image for artist {} from URL: {}", artist.name, best_image.url);
-        }
-    } else {
-        debug!("No images with valid grades found for artist {}", artist.name);
-    }
-    
-    artist
-}
-
-/// Download an image from a URL
-/// 
-/// # Arguments
-/// * `url` - The URL to download the image from
-/// 
-/// # Returns
-/// * `Result<Vec<u8>, String>` - The image data or an error message
-fn download_image(url: &str) -> Result<Vec<u8>, String> {
-    debug!("Downloading image from URL: {}", url);
-    
-    // Use ureq to download the image
-    match ureq::get(url).call() {
-        Ok(response) => {
-            let mut bytes = Vec::new();
-            if let Err(e) = response.into_reader().read_to_end(&mut bytes) {
-                return Err(format!("Failed to read image data: {}", e));
-            }
-            
-            if bytes.is_empty() {
-                return Err("Downloaded image is empty".to_string());
-            }
-            
-            debug!("Successfully downloaded image: {} bytes", bytes.len());
-            Ok(bytes)
-        },
-        Err(e) => {
-            Err(format!("HTTP request failed: {}", e))
-        }
-    }
+    // Use the new artist store to handle cover art
+    crate::helpers::artist_store::update_artist_with_coverart(artist)
 }
 
 /// Updates artist data by fetching additional information like MusicBrainz IDs

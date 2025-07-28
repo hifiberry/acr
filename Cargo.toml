@@ -96,6 +96,7 @@ md5 = "0.7.0"
 [dev-dependencies]
 serial_test = "3.0"
 tempfile = "3.12"
+tokio-test = "0.4"
 
 # Binary targets
 [[bin]]

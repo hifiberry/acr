@@ -238,6 +238,60 @@ impl ArtistStore {
         result
     }
 
+    /// Download and store image directly to the user directory
+    /// 
+    /// # Arguments
+    /// * `artist_name` - The name of the artist
+    /// * `url` - URL of the image to download
+    /// * `image_type` - Type of image ("custom", "cover", etc.)
+    /// 
+    /// # Returns
+    /// ArtistImageResult with the user path if successfully downloaded and stored
+    pub fn download_and_store_user_image(&mut self, artist_name: &str, url: &str, image_type: &str) -> ArtistImageResult {
+        debug!("Downloading image for artist {} from URL to user directory: {}", artist_name, url);
+
+        // Check if already downloading
+        if let Some(downloading_flag) = self.downloading.get(artist_name) {
+            if downloading_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                debug!("Image already being downloaded for artist: {}", artist_name);
+                return ArtistImageResult::Error("Download already in progress".to_string());
+            }
+        }
+
+        // Mark as downloading
+        let downloading_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        self.downloading.insert(artist_name.to_string(), downloading_flag.clone());
+
+        let result = match self.download_image(url) {
+            Ok(image_data) => {
+                let user_path = self.get_artist_user_image_path(artist_name, image_type);
+                
+                match self.store_image(&user_path, &image_data) {
+                    Ok(_) => {
+                        info!("Downloaded and stored {} image for artist {} in user directory", image_type, artist_name);
+                        // Also cache the path for quick access
+                        self.image_cache.insert(artist_name.to_string(), user_path.clone());
+                        ArtistImageResult::Found { cache_path: user_path }
+                    },
+                    Err(e) => {
+                        warn!("Failed to store {} image for artist {} in user directory: {}", image_type, artist_name, e);
+                        ArtistImageResult::Error(format!("Failed to store image: {}", e))
+                    }
+                }
+            },
+            Err(e) => {
+                warn!("Failed to download image for artist {} from URL {}: {}", artist_name, url, e);
+                ArtistImageResult::Error(format!("Failed to download image: {}", e))
+            }
+        };
+
+        // Clear downloading flag
+        downloading_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.downloading.remove(artist_name);
+
+        result
+    }
+
     /// Get or download artist cover art
     /// 
     /// # Arguments

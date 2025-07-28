@@ -2,7 +2,8 @@ use rocket::get;
 use rocket::post;
 use rocket::serde::json::Json;
 use rocket::serde::{Deserialize, Serialize};
-use log::debug;
+use log::{debug, info, warn, error};
+use std::io::Read;
 use crate::helpers::coverart::{get_coverart_manager, CoverartMethod, CoverartResult, ProviderInfo};
 use crate::helpers::url_encoding::decode_url_safe;
 use crate::helpers::settingsdb;
@@ -224,9 +225,12 @@ pub fn get_coverart_methods() -> Json<CoverartMethodsResponse> {
 /// * `request` - JSON request body containing the image URL
 #[post("/artist/<artist_b64>/update", data = "<request>")]
 pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>) -> Json<UpdateImageResponse> {
+    debug!("Received artist image update request: artist_b64={}, url={}", artist_b64, request.url);
+    
     let artist_name = match decode_url_safe(&artist_b64) {
         Some(name) => name,
         None => {
+            warn!("Invalid artist name encoding: {}", artist_b64);
             return Json(UpdateImageResponse {
                 success: false,
                 message: "Invalid artist name encoding".to_string(),
@@ -234,21 +238,59 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
         }
     };
 
+    debug!("Decoded artist name: {}", artist_name);
+
     // Store the custom URL in settings database
-    match settingsdb::set_string(&format!("artist.image.{}", artist_name), &request.url) {
+    let settings_key = format!("artist.image.{}", artist_name);
+    debug!("Storing custom image URL in settings: key={}, url={}", settings_key, request.url);
+    
+    match settingsdb::set_string(&settings_key, &request.url) {
         Ok(_) => {
+            info!("Successfully stored custom image URL for artist '{}': {}", artist_name, request.url);
+            
             // Clear any cached image to force refresh
             let cache_path = format!("artists/{}/cover.jpg", crate::helpers::url_encoding::encode_url_safe(&artist_name));
-            if let Ok(_) = std::fs::remove_file(&cache_path) {
-                debug!("Cleared cached image for artist: {}", artist_name);
+            debug!("Attempting to clear cached image at: {}", cache_path);
+            
+            match std::fs::remove_file(&cache_path) {
+                Ok(_) => {
+                    debug!("Successfully cleared cached image for artist: {}", artist_name);
+                }
+                Err(e) => {
+                    debug!("No cached image to clear for artist '{}' ({}): {}", artist_name, cache_path, e);
+                }
+            }
+            
+            // If URL is not empty, try to trigger immediate download to user directory
+            if !request.url.is_empty() {
+                debug!("Attempting to trigger immediate download of custom image to user directory for artist: {}", artist_name);
+                
+                // Use the global artist store to download the image to user directory
+                let artist_store = crate::helpers::artist_store::get_artist_store();
+                let mut store_lock = artist_store.lock().unwrap();
+                
+                match store_lock.download_and_store_user_image(&artist_name, &request.url, "custom") {
+                    crate::helpers::artist_store::ArtistImageResult::Found { cache_path } => {
+                        info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
+                    }
+                    crate::helpers::artist_store::ArtistImageResult::NotFound => {
+                        warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
+                    }
+                    crate::helpers::artist_store::ArtistImageResult::Error(error) => {
+                        warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);
+                    }
+                }
+            } else {
+                info!("Empty URL provided - custom image cleared for artist: {}", artist_name);
             }
             
             Json(UpdateImageResponse {
                 success: true,
-                message: "Artist image URL updated successfully".to_string(),
+                message: format!("Artist image URL updated successfully for '{}'", artist_name),
             })
         }
         Err(e) => {
+            error!("Failed to store custom image URL for artist '{}': {}", artist_name, e);
             Json(UpdateImageResponse {
                 success: false,
                 message: format!("Failed to update artist image: {}", e),

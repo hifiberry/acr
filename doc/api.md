@@ -75,6 +75,11 @@ This document describes the REST API endpoints available in the Audio Control RE
 - [Settings API](#settings-api)
   - [Get Setting Value](#get-setting-value)
   - [Set Setting Value](#set-setting-value)
+- [Cache API](#cache-api)
+  - [Get Cache Statistics](#get-cache-statistics)
+- [Background Jobs API](#background-jobs-api)
+  - [List Background Jobs](#list-background-jobs)
+  - [Get Background Job by ID](#get-background-job-by-id)
 - [Generic Player Controller](#generic-player-controller)
   - [Configuration](#configuration)
   - [Event Handling](#event-handling)
@@ -2861,6 +2866,228 @@ curl -X POST http://<device-ip>:1080/api/settings/set \
 - No authentication or authorization is currently implemented
 - All settings are accessible via the API
 - Consider network security when exposing the API
+
+## Cache API
+
+The Cache API provides endpoints to retrieve information about the internal caching system used by the audio control service. This includes statistics about memory and disk cache usage.
+
+### Get Cache Statistics
+
+Retrieves comprehensive statistics about the current cache state, including memory usage, disk entries, and cache limits.
+
+**Endpoint**: `GET /api/cache/stats`
+
+**Response Format**:
+```json
+{
+  "success": true,
+  "stats": {
+    "disk_entries": 245,
+    "memory_entries": 128,
+    "memory_bytes": 2048576,
+    "memory_limit_bytes": 10485760
+  },
+  "message": null
+}
+```
+
+**Response Fields**:
+- `success` (boolean): Indicates if the request was successful
+- `stats` (object): Cache statistics object containing:
+  - `disk_entries` (number): Number of entries stored on disk
+  - `memory_entries` (number): Number of entries currently in memory
+  - `memory_bytes` (number): Current memory usage in bytes
+  - `memory_limit_bytes` (number): Maximum memory limit in bytes (null if no limit)
+- `message` (string|null): Error message if success is false, null otherwise
+
+**Example Request**:
+```bash
+curl -X GET "http://localhost:8080/api/cache/stats"
+```
+
+**Example Response**:
+```json
+{
+  "success": true,
+  "stats": {
+    "disk_entries": 1250,
+    "memory_entries": 450,
+    "memory_bytes": 5242880,
+    "memory_limit_bytes": 20971520
+  },
+  "message": null
+}
+```
+
+**Use Cases**:
+- Monitoring cache performance and memory usage
+- Debugging cache-related issues
+- Optimizing cache configuration based on usage patterns
+- System health monitoring and alerting
+
+## Background Jobs API
+
+The Background Jobs API provides endpoints to monitor long-running background operations within the audio control service. This includes metadata updates, library scans, and other asynchronous tasks.
+
+### List Background Jobs
+
+Retrieves a list of all currently running background jobs with their progress and timing information.
+
+**Endpoint**: `GET /api/background/jobs`
+
+**Response Format**:
+```json
+{
+  "success": true,
+  "jobs": [
+    {
+      "id": "artist_metadata_update_1234567890",
+      "name": "Artist Metadata Update",
+      "start_time": 1640995200,
+      "last_update": 1640995245,
+      "progress": "Processing artist 150/500",
+      "total_items": 500,
+      "completed_items": 150,
+      "duration_seconds": 45,
+      "time_since_last_update": 2,
+      "completion_percentage": 30.0
+    }
+  ],
+  "message": null
+}
+```
+
+**Response Fields**:
+- `success` (boolean): Indicates if the request was successful
+- `jobs` (array): List of background job objects, each containing:
+  - `id` (string): Unique identifier for the job
+  - `name` (string): Human-readable name of the job
+  - `start_time` (number): Unix timestamp when the job started
+  - `last_update` (number): Unix timestamp of the last progress update
+  - `progress` (string|null): Current progress description
+  - `total_items` (number|null): Total number of items to process
+  - `completed_items` (number|null): Number of items completed
+  - `duration_seconds` (number): Total time the job has been running
+  - `time_since_last_update` (number): Seconds since the last update
+  - `completion_percentage` (number|null): Percentage completion (0-100)
+- `message` (string|null): Error message if success is false, null otherwise
+
+**Example Request**:
+```bash
+curl -X GET "http://localhost:8080/api/background/jobs"
+```
+
+**Example Response (No Jobs Running)**:
+```json
+{
+  "success": true,
+  "jobs": [],
+  "message": null
+}
+```
+
+**Example Response (With Running Jobs)**:
+```json
+{
+  "success": true,
+  "jobs": [
+    {
+      "id": "artist_metadata_update_1640995200",
+      "name": "Artist Metadata Update",
+      "start_time": 1640995200,
+      "last_update": 1640995320,
+      "progress": "Processing artist metadata: 75/120 completed",
+      "total_items": 120,
+      "completed_items": 75,
+      "duration_seconds": 120,
+      "time_since_last_update": 5,
+      "completion_percentage": 62.5
+    }
+  ],
+  "message": null
+}
+```
+
+### Get Background Job by ID
+
+Retrieves detailed information about a specific background job by its unique identifier.
+
+**Endpoint**: `GET /api/background/jobs/{job_id}`
+
+**Path Parameters**:
+- `job_id` (string): Unique identifier of the background job
+
+**Response Format**:
+```json
+{
+  "success": true,
+  "jobs": [
+    {
+      "id": "artist_metadata_update_1234567890",
+      "name": "Artist Metadata Update",
+      "start_time": 1640995200,
+      "last_update": 1640995245,
+      "progress": "Processing artist 150/500",
+      "total_items": 500,
+      "completed_items": 150,
+      "duration_seconds": 45,
+      "time_since_last_update": 2,
+      "completion_percentage": 30.0
+    }
+  ],
+  "message": null
+}
+```
+
+**Example Request**:
+```bash
+curl -X GET "http://localhost:8080/api/background/jobs/artist_metadata_update_1640995200"
+```
+
+**Example Response (Job Found)**:
+```json
+{
+  "success": true,
+  "jobs": [
+    {
+      "id": "artist_metadata_update_1640995200",
+      "name": "Artist Metadata Update",
+      "start_time": 1640995200,
+      "last_update": 1640995280,
+      "progress": "Updating artist images: 45/120",
+      "total_items": 120,
+      "completed_items": 45,
+      "duration_seconds": 80,
+      "time_since_last_update": 3,
+      "completion_percentage": 37.5
+    }
+  ],
+  "message": null
+}
+```
+
+**Example Response (Job Not Found)**:
+```json
+{
+  "success": false,
+  "jobs": null,
+  "message": "Background job 'invalid_job_id' not found"
+}
+```
+
+**Use Cases**:
+- Monitoring progress of long-running operations
+- Building progress indicators in user interfaces
+- Debugging background task performance
+- Tracking job completion and error states
+- System administration and maintenance
+
+**Background Job Types**:
+Common background jobs include:
+- `Artist Metadata Update`: Updates metadata for library artists
+- `Library Scan`: Scans and indexes music library files
+- `Cover Art Download`: Downloads cover art for albums/artists
+- `Database Maintenance`: Performs database cleanup and optimization
 
 ## Generic Player Controller
 

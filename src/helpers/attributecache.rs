@@ -2134,7 +2134,7 @@ mod tests {
         let db_path = temp_dir.path().join("cache.db");
         
         // Initialize the global cache
-        super::AttributeCache::initialize(&db_path).unwrap();
+        super::AttributeCache::initialize_global(&db_path).unwrap();
         
         let key = "global_expiry_test";
         let value = "test_value";

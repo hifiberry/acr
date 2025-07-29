@@ -1,0 +1,220 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use serde::{Deserialize, Serialize};
+use log::{debug, warn};
+
+/// Represents a background job with its current status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundJob {
+    pub id: String,
+    pub name: String,
+    pub start_time: u64,
+    pub last_update: u64,
+    pub progress: Option<String>,
+    pub total_items: Option<usize>,
+    pub completed_items: Option<usize>,
+}
+
+impl BackgroundJob {
+    /// Create a new background job
+    pub fn new(id: String, name: String) -> Self {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        Self {
+            id,
+            name,
+            start_time: now,
+            last_update: now,
+            progress: None,
+            total_items: None,
+            completed_items: None,
+        }
+    }
+    
+    /// Update the job with progress information
+    pub fn update_progress(&mut self, progress: Option<String>, completed: Option<usize>, total: Option<usize>) {
+        self.last_update = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        if let Some(prog) = progress {
+            self.progress = Some(prog);
+        }
+        
+        if let Some(comp) = completed {
+            self.completed_items = Some(comp);
+        }
+        
+        if let Some(tot) = total {
+            self.total_items = Some(tot);
+        }
+        
+        debug!("Updated background job '{}': {:?}", self.id, self);
+    }
+    
+    /// Get the duration since the job started in seconds
+    pub fn duration_seconds(&self) -> u64 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now.saturating_sub(self.start_time)
+    }
+    
+    /// Get the duration since the last update in seconds
+    pub fn time_since_last_update(&self) -> u64 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now.saturating_sub(self.last_update)
+    }
+}
+
+/// Singleton manager for background jobs
+pub struct BackgroundJobs {
+    jobs: Arc<Mutex<HashMap<String, BackgroundJob>>>,
+}
+
+impl BackgroundJobs {
+    /// Create a new BackgroundJobs instance
+    fn new() -> Self {
+        Self {
+            jobs: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+    
+    /// Get the global singleton instance
+    pub fn instance() -> &'static BackgroundJobs {
+        use std::sync::Once;
+        static mut INSTANCE: Option<BackgroundJobs> = None;
+        static ONCE: Once = Once::new();
+        
+        unsafe {
+            ONCE.call_once(|| {
+                INSTANCE = Some(BackgroundJobs::new());
+            });
+            INSTANCE.as_ref().unwrap()
+        }
+    }
+    
+    /// Register a new background job
+    pub fn register_job(&self, id: String, name: String) -> Result<(), String> {
+        let job = BackgroundJob::new(id.clone(), name);
+        
+        match self.jobs.lock() {
+            Ok(mut jobs) => {
+                if jobs.contains_key(&id) {
+                    return Err(format!("Job with ID '{}' already exists", id));
+                }
+                jobs.insert(id.clone(), job);
+                debug!("Registered background job: {}", id);
+                Ok(())
+            }
+            Err(e) => {
+                warn!("Failed to acquire lock for registering job '{}': {}", id, e);
+                Err(format!("Failed to register job: {}", e))
+            }
+        }
+    }
+    
+    /// Update progress for an existing job
+    pub fn update_job(&self, id: &str, progress: Option<String>, completed: Option<usize>, total: Option<usize>) -> Result<(), String> {
+        match self.jobs.lock() {
+            Ok(mut jobs) => {
+                if let Some(job) = jobs.get_mut(id) {
+                    job.update_progress(progress, completed, total);
+                    Ok(())
+                } else {
+                    Err(format!("Job with ID '{}' not found", id))
+                }
+            }
+            Err(e) => {
+                warn!("Failed to acquire lock for updating job '{}': {}", id, e);
+                Err(format!("Failed to update job: {}", e))
+            }
+        }
+    }
+    
+    /// Remove a job when it's completed
+    pub fn complete_job(&self, id: &str) -> Result<(), String> {
+        match self.jobs.lock() {
+            Ok(mut jobs) => {
+                if jobs.remove(id).is_some() {
+                    debug!("Completed and removed background job: {}", id);
+                    Ok(())
+                } else {
+                    Err(format!("Job with ID '{}' not found", id))
+                }
+            }
+            Err(e) => {
+                warn!("Failed to acquire lock for completing job '{}': {}", id, e);
+                Err(format!("Failed to complete job: {}", e))
+            }
+        }
+    }
+    
+    /// Get all currently running background jobs
+    pub fn get_all_jobs(&self) -> Result<Vec<BackgroundJob>, String> {
+        match self.jobs.lock() {
+            Ok(jobs) => {
+                Ok(jobs.values().cloned().collect())
+            }
+            Err(e) => {
+                warn!("Failed to acquire lock for getting all jobs: {}", e);
+                Err(format!("Failed to get all jobs: {}", e))
+            }
+        }
+    }
+    
+    /// Get a specific job by ID
+    pub fn get_job(&self, id: &str) -> Result<Option<BackgroundJob>, String> {
+        match self.jobs.lock() {
+            Ok(jobs) => {
+                Ok(jobs.get(id).cloned())
+            }
+            Err(e) => {
+                warn!("Failed to acquire lock for getting job '{}': {}", id, e);
+                Err(format!("Failed to get job: {}", e))
+            }
+        }
+    }
+    
+    /// Get the count of currently running jobs
+    pub fn job_count(&self) -> usize {
+        match self.jobs.lock() {
+            Ok(jobs) => jobs.len(),
+            Err(_) => 0,
+        }
+    }
+}
+
+/// Convenience functions for easier access to the singleton
+pub fn register_job(id: String, name: String) -> Result<(), String> {
+    BackgroundJobs::instance().register_job(id, name)
+}
+
+pub fn update_job(id: &str, progress: Option<String>, completed: Option<usize>, total: Option<usize>) -> Result<(), String> {
+    BackgroundJobs::instance().update_job(id, progress, completed, total)
+}
+
+pub fn complete_job(id: &str) -> Result<(), String> {
+    BackgroundJobs::instance().complete_job(id)
+}
+
+pub fn get_all_jobs() -> Result<Vec<BackgroundJob>, String> {
+    BackgroundJobs::instance().get_all_jobs()
+}
+
+pub fn get_job(id: &str) -> Result<Option<BackgroundJob>, String> {
+    BackgroundJobs::instance().get_job(id)
+}
+
+pub fn job_count() -> usize {
+    BackgroundJobs::instance().job_count()
+}

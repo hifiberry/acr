@@ -5,6 +5,7 @@ pub mod image_grader;
 pub mod artistupdater;
 pub mod artist_store;
 pub mod artistsplitter;
+pub mod backgroundjobs;
 pub mod coverart;
 pub mod coverart_providers;
 pub mod local_coverart;

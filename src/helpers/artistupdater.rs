@@ -237,9 +237,20 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
 pub fn update_library_artists_metadata_in_background(
     artists_collection: Arc<RwLock<HashMap<String, Artist>>>
 ) {
-    debug!("Starting background thread to update artist metadata");    // Spawn a new thread to handle the metadata updates
+    debug!("Starting background thread to update artist metadata");
+    
+    // Spawn a new thread to handle the metadata updates
     use std::thread;
     thread::spawn(move || {
+        let job_id = "artist_metadata_update".to_string();
+        let job_name = "Artist Metadata Update".to_string();
+        
+        // Register the background job
+        if let Err(e) = crate::helpers::backgroundjobs::register_job(job_id.clone(), job_name) {
+            warn!("Failed to register background job: {}", e);
+            return;
+        }
+        
         info!("Artist metadata update thread started");
 
         // Get all artists from the collection
@@ -249,16 +260,39 @@ pub fn update_library_artists_metadata_in_background(
                 artists_map.values().cloned().collect::<Vec<_>>()
             } else {
                 warn!("Failed to acquire read lock on artists collection");
-                Vec::new()
+                let _ = crate::helpers::backgroundjobs::complete_job(&job_id);
+                return;
             }
         };
 
         let total = artists.len();
         info!("Processing metadata for {} artists", total);
+        
+        // Update the job with total count
+        if let Err(e) = crate::helpers::backgroundjobs::update_job(
+            &job_id,
+            Some(format!("Starting metadata update for {} artists", total)),
+            Some(0),
+            Some(total)
+        ) {
+            warn!("Failed to update background job: {}", e);
+        }
 
         for (index, artist) in artists.into_iter().enumerate() {
             let artist_name = artist.name.clone();
             debug!("Updating metadata for artist: {}", artist_name);
+            
+            // Update progress in background job
+            let completed = index;
+            let progress_message = format!("Processing artist: {}", artist_name);
+            if let Err(e) = crate::helpers::backgroundjobs::update_job(
+                &job_id,
+                Some(progress_message),
+                Some(completed),
+                Some(total)
+            ) {
+                warn!("Failed to update background job progress: {}", e);
+            }
 
             // Use the synchronous version of update_data_for_artist
             let updated_artist = update_data_for_artist(artist);
@@ -305,10 +339,28 @@ pub fn update_library_artists_metadata_in_background(
             let count = index + 1;
             if count % 10 == 0 || count == total {
                 info!("Processed {}/{} artists for metadata", count, total);
-            }            // Sleep between updates to avoid overwhelming external services
+                
+                // Update background job with milestone progress
+                if let Err(e) = crate::helpers::backgroundjobs::update_job(
+                    &job_id,
+                    Some(format!("Processed {}/{} artists", count, total)),
+                    Some(count),
+                    Some(total)
+                ) {
+                    warn!("Failed to update background job milestone: {}", e);
+                }
+            }
+            
+            // Sleep between updates to avoid overwhelming external services
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
         info!("Artist metadata update process completed");
+        
+        // Complete and remove the background job
+        if let Err(e) = crate::helpers::backgroundjobs::complete_job(&job_id) {
+            warn!("Failed to complete background job: {}", e);
+        }
     });
 
     info!("Background artist metadata update initiated");

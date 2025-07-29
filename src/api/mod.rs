@@ -46,5 +46,8 @@ pub mod settings;
 // Export the cache module
 pub mod cache;
 
+// Export the backgroundjobs module
+pub mod backgroundjobs;
+
 // Export the server module
 pub mod server;

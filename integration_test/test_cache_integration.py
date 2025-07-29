@@ -19,7 +19,7 @@ def test_cache_stats_basic_response(generic_server):
     assert response['stats'] is not None
     assert response['message'] is None
     
-    # Verify the stats structure
+    # Verify the attribute cache stats structure
     stats = response['stats']
     assert isinstance(stats, dict)
     assert 'disk_entries' in stats
@@ -32,6 +32,20 @@ def test_cache_stats_basic_response(generic_server):
     assert isinstance(stats['memory_entries'], int)
     assert isinstance(stats['memory_bytes'], int) 
     assert isinstance(stats['memory_limit_bytes'], int)
+    
+    # Verify the image cache stats structure (should be present)
+    assert 'image_cache_stats' in response
+    if response['image_cache_stats'] is not None:
+        image_stats = response['image_cache_stats']
+        assert isinstance(image_stats, dict)
+        assert 'total_images' in image_stats
+        assert 'total_size' in image_stats
+        assert 'last_updated' in image_stats
+        
+        # Verify data types
+        assert isinstance(image_stats['total_images'], int)
+        assert isinstance(image_stats['total_size'], int)
+        assert isinstance(image_stats['last_updated'], int)
 
 
 def test_cache_stats_memory_limit_configuration(generic_server):
@@ -117,7 +131,7 @@ def test_cache_stats_response_format(generic_server):
     response = generic_server.api_request('GET', '/api/cache/stats')
     
     # Check top-level structure
-    required_fields = ['success', 'stats', 'message']
+    required_fields = ['success', 'stats', 'image_cache_stats', 'message']
     for field in required_fields:
         assert field in response, f"Missing required field: {field}"
     
@@ -127,8 +141,15 @@ def test_cache_stats_response_format(generic_server):
     for field in required_stats_fields:
         assert field in stats, f"Missing required stats field: {field}"
     
+    # Check image cache stats structure (if present)
+    if response['image_cache_stats'] is not None:
+        image_stats = response['image_cache_stats']
+        required_image_stats_fields = ['total_images', 'total_size', 'last_updated']
+        for field in required_image_stats_fields:
+            assert field in image_stats, f"Missing required image cache stats field: {field}"
+    
     # Check that there are no unexpected extra fields at the top level
-    expected_fields = {'success', 'stats', 'message'}
+    expected_fields = {'success', 'stats', 'image_cache_stats', 'message'}
     actual_fields = set(response.keys())
     extra_fields = actual_fields - expected_fields
     assert len(extra_fields) == 0, f"Unexpected extra fields in response: {extra_fields}"

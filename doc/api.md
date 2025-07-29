@@ -2869,11 +2869,11 @@ curl -X POST http://<device-ip>:1080/api/settings/set \
 
 ## Cache API
 
-The Cache API provides endpoints to retrieve information about the internal caching system used by the audio control service. This includes statistics about memory and disk cache usage.
+The Cache API provides endpoints to retrieve information about the internal caching system used by the audio control service. This includes statistics about memory and disk cache usage, as well as image cache statistics.
 
 ### Get Cache Statistics
 
-Retrieves comprehensive statistics about the current cache state, including memory usage, disk entries, and cache limits.
+Retrieves comprehensive statistics about the current cache state, including memory usage, disk entries, cache limits, and image cache information.
 
 **Endpoint**: `GET /api/cache/stats`
 
@@ -2887,17 +2887,26 @@ Retrieves comprehensive statistics about the current cache state, including memo
     "memory_bytes": 2048576,
     "memory_limit_bytes": 10485760
   },
+  "image_cache_stats": {
+    "total_images": 150,
+    "total_size": 25165824,
+    "last_updated": 1722254400
+  },
   "message": null
 }
 ```
 
 **Response Fields**:
 - `success` (boolean): Indicates if the request was successful
-- `stats` (object): Cache statistics object containing:
+- `stats` (object): Attribute cache statistics object containing:
   - `disk_entries` (number): Number of entries stored on disk
   - `memory_entries` (number): Number of entries currently in memory
   - `memory_bytes` (number): Current memory usage in bytes
   - `memory_limit_bytes` (number): Maximum memory limit in bytes (null if no limit)
+- `image_cache_stats` (object|null): Image cache statistics object containing:
+  - `total_images` (number): Total number of cached images
+  - `total_size` (number): Total size of all cached images in bytes
+  - `last_updated` (number): Timestamp when statistics were last updated (Unix epoch seconds)
 - `message` (string|null): Error message if success is false, null otherwise
 
 **Example Request**:
@@ -2915,6 +2924,11 @@ curl -X GET "http://localhost:8080/api/cache/stats"
     "memory_bytes": 5242880,
     "memory_limit_bytes": 20971520
   },
+  "image_cache_stats": {
+    "total_images": 342,
+    "total_size": 67108864,
+    "last_updated": 1722254400
+  },
   "message": null
 }
 ```
@@ -2924,10 +2938,13 @@ curl -X GET "http://localhost:8080/api/cache/stats"
 - Debugging cache-related issues
 - Optimizing cache configuration based on usage patterns
 - System health monitoring and alerting
+- Tracking image cache storage usage and performance
 
 **Notes**:
 - Cache statistics are updated in real-time
 - Memory limits can be configured in the application settings
+- Image cache statistics include metadata stored in the attribute cache
+- The `image_cache_stats` field may be null if image cache statistics are unavailable
 - Disk cache location is configurable via the application configuration
 
 ## Background Jobs API

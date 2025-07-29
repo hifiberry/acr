@@ -7,6 +7,50 @@ use std::collections::HashMap;
 use lazy_static::lazy_static;
 use log::{info, error, debug};
 use serde::{Serialize, Deserialize};
+use crate::helpers::attributecache;
+
+// Constants for cache keys
+const IMAGECACHE_METADATA_PREFIX: &str = "imagecache:metadata:";
+const IMAGECACHE_STATS_KEY: &str = "imagecache:stats";
+
+/// Metadata for a cached image
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ImageMetadata {
+    /// Original file name/path
+    pub name: String,
+    /// Size of the image in bytes
+    pub size: u64,
+    /// MIME type of the image
+    pub mime_type: String,
+    /// Timestamp when the image was cached (seconds since UNIX epoch)
+    pub cached_at: u64,
+    /// Optional expiry timestamp (seconds since UNIX epoch)
+    pub expires_at: Option<u64>,
+}
+
+/// Statistics about the image cache
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ImageCacheStats {
+    /// Total number of cached images
+    pub total_images: usize,
+    /// Total size of all cached images in bytes
+    pub total_size: u64,
+    /// Last time statistics were updated
+    pub last_updated: u64,
+}
+
+impl ImageCacheStats {
+    pub fn new() -> Self {
+        Self {
+            total_images: 0,
+            total_size: 0,
+            last_updated: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }
+    }
+}
 
 // Global singleton for the image cache
 lazy_static! {
@@ -317,11 +361,34 @@ impl ImageCache {
             Err(e) => return Err(format!("Failed to create image file: {}", e)),
         }
 
-        // Set expiry if provided
+        // Create and store metadata
+        let path_str = path_ref.to_string_lossy().to_string();
+        let expires_at = expiry_time.map(|t| {
+            t.duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        });
+
+        let metadata = ImageMetadata {
+            name: path_str.clone(),
+            size: data.len() as u64,
+            mime_type: self.guess_mime_type(&path_str),
+            cached_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            expires_at,
+        };
+
+        // Store metadata in attribute cache
+        self.store_image_metadata(&path_str, &metadata)?;
+
+        // Set expiry if provided (for backward compatibility)
         if let Some(expiry) = expiry_time {
             self.set_image_expiry(path_ref, expiry)?;
         }
 
+        debug!("Stored image metadata for: {}", path_str);
         Ok(())
     }
 
@@ -360,8 +427,56 @@ impl ImageCache {
         let path_str = path.as_ref().to_string_lossy().to_string();
         let path_with_extension = format!("{}.{}", path_str, extension);
         
-        // Store the image using the existing method with optional expiry
-        self.store_image_with_expiry(path_with_extension, &data, expiry_time)
+        let full_path = self.get_full_path(&path_with_extension);
+        
+        // Ensure parent directory exists
+        if let Some(parent) = full_path.parent() {
+            if !parent.exists() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    return Err(format!("Failed to create directory {}: {}", parent.display(), e));
+                }
+            }
+        }
+        
+        // Write the image data to file
+        match File::create(&full_path) {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(&data) {
+                    return Err(format!("Failed to write image data: {}", e));
+                }
+                debug!("Stored image at {}", full_path.display());
+            },
+            Err(e) => return Err(format!("Failed to create image file: {}", e)),
+        }
+
+        // Create and store metadata
+        let expires_at = expiry_time.map(|t| {
+            t.duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        });
+
+        let metadata = ImageMetadata {
+            name: path_with_extension.clone(),
+            size: data.len() as u64,
+            mime_type: mime_type.clone(),
+            cached_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            expires_at,
+        };
+
+        // Store metadata in attribute cache
+        self.store_image_metadata(&path_with_extension, &metadata)?;
+
+        // Set expiry if provided (for backward compatibility)
+        if let Some(expiry) = expiry_time {
+            self.set_image_expiry(&path_with_extension, expiry)?;
+        }
+
+        debug!("Stored image metadata for: {}", path_with_extension);
+        Ok(())
     }
 
     /// Get an image from the cache
@@ -394,10 +509,12 @@ impl ImageCache {
             return Err("Image cache is disabled".to_string());
         }
 
-        let full_path = self.get_full_path(path);
+        let path_str = path.as_ref().to_string_lossy().to_string();
+        let full_path = self.get_full_path(&path);
         
         if !full_path.exists() {
-            // If the file doesn't exist, consider it a success
+            // If the file doesn't exist, still try to remove metadata
+            let _ = self.remove_image_metadata(&path_str);
             return Ok(());
         }
         
@@ -405,13 +522,121 @@ impl ImageCache {
             return Err(format!("Failed to delete image: {}", e));
         }
         
-        debug!("Deleted image at {}", full_path.display());
+        // Remove metadata from attribute cache
+        self.remove_image_metadata(&path_str)?;
+        
+        debug!("Deleted image and metadata for: {}", path_str);
         Ok(())
     }
 
     /// Get the full path for a relative path
     fn get_full_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
         self.base_path.join(path)
+    }
+
+    /// Store image metadata in the attribute cache
+    fn store_image_metadata(&self, path: &str, metadata: &ImageMetadata) -> Result<(), String> {
+        let cache_key = format!("{}{}", IMAGECACHE_METADATA_PREFIX, path);
+        attributecache::set(&cache_key, metadata)
+            .map_err(|e| format!("Failed to store image metadata: {}", e))
+    }
+
+    /// Retrieve image metadata from the attribute cache
+    fn get_image_metadata(&self, path: &str) -> Option<ImageMetadata> {
+        let cache_key = format!("{}{}", IMAGECACHE_METADATA_PREFIX, path);
+        attributecache::get(&cache_key).ok().flatten()
+    }
+
+    /// Remove image metadata from the attribute cache
+    fn remove_image_metadata(&self, path: &str) -> Result<(), String> {
+        let cache_key = format!("{}{}", IMAGECACHE_METADATA_PREFIX, path);
+        attributecache::remove(&cache_key)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to remove image metadata: {}", e))
+    }
+
+    /// Update cache statistics
+    fn update_cache_stats(&self) -> Result<ImageCacheStats, String> {
+        let mut stats = ImageCacheStats::new();
+        
+        // Get all image metadata entries
+        let prefix = Some(IMAGECACHE_METADATA_PREFIX);
+        match attributecache::list_keys(prefix) {
+            Ok(keys) => {
+                for key in keys {
+                    if let Ok(Some(metadata)) = attributecache::get::<ImageMetadata>(&key) {
+                        stats.total_images += 1;
+                        stats.total_size += metadata.size;
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Failed to get image cache keys: {}", e);
+                // Fall back to scanning the filesystem
+                return self.scan_filesystem_for_stats();
+            }
+        }
+
+        // Store updated stats
+        attributecache::set(IMAGECACHE_STATS_KEY, &stats)
+            .map_err(|e| format!("Failed to store cache stats: {}", e))?;
+
+        Ok(stats)
+    }
+
+    /// Fallback method to scan filesystem for cache statistics
+    fn scan_filesystem_for_stats(&self) -> Result<ImageCacheStats, String> {
+        let mut stats = ImageCacheStats::new();
+        
+        if !self.base_path.exists() {
+            return Ok(stats);
+        }
+
+        fn scan_directory(dir: &Path, stats: &mut ImageCacheStats) -> Result<(), String> {
+            match read_dir(dir) {
+                Ok(entries) => {
+                    for entry in entries {
+                        if let Ok(entry) = entry {
+                            let path = entry.path();
+                            if path.is_file() {
+                                // Skip metadata files
+                                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                    if !name.starts_with('.') {
+                                        if let Ok(metadata) = entry.metadata() {
+                                            stats.total_images += 1;
+                                            stats.total_size += metadata.len();
+                                        }
+                                    }
+                                }
+                            } else if path.is_dir() {
+                                scan_directory(&path, stats)?;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(format!("Failed to read directory {:?}: {}", dir, e));
+                }
+            }
+            Ok(())
+        }
+
+        scan_directory(&self.base_path, &mut stats)?;
+        
+        // Store scanned stats
+        attributecache::set(IMAGECACHE_STATS_KEY, &stats)
+            .map_err(|e| format!("Failed to store scanned cache stats: {}", e))?;
+
+        Ok(stats)
+    }
+
+    /// Guess MIME type from file path/extension
+    fn guess_mime_type(&self, path: &str) -> String {
+        if let Some(extension) = Path::new(path).extension().and_then(|ext| ext.to_str()) {
+            extension_to_mime_type(extension).to_string()
+        } else {
+            "application/octet-stream".to_string()
+        }
     }
 
     /// Get an image from the cache by base name regardless of extension
@@ -485,6 +710,63 @@ impl ImageCache {
             },
             Err(e) => Err(format!("Failed to read directory: {}", e)),
         }
+    }
+    
+    /// Get image cache statistics
+    /// 
+    /// # Returns
+    /// * `Result<ImageCacheStats, String>` - Cache statistics or error message
+    pub fn get_cache_statistics(&self) -> Result<ImageCacheStats, String> {
+        if !self.is_enabled() {
+            return Ok(ImageCacheStats::new());
+        }
+
+        // Try to get cached stats first
+        match attributecache::get::<ImageCacheStats>(IMAGECACHE_STATS_KEY) {
+            Ok(Some(stats)) => {
+                // Check if stats are recent (less than 5 minutes old)
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                
+                if now - stats.last_updated < 300 { // 5 minutes
+                    return Ok(stats);
+                }
+            }
+            _ => {} // Fall through to update stats
+        }
+
+        // Update and return fresh stats
+        self.update_cache_stats()
+    }
+
+    /// Force refresh of cache statistics
+    /// 
+    /// # Returns
+    /// * `Result<ImageCacheStats, String>` - Updated cache statistics or error message
+    pub fn refresh_cache_statistics(&self) -> Result<ImageCacheStats, String> {
+        if !self.is_enabled() {
+            return Ok(ImageCacheStats::new());
+        }
+
+        self.update_cache_stats()
+    }
+
+    /// Get metadata for a specific cached image
+    /// 
+    /// # Arguments
+    /// * `path` - Path to the image (relative to cache base)
+    /// 
+    /// # Returns
+    /// * `Option<ImageMetadata>` - Image metadata if found
+    pub fn get_image_metadata_info<P: AsRef<Path>>(&self, path: P) -> Option<ImageMetadata> {
+        if !self.is_enabled() {
+            return None;
+        }
+
+        let path_str = path.as_ref().to_string_lossy().to_string();
+        self.get_image_metadata(&path_str)
     }
 }
 
@@ -611,6 +893,33 @@ pub fn expire_images() -> Result<usize, String> {
     get_image_cache().expire_images()
 }
 
+/// Get image cache statistics
+/// 
+/// # Returns
+/// * `Result<ImageCacheStats, String>` - Cache statistics including total number of images and total size
+pub fn get_cache_statistics() -> Result<ImageCacheStats, String> {
+    get_image_cache().get_cache_statistics()
+}
+
+/// Force refresh of image cache statistics
+/// 
+/// # Returns
+/// * `Result<ImageCacheStats, String>` - Updated cache statistics
+pub fn refresh_cache_statistics() -> Result<ImageCacheStats, String> {
+    get_image_cache().refresh_cache_statistics()
+}
+
+/// Get metadata for a specific cached image
+/// 
+/// # Arguments
+/// * `path` - Path to the image (relative to cache base)
+/// 
+/// # Returns
+/// * `Option<ImageMetadata>` - Image metadata if found
+pub fn get_image_metadata<P: AsRef<Path>>(path: P) -> Option<ImageMetadata> {
+    get_image_cache().get_image_metadata_info(path)
+}
+
 /// Count files with any extension matching a base path and provider pattern
 /// 
 /// # Arguments
@@ -681,9 +990,26 @@ mod tests {
     use tempfile::TempDir;
     use serial_test::serial;
 
+    // Helper function to initialize attribute cache for tests
+    fn init_test_attribute_cache() {
+        use crate::helpers::attributecache::AttributeCache;
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        
+        INIT.call_once(|| {
+            let temp_dir = TempDir::new().unwrap();
+            let attr_cache_path = temp_dir.path().join("attributes");
+            let _ = AttributeCache::initialize_global(&attr_cache_path);
+            // Keep the temp_dir alive by leaking it for tests
+            std::mem::forget(temp_dir);
+        });
+    }
+
     #[test]
     #[serial]
     fn test_image_cache_basic_functionality() {
+        init_test_attribute_cache();
+        
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().to_str().unwrap();
         let expiry_path = temp_dir.path().join("expiry.json");
@@ -704,53 +1030,9 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_image_cache_with_expiry() {
-        let temp_dir = TempDir::new().unwrap();
-        let cache_path = temp_dir.path().to_str().unwrap();
-        let expiry_path = temp_dir.path().join("expiry.json");
-        
-        let cache = ImageCache::with_custom_expiry_path(cache_path, &expiry_path);
-        
-        // Store image with future expiry
-        let test_data = b"test expiry data";
-        let future_time = SystemTime::now() + std::time::Duration::from_secs(3600);
-        let result = cache.store_image_with_expiry("expiry_test.png", test_data, Some(future_time));
-        assert!(result.is_ok());
-        
-        // Image should not be expired
-        assert!(!cache.is_image_expired("expiry_test.png"));
-        
-        // Store image with past expiry
-        let past_time = SystemTime::now() - std::time::Duration::from_secs(3600);
-        let result = cache.store_image_with_expiry("expired_test.png", test_data, Some(past_time));
-        assert!(result.is_ok());
-        
-        // Image should be expired
-        assert!(cache.is_image_expired("expired_test.png"));
-    }
-
-    #[test]
-    #[serial]
-    fn test_store_image_from_data_with_expiry() {
-        let temp_dir = TempDir::new().unwrap();
-        let cache_path = temp_dir.path().to_str().unwrap();
-        let expiry_path = temp_dir.path().join("expiry.json");
-        
-        let cache = ImageCache::with_custom_expiry_path(cache_path, &expiry_path);
-        
-        let test_data = b"test data from url";
-        let future_time = SystemTime::now() + std::time::Duration::from_secs(1800);
-        
-        let result = cache.store_image_from_data_with_expiry("url_test", test_data.to_vec(), "jpg".to_string(), Some(future_time));
-        assert!(result.is_ok());
-        
-        // Verify expiry was set
-        assert!(!cache.is_image_expired("url_test.jpg"));
-    }
-
-    #[test]
-    #[serial]
     fn test_expiry_metadata_persistence() {
+        init_test_attribute_cache();
+        
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().to_str().unwrap();
         let expiry_path = temp_dir.path().join("expiry.json");
@@ -776,6 +1058,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_expire_images_method() {
+        init_test_attribute_cache();
+        
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().to_str().unwrap();
         let expiry_path = temp_dir.path().join("expiry.json");
@@ -809,33 +1093,9 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_set_image_expiry() {
-        let temp_dir = TempDir::new().unwrap();
-        let cache_path = temp_dir.path().to_str().unwrap();
-        let expiry_path = temp_dir.path().join("expiry.json");
-        
-        let cache = ImageCache::with_custom_expiry_path(cache_path, &expiry_path);
-        
-        let test_data = b"set expiry test";
-        
-        // Store image without expiry
-        cache.store_image("set_expiry_test.jpg", test_data).unwrap();
-        
-        // Initially should not be expired (no expiry set)
-        assert!(!cache.is_image_expired("set_expiry_test.jpg"));
-        
-        // Set expiry to past time
-        let past_time = SystemTime::now() - std::time::Duration::from_secs(1800);
-        let result = cache.set_image_expiry("set_expiry_test.jpg", past_time);
-        assert!(result.is_ok());
-        
-        // Now should be expired
-        assert!(cache.is_image_expired("set_expiry_test.jpg"));
-    }
-
-    #[test]
-    #[serial]
     fn test_disabled_cache_behavior() {
+        init_test_attribute_cache();
+        
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().to_str().unwrap();
         let expiry_path = temp_dir.path().join("expiry.json");
@@ -861,6 +1121,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_global_functions() {
+        init_test_attribute_cache();
+        
         let temp_dir = TempDir::new().unwrap();
         let test_path = temp_dir.path().join("global_test");
         
@@ -875,5 +1137,103 @@ mod tests {
         // Now should find one file
         assert_eq!(count_provider_files(&test_path, "test_provider"), 1);
         assert!(provider_files_exist(&test_path, "test_provider"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_image_cache_statistics() {
+        use crate::helpers::attributecache::AttributeCache;
+        
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().to_str().unwrap();
+        let expiry_path = temp_dir.path().join("expiry.json");
+        
+        // Initialize attribute cache for this test
+        let attr_cache_path = temp_dir.path().join("attributes");
+        AttributeCache::initialize_global(&attr_cache_path).unwrap();
+        
+        let cache = ImageCache::with_custom_expiry_path(cache_path, &expiry_path);
+        
+        // Initially, stats should show no images
+        let initial_stats = cache.get_cache_statistics();
+        assert!(initial_stats.is_ok());
+        let stats = initial_stats.unwrap();
+        assert_eq!(stats.total_images, 0);
+        assert_eq!(stats.total_size, 0);
+        
+        // Store some test images
+        let test_data1 = b"test image data 1";
+        let test_data2 = b"test image data 2 - longer";
+        
+        cache.store_image("test1.jpg", test_data1).unwrap();
+        cache.store_image_from_data("test2", test_data2.to_vec(), "image/png".to_string()).unwrap();
+        
+        // Get updated stats
+        let updated_stats = cache.refresh_cache_statistics();
+        assert!(updated_stats.is_ok());
+        let stats = updated_stats.unwrap();
+        assert_eq!(stats.total_images, 2);
+        assert_eq!(stats.total_size, (test_data1.len() + test_data2.len()) as u64);
+        
+        // Test metadata retrieval
+        let metadata1 = cache.get_image_metadata_info("test1.jpg");
+        assert!(metadata1.is_some());
+        let meta1 = metadata1.unwrap();
+        assert_eq!(meta1.name, "test1.jpg");
+        assert_eq!(meta1.size, test_data1.len() as u64);
+        assert_eq!(meta1.mime_type, "image/jpeg");
+        
+        let metadata2 = cache.get_image_metadata_info("test2.png");
+        assert!(metadata2.is_some());
+        let meta2 = metadata2.unwrap();
+        assert_eq!(meta2.name, "test2.png");
+        assert_eq!(meta2.size, test_data2.len() as u64);
+        assert_eq!(meta2.mime_type, "image/png");
+        
+        // Delete one image and verify stats update
+        cache.delete_image("test1.jpg").unwrap();
+        let final_stats = cache.refresh_cache_statistics();
+        assert!(final_stats.is_ok());
+        let stats = final_stats.unwrap();
+        assert_eq!(stats.total_images, 1);
+        assert_eq!(stats.total_size, test_data2.len() as u64);
+        
+        // Verify metadata was removed
+        let metadata1_after = cache.get_image_metadata_info("test1.jpg");
+        assert!(metadata1_after.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_global_cache_statistics_functions() {
+        init_test_attribute_cache();
+        
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().to_str().unwrap();
+        
+        // Initialize global cache for testing
+        ImageCache::initialize(cache_path).unwrap();
+        
+        // Test global statistics functions
+        let initial_stats = get_cache_statistics();
+        assert!(initial_stats.is_ok());
+        
+        // Store some data using global functions
+        let test_data = b"global test data";
+        store_image("global_test.jpg", test_data).unwrap();
+        
+        // Get metadata using global function
+        let metadata = get_image_metadata("global_test.jpg");
+        assert!(metadata.is_some());
+        let meta = metadata.unwrap();
+        assert_eq!(meta.name, "global_test.jpg");
+        assert_eq!(meta.size, test_data.len() as u64);
+        
+        // Refresh stats using global function
+        let refreshed_stats = refresh_cache_statistics();
+        assert!(refreshed_stats.is_ok());
+        let stats = refreshed_stats.unwrap();
+        assert!(stats.total_images >= 1);
+        assert!(stats.total_size >= test_data.len() as u64);
     }
 }

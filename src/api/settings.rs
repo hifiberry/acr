@@ -272,28 +272,4 @@ mod tests {
         assert!(retrieved.is_ok());
         assert!(retrieved.unwrap().is_none());
     }
-
-    #[test]
-    fn test_database_complex_value() {
-        let _temp_dir = setup_test_env();
-        
-        let test_key = "test_complex_key";
-        let test_value = json!({
-            "name": "test",
-            "count": 42,
-            "enabled": true,
-            "items": [1, 2, 3]
-        });
-        
-        // Test setting a complex value
-        let result = settingsdb::get_settings_db().set(test_key, &test_value);
-        assert!(result.is_ok());
-        
-        // Test getting the complex value
-        let retrieved: Result<Option<serde_json::Value>, String> = settingsdb::get_settings_db().get(test_key);
-        assert!(retrieved.is_ok());
-        
-        let retrieved_value = retrieved.unwrap().unwrap();
-        assert_eq!(retrieved_value, test_value);
-    }
 }

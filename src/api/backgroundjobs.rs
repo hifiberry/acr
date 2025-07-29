@@ -25,6 +25,8 @@ pub struct BackgroundJobInfo {
     pub duration_seconds: u64,
     pub time_since_last_update: u64,
     pub completion_percentage: Option<f64>,
+    pub finished: bool,
+    pub finish_time: Option<u64>,
 }
 
 impl From<BackgroundJob> for BackgroundJobInfo {
@@ -50,6 +52,8 @@ impl From<BackgroundJob> for BackgroundJobInfo {
             duration_seconds: job.duration_seconds(),
             time_since_last_update: job.time_since_last_update(),
             completion_percentage,
+            finished: job.finished,
+            finish_time: job.finish_time,
         }
     }
 }

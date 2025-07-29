@@ -14,6 +14,8 @@ pub struct BackgroundJob {
     pub progress: Option<String>,
     pub total_items: Option<usize>,
     pub completed_items: Option<usize>,
+    pub finished: bool,
+    pub finish_time: Option<u64>,
 }
 
 impl BackgroundJob {
@@ -32,6 +34,8 @@ impl BackgroundJob {
             progress: None,
             total_items: None,
             completed_items: None,
+            finished: false,
+            finish_time: None,
         }
     }
     
@@ -55,6 +59,20 @@ impl BackgroundJob {
         }
         
         debug!("Updated background job '{}': {:?}", self.id, self);
+    }
+    
+    /// Mark the job as finished
+    pub fn mark_finished(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        self.finished = true;
+        self.finish_time = Some(now);
+        self.last_update = now;
+        
+        debug!("Marked background job '{}' as finished", self.id);
     }
     
     /// Get the duration since the job started in seconds
@@ -102,10 +120,11 @@ impl BackgroundJobs {
         match self.jobs.lock() {
             Ok(mut jobs) => {
                 if jobs.contains_key(&id) {
-                    return Err(format!("Job with ID '{}' already exists", id));
+                    debug!("Overwriting existing job with ID '{}' with new job", id);
+                } else {
+                    debug!("Registering new background job: {}", id);
                 }
                 jobs.insert(id.clone(), job);
-                debug!("Registered background job: {}", id);
                 Ok(())
             }
             Err(e) => {
@@ -133,12 +152,13 @@ impl BackgroundJobs {
         }
     }
     
-    /// Remove a job when it's completed
+    /// Mark a job as completed/finished
     pub fn complete_job(&self, id: &str) -> Result<(), String> {
         match self.jobs.lock() {
             Ok(mut jobs) => {
-                if jobs.remove(id).is_some() {
-                    debug!("Completed and removed background job: {}", id);
+                if let Some(job) = jobs.get_mut(id) {
+                    job.mark_finished();
+                    debug!("Marked background job as finished: {}", id);
                     Ok(())
                 } else {
                     Err(format!("Job with ID '{}' not found", id))

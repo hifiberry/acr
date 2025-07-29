@@ -13,9 +13,9 @@ use urlencoding::encode;
 pub static MUSICBRAINZ_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // Cache key prefixes
-const ARTIST_MBID_CACHE_PREFIX: &str = "artist::mbid::";
-const ARTIST_MBID_PARTIAL_CACHE_PREFIX: &str = "artist::mbid_partial::";
-const ARTIST_NOT_FOUND_CACHE_PREFIX: &str = "artist::not_found::";
+pub const ARTIST_MBID_CACHE_PREFIX: &str = "artist::mbid::";
+pub const ARTIST_MBID_PARTIAL_CACHE_PREFIX: &str = "artist::mbid_partial::";
+pub const ARTIST_NOT_FOUND_CACHE_PREFIX: &str = "artist::mbid_not_found::";
 
 // Cache timeout for not found entries (48 hours in seconds)
 const NOT_FOUND_CACHE_TIMEOUT_SECONDS: i64 = 48 * 60 * 60;

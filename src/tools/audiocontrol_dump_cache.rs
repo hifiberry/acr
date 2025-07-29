@@ -2,6 +2,8 @@ use clap::{Parser, Subcommand};
 use log::{info, warn};
 use audiocontrol::helpers::attributecache::{self, AttributeCache, CacheEntry};
 use audiocontrol::helpers::artistsplitter::ARTIST_SPLIT_CACHE_PREFIX;
+use audiocontrol::helpers::musicbrainz::{ARTIST_MBID_CACHE_PREFIX, ARTIST_NOT_FOUND_CACHE_PREFIX};
+use audiocontrol::helpers::image_meta::IMAGE_META_CACHE_PREFIX;
 use std::path::PathBuf;
 use chrono::DateTime;
 
@@ -104,13 +106,13 @@ fn determine_prefix(prefix: Option<&str>, artistmbid: bool, imagemeta: bool, art
     }
     
     if artistmbid {
-        Ok(Some("artist::mbid".to_string()))
+        Ok(Some(ARTIST_MBID_CACHE_PREFIX.trim_end_matches("::").to_string()))
     } else if imagemeta {
-        Ok(Some("image_meta:".to_string()))
+        Ok(Some(IMAGE_META_CACHE_PREFIX.trim_end_matches("::").to_string()))
     } else if artistsplit {
         Ok(Some(ARTIST_SPLIT_CACHE_PREFIX.trim_end_matches("::").to_string()))
     } else if artistnotfound {
-        Ok(Some("artist::not_found".to_string()))
+        Ok(Some(ARTIST_NOT_FOUND_CACHE_PREFIX.trim_end_matches("::").to_string()))
     } else {
         Ok(prefix.map(|s| s.to_string()))
     }

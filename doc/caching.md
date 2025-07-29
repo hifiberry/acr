@@ -9,7 +9,7 @@ Audiocontrol implements two types of caches:
 1. **Attribute Cache**: Stores key-value pairs like metadata and IDs from external services
 2. **Image Cache**: Stores image files like album covers and artist images
 
-By default, entries in the cache have no expiry date, though the attribute cache can be configured with a maximum age.
+By default, entries in the cache have no expiry date, though the attribute cache can be configured with a maximum age. Critical negative cache entries (like MusicBrainz lookup failures) use extended timeouts to prevent excessive API requests.
 
 ## Cache Locations
 
@@ -19,9 +19,42 @@ By default, the cache directories are:
 
 These paths can be customized in the configuration file.
 
-## Display cache contents
+## Cache Management Tools
 
-Audiocontrol uses SQLite database engine to implement its attribute caching. To view the contents of the attribute cache, you can use standard SQLite tools:
+### audiocontrol_dump_cache Tool
+
+Audiocontrol includes a dedicated cache management tool for inspecting and managing cache contents:
+
+```bash
+# List all cache entries with details
+audiocontrol_dump_cache list --detailed
+
+# List entries with a specific prefix
+audiocontrol_dump_cache list --prefix "artist::mbid"
+
+# Use shortcuts for common cache types
+audiocontrol_dump_cache list --artistmbid          # MusicBrainz artist data
+audiocontrol_dump_cache list --artistnotfound      # MusicBrainz negative cache
+audiocontrol_dump_cache list --artistsplit         # Artist name splitting cache
+audiocontrol_dump_cache list --imagemeta           # Image metadata cache
+
+# Show cache statistics
+audiocontrol_dump_cache stats --by-prefix
+
+# Clean specific cache entries (dry run first)
+audiocontrol_dump_cache clean --prefix "artist::mbid" --dry-run
+audiocontrol_dump_cache clean --prefix "artist::mbid"
+
+# Clean old entries
+audiocontrol_dump_cache clean --older-than-days 7
+
+# Clean all cache entries (use with caution!)
+audiocontrol_dump_cache clean --all
+```
+
+### SQLite Direct Access
+
+You can also use standard SQLite tools to inspect the cache:
 
 ```bash
 # View all cached entries
@@ -32,71 +65,99 @@ sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db ".schema"
 
 # Count total entries
 sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT COUNT(*) FROM cache;"
-```
-
-Alternatively, you can use any SQLite browser or viewer tool to inspect the database.
-
-## Cache Management Tools
-
-Audiocontrol uses SQLite database engine to implement its attribute caching. To view the contents of the attribute cache, you can use standard SQLite tools:
-
-```bash
-# Connect to the cache database
-sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db
-
-# List all cache entries
-.mode column
-.headers on
-SELECT * FROM cache;
 
 # Search for specific entries
-SELECT * FROM cache WHERE key LIKE '%lastfm%';
+sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT * FROM cache WHERE key LIKE '%artist::mbid%';"
 ```
 
-## Managing the cache
+## Managing the Cache
 
-### Deleting the cache
+### Using the audiocontrol_dump_cache Tool
 
-You can simply delete the cache directory to clear all cached data. The directory will be recreated automatically when needed. 
+The recommended way to manage the cache is using the built-in tool:
 
-Note that deleting the cache can significantly slow down operation, particularly during startup, as Audiocontrol will need to rebuild the cache by querying external services again. You should only delete the cache if there are incorrect or outdated entries.
+```bash
+# Inspect cache contents before cleaning
+audiocontrol_dump_cache list --artistnotfound --detailed
 
-## Internal cache IDs
+# Clean only expired negative cache entries (safe)
+audiocontrol_dump_cache clean --artistnotfound --dry-run
+audiocontrol_dump_cache clean --artistnotfound
 
-The attribute cache uses specific key formats for various types of data:
+# Clean old entries across all cache types
+audiocontrol_dump_cache clean --older-than-days 30
+```
 
-| Key | Value |
-|-----|-------|
-| `artist::mbid::<artist>` | Musicbrainz ID(s) for this artist or this list of artists |
-| `artist::mbid_partial::<artistlist>` | Musicbrainz IDs could not be found for all artists in the list |
-| `artist::fanart::<mbid>` | URLs to artist images from FanartTV |
-| `artist::metadata::<artist>` | Full artist metadata collected from multiple 3rd party sources |
-| `album::mbid::<album>::<artist>` | Musicbrainz ID for this album |
-| `theartistdb::mbid::<mbid>` | Artist data retrieved from TheArtistDB API |
-| `theartistdb::not_found::<mbid>` | Records that an artist was not found in TheArtistDB (negative cache) |
-| `theartistdb::no_thumbnail::<mbid>` | Records that an artist has no thumbnail in TheArtistDB (negative cache) |
+### Manual Cache Deletion
+
+You can also manually delete the cache directory to clear all cached data:
+
+```bash
+# Stop audiocontrol service first
+sudo systemctl stop audiocontrol
+
+# Remove cache directory
+sudo rm -rf /var/lib/audiocontrol/cache
+
+# Restart audiocontrol (cache will be recreated)
+sudo systemctl start audiocontrol
+```
+
+**Warning**: Deleting the cache can significantly slow down operation, particularly during startup, as Audiocontrol will need to rebuild the cache by querying external services again. The audiocontrol_dump_cache tool provides more granular control and is the preferred method.
+
+## Cache Key Prefixes
+
+The attribute cache uses specific key formats for various types of data. All cache key prefixes are defined as constants in the code for maintainability:
+
+| Key Pattern | Description | Timeout | Module |
+|-------------|-------------|---------|---------|
+| `artist::mbid::<artist>` | MusicBrainz ID(s) for artist or artist list | Permanent | musicbrainz |
+| `artist::mbid_partial::<artistlist>` | Partial MusicBrainz matches (not all artists found) | Permanent | musicbrainz |
+| `artist::mbid_not_found::<artist>` | MusicBrainz negative cache (artist not found) | 48 hours | musicbrainz |
+| `artist::split::<artist>` | Artist name splitting results | Permanent | artistsplitter |
+| `artist::simple_split::<artist>` | Simple artist splitting results | Permanent | artistsplitter |
+| `image_meta::<url>` | Image metadata (dimensions, format, size) | Permanent | image_meta |
+| `artist::fanart::<mbid>` | URLs to artist images from FanartTV | Permanent | fanarttv |
+| `artist::metadata::<artist>` | Full artist metadata from multiple sources | Permanent | metadata |
+| `album::mbid::<album>::<artist>` | MusicBrainz ID for album | Permanent | musicbrainz |
+| `theaudiodb::mbid::<mbid>` | Artist data from TheAudioDB API | Permanent | theaudiodb |
+| `theaudiodb::not_found::<mbid>` | TheAudioDB negative cache | Permanent | theaudiodb |
+| `theaudiodb::no_thumbnail::<mbid>` | No thumbnail available in TheAudioDB | Permanent | theaudiodb |
+
+### Extended Timeout Strategy
+
+Critical services like MusicBrainz use extended negative caching (48 hours) to prevent excessive API requests for non-existent data. This significantly reduces load on external services while maintaining good user experience.
 
 ## Implementation Details
 
-### Attribute Cache
+### Unified Attribute Cache Architecture
 
-The attribute cache is implemented using the [SQLite](https://www.sqlite.org/) database with the following features:
+The attribute cache is implemented using a unified architecture with the following features:
 
+- **Single SQLite Database**: All cache types use the same SQLite database for consistency
 - **Two-tier Caching**: Uses both an in-memory cache for fast access and a persistent SQLite database for durability
 - **JSON Serialization**: All values are serialized to JSON before storage
 - **Thread Safety**: The global cache instance is protected by a mutex for thread-safe access
-- **Configurable Max Age**: Can be configured to automatically expire entries after a specified number of days
-- **SQL Interface**: Standard SQL database allows for easy inspection and debugging with SQLite tools
+- **Configurable Expiry**: Supports per-entry expiry times with automatic cleanup
+- **Cache Key Constants**: All cache key prefixes are defined as constants for maintainability and consistency
 
-### TheArtistDB Caching Implementation
+### Performance Optimizations
 
-The TheArtistDB integration uses the attribute cache to improve performance:
+Recent performance improvements include:
 
-- **`lookup_artistdb_by_mbid`**: Checks for cached artist data before making API calls and stores both successful and failed results
-- **`download_artist_thumbnail`**: Checks whether an artist has been previously identified as having no thumbnail before attempting a download
-- **`update_artist`**: Uses cached data to avoid redundant processing when a previous attempt found no thumbnail
+- **MPD Library Optimization**: Removed redundant metadata updates during API access
+- **Extended Negative Caching**: 48-hour timeout for MusicBrainz failures reduces unnecessary API calls
+- **Unified Cache System**: All services use the same attributecache infrastructure
+- **Constant-based Keys**: Cache key prefixes defined as constants prevent typos and facilitate maintenance
 
-This multi-level caching approach significantly reduces API calls, particularly for artists that don't have thumbnails available in TheArtistDB.
+### MusicBrainz Caching Strategy
+
+The MusicBrainz integration implements sophisticated caching:
+
+- **Positive Result Caching**: Successful MBID lookups cached permanently
+- **Extended Negative Caching**: Failed lookups cached for 48 hours to prevent excessive API requests
+- **Partial Match Support**: Handles cases where only some artists in a multi-artist name are found
+- **Name Matching**: Uses fuzzy matching and alias support for better accuracy
 
 ### Image Cache
 
@@ -106,13 +167,24 @@ The image cache is a simple file-based cache that:
 - Creates subdirectories as needed based on the path structure
 - Uses the filesystem's native caching to optimize read performance
 
-### TheArtistDB Caching
+### Image Metadata Cache
+
+Image metadata (dimensions, format, file size) is cached using the unified attribute cache:
+
+- **Cache Key Format**: `image_meta::<url>` where URL can be local file path or remote URL
+- **Cached Data**: Width, height, size in bytes, and image format (JPEG, PNG, GIF, WebP)
+- **Performance Benefit**: Avoids re-analyzing image files for metadata
+- **Local and Remote Support**: Works with both local files and remote URLs
+
+### Legacy Service Caching
+
+#### TheArtistDB Caching
 
 The caching for TheArtistDB API implements these specific strategies:
 
-- **Positive Result Caching**: Artist data retrieved from TheArtistDB is stored with the key `theartistdb::mbid::<mbid>` to avoid redundant API calls
-- **Negative Result Caching**: When an artist is not found in TheArtistDB, this fact is cached with the key `theartistdb::not_found::<mbid>` to avoid attempting to look up the same non-existent artist repeatedly
-- **No Thumbnail Caching**: When an artist exists in TheArtistDB but has no thumbnail, this is cached with the key `theartistdb::no_thumbnail::<mbid>` to avoid redundant processing
+- **Positive Result Caching**: Artist data retrieved from TheArtistDB is stored with the key `theaudiodb::mbid::<mbid>` to avoid redundant API calls
+- **Negative Result Caching**: When an artist is not found in TheArtistDB, this fact is cached with the key `theaudiodb::not_found::<mbid>` to avoid attempting to look up the same non-existent artist repeatedly
+- **No Thumbnail Caching**: When an artist exists in TheArtistDB but has no thumbnail, this is cached with the key `theaudiodb::no_thumbnail::<mbid>` to avoid redundant processing
 - **Cache-First Approach**: Each API function first checks the cache before making any network requests
 
 ## Configuration
@@ -123,9 +195,13 @@ In the main configuration file, you can customize the cache behavior:
 {
   "cache": {
     "attribute_cache_path": "custom/path/to/attributes",
-    "image_cache_path": "custom/path/to/images",
+    "image_cache_path": "custom/path/to/images", 
     "max_age_days": 30,
     "enabled": true
+  },
+  "musicbrainz": {
+    "enable": true,
+    "rate_limit_ms": 500
   }
 }
 ```
@@ -138,4 +214,25 @@ Available configuration options:
 | `image_cache_path` | `"/var/lib/audiocontrol/cache/images"` | Path to the image cache directory |
 | `max_age_days` | `30` | Maximum age of cached items in days (0 = no expiration) |
 | `enabled` | `true` | Whether caching is enabled |
+
+## Recent Improvements
+
+### Cache Architecture Unification (2025)
+
+Recent updates have significantly improved the caching system:
+
+- **Unified Constants**: All cache key prefixes are now defined as constants in their respective modules
+- **Extended Negative Caching**: MusicBrainz failures are cached for 48 hours instead of indefinitely
+- **Performance Optimization**: MPD library no longer performs redundant metadata updates during API access
+- **Consistent Key Format**: All cache keys now use "::" as the separator for consistency
+- **Enhanced Tooling**: The audiocontrol_dump_cache tool provides comprehensive cache management capabilities
+
+### Performance Benefits
+
+These improvements provide:
+
+- **Reduced API Calls**: Extended negative caching prevents excessive requests to external services
+- **Faster API Response**: MPD endpoints no longer trigger expensive metadata updates
+- **Better Maintainability**: Cache key constants prevent typos and facilitate code maintenance
+- **Improved Debugging**: Enhanced tools make cache inspection and management easier
 

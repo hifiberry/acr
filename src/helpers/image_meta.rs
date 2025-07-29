@@ -5,6 +5,9 @@ use serde::{Serialize, Deserialize};
 use crate::helpers::attributecache::get_attribute_cache;
 use crate::helpers::http_client::new_http_client;
 
+/// Cache key prefix for image metadata
+pub const IMAGE_META_CACHE_PREFIX: &str = "image_meta::";
+
 /// Image metadata containing resolution and size information
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImageMetadata {
@@ -30,7 +33,7 @@ pub struct ImageMetadata {
 /// * `Result<ImageMetadata, String>` - Image metadata or error message
 pub fn image_size(url: &str) -> Result<ImageMetadata, String> {
     // Check cache first
-    let cache_key = format!("image_meta:{}", url);
+    let cache_key = format!("{}{}", IMAGE_META_CACHE_PREFIX, url);
     
     {
         let mut cache = get_attribute_cache();
@@ -347,7 +350,7 @@ fn parse_bmp_dimensions<R: BufRead + Seek>(reader: &mut R) -> Result<(u32, u32, 
 
 /// Clear cached image metadata for a specific URL
 pub fn clear_image_cache(url: &str) -> Result<(), String> {
-    let cache_key = format!("image_meta:{}", url);
+    let cache_key = format!("{}{}", IMAGE_META_CACHE_PREFIX, url);
     
     {
         let mut cache = get_attribute_cache();
@@ -361,7 +364,7 @@ pub fn clear_image_cache(url: &str) -> Result<(), String> {
 
 /// Get cached image metadata without analyzing the image
 pub fn get_cached_image_size(url: &str) -> Option<ImageMetadata> {
-    let cache_key = format!("image_meta:{}", url);
+    let cache_key = format!("{}{}", IMAGE_META_CACHE_PREFIX, url);
     
     {
         let mut cache = get_attribute_cache();
@@ -532,7 +535,7 @@ mod tests {
         assert!(cache.is_enabled(), "Test cache should be enabled");
         
         // Test direct cache operations
-        let cache_key = format!("image_meta:{}", url);
+        let cache_key = format!("{}{}", IMAGE_META_CACHE_PREFIX, url);
         let test_metadata = ImageMetadata {
             width: 272,
             height: 92,

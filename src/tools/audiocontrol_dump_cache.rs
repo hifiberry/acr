@@ -45,6 +45,10 @@ enum Commands {
         /// Show artist split cache (shortcut for --prefix "artist::split")
         #[arg(long)]
         artistsplit: bool,
+
+        /// Show MusicBrainz negative cache (shortcut for --prefix "artist::not_found")
+        #[arg(long)]
+        artistnotfound: bool,
     },
     /// Clean cache entries
     Clean {
@@ -75,6 +79,10 @@ enum Commands {
         /// Clean artist split cache (shortcut for --prefix "artist::split")
         #[arg(long)]
         artistsplit: bool,
+
+        /// Clean MusicBrainz negative cache (shortcut for --prefix "artist::not_found")
+        #[arg(long)]
+        artistnotfound: bool,
     },
     /// Show cache statistics
     Stats {
@@ -84,15 +92,15 @@ enum Commands {
     },
 }
 
-fn determine_prefix(prefix: Option<&str>, artistmbid: bool, imagemeta: bool, artistsplit: bool) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let shortcut_count = [artistmbid, imagemeta, artistsplit].iter().filter(|&&x| x).count();
+fn determine_prefix(prefix: Option<&str>, artistmbid: bool, imagemeta: bool, artistsplit: bool, artistnotfound: bool) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let shortcut_count = [artistmbid, imagemeta, artistsplit, artistnotfound].iter().filter(|&&x| x).count();
     
     if shortcut_count > 1 {
-        return Err("Cannot specify multiple shortcut options (--artistmbid, --imagemeta, --artistsplit) at once".into());
+        return Err("Cannot specify multiple shortcut options (--artistmbid, --imagemeta, --artistsplit, --artistnotfound) at once".into());
     }
     
     if prefix.is_some() && shortcut_count > 0 {
-        return Err("Cannot specify both --prefix and shortcut options (--artistmbid, --imagemeta, --artistsplit)".into());
+        return Err("Cannot specify both --prefix and shortcut options (--artistmbid, --imagemeta, --artistsplit, --artistnotfound)".into());
     }
     
     if artistmbid {
@@ -101,6 +109,8 @@ fn determine_prefix(prefix: Option<&str>, artistmbid: bool, imagemeta: bool, art
         Ok(Some("image_meta:".to_string()))
     } else if artistsplit {
         Ok(Some(ARTIST_SPLIT_CACHE_PREFIX.trim_end_matches("::").to_string()))
+    } else if artistnotfound {
+        Ok(Some("artist::not_found".to_string()))
     } else {
         Ok(prefix.map(|s| s.to_string()))
     }
@@ -120,12 +130,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     match &cli.command {
-        Commands::List { prefix, detailed, limit, artistmbid, imagemeta, artistsplit } => {
-            let effective_prefix = determine_prefix(prefix.as_deref(), *artistmbid, *imagemeta, *artistsplit)?;
+        Commands::List { prefix, detailed, limit, artistmbid, imagemeta, artistsplit, artistnotfound } => {
+            let effective_prefix = determine_prefix(prefix.as_deref(), *artistmbid, *imagemeta, *artistsplit, *artistnotfound)?;
             list_cache_entries(effective_prefix.as_deref(), *detailed, *limit)?;
         }
-        Commands::Clean { prefix, all, older_than_days, dry_run, artistmbid, imagemeta, artistsplit } => {
-            let effective_prefix = determine_prefix(prefix.as_deref(), *artistmbid, *imagemeta, *artistsplit)?;
+        Commands::Clean { prefix, all, older_than_days, dry_run, artistmbid, imagemeta, artistsplit, artistnotfound } => {
+            let effective_prefix = determine_prefix(prefix.as_deref(), *artistmbid, *imagemeta, *artistsplit, *artistnotfound)?;
             clean_cache_entries(effective_prefix.as_deref(), *all, *older_than_days, *dry_run)?;
         }
         Commands::Stats { by_prefix } => {

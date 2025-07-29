@@ -4,29 +4,21 @@ use crate::helpers::sanitize;
 use crate::helpers::artistsplitter;
 use crate::config::get_service_config;
 use log::{info, error, debug, warn};
-use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use deunicode::deunicode;
 use serde::Deserialize;
 use urlencoding::encode;
-// Import moka for negative caching (using the sync module)
-use moka::sync::Cache;
-use lazy_static::lazy_static;
 
 /// Global flag to indicate if MusicBrainz lookups are enabled
 pub static MUSICBRAINZ_ENABLED: AtomicBool = AtomicBool::new(false);
 
-// Using lazy_static for failed artist cache with 24-hour expiry
-lazy_static! {
-    static ref FAILED_ARTIST_CACHE: Cache<String, bool> = {
-        Cache::builder()
-            // Set a 24-hour time-to-live (TTL)
-            .time_to_live(Duration::from_secs(24 * 60 * 60))
-            // Optionally set a maximum capacity for the cache
-            .max_capacity(1000) 
-            .build()
-    };
-}
+// Cache key prefixes
+const ARTIST_MBID_CACHE_PREFIX: &str = "artist::mbid::";
+const ARTIST_MBID_PARTIAL_CACHE_PREFIX: &str = "artist::mbid_partial::";
+const ARTIST_NOT_FOUND_CACHE_PREFIX: &str = "artist::not_found::";
+
+// Cache timeout for not found entries (48 hours in seconds)
+const NOT_FOUND_CACHE_TIMEOUT_SECONDS: i64 = 48 * 60 * 60;
 
 // MusicBrainz API Constants
 const MUSICBRAINZ_API_BASE: &str = "https://musicbrainz.org/ws/2";
@@ -402,7 +394,7 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
     }
     
     // Try to get MBID from cache first
-    let cache_key = format!("artist::mbid::{}", artist_name);
+    let cache_key = format!("{}{}", ARTIST_MBID_CACHE_PREFIX, artist_name);
     match attributecache::get::<String>(&cache_key) {
         Ok(Some(mbid)) => {
             debug!("Found MusicBrainz ID for '{}' in cache: {}", artist_name, mbid);
@@ -418,10 +410,16 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         }
     }
     
-    // Check negative cache for failed lookups
-    if FAILED_ARTIST_CACHE.get(artist_name).is_some() {
-        debug!("Artist '{}' found in negative cache (previous lookup failed)", artist_name);
-        return MusicBrainzSearchResult::NotFound;
+    // Check negative cache for failed lookups using attributecache
+    let not_found_cache_key = format!("{}{}", ARTIST_NOT_FOUND_CACHE_PREFIX, artist_name);
+    match attributecache::get::<bool>(&not_found_cache_key) {
+        Ok(Some(true)) => {
+            debug!("Artist '{}' found in negative cache (previous lookup failed)", artist_name);
+            return MusicBrainzSearchResult::NotFound;
+        },
+        _ => {
+            // Continue with search if not in negative cache
+        }
     }
     
     // If cache_only is true, we shouldn't reach this point (should have returned earlier)
@@ -445,13 +443,18 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         MUSICBRAINZ_SEARCH_LIMIT
     );
     debug!("MusicBrainz API request URL: {}", url);
-      // Execute the HTTP GET request with proper headers
+    // Execute the HTTP GET request with proper headers
     let response = match musicbrainz_api_get(&url) {
         Ok(response_text) => response_text,
         Err(e) => {
             error!("Failed to execute MusicBrainz API request: {}", e);
-            // Add to negative cache before returning
-            FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
+            // Add to negative cache with 48-hour expiry before returning
+            let not_found_cache_key = format!("{}{}", ARTIST_NOT_FOUND_CACHE_PREFIX, artist_name);
+            if let Err(cache_err) = attributecache::set_with_expiry(&not_found_cache_key, &true, Some(NOT_FOUND_CACHE_TIMEOUT_SECONDS)) {
+                debug!("Failed to cache API failure for '{}': {}", artist_name, cache_err);
+            } else {
+                debug!("Cached API failure for '{}' with 48-hour expiry", artist_name);
+            }
             return MusicBrainzSearchResult::Error(format!("API request error: {}", e));
         }
     };
@@ -481,7 +484,7 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                     debug!("Found matching artist: '{}' with MBID: {}", response_name, mbid);
                     
                     // Store the MBID in the attribute cache
-                    let cache_key = format!("artist::mbid::{}", artist_name);
+                    let cache_key = format!("{}{}", ARTIST_MBID_CACHE_PREFIX, artist_name);
                     debug!("Attempting to store MBID in cache with key: {}", cache_key);
                     
                     match attributecache::set(&cache_key, &mbid) {
@@ -496,14 +499,24 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
                     // Return the MBID
                     return MusicBrainzSearchResult::Found(vec![mbid], false);
                 } else {
-                    // No matching artist found, add to negative cache
+                    // No matching artist found, add to negative cache with 48-hour expiry
                     debug!("Found artist but names don't match: '{}' vs '{}'", artist_name, response_name);
-                    FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
+                    let not_found_cache_key = format!("{}{}", ARTIST_NOT_FOUND_CACHE_PREFIX, artist_name);
+                    if let Err(cache_err) = attributecache::set_with_expiry(&not_found_cache_key, &true, Some(NOT_FOUND_CACHE_TIMEOUT_SECONDS)) {
+                        debug!("Failed to cache name mismatch for '{}': {}", artist_name, cache_err);
+                    } else {
+                        debug!("Cached name mismatch for '{}' with 48-hour expiry", artist_name);
+                    }
                 }
             } else {
-                // No results found, add to negative cache
+                // No results found, add to negative cache with 48-hour expiry
                 debug!("No results found for artist '{}'", artist_name);
-                FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
+                let not_found_cache_key = format!("{}{}", ARTIST_NOT_FOUND_CACHE_PREFIX, artist_name);
+                if let Err(cache_err) = attributecache::set_with_expiry(&not_found_cache_key, &true, Some(NOT_FOUND_CACHE_TIMEOUT_SECONDS)) {
+                    debug!("Failed to cache no results for '{}': {}", artist_name, cache_err);
+                } else {
+                    debug!("Cached no results for '{}' with 48-hour expiry", artist_name);
+                }
             }
             
             debug!("No matching MusicBrainz ID found for artist '{}'", artist_name);
@@ -513,8 +526,13 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
             // Print error response safely (UTF-8 safe truncation)
             error!("Response text: {}", sanitize::safe_truncate(&response, 500));
             debug!("Full response JSON: {}", response);
-            // Add to negative cache before returning
-            FAILED_ARTIST_CACHE.insert(artist_name.to_string(), true);
+            // Add to negative cache with 48-hour expiry before returning
+            let not_found_cache_key = format!("{}{}", ARTIST_NOT_FOUND_CACHE_PREFIX, artist_name);
+            if let Err(cache_err) = attributecache::set_with_expiry(&not_found_cache_key, &true, Some(NOT_FOUND_CACHE_TIMEOUT_SECONDS)) {
+                debug!("Failed to cache parse error for '{}': {}", artist_name, cache_err);
+            } else {
+                debug!("Cached parse error for '{}' with 48-hour expiry", artist_name);
+            }
             MusicBrainzSearchResult::Error(format!("Response parse error: {} ({})", e, 
                                                  if response.len() < 50 { "possibly truncated response" } else { "check response format" }))
         }
@@ -547,12 +565,12 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
     }
     
     // Try to get MBID from cache first for the full combined name
-    let cache_key = format!("artist::mbid::{}", artist_name);
-    let cache_partial_key = format!("artist::mbid_partial::{}", artist_name);
+    let cache_key = format!("{}{}", ARTIST_MBID_CACHE_PREFIX, artist_name);
+    let cache_partial_key = format!("{}{}", ARTIST_MBID_PARTIAL_CACHE_PREFIX, artist_name);
     
     // Check if we have already determined this artist doesn't exist
     if cache_failures {
-        let not_found_cache_key = format!("artist::not_found::{}", artist_name);
+        let not_found_cache_key = format!("{}{}", ARTIST_NOT_FOUND_CACHE_PREFIX, artist_name);
         match attributecache::get::<bool>(&not_found_cache_key) {
             Ok(Some(true)) => {
                 debug!("Artist '{}' previously marked as not found in cache", artist_name);
@@ -670,10 +688,10 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
             
             // If we reached here, the artist was not found. Cache this result if requested.
             if cache_failures {
-                let not_found_cache_key = format!("artist::not_found::{}", artist_name);
-                match attributecache::set(&not_found_cache_key, &true) {
+                let not_found_cache_key = format!("{}{}", ARTIST_NOT_FOUND_CACHE_PREFIX, artist_name);
+                match attributecache::set_with_expiry(&not_found_cache_key, &true, Some(NOT_FOUND_CACHE_TIMEOUT_SECONDS)) {
                     Ok(_) => {
-                        debug!("Cached '{}' as not found to prevent future lookups", artist_name);
+                        debug!("Cached '{}' as not found with 48-hour expiry to prevent future lookups", artist_name);
                     },
                     Err(e) => error!("Failed to cache not_found status for '{}': {}", artist_name, e)
                 }

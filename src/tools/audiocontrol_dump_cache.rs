@@ -40,6 +40,10 @@ enum Commands {
         /// Show image metadata (shortcut for --prefix "image_meta:")
         #[arg(long)]
         imagemeta: bool,
+
+        /// Show artist split cache (shortcut for --prefix "artist::split")
+        #[arg(long)]
+        artistsplit: bool,
     },
     /// Clean cache entries
     Clean {
@@ -66,6 +70,10 @@ enum Commands {
         /// Clean image metadata (shortcut for --prefix "image_meta:")
         #[arg(long)]
         imagemeta: bool,
+
+        /// Clean artist split cache (shortcut for --prefix "artist::split")
+        #[arg(long)]
+        artistsplit: bool,
     },
     /// Show cache statistics
     Stats {
@@ -75,21 +83,23 @@ enum Commands {
     },
 }
 
-fn determine_prefix(prefix: Option<&str>, artistmbid: bool, imagemeta: bool) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let shortcut_count = [artistmbid, imagemeta].iter().filter(|&&x| x).count();
+fn determine_prefix(prefix: Option<&str>, artistmbid: bool, imagemeta: bool, artistsplit: bool) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let shortcut_count = [artistmbid, imagemeta, artistsplit].iter().filter(|&&x| x).count();
     
     if shortcut_count > 1 {
-        return Err("Cannot specify multiple shortcut options (--artistmbid, --imagemeta) at once".into());
+        return Err("Cannot specify multiple shortcut options (--artistmbid, --imagemeta, --artistsplit) at once".into());
     }
     
     if prefix.is_some() && shortcut_count > 0 {
-        return Err("Cannot specify both --prefix and shortcut options (--artistmbid, --imagemeta)".into());
+        return Err("Cannot specify both --prefix and shortcut options (--artistmbid, --imagemeta, --artistsplit)".into());
     }
     
     if artistmbid {
         Ok(Some("artist::mbid".to_string()))
     } else if imagemeta {
         Ok(Some("image_meta:".to_string()))
+    } else if artistsplit {
+        Ok(Some("artist::split".to_string()))
     } else {
         Ok(prefix.map(|s| s.to_string()))
     }
@@ -109,12 +119,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     match &cli.command {
-        Commands::List { prefix, detailed, limit, artistmbid, imagemeta } => {
-            let effective_prefix = determine_prefix(prefix.as_deref(), *artistmbid, *imagemeta)?;
+        Commands::List { prefix, detailed, limit, artistmbid, imagemeta, artistsplit } => {
+            let effective_prefix = determine_prefix(prefix.as_deref(), *artistmbid, *imagemeta, *artistsplit)?;
             list_cache_entries(effective_prefix.as_deref(), *detailed, *limit)?;
         }
-        Commands::Clean { prefix, all, older_than_days, dry_run, artistmbid, imagemeta } => {
-            let effective_prefix = determine_prefix(prefix.as_deref(), *artistmbid, *imagemeta)?;
+        Commands::Clean { prefix, all, older_than_days, dry_run, artistmbid, imagemeta, artistsplit } => {
+            let effective_prefix = determine_prefix(prefix.as_deref(), *artistmbid, *imagemeta, *artistsplit)?;
             clean_cache_entries(effective_prefix.as_deref(), *all, *older_than_days, *dry_run)?;
         }
         Commands::Stats { by_prefix } => {

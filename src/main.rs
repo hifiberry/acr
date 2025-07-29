@@ -56,17 +56,10 @@ fn main() {
 
     // Initialize logging system
     if let Err(e) = logging::initialize_logging_with_args(&args, log_config_path.as_deref()) {
-        // Fallback to basic logging if configuration fails
-        eprintln!("Warning: Failed to initialize logging configuration: {}", e);
-        eprintln!("Falling back to basic logging...");
-
-        let debug_mode = args.iter().any(|arg| arg == "--debug" || arg == "-d");
-        let log_level = if debug_mode { "debug" } else { "info" };
-
-        std::env::set_var("RUST_LOG", log_level);
-        env_logger::Builder::from_env(env_logger::Env::default())
-            .format_timestamp_secs()
-            .init();
+        // Exit with error instead of falling back to basic logging
+        eprintln!("Error: Failed to initialize logging configuration: {}", e);
+        eprintln!("AudioControl cannot start without a valid logging configuration.");
+        std::process::exit(1);
     }
 
     info!("AudioControl Player Controller starting");

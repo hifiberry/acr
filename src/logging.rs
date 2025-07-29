@@ -522,8 +522,7 @@ pub fn initialize_logging_with_args(args: &[String], config_file: Option<&Path>)
         if config_path.exists() {
             LoggingConfig::from_file(config_path)?
         } else {
-            warn!("Logging config file {:?} not found, using defaults", config_path);
-            LoggingConfig::default()
+            return Err(format!("Logging config file {:?} not found", config_path));
         }
     } else {
         LoggingConfig::default()

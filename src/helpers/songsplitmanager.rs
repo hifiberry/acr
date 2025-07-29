@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_max_splitters_limit() {
-        let mut manager = SongSplitManager::with_max_splitters(2);
+        let manager = SongSplitManager::with_max_splitters(2);
         
         // Create splitters up to the limit
         assert!(manager.get_or_create_splitter("station1").is_some());

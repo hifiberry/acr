@@ -1071,7 +1071,7 @@ mod tests {
         assert_eq!(splitter.get_total_count(), initial_count); // Stats shouldn't change
         
         // Test with custom cache size
-        let mut splitter2 = SongTitleSplitter::with_cache_size("track_custom", 2);
+        let splitter2 = SongTitleSplitter::with_cache_size("track_custom", 2);
         assert_eq!(splitter2.get_cache_size_limit(), 2);
         
         // Clear cache

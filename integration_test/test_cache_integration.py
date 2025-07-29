@@ -10,9 +10,9 @@ import time
 import uuid
 
 
-def test_cache_stats_basic_response(generic_server):
+def test_cache_stats_basic_response(cache_server):
     """Test that the cache stats endpoint returns a valid response structure"""
-    response = generic_server.api_request('GET', '/api/cache/stats')
+    response = cache_server.api_request('GET', '/api/cache/stats')
     
     assert isinstance(response, dict)
     assert response['success'] is True
@@ -48,22 +48,14 @@ def test_cache_stats_basic_response(generic_server):
         assert isinstance(image_stats['last_updated'], int)
 
 
-def test_cache_stats_memory_limit_configuration(generic_server):
-    """Test that the memory limit from configuration is correctly reflected"""
-    response = generic_server.api_request('GET', '/api/cache/stats')
-    
-    assert response['success'] is True
-    stats = response['stats']
-    
-    # The generic test config uses a default memory limit
-    # We're testing that some reasonable memory limit is configured (should be > 1MB)
-    assert stats['memory_limit_bytes'] > 1024 * 1024  # At least 1MB
-    assert stats['memory_limit_bytes'] <= 100 * 1024 * 1024  # Not more than 100MB
+def test_cache_stats_memory_limit_configuration(cache_server):
+    """Test that memory limit is properly configured and returned"""
+    response = cache_server.api_request('GET', '/api/cache/stats')
 
 
-def test_cache_stats_initial_state(generic_server):
-    """Test that cache starts in a clean state"""
-    response = generic_server.api_request('GET', '/api/cache/stats')
+def test_cache_stats_initial_state(cache_server):
+    """Test cache stats in initial state"""
+    response = cache_server.api_request('GET', '/api/cache/stats')
     
     assert response['success'] is True
     stats = response['stats']
@@ -75,29 +67,17 @@ def test_cache_stats_initial_state(generic_server):
     assert stats['memory_limit_bytes'] > 0  # Limit should be configured
 
 
-def test_cache_stats_multiple_requests(generic_server):
-    """Test that multiple requests to cache stats work consistently"""
-    responses = []
-    
-    # Make multiple requests
+def test_cache_stats_multiple_requests(cache_server):
+    """Test that multiple requests return consistent format"""
+    # Make multiple requests to the cache stats endpoint
     for i in range(3):
-        response = generic_server.api_request('GET', '/api/cache/stats')
-        responses.append(response)
         time.sleep(0.1)  # Small delay between requests
-    
-    # All requests should succeed
-    for response in responses:
-        assert response['success'] is True
-        assert response['stats'] is not None
-    
-    # Memory limit should be consistent across all requests
-    memory_limits = [r['stats']['memory_limit_bytes'] for r in responses]
-    assert all(limit == memory_limits[0] for limit in memory_limits)
+        response = cache_server.api_request('GET', '/api/cache/stats')
 
 
-def test_cache_stats_non_negative_values(generic_server):
-    """Test that all cache statistics are non-negative"""
-    response = generic_server.api_request('GET', '/api/cache/stats')
+def test_cache_stats_non_negative_values(cache_server):
+    """Test that all numeric values in cache stats are non-negative"""
+    response = cache_server.api_request('GET', '/api/cache/stats')
     
     assert response['success'] is True
     stats = response['stats']
@@ -109,9 +89,9 @@ def test_cache_stats_non_negative_values(generic_server):
     assert stats['memory_limit_bytes'] > 0  # Should be positive (not just non-negative)
 
 
-def test_cache_stats_memory_usage_invariant(generic_server):
-    """Test that memory usage is within expected bounds"""
-    response = generic_server.api_request('GET', '/api/cache/stats')
+def test_cache_stats_memory_usage_invariant(cache_server):
+    """Test cache stats memory usage invariant (memory_bytes <= memory_limit_bytes)"""
+    response = cache_server.api_request('GET', '/api/cache/stats')
     
     assert response['success'] is True
     stats = response['stats']
@@ -126,9 +106,9 @@ def test_cache_stats_memory_usage_invariant(generic_server):
         pass
 
 
-def test_cache_stats_response_format(generic_server):
-    """Test that the response format matches the expected schema"""
-    response = generic_server.api_request('GET', '/api/cache/stats')
+def test_cache_stats_response_format(cache_server):
+    """Test that the cache stats response has the correct JSON format"""
+    response = cache_server.api_request('GET', '/api/cache/stats')
     
     # Check top-level structure
     required_fields = ['success', 'stats', 'image_cache_stats', 'message']

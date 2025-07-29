@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use log::{info, warn};
-use audiocontrol::helpers::attributecache::{self, AttributeCache, CacheEntry};
+use audiocontrol::helpers::attributecache::{self, AttributeCache};
 use audiocontrol::helpers::artistsplitter::ARTIST_SPLIT_CACHE_PREFIX;
 use audiocontrol::helpers::musicbrainz::{ARTIST_MBID_CACHE_PREFIX, ARTIST_NOT_FOUND_CACHE_PREFIX};
 use audiocontrol::helpers::image_meta::IMAGE_META_CACHE_PREFIX;

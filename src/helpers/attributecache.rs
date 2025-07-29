@@ -435,12 +435,6 @@ impl AttributeCache {
         self.evict_to_memory_limit();
     }
 
-    /// Estimate memory usage of an entry
-    fn estimate_entry_size(key: &str, data: &str) -> usize {
-        // Approximate memory usage: key + data + overhead
-        key.len() + data.len() + 64 // 64 bytes overhead for struct and metadata
-    }
-
     /// Estimate memory usage of a cache entry (with binary data)
     fn estimate_cache_entry_size(key: &str, data: &[u8]) -> usize {
         // Approximate memory usage: key + data + Arc overhead

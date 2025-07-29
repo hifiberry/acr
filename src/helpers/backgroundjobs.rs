@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use log::{debug, warn};
@@ -91,16 +91,8 @@ impl BackgroundJobs {
     
     /// Get the global singleton instance
     pub fn instance() -> &'static BackgroundJobs {
-        use std::sync::Once;
-        static mut INSTANCE: Option<BackgroundJobs> = None;
-        static ONCE: Once = Once::new();
-        
-        unsafe {
-            ONCE.call_once(|| {
-                INSTANCE = Some(BackgroundJobs::new());
-            });
-            INSTANCE.as_ref().unwrap()
-        }
+        static INSTANCE: OnceLock<BackgroundJobs> = OnceLock::new();
+        INSTANCE.get_or_init(|| BackgroundJobs::new())
     }
     
     /// Register a new background job

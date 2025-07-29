@@ -112,8 +112,15 @@ class AudioControlTestServer:
                 )
         
         # Update cache paths
-        config["services"]["cache"]["attribute_cache_path"] = str(attributes_cache_dir.absolute())
-        config["services"]["cache"]["image_cache_path"] = str(images_cache_dir.absolute())
+        if "datastore" in config["services"]:
+            if "attribute_cache" in config["services"]["datastore"]:
+                config["services"]["datastore"]["attribute_cache"]["dbfile"] = str(attributes_cache_dir / "cache_attributes.db")
+            if "image_cache_path" in config["services"]["datastore"]:
+                config["services"]["datastore"]["image_cache_path"] = str(images_cache_dir.absolute())
+        elif "cache" in config["services"]:
+            # Fallback for older config structure
+            config["services"]["cache"]["attribute_cache_path"] = str(attributes_cache_dir.absolute())
+            config["services"]["cache"]["image_cache_path"] = str(images_cache_dir.absolute())
         
         # Create config file
         self.config_path = Path(f"test_config_{self.port}.json")

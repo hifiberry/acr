@@ -3,7 +3,6 @@ use rocket::post;
 use rocket::serde::json::Json;
 use rocket::serde::{Deserialize, Serialize};
 use log::{debug, info, warn, error};
-use std::io::Read;
 use crate::helpers::coverart::{get_coverart_manager, CoverartMethod, CoverartResult, ProviderInfo};
 use crate::helpers::url_encoding::decode_url_safe;
 use crate::helpers::settingsdb;

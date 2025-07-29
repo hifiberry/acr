@@ -1,3 +1,18 @@
+hifiberry-audiocontrol (0.6.10) stable; urgency=medium
+
+  * Added Cache Statistics API endpoint for monitoring cache performance and memory usage
+  * Added Background Jobs API for tracking long-running operations with progress monitoring
+  * Implemented thread-safe singleton background job manager with progress tracking
+  * Integrated background job tracking with artist metadata update operations
+  * Added comprehensive integration tests for cache and background jobs APIs
+  * Enhanced API documentation with detailed endpoint specifications and examples
+  * Added cache statistics endpoint providing disk/memory usage and limits information
+  * Added background job listing and individual job status retrieval endpoints
+  * Improved system monitoring capabilities for cache performance optimization
+  * Fixed compilation issues with AttributeCache initialization function calls
+
+ -- HiFiBerry <info@hifiberry.com>  Tue, 29 Jul 2025 12:00:00 +0000
+
 hifiberry-audiocontrol (0.6.9) stable; urgency=medium
 
   * Refactored artist name splitting functionality into dedicated artistsplitter module

@@ -100,46 +100,9 @@ impl MPDLibrary {
             }
         }
         
-        // Check if we need to populate additional metadata (biography, genres, etc.)
-        let needs_metadata_update = if let Some(ref metadata) = artist.metadata {
-            metadata.biography.is_none() || metadata.mbid.is_empty() || metadata.genres.is_empty()
-        } else {
-            true
-        };
-        
-        if needs_metadata_update {
-            // Use the artist updater system to populate missing metadata
-            let updated_artist = crate::helpers::artistupdater::update_data_for_artist(artist.clone());
-            
-            // Copy the updated metadata back to the original artist
-            if let Some(updated_metadata) = updated_artist.metadata {
-                // Merge with existing metadata, preserving what we already have
-                if let Some(ref mut existing_metadata) = artist.metadata {
-                    // Update biography if we got one and don't have one
-                    if existing_metadata.biography.is_none() && updated_metadata.biography.is_some() {
-                        existing_metadata.biography = updated_metadata.biography;
-                        existing_metadata.biography_source = updated_metadata.biography_source;
-                    }
-                    
-                    // Add any new MBIDs
-                    for mbid in updated_metadata.mbid {
-                        if !existing_metadata.mbid.contains(&mbid) {
-                            existing_metadata.mbid.push(mbid);
-                        }
-                    }
-                    
-                    // Add any new genres
-                    for genre in updated_metadata.genres {
-                        if !existing_metadata.genres.contains(&genre) {
-                            existing_metadata.genres.push(genre);
-                        }
-                    }
-                } else {
-                    // No existing metadata, use the updated one
-                    artist.metadata = Some(updated_metadata);
-                }
-            }
-        }
+        // Note: Metadata updates (biography, MBIDs, genres) are only done during library loading
+        // to avoid expensive operations on every API access. All metadata should be populated
+        // during the initial library load and background update processes.
     }
 
     /// Get the current library loading progress (0.0 to 1.0)
@@ -579,9 +542,15 @@ impl MPDLibrary {
                 },
                 Ok(None) => {
                     debug!("No cached metadata found for artist {}", artist_name);
+                    // Create new metadata for album artists
+                    let metadata = crate::data::ArtistMeta::new();
+                    artist_with_metadata.metadata = Some(metadata);
                 },
                 Err(e) => {
                     warn!("Error loading cached metadata for artist {}: {}", artist_name, e);
+                    // Create new metadata as fallback
+                    let metadata = crate::data::ArtistMeta::new();
+                    artist_with_metadata.metadata = Some(metadata);
                 }
             }
 

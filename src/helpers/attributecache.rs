@@ -16,6 +16,7 @@ pub struct CacheEntry {
     pub size_bytes: usize,
     pub created_at: i64,
     pub updated_at: i64,
+    pub expires_at: Option<i64>,
 }
 
 // Global singleton for the attribute cache
@@ -87,79 +88,76 @@ impl AttributeCache {
             Ok(conn) => {
                 info!("Successfully opened attribute cache database at {:?}", db_path);
                 
-                // Create the cache table if it doesn't exist
-                if let Err(e) = conn.execute(
-                    "CREATE TABLE IF NOT EXISTS cache (
-                        key TEXT PRIMARY KEY,
-                        value BLOB NOT NULL,
-                        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-                        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-                    )",
-                    [],
-                ) {
-                    error!("Failed to create cache table: {}", e);
-                    return None;
-                }
-                
-                // Check if timestamp columns exist and add them if needed
+                // First, check if this is a completely new database or needs migration
+                let mut table_exists = false;
+                let mut has_key = false;
+                let mut has_value = false;
                 let mut has_created_at = false;
                 let mut has_updated_at = false;
+                let mut has_expires_at = false;
                 
-                {
-                    let mut stmt = conn.prepare("PRAGMA table_info(cache)").unwrap();
-                    let column_iter = stmt.query_map([], |row| {
-                        Ok(row.get::<_, String>(1)?) // Column name is at index 1
-                    }).unwrap();
-                    
-                    for column in column_iter {
-                        let col_name = column.unwrap();
-                        match col_name.as_str() {
-                            "created_at" => has_created_at = true,
-                            "updated_at" => has_updated_at = true,
-                            _ => {}
+                // Check if table exists and what columns it has
+                if let Ok(mut stmt) = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='cache'") {
+                    if stmt.query_row([], |_| Ok(())).is_ok() {
+                        table_exists = true;
+                        
+                        // Check existing columns
+                        if let Ok(mut stmt) = conn.prepare("PRAGMA table_info(cache)") {
+                            let column_iter = stmt.query_map([], |row| {
+                                Ok(row.get::<_, String>(1)?) // Column name is at index 1
+                            });
+                            
+                            if let Ok(iter) = column_iter {
+                                for column in iter {
+                                    if let Ok(col_name) = column {
+                                        match col_name.as_str() {
+                                            "key" => has_key = true,
+                                            "value" => has_value = true,
+                                            "created_at" => has_created_at = true,
+                                            "updated_at" => has_updated_at = true,
+                                            "expires_at" => has_expires_at = true,
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
                 
-        // Add timestamp columns if they don't exist
-        let current_timestamp = Utc::now().timestamp();
-        
-        if !has_created_at {
-            if let Err(e) = conn.execute(
-                "ALTER TABLE cache ADD COLUMN created_at INTEGER",
-                []
-            ) {
-                error!("Failed to add created_at column: {}", e);
-            } else {
-                // Set current timestamp for all existing rows
-                if let Err(e) = conn.execute(
-                    "UPDATE cache SET created_at = ? WHERE created_at IS NULL",
-                    [current_timestamp]
-                ) {
-                    error!("Failed to set initial created_at values: {}", e);
+                // If the table doesn't have all required columns, recreate the database
+                // This is simpler than complex migration logic
+                let schema_complete = has_key && has_value && has_created_at && has_updated_at && has_expires_at;
+                if table_exists && !schema_complete {
+                    warn!("Database schema is incomplete (key: {}, value: {}, created_at: {}, updated_at: {}, expires_at: {}), recreating cache database", 
+                          has_key, has_value, has_created_at, has_updated_at, has_expires_at);
+                    if let Err(e) = conn.execute("DROP TABLE IF EXISTS cache", []) {
+                        error!("Failed to drop old cache table: {}", e);
+                        return None;
+                    }
+                    table_exists = false;
                 }
-            }
-        }
-        
-        if !has_updated_at {
-            if let Err(e) = conn.execute(
-                "ALTER TABLE cache ADD COLUMN updated_at INTEGER",
-                []
-            ) {
-                error!("Failed to add updated_at column: {}", e);
-            } else {
-                // Set current timestamp for all existing rows
-                if let Err(e) = conn.execute(
-                    "UPDATE cache SET updated_at = ? WHERE updated_at IS NULL",
-                    [current_timestamp]
-                ) {
-                    error!("Failed to set initial updated_at values: {}", e);
+                
+                // Create the cache table with the full schema
+                if !table_exists {
+                    if let Err(e) = conn.execute(
+                        "CREATE TABLE cache (
+                            key TEXT PRIMARY KEY,
+                            value BLOB NOT NULL,
+                            created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                            updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                            expires_at INTEGER
+                        )",
+                        [],
+                    ) {
+                        error!("Failed to create cache table: {}", e);
+                        return None;
+                    }
+                    info!("Created new cache table with complete schema");
                 }
-            }
-        }
-        
-        debug!("Cache table created or already exists");
-        Some(conn)
+                
+                debug!("Cache table created or verified successfully");
+                Some(conn)
             },
             Err(e) => {
                 error!("Failed to open SQLite database at {:?}: {}", db_path, e);
@@ -283,6 +281,11 @@ impl AttributeCache {
 
     /// Store a serializable value in the cache
     pub fn set<T: Serialize + ?Sized>(&mut self, key: &str, value: &T) -> Result<(), String> {
+        self.set_with_expiry(key, value, None)
+    }
+
+    /// Store a serializable value in the cache with an optional expiry time (Unix timestamp)
+    pub fn set_with_expiry<T: Serialize + ?Sized>(&mut self, key: &str, value: &T, expires_at: Option<i64>) -> Result<(), String> {
         if !self.is_enabled() {
             return Err("Cache is disabled".to_string());
         }
@@ -302,27 +305,73 @@ impl AttributeCache {
                 // For new records: set both created_at and updated_at to current time
                 // For existing records: keep created_at, update only updated_at
                 if let Err(e) = db.execute(
-                    "INSERT INTO cache (key, value, created_at, updated_at) 
-                     VALUES (?1, ?2, strftime('%s', 'now'), strftime('%s', 'now'))
+                    "INSERT INTO cache (key, value, created_at, updated_at, expires_at) 
+                     VALUES (?1, ?2, strftime('%s', 'now'), strftime('%s', 'now'), ?3)
                      ON CONFLICT(key) DO UPDATE SET 
                          value = excluded.value,
-                         updated_at = strftime('%s', 'now')",
-                    params![key, serialized],
+                         updated_at = strftime('%s', 'now'),
+                         expires_at = excluded.expires_at",
+                    params![key, serialized, expires_at],
                 ) {
                     return Err(format!("Failed to store in database: {}", e));
                 }
                 
-                debug!("Stored key '{}' in SQLite cache", key);
+                debug!("Stored key '{}' in SQLite cache with expiry: {:?}", key, expires_at);
                 Ok(())
             },
             None => Err("Database not available".to_string()),
         }
     }
 
+    /// Store a serializable value in the cache with a TTL (time to live) in seconds
+    pub fn set_with_ttl<T: Serialize + ?Sized>(&mut self, key: &str, value: &T, ttl_seconds: u64) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("Failed to get current time: {}", e))?
+            .as_secs() as i64;
+        let expires_at = now + ttl_seconds as i64;
+        self.set_with_expiry(key, value, Some(expires_at))
+    }
+
     /// Get a value from the cache and deserialize it
+    /// This method automatically removes expired entries when they are accessed
     pub fn get<T: for<'de> Deserialize<'de>>(&mut self, key: &str) -> Result<Option<T>, String> {
         if !self.is_enabled() {
             return Err("Cache is disabled".to_string());
+        }
+
+        // Check database first to validate expiry before returning from memory cache
+        let is_expired = match &mut self.db {
+            Some(db) => {
+                let mut stmt = match db.prepare("SELECT expires_at FROM cache WHERE key = ?1") {
+                    Ok(stmt) => stmt,
+                    Err(e) => return Err(format!("Failed to prepare expiry check statement: {}", e)),
+                };
+                
+                match stmt.query_row(params![key], |row| {
+                    let expires_at: Option<i64> = row.get(0)?;
+                    Ok(expires_at)
+                }) {
+                    Ok(Some(expires_at)) => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|e| format!("Failed to get current time: {}", e))?
+                            .as_secs() as i64;
+                        expires_at <= now
+                    },
+                    Ok(None) => false, // No expiry set
+                    Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None), // Key doesn't exist
+                    Err(e) => return Err(format!("Database error checking expiry: {}", e)),
+                }
+            },
+            None => return Err("Database not available".to_string()),
+        };
+
+        // If expired, remove it and return None
+        if is_expired {
+            debug!("Removing expired cache entry: {}", key);
+            let _ = self.remove(key); // Ignore errors during cleanup
+            return Ok(None);
         }
 
         // Try memory cache first
@@ -564,7 +613,7 @@ impl AttributeCache {
         match prefix_filter {
             Some(prefix) => {
                 let pattern = format!("{}%", prefix);
-                let mut stmt = db.prepare("SELECT key, LENGTH(value) as size, created_at, updated_at FROM cache WHERE key LIKE ?1 ORDER BY key")
+                let mut stmt = db.prepare("SELECT key, LENGTH(value) as size, created_at, updated_at, expires_at FROM cache WHERE key LIKE ?1 ORDER BY key")
                     .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
                 
                 let rows = stmt.query_map(params![pattern], |row: &rusqlite::Row| {
@@ -573,6 +622,7 @@ impl AttributeCache {
                         size_bytes: row.get::<_, i64>(1)? as usize,
                         created_at: row.get::<_, i64>(2)?,
                         updated_at: row.get::<_, i64>(3)?,
+                        expires_at: row.get::<_, Option<i64>>(4)?,
                     })
                 }).map_err(|e| format!("Failed to execute list query: {}", e))?;
                 
@@ -582,7 +632,7 @@ impl AttributeCache {
                 }
             },
             None => {
-                let mut stmt = db.prepare("SELECT key, LENGTH(value) as size, created_at, updated_at FROM cache ORDER BY key")
+                let mut stmt = db.prepare("SELECT key, LENGTH(value) as size, created_at, updated_at, expires_at FROM cache ORDER BY key")
                     .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
                 
                 let rows = stmt.query_map([], |row: &rusqlite::Row| {
@@ -591,6 +641,7 @@ impl AttributeCache {
                         size_bytes: row.get::<_, i64>(1)? as usize,
                         created_at: row.get::<_, i64>(2)?,
                         updated_at: row.get::<_, i64>(3)?,
+                        expires_at: row.get::<_, Option<i64>>(4)?,
                     })
                 }).map_err(|e| format!("Failed to execute list query: {}", e))?;
                 
@@ -701,6 +752,16 @@ pub fn get_attribute_cache() -> std::sync::MutexGuard<'static, AttributeCache> {
 /// Store a value in the attribute cache
 pub fn set<T: Serialize + ?Sized>(key: &str, value: &T) -> Result<(), String> {
     get_attribute_cache().set(key, value)
+}
+
+/// Store a value in the attribute cache with an optional expiry time (Unix timestamp)
+pub fn set_with_expiry<T: Serialize + ?Sized>(key: &str, value: &T, expires_at: Option<i64>) -> Result<(), String> {
+    get_attribute_cache().set_with_expiry(key, value, expires_at)
+}
+
+/// Store a value in the attribute cache with a TTL (time to live) in seconds
+pub fn set_with_ttl<T: Serialize + ?Sized>(key: &str, value: &T, ttl_seconds: u64) -> Result<(), String> {
+    get_attribute_cache().set_with_ttl(key, value, ttl_seconds)
 }
 
 /// Get a value from the attribute cache
@@ -1547,15 +1608,306 @@ mod tests {
             ).unwrap();
         }
 
-        // Create new cache - should trigger migration
+        // Create new cache - should recreate the database due to missing expires_at column
         let mut cache = AttributeCache::with_database_file(&cache_file);
         
-        // Check that old data is still there
-        assert_eq!(cache.get::<String>("old_key").unwrap(), Some("old_value".to_string()));
+        // Old data should be gone due to database recreation
+        assert_eq!(cache.get::<String>("old_key").unwrap(), None);
 
-        // Add new data - should work with timestamps
+        // Add new data - should work with timestamps and expiry
         cache.set("new_key", "new_value").unwrap();
         let timestamps = cache.get_timestamps("new_key").unwrap();
         assert!(timestamps.is_some());
+    }
+
+    #[test]
+    fn test_database_recreation_missing_expires_at() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let cache_file = temp_dir.path().join("test_cache.db");
+
+        // Create a cache with timestamps but missing expires_at column
+        {
+            let conn = rusqlite::Connection::open(&cache_file).unwrap();
+            conn.execute(
+                "CREATE TABLE cache (
+                    key TEXT PRIMARY KEY,
+                    value BLOB NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )",
+                [],
+            ).unwrap();
+            
+            let value_json = serde_json::to_vec("old_value").unwrap();
+            conn.execute(
+                "INSERT INTO cache (key, value, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                [&"old_key" as &dyn rusqlite::ToSql, &value_json, &1234567890_i64, &1234567890_i64],
+            ).unwrap();
+        }
+
+        // Create new cache - should recreate due to missing expires_at
+        let mut cache = AttributeCache::with_database_file(&cache_file);
+        
+        // Old data should be gone
+        assert_eq!(cache.get::<String>("old_key").unwrap(), None);
+
+        // New functionality should work
+        cache.set_with_ttl("new_key", "new_value", 3600).unwrap();
+        assert_eq!(cache.get::<String>("new_key").unwrap(), Some("new_value".to_string()));
+        
+        let entries = cache.list_entries(None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].expires_at.is_some());
+    }
+
+    #[test]
+    fn test_database_recreation_missing_multiple_columns() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let cache_file = temp_dir.path().join("test_cache.db");
+
+        // Create a cache with only key and value columns
+        {
+            let conn = rusqlite::Connection::open(&cache_file).unwrap();
+            conn.execute(
+                "CREATE TABLE cache (
+                    key TEXT PRIMARY KEY,
+                    value BLOB NOT NULL
+                )",
+                [],
+            ).unwrap();
+        }
+
+        // Create new cache - should recreate due to missing timestamp and expires_at columns
+        let mut cache = AttributeCache::with_database_file(&cache_file);
+        
+        // Should be able to use all functionality
+        cache.set_with_expiry("test_key", "test_value", None).unwrap();
+        assert_eq!(cache.get::<String>("test_key").unwrap(), Some("test_value".to_string()));
+        
+        let timestamps = cache.get_timestamps("test_key").unwrap();
+        assert!(timestamps.is_some());
+    }
+
+    #[test]
+    fn test_database_with_complete_schema() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let cache_file = temp_dir.path().join("test_cache.db");
+
+        // Create a cache with complete schema
+        {
+            let conn = rusqlite::Connection::open(&cache_file).unwrap();
+            conn.execute(
+                "CREATE TABLE cache (
+                    key TEXT PRIMARY KEY,
+                    value BLOB NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                    expires_at INTEGER
+                )",
+                [],
+            ).unwrap();
+            
+            let value_json = serde_json::to_vec("existing_value").unwrap();
+            let now = chrono::Utc::now().timestamp();
+            conn.execute(
+                "INSERT INTO cache (key, value, created_at, updated_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                [&"existing_key" as &dyn rusqlite::ToSql, &value_json, &now, &now, &(now + 3600)],
+            ).unwrap();
+        }
+
+        // Create new cache - should NOT recreate database since schema is complete
+        let mut cache = AttributeCache::with_database_file(&cache_file);
+        
+        // Existing data should still be there
+        assert_eq!(cache.get::<String>("existing_key").unwrap(), Some("existing_value".to_string()));
+        
+        // All functionality should work
+        cache.set_with_ttl("new_key", "new_value", 1800).unwrap();
+        assert_eq!(cache.get::<String>("new_key").unwrap(), Some("new_value".to_string()));
+        
+        let entries = cache.list_entries(None).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_expiry_functionality() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let key = "expiry_test";
+        let value = "test_value";
+
+        // Test setting with TTL
+        cache.set_with_ttl(key, &value, 2).unwrap(); // 2 seconds TTL
+
+        // Should be available immediately
+        assert_eq!(cache.get::<String>(key).unwrap(), Some(value.to_string()));
+
+        // Wait for expiry
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        // Should be expired and removed
+        assert_eq!(cache.get::<String>(key).unwrap(), None);
+    }
+
+    #[test]
+    fn test_expiry_with_timestamp() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let key = "expiry_timestamp_test";
+        let value = "test_value";
+
+        // Set expiry to 2 seconds from now
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let expires_at = now + 2;
+
+        cache.set_with_expiry(key, &value, Some(expires_at)).unwrap();
+
+        // Should be available immediately
+        assert_eq!(cache.get::<String>(key).unwrap(), Some(value.to_string()));
+
+        // Wait for expiry
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        // Should be expired and removed
+        assert_eq!(cache.get::<String>(key).unwrap(), None);
+    }
+
+    #[test]
+    fn test_no_expiry_behavior() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let key = "no_expiry_test";
+        let value = "test_value";
+
+        // Set without expiry (should use None)
+        cache.set(key, &value).unwrap();
+
+        // Should be available
+        assert_eq!(cache.get::<String>(key).unwrap(), Some(value.to_string()));
+
+        // Wait some time
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        // Should still be available (no expiry)
+        assert_eq!(cache.get::<String>(key).unwrap(), Some(value.to_string()));
+    }
+
+    #[test]
+    fn test_expiry_memory_cache_handling() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let key = "memory_expiry_test";
+        let value = "test_value";
+
+        // Set with short TTL
+        cache.set_with_ttl(key, &value, 1).unwrap(); // 1 second TTL
+
+        // First access should populate memory cache
+        assert_eq!(cache.get::<String>(key).unwrap(), Some(value.to_string()));
+
+        // Wait for expiry
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Even though it's in memory cache, should check database expiry and remove
+        assert_eq!(cache.get::<String>(key).unwrap(), None);
+    }
+
+    #[test]
+    fn test_global_expiry_functions() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().join("cache.db");
+        
+        // Initialize the global cache
+        super::AttributeCache::initialize(&db_path).unwrap();
+        
+        let key = "global_expiry_test";
+        let value = "test_value";
+
+        // Test global TTL function
+        set_with_ttl(key, &value, 2).unwrap(); // 2 seconds TTL
+
+        // Should be available immediately
+        assert_eq!(get::<String>(key).unwrap(), Some(value.to_string()));
+
+        // Wait for expiry
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        // Should be expired
+        assert_eq!(get::<String>(key).unwrap(), None);
+    }
+
+    #[test]
+    fn test_list_entries_with_expiry() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        // Set entries with and without expiry
+        cache.set("no_expiry", "value1").unwrap();
+        cache.set_with_ttl("with_expiry", "value2", 3600).unwrap(); // 1 hour TTL
+
+        let entries = cache.list_entries(None).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        // Check that one has expiry and one doesn't
+        let no_expiry_entry = entries.iter().find(|e| e.key == "no_expiry").unwrap();
+        let with_expiry_entry = entries.iter().find(|e| e.key == "with_expiry").unwrap();
+
+        assert_eq!(no_expiry_entry.expires_at, None);
+        assert!(with_expiry_entry.expires_at.is_some());
+    }
+
+    #[test]
+    fn test_expired_entry_removal_on_access() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let key = "removal_test";
+        let value = "test_value";
+
+        // Set with very short TTL
+        cache.set_with_ttl(key, &value, 1).unwrap();
+
+        // Verify it exists in database initially
+        let entries_before = cache.list_entries(None).unwrap();
+        assert_eq!(entries_before.len(), 1);
+
+        // Wait for expiry
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Access should trigger removal
+        assert_eq!(cache.get::<String>(key).unwrap(), None);
+
+        // Verify it's removed from database
+        let entries_after = cache.list_entries(None).unwrap();
+        assert_eq!(entries_after.len(), 0);
+    }
+
+    #[test]
+    fn test_update_expiry_on_existing_key() {
+        let (mut cache, _temp_dir) = create_test_cache();
+
+        let key = "update_expiry_test";
+        let value1 = "value1";
+        let value2 = "value2";
+
+        // Set initial value without expiry
+        cache.set(key, &value1).unwrap();
+
+        // Update with expiry
+        let future_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64 + 3600; // 1 hour from now
+
+        cache.set_with_expiry(key, &value2, Some(future_time)).unwrap();
+
+        // Check that value was updated and expiry was set
+        assert_eq!(cache.get::<String>(key).unwrap(), Some(value2.to_string()));
+        
+        let entries = cache.list_entries(None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].expires_at.is_some());
+        assert_eq!(entries[0].expires_at.unwrap(), future_time);
     }
 }

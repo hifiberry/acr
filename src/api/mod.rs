@@ -43,5 +43,8 @@ pub mod m3u;
 // Export the settings module
 pub mod settings;
 
+// Export the cache module
+pub mod cache;
+
 // Export the server module
 pub mod server;

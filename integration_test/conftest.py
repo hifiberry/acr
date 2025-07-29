@@ -30,6 +30,7 @@ TEST_PORTS = {
     'fanarttv': 18080,
     'volume': 18080,
     'coverart': 18080,
+    'cache': 18080,
 }
 
 # Path configurations for different test types
@@ -42,6 +43,7 @@ TEST_CONFIGS = {
     'fanarttv': Path(__file__).parent / "test_config_fanarttv.json",
     'volume': Path(__file__).parent / "test_config_volume.json",
     'coverart': Path(__file__).parent / "test_config_generic.json",
+    'cache': Path(__file__).parent / "test_config_cache.json",
 }
 
 # Default path to static configuration file
@@ -774,6 +776,14 @@ def raat_server():
     """Fixture for RAAT integration tests"""
     server = AudioControlTestServer("raat", TEST_PORTS['raat'])
     assert server.start_server(), "Failed to start RAAT test server"
+    yield server
+    server.stop_server()
+
+@pytest.fixture
+def cache_server():
+    """Fixture for cache integration tests"""
+    server = AudioControlTestServer("cache", TEST_PORTS['cache'])
+    assert server.start_server(), "Failed to start cache test server"
     yield server
     server.stop_server()
 

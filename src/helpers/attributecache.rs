@@ -5,9 +5,61 @@ use log::{info, error, debug, warn};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use rusqlite::{Connection, params};
-use chrono::Utc;
 use lru::LruCache;
 use std::num::NonZeroUsize;
+
+/// Parse a size string that can be:
+/// - A simple number (bytes)
+/// - A string like "100K", "200M", "18kB", "189MB", "1G"
+pub fn parse_size_string(size_str: &str) -> Result<usize, String> {
+    let size_str = size_str.trim();
+    
+    // If it's just a number, treat as bytes
+    if let Ok(bytes) = size_str.parse::<usize>() {
+        return Ok(bytes);
+    }
+    
+    // Parse size with units
+    let size_str_upper = size_str.to_uppercase();
+    
+    // Handle different unit formats
+    let (number_str, multiplier) = if size_str_upper.ends_with("KB") || size_str_upper.ends_with("KIB") {
+        (&size_str_upper[..size_str_upper.len()-2], 1024)
+    } else if size_str_upper.ends_with("K") {
+        (&size_str_upper[..size_str_upper.len()-1], 1024)
+    } else if size_str_upper.ends_with("MB") || size_str_upper.ends_with("MIB") {
+        (&size_str_upper[..size_str_upper.len()-2], 1024 * 1024)
+    } else if size_str_upper.ends_with("M") {
+        (&size_str_upper[..size_str_upper.len()-1], 1024 * 1024)
+    } else if size_str_upper.ends_with("GB") || size_str_upper.ends_with("GIB") {
+        (&size_str_upper[..size_str_upper.len()-2], 1024 * 1024 * 1024)
+    } else if size_str_upper.ends_with("G") {
+        (&size_str_upper[..size_str_upper.len()-1], 1024 * 1024 * 1024)
+    } else if size_str_upper.ends_with("TB") || size_str_upper.ends_with("TIB") {
+        (&size_str_upper[..size_str_upper.len()-2], 1024_usize.pow(4))
+    } else if size_str_upper.ends_with("T") {
+        (&size_str_upper[..size_str_upper.len()-1], 1024_usize.pow(4))
+    } else if size_str_upper.ends_with("B") {
+        // Just "B" suffix, treat as bytes
+        (&size_str_upper[..size_str_upper.len()-1], 1)
+    } else {
+        return Err(format!("Unrecognized size format: '{}'. Supported formats: 100K, 200M, 18kB, 189MB, 1G, etc.", size_str));
+    };
+    
+    match number_str.parse::<f64>() {
+        Ok(number) => {
+            if number < 0.0 {
+                return Err(format!("Size cannot be negative: '{}'", size_str));
+            }
+            let bytes = (number * multiplier as f64) as usize;
+            if bytes == 0 {
+                return Err(format!("Size must be greater than 0: '{}'", size_str));
+            }
+            Ok(bytes)
+        }
+        Err(_) => Err(format!("Invalid number in size string: '{}'", size_str))
+    }
+}
 
 /// Information about a cache entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +69,15 @@ pub struct CacheEntry {
     pub created_at: i64,
     pub updated_at: i64,
     pub expires_at: Option<i64>,
+}
+
+/// Cache statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStats {
+    pub disk_entries: usize,
+    pub memory_entries: usize,
+    pub memory_bytes: usize,
+    pub memory_limit_bytes: usize,
 }
 
 // Global singleton for the attribute cache
@@ -36,6 +97,10 @@ pub struct AttributeCache {
     max_age_days: u64,
     /// In-memory LRU cache of recently accessed items
     memory_cache: LruCache<String, Arc<Vec<u8>>>,
+    /// Maximum memory usage for the memory cache in bytes
+    max_memory_bytes: usize,
+    /// Current memory usage of the memory cache in bytes
+    current_memory_bytes: usize,
 }
 
 impl AttributeCache {
@@ -44,16 +109,16 @@ impl AttributeCache {
         // Using the default path that matches our datastore.attribute_cache.dbfile setting
         let cache_dir = PathBuf::from("/var/lib/audiocontrol/cache");
         let db_file = cache_dir.join("attributes.db");
-        Self::with_database_file_and_cache_size(db_file, 20_000)
+        Self::with_database_file_and_memory_limit(db_file, 50 * 1024 * 1024) // 50MB default
     }
 
     /// Create a new attribute cache with a specific database file
     pub fn with_database_file<P: AsRef<Path>>(db_file: P) -> Self {
-        Self::with_database_file_and_cache_size(db_file, 20_000)
+        Self::with_database_file_and_memory_limit(db_file, 50 * 1024 * 1024) // 50MB default
     }
 
-    /// Create a new attribute cache with a specific database file and cache size
-    pub fn with_database_file_and_cache_size<P: AsRef<Path>>(db_file: P, cache_size: usize) -> Self {
+    /// Create a new attribute cache with a specific database file and memory limit
+    pub fn with_database_file_and_memory_limit<P: AsRef<Path>>(db_file: P, max_memory_bytes: usize) -> Self {
         let db_path = db_file.as_ref().to_path_buf();
         
         // Try to ensure the directory exists
@@ -65,11 +130,11 @@ impl AttributeCache {
         
         let db = Self::setup_database(&db_path);
 
-        let cache_size = if cache_size > 0 {
-            cache_size
+        let max_memory_bytes = if max_memory_bytes > 0 {
+            max_memory_bytes
         } else {
-            warn!("Invalid cache size {}, using default of 20,000", cache_size);
-            20_000
+            warn!("Invalid memory limit {}, using default of 50MB", max_memory_bytes);
+            50 * 1024 * 1024
         };
 
         AttributeCache {
@@ -77,7 +142,9 @@ impl AttributeCache {
             db,
             enabled: true,
             max_age_days: 30, // Default to 30 days
-            memory_cache: LruCache::new(NonZeroUsize::new(cache_size).unwrap()),
+            memory_cache: LruCache::new(NonZeroUsize::new(1000000).unwrap()), // Large number since we'll limit by memory
+            max_memory_bytes,
+            current_memory_bytes: 0,
         }
     }
 
@@ -180,9 +247,9 @@ impl AttributeCache {
         }
     }
     
-    /// Initialize the global attribute cache with a custom directory path and cache size
-    pub fn initialize_global_with_cache_size<P: AsRef<Path>>(db_file: P, cache_size: usize) -> Result<(), String> {
-        match get_attribute_cache().reconfigure_with_file_and_cache_size(db_file, cache_size) {
+    /// Initialize the global attribute cache with a custom directory path and memory limit
+    pub fn initialize_global_with_memory_limit<P: AsRef<Path>>(db_file: P, max_memory_bytes: usize) -> Result<(), String> {
+        match get_attribute_cache().reconfigure_with_file_and_memory_limit(db_file, max_memory_bytes) {
             Ok(_) => {
                 info!("Global attribute cache initialized successfully");
                 Ok(())
@@ -194,14 +261,65 @@ impl AttributeCache {
         }
     }
     
-    /// Initialize the global attribute cache with a custom directory path as string and cache size
-    pub fn initialize_with_cache_size<P: AsRef<Path>>(path: P, cache_size: usize) -> Result<(), String> {
-        Self::initialize_global_with_cache_size(path, cache_size)
+    /// Initialize the global attribute cache with a custom directory path and memory limit
+    pub fn initialize_with_memory_limit<P: AsRef<Path>>(path: P, max_memory_bytes: usize) -> Result<(), String> {
+        Self::initialize_global_with_memory_limit(path, max_memory_bytes)
     }
 
-    /// Initialize the global attribute cache with a custom directory path as string (backward compatibility)
-    pub fn initialize<P: AsRef<Path>>(path: P) -> Result<(), String> {
-        Self::initialize_with_cache_size(path, 20_000)
+    /// Initialize the global attribute cache from JSON configuration
+    pub fn initialize_from_config(config: &serde_json::Value) -> Result<(), String> {
+        // Get the database file path
+        let db_path = if let Some(dbfile) = config.get("dbfile").and_then(|v| v.as_str()) {
+            dbfile.to_string()
+        } else {
+            "/var/lib/audiocontrol/cache/attributes.db".to_string()
+        };
+
+        // Parse memory configuration
+        let memory_limit = if let Some(memory_limit) = config.get("memory_limit") {
+            // memory_limit field - can be a number (bytes) or string with units
+            if let Some(limit_num) = memory_limit.as_u64() {
+                limit_num as usize
+            } else if let Some(limit_str) = memory_limit.as_str() {
+                parse_size_string(limit_str)?
+            } else {
+                return Err("memory_limit must be a number or string".to_string());
+            }
+        } else {
+            // Default to 50MB
+            50 * 1024 * 1024
+        };
+
+        info!("Initializing attribute cache with {}MB memory limit", memory_limit / 1024 / 1024);
+        
+        Self::initialize_global_with_memory_limit(db_path, memory_limit)?;
+
+        // Handle preload_prefixes if specified
+        if let Some(prefixes_value) = config.get("preload_prefixes") {
+            if let Some(prefixes_array) = prefixes_value.as_array() {
+                let mut prefixes = Vec::new();
+                for prefix in prefixes_array {
+                    if let Some(prefix_str) = prefix.as_str() {
+                        prefixes.push(prefix_str.to_string());
+                    }
+                }
+                
+                if !prefixes.is_empty() {
+                    info!("Preloading {} cache prefixes from configuration", prefixes.len());
+                    let mut cache = get_attribute_cache();
+                    for prefix in prefixes {
+                        match cache.preload_prefix(&prefix) {
+                            Ok(count) => info!("Preloaded {} entries for prefix '{}'", count, prefix),
+                            Err(e) => warn!("Failed to preload prefix '{}': {}", prefix, e),
+                        }
+                    }
+                }
+            } else {
+                warn!("preload_prefixes is not an array, ignoring");
+            }
+        }
+
+        Ok(())
     }
 
     /// Reconfigure the attribute cache with a new directory
@@ -225,13 +343,14 @@ impl AttributeCache {
         self.db_path = db_file;
         self.db = db;
         self.memory_cache.clear(); // Clear memory cache as we have a new DB
+        self.current_memory_bytes = 0;
         
         Ok(())
     }
 
-    /// Reconfigure the attribute cache with a new database file and cache size
+    /// Reconfigure the attribute cache with a new database file and memory limit
     /// This will close the existing database and open a new one with a new memory cache
-    fn reconfigure_with_file_and_cache_size<P: AsRef<Path>>(&mut self, db_file: P, cache_size: usize) -> Result<(), String> {
+    fn reconfigure_with_file_and_memory_limit<P: AsRef<Path>>(&mut self, db_file: P, max_memory_bytes: usize) -> Result<(), String> {
         let db_path = db_file.as_ref().to_path_buf();
         
         // Try to ensure the directory exists
@@ -247,19 +366,21 @@ impl AttributeCache {
             return Err("Failed to setup database".to_string());
         }
 
-        let cache_size = if cache_size > 0 {
-            cache_size
+        let max_memory_bytes = if max_memory_bytes > 0 {
+            max_memory_bytes
         } else {
-            warn!("Invalid cache size {}, using default of 20,000", cache_size);
-            20_000
+            warn!("Invalid memory limit {}, using default of 50MB", max_memory_bytes);
+            50 * 1024 * 1024
         };
         
         // Update the instance
         self.db_path = db_path;
         self.db = db;
-        self.memory_cache = LruCache::new(NonZeroUsize::new(cache_size).unwrap());
+        self.memory_cache.clear();
+        self.current_memory_bytes = 0;
+        self.max_memory_bytes = max_memory_bytes;
         
-        info!("Attribute cache reconfigured with {} memory cache entries", cache_size);
+        info!("Attribute cache reconfigured with {}MB memory limit", max_memory_bytes / 1024 / 1024);
         
         Ok(())
     }
@@ -279,6 +400,53 @@ impl AttributeCache {
         self.enabled && self.db.is_some()
     }
 
+    /// Evict items from memory cache until we're under the memory limit
+    fn evict_to_memory_limit(&mut self) {
+        while self.current_memory_bytes > self.max_memory_bytes {
+            if let Some((key, value)) = self.memory_cache.pop_lru() {
+                let item_size = key.len() + value.len();
+                self.current_memory_bytes = self.current_memory_bytes.saturating_sub(item_size);
+                debug!("Evicted cache entry '{}' ({} bytes), current memory usage: {} bytes", 
+                       key, item_size, self.current_memory_bytes);
+            } else {
+                // Cache is empty but current_memory_bytes is still > 0, reset it
+                debug!("Memory cache is empty, resetting memory usage counter");
+                self.current_memory_bytes = 0;
+                break;
+            }
+        }
+    }
+
+    /// Add an item to memory cache, managing memory usage
+    fn add_to_memory_cache(&mut self, key: String, value: Arc<Vec<u8>>) {
+        let item_size = key.len() + value.len();
+        
+        // Remove existing entry if it exists (to update memory usage correctly)
+        if let Some(old_value) = self.memory_cache.pop(&key) {
+            let old_size = key.len() + old_value.len();
+            self.current_memory_bytes = self.current_memory_bytes.saturating_sub(old_size);
+        }
+        
+        // Add new entry
+        self.memory_cache.put(key, value);
+        self.current_memory_bytes += item_size;
+        
+        // Evict items if we exceed memory limit
+        self.evict_to_memory_limit();
+    }
+
+    /// Estimate memory usage of an entry
+    fn estimate_entry_size(key: &str, data: &str) -> usize {
+        // Approximate memory usage: key + data + overhead
+        key.len() + data.len() + 64 // 64 bytes overhead for struct and metadata
+    }
+
+    /// Estimate memory usage of a cache entry (with binary data)
+    fn estimate_cache_entry_size(key: &str, data: &[u8]) -> usize {
+        // Approximate memory usage: key + data + Arc overhead
+        key.len() + data.len() + 64 // 64 bytes overhead for Arc and metadata
+    }
+
     /// Store a serializable value in the cache
     pub fn set<T: Serialize + ?Sized>(&mut self, key: &str, value: &T) -> Result<(), String> {
         self.set_with_expiry(key, value, None)
@@ -295,8 +463,8 @@ impl AttributeCache {
             Err(e) => return Err(format!("Failed to serialize value: {}", e)),
         };
 
-        // Store in memory cache
-        self.memory_cache.put(key.to_string(), Arc::new(serialized.clone()));
+        // Store in memory cache using memory management
+        self.add_to_memory_cache(key.to_string(), Arc::new(serialized.clone()));
 
         // Store in SQLite database
         match &mut self.db {
@@ -401,7 +569,12 @@ impl AttributeCache {
                             Err(e) => return Err(format!("Failed to deserialize from database: {}", e)),
                         };
                         
-                        self.memory_cache.put(key.to_string(), Arc::new(data_vec));
+                        // Add to memory cache after we're done with the database
+                        let data_arc = Arc::new(data_vec);
+                        let key_string = key.to_string();
+                        drop(stmt); // Explicitly drop stmt to release the database borrow
+                        
+                        self.add_to_memory_cache(key_string, data_arc);
                         debug!("Retrieved key '{}' from SQLite cache", key);
                         Ok(Some(result))
                     },
@@ -420,7 +593,10 @@ impl AttributeCache {
         }
 
         // Remove from memory cache
-        self.memory_cache.pop(key);
+        if let Some(removed_value) = self.memory_cache.pop(key) {
+            let item_size = key.len() + removed_value.len();
+            self.current_memory_bytes = self.current_memory_bytes.saturating_sub(item_size);
+        }
 
         // Remove from database
         match &mut self.db {
@@ -448,6 +624,7 @@ impl AttributeCache {
 
         // Clear memory cache
         self.memory_cache.clear();
+        self.current_memory_bytes = 0;
 
         // Clear database
         match &mut self.db {
@@ -487,6 +664,7 @@ impl AttributeCache {
                             info!("Cleaned up {} old entries from attribute cache", affected_rows);
                             // Clear memory cache as some entries might have been removed
                             self.memory_cache.clear();
+                            self.current_memory_bytes = 0;
                         }
                         Ok(affected_rows)
                     },
@@ -732,13 +910,72 @@ impl AttributeCache {
         for row in rows {
             let (key, value) = row.map_err(|e| format!("Failed to read row: {}", e))?;
             
+            // Check memory limit before adding
+            let entry_size = Self::estimate_cache_entry_size(&key, &value);
+            if self.current_memory_bytes + entry_size > self.max_memory_bytes {
+                // Evict entries to make room, but ensure we don't evict too much
+                while self.current_memory_bytes + entry_size > self.max_memory_bytes {
+                    if let Some((evict_key, evict_value)) = self.memory_cache.pop_lru() {
+                        let evict_size = evict_key.len() + evict_value.len();
+                        self.current_memory_bytes = self.current_memory_bytes.saturating_sub(evict_size);
+                    } else {
+                        // Cache is empty, reset counter and break
+                        self.current_memory_bytes = 0;
+                        break;
+                    }
+                }
+            }
+            
             // Store in memory cache
             self.memory_cache.put(key, Arc::new(value));
+            self.current_memory_bytes += entry_size;
             loaded_count += 1;
         }
 
-        debug!("Preloaded {} cache entries with prefix '{}' into memory cache", loaded_count, prefix);
+        debug!("Preloaded {} cache entries with prefix '{}' into memory cache (using {:.1}MB memory)", 
+               loaded_count, prefix, self.current_memory_bytes as f64 / 1024.0 / 1024.0);
         Ok(loaded_count)
+    }
+
+    /// Get cache statistics
+    pub fn get_cache_stats(&mut self) -> Result<CacheStats, String> {
+        if !self.enabled {
+            return Ok(CacheStats {
+                disk_entries: 0,
+                memory_entries: 0,
+                memory_bytes: 0,
+                memory_limit_bytes: self.max_memory_bytes,
+            });
+        }
+
+        let disk_entries = if let Some(ref db) = self.db {
+            match db.prepare("SELECT COUNT(*) FROM cache") {
+                Ok(mut stmt) => {
+                    match stmt.query_row([], |row| {
+                        Ok(row.get::<_, i64>(0)? as usize)
+                    }) {
+                        Ok(count) => count,
+                        Err(e) => {
+                            warn!("Failed to count disk entries: {}", e);
+                            0
+                        }
+                    }
+                },
+                Err(e) => {
+                    warn!("Failed to prepare count statement: {}", e);
+                    0
+                }
+            }
+        } else {
+            0
+        };
+
+        Ok(CacheStats {
+            disk_entries,
+            memory_entries: self.memory_cache.len(),
+            memory_bytes: self.current_memory_bytes,
+            memory_limit_bytes: self.max_memory_bytes,
+        })
     }
 }
 
@@ -830,11 +1067,92 @@ pub fn get_last_updated_age(key: &str) -> Result<Option<i64>, String> {
     get_attribute_cache().get_last_updated_age(key)
 }
 
+/// Get cache statistics
+pub fn get_cache_stats() -> Result<CacheStats, String> {
+    get_attribute_cache().get_cache_stats()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
     use serde::{Deserialize, Serialize};
+
+    #[test]
+    fn test_parse_size_string() {
+        // Test plain numbers (bytes)
+        assert_eq!(parse_size_string("1024").unwrap(), 1024);
+        assert_eq!(parse_size_string("0").unwrap(), 0);
+        assert_eq!(parse_size_string("123456789").unwrap(), 123456789);
+        
+        // Test with units
+        assert_eq!(parse_size_string("1K").unwrap(), 1024);
+        assert_eq!(parse_size_string("1KB").unwrap(), 1024);
+        assert_eq!(parse_size_string("1kB").unwrap(), 1024);
+        assert_eq!(parse_size_string("1kb").unwrap(), 1024);
+        
+        assert_eq!(parse_size_string("2M").unwrap(), 2 * 1024 * 1024);
+        assert_eq!(parse_size_string("2MB").unwrap(), 2 * 1024 * 1024);
+        assert_eq!(parse_size_string("2mb").unwrap(), 2 * 1024 * 1024);
+        
+        assert_eq!(parse_size_string("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_size_string("1GB").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_size_string("1gb").unwrap(), 1024 * 1024 * 1024);
+        
+        // Test fractional values
+        assert_eq!(parse_size_string("0.5K").unwrap(), 512);
+        assert_eq!(parse_size_string("1.5M").unwrap(), (1.5 * 1024.0 * 1024.0) as usize);
+        
+        // Test bytes suffix
+        assert_eq!(parse_size_string("100B").unwrap(), 100);
+        assert_eq!(parse_size_string("100b").unwrap(), 100);
+        
+        // Test with whitespace
+        assert_eq!(parse_size_string(" 50M ").unwrap(), 50 * 1024 * 1024);
+        
+        // Test error cases
+        assert!(parse_size_string("invalid").is_err());
+        assert!(parse_size_string("100Z").is_err());
+        assert!(parse_size_string("-100").is_err());
+        assert!(parse_size_string("-1M").is_err());
+        assert!(parse_size_string("").is_err());
+    }
+
+    #[test]
+    fn test_initialize_from_config() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        
+        // Test with memory_limit as string
+        let db_path1 = temp_dir.path().join("test_config1.db");
+        let config = serde_json::json!({
+            "dbfile": db_path1.to_str().unwrap(),
+            "memory_limit": "10MB"
+        });
+        
+        let result = AttributeCache::initialize_from_config(&config);
+        assert!(result.is_ok(), "Failed to initialize with string memory_limit: {:?}", result);
+        
+        // Test with memory_limit as number
+        let db_path2 = temp_dir.path().join("test_config2.db");
+        let config = serde_json::json!({
+            "dbfile": db_path2.to_str().unwrap(),
+            "memory_limit": 5242880 // 5MB in bytes
+        });
+        
+        let result = AttributeCache::initialize_from_config(&config);
+        assert!(result.is_ok(), "Failed to initialize with numeric memory_limit: {:?}", result);
+        
+        // Test with preload_prefixes (should not fail even though prefixes don't exist)
+        let db_path4 = temp_dir.path().join("test_config4.db");
+        let config = serde_json::json!({
+            "dbfile": db_path4.to_str().unwrap(),
+            "memory_limit": "1MB",
+            "preload_prefixes": ["test1", "test2"]
+        });
+        
+        let result = AttributeCache::initialize_from_config(&config);
+        assert!(result.is_ok(), "Failed to initialize with preload_prefixes: {:?}", result);
+    }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct TestData {

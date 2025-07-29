@@ -5,6 +5,7 @@ use log::{debug, info, error, warn};
 use chrono::NaiveDate;
 use crate::data::LibraryError;
 use crate::players::mpd::mpd::MPDPlayerController;
+use crate::helpers::backgroundjobs::{register_job, update_job, complete_job};
 
 /// Number of songs to process before updating progress
 const PROGRESS_UPDATE_FREQUENCY: usize = 100;
@@ -264,6 +265,18 @@ impl MPDLibraryLoader {
     
     /// Load albums from MPD
     pub fn load_albums_from_mpd(&self, custom_separators: Option<Vec<String>>) -> Result<Vec<crate::data::Album>, LibraryError> {
+        // Generate unique job ID for this library load operation
+        let job_id = format!("mpd_library_load_{}", 
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs());
+        
+        // Register background job for library loading
+        if let Err(e) = register_job(job_id.clone(), "MPD Library Load".to_string()) {
+            warn!("Failed to register background job for MPD library load: {}", e);
+        }
+        
         // progress indicator (f32 0.0..100.0)
         let mut progress: f32 = 0.0;
         self.controller.notify_database_update(Some("Starting MPD database import".to_string()), None, None, Some(progress)); 
@@ -272,9 +285,19 @@ impl MPDLibraryLoader {
         let start_time = Instant::now();
         
         // Step 1: Load all artists
-        let artists = self.load_artists()?;
+        let artists = match self.load_artists() {
+            Ok(artists) => artists,
+            Err(e) => {
+                let _ = complete_job(&job_id);
+                return Err(e);
+            }
+        };
+        
         info!("Found {} artists in MPD database", artists.len());
         progress = 10.0; // Update progress to 10%
+        
+        // Update background job progress
+        let _ = update_job(&job_id, Some("Loading artists".to_string()), None, Some(artists.len()));
         
         // Send database update event to show initial progress
         // Note: We no longer need to pass the source parameter
@@ -288,7 +311,7 @@ impl MPDLibraryLoader {
 
         // Step 2: Load all songs for each album artist
         let mut all_songs = Vec::new();
-        for artist in &artists {
+        for (artist_index, artist) in artists.iter().enumerate() {
             // more verbose logging for "real" artists
             if artist.contains(",") {
                 debug!("Loading songs for artist: {}", artist);
@@ -296,12 +319,26 @@ impl MPDLibraryLoader {
                 info!("Loading songs for artist: {}", artist);
             }
             
+            // Update background job progress for artist processing
+            let artist_progress = format!("Processing artist {}/{}: {}", 
+                artist_index + 1, artists.len(), artist);
+            let _ = update_job(&job_id, Some(artist_progress), Some(artist_index + 1), Some(artists.len()));
+            
             // Fetch all songs for this artist
-            let songs = self.fetch_all_songs_for_artist(artist)?;
+            let songs = match self.fetch_all_songs_for_artist(artist) {
+                Ok(songs) => songs,
+                Err(e) => {
+                    let _ = complete_job(&job_id);
+                    return Err(e);
+                }
+            };
             debug!("Found {} songs for album artist '{}'", songs.len(), artist);
             all_songs.extend(songs);
         }
         progress = 20.0; // Update progress to 20%
+        
+        // Update background job for song processing phase
+        let _ = update_job(&job_id, Some("Processing songs".to_string()), None, Some(all_songs.len()));
         
         // Send database update event to show progress
         self.controller.notify_database_update(Some("Processing songs".to_string()), None, None, Some(progress));
@@ -367,6 +404,11 @@ impl MPDLibraryLoader {
                     .map(|s| s.as_str())
                     .unwrap_or("Unknown Song").to_string();
                 
+                // Update background job with current song processing
+                let song_progress = format!("Processing song {}/{}: {} - {}", 
+                    index + 1, total_songs, artist_name, song_name);
+                let _ = update_job(&job_id, Some(song_progress), Some(index + 1), Some(total_songs));
+                
                 // Send database update event with current item details
                 self.controller.notify_database_update(Some(artist_name), Some(album_name), Some(song_name), Some(progress));
                 
@@ -387,6 +429,10 @@ impl MPDLibraryLoader {
         // Final progress update (99%)
         progress = 99.0;
         
+        // Update background job with final status
+        let final_progress = format!("Library load complete: {} albums created", albums.len());
+        let _ = update_job(&job_id, Some(final_progress), Some(albums.len()), Some(albums.len()));
+        
         // Send the final database update event
         self.controller.notify_database_update(Some("Library load complete".to_string()), None, None, Some(progress));
         
@@ -394,6 +440,11 @@ impl MPDLibraryLoader {
         
         let elapsed = start_time.elapsed();
         info!("Loaded {} albums in {:?}", albums.len(), elapsed);
+        
+        // Complete the background job
+        if let Err(e) = complete_job(&job_id) {
+            warn!("Failed to complete background job {}: {}", job_id, e);
+        }
         
         Ok(albums)
     }

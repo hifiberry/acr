@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use log::{info, warn};
 use audiocontrol::helpers::attributecache::{self, AttributeCache, CacheEntry};
+use audiocontrol::helpers::artistsplitter::ARTIST_SPLIT_CACHE_PREFIX;
 use std::path::PathBuf;
 use chrono::DateTime;
 
@@ -99,7 +100,7 @@ fn determine_prefix(prefix: Option<&str>, artistmbid: bool, imagemeta: bool, art
     } else if imagemeta {
         Ok(Some("image_meta:".to_string()))
     } else if artistsplit {
-        Ok(Some("artist::split".to_string()))
+        Ok(Some(ARTIST_SPLIT_CACHE_PREFIX.trim_end_matches("::").to_string()))
     } else {
         Ok(prefix.map(|s| s.to_string()))
     }

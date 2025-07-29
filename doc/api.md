@@ -2925,6 +2925,11 @@ curl -X GET "http://localhost:8080/api/cache/stats"
 - Optimizing cache configuration based on usage patterns
 - System health monitoring and alerting
 
+**Notes**:
+- Cache statistics are updated in real-time
+- Memory limits can be configured in the application settings
+- Disk cache location is configurable via the application configuration
+
 ## Background Jobs API
 
 The Background Jobs API provides endpoints to monitor long-running background operations within the audio control service. This includes metadata updates, library scans, and other asynchronous tasks.

@@ -2951,9 +2951,11 @@ curl -X GET "http://localhost:8080/api/cache/stats"
 
 The Background Jobs API provides endpoints to monitor long-running background operations within the audio control service. This includes metadata updates, library scans, and other asynchronous tasks.
 
+Jobs remain in the system after completion and are marked with `finished: true`. This allows clients to track both active and completed jobs. When a new job is created with the same ID as an existing job, it will overwrite the previous job data.
+
 ### List Background Jobs
 
-Retrieves a list of all currently running background jobs with their progress and timing information.
+Retrieves a list of all background jobs (both running and finished) with their progress and timing information.
 
 **Endpoint**: `GET /api/background/jobs`
 
@@ -2972,7 +2974,9 @@ Retrieves a list of all currently running background jobs with their progress an
       "completed_items": 150,
       "duration_seconds": 45,
       "time_since_last_update": 2,
-      "completion_percentage": 30.0
+      "completion_percentage": 30.0,
+      "finished": false,
+      "finish_time": null
     }
   ],
   "message": null
@@ -2992,6 +2996,8 @@ Retrieves a list of all currently running background jobs with their progress an
   - `duration_seconds` (number): Total time the job has been running
   - `time_since_last_update` (number): Seconds since the last update
   - `completion_percentage` (number|null): Percentage completion (0-100)
+  - `finished` (boolean): Whether the job has completed
+  - `finish_time` (number|null): Unix timestamp when the job finished, null if not finished
 - `message` (string|null): Error message if success is false, null otherwise
 
 **Example Request**:
@@ -3023,7 +3029,33 @@ curl -X GET "http://localhost:8080/api/background/jobs"
       "completed_items": 75,
       "duration_seconds": 120,
       "time_since_last_update": 5,
-      "completion_percentage": 62.5
+      "completion_percentage": 62.5,
+      "finished": false,
+      "finish_time": null
+    }
+  ],
+  "message": null
+}
+```
+
+**Example Response (With Finished Jobs)**:
+```json
+{
+  "success": true,
+  "jobs": [
+    {
+      "id": "library_scan_1640995100",
+      "name": "Library Scan",
+      "start_time": 1640995100,
+      "last_update": 1640995300,
+      "progress": "Scan completed successfully",
+      "total_items": 1500,
+      "completed_items": 1500,
+      "duration_seconds": 200,
+      "time_since_last_update": 120,
+      "completion_percentage": 100.0,
+      "finished": true,
+      "finish_time": 1640995300
     }
   ],
   "message": null
@@ -3054,7 +3086,9 @@ Retrieves detailed information about a specific background job by its unique ide
       "completed_items": 150,
       "duration_seconds": 45,
       "time_since_last_update": 2,
-      "completion_percentage": 30.0
+      "completion_percentage": 30.0,
+      "finished": false,
+      "finish_time": null
     }
   ],
   "message": null
@@ -3081,7 +3115,33 @@ curl -X GET "http://localhost:8080/api/background/jobs/artist_metadata_update_16
       "completed_items": 45,
       "duration_seconds": 80,
       "time_since_last_update": 3,
-      "completion_percentage": 37.5
+      "completion_percentage": 37.5,
+      "finished": false,
+      "finish_time": null
+    }
+  ],
+  "message": null
+}
+```
+
+**Example Response (Finished Job)**:
+```json
+{
+  "success": true,
+  "jobs": [
+    {
+      "id": "cover_art_download_1640995150",
+      "name": "Cover Art Download",
+      "start_time": 1640995150,
+      "last_update": 1640995250,
+      "progress": "Downloaded cover art for all albums",
+      "total_items": 85,
+      "completed_items": 85,
+      "duration_seconds": 100,
+      "time_since_last_update": 60,
+      "completion_percentage": 100.0,
+      "finished": true,
+      "finish_time": 1640995250
     }
   ],
   "message": null
@@ -3103,6 +3163,14 @@ curl -X GET "http://localhost:8080/api/background/jobs/artist_metadata_update_16
 - Debugging background task performance
 - Tracking job completion and error states
 - System administration and maintenance
+- Reviewing completed job history
+
+**Job Lifecycle**:
+- Jobs are created with `finished: false` and `finish_time: null`
+- During execution, jobs are updated with progress information
+- When completed, jobs are marked with `finished: true` and `finish_time` is set
+- Finished jobs remain in the system for tracking purposes
+- New jobs with the same ID will overwrite existing job data
 
 **Background Job Types**:
 Common background jobs include:

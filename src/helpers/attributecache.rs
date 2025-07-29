@@ -1545,23 +1545,18 @@ mod tests {
 
     #[test]
     fn test_global_timestamp_functions() {
-        // Create a temporary cache for testing
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let db_path = temp_dir.path().join("cache.db");
-        
-        // Initialize the global cache with the temporary database file
-        super::AttributeCache::initialize(&db_path).unwrap();
+        let (mut cache, _temp_dir) = create_test_cache();
         
         let key = "test_key";
         let value = "test_value";
 
-        // Set a value using global function
-        set(key, &value).unwrap();
+        // Set a value using cache method
+        cache.set(key, &value).unwrap();
 
-        // Get timestamps using global functions
-        let (created_at, updated_at) = get_timestamps(key).unwrap().unwrap();
-        let age = get_age(key).unwrap().unwrap();
-        let last_updated_age = get_last_updated_age(key).unwrap().unwrap();
+        // Get timestamps using cache methods
+        let (created_at, updated_at) = cache.get_timestamps(key).unwrap().unwrap();
+        let age = cache.get_age(key).unwrap().unwrap();
+        let last_updated_age = cache.get_last_updated_age(key).unwrap().unwrap();
 
         // Basic validation
         assert!(created_at > 0);

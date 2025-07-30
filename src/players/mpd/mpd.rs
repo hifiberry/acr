@@ -6,6 +6,7 @@ use crate::helpers::retry::RetryHandler;
 use crate::helpers::url_encoding;
 use crate::helpers::songsplitmanager::SongSplitManager;
 use crate::helpers::attributecache;
+use crate::helpers::backgroundjobs::BackgroundJobs;
 use delegate::delegate;
 use std::sync::{Arc, Mutex};
 use std::fs;
@@ -75,6 +76,9 @@ pub struct MPDPlayerController {
     
     /// Song title splitter manager for radio stations that combine artist and song in title
     song_split_manager: SongSplitManager,
+    
+    /// Current MPD database update job ID (if any)
+    current_update_job_id: Arc<Mutex<Option<String>>>,
 }
 
 // Manually implement Clone for MPDPlayerController
@@ -98,6 +102,7 @@ impl Clone for MPDPlayerController {
             reconnect_attempts: Arc::clone(&self.reconnect_attempts),
             connection_disabled: Arc::clone(&self.connection_disabled),
             song_split_manager: self.song_split_manager.clone(),
+            current_update_job_id: Arc::clone(&self.current_update_job_id),
         }
     }
 }
@@ -129,6 +134,7 @@ impl MPDPlayerController {
             reconnect_attempts: Arc::new(Mutex::new(0)),
             connection_disabled: Arc::new(AtomicBool::new(false)),
             song_split_manager: SongSplitManager::new(),
+            current_update_job_id: Arc::new(Mutex::new(None)),
         };
         
         // Set default capabilities
@@ -161,6 +167,7 @@ impl MPDPlayerController {
             reconnect_attempts: Arc::new(Mutex::new(0)),
             connection_disabled: Arc::new(AtomicBool::new(false)),
             song_split_manager: SongSplitManager::new(),
+            current_update_job_id: Arc::new(Mutex::new(None)),
         };
         
         // Set default capabilities
@@ -632,6 +639,7 @@ impl MPDPlayerController {
                 Subsystem::Options,
                 Subsystem::Playlist,
                 Subsystem::Database,
+                Subsystem::Update,
             ]) {
                 Ok(subs) => subs,
                 Err(e) => {
@@ -707,6 +715,22 @@ impl MPDPlayerController {
                             Err(e) => warn!("Failed to refresh MPD library after database change: {}", e),
                         }
                     });
+                }
+            },
+            Subsystem::Update => {
+                debug!("MPD database update status changed");
+                // Get fresh status to check the current update state
+                if let Some(mut status_client) = player.get_fresh_client() {
+                    match status_client.status() {
+                        Ok(status) => {
+                            player.check_database_update_status(&status);
+                        },
+                        Err(e) => {
+                            warn!("Failed to get MPD status for update event: {}", e);
+                        }
+                    }
+                } else {
+                    warn!("Failed to get client for update status check");
                 }
             },
             _ => {
@@ -1311,6 +1335,55 @@ struct PlayerInstanceData {
 type PlayerStateMap = HashMap<usize, PlayerInstanceData>;
 lazy_static! {
     static ref PLAYER_STATE: Mutex<PlayerStateMap> = Mutex::new(HashMap::new());
+}
+
+impl MPDPlayerController {
+    /// Check MPD database update status and manage background job
+    fn check_database_update_status(&self, status: &mpd::Status) {
+        let job_id = "mpd_database_update";
+        
+        // Check if MPD is currently updating the database
+        let is_updating = status.updating_db.is_some();
+        
+        if let Ok(mut current_job_guard) = self.current_update_job_id.lock() {
+            let has_active_job = current_job_guard.is_some();
+            
+            if is_updating && !has_active_job {
+                // MPD started updating and we don't have an active job - start one
+                match BackgroundJobs::instance().register_job(
+                    job_id.to_string(), 
+                    "MPD Database Update".to_string()
+                ) {
+                    Ok(_) => {
+                        info!("Started background job for MPD database update");
+                        *current_job_guard = Some(job_id.to_string());
+                    },
+                    Err(e) => {
+                        warn!("Failed to register MPD database update job: {}", e);
+                    }
+                }
+            } else if !is_updating && has_active_job {
+                // MPD finished updating and we have an active job - finish it
+                if let Some(active_job_id) = current_job_guard.take() {
+                    if let Err(e) = BackgroundJobs::instance().complete_job(&active_job_id) {
+                        warn!("Failed to complete MPD database update job: {}", e);
+                    } else {
+                        info!("Finished background job for MPD database update");
+                    }
+                }
+            } else if is_updating && has_active_job {
+                // MPD is still updating and we have an active job - update progress if available
+                if let Some(update_id) = status.updating_db {
+                    let progress_msg = format!("Updating database (job {})", update_id);
+                    if let Err(e) = BackgroundJobs::instance().update_job(job_id, Some(progress_msg), None, None) {
+                        debug!("Failed to update MPD database update job progress: {}", e);
+                    }
+                }
+            }
+        } else {
+            warn!("Failed to acquire lock on current update job ID");
+        }
+    }
 }
 
 impl PlayerController for MPDPlayerController {

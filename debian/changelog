@@ -1,4 +1,4 @@
-hifiberry-audiocontrol (0.6.11) stable; urgency=medium
+hifiberry-audiocontrol (0.6.11) bookworm; urgency=medium
 
   * Added REST endpoints to pause/stop all players, with fallback if capability missing
   * Updated API documentation for new endpoints
@@ -22,7 +22,7 @@ hifiberry-audiocontrol (0.6.10) stable; urgency=medium
  -- HiFiBerry <info@hifiberry.com>  Tue, 29 Jul 2025 12:00:00 +0000
 
 hifiberry-audiocontrol (0.6.9) stable; urgency=medium
-
+hifiberry-audiocontrol (0.6.11) bookworm; urgency=medium
   * Refactored artist name splitting functionality into dedicated artistsplitter module
   * Moved artist splitting logic from musicbrainz.rs to new artistsplitter.rs for better organization
   * Enhanced artist splitting with comprehensive unit tests for complex multi-artist scenarios

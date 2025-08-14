@@ -1,10 +1,12 @@
-
+hifiberry-audiocontrol (0.6.11) stable; urgency=medium
 
   * Added REST endpoints to pause/stop all players, with fallback if capability missing
   * Updated API documentation for new endpoints
   * Version bump for new API features
 
  -- HiFiBerry <info@hifiberry.com>  Thu, 14 Aug 2025 12:00:00 +0000
+
+hifiberry-audiocontrol (0.6.10) stable; urgency=medium
 
   * Added Cache Statistics API endpoint for monitoring cache performance and memory usage
   * Added Background Jobs API for tracking long-running operations with progress monitoring

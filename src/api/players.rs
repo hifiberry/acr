@@ -3,6 +3,70 @@ use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track, PlayerUpd
 use crate::players::PlayerController; // Fixed: Using the public re-export
 use rocket::serde::json::Json;
 use rocket::{get, post, State};
+use rocket::serde::json::Value as JsonValue;
+/// Pause all players
+#[post("/players/pause-all")]
+pub fn pause_all_players(controller: &State<Arc<AudioController>>) -> Json<CommandResponse> {
+    let audio_controller = controller.inner();
+    let mut success_count = 0;
+    let controllers = audio_controller.list_controllers();
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            let caps = ctrl.get_capabilities();
+            let did_pause = if caps.has_capability(crate::data::capabilities::PlayerCapability::Pause) {
+                ctrl.send_command(PlayerCommand::Pause)
+            } else if caps.has_capability(crate::data::capabilities::PlayerCapability::Stop) {
+                ctrl.send_command(PlayerCommand::Stop)
+            } else {
+                false
+            };
+            if did_pause {
+                success_count += 1;
+            }
+        }
+    }
+    let success = success_count > 0;
+    Json(CommandResponse {
+        success,
+        message: if success {
+            format!("Paused or stopped {} players", success_count)
+        } else {
+            "No players paused or stopped".to_string()
+        },
+    })
+}
+
+/// Stop all players
+#[post("/players/stop-all")]
+pub fn stop_all_players(controller: &State<Arc<AudioController>>) -> Json<CommandResponse> {
+    let audio_controller = controller.inner();
+    let mut success_count = 0;
+    let controllers = audio_controller.list_controllers();
+    for ctrl_lock in controllers {
+        if let Ok(ctrl) = ctrl_lock.read() {
+            let caps = ctrl.get_capabilities();
+            let did_stop = if caps.has_capability(crate::data::capabilities::PlayerCapability::Stop) {
+                ctrl.send_command(PlayerCommand::Stop)
+            } else if caps.has_capability(crate::data::capabilities::PlayerCapability::Pause) {
+                ctrl.send_command(PlayerCommand::Pause)
+            } else {
+                false
+            };
+            if did_stop {
+                success_count += 1;
+            }
+        }
+    }
+    let success = success_count > 0;
+    Json(CommandResponse {
+        success,
+        message: if success {
+            format!("Stopped or paused {} players", success_count)
+        } else {
+            "No players stopped or paused".to_string()
+        },
+    })
+}
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;

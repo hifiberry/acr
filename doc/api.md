@@ -139,7 +139,46 @@ Retrieves the current version of the API.
 curl http://<device-ip>:1080/api/version
 ```
 
+
 ## Player API
+
+### Pause All Players
+
+Pauses all available players. If a player does not support pause, it will be stopped instead.
+
+- **Endpoint**: `/api/players/pause-all`
+- **Method**: POST
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Paused or stopped N players"
+  }
+  ```
+
+#### Example
+```bash
+curl -X POST http://<device-ip>:1080/api/players/pause-all
+```
+
+### Stop All Players
+
+Stops all available players. If a player does not support stop, it will be paused instead.
+
+- **Endpoint**: `/api/players/stop-all`
+- **Method**: POST
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Stopped or paused N players"
+  }
+  ```
+
+#### Example
+```bash
+curl -X POST http://<device-ip>:1080/api/players/stop-all
+```
 
 ### Get Current Player
 

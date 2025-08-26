@@ -9,7 +9,8 @@ use serde_json::json;
 
 use crate::helpers::spotify::{Spotify, SpotifyTokens};
 use crate::helpers::http_client::new_http_client;
-use rocket::http::Status;
+use rocket::http::{Status, ContentType};
+use rocket::response::content;
 use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -396,5 +397,22 @@ pub fn spotify_search(request: Json<SearchRequest>) -> Json<Value> {
     match spotify.search(&request.query, &types, request.filters.as_ref()) {
         Ok(json) => Json(json),
         Err(e) => Json(json!({"status": "error", "message": format!("{}", e)})),
+    }
+}
+
+/// Get the current Spotify access token as plain text
+#[get("/access_token")]
+pub fn get_access_token() -> Result<content::RawText<String>, Status> {
+    let spotify = Spotify::new();
+    
+    match spotify.ensure_valid_token() {
+        Ok(token) => {
+            info!("Successfully retrieved Spotify access token");
+            Ok(content::RawText(token))
+        },
+        Err(e) => {
+            error!("Failed to get Spotify access token: {}", e);
+            Err(Status::InternalServerError)
+        }
     }
 }

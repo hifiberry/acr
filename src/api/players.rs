@@ -3,7 +3,6 @@ use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track, PlayerUpd
 use crate::players::PlayerController; // Fixed: Using the public re-export
 use rocket::serde::json::Json;
 use rocket::{get, post, State};
-use rocket::serde::json::Value as JsonValue;
 /// Pause all players
 #[post("/players/pause-all")]
 pub fn pause_all_players(controller: &State<Arc<AudioController>>) -> Json<CommandResponse> {

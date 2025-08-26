@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::helpers::spotify::{Spotify, SpotifyTokens};
 use crate::helpers::http_client::new_http_client;
-use rocket::http::{Status, ContentType};
+use rocket::http::{Status};
 use rocket::response::content;
 use serde_json::Value;
 

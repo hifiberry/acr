@@ -2,6 +2,7 @@ use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::stream_details::StreamDetails;
 use crate::helpers::playback_progress::PlayerProgress;
+use crate::helpers::spotify::Spotify;
 use delegate::delegate;
 use std::sync::{Arc, RwLock};
 use log::{debug, info, warn, error, trace};
@@ -30,6 +31,9 @@ pub struct LibrespotPlayerController {
     
     /// What to do when receiving pause/stop commands: "systemd", "kill", or None
     on_pause_event: Option<String>,
+    
+    /// Whether we have a valid Spotify access token for API control
+    has_valid_token: Arc<RwLock<bool>>,
 }
 
 // Manually implement Clone for LibrespotPlayerController
@@ -44,6 +48,7 @@ impl Clone for LibrespotPlayerController {
             stream_details: Arc::clone(&self.stream_details),
             player_progress: Arc::clone(&self.player_progress),
             on_pause_event: self.on_pause_event.clone(),
+            has_valid_token: Arc::clone(&self.has_valid_token),
         }
     }
 }
@@ -91,9 +96,10 @@ impl LibrespotPlayerController {
             stream_details: Arc::new(RwLock::new(None)),
             player_progress: Arc::new(RwLock::new(PlayerProgress::new())),
             on_pause_event: None,
+            has_valid_token: Arc::new(RwLock::new(false)),
         };
         
-        // Set default capabilities - only Killable is available
+        // Set default capabilities - will be updated in start() based on token availability
         player.set_default_capabilities();
         
         player
@@ -103,9 +109,10 @@ impl LibrespotPlayerController {
     fn set_default_capabilities(&self) {
         debug!("Setting default LibrespotPlayerController capabilities");
         
-        // Only the Killable capability is available (previously incorrectly named Kill)
+        // Default to limited capabilities - full capabilities will be set in start() if token is available
         self.base.set_capabilities(vec![
             PlayerCapability::Killable,
+            PlayerCapability::ReceivesUpdates,
         ], false); // Don't notify on initialization
     }
     
@@ -289,47 +296,181 @@ impl PlayerController for LibrespotPlayerController {
     fn send_command(&self, command: PlayerCommand) -> bool {
         info!("Sending command to Librespot player: {}", command);
         
-        // Handle pause/stop commands with on_pause_event action
+        // Check if we have a valid token first
+        let has_token = match self.has_valid_token.read() {
+            Ok(token_state) => *token_state,
+            Err(_) => false,
+        };
+        
+        // Handle commands based on token availability
         match command {
-            PlayerCommand::Pause | PlayerCommand::Stop => {
-                if let Some(ref action) = self.on_pause_event {
-                    match action.as_str() {
-                        "systemd" => {
-                            info!("Received {} command, restarting librespot via systemd", command);
-                            match crate::helpers::process_helper::systemd("librespot", crate::helpers::process_helper::SystemdAction::Restart) {
-                                Ok(true) => {
-                                    info!("Successfully restarted librespot systemd unit");
-                                    return true;
-                                }
-                                Ok(false) => {
-                                    error!("Failed to restart librespot systemd unit");
-                                    return false;
-                                }
-                                Err(e) => {
-                                    error!("Failed to restart librespot systemd unit: {}", e);
-                                    return false;
-                                }
-                            }
-                        }
-                        "kill" => {
-                            info!("Received {} command, killing librespot process", command);
-                            return self.kill_process();
-                        }
-                        _ => {
-                            debug!("Received {} command, doing nothing (on_pause_event='{}')", command, action);
-                            return true;
-                        }
+            // Playback control commands (require Spotify API token)
+            PlayerCommand::Play => {
+                if !has_token {
+                    warn!("Cannot execute Play command: no valid Spotify access token");
+                    return false;
+                }
+                
+                let spotify = Spotify::new();
+                match spotify.send_command("play", &serde_json::json!({})) {
+                    Ok(_) => {
+                        info!("Successfully sent play command to Spotify API");
+                        true
                     }
-                } else {
-                    debug!("Received {} command, doing nothing (on_pause_event not configured)", command);
-                    return true;
+                    Err(e) => {
+                        error!("Failed to send play command to Spotify API: {}", e);
+                        false
+                    }
                 }
             }
-            PlayerCommand::Kill => {
-                return self.kill_process();
+            
+            PlayerCommand::Pause => {
+                if !has_token {
+                    // Fallback to legacy behavior if no token
+                    return self.handle_legacy_pause_command();
+                }
+                
+                let spotify = Spotify::new();
+                match spotify.send_command("pause", &serde_json::json!({})) {
+                    Ok(_) => {
+                        info!("Successfully sent pause command to Spotify API");
+                        true
+                    }
+                    Err(e) => {
+                        error!("Failed to send pause command to Spotify API: {}", e);
+                        false
+                    }
+                }
             }
+            
+            PlayerCommand::Stop => {
+                if !has_token {
+                    // Fallback to legacy behavior if no token
+                    return self.handle_legacy_stop_command();
+                }
+                
+                let spotify = Spotify::new();
+                match spotify.send_command("pause", &serde_json::json!({})) {
+                    Ok(_) => {
+                        info!("Successfully sent stop (pause) command to Spotify API");
+                        true
+                    }
+                    Err(e) => {
+                        error!("Failed to send stop (pause) command to Spotify API: {}", e);
+                        false
+                    }
+                }
+            }
+            
+            PlayerCommand::Next => {
+                if !has_token {
+                    warn!("Cannot execute Next command: no valid Spotify access token");
+                    return false;
+                }
+                
+                let spotify = Spotify::new();
+                match spotify.send_command("next", &serde_json::json!({})) {
+                    Ok(_) => {
+                        info!("Successfully sent next command to Spotify API");
+                        true
+                    }
+                    Err(e) => {
+                        error!("Failed to send next command to Spotify API: {}", e);
+                        false
+                    }
+                }
+            }
+            
+            PlayerCommand::Previous => {
+                if !has_token {
+                    warn!("Cannot execute Previous command: no valid Spotify access token");
+                    return false;
+                }
+                
+                let spotify = Spotify::new();
+                match spotify.send_command("previous", &serde_json::json!({})) {
+                    Ok(_) => {
+                        info!("Successfully sent previous command to Spotify API");
+                        true
+                    }
+                    Err(e) => {
+                        error!("Failed to send previous command to Spotify API: {}", e);
+                        false
+                    }
+                }
+            }
+            
+            PlayerCommand::Seek(position) => {
+                if !has_token {
+                    warn!("Cannot execute Seek command: no valid Spotify access token");
+                    return false;
+                }
+                
+                let position_ms = (position * 1000.0) as u64;
+                let spotify = Spotify::new();
+                match spotify.send_command("seek", &serde_json::json!({"position_ms": position_ms})) {
+                    Ok(_) => {
+                        info!("Successfully sent seek command to Spotify API (position: {}ms)", position_ms);
+                        true
+                    }
+                    Err(e) => {
+                        error!("Failed to send seek command to Spotify API: {}", e);
+                        false
+                    }
+                }
+            }
+            
+            PlayerCommand::SetRandom(enabled) => {
+                if !has_token {
+                    warn!("Cannot execute SetRandom command: no valid Spotify access token");
+                    return false;
+                }
+                
+                let spotify = Spotify::new();
+                match spotify.send_command("shuffle", &serde_json::json!({"state": enabled})) {
+                    Ok(_) => {
+                        info!("Successfully sent shuffle command to Spotify API (enabled: {})", enabled);
+                        true
+                    }
+                    Err(e) => {
+                        error!("Failed to send shuffle command to Spotify API: {}", e);
+                        false
+                    }
+                }
+            }
+            
+            PlayerCommand::SetLoopMode(mode) => {
+                if !has_token {
+                    warn!("Cannot execute SetLoop command: no valid Spotify access token");
+                    return false;
+                }
+                
+                let repeat_state = match mode {
+                    LoopMode::Track => "track",
+                    LoopMode::Playlist => "context", 
+                    LoopMode::None => "off",
+                };
+                
+                let spotify = Spotify::new();
+                match spotify.send_command("repeat", &serde_json::json!({"state": repeat_state})) {
+                    Ok(_) => {
+                        info!("Successfully sent repeat command to Spotify API (mode: {})", repeat_state);
+                        true
+                    }
+                    Err(e) => {
+                        error!("Failed to send repeat command to Spotify API: {}", e);
+                        false
+                    }
+                }
+            }
+            
+            // Legacy commands that don't require token
+            PlayerCommand::Kill => {
+                self.kill_process()
+            }
+            
+            // Unsupported commands
             _ => {
-                // Any other command is not supported
                 warn!("Command not supported by Librespot: {}", command);
                 false
             }
@@ -341,9 +482,57 @@ impl PlayerController for LibrespotPlayerController {
     }
 
     fn start(&self) -> bool {
-        info!("Starting Librespot player controller (API mode only)");
+        info!("Starting Librespot player controller (API mode only, accepting updates via audiocontrol_notify_librespot)");
         
-        // No pipe listeners to start
+        // Check if we have a valid Spotify access token
+        let spotify = Spotify::new();
+        let has_valid_token = match spotify.ensure_valid_token() {
+            Ok(_) => {
+                info!("Valid Spotify access token found - enabling full playback control capabilities");
+                true
+            }
+            Err(e) => {
+                info!("No valid Spotify access token available ({}), using limited capabilities", e);
+                false
+            }
+        };
+        
+        // Store the token validity state
+        if let Ok(mut token_state) = self.has_valid_token.write() {
+            *token_state = has_valid_token;
+        }
+        
+        // Set capabilities based on token availability
+        if has_valid_token {
+            // Full Spotify Web API capabilities
+            self.base.set_capabilities(vec![
+                PlayerCapability::Play,
+                PlayerCapability::Pause,
+                PlayerCapability::PlayPause,
+                PlayerCapability::Next,
+                PlayerCapability::Previous,
+                PlayerCapability::Seek,
+                PlayerCapability::Position,
+                PlayerCapability::Length,
+                PlayerCapability::Shuffle,
+                PlayerCapability::Loop,
+                PlayerCapability::Queue,
+                PlayerCapability::Metadata,
+                PlayerCapability::AlbumArt,
+                PlayerCapability::Search,
+                PlayerCapability::Browse,
+                PlayerCapability::Playlists,
+                PlayerCapability::Killable,
+                PlayerCapability::ReceivesUpdates,
+            ], true); // Notify on capability change
+        } else {
+            // Limited capabilities when no token is available
+            self.base.set_capabilities(vec![
+                PlayerCapability::Killable,
+                PlayerCapability::ReceivesUpdates,
+            ], true); // Notify on capability change
+        }
+        
         self.base.alive();
         true
     }
@@ -572,6 +761,78 @@ impl LibrespotPlayerController {
 }
 
 impl LibrespotPlayerController {
+    /// Handle legacy pause command when no token is available
+    fn handle_legacy_pause_command(&self) -> bool {
+        if let Some(ref action) = self.on_pause_event {
+            match action.as_str() {
+                "systemd" => {
+                    info!("Received pause command, restarting librespot via systemd");
+                    match crate::helpers::process_helper::systemd("librespot", crate::helpers::process_helper::SystemdAction::Restart) {
+                        Ok(true) => {
+                            info!("Successfully restarted librespot systemd unit");
+                            true
+                        }
+                        Ok(false) => {
+                            error!("Failed to restart librespot systemd unit");
+                            false
+                        }
+                        Err(e) => {
+                            error!("Failed to restart librespot systemd unit: {}", e);
+                            false
+                        }
+                    }
+                }
+                "kill" => {
+                    info!("Received pause command, killing librespot process");
+                    self.kill_process()
+                }
+                _ => {
+                    debug!("Received pause command, doing nothing (on_pause_event='{}')", action);
+                    true
+                }
+            }
+        } else {
+            debug!("Received pause command, doing nothing (on_pause_event not configured)");
+            true
+        }
+    }
+    
+    /// Handle legacy stop command when no token is available
+    fn handle_legacy_stop_command(&self) -> bool {
+        if let Some(ref action) = self.on_pause_event {
+            match action.as_str() {
+                "systemd" => {
+                    info!("Received stop command, restarting librespot via systemd");
+                    match crate::helpers::process_helper::systemd("librespot", crate::helpers::process_helper::SystemdAction::Restart) {
+                        Ok(true) => {
+                            info!("Successfully restarted librespot systemd unit");
+                            true
+                        }
+                        Ok(false) => {
+                            error!("Failed to restart librespot systemd unit");
+                            false
+                        }
+                        Err(e) => {
+                            error!("Failed to restart librespot systemd unit: {}", e);
+                            false
+                        }
+                    }
+                }
+                "kill" => {
+                    info!("Received stop command, killing librespot process");
+                    self.kill_process()
+                }
+                _ => {
+                    debug!("Received stop command, doing nothing (on_pause_event='{}')", action);
+                    true
+                }
+            }
+        } else {
+            debug!("Received stop command, doing nothing (on_pause_event not configured)");
+            true
+        }
+    }
+
     /// Kill the librespot process
     fn kill_process(&self) -> bool {
         info!("Attempting to kill Librespot process: {}", self.process_name);

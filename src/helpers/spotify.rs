@@ -612,7 +612,7 @@ impl Spotify {
     }
     /// Send a command to the Spotify Web API (play, pause, next, previous, seek, repeat, shuffle)
     pub fn send_command(&self, command: &str, args: &serde_json::Value) -> Result<()> {
-        use crate::helpers::http_client::new_http_client;
+        use crate::helpers::http_client::{new_http_client, HttpClientError};
         let access_token = self.ensure_valid_token()?;
         let http_client = new_http_client(10);
         let api_url = match command {
@@ -649,10 +649,15 @@ impl Spotify {
             },
             // Use POST for next and previous
             "next" | "previous" => http_client.post_json_value_with_headers(api_url, args.clone(), &headers),
-            _ => Err(crate::helpers::http_client::HttpClientError::RequestError("Not implemented".to_string())),
+            _ => Err(HttpClientError::RequestError("Not implemented".to_string())),
         };
         match result {
             Ok(_) => Ok(()),
+            // Handle empty responses as success for Spotify API commands (204 No Content)
+            Err(HttpClientError::EmptyResponse) => {
+                debug!("Spotify API command '{}' returned empty response (204 No Content) - treating as success", command);
+                Ok(())
+            },
             Err(e) => Err(SpotifyError::ApiError(format!("Command failed: {}", e))),
         }
     }

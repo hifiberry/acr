@@ -152,6 +152,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         spotify::login,
         spotify::poll_session,
         spotify::check_server,
+        spotify::access_token
     ];
     // Define full Spotify API routes
     let spotify_full_routes = routes![
@@ -166,7 +167,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         spotify::spotify_command,
         spotify::get_playback,
         spotify::spotify_currently_playing,
-        spotify::spotify_search,
+        spotify::spotify_search
     ];
     
     // ImageCache routes

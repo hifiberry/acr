@@ -411,8 +411,14 @@ pub fn get_access_token() -> Result<content::RawText<String>, Status> {
             Ok(content::RawText(token))
         },
         Err(e) => {
-            error!("Failed to get Spotify access token: {}", e);
-            Err(Status::InternalServerError)
+            let error_msg = e.to_string();
+            if error_msg.contains("Token not found") || error_msg.contains("not found") {
+                error!("Spotify access token not found: {}", e);
+                Err(Status::NotFound)
+            } else {
+                error!("Failed to get Spotify access token: {}", e);
+                Err(Status::InternalServerError)
+            }
         }
     }
 }

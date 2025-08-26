@@ -73,7 +73,9 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         players::get_now_playing,
         players::get_player_queue,
         players::get_player_metadata,      
-        players::get_player_metadata_key,        
+        players::get_player_metadata_key,
+        players::pause_all_players,
+        players::stop_all_players,        
         // Plugin routes
         plugins::list_action_plugins,
         
@@ -167,7 +169,8 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         spotify::spotify_command,
         spotify::get_playback,
         spotify::spotify_currently_playing,
-        spotify::spotify_search
+        spotify::spotify_search,
+        spotify::get_access_token
     ];
     
     // ImageCache routes

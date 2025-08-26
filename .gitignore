@@ -68,3 +68,4 @@ debian/hifiberry-audiocontrol.postrm.debhelper
 debian/hifiberry-audiocontrol.substvars
 audiocontrol.json
 audiocontrol.dev.json
+audiocontrol.log

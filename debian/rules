@@ -5,6 +5,12 @@ export SKIP_BUILD
 export CARGO_HOME = $(CURDIR)/debian/cargo_home
 export RUSTUP_HOME = $(CURDIR)/debian/rustup_home
 
+# Optimize Rust compilation for space efficiency
+export CARGO_BUILD_JOBS = 1
+export CARGO_INCREMENTAL = 0
+export CARGO_NET_OFFLINE = true
+export RUST_BACKTRACE = 0
+
 %:
 	dh $@
 
@@ -21,7 +27,17 @@ override_dh_auto_build:
 	if [ "$$SKIP_BUILD" = "1" ]; then \
 		echo "Skipping cargo build as requested"; \
 	else \
-		PATH="$(CARGO_HOME)/bin:$(PATH)" HOME=/tmp cargo build --release; \
+		export CARGO_BUILD_JOBS=1; \
+		export CARGO_TARGET_DIR=$(CURDIR)/target; \
+		export TMPDIR=$(CURDIR)/build_tmp; \
+		export HOME=$(CURDIR)/build_home; \
+		export RUST_BACKTRACE=0; \
+		mkdir -p $(CURDIR)/build_tmp $(CURDIR)/build_home; \
+		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release --jobs 1 --config "build.jobs=1" || \
+		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release --jobs 1; \
+		find $(CURDIR)/target -name "*.rlib" -delete 2>/dev/null || true; \
+		find $(CURDIR)/target -name "*.rmeta" -delete 2>/dev/null || true; \
+		rm -rf $(CURDIR)/build_tmp $(CURDIR)/build_home; \
 	fi
 
 override_dh_auto_install:
@@ -60,13 +76,20 @@ override_dh_auto_install:
 
 override_dh_auto_clean:
 	dh_auto_clean
+	# Comprehensive cleanup to free space
 	rm -rf target/
 	rm -rf $(CARGO_HOME)
 	rm -rf $(RUSTUP_HOME)
+	rm -rf $(CURDIR)/build_tmp
+	rm -rf $(CURDIR)/build_home
 	rm -rf debian/.debhelper/
 	rm -f debian/*.debhelper.log
 	rm -f debian/*.postrm.debhelper
 	rm -f debian/*.substvars
+	# Clean any cargo lock files and caches
+	rm -f Cargo.lock
+	find . -name "*.rlib" -delete 2>/dev/null || true
+	find . -name "*.rmeta" -delete 2>/dev/null || true
 
 override_dh_installsystemd:
 	dh_installsystemd --name=audiocontrol --restart-after-upgrade

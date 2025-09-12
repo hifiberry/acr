@@ -149,3 +149,11 @@ path = "src/tools/acr_listen_shairportsync.rs"
 [[bin]]
 name = "audiocontrol_favourites"
 path = "src/tools/acr_favourites.rs"
+
+[profile.release]
+# Optimize for smaller binary size and reduced build space usage
+opt-level = "s"          # Optimize for size
+lto = true               # Link-time optimization
+codegen-units = 1        # Use single codegen unit (less parallelism, less space)
+panic = "abort"          # Smaller panic handling
+strip = true             # Strip debug symbols

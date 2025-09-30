@@ -8,7 +8,6 @@ export RUSTUP_HOME = $(CURDIR)/debian/rustup_home
 # Optimize Rust compilation for space efficiency
 export CARGO_BUILD_JOBS = 1
 export CARGO_INCREMENTAL = 0
-export CARGO_NET_OFFLINE = true
 export RUST_BACKTRACE = 0
 
 %:
@@ -33,8 +32,11 @@ override_dh_auto_build:
 		export HOME=$(CURDIR)/build_home; \
 		export RUST_BACKTRACE=0; \
 		mkdir -p $(CURDIR)/build_tmp $(CURDIR)/build_home; \
-		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release --jobs 1 --config "build.jobs=1" || \
-		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release --jobs 1; \
+		echo "Fetching dependencies..."; \
+		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo fetch || exit 1; \
+		echo "Building with Cargo..."; \
+		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release --jobs 1 || exit 1; \
+		echo "Build completed successfully"; \
 		find $(CURDIR)/target -name "*.rlib" -delete 2>/dev/null || true; \
 		find $(CURDIR)/target -name "*.rmeta" -delete 2>/dev/null || true; \
 		rm -rf $(CURDIR)/build_tmp $(CURDIR)/build_home; \
@@ -45,10 +47,18 @@ override_dh_auto_install:
 	mkdir -p debian/hifiberry-audiocontrol/usr/bin
 	mkdir -p debian/hifiberry-audiocontrol/usr/share/hifiberry-audiocontrol
 	mkdir -p debian/hifiberry-audiocontrol/etc/audiocontrol
+	# Debug: List target directory contents
+	echo "Contents of target/release directory:"; \
+	ls -la target/release/ || echo "target/release directory not found"
 	# Install main binary
 	if [ -f target/release/audiocontrol ]; then \
+		echo "Installing main audiocontrol binary"; \
 		cp target/release/audiocontrol debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
 		chmod +x debian/hifiberry-audiocontrol/usr/bin/audiocontrol; \
+	else \
+		echo "Error: Main binary target/release/audiocontrol not found!"; \
+		echo "Build may have failed - check for cargo build errors above"; \
+		exit 1; \
 	fi
 	# Install CLI tools if they exist
 	for tool in audiocontrol_lms_client audiocontrol_musicbrainz_client audiocontrol_send_update audiocontrol_dump_store audiocontrol_dump_cache audiocontrol_notify_librespot audiocontrol_player_event_client audiocontrol_list_mpris_players audiocontrol_get_mpris_state audiocontrol_monitor_mpris_state audiocontrol_listen_shairportsync audiocontrol_favourites; do \

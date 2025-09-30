@@ -1,3 +1,11 @@
+hifiberry-audiocontrol (0.6.12) bookworm; urgency=medium
+
+  * Enhanced volume control initialization with configurable retry mechanism
+  * Improved API connectivity handling with 5-second retry delays
+  * Better error handling for volume control unavailability scenarios
+
+ -- HiFiBerry <info@hifiberry.com>  Mon, 30 Sep 2025 14:00:00 +0000
+
 hifiberry-audiocontrol (0.6.11) bookworm; urgency=medium
 
   * Added REST endpoints to pause/stop all players, with fallback if capability missing

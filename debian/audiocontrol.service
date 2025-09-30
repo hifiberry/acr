@@ -1,6 +1,12 @@
 [Unit]
 Description=HiFiBerry AudioControl - Audio Player Management Service
-After=network.target mpd.service raat.service shairport-sync.service librespot.service config-server.service
+After=network.target sound.target alsa-state.service pulseaudio.service pipewire.service config-server.service
+After=raat.service shairport-sync.service librespot.service mpd.service
+Wants=sound.target alsa-state.service
+# Ensure we start after audio hardware is detected and configured
+After=systemd-udev-settle.service
+# Only start if sound devices are available
+ConditionPathExists=/proc/asound/cards
 
 [Service]
 Type=simple
@@ -9,10 +15,16 @@ Restart=on-failure
 RestartSec=5
 User=audiocontrol
 Group=audiocontrol
+# Add audio group for sound device access
+SupplementaryGroups=audio
 WorkingDirectory=/etc/audiocontrol
 RuntimeDirectory=audiocontrol
 RuntimeDirectoryMode=0755
 PIDFile=/var/run/audiocontrol/audiocontrol.pid
+
+# Environment for audio system access
+Environment="PULSE_RUNTIME_PATH=/run/pulse"
+Environment="XDG_RUNTIME_DIR=/run/audiocontrol"
 
 # Timeout and kill settings
 TimeoutStopSec=10

@@ -64,63 +64,98 @@ pub fn initialize_volume_control(config: &Value) {
                 // Auto-detect device and control name from configurator API if not provided
                 let (final_device, final_control_name) = if device.is_empty() || control_name.is_empty() {
                     info!("Auto-detecting ALSA volume settings from configurator API (device='{}', control_name='{}')", device, control_name);
-                    match configurator::get_system_info() {
-                        Ok(system_info) => {
-                            let auto_device = if device.is_empty() {
-                                if let Some(soundcard) = &system_info.soundcard {
-                                    if let Some(hw_index) = soundcard.hardware_index {
-                                        format!("hw:{}", hw_index)
+                    
+                    // Get retry configuration from volume config or use defaults
+                    let retry_count = volume_config
+                        .get("auto_detect_retry_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(2) as usize;
+                    
+                    let retry_delay_seconds = volume_config
+                        .get("auto_detect_retry_delay_seconds")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(10);
+                    
+                    // Attempt to get system info with retries
+                    let mut last_error = String::new();
+                    let mut result: Option<(String, String)> = None;
+                    
+                    for attempt in 0..=retry_count {
+                        if attempt > 0 {
+                            info!("Retrying auto-detection after {} seconds (attempt {}/{})", retry_delay_seconds, attempt + 1, retry_count + 1);
+                            std::thread::sleep(std::time::Duration::from_secs(retry_delay_seconds));
+                        }
+                        
+                        match configurator::get_system_info() {
+                            Ok(system_info) => {
+                                let auto_device = if device.is_empty() {
+                                    if let Some(soundcard) = &system_info.soundcard {
+                                        if let Some(hw_index) = soundcard.hardware_index {
+                                            format!("hw:{}", hw_index)
+                                        } else {
+                                            "default".to_string()
+                                        }
                                     } else {
                                         "default".to_string()
                                     }
                                 } else {
-                                    "default".to_string()
-                                }
-                            } else {
-                                device.to_string()
-                            };
+                                    device.to_string()
+                                };
 
-                            let auto_control_name = if control_name.is_empty() {
-                                if let Some(soundcard) = &system_info.soundcard {
-                                    if let Some(vol_control) = &soundcard.volume_control {
-                                        vol_control.clone()
+                                let auto_control_name = if control_name.is_empty() {
+                                    if let Some(soundcard) = &system_info.soundcard {
+                                        if let Some(vol_control) = &soundcard.volume_control {
+                                            vol_control.clone()
+                                        } else {
+                                            "Master".to_string()
+                                        }
                                     } else {
                                         "Master".to_string()
                                     }
                                 } else {
-                                    "Master".to_string()
-                                }
-                            } else {
-                                control_name.to_string()
-                            };
+                                    control_name.to_string()
+                                };
 
-                            info!("Auto-detected ALSA volume settings from configurator API: device='{}', control='{}'", auto_device, auto_control_name);
-                            (auto_device, auto_control_name)
-                        }
-                        Err(e) => {
-                            warn!("Failed to get system info from configurator API: {}.", e);
-                            
-                            // If both device and control_name were empty (auto-detection requested)
-                            // and API fails, disable volume control instead of using unreliable fallback
-                            if device.is_empty() && control_name.is_empty() {
-                                warn!("Auto-detection failed and no manual configuration provided. Disabling volume control.");
-                                let mut dummy_control = DummyVolumeControl::new(
-                                    "auto_detection_failed".to_string(),
-                                    "Auto-detection Failed".to_string(),
-                                    0.0
-                                );
-                                dummy_control.set_available(false);
-                                let dummy_control: Box<dyn VolumeControl + Send + Sync> = Box::new(dummy_control);
-                                let _ = GLOBAL_VOLUME_CONTROL.set(Arc::new(Mutex::new(dummy_control)));
-                                return;
+                                info!("Auto-detected ALSA volume settings from configurator API: device='{}', control='{}'", auto_device, auto_control_name);
+                                result = Some((auto_device, auto_control_name));
+                                break;
                             }
-                            
-                            // Only use fallback if at least one value was explicitly configured
-                            let fallback_device = if device.is_empty() { "default".to_string() } else { device.to_string() };
-                            let fallback_control = if control_name.is_empty() { "Master".to_string() } else { control_name.to_string() };
-                            info!("Using fallback ALSA volume settings: device='{}', control='{}'", fallback_device, fallback_control);
-                            (fallback_device, fallback_control)
+                            Err(e) => {
+                                last_error = format!("{}", e);
+                                if attempt < retry_count {
+                                    warn!("Failed to get system info from configurator API (attempt {}/{}): {}. Retrying...", attempt + 1, retry_count + 1, e);
+                                } else {
+                                    warn!("Failed to get system info from configurator API after {} attempts: {}", retry_count + 1, e);
+                                }
+                            }
                         }
+                    }
+                    
+                    // Check if we got a result from the retry loop
+                    if let Some((detected_device, detected_control)) = result {
+                        (detected_device, detected_control)
+                    } else {
+                        // If all retries failed
+                        // If both device and control_name were empty (auto-detection requested)
+                        // and API fails after all retries, disable volume control
+                        if device.is_empty() && control_name.is_empty() {
+                            error!("Auto-detection failed after {} retries and no manual configuration provided. Disabling volume control.", retry_count + 1);
+                            let mut dummy_control = DummyVolumeControl::new(
+                                "auto_detection_failed".to_string(),
+                                format!("Auto-detection Failed ({})", last_error),
+                                0.0
+                            );
+                            dummy_control.set_available(false);
+                            let dummy_control: Box<dyn VolumeControl + Send + Sync> = Box::new(dummy_control);
+                            let _ = GLOBAL_VOLUME_CONTROL.set(Arc::new(Mutex::new(dummy_control)));
+                            return;
+                        }
+                        
+                        // Only use fallback if at least one value was explicitly configured
+                        let fallback_device = if device.is_empty() { "default".to_string() } else { device.to_string() };
+                        let fallback_control = if control_name.is_empty() { "Master".to_string() } else { control_name.to_string() };
+                        warn!("Using fallback ALSA volume settings after auto-detection failure: device='{}', control='{}'", fallback_device, fallback_control);
+                        (fallback_device, fallback_control)
                     }
                 } else {
                     info!("Using configured ALSA volume settings: device='{}', control='{}'", device, control_name);

@@ -1,0 +1,64 @@
+.TH PAUSE-ALL 1 "October 2025" "audiocontrol 0.6.11" "AudioControl Manual"
+.SH NAME
+pause-all \- pause all players using the AudioControl API
+.SH SYNOPSIS
+.B pause-all
+[\fIPLAYER_NAME_OR_ID\fR]
+.SH DESCRIPTION
+.B pause-all
+is a command-line utility that pauses all audio players managed by an AudioControl server. The script communicates with the AudioControl server via its REST API to send pause commands to all active players.
+.PP
+If a player does not support the pause command, the script will attempt to stop the player instead.
+.PP
+Optionally, you can exclude a specific player from the pause operation by specifying its name or ID as an argument.
+.SH ARGUMENTS
+.TP
+\fIPLAYER_NAME_OR_ID\fR
+Exclude the specified player from the pause operation. The player can be identified by either its name or its unique ID. The comparison is case-insensitive.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show usage information and exit.
+.SH ENVIRONMENT VARIABLES
+.TP
+.B AUDIOCONTROL_API_URL
+Base URL for the AudioControl API. If not set, defaults to \fIhttp://localhost:1080/api\fR.
+.SH EXAMPLES
+.TP
+.B pause-all
+Pause all active players.
+.TP
+.B pause-all spotify
+Pause all players except the one named "spotify".
+.TP
+.B pause-all "mpd:localhost:6600"
+Pause all players except the MPD player with ID "mpd:localhost:6600".
+.TP
+.B AUDIOCONTROL_API_URL=http://192.168.1.100:1080/api pause-all
+Pause all players on a remote AudioControl server.
+.SH EXIT STATUS
+.TP
+.B 0
+Success - at least one player was paused or stopped.
+.TP
+.B 1
+Failure - no players were paused/stopped, connection error, or invalid arguments.
+.SH NOTES
+The script requires \fBcurl\fR to be installed for making HTTP requests to the AudioControl API.
+.PP
+If \fBjq\fR is installed, it will be used for proper JSON parsing. Otherwise, the script falls back to basic text processing.
+.PP
+Player names and IDs are matched case-insensitively when using the exclusion parameter.
+.SH REQUIREMENTS
+.TP
+.B curl
+Required for making HTTP API calls.
+.TP
+.B jq
+Optional but recommended for better JSON response parsing.
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_send_update (1),
+.BR audiocontrol_nowplaying (1)
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>

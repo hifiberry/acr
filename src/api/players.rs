@@ -3,14 +3,28 @@ use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track, PlayerUpd
 use crate::players::PlayerController; // Fixed: Using the public re-export
 use rocket::serde::json::Json;
 use rocket::{get, post, State};
-/// Pause all players
-#[post("/players/pause-all")]
-pub fn pause_all_players(controller: &State<Arc<AudioController>>) -> Json<CommandResponse> {
+
+/// Pause all players with optional exclusion
+#[post("/players/pause-all?<except>")]
+pub fn pause_all_players(controller: &State<Arc<AudioController>>, except: Option<String>) -> Json<CommandResponse> {
     let audio_controller = controller.inner();
     let mut success_count = 0;
+    let mut skipped_count = 0;
     let controllers = audio_controller.list_controllers();
+    
     for ctrl_lock in controllers {
         if let Ok(ctrl) = ctrl_lock.read() {
+            let player_name = ctrl.get_player_name();
+            let player_id = ctrl.get_player_id();
+            
+            // Check if this player should be excluded
+            if let Some(ref except_name) = except {
+                if player_name.eq_ignore_ascii_case(except_name) || player_id.eq_ignore_ascii_case(except_name) {
+                    skipped_count += 1;
+                    continue;
+                }
+            }
+            
             let caps = ctrl.get_capabilities();
             let did_pause = if caps.has_capability(crate::data::capabilities::PlayerCapability::Pause) {
                 ctrl.send_command(PlayerCommand::Pause)
@@ -24,25 +38,53 @@ pub fn pause_all_players(controller: &State<Arc<AudioController>>) -> Json<Comma
             }
         }
     }
+    
     let success = success_count > 0;
-    Json(CommandResponse {
-        success,
-        message: if success {
+    let message = if let Some(ref except_name) = except {
+        if success {
+            format!("Paused or stopped {} players (skipped {} player '{}')", success_count, skipped_count, except_name)
+        } else {
+            if skipped_count > 0 {
+                format!("No players paused or stopped (skipped {} player '{}')", skipped_count, except_name)
+            } else {
+                "No players paused or stopped".to_string()
+            }
+        }
+    } else {
+        if success {
             format!("Paused or stopped {} players", success_count)
         } else {
             "No players paused or stopped".to_string()
-        },
+        }
+    };
+    
+    Json(CommandResponse {
+        success,
+        message,
     })
 }
 
-/// Stop all players
-#[post("/players/stop-all")]
-pub fn stop_all_players(controller: &State<Arc<AudioController>>) -> Json<CommandResponse> {
+/// Stop all players with optional exclusion
+#[post("/players/stop-all?<except>")]
+pub fn stop_all_players(controller: &State<Arc<AudioController>>, except: Option<String>) -> Json<CommandResponse> {
     let audio_controller = controller.inner();
     let mut success_count = 0;
+    let mut skipped_count = 0;
     let controllers = audio_controller.list_controllers();
+    
     for ctrl_lock in controllers {
         if let Ok(ctrl) = ctrl_lock.read() {
+            let player_name = ctrl.get_player_name();
+            let player_id = ctrl.get_player_id();
+            
+            // Check if this player should be excluded
+            if let Some(ref except_name) = except {
+                if player_name.eq_ignore_ascii_case(except_name) || player_id.eq_ignore_ascii_case(except_name) {
+                    skipped_count += 1;
+                    continue;
+                }
+            }
+            
             let caps = ctrl.get_capabilities();
             let did_stop = if caps.has_capability(crate::data::capabilities::PlayerCapability::Stop) {
                 ctrl.send_command(PlayerCommand::Stop)
@@ -56,14 +98,29 @@ pub fn stop_all_players(controller: &State<Arc<AudioController>>) -> Json<Comman
             }
         }
     }
+    
     let success = success_count > 0;
-    Json(CommandResponse {
-        success,
-        message: if success {
+    let message = if let Some(ref except_name) = except {
+        if success {
+            format!("Stopped or paused {} players (skipped {} player '{}')", success_count, skipped_count, except_name)
+        } else {
+            if skipped_count > 0 {
+                format!("No players stopped or paused (skipped {} player '{}')", skipped_count, except_name)
+            } else {
+                "No players stopped or paused".to_string()
+            }
+        }
+    } else {
+        if success {
             format!("Stopped or paused {} players", success_count)
         } else {
             "No players stopped or paused".to_string()
-        },
+        }
+    };
+    
+    Json(CommandResponse {
+        success,
+        message,
     })
 }
 use std::sync::Arc;

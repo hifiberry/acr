@@ -13,3 +13,4 @@ debian/man/audiocontrol_notify_librespot.1
 debian/man/audiocontrol_nowplaying.1
 debian/man/audiocontrol_player_event_client.1
 debian/man/audiocontrol_send_update.1
+debian/man/pause-all.1

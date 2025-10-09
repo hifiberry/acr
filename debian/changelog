@@ -1,4 +1,4 @@
-hifiberry-audiocontrol (0.6.13) latest; urgency=medium
+hifiberry-audiocontrol (0.6.13) stable; urgency=medium
 
   * Added pause-all script (/usr/bin/pause-all) with optional player exclusion
   * Enhanced pause-all and stop-all API endpoints with 'except' query parameter
@@ -6,7 +6,7 @@ hifiberry-audiocontrol (0.6.13) latest; urgency=medium
 
  -- HiFiBerry <info@hifiberry.com>  Thu, 09 Oct 2025 12:00:00 +0000
 
-hifiberry-audiocontrol (0.6.12) latest; urgency=medium
+hifiberry-audiocontrol (0.6.12) stable; urgency=medium
 
   * Enhanced volume control initialization with configurable retry mechanism
   * Improved API connectivity handling with 5-second retry delays
@@ -14,7 +14,7 @@ hifiberry-audiocontrol (0.6.12) latest; urgency=medium
 
  -- HiFiBerry <info@hifiberry.com>  Mon, 30 Sep 2025 14:00:00 +0000
 
-hifiberry-audiocontrol (0.6.11) latest; urgency=medium
+hifiberry-audiocontrol (0.6.11) stable; urgency=medium
 
   * Added REST endpoints to pause/stop all players, with fallback if capability missing
   * Updated API documentation for new endpoints
@@ -22,7 +22,7 @@ hifiberry-audiocontrol (0.6.11) latest; urgency=medium
 
  -- HiFiBerry <info@hifiberry.com>  Thu, 14 Aug 2025 12:00:00 +0000
 
-hifiberry-audiocontrol (0.6.10) latest; urgency=medium
+hifiberry-audiocontrol (0.6.10) stable; urgency=medium
 
   * Added Cache Statistics API endpoint for monitoring cache performance and memory usage
   * Added Background Jobs API for tracking long-running operations with progress monitoring
@@ -37,7 +37,7 @@ hifiberry-audiocontrol (0.6.10) latest; urgency=medium
 
  -- HiFiBerry <info@hifiberry.com>  Tue, 29 Jul 2025 12:00:00 +0000
 
-hifiberry-audiocontrol (0.6.9) latest; urgency=medium
+hifiberry-audiocontrol (0.6.9) stable; urgency=medium
   * Refactored artist name splitting functionality into dedicated artistsplitter module
   * Moved artist splitting logic from musicbrainz.rs to new artistsplitter.rs for better organization
   * Enhanced artist splitting with comprehensive unit tests for complex multi-artist scenarios

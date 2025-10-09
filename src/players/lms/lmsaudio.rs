@@ -895,6 +895,10 @@ impl PlayerController for LMSAudioController {
         self.base.get_player_name()
     }
     
+    fn get_aliases(&self) -> Vec<String> {
+        vec!["lms".to_string(), "squeezelite".to_string()]
+    }
+    
     fn get_player_id(&self) -> String {
         self.base.get_player_id()
     }

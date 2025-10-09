@@ -19,7 +19,12 @@ pub fn pause_all_players(controller: &State<Arc<AudioController>>, except: Optio
             
             // Check if this player should be excluded
             if let Some(ref except_name) = except {
-                if player_name.eq_ignore_ascii_case(except_name) || player_id.eq_ignore_ascii_case(except_name) {
+                let aliases = ctrl.get_aliases();
+                let should_skip = player_name.eq_ignore_ascii_case(except_name) 
+                    || player_id.eq_ignore_ascii_case(except_name)
+                    || aliases.iter().any(|alias| alias.eq_ignore_ascii_case(except_name));
+                
+                if should_skip {
                     skipped_count += 1;
                     continue;
                 }
@@ -79,7 +84,12 @@ pub fn stop_all_players(controller: &State<Arc<AudioController>>, except: Option
             
             // Check if this player should be excluded
             if let Some(ref except_name) = except {
-                if player_name.eq_ignore_ascii_case(except_name) || player_id.eq_ignore_ascii_case(except_name) {
+                let aliases = ctrl.get_aliases();
+                let should_skip = player_name.eq_ignore_ascii_case(except_name) 
+                    || player_id.eq_ignore_ascii_case(except_name)
+                    || aliases.iter().any(|alias| alias.eq_ignore_ascii_case(except_name));
+                
+                if should_skip {
                     skipped_count += 1;
                     continue;
                 }

@@ -10,11 +10,11 @@ is a command-line utility that pauses all audio players managed by an AudioContr
 .PP
 If a player does not support the pause command, the script will attempt to stop the player instead.
 .PP
-Optionally, you can exclude a specific player from the pause operation by specifying its name or ID as an argument.
+Optionally, you can exclude a specific player from the pause operation by specifying its name, ID, or alias as an argument. Supported aliases include common names for popular players.
 .SH ARGUMENTS
 .TP
 \fIPLAYER_NAME_OR_ID\fR
-Exclude the specified player from the pause operation. The player can be identified by either its name or its unique ID. The comparison is case-insensitive.
+Exclude the specified player from the pause operation. The player can be identified by its name, unique ID, or alias. Common aliases include: mpd, spotify/spotifyd/librespot, raat/roon, shairport/airplay/shairport-sync, lms/squeezelite. The comparison is case-insensitive.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help
@@ -30,6 +30,9 @@ Pause all active players.
 .TP
 .B pause-all spotify
 Pause all players except the one named "spotify".
+.TP
+.B pause-all librespot
+Pause all players except Spotify players (using alias).
 .TP
 .B pause-all "mpd:localhost:6600"
 Pause all players except the MPD player with ID "mpd:localhost:6600".
@@ -48,7 +51,7 @@ The script requires \fBcurl\fR to be installed for making HTTP requests to the A
 .PP
 If \fBjq\fR is installed, it will be used for proper JSON parsing. Otherwise, the script falls back to basic text processing.
 .PP
-Player names and IDs are matched case-insensitively when using the exclusion parameter.
+Player names, IDs, and aliases are matched case-insensitively when using the exclusion parameter.
 .SH REQUIREMENTS
 .TP
 .B curl

@@ -289,6 +289,10 @@ impl PlayerController for LibrespotPlayerController {
         "spotify".to_string()
     }
     
+    fn get_aliases(&self) -> Vec<String> {
+        vec!["spotifyd".to_string(), "librespot".to_string(), "spotify".to_string()]
+    }
+    
     fn get_player_id(&self) -> String {
         "librespot".to_string()
     }

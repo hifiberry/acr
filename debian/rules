@@ -72,6 +72,11 @@ override_dh_auto_install:
 		cp example/python/audiocontrol_nowplaying.py debian/hifiberry-audiocontrol/usr/bin/audiocontrol_nowplaying; \
 		chmod +x debian/hifiberry-audiocontrol/usr/bin/audiocontrol_nowplaying; \
 	fi
+	# Install pause-all script
+	if [ -f scripts/pause-all ]; then \
+		cp scripts/pause-all debian/hifiberry-audiocontrol/usr/bin/pause-all; \
+		chmod +x debian/hifiberry-audiocontrol/usr/bin/pause-all; \
+	fi
 	# Install default configuration files
 	if [ -f configs/audiocontrol.json ]; then \
 		cp configs/audiocontrol.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \

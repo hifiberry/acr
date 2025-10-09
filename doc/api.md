@@ -148,17 +148,23 @@ Pauses all available players. If a player does not support pause, it will be sto
 
 - **Endpoint**: `/api/players/pause-all`
 - **Method**: POST
+- **Query Parameters**:
+  - `except` (optional): Player name or ID to exclude from the pause operation
 - **Response**:
   ```json
   {
     "success": true,
-    "message": "Paused or stopped N players"
+    "message": "Paused or stopped N players" // or "Paused or stopped N players (skipped 1 player 'player-name')" when using except
   }
   ```
 
-#### Example
+#### Examples
 ```bash
+# Pause all players
 curl -X POST http://<device-ip>:1080/api/players/pause-all
+
+# Pause all players except the one named "spotify"
+curl -X POST "http://<device-ip>:1080/api/players/pause-all?except=spotify"
 ```
 
 ### Stop All Players
@@ -167,17 +173,23 @@ Stops all available players. If a player does not support stop, it will be pause
 
 - **Endpoint**: `/api/players/stop-all`
 - **Method**: POST
+- **Query Parameters**:
+  - `except` (optional): Player name or ID to exclude from the stop operation
 - **Response**:
   ```json
   {
     "success": true,
-    "message": "Stopped or paused N players"
+    "message": "Stopped or paused N players" // or "Stopped or paused N players (skipped 1 player 'player-name')" when using except
   }
   ```
 
-#### Example
+#### Examples
 ```bash
+# Stop all players
 curl -X POST http://<device-ip>:1080/api/players/stop-all
+
+# Stop all players except the one with ID "mpd:localhost:6600"
+curl -X POST "http://<device-ip>:1080/api/players/stop-all?except=mpd:localhost:6600"
 ```
 
 ### Get Current Player

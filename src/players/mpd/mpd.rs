@@ -1470,6 +1470,10 @@ impl PlayerController for MPDPlayerController {
         "mpd".to_string()
     }
     
+    fn get_aliases(&self) -> Vec<String> {
+        vec!["mpd".to_string()]
+    }
+    
     fn get_player_id(&self) -> String {
         format!("{}:{}", self.hostname, self.port)
     }

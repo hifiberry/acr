@@ -149,7 +149,12 @@ Pauses all available players. If a player does not support pause, it will be sto
 - **Endpoint**: `/api/players/pause-all`
 - **Method**: POST
 - **Query Parameters**:
-  - `except` (optional): Player name or ID to exclude from the pause operation
+  - `except` (optional): Player name, ID, or alias to exclude from the pause operation. Supported aliases:
+    - **mpd**: mpd
+    - **spotify**: spotifyd, librespot, spotify
+    - **raat**: roon, raat
+    - **shairport**: airplay, shairport, shairport-sync
+    - **lms**: lms, squeezelite
 - **Response**:
   ```json
   {
@@ -165,6 +170,9 @@ curl -X POST http://<device-ip>:1080/api/players/pause-all
 
 # Pause all players except the one named "spotify"
 curl -X POST "http://<device-ip>:1080/api/players/pause-all?except=spotify"
+
+# Pause all players except Spotify (using alias)
+curl -X POST "http://<device-ip>:1080/api/players/pause-all?except=librespot"
 ```
 
 ### Stop All Players
@@ -174,7 +182,12 @@ Stops all available players. If a player does not support stop, it will be pause
 - **Endpoint**: `/api/players/stop-all`
 - **Method**: POST
 - **Query Parameters**:
-  - `except` (optional): Player name or ID to exclude from the stop operation
+  - `except` (optional): Player name, ID, or alias to exclude from the stop operation. Supported aliases:
+    - **mpd**: mpd
+    - **spotify**: spotifyd, librespot, spotify
+    - **raat**: roon, raat
+    - **shairport**: airplay, shairport, shairport-sync
+    - **lms**: lms, squeezelite
 - **Response**:
   ```json
   {
@@ -190,6 +203,9 @@ curl -X POST http://<device-ip>:1080/api/players/stop-all
 
 # Stop all players except the one with ID "mpd:localhost:6600"
 curl -X POST "http://<device-ip>:1080/api/players/stop-all?except=mpd:localhost:6600"
+
+# Stop all players except Roon (using alias)
+curl -X POST "http://<device-ip>:1080/api/players/stop-all?except=roon"
 ```
 
 ### Get Current Player

@@ -635,6 +635,10 @@ impl PlayerController for RAATPlayerController {
         "raat".to_string()
     }
     
+    fn get_aliases(&self) -> Vec<String> {
+        vec!["roon".to_string(), "raat".to_string()]
+    }
+    
     fn get_player_id(&self) -> String {
         "raat".to_string()
     }

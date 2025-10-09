@@ -56,6 +56,14 @@ pub trait PlayerController: Send + Sync {
     /// Returns a string that uniquely identifies this player instance
     fn get_player_id(&self) -> String;
     
+    /// Get the aliases for this player
+    /// 
+    /// Returns a vector of string aliases that can be used to identify this player type
+    /// Default implementation returns just the player name
+    fn get_aliases(&self) -> Vec<String> {
+        vec![self.get_player_name()]
+    }
+    
     /// Get the last time this player was seen active
     /// 
     /// Returns the timestamp when the player was last seen, or None if not tracked

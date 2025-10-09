@@ -807,6 +807,10 @@ impl PlayerController for ShairportController {
         "shairport".to_string()
     }
     
+    fn get_aliases(&self) -> Vec<String> {
+        vec!["airplay".to_string(), "shairport".to_string(), "shairport-sync".to_string()]
+    }
+    
     fn get_player_id(&self) -> String {
         "shairport".to_string()
     }

@@ -5,11 +5,13 @@
 # Usage: pause-all [PLAYER_NAME_OR_ID]
 #
 # This script calls the audiocontrol API to pause all players.
-# Optionally, you can specify a player name or ID to exclude from the pause operation.
+# Optionally, you can specify a player name, ID, or alias to exclude from the pause operation.
+# Supported aliases: mpd, spotify/spotifyd/librespot, raat/roon, shairport/airplay/shairport-sync, lms/squeezelite
 #
 # Examples:
 #   pause-all                    # Pause all players
 #   pause-all spotify            # Pause all players except the one named "spotify"
+#   pause-all librespot          # Pause all players except Spotify (using alias)
 #   pause-all mpd:localhost:6600 # Pause all except MPD with this ID
 #
 
@@ -24,6 +26,8 @@ usage() {
     echo ""
     echo "ARGUMENTS:"
     echo "  PLAYER_NAME_OR_ID       Exclude the specified player from the pause operation"
+    echo "                          Can be player name, ID, or alias (mpd, spotify/spotifyd/librespot,"
+    echo "                          raat/roon, shairport/airplay/shairport-sync, lms/squeezelite)"
     echo ""
     echo "ENVIRONMENT VARIABLES:"
     echo "  AUDIOCONTROL_API_URL    Base URL for the audiocontrol API (default: http://localhost:1080/api)"
@@ -31,6 +35,7 @@ usage() {
     echo "EXAMPLES:"
     echo "  $0                      Pause all players"
     echo "  $0 spotify              Pause all players except 'spotify'"
+    echo "  $0 librespot            Pause all players except Spotify (using alias)"
     echo "  $0 mpd:localhost:6600   Pause all except MPD with this ID"
     exit 1
 }

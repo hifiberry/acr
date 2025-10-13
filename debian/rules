@@ -61,7 +61,7 @@ override_dh_auto_install:
 		exit 1; \
 	fi
 	# Install CLI tools if they exist
-	for tool in audiocontrol_lms_client audiocontrol_musicbrainz_client audiocontrol_send_update audiocontrol_dump_store audiocontrol_dump_cache audiocontrol_notify_librespot audiocontrol_player_event_client audiocontrol_list_mpris_players audiocontrol_get_mpris_state audiocontrol_monitor_mpris_state audiocontrol_listen_shairportsync audiocontrol_favourites; do \
+	for tool in audiocontrol_lms_client audiocontrol_musicbrainz_client audiocontrol_send_update audiocontrol_dump_store audiocontrol_dump_cache audiocontrol_notify_librespot audiocontrol_player_event_client audiocontrol_list_mpris_players audiocontrol_get_mpris_state audiocontrol_monitor_mpris_state audiocontrol_listen_shairportsync audiocontrol_favourites audiocontrol_bluetooth_info; do \
 		if [ -f "target/release/$$tool" ]; then \
 			cp "target/release/$$tool" "debian/hifiberry-audiocontrol/usr/bin/$$tool"; \
 			chmod +x "debian/hifiberry-audiocontrol/usr/bin/$$tool"; \

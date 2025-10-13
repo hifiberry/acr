@@ -36,6 +36,7 @@ pub mod lyrics;
 pub mod songtitlesplitter;
 pub mod songsplitmanager;
 pub mod m3u;
+pub mod bluez;
 #[cfg(unix)]
 pub mod mpris;
 #[cfg(unix)]

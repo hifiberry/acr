@@ -184,9 +184,9 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                 // Create BluetoothPlayerController with config
                 let device_address = config_obj.get("device_address")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| PlayerCreationError::MissingField("device_address".to_string()))?;
+                    .map(|s| s.to_string());
                 
-                let player = BluetoothPlayerController::new_with_address(Some(device_address.to_string()));
+                let player = BluetoothPlayerController::new_with_address(device_address);
                 Ok(Box::new(player))
             },
             #[cfg(not(windows))]

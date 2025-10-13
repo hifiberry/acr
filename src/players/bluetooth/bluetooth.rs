@@ -41,6 +41,12 @@ pub struct BluetoothPlayerController {
     
     /// Flag to stop scanning thread
     stop_scanning: Arc<std::sync::atomic::AtomicBool>,
+    
+    /// Background thread handle for status polling
+    poll_thread: Arc<RwLock<Option<std::thread::JoinHandle<()>>>>,
+    
+    /// Flag to stop polling thread
+    stop_polling: Arc<std::sync::atomic::AtomicBool>,
 }
 
 // Manually implement Clone for BluetoothPlayerController
@@ -56,17 +62,27 @@ impl Clone for BluetoothPlayerController {
             device_name: Arc::clone(&self.device_name),
             scan_thread: Arc::new(RwLock::new(None)),
             stop_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            poll_thread: Arc::new(RwLock::new(None)),
+            stop_polling: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
 
 impl Drop for BluetoothPlayerController {
     fn drop(&mut self) {
-        // Signal the scanning thread to stop
+        // Signal both threads to stop
         self.stop_scanning.store(true, Ordering::Relaxed);
+        self.stop_polling.store(true, Ordering::Relaxed);
         
-        // Wait for the thread to finish
+        // Wait for the scanning thread to finish
         if let Ok(mut guard) = self.scan_thread.write() {
+            if let Some(handle) = guard.take() {
+                let _ = handle.join();
+            }
+        }
+        
+        // Wait for the polling thread to finish
+        if let Ok(mut guard) = self.poll_thread.write() {
             if let Some(handle) = guard.take() {
                 let _ = handle.join();
             }
@@ -111,6 +127,8 @@ impl BluetoothPlayerController {
             device_name: Arc::new(RwLock::new(None)),
             scan_thread: Arc::new(RwLock::new(None)),
             stop_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            poll_thread: Arc::new(RwLock::new(None)),
+            stop_polling: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         
         info!("Created BluetoothPlayerController with address: {:?}", device_address);
@@ -564,6 +582,219 @@ impl BluetoothPlayerController {
         // Try to find a device immediately
         self.find_player_path();
     }
+    
+    /// Helper to extract player ID from D-Bus path
+    fn extract_player_id_from_path(path: &str, connection: &Arc<Mutex<Option<Connection>>>) -> String {
+        if let Some(device_part) = path.strip_prefix("/org/bluez/hci0/dev_") {
+            if let Some(addr_part) = device_part.split('/').next() {
+                let device_address = addr_part.replace('_', ":");
+                
+                // Try to get device name
+                let device_name = if let Ok(conn_guard) = connection.lock() {
+                    if let Some(ref conn) = *conn_guard {
+                        let device_path = format!("/org/bluez/hci0/dev_{}", addr_part);
+                        let device_proxy = conn.with_proxy("org.bluez", &device_path, Duration::from_millis(1000));
+                        device_proxy.get::<String>("org.bluez.Device1", "Name").ok()
+                    } else { None }
+                } else { None };
+                
+                if let Some(name) = device_name {
+                    format!("bluetooth:{}:{}", name, device_address)
+                } else {
+                    format!("bluetooth:{}", device_address)
+                }
+            } else {
+                "bluetooth:auto-discover".to_string()
+            }
+        } else {
+            "bluetooth:auto-discover".to_string()
+        }
+    }
+
+    /// Poll and update playback state
+    fn poll_playback_state(
+        proxy: &dbus::blocking::Proxy<&dbus::blocking::Connection>,
+        current_state: &Arc<RwLock<PlayerState>>,
+        current_song: &Arc<RwLock<Option<Song>>>,
+        player_path: &Arc<RwLock<Option<String>>>,
+        connection: &Arc<Mutex<Option<Connection>>>,
+        base: &BasePlayerController,
+    ) {
+        if let Ok(status) = proxy.get::<String>("org.bluez.MediaPlayer1", "Status") {
+            let new_state = match status.as_str() {
+                "playing" => PlaybackState::Playing,
+                "paused" => PlaybackState::Paused,
+                "stopped" => PlaybackState::Stopped,
+                _ => PlaybackState::Unknown,
+            };
+            
+            // Update state if changed
+            if let Ok(mut state_guard) = current_state.write() {
+                let old_state = state_guard.state;
+                if old_state != new_state {
+                    debug!("Bluetooth playback state changed: {:?} -> {:?}", old_state, new_state);
+                    state_guard.state = new_state;
+                    base.notify_state_changed(new_state);
+                    
+                    // Notify when becoming active (starts playing)
+                    if new_state == PlaybackState::Playing && old_state != PlaybackState::Playing {
+                        if let Ok(addr_guard) = player_path.read() {
+                            if let Some(ref addr) = *addr_guard {
+                                let player_id = Self::extract_player_id_from_path(addr, connection);
+                                debug!("Bluetooth player became active: {}", player_id);
+                                
+                                // Also notify about current song when becoming active
+                                if let Ok(song_guard) = current_song.read() {
+                                    if let Some(ref song) = *song_guard {
+                                        base.notify_song_changed(Some(song));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Mark as alive
+            base.alive();
+        }
+    }
+
+    /// Poll and update track information
+    fn poll_track_information(
+        proxy: &dbus::blocking::Proxy<&dbus::blocking::Connection>,
+        current_song: &Arc<RwLock<Option<Song>>>,
+        base: &BasePlayerController,
+    ) {
+        if let Ok(track_data) = proxy.get::<HashMap<String, dbus::arg::Variant<Box<dyn RefArg>>>>("org.bluez.MediaPlayer1", "Track") {
+            let title = track_data.get("Title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            
+            let artist = track_data.get("Artist")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            
+            let album = track_data.get("Album")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            
+            let duration = track_data.get("Duration")
+                .and_then(|v| v.as_u64())
+                .map(|d| d as f64 / 1000.0); // Convert ms to seconds
+            
+            // Create new song if we have track data
+            if title.is_some() || artist.is_some() || album.is_some() {
+                let new_song = Song {
+                    title: title.clone(),
+                    artist: artist.clone(),
+                    album: album.clone(),
+                    duration: duration,
+                    ..Song::default()
+                };
+                
+                // Update song if changed
+                if let Ok(mut song_guard) = current_song.write() {
+                    let song_changed = song_guard.as_ref().map(|s| {
+                        s.title != new_song.title || 
+                        s.artist != new_song.artist || 
+                        s.album != new_song.album
+                    }).unwrap_or(true);
+                    
+                    if song_changed {
+                        info!("Bluetooth track changed: {:?} - {:?} ({:?})", 
+                               new_song.artist, new_song.title, new_song.album);
+                        *song_guard = Some(new_song.clone());
+                        base.notify_song_changed(Some(&new_song));
+                        
+                        // Also mark as alive when song changes
+                        base.alive();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Poll and update position information
+    fn poll_position_information(
+        proxy: &dbus::blocking::Proxy<&dbus::blocking::Connection>,
+        current_state: &Arc<RwLock<PlayerState>>,
+        base: &BasePlayerController,
+    ) {
+        if let Ok(position) = proxy.get::<u32>("org.bluez.MediaPlayer1", "Position") {
+            let position_seconds = position as f64 / 1000.0;
+            
+            // Update position in player state
+            if let Ok(mut state_guard) = current_state.write() {
+                if (state_guard.position.unwrap_or(0.0) - position_seconds).abs() > 1.0 {
+                    state_guard.position = Some(position_seconds);
+                    base.notify_position_changed(position_seconds);
+                }
+            }
+        }
+    }
+
+    /// Main polling loop logic
+    fn run_polling_loop(
+        player_path: Arc<RwLock<Option<String>>>,
+        connection: Arc<Mutex<Option<Connection>>>,
+        current_song: Arc<RwLock<Option<Song>>>,
+        current_state: Arc<RwLock<PlayerState>>,
+        stop_flag: Arc<std::sync::atomic::AtomicBool>,
+        base: BasePlayerController,
+    ) {
+        info!("Starting Bluetooth status polling thread");
+        
+        while !stop_flag.load(Ordering::Relaxed) {
+            // Get current player path
+            let path = if let Ok(guard) = player_path.read() {
+                guard.clone()
+            } else {
+                thread::sleep(Duration::from_secs(2));
+                continue;
+            };
+            
+            if let Some(ref path_str) = path {
+                if let Ok(conn_guard) = connection.lock() {
+                    if let Some(ref conn) = *conn_guard {
+                        let proxy = conn.with_proxy("org.bluez", path_str, Duration::from_millis(1000));
+                        
+                        // Poll different aspects of the player state
+                        Self::poll_playback_state(&proxy, &current_state, &current_song, &player_path, &connection, &base);
+                        Self::poll_track_information(&proxy, &current_song, &base);
+                        Self::poll_position_information(&proxy, &current_state, &base);
+                    }
+                }
+            } else {
+                debug!("No player path available for polling");
+            }
+            
+            // Poll every 2 seconds
+            thread::sleep(Duration::from_secs(2));
+        }
+        
+        debug!("Bluetooth polling thread stopped");
+    }
+
+    /// Start the status polling thread
+    fn start_polling_thread(&self) {
+        debug!("Starting Bluetooth status polling thread");
+        
+        let player_path = Arc::clone(&self.player_path);
+        let connection = Arc::clone(&self.connection);
+        let current_song = Arc::clone(&self.current_song);
+        let current_state = Arc::clone(&self.current_state);
+        let stop_flag = Arc::clone(&self.stop_polling);
+        let base = self.base.clone();
+        
+        let handle = thread::spawn(move || {
+            Self::run_polling_loop(player_path, connection, current_song, current_state, stop_flag, base);
+        });
+        
+        if let Ok(mut guard) = self.poll_thread.write() {
+            *guard = Some(handle);
+        }
+    }
     fn get_playback_status(&self) -> PlaybackState {
         let player_path = match self.player_path.read() {
             Ok(guard) => guard.clone(),
@@ -666,28 +897,51 @@ impl PlayerController for BluetoothPlayerController {
     }
     
     fn get_player_id(&self) -> String {
-        // Use device name if available, otherwise use MAC address
-        if let Ok(guard) = self.device_name.read() {
-            if let Some(ref name) = *guard {
-                return format!("bluetooth:{}", name);
-            }
-        }
+        // For auto-discovered devices, use format: bluetooth:name:mac
+        // For manually configured devices, use format: bluetooth:address
         
-        // Try to get device name
-        if let Some(name) = self.get_device_name() {
-            if let Ok(mut guard) = self.device_name.write() {
-                *guard = Some(name.clone());
-            }
-            format!("bluetooth:{}", name)
+        let device_name = if let Ok(guard) = self.device_name.read() {
+            guard.clone()
         } else {
-            if let Ok(guard) = self.device_address.read() {
-                if let Some(addr) = guard.as_ref() {
-                    format!("bluetooth:{}", addr)
-                } else {
-                    "bluetooth:auto-discover".to_string()
+            None
+        };
+        
+        let device_address = if let Ok(guard) = self.device_address.read() {
+            guard.clone()
+        } else {
+            None
+        };
+        
+        // Try to get device name if we don't have it cached
+        let device_name = if device_name.is_none() {
+            if let Some(name) = self.get_device_name() {
+                if let Ok(mut guard) = self.device_name.write() {
+                    *guard = Some(name.clone());
                 }
+                Some(name)
             } else {
-                "bluetooth:unknown".to_string()
+                None
+            }
+        } else {
+            device_name
+        };
+        
+        match (device_name, device_address) {
+            (Some(name), Some(addr)) => {
+                // Auto-discovered device: include both name and MAC
+                format!("bluetooth:{}:{}", name, addr)
+            }
+            (Some(name), None) => {
+                // Device name available but no address (shouldn't happen, but handle gracefully)
+                format!("bluetooth:{}", name)
+            }
+            (None, Some(addr)) => {
+                // Only MAC address available (manually configured or name lookup failed)
+                format!("bluetooth:{}", addr)
+            }
+            (None, None) => {
+                // No device info available yet (initial state)
+                "bluetooth:auto-discover".to_string()
             }
         }
     }
@@ -751,6 +1005,9 @@ impl PlayerController for BluetoothPlayerController {
             // Don't return false here as the device might connect later
         }
         
+        // Always start polling thread - it will wait for a device if none is available yet
+        self.start_polling_thread();
+        
         // Get device name
         if let Some(name) = self.get_device_name() {
             if let Ok(mut guard) = self.device_name.write() {
@@ -767,6 +1024,16 @@ impl PlayerController for BluetoothPlayerController {
     fn stop(&self) -> bool {
         let addr = self.device_address.read().map(|guard| guard.clone()).unwrap_or(None);
         info!("Stopping Bluetooth player controller for device: {:?}", addr);
+        
+        // Signal polling thread to stop
+        self.stop_polling.store(true, Ordering::Relaxed);
+        
+        // Wait for polling thread to finish
+        if let Ok(mut guard) = self.poll_thread.write() {
+            if let Some(handle) = guard.take() {
+                let _ = handle.join();
+            }
+        }
         
         // Clear connection
         if let Ok(mut guard) = self.connection.lock() {

@@ -150,6 +150,10 @@ path = "src/tools/acr_listen_shairportsync.rs"
 name = "audiocontrol_favourites"
 path = "src/tools/acr_favourites.rs"
 
+[[bin]]
+name = "audiocontrol_bluetooth_info"
+path = "src/tools/audiocontrol_bluetooth_info.rs"
+
 [profile.release]
 # Optimize for smaller binary size and reduced build space usage
 opt-level = "s"          # Optimize for size

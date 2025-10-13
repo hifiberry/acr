@@ -47,6 +47,9 @@ pub struct BluetoothPlayerController {
     
     /// Flag to stop polling thread
     stop_polling: Arc<std::sync::atomic::AtomicBool>,
+    
+    /// Whether this controller was created in auto-discover mode
+    is_auto_discover: bool,
 }
 
 // Manually implement Clone for BluetoothPlayerController
@@ -64,6 +67,7 @@ impl Clone for BluetoothPlayerController {
             stop_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             poll_thread: Arc::new(RwLock::new(None)),
             stop_polling: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            is_auto_discover: self.is_auto_discover,
         }
     }
 }
@@ -117,6 +121,8 @@ impl BluetoothPlayerController {
         ]);
         base.set_capabilities_set(capabilities, false);
         
+        let is_auto_discover = device_address.is_none();
+        
         let controller = BluetoothPlayerController {
             base,
             connection: Arc::new(Mutex::new(None)),
@@ -129,6 +135,7 @@ impl BluetoothPlayerController {
             stop_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             poll_thread: Arc::new(RwLock::new(None)),
             stop_polling: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            is_auto_discover,
         };
         
         info!("Created BluetoothPlayerController with address: {:?}", device_address);
@@ -583,41 +590,13 @@ impl BluetoothPlayerController {
         self.find_player_path();
     }
     
-    /// Helper to extract player ID from D-Bus path
-    fn extract_player_id_from_path(path: &str, connection: &Arc<Mutex<Option<Connection>>>) -> String {
-        if let Some(device_part) = path.strip_prefix("/org/bluez/hci0/dev_") {
-            if let Some(addr_part) = device_part.split('/').next() {
-                let device_address = addr_part.replace('_', ":");
-                
-                // Try to get device name
-                let device_name = if let Ok(conn_guard) = connection.lock() {
-                    if let Some(ref conn) = *conn_guard {
-                        let device_path = format!("/org/bluez/hci0/dev_{}", addr_part);
-                        let device_proxy = conn.with_proxy("org.bluez", &device_path, Duration::from_millis(1000));
-                        device_proxy.get::<String>("org.bluez.Device1", "Name").ok()
-                    } else { None }
-                } else { None };
-                
-                if let Some(name) = device_name {
-                    format!("bluetooth:{}:{}", name, device_address)
-                } else {
-                    format!("bluetooth:{}", device_address)
-                }
-            } else {
-                "bluetooth:auto-discover".to_string()
-            }
-        } else {
-            "bluetooth:auto-discover".to_string()
-        }
-    }
+
 
     /// Poll and update playback state
     fn poll_playback_state(
         proxy: &dbus::blocking::Proxy<&dbus::blocking::Connection>,
         current_state: &Arc<RwLock<PlayerState>>,
         current_song: &Arc<RwLock<Option<Song>>>,
-        player_path: &Arc<RwLock<Option<String>>>,
-        connection: &Arc<Mutex<Option<Connection>>>,
         base: &BasePlayerController,
     ) {
         if let Ok(status) = proxy.get::<String>("org.bluez.MediaPlayer1", "Status") {
@@ -636,19 +615,14 @@ impl BluetoothPlayerController {
                     state_guard.state = new_state;
                     base.notify_state_changed(new_state);
                     
-                    // Notify when becoming active (starts playing)
+                    // When becoming active (starts playing), just notify about current song
                     if new_state == PlaybackState::Playing && old_state != PlaybackState::Playing {
-                        if let Ok(addr_guard) = player_path.read() {
-                            if let Some(ref addr) = *addr_guard {
-                                let player_id = Self::extract_player_id_from_path(addr, connection);
-                                debug!("Bluetooth player became active: {}", player_id);
-                                
-                                // Also notify about current song when becoming active
-                                if let Ok(song_guard) = current_song.read() {
-                                    if let Some(ref song) = *song_guard {
-                                        base.notify_song_changed(Some(song));
-                                    }
-                                }
+                        debug!("Bluetooth player became active");
+                        
+                        // Notify about current song when becoming active
+                        if let Ok(song_guard) = current_song.read() {
+                            if let Some(ref song) = *song_guard {
+                                base.notify_song_changed(Some(song));
                             }
                         }
                     }
@@ -760,7 +734,8 @@ impl BluetoothPlayerController {
                         let proxy = conn.with_proxy("org.bluez", path_str, Duration::from_millis(1000));
                         
                         // Poll different aspects of the player state
-                        Self::poll_playback_state(&proxy, &current_state, &current_song, &player_path, &connection, &base);
+                        debug!("Polling Bluetooth player state at {}", path_str);
+                        Self::poll_playback_state(&proxy, &current_state, &current_song, &base);
                         Self::poll_track_information(&proxy, &current_song, &base);
                         Self::poll_position_information(&proxy, &current_state, &base);
                     }
@@ -897,52 +872,19 @@ impl PlayerController for BluetoothPlayerController {
     }
     
     fn get_player_id(&self) -> String {
-        // For auto-discovered devices, use format: bluetooth:name:mac
-        // For manually configured devices, use format: bluetooth:address
+        // If controller was created in auto-discover mode, always return "auto-discover"
+        // If controller was created with specific device, return that device address
         
-        let device_name = if let Ok(guard) = self.device_name.read() {
-            guard.clone()
+        if self.is_auto_discover {
+            "auto-discover".to_string()
         } else {
-            None
-        };
-        
-        let device_address = if let Ok(guard) = self.device_address.read() {
-            guard.clone()
-        } else {
-            None
-        };
-        
-        // Try to get device name if we don't have it cached
-        let device_name = if device_name.is_none() {
-            if let Some(name) = self.get_device_name() {
-                if let Ok(mut guard) = self.device_name.write() {
-                    *guard = Some(name.clone());
-                }
-                Some(name)
+            // For specific device controllers, return the configured address
+            let device_address = if let Ok(guard) = self.device_address.read() {
+                guard.clone().unwrap_or_else(|| "unknown".to_string())
             } else {
-                None
-            }
-        } else {
-            device_name
-        };
-        
-        match (device_name, device_address) {
-            (Some(name), Some(addr)) => {
-                // Auto-discovered device: include both name and MAC
-                format!("bluetooth:{}:{}", name, addr)
-            }
-            (Some(name), None) => {
-                // Device name available but no address (shouldn't happen, but handle gracefully)
-                format!("bluetooth:{}", name)
-            }
-            (None, Some(addr)) => {
-                // Only MAC address available (manually configured or name lookup failed)
-                format!("bluetooth:{}", addr)
-            }
-            (None, None) => {
-                // No device info available yet (initial state)
-                "bluetooth:auto-discover".to_string()
-            }
+                "unknown".to_string()
+            };
+            device_address
         }
     }
     

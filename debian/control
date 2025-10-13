@@ -30,3 +30,4 @@ Description: HiFiBerry AudioControl/Rust application
  .
  The audiocontrol_nowplaying client requires Python 3 and optionally
  python3-websocket for WebSocket support.
+ 

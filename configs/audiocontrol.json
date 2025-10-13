@@ -154,6 +154,14 @@
             }
         },
         {
+            "bluetooth": {
+                "enable": true,
+                "_comment": "Bluetooth audio device controller via D-Bus BlueZ interface. Omit device_address for auto-discovery of available Bluetooth devices with MediaPlayer1 interface.",
+                "_device_address": "80:B9:89:1E:B5:6F",
+                "_device_address_comment": "Uncomment and set device_address to connect to a specific Bluetooth device. Format: MAC address like '80:B9:89:1E:B5:6F'"
+            }
+        },
+        {
             "_mpris": {
                 "enable": true,
                 "bus_name": "org.mpris.MediaPlayer2.vlc",

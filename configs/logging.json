@@ -69,7 +69,11 @@
     "audiocontrol::players::raat": "info",
     "audiocontrol::players::raat::metadata_pipe_reader": "info",
     "audiocontrol::players::raat::raat": "info",
-    "audiocontrol::players::shairport": "info"
+    "audiocontrol::players::shairport": "info",
+    
+    "_comment_external": "External crates logging configuration:",
+    
+    "rocket::server": "warn"
     
   },
   "env_overrides": {

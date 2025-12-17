@@ -6,7 +6,7 @@ use log::{debug, info, warn, error};
 use std::any::Any;
 use std::collections::HashMap;
 use dbus::blocking::Connection;
-use dbus::blocking::stdintf::org_freedesktop_dbus::{Properties, Introspectable, ObjectManager};
+use dbus::blocking::stdintf::org_freedesktop_dbus::{Properties, ObjectManager};
 use dbus::arg::RefArg;
 use std::time::{Duration, SystemTime};
 use std::thread;
@@ -269,28 +269,32 @@ impl BluetoothPlayerController {
         // Convert MAC address format from 80:B9:89:1E:B5:6F to 80_B9_89_1E_B5_6F
         let device_path_part = device_address.replace(":", "_");
         
-        // Look for devices under /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX/player0
-        let player_path = format!("/org/bluez/hci0/dev_{}/player0", device_path_part);
-        
-        // Try to create a basic connection to test if the path exists
+        // Use ObjectManager to find the actual player path (player index may vary: player0, player1, player2, etc.)
         let conn_guard = match self.connection.lock() {
             Ok(guard) => guard,
             Err(_) => return None,
         };
         
         if let Some(conn) = conn_guard.as_ref() {
-            let proxy = conn.with_proxy("org.bluez", &player_path, Duration::from_millis(1000));
+            let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
             
-            // Try to introspect to see if the object exists
-            match proxy.introspect() {
-                Ok(_) => {
-                    debug!("Found MediaPlayer1 at path: {}", player_path);
-                    Some(player_path)
+            // Get all managed objects and find the MediaPlayer1 for our device
+            if let Ok(objects) = proxy.get_managed_objects() {
+                let device_prefix = format!("/org/bluez/hci0/dev_{}/player", device_path_part);
+                
+                for (path, interfaces) in objects {
+                    // Look for MediaPlayer1 interface under our device path
+                    if path.starts_with(&device_prefix) && interfaces.contains_key("org.bluez.MediaPlayer1") {
+                        debug!("Found MediaPlayer1 at path: {}", path);
+                        return Some(path.to_string());
+                    }
                 }
-                Err(_) => {
-                    debug!("MediaPlayer1 not found at {}", player_path);
-                    None
-                }
+                
+                debug!("MediaPlayer1 not found for device {}", device_address);
+                None
+            } else {
+                debug!("Failed to get managed objects from BlueZ");
+                None
             }
         } else {
             None
@@ -719,6 +723,8 @@ impl BluetoothPlayerController {
     ) {
         info!("Starting Bluetooth status polling thread");
         
+        let mut last_no_path_warning = SystemTime::UNIX_EPOCH;
+        
         while !stop_flag.load(Ordering::Relaxed) {
             // Get current player path
             let path = if let Ok(guard) = player_path.read() {
@@ -741,7 +747,13 @@ impl BluetoothPlayerController {
                     }
                 }
             } else {
-                debug!("No player path available for polling");
+                // Only log this message every 10 seconds to avoid spam
+                if let Ok(elapsed) = SystemTime::now().duration_since(last_no_path_warning) {
+                    if elapsed >= Duration::from_secs(10) {
+                        debug!("No player path available for polling");
+                        last_no_path_warning = SystemTime::now();
+                    }
+                }
             }
             
             // Poll every 2 seconds

@@ -353,7 +353,6 @@ impl Clone for SongSplitManager {
 mod tests {
     use super::*;
     use std::thread;
-    use std::time::Duration;
 
     #[test]
     fn test_manager_creation() {
@@ -447,7 +446,7 @@ mod tests {
         
         // This should create a new splitter and attempt to split
         // Since the splitter is new, it won't have learning data, so it might not split
-        let result = manager.split_song(id, "Artist - Song Title");
+        let _result = manager.split_song(id, "Artist - Song Title");
         
         // The exact result depends on MusicBrainz lookup, but the splitter should be created
         assert_eq!(manager.get_splitter_count(), 1);

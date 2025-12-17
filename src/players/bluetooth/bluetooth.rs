@@ -884,19 +884,19 @@ impl PlayerController for BluetoothPlayerController {
     }
     
     fn get_player_id(&self) -> String {
-        // If controller was created in auto-discover mode, always return "auto-discover"
-        // If controller was created with specific device, return that device address
+        // If controller was created in auto-discover mode, always return "bluetooth:auto-discover"
+        // If controller was created with specific device, return "bluetooth:<device_address>"
         
         if self.is_auto_discover {
-            "auto-discover".to_string()
+            "bluetooth:auto-discover".to_string()
         } else {
-            // For specific device controllers, return the configured address
+            // For specific device controllers, return the configured address with bluetooth prefix
             let device_address = if let Ok(guard) = self.device_address.read() {
                 guard.clone().unwrap_or_else(|| "unknown".to_string())
             } else {
                 "unknown".to_string()
             };
-            device_address
+            format!("bluetooth:{}", device_address)
         }
     }
     

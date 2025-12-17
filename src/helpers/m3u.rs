@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader};
 use std::time::Duration;
 use reqwest;
 use serde::{Deserialize, Serialize};
-use log::{debug, error, info};
+use log::{debug, info};
 use thiserror::Error;
 
 /// Errors that can occur during M3U playlist parsing

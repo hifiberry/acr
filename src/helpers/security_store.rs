@@ -7,7 +7,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use log::{debug, info, warn, error};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use once_cell::sync::Lazy;
 use thiserror::Error;

@@ -229,6 +229,200 @@ impl BluetoothPlayerController {
         
         devices
     }
+    /// Find the active player path for a given device address
+    /// This scans for MediaPlayer1 interfaces (player0, player1, player2, etc.)
+    fn find_active_player(&self, device_address: &str) -> Option<String> {
+        if !self.ensure_dbus_connection() {
+            return None;
+        }
+        
+        // Convert MAC address format from 80:B9:89:1E:B5:6F to 80_B9_89_1E_B5_6F
+        let device_path_part = device_address.replace(":", "_");
+        
+        // Use ObjectManager to find the actual player path (player index may vary: player0, player1, player2, etc.)
+        let conn_guard = match self.connection.lock() {
+            Ok(guard) => guard,
+            Err(_) => return None,
+        };
+        
+        if let Some(conn) = conn_guard.as_ref() {
+            let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
+            
+            // Get all managed objects and find the MediaPlayer1 for our device
+            if let Ok(objects) = proxy.get_managed_objects() {
+                let device_prefix = format!("/org/bluez/hci0/dev_{}/player", device_path_part);
+                
+                for (path, interfaces) in objects {
+                    // Look for MediaPlayer1 interface under our device path
+                    if path.starts_with(&device_prefix) && interfaces.contains_key("org.bluez.MediaPlayer1") {
+                        debug!("Found MediaPlayer1 at path: {}", path);
+                        return Some(path.to_string());
+                    }
+                }
+                
+                debug!("MediaPlayer1 not found for device {}", device_address);
+                None
+            } else {
+                debug!("Failed to get managed objects from BlueZ");
+                None
+            }
+        } else {
+            None
+        }
+    }
+    
+    /// Static helper for checking and updating active player in the polling thread
+    fn check_and_update_active_player(
+        player_path: &Arc<RwLock<Option<String>>>,
+        connection: &Arc<Mutex<Option<Connection>>>,
+        device_address: &Arc<RwLock<Option<String>>>,
+    ) {
+        let current_path = match player_path.read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return,
+        };
+        
+        let device_addr = match device_address.read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return,
+        };
+        
+        // If we have a stored path, check if it's still valid
+        if let Some(path) = current_path {
+            let conn_guard = match connection.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            
+            if let Some(conn) = conn_guard.as_ref() {
+                let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
+                
+                // Check if the current path still exists
+                if let Ok(objects) = proxy.get_managed_objects() {
+                    if objects.contains_key(&dbus::Path::from(path.clone())) {
+                        // Current player path is still valid
+                        return;
+                    } else {
+                        debug!("Current player path {} no longer exists, searching for new player", path);
+                    }
+                } else {
+                    debug!("Failed to get managed objects from BlueZ");
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+        
+        // Current path is invalid or doesn't exist, try to find a new player
+        if let Some(addr) = device_addr {
+            // Find active player using static helper
+            if let Some(new_path) = Self::find_active_player_static(connection, &addr) {
+                info!("Found new active player at path: {}", new_path);
+                if let Ok(mut guard) = player_path.write() {
+                    *guard = Some(new_path);
+                }
+            }
+        }
+    }
+    
+    /// Static helper to find active player (for use in polling thread)
+    fn find_active_player_static(
+        connection: &Arc<Mutex<Option<Connection>>>,
+        device_address: &str,
+    ) -> Option<String> {
+        // Convert MAC address format from 80:B9:89:1E:B5:6F to 80_B9_89_1E_B5_6F
+        let device_path_part = device_address.replace(":", "_");
+        
+        let conn_guard = match connection.lock() {
+            Ok(guard) => guard,
+            Err(_) => return None,
+        };
+        
+        if let Some(conn) = conn_guard.as_ref() {
+            let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
+            
+            // Get all managed objects and find the MediaPlayer1 for our device
+            if let Ok(objects) = proxy.get_managed_objects() {
+                let device_prefix = format!("/org/bluez/hci0/dev_{}/player", device_path_part);
+                
+                for (path, interfaces) in objects {
+                    // Look for MediaPlayer1 interface under our device path
+                    if path.starts_with(&device_prefix) && interfaces.contains_key("org.bluez.MediaPlayer1") {
+                        debug!("Found MediaPlayer1 at path: {}", path);
+                        return Some(path.to_string());
+                    }
+                }
+                
+                debug!("MediaPlayer1 not found for device {}", device_address);
+                None
+            } else {
+                debug!("Failed to get managed objects from BlueZ");
+                None
+            }
+        } else {
+            None
+        }
+    }
+    
+    /// Check if the currently stored active player is still available
+    /// If not, attempt to find a new player (e.g., player0 -> player1 transition)
+    fn check_active_player(&self) -> bool {
+        if !self.ensure_dbus_connection() {
+            return false;
+        }
+        
+        let current_path = match self.player_path.read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return false,
+        };
+        
+        let device_address = match self.device_address.read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return false,
+        };
+        
+        // If we have a stored path, check if it's still valid
+        if let Some(path) = current_path {
+            let conn_guard = match self.connection.lock() {
+                Ok(guard) => guard,
+                Err(_) => return false,
+            };
+            
+            if let Some(conn) = conn_guard.as_ref() {
+                let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
+                
+                // Check if the current path still exists
+                if let Ok(objects) = proxy.get_managed_objects() {
+                    if objects.contains_key(&dbus::Path::from(path.clone())) {
+                        // Current player path is still valid
+                        return true;
+                    } else {
+                        debug!("Current player path {} no longer exists, searching for new player", path);
+                    }
+                } else {
+                    debug!("Failed to get managed objects from BlueZ");
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        
+        // Current path is invalid or doesn't exist, try to find a new player
+        if let Some(addr) = device_address {
+            if let Some(new_path) = self.find_active_player(&addr) {
+                info!("Found new active player at path: {}", new_path);
+                if let Ok(mut guard) = self.player_path.write() {
+                    *guard = Some(new_path);
+                }
+                return true;
+            }
+        }
+        
+        false
+    }
+    
     /// Find the MediaPlayer1 object path for the device
     fn find_player_path(&self) -> Option<String> {
         if !self.ensure_dbus_connection() {
@@ -266,39 +460,8 @@ impl BluetoothPlayerController {
             }
         };
         
-        // Convert MAC address format from 80:B9:89:1E:B5:6F to 80_B9_89_1E_B5_6F
-        let device_path_part = device_address.replace(":", "_");
-        
-        // Use ObjectManager to find the actual player path (player index may vary: player0, player1, player2, etc.)
-        let conn_guard = match self.connection.lock() {
-            Ok(guard) => guard,
-            Err(_) => return None,
-        };
-        
-        if let Some(conn) = conn_guard.as_ref() {
-            let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
-            
-            // Get all managed objects and find the MediaPlayer1 for our device
-            if let Ok(objects) = proxy.get_managed_objects() {
-                let device_prefix = format!("/org/bluez/hci0/dev_{}/player", device_path_part);
-                
-                for (path, interfaces) in objects {
-                    // Look for MediaPlayer1 interface under our device path
-                    if path.starts_with(&device_prefix) && interfaces.contains_key("org.bluez.MediaPlayer1") {
-                        debug!("Found MediaPlayer1 at path: {}", path);
-                        return Some(path.to_string());
-                    }
-                }
-                
-                debug!("MediaPlayer1 not found for device {}", device_address);
-                None
-            } else {
-                debug!("Failed to get managed objects from BlueZ");
-                None
-            }
-        } else {
-            None
-        }
+        // Use the new find_active_player function
+        self.find_active_player(&device_address)
     }
     
     /// Get device friendly name  
@@ -342,6 +505,9 @@ impl BluetoothPlayerController {
     
     /// Update current song from D-Bus
     fn update_song_from_dbus(&self) {
+        // Check if the active player is still valid before querying
+        self.check_active_player();
+        
         let player_path = match self.player_path.read() {
             Ok(guard) => guard.clone(),
             Err(_) => return,
@@ -720,12 +886,17 @@ impl BluetoothPlayerController {
         current_state: Arc<RwLock<PlayerState>>,
         stop_flag: Arc<std::sync::atomic::AtomicBool>,
         base: BasePlayerController,
+        device_address: Arc<RwLock<Option<String>>>,
     ) {
         info!("Starting Bluetooth status polling thread");
         
         let mut last_no_path_warning = SystemTime::UNIX_EPOCH;
         
         while !stop_flag.load(Ordering::Relaxed) {
+            // Check if the active player is still available before polling
+            // This handles transitions like player0 -> player1 -> player2
+            Self::check_and_update_active_player(&player_path, &connection, &device_address);
+            
             // Get current player path
             let path = if let Ok(guard) = player_path.read() {
                 guard.clone()
@@ -773,9 +944,10 @@ impl BluetoothPlayerController {
         let current_state = Arc::clone(&self.current_state);
         let stop_flag = Arc::clone(&self.stop_polling);
         let base = self.base.clone();
+        let device_address = Arc::clone(&self.device_address);
         
         let handle = thread::spawn(move || {
-            Self::run_polling_loop(player_path, connection, current_song, current_state, stop_flag, base);
+            Self::run_polling_loop(player_path, connection, current_song, current_state, stop_flag, base, device_address);
         });
         
         if let Ok(mut guard) = self.poll_thread.write() {

@@ -1,3 +1,10 @@
+hifiberry-audiocontrol (0.6.16) stable; urgency=medium
+
+  * Fixed Debian maintainer scripts to properly enable and start systemd service
+  * Service now automatically enabled and started on package installation
+
+ -- HiFiBerry <info@hifiberry.com>  Mon, 02 Feb 2026 12:00:00 +0000
+
 hifiberry-audiocontrol (0.6.15) stable; urgency=medium
 
   * Enhanced Bluetooth player active player detection and switching

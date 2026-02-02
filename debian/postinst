@@ -1,11 +1,6 @@
 #!/bin/bash
 set -e
 
-# Ensure the script runs with proper error handling (bash specific)
-if [ -n "$BASH_VERSION" ]; then
-    set -euo pipefail
-fi
-
 # Function to create user, group and directory
 setup_user_and_dirs() {
     # Create audiocontrol group if it doesn't exist
@@ -48,6 +43,6 @@ case "$1" in
         ;;
 esac
 
-exit 0
-
 #DEBHELPER#
+
+exit 0

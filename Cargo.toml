@@ -1,6 +1,6 @@
 [package]
 name = "audiocontrol"
-version = "0.6.12"
+version = "0.6.16"
 authors = ["HiFiBerry <support@hifiberry.com>"]
 edition = "2021"
 description = "AudioControl server"
@@ -149,10 +149,6 @@ path = "src/tools/acr_listen_shairportsync.rs"
 [[bin]]
 name = "audiocontrol_favourites"
 path = "src/tools/acr_favourites.rs"
-
-[[bin]]
-name = "audiocontrol_bluetooth_info"
-path = "src/tools/audiocontrol_bluetooth_info.rs"
 
 [profile.release]
 # Optimize for smaller binary size and reduced build space usage

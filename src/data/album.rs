@@ -1,6 +1,7 @@
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use crate::data::{Identifier, track::Track};
 
 /// Represents an Album in the music database
@@ -38,23 +39,15 @@ impl Serialize for Album {
         state.serialize_field("name", &self.name)?;
         
         // Get lock on artists and serialize directly as Vec<String>
-        if let Ok(artists) = self.artists.lock() {
-            state.serialize_field("artists", &*artists)?;
-        } else {
-            // If we can't get the lock, serialize an empty vector
-            state.serialize_field("artists", &Vec::<String>::new())?;
-        }
+        let artists = self.artists.lock();
+        state.serialize_field("artists", &*artists)?;
         
         // Serialize release_date field
         state.serialize_field("release_date", &self.release_date)?;
         
         // Get lock on tracks and serialize directly as Vec<Track>
-        if let Ok(tracks) = self.tracks.lock() {
-            state.serialize_field("tracks", &*tracks)?;
-        } else {
-            // If we can't get the lock, serialize an empty vector
-            state.serialize_field("tracks", &Vec::<Track>::new())?;
-        }
+        let tracks = self.tracks.lock();
+        state.serialize_field("tracks", &*tracks)?;
         
         state.serialize_field("cover_art", &self.cover_art)?;
         state.serialize_field("uri", &self.uri)?;
@@ -122,28 +115,27 @@ impl Album {
     /// and then by track number within each disc. This ensures tracks are in the
     /// correct playing order.
     pub fn sort_tracks(&self) {
-        if let Ok(mut tracks) = self.tracks.lock() {
-            tracks.sort_by(|a, b| {
-                // First compare disc numbers (default to "1" if not present)
-                let disc_a = a.disc_number.as_ref().cloned().unwrap_or_else(|| "1".to_string());
-                let disc_b = b.disc_number.as_ref().cloned().unwrap_or_else(|| "1".to_string());
-                
-                // Try to parse disc numbers as integers
-                let disc_num_a = disc_a.parse::<u32>().unwrap_or(1);
-                let disc_num_b = disc_b.parse::<u32>().unwrap_or(1);
-                
-                // Compare discs first
-                match disc_num_a.cmp(&disc_num_b) {
-                    std::cmp::Ordering::Equal => {
-                        // If discs are the same, compare track numbers
-                        let track_num_a = a.track_number.unwrap_or(0);
-                        let track_num_b = b.track_number.unwrap_or(0);
-                        track_num_a.cmp(&track_num_b)
-                    },
-                    other => other, // If discs are different, sort by disc
-                }
-            });
-        }
+        let mut tracks = self.tracks.lock();
+        tracks.sort_by(|a, b| {
+            // First compare disc numbers (default to "1" if not present)
+            let disc_a = a.disc_number.as_ref().cloned().unwrap_or_else(|| "1".to_string());
+            let disc_b = b.disc_number.as_ref().cloned().unwrap_or_else(|| "1".to_string());
+
+            // Try to parse disc numbers as integers
+            let disc_num_a = disc_a.parse::<u32>().unwrap_or(1);
+            let disc_num_b = disc_b.parse::<u32>().unwrap_or(1);
+
+            // Compare discs first
+            match disc_num_a.cmp(&disc_num_b) {
+                std::cmp::Ordering::Equal => {
+                    // If discs are the same, compare track numbers
+                    let track_num_a = a.track_number.unwrap_or(0);
+                    let track_num_b = b.track_number.unwrap_or(0);
+                    track_num_a.cmp(&track_num_b)
+                },
+                other => other, // If discs are different, sort by disc
+            }
+        });
     }
 }
 

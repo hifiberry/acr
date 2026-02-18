@@ -1,4 +1,5 @@
-use std::sync::{Arc, Weak, Mutex};
+use std::sync::{Arc, Weak};
+use parking_lot::Mutex;
 use std::any::Any;
 use crate::data::PlayerEvent;
 use crate::plugins::plugin::Plugin;
@@ -72,9 +73,7 @@ impl BaseActionPlugin {
         let (id, receiver) = event_bus.subscribe_all();
         
         // Store our subscription ID (we'll need it to unsubscribe later)
-        if let Ok(mut sub) = self.event_bus_subscription.lock() {
-            *sub = Some((id, receiver.clone()));
-        }
+        *self.event_bus_subscription.lock() = Some((id, receiver.clone()));
         
         // Start a thread to listen for events from the event bus
         let thread_handle = std::thread::spawn(move || {
@@ -90,9 +89,7 @@ impl BaseActionPlugin {
         });
         
         // Store the thread handle
-        if let Ok(mut handle) = self.event_listener_thread.lock() {
-            *handle = Some(thread_handle);
-        }
+        *self.event_listener_thread.lock() = Some(thread_handle);
     }
     
     /// Unsubscribe from the event bus and clean up the listener thread
@@ -100,20 +97,17 @@ impl BaseActionPlugin {
         log::debug!("Unsubscribing from event bus for plugin '{}'", self.name);
         
         // Unsubscribe from the event bus
-        if let Ok(mut sub_guard) = self.event_bus_subscription.lock() {
-            if let Some((id, _)) = sub_guard.take() {
-                EventBus::instance().unsubscribe(id);
-                log::debug!("Unsubscribed from event bus");
-            }
+        if let Some((id, _)) = self.event_bus_subscription.lock().take() {
+            EventBus::instance().unsubscribe(id);
+            log::debug!("Unsubscribed from event bus");
         }
         
         // Wait for the event listener thread to exit
-        if let Ok(mut thread_guard) = self.event_listener_thread.lock() {
-            if thread_guard.is_some() {
-                // Just take the handle and drop it, which detaches the thread
-                let _ = thread_guard.take();
-                log::debug!("Detaching event bus listener thread");
-            }
+        let mut thread_guard = self.event_listener_thread.lock();
+        if thread_guard.is_some() {
+            // Just take the handle and drop it, which detaches the thread
+            let _ = thread_guard.take();
+            log::debug!("Detaching event bus listener thread");
         }
     }
 }

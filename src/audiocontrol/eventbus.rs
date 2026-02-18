@@ -1,8 +1,9 @@
 use crate::data::player_event::PlayerEvent;
 use crossbeam::channel::{unbounded, Receiver, Sender};
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::thread;
 
 /// Defines what kinds of events a subscriber wants to receive
@@ -66,10 +67,8 @@ impl From<&PlayerEvent> for EventSubscription {
 /// Type alias for a subscriber ID
 pub type SubscriberId = u64;
 
-lazy_static! {
-    /// Global singleton instance of the EventBus.
-    static ref GLOBAL_EVENT_BUS: EventBus = EventBus::new();
-}
+/// Global singleton instance of the EventBus.
+static GLOBAL_EVENT_BUS: Lazy<EventBus> = Lazy::new(EventBus::new);
 
 /// EventBus for distributing PlayerEvents to subscribers
 #[derive(Clone)]
@@ -102,11 +101,11 @@ impl EventBus {
     pub fn subscribe(&self, event_types: Vec<EventSubscription>) -> (SubscriberId, Receiver<PlayerEvent>) {
         let (sender, receiver) = unbounded();
         
-        let mut id_guard = self.next_id.lock().unwrap();
+        let mut id_guard = self.next_id.lock();
         let id = *id_guard;
         *id_guard += 1;
         
-        let mut subscribers = self.subscribers.lock().unwrap();
+        let mut subscribers = self.subscribers.lock();
         subscribers.insert(id, (sender, event_types));
         
         (id, receiver)
@@ -114,13 +113,13 @@ impl EventBus {
     
     /// Unsubscribe from the event bus
     pub fn unsubscribe(&self, id: SubscriberId) -> bool {
-        let mut subscribers = self.subscribers.lock().unwrap();
+        let mut subscribers = self.subscribers.lock();
         subscribers.remove(&id).is_some()
     }
     
     /// Publish an event to all relevant subscribers
     pub fn publish(&self, event: PlayerEvent) {
-        let subscribers = self.subscribers.lock().unwrap();
+        let subscribers = self.subscribers.lock();
         let event_type = EventSubscription::from(&event);
         
         for (_, (sender, subscriptions)) in subscribers.iter() {

@@ -1,7 +1,8 @@
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use delegate::delegate;
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::Arc;
+use parking_lot::{RwLock, Mutex};
 use log::{debug, info, warn, error};
 use std::any::Any;
 use std::collections::HashMap;
@@ -79,14 +80,16 @@ impl Drop for BluetoothPlayerController {
         self.stop_polling.store(true, Ordering::Relaxed);
         
         // Wait for the scanning thread to finish
-        if let Ok(mut guard) = self.scan_thread.write() {
+        {
+            let mut guard = self.scan_thread.write();
             if let Some(handle) = guard.take() {
                 let _ = handle.join();
             }
         }
-        
+
         // Wait for the polling thread to finish
-        if let Ok(mut guard) = self.poll_thread.write() {
+        {
+            let mut guard = self.poll_thread.write();
             if let Some(handle) = guard.take() {
                 let _ = handle.join();
             }
@@ -154,13 +157,7 @@ impl BluetoothPlayerController {
     
     /// Initialize D-Bus connection
     fn ensure_dbus_connection(&self) -> bool {
-        let mut conn_guard = match self.connection.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                error!("Failed to acquire lock for D-Bus connection");
-                return false;
-            }
-        };
+        let mut conn_guard = self.connection.lock();
         
         if conn_guard.is_none() {
             match Connection::new_system() {
@@ -187,16 +184,13 @@ impl BluetoothPlayerController {
             return devices;
         }
         
-        let conn_guard = match self.connection.lock() {
-            Ok(guard) => guard,
-            Err(_) => return devices,
-        };
-        
+        let conn_guard = self.connection.lock();
+
         let conn = match conn_guard.as_ref() {
             Some(c) => c,
             None => return devices,
         };
-        
+
         // Get the BlueZ object manager to enumerate all objects
         let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
         
@@ -240,11 +234,8 @@ impl BluetoothPlayerController {
         let device_path_part = device_address.replace(":", "_");
         
         // Use ObjectManager to find the actual player path (player index may vary: player0, player1, player2, etc.)
-        let conn_guard = match self.connection.lock() {
-            Ok(guard) => guard,
-            Err(_) => return None,
-        };
-        
+        let conn_guard = self.connection.lock();
+
         if let Some(conn) = conn_guard.as_ref() {
             let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
             
@@ -277,22 +268,13 @@ impl BluetoothPlayerController {
         connection: &Arc<Mutex<Option<Connection>>>,
         device_address: &Arc<RwLock<Option<String>>>,
     ) {
-        let current_path = match player_path.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return,
-        };
-        
-        let device_addr = match device_address.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return,
-        };
-        
+        let current_path = player_path.read().clone();
+
+        let device_addr = device_address.read().clone();
+
         // If we have a stored path, check if it's still valid
         if let Some(path) = current_path {
-            let conn_guard = match connection.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
+            let conn_guard = connection.lock();
             
             if let Some(conn) = conn_guard.as_ref() {
                 let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
@@ -319,13 +301,12 @@ impl BluetoothPlayerController {
             // Find active player using static helper
             if let Some(new_path) = Self::find_active_player_static(connection, &addr) {
                 info!("Found new active player at path: {}", new_path);
-                if let Ok(mut guard) = player_path.write() {
-                    *guard = Some(new_path);
-                }
+                let mut guard = player_path.write();
+                *guard = Some(new_path);
             }
         }
     }
-    
+
     /// Static helper to find active player (for use in polling thread)
     fn find_active_player_static(
         connection: &Arc<Mutex<Option<Connection>>>,
@@ -334,18 +315,15 @@ impl BluetoothPlayerController {
         // Convert MAC address format from 80:B9:89:1E:B5:6F to 80_B9_89_1E_B5_6F
         let device_path_part = device_address.replace(":", "_");
         
-        let conn_guard = match connection.lock() {
-            Ok(guard) => guard,
-            Err(_) => return None,
-        };
-        
+        let conn_guard = connection.lock();
+
         if let Some(conn) = conn_guard.as_ref() {
             let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
-            
+
             // Get all managed objects and find the MediaPlayer1 for our device
             if let Ok(objects) = proxy.get_managed_objects() {
                 let device_prefix = format!("/org/bluez/hci0/dev_{}/player", device_path_part);
-                
+
                 for (path, interfaces) in objects {
                     // Look for MediaPlayer1 interface under our device path
                     if path.starts_with(&device_prefix) && interfaces.contains_key("org.bluez.MediaPlayer1") {
@@ -353,7 +331,7 @@ impl BluetoothPlayerController {
                         return Some(path.to_string());
                     }
                 }
-                
+
                 debug!("MediaPlayer1 not found for device {}", device_address);
                 None
             } else {
@@ -372,22 +350,13 @@ impl BluetoothPlayerController {
             return false;
         }
         
-        let current_path = match self.player_path.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return false,
-        };
-        
-        let device_address = match self.device_address.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return false,
-        };
-        
+        let current_path = self.player_path.read().clone();
+
+        let device_address = self.device_address.read().clone();
+
         // If we have a stored path, check if it's still valid
         if let Some(path) = current_path {
-            let conn_guard = match self.connection.lock() {
-                Ok(guard) => guard,
-                Err(_) => return false,
-            };
+            let conn_guard = self.connection.lock();
             
             if let Some(conn) = conn_guard.as_ref() {
                 let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
@@ -413,9 +382,8 @@ impl BluetoothPlayerController {
         if let Some(addr) = device_address {
             if let Some(new_path) = self.find_active_player(&addr) {
                 info!("Found new active player at path: {}", new_path);
-                if let Ok(mut guard) = self.player_path.write() {
-                    *guard = Some(new_path);
-                }
+                let mut guard = self.player_path.write();
+                *guard = Some(new_path);
                 return true;
             }
         }
@@ -430,10 +398,7 @@ impl BluetoothPlayerController {
         }
         
         // Get current device address
-        let device_address = match self.device_address.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return None,
-        };
+        let device_address = self.device_address.read().clone();
         
         // If no specific device address, try to discover one
         let device_address = match device_address {
@@ -445,10 +410,12 @@ impl BluetoothPlayerController {
                     info!("Auto-discovered Bluetooth device: {} ({})", name, addr);
                     
                     // Update our stored address and name
-                    if let Ok(mut guard) = self.device_address.write() {
+                    {
+                        let mut guard = self.device_address.write();
                         *guard = Some(addr.clone());
                     }
-                    if let Ok(mut guard) = self.device_name.write() {
+                    {
+                        let mut guard = self.device_name.write();
                         *guard = Some(name.clone());
                     }
                     
@@ -470,17 +437,11 @@ impl BluetoothPlayerController {
             return None;
         }
         
-        let conn_guard = match self.connection.lock() {
-            Ok(guard) => guard,
-            Err(_) => return None,
-        };
-        
+        let conn_guard = self.connection.lock();
+
         let conn = conn_guard.as_ref()?;
-        
-        let device_address = match self.device_address.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return None,
-        };
+
+        let device_address = self.device_address.read().clone();
         
         let device_address = device_address?;
         let device_path_part = device_address.replace(":", "_");
@@ -508,34 +469,27 @@ impl BluetoothPlayerController {
         // Check if the active player is still valid before querying
         self.check_active_player();
         
-        let player_path = match self.player_path.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return,
-        };
-        
+        let player_path = self.player_path.read().clone();
+
         let player_path = match player_path {
             Some(path) => path,
             None => {
                 // Try to find the player path
                 if let Some(path) = self.find_player_path() {
-                    if let Ok(mut guard) = self.player_path.write() {
-                        *guard = Some(path.clone());
-                    }
+                    let mut guard = self.player_path.write();
+                    *guard = Some(path.clone());
                     path
                 } else {
                     return;
                 }
             }
         };
-        
+
         if !self.ensure_dbus_connection() {
             return;
         }
-        
-        let conn_guard = match self.connection.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
+
+        let conn_guard = self.connection.lock();
         
         let conn = match conn_guard.as_ref() {
             Some(c) => c,
@@ -602,7 +556,8 @@ impl BluetoothPlayerController {
                     ..Default::default()
                 };
                 
-                if let Ok(mut guard) = self.current_song.write() {
+                {
+                    let mut guard = self.current_song.write();
                     *guard = Some(song);
                     debug!("Updated Bluetooth song information");
                 }
@@ -612,35 +567,28 @@ impl BluetoothPlayerController {
     
     /// Send a D-Bus method call to the MediaPlayer1 interface
     fn send_dbus_command(&self, method: &str) -> bool {
-        let player_path = match self.player_path.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return false,
-        };
-        
+        let player_path = self.player_path.read().clone();
+
         let player_path = match player_path {
             Some(path) => path,
             None => {
                 if let Some(path) = self.find_player_path() {
-                    if let Ok(mut guard) = self.player_path.write() {
-                        *guard = Some(path.clone());
-                    }
+                    let mut guard = self.player_path.write();
+                    *guard = Some(path.clone());
                     path
                 } else {
-                    let addr = self.device_address.read().map(|guard| guard.clone()).unwrap_or(None);
+                    let addr = self.device_address.read().clone();
                     warn!("No MediaPlayer1 found for device {:?}", addr);
                     return false;
                 }
             }
         };
-        
+
         if !self.ensure_dbus_connection() {
             return false;
         }
-        
-        let conn_guard = match self.connection.lock() {
-            Ok(guard) => guard,
-            Err(_) => return false,
-        };
+
+        let conn_guard = self.connection.lock();
         
         let conn = match conn_guard.as_ref() {
             Some(c) => c,
@@ -664,10 +612,8 @@ impl BluetoothPlayerController {
     /// Start background scanning for devices
     fn start_scanning_thread(&self) {
         // Don't start if we already have a device
-        if let Ok(guard) = self.device_address.read() {
-            if guard.is_some() {
-                return;
-            }
+        if self.device_address.read().is_some() {
+            return;
         }
         
         let device_address = Arc::clone(&self.device_address);
@@ -681,45 +627,39 @@ impl BluetoothPlayerController {
             
             while !stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 // Check if we still need to scan
-                if let Ok(guard) = device_address.read() {
-                    if guard.is_some() {
-                        // We found a device, stop scanning
-                        break;
-                    }
+                if device_address.read().is_some() {
+                    // We found a device, stop scanning
+                    break;
                 }
-                
+
                 // Try to discover devices
-                if let Ok(conn_guard) = connection.lock() {
+                {
+                    let conn_guard = connection.lock();
                     if let Some(conn) = conn_guard.as_ref() {
                         // Simplified discovery logic for background thread
                         let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(2000));
-                        
+
                         if let Ok(objects) = proxy.get_managed_objects() {
                             for (path, interfaces) in objects {
                                 if interfaces.contains_key("org.bluez.MediaPlayer1") {
                                     if let Some(device_part) = path.strip_prefix("/org/bluez/hci0/dev_") {
                                         if let Some(addr_part) = device_part.split('/').next() {
                                             let discovered_address = addr_part.replace('_', ":");
-                                            
+
                                             // Get device name
                                             let device_path = format!("/org/bluez/hci0/dev_{}", addr_part);
                                             let device_proxy = conn.with_proxy("org.bluez", &device_path, Duration::from_millis(1000));
-                                            
+
                                             let discovered_name = device_proxy.get::<String>("org.bluez.Device1", "Name")
                                                 .unwrap_or_else(|_| discovered_address.clone());
-                                            
+
                                             info!("Background scan found Bluetooth device: {} ({})", discovered_name, discovered_address);
-                                            
+
                                             // Update stored values
-                                            if let Ok(mut guard) = device_address.write() {
-                                                *guard = Some(discovered_address);
-                                            }
-                                            if let Ok(mut guard) = device_name.write() {
-                                                *guard = Some(discovered_name);
-                                            }
-                            if let Ok(mut guard) = player_path.write() {
-                                *guard = Some(path.to_string());
-                            }                                            // Found a device, stop scanning
+                                            *device_address.write() = Some(discovered_address);
+                                            *device_name.write() = Some(discovered_name);
+                                            *player_path.write() = Some(path.to_string());
+                                            // Found a device, stop scanning
                                             return;
                                         }
                                     }
@@ -736,25 +676,17 @@ impl BluetoothPlayerController {
             debug!("Bluetooth scanning thread stopped");
         });
         
-        if let Ok(mut guard) = self.scan_thread.write() {
-            *guard = Some(handle);
-        }
+        *self.scan_thread.write() = Some(handle);
     }
-    
+
     /// Manually trigger a rescan for devices
     pub fn rescan(&self) {
         debug!("Manually triggering Bluetooth device rescan");
         
         // Clear current device info to force rediscovery
-        if let Ok(mut guard) = self.device_address.write() {
-            *guard = None;
-        }
-        if let Ok(mut guard) = self.player_path.write() {
-            *guard = None;
-        }
-        if let Ok(mut guard) = self.device_name.write() {
-            *guard = None;
-        }
+        *self.device_address.write() = None;
+        *self.player_path.write() = None;
+        *self.device_name.write() = None;
         
         // Try to find a device immediately
         self.find_player_path();
@@ -778,22 +710,22 @@ impl BluetoothPlayerController {
             };
             
             // Update state if changed
-            if let Ok(mut state_guard) = current_state.write() {
+            {
+                let mut state_guard = current_state.write();
                 let old_state = state_guard.state;
                 if old_state != new_state {
                     debug!("Bluetooth playback state changed: {:?} -> {:?}", old_state, new_state);
                     state_guard.state = new_state;
                     base.notify_state_changed(new_state);
-                    
+
                     // When becoming active (starts playing), just notify about current song
                     if new_state == PlaybackState::Playing && old_state != PlaybackState::Playing {
                         debug!("Bluetooth player became active");
-                        
+
                         // Notify about current song when becoming active
-                        if let Ok(song_guard) = current_song.read() {
-                            if let Some(ref song) = *song_guard {
-                                base.notify_song_changed(Some(song));
-                            }
+                        let song_guard = current_song.read();
+                        if let Some(ref song) = *song_guard {
+                            base.notify_song_changed(Some(song));
                         }
                     }
                 }
@@ -838,19 +770,20 @@ impl BluetoothPlayerController {
                 };
                 
                 // Update song if changed
-                if let Ok(mut song_guard) = current_song.write() {
+                {
+                    let mut song_guard = current_song.write();
                     let song_changed = song_guard.as_ref().map(|s| {
-                        s.title != new_song.title || 
-                        s.artist != new_song.artist || 
+                        s.title != new_song.title ||
+                        s.artist != new_song.artist ||
                         s.album != new_song.album
                     }).unwrap_or(true);
-                    
+
                     if song_changed {
-                        info!("Bluetooth track changed: {:?} - {:?} ({:?})", 
+                        info!("Bluetooth track changed: {:?} - {:?} ({:?})",
                                new_song.artist, new_song.title, new_song.album);
                         *song_guard = Some(new_song.clone());
                         base.notify_song_changed(Some(&new_song));
-                        
+
                         // Also mark as alive when song changes
                         base.alive();
                     }
@@ -869,7 +802,8 @@ impl BluetoothPlayerController {
             let position_seconds = position as f64 / 1000.0;
             
             // Update position in player state
-            if let Ok(mut state_guard) = current_state.write() {
+            {
+                let mut state_guard = current_state.write();
                 if (state_guard.position.unwrap_or(0.0) - position_seconds).abs() > 1.0 {
                     state_guard.position = Some(position_seconds);
                     base.notify_position_changed(position_seconds);
@@ -898,24 +832,18 @@ impl BluetoothPlayerController {
             Self::check_and_update_active_player(&player_path, &connection, &device_address);
             
             // Get current player path
-            let path = if let Ok(guard) = player_path.read() {
-                guard.clone()
-            } else {
-                thread::sleep(Duration::from_secs(2));
-                continue;
-            };
-            
+            let path = player_path.read().clone();
+
             if let Some(ref path_str) = path {
-                if let Ok(conn_guard) = connection.lock() {
-                    if let Some(ref conn) = *conn_guard {
-                        let proxy = conn.with_proxy("org.bluez", path_str, Duration::from_millis(1000));
-                        
-                        // Poll different aspects of the player state
-                        debug!("Polling Bluetooth player state at {}", path_str);
-                        Self::poll_playback_state(&proxy, &current_state, &current_song, &base);
-                        Self::poll_track_information(&proxy, &current_song, &base);
-                        Self::poll_position_information(&proxy, &current_state, &base);
-                    }
+                let conn_guard = connection.lock();
+                if let Some(ref conn) = *conn_guard {
+                    let proxy = conn.with_proxy("org.bluez", path_str, Duration::from_millis(1000));
+
+                    // Poll different aspects of the player state
+                    debug!("Polling Bluetooth player state at {}", path_str);
+                    Self::poll_playback_state(&proxy, &current_state, &current_song, &base);
+                    Self::poll_track_information(&proxy, &current_song, &base);
+                    Self::poll_position_information(&proxy, &current_state, &base);
                 }
             } else {
                 // Only log this message every 10 seconds to avoid spam
@@ -950,29 +878,21 @@ impl BluetoothPlayerController {
             Self::run_polling_loop(player_path, connection, current_song, current_state, stop_flag, base, device_address);
         });
         
-        if let Ok(mut guard) = self.poll_thread.write() {
-            *guard = Some(handle);
-        }
+        *self.poll_thread.write() = Some(handle);
     }
     fn get_playback_status(&self) -> PlaybackState {
-        let player_path = match self.player_path.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return PlaybackState::Unknown,
-        };
-        
+        let player_path = self.player_path.read().clone();
+
         let player_path = match player_path {
             Some(path) => path,
             None => return PlaybackState::Unknown,
         };
-        
+
         if !self.ensure_dbus_connection() {
             return PlaybackState::Unknown;
         }
-        
-        let conn_guard = match self.connection.lock() {
-            Ok(guard) => guard,
-            Err(_) => return PlaybackState::Unknown,
-        };
+
+        let conn_guard = self.connection.lock();
         
         let conn = match conn_guard.as_ref() {
             Some(c) => c,
@@ -1007,10 +927,7 @@ impl PlayerController for BluetoothPlayerController {
         // Update song information from D-Bus before returning
         self.update_song_from_dbus();
         
-        match self.current_song.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => None,
-        }
+        self.current_song.read().clone()
     }
     
     fn get_queue(&self) -> Vec<Track> {
@@ -1027,9 +944,7 @@ impl PlayerController for BluetoothPlayerController {
         let state = self.get_playback_status();
         
         // Update our internal state
-        if let Ok(mut guard) = self.current_state.write() {
-            guard.state = state;
-        }
+        self.current_state.write().state = state;
         
         // Mark as alive
         self.base.alive();
@@ -1063,11 +978,7 @@ impl PlayerController for BluetoothPlayerController {
             "bluetooth:auto-discover".to_string()
         } else {
             // For specific device controllers, return the configured address with bluetooth prefix
-            let device_address = if let Ok(guard) = self.device_address.read() {
-                guard.clone().unwrap_or_else(|| "unknown".to_string())
-            } else {
-                "unknown".to_string()
-            };
+            let device_address = self.device_address.read().clone().unwrap_or_else(|| "unknown".to_string());
             format!("bluetooth:{}", device_address)
         }
     }
@@ -1076,11 +987,9 @@ impl PlayerController for BluetoothPlayerController {
         info!("Sending command to Bluetooth device: {}", command);
         
         // Update player path if needed
-        if self.player_path.read().unwrap().is_none() {
+        if self.player_path.read().is_none() {
             if let Some(path) = self.find_player_path() {
-                if let Ok(mut guard) = self.player_path.write() {
-                    *guard = Some(path);
-                }
+                *self.player_path.write() = Some(path);
             }
         }
         
@@ -1109,7 +1018,7 @@ impl PlayerController for BluetoothPlayerController {
     }
     
     fn start(&self) -> bool {
-        let addr = self.device_address.read().map(|guard| guard.clone()).unwrap_or(None);
+        let addr = self.device_address.read().clone();
         info!("Starting Bluetooth player controller for device: {:?}", addr);
         
         // Initialize D-Bus connection
@@ -1120,13 +1029,11 @@ impl PlayerController for BluetoothPlayerController {
         
         // Try to find the player path
         if let Some(path) = self.find_player_path() {
-            if let Ok(mut guard) = self.player_path.write() {
-                *guard = Some(path);
-            }
-            let addr = self.device_address.read().map(|guard| guard.clone()).unwrap_or(None);
+            *self.player_path.write() = Some(path);
+            let addr = self.device_address.read().clone();
             info!("Found MediaPlayer1 interface for device: {:?}", addr);
         } else {
-            let addr = self.device_address.read().map(|guard| guard.clone()).unwrap_or(None);
+            let addr = self.device_address.read().clone();
             warn!("MediaPlayer1 interface not found for device: {:?}", addr);
             // Don't return false here as the device might connect later
         }
@@ -1136,9 +1043,7 @@ impl PlayerController for BluetoothPlayerController {
         
         // Get device name
         if let Some(name) = self.get_device_name() {
-            if let Ok(mut guard) = self.device_name.write() {
-                *guard = Some(name);
-            }
+            *self.device_name.write() = Some(name);
         }
         
         // Mark as alive
@@ -1148,28 +1053,25 @@ impl PlayerController for BluetoothPlayerController {
     }
     
     fn stop(&self) -> bool {
-        let addr = self.device_address.read().map(|guard| guard.clone()).unwrap_or(None);
+        let addr = self.device_address.read().clone();
         info!("Stopping Bluetooth player controller for device: {:?}", addr);
         
         // Signal polling thread to stop
         self.stop_polling.store(true, Ordering::Relaxed);
         
         // Wait for polling thread to finish
-        if let Ok(mut guard) = self.poll_thread.write() {
+        {
+            let mut guard = self.poll_thread.write();
             if let Some(handle) = guard.take() {
                 let _ = handle.join();
             }
         }
-        
+
         // Clear connection
-        if let Ok(mut guard) = self.connection.lock() {
-            *guard = None;
-        }
-        
+        *self.connection.lock() = None;
+
         // Clear player path
-        if let Ok(mut guard) = self.player_path.write() {
-            *guard = None;
-        }
+        *self.player_path.write() = None;
         
         true
     }

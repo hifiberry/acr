@@ -1,4 +1,5 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use std::time::SystemTime;
 use std::any::Any;
 use std::collections::HashMap;
@@ -69,7 +70,8 @@ impl GenericPlayerController {
         let controller = Self::new(player_name.to_string());
         
         // Store the full configuration
-        if let Ok(mut config_lock) = controller.config.write() {
+        {
+            let mut config_lock = controller.config.write();
             if let Some(obj) = config.as_object() {
                 for (key, value) in obj {
                     config_lock.insert(key.clone(), value.clone());
@@ -95,7 +97,8 @@ impl GenericPlayerController {
                     _ => PlaybackState::Unknown,
                 };
                 
-                if let Ok(mut state) = self.current_state.write() {
+                {
+                    let mut state = self.current_state.write();
                     *state = playback_state;
                 }
             }
@@ -103,9 +106,8 @@ impl GenericPlayerController {
         
         // Set initial shuffle if provided
         if let Some(shuffle) = config.get("shuffle").and_then(|s| s.as_bool()) {
-            if let Ok(mut shuffle_lock) = self.current_shuffle.write() {
-                *shuffle_lock = shuffle;
-            }
+            let mut shuffle_lock = self.current_shuffle.write();
+            *shuffle_lock = shuffle;
         }
         
         // Set initial loop mode if provided
@@ -116,7 +118,8 @@ impl GenericPlayerController {
                 _ => LoopMode::None,
             };
             
-            if let Ok(mut loop_lock) = self.current_loop_mode.write() {
+            {
+                let mut loop_lock = self.current_loop_mode.write();
                 *loop_lock = loop_mode;
             }
         }
@@ -183,21 +186,15 @@ impl GenericPlayerController {
             };
             
             // Update the state first, then release the lock before notifying
-            let updated = {
-                if let Ok(mut state) = self.current_state.write() {
-                    *state = playback_state;
-                    debug!("Generic player '{}' state changed to: {:?}", self.player_name, playback_state);
-                    true
-                } else {
-                    false
-                }
-            }; // Lock is released here
-            
-            if updated {
-                // Notify the event bus about the state change after releasing the lock
-                self.base.notify_state_changed(playback_state);
-                return true;
-            }
+            {
+                let mut state = self.current_state.write();
+                *state = playback_state;
+                debug!("Generic player '{}' state changed to: {:?}", self.player_name, playback_state);
+            } // Lock is released here
+
+            // Notify the event bus about the state change after releasing the lock
+            self.base.notify_state_changed(playback_state);
+            return true;
         }
         false
     }
@@ -212,43 +209,31 @@ impl GenericPlayerController {
         };
         
         // Update the state first, then release the lock before notifying
-        let (updated, song_for_notify) = {
-            if let Ok(mut current_song) = self.current_song.write() {
-                *current_song = song.clone();
-                debug!("Generic player '{}' song changed", self.player_name);
-                (true, song.clone())
-            } else {
-                (false, None)
-            }
+        let song_for_notify = {
+            let mut current_song = self.current_song.write();
+            *current_song = song.clone();
+            debug!("Generic player '{}' song changed", self.player_name);
+            song.clone()
         }; // Lock is released here
-        
-        if updated {
-            // Notify the event bus about the song change after releasing the lock
-            self.base.notify_song_changed(song_for_notify.as_ref());
-            return true;
-        }
-        false
+
+        // Notify the event bus about the song change after releasing the lock
+        self.base.notify_song_changed(song_for_notify.as_ref());
+        true
     }
     
     /// Handle position change events
     fn handle_position_change_event(&self, event_data: &Value) -> bool {
         if let Some(position) = event_data.get("position").and_then(|p| p.as_f64()) {
             // Update the state first, then release the lock before notifying
-            let updated = {
-                if let Ok(mut pos) = self.current_position.write() {
-                    *pos = Some(position);
-                    debug!("Generic player '{}' position changed to: {}", self.player_name, position);
-                    true
-                } else {
-                    false
-                }
-            }; // Lock is released here
-            
-            if updated {
-                // Notify the event bus about the position change after releasing the lock
-                self.base.notify_position_changed(position);
-                return true;
-            }
+            {
+                let mut pos = self.current_position.write();
+                *pos = Some(position);
+                debug!("Generic player '{}' position changed to: {}", self.player_name, position);
+            } // Lock is released here
+
+            // Notify the event bus about the position change after releasing the lock
+            self.base.notify_position_changed(position);
+            return true;
         }
         false
     }
@@ -263,21 +248,15 @@ impl GenericPlayerController {
             };
             
             // Update the state first, then release the lock before notifying
-            let updated = {
-                if let Ok(mut mode) = self.current_loop_mode.write() {
-                    *mode = loop_mode;
-                    debug!("Generic player '{}' loop mode changed to: {:?}", self.player_name, loop_mode);
-                    true
-                } else {
-                    false
-                }
-            }; // Lock is released here
-            
-            if updated {
-                // Notify the event bus about the loop mode change after releasing the lock
-                self.base.notify_loop_mode_changed(loop_mode);
-                return true;
-            }
+            {
+                let mut mode = self.current_loop_mode.write();
+                *mode = loop_mode;
+                debug!("Generic player '{}' loop mode changed to: {:?}", self.player_name, loop_mode);
+            } // Lock is released here
+
+            // Notify the event bus about the loop mode change after releasing the lock
+            self.base.notify_loop_mode_changed(loop_mode);
+            return true;
         }
         false
     }
@@ -290,21 +269,15 @@ impl GenericPlayerController {
             
         if let Some(shuffle) = shuffle {
             // Update the state first, then release the lock before notifying
-            let updated = {
-                if let Ok(mut shuffle_lock) = self.current_shuffle.write() {
-                    *shuffle_lock = shuffle;
-                    debug!("Generic player '{}' shuffle changed to: {}", self.player_name, shuffle);
-                    true
-                } else {
-                    false
-                }
-            }; // Lock is released here
-            
-            if updated {
-                // Notify the event bus about the shuffle change after releasing the lock
-                self.base.notify_random_changed(shuffle);
-                return true;
-            }
+            {
+                let mut shuffle_lock = self.current_shuffle.write();
+                *shuffle_lock = shuffle;
+                debug!("Generic player '{}' shuffle changed to: {}", self.player_name, shuffle);
+            } // Lock is released here
+
+            // Notify the event bus about the shuffle change after releasing the lock
+            self.base.notify_random_changed(shuffle);
+            return true;
         }
         false
     }
@@ -361,51 +334,33 @@ impl PlayerController for GenericPlayerController {
     }
     
     fn get_song(&self) -> Option<Song> {
-        if let Ok(song) = self.current_song.read() {
-            song.clone()
-        } else {
-            None
-        }
+        let song = self.current_song.read();
+        song.clone()
     }
     
     fn get_queue(&self) -> Vec<Track> {
-        if let Ok(queue) = self.current_queue.read() {
-            queue.clone()
-        } else {
-            Vec::new()
-        }
+        let queue = self.current_queue.read();
+        queue.clone()
     }
     
     fn get_loop_mode(&self) -> LoopMode {
-        if let Ok(mode) = self.current_loop_mode.read() {
-            *mode
-        } else {
-            LoopMode::None
-        }
+        let mode = self.current_loop_mode.read();
+        *mode
     }
     
     fn get_playback_state(&self) -> PlaybackState {
-        if let Ok(state) = self.current_state.read() {
-            *state
-        } else {
-            PlaybackState::Unknown
-        }
+        let state = self.current_state.read();
+        *state
     }
     
     fn get_position(&self) -> Option<f64> {
-        if let Ok(pos) = self.current_position.read() {
-            *pos
-        } else {
-            None
-        }
+        let pos = self.current_position.read();
+        *pos
     }
     
     fn get_shuffle(&self) -> bool {
-        if let Ok(shuffle) = self.current_shuffle.read() {
-            *shuffle
-        } else {
-            false
-        }
+        let shuffle = self.current_shuffle.read();
+        *shuffle
     }
     
     fn get_player_name(&self) -> String {
@@ -441,39 +396,39 @@ impl PlayerController for GenericPlayerController {
         // In a real implementation, this would send commands to an external player
         match command {
             PlayerCommand::Play => {
-                if let Ok(mut state) = self.current_state.write() {
-                    *state = PlaybackState::Playing;
-                }
+                let mut state = self.current_state.write();
+                *state = PlaybackState::Playing;
+                drop(state);
                 true
             }
             PlayerCommand::Pause => {
-                if let Ok(mut state) = self.current_state.write() {
-                    *state = PlaybackState::Paused;
-                }
+                let mut state = self.current_state.write();
+                *state = PlaybackState::Paused;
+                drop(state);
                 true
             }
             PlayerCommand::Stop => {
-                if let Ok(mut state) = self.current_state.write() {
-                    *state = PlaybackState::Stopped;
-                }
+                let mut state = self.current_state.write();
+                *state = PlaybackState::Stopped;
+                drop(state);
                 true
             }
             PlayerCommand::SetLoopMode(mode) => {
-                if let Ok(mut loop_mode) = self.current_loop_mode.write() {
-                    *loop_mode = mode;
-                }
+                let mut loop_mode = self.current_loop_mode.write();
+                *loop_mode = mode;
+                drop(loop_mode);
                 true
             }
             PlayerCommand::SetRandom(enabled) => {
-                if let Ok(mut shuffle) = self.current_shuffle.write() {
-                    *shuffle = enabled;
-                }
+                let mut shuffle = self.current_shuffle.write();
+                *shuffle = enabled;
+                drop(shuffle);
                 true
             }
             PlayerCommand::Seek(position) => {
-                if let Ok(mut pos) = self.current_position.write() {
-                    *pos = Some(position);
-                }
+                let mut pos = self.current_position.write();
+                *pos = Some(position);
+                drop(pos);
                 true
             }
             _ => {

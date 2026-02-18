@@ -1,15 +1,13 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use log::{info, error};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 
 // Global singleton for the settings database
-lazy_static! {
-    static ref SETTINGS_DB: Mutex<SettingsDb> = Mutex::new(SettingsDb::new());
-}
+static SETTINGS_DB: Lazy<Mutex<SettingsDb>> = Lazy::new(|| Mutex::new(SettingsDb::new()));
 
 /// A persistent settings database that stores user settings as key-value pairs using SQLite database
 pub struct SettingsDb {
@@ -408,8 +406,8 @@ impl SettingsDb {
 // Global functions to access the settings database singleton
 
 /// Get a reference to the global settings database
-pub fn get_settings_db() -> std::sync::MutexGuard<'static, SettingsDb> {
-    SETTINGS_DB.lock().unwrap()
+pub fn get_settings_db() -> parking_lot::MutexGuard<'static, SettingsDb> {
+    SETTINGS_DB.lock()
 }
 
 /// Store a value in the settings database
@@ -849,7 +847,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_concurrent_set_and_get() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use std::thread;
         
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
@@ -870,13 +869,13 @@ mod tests {
                     
                     // Set value
                     {
-                        let mut db_guard = db_clone.lock().unwrap();
+                        let mut db_guard = db_clone.lock();
                         db_guard.set_string(&key, &value).expect("Failed to set value in thread");
                     }
                     
                     // Get value back
                     {
-                        let mut db_guard = db_clone.lock().unwrap();
+                        let mut db_guard = db_clone.lock();
                         let retrieved = db_guard.get_string(&key).expect("Failed to get value in thread");
                         assert_eq!(retrieved, Some(value));
                     }
@@ -896,7 +895,7 @@ mod tests {
                 let key = format!("thread_{}_key_{}", thread_id, i);
                 let expected_value = format!("thread_{}_value_{}", thread_id, i);
                 
-                let mut db_guard = db.lock().unwrap();
+                let mut db_guard = db.lock();
                 let retrieved = db_guard.get_string(&key).expect("Failed to get value after threads");
                 assert_eq!(retrieved, Some(expected_value));
                 drop(db_guard); // Explicitly drop to release lock
@@ -907,7 +906,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_concurrent_mixed_operations() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use std::thread;
         use std::time::Duration;
         
@@ -917,7 +917,7 @@ mod tests {
         
         // Pre-populate with some data
         {
-            let mut db_guard = db.lock().unwrap();
+            let mut db_guard = db.lock();
             for i in 0..10 {
                 let key = format!("shared_key_{}", i);
                 let value = format!("shared_value_{}", i);
@@ -939,8 +939,8 @@ mod tests {
                         
                         // Just verify we can read some value, don't care about the exact content
                         // since writers might be updating it concurrently
-                        if let Ok(db_guard) = db_clone.lock() {
-                            let mut db_mut = db_guard;
+                        {
+                            let mut db_mut = db_clone.lock();
                             let _retrieved = db_mut.get_string(&key);
                             // Don't assert on value since it may be updated by writers
                         }
@@ -962,8 +962,8 @@ mod tests {
                         let key = format!("shared_key_{}", key_id);
                         let new_value = format!("updated_by_thread_{}_iter_{}_{}", thread_id, iteration, key_id);
                         
-                        if let Ok(db_guard) = db_clone.lock() {
-                            let mut db_mut = db_guard;
+                        {
+                            let mut db_mut = db_clone.lock();
                             let _ = db_mut.set_string(&key, &new_value); // Ignore errors
                         }
                         
@@ -1055,7 +1055,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_concurrent_memory_cache_access() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use std::thread;
         use std::time::Duration;
         
@@ -1065,7 +1066,7 @@ mod tests {
         
         // Pre-populate the database to test memory cache behavior
         {
-            let mut db_guard = db.lock().unwrap();
+            let mut db_guard = db.lock();
             for i in 0..10 {
                 let key = format!("memory_key_{}", i);
                 let value = format!("memory_value_{}", i);
@@ -1086,11 +1087,11 @@ mod tests {
                     for key_id in 0..10 {
                         let key = format!("memory_key_{}", key_id);
                         
-                        if let Ok(db_guard) = db_clone.lock() {
-                            let mut db_mut = db_guard;
+                        {
+                            let mut db_mut = db_clone.lock();
                             // This should hit the memory cache
                             let _retrieved = db_mut.get_string(&key);
-                            
+
                             // Verify memory cache contains the key
                             let has_cached = db_mut.memory_cache.contains_key(&key);
                             assert!(has_cached, "Key {} should be in memory cache", key);
@@ -1112,7 +1113,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_concurrent_clear_and_access() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use std::thread;
         use std::time::Duration;
         
@@ -1133,13 +1135,13 @@ mod tests {
                     
                     // Set value
                     {
-                        let mut db_guard = db_clone.lock().unwrap();
+                        let mut db_guard = db_clone.lock();
                         db_guard.set_string(&key, &value).ok(); // Ignore errors
                     }
                     
                     // Try to get value
                     {
-                        let mut db_guard = db_clone.lock().unwrap();
+                        let mut db_guard = db_clone.lock();
                         let _retrieved = db_guard.get_string(&key);
                         // Don't assert here as clear might remove the value
                     }
@@ -1155,7 +1157,7 @@ mod tests {
         let clear_handle = thread::spawn(move || {
             for _i in 0..5 {
                 thread::sleep(Duration::from_millis(10));
-                let mut db_guard = db_clear.lock().unwrap();
+                let mut db_guard = db_clear.lock();
                 db_guard.clear().ok(); // Ignore errors
             }
         });
@@ -1173,7 +1175,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_concurrent_different_data_types() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use std::thread;
         
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
@@ -1191,7 +1194,7 @@ mod tests {
                     let base_key = format!("thread_{}_item_{}", thread_id, i);
                     
                     {
-                        let mut db_guard = db_clone.lock().unwrap();
+                        let mut db_guard = db_clone.lock();
                         
                         // Set different types of data
                         let string_key = format!("{}_string", base_key);
@@ -1209,7 +1212,7 @@ mod tests {
                     
                     // Read back and verify
                     {
-                        let mut db_guard = db_clone.lock().unwrap();
+                        let mut db_guard = db_clone.lock();
                         
                         let string_key = format!("{}_string", base_key);
                         let int_key = format!("{}_int", base_key);
@@ -1234,7 +1237,7 @@ mod tests {
         }
         
         // Verify final state
-        let mut db_guard = db.lock().unwrap();
+        let mut db_guard = db.lock();
         let total_keys = db_guard.get_all_keys().unwrap().len();
         // Each thread creates 3 keys per iteration
         let expected_keys = num_threads * 20 * 3;

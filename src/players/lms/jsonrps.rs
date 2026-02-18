@@ -3,7 +3,8 @@ use serde_json::Value;
 use log::{debug, error};
 use crate::helpers::macaddress::normalize_mac_address;
 use crate::helpers::http_client::{HttpClient, HttpClientError, new_http_client, post_json};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The standard JSON-RPC path for Lyrion Music Server
@@ -176,7 +177,7 @@ impl LmsRpcClient {
     pub fn request_raw(&self, player_id: Option<&str>, command: Vec<Value>) -> Result<Value, LmsRpcError> {
         // Acquire the lock before proceeding with the request.
         // The lock is released when `_guard` goes out of scope.
-        let _guard = self.request_lock.lock().unwrap();
+        let _guard = self.request_lock.lock();
 
         // The LMS jsonrpc.js API expects params to be an array with:
         // 1. The player_id as the first element (or "0" for command that doesn't require a player)

@@ -118,12 +118,11 @@ impl AlbumArtists {
         // Process all albums and their artists
         for album in albums.values() {
             // Get the artists for this album
-            if let Ok(artist_names) = album.artists.lock() {
-                // Process each artist name in the vector
-                for artist_name in artist_names.iter() {
-                    if let Some(artist) = artists.get(artist_name) {
-                        mapping.add_mapping(album.id.clone(), artist.id.clone());
-                    }
+            let artist_names = album.artists.lock();
+            // Process each artist name in the vector
+            for artist_name in artist_names.iter() {
+                if let Some(artist) = artists.get(artist_name) {
+                    mapping.add_mapping(album.id.clone(), artist.id.clone());
                 }
             }
         }
@@ -144,12 +143,11 @@ impl AlbumArtists {
         // Process all albums and their artists
         for album in albums {
             // Get the artists for this album
-            if let Ok(artist_names) = album.artists.lock() {
-                // Process each artist name in the vector
-                for name in artist_names.iter() {
-                    if let Some(artist_id) = artist_name_to_id.get(name) {
-                        mapping.add_mapping(album.id.clone(), artist_id.clone());
-                    }
+            let artist_names = album.artists.lock();
+            // Process each artist name in the vector
+            for name in artist_names.iter() {
+                if let Some(artist_id) = artist_name_to_id.get(name) {
+                    mapping.add_mapping(album.id.clone(), artist_id.clone());
                 }
             }
         }

@@ -149,7 +149,8 @@ impl LMSLibraryLoader {
     fn album_from_lms_json(&self, album_json: &serde_json::Value, custom_separators: Option<&[String]>) -> Option<Album> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         
         // Extract album title
         let title = album_json["album"].as_str();
@@ -189,7 +190,7 @@ impl LMSLibraryLoader {
             None => Arc::new(Mutex::new(vec![album_artist.to_string()]))
         };
           debug!("Created album: {} (ID: {}) by {:?}", 
-               title, album_id, artists.lock().unwrap());
+               title, album_id, artists.lock());
         
         // Create and return the Album object
         Some(Album {
@@ -304,7 +305,8 @@ impl LMSLibraryLoader {
                         }
                         
                         // Add the tracks to the album
-                        if let Ok(mut album_tracks_lock) = album.tracks.lock() {
+                        {
+                            let mut album_tracks_lock = album.tracks.lock();
                             *album_tracks_lock = album_tracks;
                         }
                         

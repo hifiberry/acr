@@ -3,7 +3,8 @@ use crate::helpers::volume::VolumeControl;
 use crate::helpers::volume::AlsaVolumeControl;
 use crate::helpers::volume::DummyVolumeControl;
 use crate::helpers::configurator;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use once_cell::sync::OnceCell;
 use log::{info, warn, error};
 use serde_json::Value;
@@ -267,7 +268,7 @@ pub fn get_global_volume_control() -> Result<Arc<Mutex<Box<dyn VolumeControl + S
 /// 
 /// The current volume percentage, or None if volume control is not available
 pub fn get_volume_percentage() -> Option<f64> {
-    get_global_volume_control().ok()?.lock().ok()?.get_volume_percent().ok()
+    get_global_volume_control().ok()?.lock().get_volume_percent().ok()
 }
 
 /// Set the volume as a percentage (0-100%)
@@ -281,9 +282,7 @@ pub fn get_volume_percentage() -> Option<f64> {
 /// true if the volume was set successfully, false otherwise
 pub fn set_volume_percentage(percentage: f64) -> bool {
     if let Ok(control) = get_global_volume_control() {
-        if let Ok(control) = control.lock() {
-            return control.set_volume_percent(percentage).is_ok();
-        }
+        return control.lock().set_volume_percent(percentage).is_ok();
     }
     false
 }
@@ -294,7 +293,7 @@ pub fn set_volume_percentage(percentage: f64) -> bool {
 /// 
 /// The current volume in dB, or None if volume control is not available or doesn't support dB
 pub fn get_volume_db() -> Option<f64> {
-    get_global_volume_control().ok()?.lock().ok()?.get_volume_db().ok()
+    get_global_volume_control().ok()?.lock().get_volume_db().ok()
 }
 
 /// Set the volume in decibels
@@ -308,9 +307,7 @@ pub fn get_volume_db() -> Option<f64> {
 /// true if the volume was set successfully, false otherwise
 pub fn set_volume_db(db: f64) -> bool {
     if let Ok(control) = get_global_volume_control() {
-        if let Ok(control) = control.lock() {
-            return control.set_volume_db(db).is_ok();
-        }
+        return control.lock().set_volume_db(db).is_ok();
     }
     false
 }
@@ -322,9 +319,7 @@ pub fn set_volume_db(db: f64) -> bool {
 /// true if volume control is available and functional, false otherwise
 pub fn is_volume_control_available() -> bool {
     if let Ok(control) = get_global_volume_control() {
-        if let Ok(control) = control.lock() {
-            return control.is_available();
-        }
+        return control.lock().is_available();
     }
     false
 }
@@ -335,7 +330,7 @@ pub fn is_volume_control_available() -> bool {
 /// 
 /// VolumeControlInfo if available, None otherwise
 pub fn get_volume_control_info() -> Option<crate::helpers::volume::VolumeControlInfo> {
-    Some(get_global_volume_control().ok()?.lock().ok()?.get_info())
+    Some(get_global_volume_control().ok()?.lock().get_info())
 }
 
 /// Start monitoring volume changes on the global volume control
@@ -346,7 +341,7 @@ pub fn get_volume_control_info() -> Option<crate::helpers::volume::VolumeControl
 pub fn start_volume_change_monitoring() -> Result<(), Box<dyn std::error::Error>> {
     log::debug!("Starting global volume change monitoring");
     let control = get_global_volume_control()?;
-    let control = control.lock().map_err(|e| format!("Failed to lock volume control: {}", e))?;
+    let control = control.lock();
     
     let supports_monitoring = control.supports_change_monitoring();
     log::debug!("Global volume control supports change monitoring: {}", supports_monitoring);
@@ -362,9 +357,7 @@ pub fn start_volume_change_monitoring() -> Result<(), Box<dyn std::error::Error>
 /// true if change monitoring is supported, false otherwise
 pub fn supports_volume_change_monitoring() -> bool {
     if let Ok(control) = get_global_volume_control() {
-        if let Ok(control) = control.lock() {
-            return control.supports_change_monitoring();
-        }
+        return control.lock().supports_change_monitoring();
     }
     false
 }

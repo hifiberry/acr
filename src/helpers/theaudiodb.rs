@@ -1,8 +1,8 @@
 // filepath: c:\Users\matuschd\devel\hifiberry-os\packages\acr\src\helpers\theaudiodb.rs
 use std::sync::atomic::{AtomicBool, Ordering};
-use log::{info, debug, warn, error};
-use lazy_static::lazy_static;
-use std::sync::Mutex;
+use log::{info, debug, warn};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use serde_json::{Value};
 use crate::config::get_service_config;
 use crate::helpers::http_client;
@@ -37,9 +37,9 @@ pub fn default_theaudiodb_api_key() -> String {
 }
 
 // Global singleton for TheAudioDB configuration
-lazy_static! {
-    static ref THEAUDIODB_CONFIG: Mutex<TheAudioDBConfig> = Mutex::new(TheAudioDBConfig::default());
-}
+static THEAUDIODB_CONFIG: Lazy<Mutex<TheAudioDBConfig>> = Lazy::new(|| {
+    Mutex::new(TheAudioDBConfig::default())
+});
 
 /// Initialize TheAudioDB module from configuration
 pub fn initialize_from_config(config: &serde_json::Value) {    
@@ -53,35 +53,34 @@ pub fn initialize_from_config(config: &serde_json::Value) {
         
         // Get API key if provided
         if let Some(api_key) = audiodb_config.get("api_key").and_then(|v| v.as_str()) {
-            if let Ok(mut config) = THEAUDIODB_CONFIG.lock() {
-                debug!("Found TheAudioDB API key in config: {}", 
-                       if !api_key.is_empty() && api_key.len() > 4 { 
-                           format!("{}...", &api_key[0..4]) 
-                       } else { 
-                           "Empty".to_string() 
+            {
+                let mut config = THEAUDIODB_CONFIG.lock();
+                debug!("Found TheAudioDB API key in config: {}",
+                       if !api_key.is_empty() && api_key.len() > 4 {
+                           format!("{}...", &api_key[0..4])
+                       } else {
+                           "Empty".to_string()
                        });
-                
+
                 config.api_key = api_key.to_string();
                 if !api_key.is_empty() {
                     info!("TheAudioDB API key configured");
                 } else {
                     // Try to load from the default key (secrets.txt)
                     let default_key = default_theaudiodb_api_key();
-                    debug!("Trying default TheAudioDB API key: {}", 
-                            if default_key != "YOUR_API_KEY_HERE" && default_key.len() > 4 { 
-                                format!("{}...", &default_key[0..4]) 
-                            } else { 
-                                "Not available".to_string() 
+                    debug!("Trying default TheAudioDB API key: {}",
+                            if default_key != "YOUR_API_KEY_HERE" && default_key.len() > 4 {
+                                format!("{}...", &default_key[0..4])
+                            } else {
+                                "Not available".to_string()
                             });
-                    
+
                     if default_key != "YOUR_API_KEY_HERE" {
                         info!("Using default TheAudioDB API key");
                     } else {
                         warn!("Empty TheAudioDB API key provided");
                     }
                 }
-            } else {
-                error!("Failed to acquire lock on TheAudioDB configuration");
             }
         } else {
             warn!("No API key found for TheAudioDB in configuration");
@@ -113,26 +112,18 @@ pub fn is_enabled() -> bool {
 
 /// Get the configured API key
 pub fn get_api_key() -> Option<String> {
-    if let Ok(config) = THEAUDIODB_CONFIG.lock() {
-        if config.api_key.is_empty() {            // If no API key is configured in audiocontrol.json, use the default from secrets.txt
-            let default_key = default_theaudiodb_api_key();
-            
-            if default_key != "YOUR_API_KEY_HERE" {
-                info!("Using default secret for TheAudioDB");
-                return Some(default_key.to_string());
-            }
-            None
-        } else {
-            Some(config.api_key.clone())
-        }
-    } else {        // Fallback to default key if we can't acquire the lock
+    let config = THEAUDIODB_CONFIG.lock();
+    if config.api_key.is_empty() {
+        // If no API key is configured in audiocontrol.json, use the default from secrets.txt
         let default_key = default_theaudiodb_api_key();
+
         if default_key != "YOUR_API_KEY_HERE" {
-            info!("Using default secret for TheAudioDB (fallback)");
-            Some(default_key.to_string())
-        } else {
-            None
+            info!("Using default secret for TheAudioDB");
+            return Some(default_key.to_string());
         }
+        None
+    } else {
+        Some(config.api_key.clone())
     }
 }
 

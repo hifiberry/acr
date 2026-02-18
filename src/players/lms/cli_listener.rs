@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}, Weak, RwLock};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}, Weak};
+use parking_lot::RwLock;
 use std::thread;
 use std::time::{Duration, SystemTime};
 use log::{warn, debug, error, trace, info};
@@ -471,10 +472,7 @@ impl LMSListener {
                                     // Display notification event - indicates updates to the player display
                                     // This is a good opportunity to refresh song and position information
                                     let now = SystemTime::now();
-                                    let mut last_notify = last_display_notify.write().unwrap_or_else(|_| {
-                                        error!("Failed to acquire write lock for last_display_notify");
-                                        panic!("Lock poisoned for last_display_notify");
-                                    });
+                                    let mut last_notify = last_display_notify.write();
                                     
                                     let should_skip = if let Some(last_time) = *last_notify {
                                         match now.duration_since(last_time) {

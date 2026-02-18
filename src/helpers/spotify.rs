@@ -9,7 +9,7 @@ use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use once_cell::sync::{Lazy, OnceCell};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use crate::helpers::security_store::SecurityStore;
 use crate::helpers::sanitize;
@@ -233,7 +233,7 @@ impl Spotify {
         
         let spotify = Spotify { config };
         
-        let mut client_guard = SPOTIFY_CLIENT.lock().unwrap();
+        let mut client_guard = SPOTIFY_CLIENT.lock();
         *client_guard = Some(spotify);
         
         info!("Spotify client initialized");
@@ -271,7 +271,7 @@ impl Spotify {
     }
       /// Get the singleton instance of the Spotify client
     pub fn get_instance() -> Result<Spotify> {
-        let client_guard = SPOTIFY_CLIENT.lock().unwrap();
+        let client_guard = SPOTIFY_CLIENT.lock();
         match &*client_guard {
             Some(client) => Ok(client.clone()),
             None => Err(SpotifyError::ConfigError("Spotify client has not been initialized".to_string()))

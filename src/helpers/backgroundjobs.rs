@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+use parking_lot::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
-use log::{debug, warn};
+use log::debug;
 
 /// Represents a background job with its current status
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,93 +117,53 @@ impl BackgroundJobs {
     /// Register a new background job
     pub fn register_job(&self, id: String, name: String) -> Result<(), String> {
         let job = BackgroundJob::new(id.clone(), name);
-        
-        match self.jobs.lock() {
-            Ok(mut jobs) => {
-                if jobs.contains_key(&id) {
-                    debug!("Overwriting existing job with ID '{}' with new job", id);
-                } else {
-                    debug!("Registering new background job: {}", id);
-                }
-                jobs.insert(id.clone(), job);
-                Ok(())
-            }
-            Err(e) => {
-                warn!("Failed to acquire lock for registering job '{}': {}", id, e);
-                Err(format!("Failed to register job: {}", e))
-            }
+
+        let mut jobs = self.jobs.lock();
+        if jobs.contains_key(&id) {
+            debug!("Overwriting existing job with ID '{}' with new job", id);
+        } else {
+            debug!("Registering new background job: {}", id);
         }
+        jobs.insert(id.clone(), job);
+        Ok(())
     }
     
     /// Update progress for an existing job
     pub fn update_job(&self, id: &str, progress: Option<String>, completed: Option<usize>, total: Option<usize>) -> Result<(), String> {
-        match self.jobs.lock() {
-            Ok(mut jobs) => {
-                if let Some(job) = jobs.get_mut(id) {
-                    job.update_progress(progress, completed, total);
-                    Ok(())
-                } else {
-                    Err(format!("Job with ID '{}' not found", id))
-                }
-            }
-            Err(e) => {
-                warn!("Failed to acquire lock for updating job '{}': {}", id, e);
-                Err(format!("Failed to update job: {}", e))
-            }
+        let mut jobs = self.jobs.lock();
+        if let Some(job) = jobs.get_mut(id) {
+            job.update_progress(progress, completed, total);
+            Ok(())
+        } else {
+            Err(format!("Job with ID '{}' not found", id))
         }
     }
     
     /// Mark a job as completed/finished
     pub fn complete_job(&self, id: &str) -> Result<(), String> {
-        match self.jobs.lock() {
-            Ok(mut jobs) => {
-                if let Some(job) = jobs.get_mut(id) {
-                    job.mark_finished();
-                    debug!("Marked background job as finished: {}", id);
-                    Ok(())
-                } else {
-                    Err(format!("Job with ID '{}' not found", id))
-                }
-            }
-            Err(e) => {
-                warn!("Failed to acquire lock for completing job '{}': {}", id, e);
-                Err(format!("Failed to complete job: {}", e))
-            }
+        let mut jobs = self.jobs.lock();
+        if let Some(job) = jobs.get_mut(id) {
+            job.mark_finished();
+            debug!("Marked background job as finished: {}", id);
+            Ok(())
+        } else {
+            Err(format!("Job with ID '{}' not found", id))
         }
     }
     
     /// Get all currently running background jobs
     pub fn get_all_jobs(&self) -> Result<Vec<BackgroundJob>, String> {
-        match self.jobs.lock() {
-            Ok(jobs) => {
-                Ok(jobs.values().cloned().collect())
-            }
-            Err(e) => {
-                warn!("Failed to acquire lock for getting all jobs: {}", e);
-                Err(format!("Failed to get all jobs: {}", e))
-            }
-        }
+        Ok(self.jobs.lock().values().cloned().collect())
     }
     
     /// Get a specific job by ID
     pub fn get_job(&self, id: &str) -> Result<Option<BackgroundJob>, String> {
-        match self.jobs.lock() {
-            Ok(jobs) => {
-                Ok(jobs.get(id).cloned())
-            }
-            Err(e) => {
-                warn!("Failed to acquire lock for getting job '{}': {}", id, e);
-                Err(format!("Failed to get job: {}", e))
-            }
-        }
+        Ok(self.jobs.lock().get(id).cloned())
     }
     
     /// Get the count of currently running jobs
     pub fn job_count(&self) -> usize {
-        match self.jobs.lock() {
-            Ok(jobs) => jobs.len(),
-            Err(_) => 0,
-        }
+        self.jobs.lock().len()
     }
 }
 

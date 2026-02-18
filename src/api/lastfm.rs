@@ -37,7 +37,7 @@ pub struct PrepareAuthResponse {
 /// their username if available, and any potential error information.
 #[get("/status")] // Changed path to be consistent
 pub fn get_status() -> Json<AuthStatus> {
-    let client_guard = LASTFM_CLIENT.lock().unwrap();
+    let client_guard = LASTFM_CLIENT.lock();
     match client_guard.as_ref() {
         Some(client) => {
             Json(AuthStatus {
@@ -68,7 +68,7 @@ pub fn get_status() -> Json<AuthStatus> {
 /// to be sent back later in the `/prepare_complete_auth` step.
 #[get("/auth")] // Changed path to be consistent
 pub fn get_auth_url_handler() -> Json<AuthUrlResponse> { // Made synchronous
-    let mut client_guard = LASTFM_CLIENT.lock().unwrap(); // Lock and get guard
+    let mut client_guard = LASTFM_CLIENT.lock(); // Lock and get guard
     match client_guard.as_mut() { // Get mutable reference to Option<LastfmClient>
         Some(client_ref) => { // client_ref is &mut LastfmClient
             match client_ref.get_auth_url() { // Call synchronous method
@@ -112,7 +112,7 @@ pub fn get_auth_url_handler() -> Json<AuthUrlResponse> { // Made synchronous
 #[post("/prepare_complete_auth", data = "<request_data>")] // Changed path
 pub fn prepare_complete_auth(request_data: Json<PrepareAuthRequest>) -> Json<PrepareAuthResponse> {
     info!("[prepare_complete_auth] Received token from frontend: {}", request_data.token);
-    let mut client_guard = LASTFM_CLIENT.lock().unwrap();
+    let mut client_guard = LASTFM_CLIENT.lock();
     match client_guard.as_mut() {
         Some(client_ref) => {
             match client_ref.set_auth_token(request_data.token.clone()) {
@@ -151,7 +151,7 @@ pub fn prepare_complete_auth(request_data: Json<PrepareAuthRequest>) -> Json<Pre
 /// username are stored securely, and the user is considered authenticated.
 #[get("/complete_auth")] // Changed path
 pub async fn complete_auth() -> Json<AuthStatus> { // Remains async for Rocket, but internal calls are sync
-    let mut client_guard = LASTFM_CLIENT.lock().unwrap(); // Lock and get guard
+    let mut client_guard = LASTFM_CLIENT.lock(); // Lock and get guard
     match client_guard.as_mut() { // Get mutable reference
         Some(client_ref) => { // client_ref is &mut LastfmClient
             match client_ref.get_session() { // get_session is synchronous
@@ -204,7 +204,7 @@ pub async fn complete_auth() -> Json<AuthStatus> { // Remains async for Rocket, 
 /// within the ACR application.
 #[post("/disconnect")]
 pub fn disconnect_handler() -> Json<AuthStatus> { // Made synchronous
-    let mut client_guard = LASTFM_CLIENT.lock().unwrap(); // Lock and get guard
+    let mut client_guard = LASTFM_CLIENT.lock(); // Lock and get guard
     match client_guard.as_mut() { // Get mutable reference
         Some(client_ref) => { // client_ref is &mut LastfmClient
             match client_ref.disconnect() { // Call synchronous method

@@ -80,12 +80,9 @@ pub fn filename_from_string(input: &str) -> String {
 /// * `String` - A key in the format "<sanitized_artist>/<sanitized_album>"
 pub fn key_from_album(album: &crate::data::Album) -> String {
     // Get the list of artists for the album
-    let artists = match album.artists.lock() {
-        Ok(artists) => artists.clone(),
-        Err(_) => {
-            log::warn!("Failed to acquire lock on album artists for {}", album.name);
-            Vec::new()
-        }
+    let artists = {
+        let guard = album.artists.lock();
+        guard.clone()
     };
     
     // Use "unknown" as a placeholder if no artists are found

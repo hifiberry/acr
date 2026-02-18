@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::fs::{self, File, read_dir};
 use std::io::{Write, Read};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use log::{info, error, debug};
 use serde::{Serialize, Deserialize};
 use crate::helpers::attributecache;
@@ -53,9 +53,7 @@ impl ImageCacheStats {
 }
 
 // Global singleton for the image cache
-lazy_static! {
-    static ref IMAGE_CACHE: Mutex<ImageCache> = Mutex::new(ImageCache::new());
-}
+static IMAGE_CACHE: Lazy<Mutex<ImageCache>> = Lazy::new(|| Mutex::new(ImageCache::new()));
 
 /// Metadata for image expiry tracking
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -799,8 +797,8 @@ fn extension_to_mime_type(extension: &str) -> &str {
 // Global functions to access the image cache singleton
 
 /// Get a reference to the global image cache
-pub fn get_image_cache() -> std::sync::MutexGuard<'static, ImageCache> {
-    IMAGE_CACHE.lock().unwrap()
+pub fn get_image_cache() -> parking_lot::MutexGuard<'static, ImageCache> {
+    IMAGE_CACHE.lock()
 }
 
 /// Get the full path for a relative path in the image cache

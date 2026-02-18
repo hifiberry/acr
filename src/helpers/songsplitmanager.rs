@@ -1,7 +1,8 @@
 use crate::helpers::songtitlesplitter::SongTitleSplitter;
 use crate::helpers::attributecache;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use log::{debug, info, warn};
 
 /// Manager for song title splitters that handles creation, reuse, and lifecycle
@@ -46,41 +47,37 @@ impl SongSplitManager {
     /// # Returns
     /// * `Option<SongTitleSplitter>` - Cloned splitter instance, or None if locking fails or limit reached
     pub fn get_or_create_splitter(&self, splitter_id: &str) -> Option<SongTitleSplitter> {
-        if let Ok(mut splitters) = self.splitters.lock() {
-            // Check if we already have a splitter for this ID in memory
-            if let Some(existing_splitter) = splitters.get(splitter_id) {
-                debug!("Reusing existing splitter for ID: {}", splitter_id);
-                return Some(existing_splitter.clone());
-            }
-            
-            // Check if we've reached the maximum number of splitters
-            if splitters.len() >= self.max_splitters {
-                warn!("Maximum number of splitters ({}) reached, cannot create new splitter for ID: {}", 
-                      self.max_splitters, splitter_id);
-                return None;
-            }
-            
-            // Try to load from persistent storage first
-            let new_splitter = if let Some(cached_splitter) = self.load_from_cache(splitter_id) {
-                debug!("Loaded splitter for ID '{}' from persistent storage", splitter_id);
-                cached_splitter
-            } else {
-                // Create a new splitter if not found in cache
-                debug!("Creating new splitter for ID: {}", splitter_id);
-                SongTitleSplitter::new(splitter_id)
-            };
-            
-            // Store it in our map
-            splitters.insert(splitter_id.to_string(), new_splitter.clone());
-            
-            info!("Created/loaded song title splitter for '{}' (total splitters: {})", 
-                  splitter_id, splitters.len());
-            
-            Some(new_splitter)
-        } else {
-            warn!("Failed to acquire lock on splitters map");
-            None
+        let mut splitters = self.splitters.lock();
+        // Check if we already have a splitter for this ID in memory
+        if let Some(existing_splitter) = splitters.get(splitter_id) {
+            debug!("Reusing existing splitter for ID: {}", splitter_id);
+            return Some(existing_splitter.clone());
         }
+        
+        // Check if we've reached the maximum number of splitters
+        if splitters.len() >= self.max_splitters {
+            warn!("Maximum number of splitters ({}) reached, cannot create new splitter for ID: {}", 
+                  self.max_splitters, splitter_id);
+            return None;
+        }
+        
+        // Try to load from persistent storage first
+        let new_splitter = if let Some(cached_splitter) = self.load_from_cache(splitter_id) {
+            debug!("Loaded splitter for ID '{}' from persistent storage", splitter_id);
+            cached_splitter
+        } else {
+            // Create a new splitter if not found in cache
+            debug!("Creating new splitter for ID: {}", splitter_id);
+            SongTitleSplitter::new(splitter_id)
+        };
+        
+        // Store it in our map
+        splitters.insert(splitter_id.to_string(), new_splitter.clone());
+        
+        info!("Created/loaded song title splitter for '{}' (total splitters: {})", 
+              splitter_id, splitters.len());
+        
+        Some(new_splitter)
     }
     
     /// Split a song title using the appropriate splitter for the given ID
@@ -94,51 +91,44 @@ impl SongSplitManager {
     /// # Returns
     /// * `Option<(String, String)>` - Tuple of (artist, song) if successfully split
     pub fn split_song(&self, splitter_id: &str, title: &str) -> Option<(String, String)> {
-        if let Ok(mut splitters) = self.splitters.lock() {
-            // Check if we already have a splitter for this ID in memory
-            if !splitters.contains_key(splitter_id) {
-                // Check if we've reached the maximum number of splitters
-                if splitters.len() >= self.max_splitters {
-                    warn!("Maximum number of splitters ({}) reached, cannot create new splitter for ID: {}", 
-                          self.max_splitters, splitter_id);
-                    return None;
-                }
-                
-                // Try to load from persistent storage first
-                let new_splitter = if let Some(cached_splitter) = self.load_from_cache(splitter_id) {
-                    debug!("Loaded splitter for ID '{}' from persistent storage for splitting", splitter_id);
-                    cached_splitter
-                } else {
-                    // Create a new splitter if not found in cache
-                    debug!("Creating new splitter for ID: {}", splitter_id);
-                    SongTitleSplitter::new(splitter_id)
-                };
-                
-                splitters.insert(splitter_id.to_string(), new_splitter);
-                info!("Created/loaded song title splitter for '{}' (total splitters: {})", 
-                      splitter_id, splitters.len());
+        let mut splitters = self.splitters.lock();
+        // Check if we already have a splitter for this ID in memory
+        if !splitters.contains_key(splitter_id) {
+            // Check if we've reached the maximum number of splitters
+            if splitters.len() >= self.max_splitters {
+                warn!("Maximum number of splitters ({}) reached, cannot create new splitter for ID: {}", 
+                      self.max_splitters, splitter_id);
+                return None;
             }
             
-            // Now get mutable access to the splitter and split the song
-            if let Some(splitter) = splitters.get_mut(splitter_id) {
-                splitter.split_song(title)
+            // Try to load from persistent storage first
+            let new_splitter = if let Some(cached_splitter) = self.load_from_cache(splitter_id) {
+                debug!("Loaded splitter for ID '{}' from persistent storage for splitting", splitter_id);
+                cached_splitter
             } else {
-                warn!("Failed to get mutable access to splitter for ID '{}'", splitter_id);
-                None
-            }
+                // Create a new splitter if not found in cache
+                debug!("Creating new splitter for ID: {}", splitter_id);
+                SongTitleSplitter::new(splitter_id)
+            };
+            
+            splitters.insert(splitter_id.to_string(), new_splitter);
+            info!("Created/loaded song title splitter for '{}' (total splitters: {})", 
+                  splitter_id, splitters.len());
+        }
+        
+        // Now get mutable access to the splitter and split the song
+        if let Some(splitter) = splitters.get_mut(splitter_id) {
+            splitter.split_song(title)
         } else {
-            warn!("Failed to acquire lock on splitters map for splitting title '{}'", title);
+            warn!("Failed to get mutable access to splitter for ID '{}'", splitter_id);
             None
         }
     }
     
     /// Get the number of active splitters
     pub fn get_splitter_count(&self) -> usize {
-        if let Ok(splitters) = self.splitters.lock() {
-            splitters.len()
-        } else {
-            0
-        }
+        let splitters = self.splitters.lock();
+        splitters.len()
     }
     
     /// Get statistics for a specific splitter
@@ -146,18 +136,15 @@ impl SongSplitManager {
     /// # Returns
     /// * `Option<(u32, u32, u32, u32, bool)>` - Tuple of (artist_song_count, song_artist_count, unknown_count, undecided_count, has_default_order)
     pub fn get_splitter_stats(&self, splitter_id: &str) -> Option<(u32, u32, u32, u32, bool)> {
-        if let Ok(splitters) = self.splitters.lock() {
-            if let Some(splitter) = splitters.get(splitter_id) {
-                Some((
-                    splitter.get_artist_song_count(),
-                    splitter.get_song_artist_count(),
-                    splitter.get_unknown_count(),
-                    splitter.get_undecided_count(),
-                    splitter.has_default_order(),
-                ))
-            } else {
-                None
-            }
+        let splitters = self.splitters.lock();
+        if let Some(splitter) = splitters.get(splitter_id) {
+            Some((
+                splitter.get_artist_song_count(),
+                splitter.get_song_artist_count(),
+                splitter.get_unknown_count(),
+                splitter.get_undecided_count(),
+                splitter.has_default_order(),
+            ))
         } else {
             None
         }
@@ -165,11 +152,8 @@ impl SongSplitManager {
     
     /// Get a list of all splitter IDs
     pub fn get_splitter_ids(&self) -> Vec<String> {
-        if let Ok(splitters) = self.splitters.lock() {
-            splitters.keys().cloned().collect()
-        } else {
-            Vec::new()
-        }
+        let splitters = self.splitters.lock();
+        splitters.keys().cloned().collect()
     }
     
     /// Get statistics for all splitters
@@ -179,19 +163,18 @@ impl SongSplitManager {
     pub fn get_all_splitter_stats(&self) -> HashMap<String, (u32, u32, u32, u32, bool)> {
         let mut stats = HashMap::new();
         
-        if let Ok(splitters) = self.splitters.lock() {
-            for (id, splitter) in splitters.iter() {
-                stats.insert(
-                    id.clone(),
-                    (
-                        splitter.get_artist_song_count(),
-                        splitter.get_song_artist_count(),
-                        splitter.get_unknown_count(),
-                        splitter.get_undecided_count(),
-                        splitter.has_default_order(),
-                    )
-                );
-            }
+        let splitters = self.splitters.lock();
+        for (id, splitter) in splitters.iter() {
+            stats.insert(
+                id.clone(),
+                (
+                    splitter.get_artist_song_count(),
+                    splitter.get_song_artist_count(),
+                    splitter.get_unknown_count(),
+                    splitter.get_undecided_count(),
+                    splitter.has_default_order(),
+                )
+            );
         }
         
         stats
@@ -199,27 +182,20 @@ impl SongSplitManager {
     
     /// Clear all splitters (useful for testing or configuration changes)
     pub fn clear_all_splitters(&self) {
-        if let Ok(mut splitters) = self.splitters.lock() {
-            let count = splitters.len();
-            splitters.clear();
-            info!("Cleared {} song title splitters", count);
-        } else {
-            warn!("Failed to acquire lock for clearing splitters");
-        }
+        let mut splitters = self.splitters.lock();
+        let count = splitters.len();
+        splitters.clear();
+        info!("Cleared {} song title splitters", count);
     }
     
     /// Remove a specific splitter
     pub fn remove_splitter(&self, splitter_id: &str) -> bool {
-        if let Ok(mut splitters) = self.splitters.lock() {
-            if splitters.remove(splitter_id).is_some() {
-                debug!("Removed splitter for ID: {}", splitter_id);
-                true
-            } else {
-                debug!("No splitter found for ID: {}", splitter_id);
-                false
-            }
+        let mut splitters = self.splitters.lock();
+        if splitters.remove(splitter_id).is_some() {
+            debug!("Removed splitter for ID: {}", splitter_id);
+            true
         } else {
-            warn!("Failed to acquire lock for removing splitter");
+            debug!("No splitter found for ID: {}", splitter_id);
             false
         }
     }
@@ -237,36 +213,33 @@ impl SongSplitManager {
     /// # Returns
     /// * `Result<(), String>` - Ok(()) if successful, Err with error message if failed
     pub fn save(&self, splitter_id: &str) -> Result<(), String> {
-        if let Ok(splitters) = self.splitters.lock() {
-            if let Some(splitter) = splitters.get(splitter_id) {
-                // Create cache key for this splitter
-                let cache_key = format!("song_splitter:{}", splitter_id);
-                
-                // Serialize the splitter to JSON
-                match splitter.to_json_compact() {
-                    Ok(json) => {
-                        // Store in attribute cache
-                        match attributecache::set(&cache_key, &json) {
-                            Ok(_) => {
-                                debug!("Successfully saved splitter state for '{}' to cache", splitter_id);
-                                Ok(())
-                            },
-                            Err(e) => {
-                                warn!("Failed to save splitter state for '{}' to cache: {}", splitter_id, e);
-                                Err(format!("Failed to save to cache: {}", e))
-                            }
+        let splitters = self.splitters.lock();
+        if let Some(splitter) = splitters.get(splitter_id) {
+            // Create cache key for this splitter
+            let cache_key = format!("song_splitter:{}", splitter_id);
+            
+            // Serialize the splitter to JSON
+            match splitter.to_json_compact() {
+                Ok(json) => {
+                    // Store in attribute cache
+                    match attributecache::set(&cache_key, &json) {
+                        Ok(_) => {
+                            debug!("Successfully saved splitter state for '{}' to cache", splitter_id);
+                            Ok(())
+                        },
+                        Err(e) => {
+                            warn!("Failed to save splitter state for '{}' to cache: {}", splitter_id, e);
+                            Err(format!("Failed to save to cache: {}", e))
                         }
-                    },
-                    Err(e) => {
-                        warn!("Failed to serialize splitter for '{}': {}", splitter_id, e);
-                        Err(format!("Failed to serialize splitter: {}", e))
                     }
+                },
+                Err(e) => {
+                    warn!("Failed to serialize splitter for '{}': {}", splitter_id, e);
+                    Err(format!("Failed to serialize splitter: {}", e))
                 }
-            } else {
-                Err(format!("No splitter found for ID: {}", splitter_id))
             }
         } else {
-            Err("Failed to acquire lock on splitters map".to_string())
+            Err(format!("No splitter found for ID: {}", splitter_id))
         }
     }
     
@@ -312,24 +285,23 @@ impl SongSplitManager {
         self.max_splitters = max_splitters;
         
         // If we currently have more splitters than the new limit, remove some
-        if let Ok(mut splitters) = self.splitters.lock() {
-            if splitters.len() > max_splitters {
-                let current_count = splitters.len();
-                let to_remove = current_count - max_splitters;
-                
-                // Remove excess splitters (no specific order)
-                let keys_to_remove: Vec<String> = splitters.keys()
-                    .take(to_remove)
-                    .cloned()
-                    .collect();
-                
-                for key in keys_to_remove {
-                    splitters.remove(&key);
-                }
-                
-                warn!("Reduced splitter count from {} to {} due to new limit", 
-                      current_count, splitters.len());
+        let mut splitters = self.splitters.lock();
+        if splitters.len() > max_splitters {
+            let current_count = splitters.len();
+            let to_remove = current_count - max_splitters;
+            
+            // Remove excess splitters (no specific order)
+            let keys_to_remove: Vec<String> = splitters.keys()
+                .take(to_remove)
+                .cloned()
+                .collect();
+            
+            for key in keys_to_remove {
+                splitters.remove(&key);
             }
+            
+            warn!("Reduced splitter count from {} to {} due to new limit", 
+                  current_count, splitters.len());
         }
     }
 }

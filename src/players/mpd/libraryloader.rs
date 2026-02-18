@@ -139,7 +139,8 @@ impl MPDLibraryLoader {
     fn album_from_mpd_song(song: &mpd::Song, custom_separators: Option<&[String]>) -> crate::data::Album {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use crate::data::{Album, Track, Identifier};
         use crate::helpers::musicbrainz;
         
@@ -183,7 +184,7 @@ impl MPDLibraryLoader {
             None => Arc::new(Mutex::new(vec![album_artist]))
         };
 
-        debug!("Album ID: {}, Name: {}, Artists: {:?}", album_id, album_name, artists.lock().unwrap());
+        debug!("Album ID: {}, Name: {}, Artists: {:?}", album_id, album_name, artists.lock());
 
         
         // Create album object with new Identifier enum
@@ -380,7 +381,7 @@ impl MPDLibraryLoader {
             // Add the track to the album's track list, but only if the track is not already present
             if let Some(album) = albums_map.get_mut(&album_key) {
                 // Check if the track is already present in the album's track list
-                let mut tracks = album.tracks.lock().unwrap();
+                let mut tracks = album.tracks.lock();
                 if !tracks.iter().any(|t| t.name == track.name && t.disc_number == track.disc_number) {
                     tracks.push(track);
                 }

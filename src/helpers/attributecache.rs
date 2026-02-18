@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use lazy_static::lazy_static;
+use parking_lot::Mutex;
+use once_cell::sync::Lazy;
 use log::{info, error, debug, warn};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
@@ -81,9 +81,7 @@ pub struct CacheStats {
 }
 
 // Global singleton for the attribute cache
-lazy_static! {
-    static ref ATTRIBUTE_CACHE: Mutex<AttributeCache> = Mutex::new(AttributeCache::new());
-}
+static ATTRIBUTE_CACHE: Lazy<Mutex<AttributeCache>> = Lazy::new(|| Mutex::new(AttributeCache::new()));
 
 /// A persistent attribute cache that stores key-value pairs using SQLite database
 pub struct AttributeCache {
@@ -976,8 +974,8 @@ impl AttributeCache {
 // Global functions to access the attribute cache singleton
 
 /// Get a reference to the global attribute cache
-pub fn get_attribute_cache() -> std::sync::MutexGuard<'static, AttributeCache> {
-    ATTRIBUTE_CACHE.lock().unwrap()
+pub fn get_attribute_cache() -> parking_lot::MutexGuard<'static, AttributeCache> {
+    ATTRIBUTE_CACHE.lock()
 }
 
 /// Store a value in the attribute cache
@@ -1442,7 +1440,8 @@ mod tests {
     // Concurrent access tests
     #[test]
     fn test_concurrent_set_and_get() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use std::thread;
         
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
@@ -1463,13 +1462,13 @@ mod tests {
                     
                     // Set value
                     {
-                        let mut cache_guard = cache_clone.lock().unwrap();
+                        let mut cache_guard = cache_clone.lock();
                         cache_guard.set(&key, &value).expect("Failed to set value in thread");
                     }
                     
                     // Get value back
                     {
-                        let mut cache_guard = cache_clone.lock().unwrap();
+                        let mut cache_guard = cache_clone.lock();
                         let retrieved: Option<String> = cache_guard.get(&key).expect("Failed to get value in thread");
                         assert_eq!(retrieved, Some(value));
                     }
@@ -1489,7 +1488,7 @@ mod tests {
                 let key = format!("thread_{}_key_{}", thread_id, i);
                 let expected_value = format!("thread_{}_value_{}", thread_id, i);
                 
-                let mut cache_guard = cache.lock().unwrap();
+                let mut cache_guard = cache.lock();
                 let retrieved: Option<String> = cache_guard.get(&key).expect("Failed to get value after threads");
                 assert_eq!(retrieved, Some(expected_value));
                 drop(cache_guard); // Explicitly drop to release lock
@@ -1499,7 +1498,8 @@ mod tests {
 
     #[test]
     fn test_concurrent_memory_cache_access() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use std::thread;
         use std::time::Duration;
         
@@ -1509,7 +1509,7 @@ mod tests {
         
         // Pre-populate the cache
         {
-            let mut cache_guard = cache.lock().unwrap();
+            let mut cache_guard = cache.lock();
             for i in 0..10 {
                 let key = format!("shared_key_{}", i);
                 let value = format!("shared_value_{}", i);
@@ -1531,7 +1531,8 @@ mod tests {
                         
                         // Just verify we can read some value, don't care about the exact content
                         // since writers might be updating it concurrently
-                        if let Ok(cache_guard) = cache_clone.lock() {
+                        {
+                            let cache_guard = cache_clone.lock();
                             let mut cache_mut = cache_guard;
                             let _retrieved: Result<Option<String>, _> = cache_mut.get(&key);
                             // Don't assert on value since it may be updated by writers
@@ -1554,7 +1555,8 @@ mod tests {
                         let key = format!("shared_key_{}", key_id);
                         let new_value = format!("updated_by_thread_{}_iter_{}_{}", thread_id, iteration, key_id);
                         
-                        if let Ok(cache_guard) = cache_clone.lock() {
+                        {
+                            let cache_guard = cache_clone.lock();
                             let mut cache_mut = cache_guard;
                             let _ = cache_mut.set(&key, &new_value); // Ignore errors
                         }
@@ -1646,7 +1648,8 @@ mod tests {
 
     #[test]
     fn test_concurrent_cleanup_and_access() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use std::thread;
         use std::time::Duration;
         
@@ -1656,7 +1659,7 @@ mod tests {
         
         // Set a very short max age for testing cleanup
         {
-            let mut cache_guard = cache.lock().unwrap();
+            let mut cache_guard = cache.lock();
             cache_guard.set_max_age(0); // Immediate expiry for testing
         }
         
@@ -1673,13 +1676,13 @@ mod tests {
                     
                     // Set value
                     {
-                        let mut cache_guard = cache_clone.lock().unwrap();
+                        let mut cache_guard = cache_clone.lock();
                         cache_guard.set(&key, &value).ok(); // Ignore errors
                     }
                     
                     // Try to get value
                     {
-                        let mut cache_guard = cache_clone.lock().unwrap();
+                        let mut cache_guard = cache_clone.lock();
                         let _retrieved: Result<Option<String>, _> = cache_guard.get(&key);
                         // Don't assert here as cleanup might remove the value
                     }
@@ -1695,7 +1698,7 @@ mod tests {
         let cleanup_handle = thread::spawn(move || {
             for _i in 0..10 {
                 thread::sleep(Duration::from_millis(5));
-                let mut cache_guard = cache_cleanup.lock().unwrap();
+                let mut cache_guard = cache_cleanup.lock();
                 cache_guard.cleanup().ok(); // Ignore errors
             }
         });
@@ -1712,7 +1715,8 @@ mod tests {
 
     #[test]
     fn test_concurrent_clear_and_access() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
+        use parking_lot::Mutex;
         use std::thread;
         use std::time::Duration;
         
@@ -1733,13 +1737,13 @@ mod tests {
                     
                     // Set value
                     {
-                        let mut cache_guard = cache_clone.lock().unwrap();
+                        let mut cache_guard = cache_clone.lock();
                         cache_guard.set(&key, &value).ok(); // Ignore errors
                     }
                     
                     // Try to get value
                     {
-                        let mut cache_guard = cache_clone.lock().unwrap();
+                        let mut cache_guard = cache_clone.lock();
                         let _retrieved: Result<Option<String>, _> = cache_guard.get(&key);
                         // Don't assert here as clear might remove the value
                     }
@@ -1755,7 +1759,7 @@ mod tests {
         let clear_handle = thread::spawn(move || {
             for _i in 0..5 {
                 thread::sleep(Duration::from_millis(10));
-                let mut cache_guard = cache_clear.lock().unwrap();
+                let mut cache_guard = cache_clear.lock();
                 cache_guard.clear().ok(); // Ignore errors
             }
         });

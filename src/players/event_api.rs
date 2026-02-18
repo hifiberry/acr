@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use log::{debug, warn, error};
+use log::{debug, warn};
 use serde_json::Value;
 use rocket::serde::json::Json;
 use rocket::{post, State};
@@ -27,48 +27,38 @@ pub fn player_event_update(
     // Find the player by name
     if let Some(player_controller_arc) = controller.get_player_by_name(&player_name) {
         // Get a read lock on the player controller
-        if let Ok(player_controller) = player_controller_arc.read() {
-            // Check if the player supports API events
-            if !player_controller.supports_api_events() {
-                warn!("Player '{}' does not support API event processing", player_name);
-                return Err(Custom(
+        let player_controller = player_controller_arc.read();
+        // Check if the player supports API events
+        if !player_controller.supports_api_events() {
+            warn!("Player '{}' does not support API event processing", player_name);
+            return Err(Custom(
+                Status::BadRequest,
+                Json(PlayerEventResponse {
+                    success: false,
+                    message: format!("Player '{}' does not support API event processing", player_name),
+                })
+            ));
+        }
+
+        // Process the event
+        match player_controller.process_api_event(&event_data) {
+            true => {
+                debug!("Successfully processed API event for player: {}", player_name);
+                Ok(Json(PlayerEventResponse {
+                    success: true,
+                    message: "Event processed successfully".to_string(),
+                }))
+            }
+            false => {
+                warn!("Failed to process API event for player: {}", player_name);
+                Err(Custom(
                     Status::BadRequest,
                     Json(PlayerEventResponse {
                         success: false,
-                        message: format!("Player '{}' does not support API event processing", player_name),
+                        message: "Failed to process event or processor disabled".to_string(),
                     })
-                ));
+                ))
             }
-            
-            // Process the event
-            match player_controller.process_api_event(&event_data) {
-                true => {
-                    debug!("Successfully processed API event for player: {}", player_name);
-                    Ok(Json(PlayerEventResponse {
-                        success: true,
-                        message: "Event processed successfully".to_string(),
-                    }))
-                }
-                false => {
-                    warn!("Failed to process API event for player: {}", player_name);
-                    Err(Custom(
-                        Status::BadRequest,
-                        Json(PlayerEventResponse {
-                            success: false,
-                            message: "Failed to process event or processor disabled".to_string(),
-                        })
-                    ))
-                }
-            }
-        } else {
-            error!("Failed to acquire read lock on player controller: {}", player_name);
-            Err(Custom(
-                Status::InternalServerError,
-                Json(PlayerEventResponse {
-                    success: false,
-                    message: "Internal error: could not access player controller".to_string(),
-                })
-            ))
         }
     } else {
         warn!("Player '{}' not found", player_name);

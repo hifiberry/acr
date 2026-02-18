@@ -1,13 +1,13 @@
 use serde_json::Value;
-use log::{debug, warn, info, error};
+use log::{debug, warn, info};
 use crate::helpers::http_client;
 use crate::helpers::coverart::{CoverartProvider, CoverartMethod};
 use moka::sync::Cache;
 use std::time::Duration;
 use std::collections::HashSet;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use crate::config::get_service_config;
 use crate::helpers::ratelimit;
 
@@ -26,9 +26,9 @@ pub fn default_fanarttv_api_key() -> String {
 }
 
 // Global singleton for FanArt.tv configuration
-lazy_static! {
-    static ref FANARTTV_CONFIG: Mutex<FanarttvConfig> = Mutex::new(FanarttvConfig::default());
-}
+static FANARTTV_CONFIG: Lazy<Mutex<FanarttvConfig>> = Lazy::new(|| {
+    Mutex::new(FanarttvConfig::default())
+});
 
 /// Initialize FanArt.tv module from configuration
 pub fn initialize_from_config(config: &serde_json::Value) {    
@@ -42,14 +42,15 @@ pub fn initialize_from_config(config: &serde_json::Value) {
         
         // Get API key if provided
         if let Some(api_key) = fanarttv_config.get("api_key").and_then(|v| v.as_str()) {
-            if let Ok(mut config) = FANARTTV_CONFIG.lock() {
-                debug!("Found FanArt.tv API key in config: {}", 
-                       if !api_key.is_empty() && api_key.len() > 4 { 
-                           format!("{}...", &api_key[0..4]) 
-                       } else { 
-                           "Empty".to_string() 
+            {
+                let mut config = FANARTTV_CONFIG.lock();
+                debug!("Found FanArt.tv API key in config: {}",
+                       if !api_key.is_empty() && api_key.len() > 4 {
+                           format!("{}...", &api_key[0..4])
+                       } else {
+                           "Empty".to_string()
                        });
-                
+
                 config.api_key = api_key.to_string();
                 if !api_key.is_empty() {
                     info!("FanArt.tv API key configured");
@@ -59,12 +60,11 @@ pub fn initialize_from_config(config: &serde_json::Value) {
                     config.api_key = default_key;
                     info!("Using default FanArt.tv API key");
                 }
-            } else {
-                error!("Failed to acquire lock on FanArt.tv configuration");
             }
         } else {
             // Use default API key if none provided
-            if let Ok(mut config) = FANARTTV_CONFIG.lock() {
+            {
+                let mut config = FANARTTV_CONFIG.lock();
                 let default_key = default_fanarttv_api_key();
                 config.api_key = default_key;
                 debug!("No API key found for FanArt.tv in configuration, using default");
@@ -84,7 +84,8 @@ pub fn initialize_from_config(config: &serde_json::Value) {
     } else {
         // Default to enabled if not in config, with default API key
         FANARTTV_ENABLED.store(true, Ordering::SeqCst);
-        if let Ok(mut config) = FANARTTV_CONFIG.lock() {
+        {
+            let mut config = FANARTTV_CONFIG.lock();
             let default_key = default_fanarttv_api_key();
             config.api_key = default_key;
         }
@@ -102,28 +103,23 @@ pub fn is_enabled() -> bool {
 
 /// Get the configured API key
 pub fn get_api_key() -> Option<String> {
-    if let Ok(config) = FANARTTV_CONFIG.lock() {
-        if !config.api_key.is_empty() {
-            Some(config.api_key.clone())
-        } else {
-            None
-        }
+    let config = FANARTTV_CONFIG.lock();
+    if !config.api_key.is_empty() {
+        Some(config.api_key.clone())
     } else {
         None
     }
 }
 
-// Using lazy_static for failed MBID cache with 24-hour expiry  
-lazy_static! {
-    static ref FAILED_MBID_CACHE: Cache<String, bool> = {
-        Cache::builder()
-            // Set a 24-hour time-to-live (TTL)
-            .time_to_live(Duration::from_secs(24 * 60 * 60))
-            // Set a maximum capacity for the cache
-            .max_capacity(1000) 
-            .build()
-    };
-}
+// Using once_cell for failed MBID cache with 24-hour expiry
+static FAILED_MBID_CACHE: Lazy<Cache<String, bool>> = Lazy::new(|| {
+    Cache::builder()
+        // Set a 24-hour time-to-live (TTL)
+        .time_to_live(Duration::from_secs(24 * 60 * 60))
+        // Set a maximum capacity for the cache
+        .max_capacity(1000)
+        .build()
+});
 
 
 

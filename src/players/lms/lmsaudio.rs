@@ -1,5 +1,6 @@
 use std::any::Any;
-use std::sync::{Arc, RwLock, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use parking_lot::RwLock;
 use std::time::{SystemTime, Duration};
 use std::thread;
 use log::{debug, info, warn, error};
@@ -245,16 +246,13 @@ impl LMSAudioController {
             let player = LMSPlayer::new(client.clone(), &player_mac);
             
             // Store the client and player
-            if let Ok(mut client_lock) = controller.client.write() {
-                *client_lock = Some(client.clone());
-            }
-            
-            if let Ok(mut player_lock) = controller.player.write() {
-                *player_lock = Some(player);
-            }
-            
+            { let mut client_lock = controller.client.write(); *client_lock = Some(client.clone()); }
+
+            { let mut player_lock = controller.player.write(); *player_lock = Some(player); }
+
             // Initialize the library with the same connection as the player
-            if let Ok(mut library_lock) = controller.library.write() {
+            {
+                let mut library_lock = controller.library.write();
                 if config.enable_library {
                     let library = crate::players::lms::library::LMSLibrary::with_connection(&server, config.port);
                     info!("Created LMS library instance for server: {}", server);
@@ -269,9 +267,7 @@ impl LMSAudioController {
             controller.is_connected.store(true, Ordering::SeqCst);
             
             // Store the connected server
-            if let Ok(mut connected_server) = controller.connected_server.write() {
-                *connected_server = Some(server.clone());
-            }
+            { let mut connected_server = controller.connected_server.write(); *connected_server = Some(server.clone()); }
             
             // Start the CLI listener
             controller.start_cli_listener(&server, &player_mac);
@@ -285,13 +281,7 @@ impl LMSAudioController {
     
     /// Start the reconnection thread
     fn start_reconnection_thread(&self) {
-        let config = match self.config.read() {
-            Ok(cfg) => cfg.clone(),
-            Err(_) => {
-                warn!("Failed to acquire read lock on LMS configuration");
-                return;
-            }
-        };
+        let config = self.config.read().clone();
         
         // Don't start the reconnection thread if the interval is 0 (disabled)
         if config.reconnection_interval == 0 {
@@ -323,13 +313,7 @@ impl LMSAudioController {
                 let was_connected = is_connected.load(Ordering::SeqCst);
                 
                 // Read the current configuration
-                let current_config = match controller_config.read() {
-                    Ok(cfg) => cfg.clone(),
-                    Err(_) => {
-                        warn!("Failed to acquire read lock on LMS configuration");
-                        continue;
-                    }
-                };
+                let current_config = controller_config.read().clone();
                 
                 // Check connection status using find_server_connection
                 let (now_connected, found_server, matched_mac, _) = controller.find_server_connection(&current_config);
@@ -396,32 +380,30 @@ impl LMSAudioController {
         // First check if we are already connected to a server
         if self.is_connected.load(Ordering::SeqCst) {
             // Get the connected server
-            if let Ok(connected_server_guard) = self.connected_server.read() {
-                if let Some(server) = connected_server_guard.as_ref() {
-                    // Get player ID
-                    if let Ok(player_guard) = self.player.read() {
-                        if let Some(player) = player_guard.as_ref() {
-                            let player_id = player.get_player_id();
-                            
-                            debug!("Already connected to server {}, checking if still connected", server);
-                            
-                            // Check if still connected to this server
-                            if crate::players::lms::player_finder::is_player(server, vec![player_id.to_string()]) {
-                                debug!("Still connected to server {}", server);
-                                return (true, Some(server.clone()), Some(player_id.to_string()), None);
-                            } else {
-                                debug!("No longer connected to server {}", server);
-                                // Still return the server address even if player isn't connected
-                                // This prevents switching to different servers
-                                return (false, Some(server.clone()), None, None);
-                            }
-                        }
+            let connected_server_guard = self.connected_server.read();
+            if let Some(server) = connected_server_guard.as_ref() {
+                // Get player ID
+                let player_guard = self.player.read();
+                if let Some(player) = player_guard.as_ref() {
+                    let player_id = player.get_player_id();
+
+                    debug!("Already connected to server {}, checking if still connected", server);
+
+                    // Check if still connected to this server
+                    if crate::players::lms::player_finder::is_player(server, vec![player_id.to_string()]) {
+                        debug!("Still connected to server {}", server);
+                        return (true, Some(server.clone()), Some(player_id.to_string()), None);
+                    } else {
+                        debug!("No longer connected to server {}", server);
+                        // Still return the server address even if player isn't connected
+                        // This prevents switching to different servers
+                        return (false, Some(server.clone()), None, None);
                     }
-                    
-                    // We have a server but no player information
-                    // Return the server address so we don't try a different one
-                    return (false, Some(server.clone()), None, None);
                 }
+
+                // We have a server but no player information
+                // Return the server address so we don't try a different one
+                return (false, Some(server.clone()), None, None);
             }
         }
         
@@ -471,14 +453,8 @@ impl LMSAudioController {
         // Only perform discovery if we've never connected before
         // Check if we've never found a server by checking both connected_server and config.server
         let never_connected = {
-            let no_connected_server = if let Ok(connected_server_guard) = self.connected_server.read() {
-                connected_server_guard.is_none()
-            } else {
-                true
-            };
-            
+            let no_connected_server = self.connected_server.read().is_none();
             let no_config_server = config.server.is_none();
-            
             no_connected_server && no_config_server
         };
         
@@ -528,7 +504,8 @@ impl LMSAudioController {
                                     for mac in &all_mac_addresses {
                                         if crate::helpers::macaddress::mac_equal_ignore_case(&player_mac_str, mac) {
                                             // Update the config with this server for future reconnections
-                                            if let Ok(mut config_write) = self.config.write() {
+                                            {
+                                                let mut config_write = self.config.write();
                                                 info!("Storing discovered server {} for future reconnections", found_server);
                                                 config_write.server = Some(found_server.clone());
                                             }
@@ -577,35 +554,29 @@ impl LMSAudioController {
         listener.start();
         
         // Store the listener and the strong reference to the controller
-        if let Ok(mut cli_lock) = self.cli_listener.write() {
+        {
+            let mut cli_lock = self.cli_listener.write();
             // Store both the listener and the strong reference to keep it alive
             *cli_lock = Some(listener);
             debug!("CLI listener started and stored");
-        } else {
-            warn!("Failed to acquire write lock for CLI listener");
         }
-        
+
         // Store the strong reference to the controller
-        if let Ok(mut controller_ref_lock) = self.controller_ref.write() {
-            *controller_ref_lock = Some(controller_arc);
-        } else {
-            warn!("Failed to acquire write lock for controller_ref");
-        }
+        { let mut controller_ref_lock = self.controller_ref.write(); *controller_ref_lock = Some(controller_arc); }
     }
     
     /// Stop the CLI listener if running
     fn stop_cli_listener(&self) {
-        if let Ok(mut cli_lock) = self.cli_listener.write() {
+        {
+            let mut cli_lock = self.cli_listener.write();
             if let Some(mut listener) = cli_lock.take() {
                 debug!("Stopping CLI listener");
                 listener.stop();
             }
         }
-        
+
         // Clear the strong reference to the controller
-        if let Ok(mut controller_ref_lock) = self.controller_ref.write() {
-            *controller_ref_lock = None;
-        }
+        { let mut controller_ref_lock = self.controller_ref.write(); *controller_ref_lock = None; }
     }
 
     /// Get the current song and send a SongChanged event to listeners
@@ -701,16 +672,15 @@ impl PlayerController for LMSAudioController {
         if !self.is_connected.load(Ordering::SeqCst) {
             return None;
         }
-        
+
         // Get direct access to the player instance
-        if let Ok(player_guard) = self.player.read() {
-            if let Some(player_instance) = player_guard.as_ref() {
-                // Get real-time song information directly from the server
-                debug!("Fetching real-time song information from LMS server");
-                return player_instance.get_current_song();
-            }
+        let player_guard = self.player.read();
+        if let Some(player_instance) = player_guard.as_ref() {
+            // Get real-time song information directly from the server
+            debug!("Fetching real-time song information from LMS server");
+            return player_instance.get_current_song();
         }
-        
+
         None
     }    fn get_queue(&self) -> Vec<Track> {
         // Check if we're connected first
@@ -718,24 +688,23 @@ impl PlayerController for LMSAudioController {
             debug!("Cannot get queue - LMS player is disconnected");
             return Vec::new();
         }
-        
+
         // Get direct access to the player instance
-        if let Ok(player_guard) = self.player.read() {
-            if let Some(player_instance) = player_guard.as_ref() {
-                // Get the queue from the player
-                debug!("Fetching queue information from LMS server");
-                match player_instance.get_queue() {
-                    Ok(tracks) => {
-                        debug!("Retrieved {} tracks from LMS queue", tracks.len());
-                        return tracks;
-                    },
-                    Err(e) => {
-                        warn!("Failed to get queue from LMS server: {}", e);
-                    }
+        let player_guard = self.player.read();
+        if let Some(player_instance) = player_guard.as_ref() {
+            // Get the queue from the player
+            debug!("Fetching queue information from LMS server");
+            match player_instance.get_queue() {
+                Ok(tracks) => {
+                    debug!("Retrieved {} tracks from LMS queue", tracks.len());
+                    return tracks;
+                },
+                Err(e) => {
+                    warn!("Failed to get queue from LMS server: {}", e);
                 }
             }
         }
-        
+
         // Return empty queue if we couldn't get the queue from the player
         Vec::new()
     }
@@ -745,32 +714,31 @@ impl PlayerController for LMSAudioController {
         if !self.is_connected.load(Ordering::SeqCst) {
             return LoopMode::None;
         }
-        
+
         // Get direct access to the player instance
-        if let Ok(player_guard) = self.player.read() {
-            if let Some(player_instance) = player_guard.as_ref() {
-                // Get repeat status from the server
-                debug!("Fetching repeat information from LMS server");
-                return match player_instance.get_repeat() {
-                    Ok(repeat_mode) => {
-                        match repeat_mode {
-                            0 => LoopMode::None,    // 0 = no repeat
-                            1 => LoopMode::Track,   // 1 = repeat current song
-                            2 => LoopMode::Playlist, // 2 = repeat playlist
-                            _ => {
-                                warn!("Unknown repeat mode: {}, defaulting to None", repeat_mode);
-                                LoopMode::None
-                            }
+        let player_guard = self.player.read();
+        if let Some(player_instance) = player_guard.as_ref() {
+            // Get repeat status from the server
+            debug!("Fetching repeat information from LMS server");
+            return match player_instance.get_repeat() {
+                Ok(repeat_mode) => {
+                    match repeat_mode {
+                        0 => LoopMode::None,    // 0 = no repeat
+                        1 => LoopMode::Track,   // 1 = repeat current song
+                        2 => LoopMode::Playlist, // 2 = repeat playlist
+                        _ => {
+                            warn!("Unknown repeat mode: {}, defaulting to None", repeat_mode);
+                            LoopMode::None
                         }
-                    },
-                    Err(e) => {
-                        warn!("Failed to get repeat status: {}", e);
-                        LoopMode::None
                     }
-                };
-            }
+                },
+                Err(e) => {
+                    warn!("Failed to get repeat status: {}", e);
+                    LoopMode::None
+                }
+            };
         }
-        
+
         LoopMode::None
     }
     
@@ -782,8 +750,8 @@ impl PlayerController for LMSAudioController {
         
         // Get player and server configuration
         let config = match self.config.try_read() {
-            Ok(cfg) => cfg.clone(),
-            Err(_) => {
+            Some(cfg) => cfg.clone(),
+            None => {
                 warn!("Could not acquire non-blocking read lock on config");
                 return PlaybackState::Unknown;
             }
@@ -800,7 +768,7 @@ impl PlayerController for LMSAudioController {
         
         // Get player ID without locks that could block
         let player_id = match self.player.try_read() {
-            Ok(guard) => {
+            Some(guard) => {
                 match guard.as_ref() {
                     Some(player) => player.get_player_id().to_string(), // Clone the string
                     None => {
@@ -809,7 +777,7 @@ impl PlayerController for LMSAudioController {
                     }
                 }
             },
-            Err(_) => {
+            None => {
                 warn!("Could not acquire non-blocking read lock on player");
                 return PlaybackState::Unknown;
             }
@@ -851,16 +819,15 @@ impl PlayerController for LMSAudioController {
         if !self.is_connected.load(Ordering::SeqCst) {
             return None;
         }
-        
+
         // Get direct access to the player instance
-        if let Ok(player_guard) = self.player.read() {
-            if let Some(player_instance) = player_guard.as_ref() {
-                // Get real-time position information directly from the server
-                debug!("Fetching real-time position information from LMS server");
-                return player_instance.get_current_position().ok().map(|pos| pos as f64);
-            }
+        let player_guard = self.player.read();
+        if let Some(player_instance) = player_guard.as_ref() {
+            // Get real-time position information directly from the server
+            debug!("Fetching real-time position information from LMS server");
+            return player_instance.get_current_position().ok().map(|pos| pos as f64);
         }
-        
+
         None
     }
     
@@ -869,25 +836,24 @@ impl PlayerController for LMSAudioController {
         if !self.is_connected.load(Ordering::SeqCst) {
             return false;
         }
-        
+
         // Get direct access to the player instance
-        if let Ok(player_guard) = self.player.read() {
-            if let Some(player_instance) = player_guard.as_ref() {
-                // Get shuffle status from the server
-                debug!("Fetching shuffle information from LMS server");
-                return match player_instance.get_shuffle() {
-                    Ok(shuffle_mode) => {
-                        // Per requirements, treat both mode 1 and 2 as "shuffle on"
-                        shuffle_mode > 0
-                    },
-                    Err(e) => {
-                        warn!("Failed to get shuffle status: {}", e);
-                        false
-                    }
-                };
-            }
+        let player_guard = self.player.read();
+        if let Some(player_instance) = player_guard.as_ref() {
+            // Get shuffle status from the server
+            debug!("Fetching shuffle information from LMS server");
+            return match player_instance.get_shuffle() {
+                Ok(shuffle_mode) => {
+                    // Per requirements, treat both mode 1 and 2 as "shuffle on"
+                    shuffle_mode > 0
+                },
+                Err(e) => {
+                    warn!("Failed to get shuffle status: {}", e);
+                    false
+                }
+            };
         }
-        
+
         false
     }
     
@@ -915,19 +881,14 @@ impl PlayerController for LMSAudioController {
         }
         
         // Get player instance
-        let player = match self.player.read() {
-            Ok(player_guard) => {
-                match player_guard.as_ref() {
-                    Some(player) => player.clone(),
-                    None => {
-                        debug!("LMS player object is missing, cannot send command");
-                        return false;
-                    }
+        let player = {
+            let player_guard = self.player.read();
+            match player_guard.as_ref() {
+                Some(player) => player.clone(),
+                None => {
+                    debug!("LMS player object is missing, cannot send command");
+                    return false;
                 }
-            },
-            Err(_) => {
-                debug!("Failed to acquire read lock on LMS player");
-                return false;
             }
         };
         
@@ -1174,13 +1135,7 @@ impl PlayerController for LMSAudioController {
     
     fn start(&self) -> bool {
         // Read the configuration to get access to configured MACs
-        let config = match self.config.read() {
-            Ok(cfg) => cfg.clone(),
-            Err(_) => {
-                warn!("Failed to acquire read lock on LMS configuration");
-                LMSAudioConfig::default()
-            }
-        };
+        let config = self.config.read().clone();
 
         // Check connection status using find_server_connection
         let (is_connected, _, _, _) = self.find_server_connection(&config);
@@ -1193,62 +1148,42 @@ impl PlayerController for LMSAudioController {
 
             // Refresh the library if we're connected and library is enabled
             if config.enable_library {
-                if let Ok(connected_server_guard) = self.connected_server.read() {
-                    if let Some(server) = connected_server_guard.as_ref() {
-                        // Get port from config
-                        let port = match self.config.read() {
-                            Ok(config_read) => config_read.port,
-                            Err(_) => 9000 // Default LMS port
-                        };
+                let connected_server_guard = self.connected_server.read();
+                if let Some(server) = connected_server_guard.as_ref() {
+                    // Get port from config
+                    let port = self.config.read().port;
 
-                        // Make sure we have a library instance
-                        let mut need_to_create_library = false;
-                        {
-                            if let Ok(lib_lock) = self.library.read() {
-                                if lib_lock.is_none() {
-                                    need_to_create_library = true;
-                                }
-                            } else {
-                                need_to_create_library = true;
+                    // Make sure we have a library instance
+                    let need_to_create_library = self.library.read().is_none();
+
+                    // Create the library if needed
+                    if need_to_create_library {
+                        let library = crate::players::lms::library::LMSLibrary::with_connection(server, port);
+
+                        // Store the library instance
+                        let mut lib_lock = self.library.write();
+                        *lib_lock = Some(library.clone());
+                        info!("Created and stored LMS library instance for server: {}", server);
+                    }
+
+                    // Get the library instance
+                    let library_clone = self.library.read().clone();
+
+                    if let Some(library) = library_clone {
+                        // Run the refresh in a separate thread to avoid blocking startup
+                        let library_for_thread = library.clone();
+                        thread::spawn(move || {
+                            info!("Starting LMS library refresh...");
+                            match library_for_thread.refresh_library() {
+                                Ok(_) => info!("LMS library loaded successfully"),
+                                Err(e) => warn!("Failed to load LMS library: {}", e),
                             }
-                        }
-
-                        // Create the library if needed
-                        if need_to_create_library {
-                            let library = crate::players::lms::library::LMSLibrary::with_connection(server, port);
-                            
-                            // Store the library instance
-                            if let Ok(mut lib_lock) = self.library.write() {
-                                *lib_lock = Some(library.clone());
-                                info!("Created and stored LMS library instance for server: {}", server);
-                            }
-                        }
-
-                        // Get the library instance
-                        let library_clone = if let Ok(lib_lock) = self.library.read() {
-                            lib_lock.clone()
-                        } else {
-                            None
-                        };
-
-                        if let Some(library) = library_clone {
-                            // Run the refresh in a separate thread to avoid blocking startup
-                            let library_for_thread = library.clone();
-                            thread::spawn(move || {
-                                info!("Starting LMS library refresh...");
-                                match library_for_thread.refresh_library() {
-                                    Ok(_) => info!("LMS library loaded successfully"),
-                                    Err(e) => warn!("Failed to load LMS library: {}", e),
-                                }
-                            });
-                        } else {
-                            warn!("Failed to get library instance for refresh");
-                        }
+                        });
                     } else {
-                        debug!("Skipping LMS library loading (no server information available)");
+                        warn!("Failed to get library instance for refresh");
                     }
                 } else {
-                    debug!("Skipping LMS library loading (cannot access server information)");
+                    debug!("Skipping LMS library loading (no server information available)");
                 }
             } else {
                 info!("LMS library is disabled, skipping refresh.");
@@ -1291,20 +1226,14 @@ impl PlayerController for LMSAudioController {
     
     fn get_library(&self) -> Option<Box<dyn LibraryInterface>> {
         // Check config first
-        if let Ok(config) = self.config.read() {
-            if !config.enable_library {
-                debug!("LMS library is disabled by configuration in get_library");
-                return None;
-            }
-        } else {
-            warn!("Could not read config to check enable_library flag in get_library");
-            // Proceed with caution, or return None if strict checking is required.
-            // For now, let's assume if we can't read config, we shouldn't provide library.
+        if !self.config.read().enable_library {
+            debug!("LMS library is disabled by configuration in get_library");
             return None;
         }
 
         // First, check if we already have a loaded library stored
-        if let Ok(lib_lock) = self.library.read() {
+        {
+            let lib_lock = self.library.read();
             if let Some(lib) = lib_lock.as_ref() {
                 debug!("Returning existing LMS library instance from controller with loaded={}", lib.is_loaded());
                 return Some(Box::new(lib.clone()));
@@ -1313,27 +1242,21 @@ impl PlayerController for LMSAudioController {
         
         // If we're connected but don't have a library yet, try to create one
         if self.is_connected.load(Ordering::SeqCst) {
-            if let Ok(connected_server_guard) = self.connected_server.read() {
-                if let Some(server) = connected_server_guard.as_ref() {
-                    // Get port from config
-                    let port = match self.config.read() {
-                        Ok(config) => config.port,
-                        Err(_) => 9000 // Default LMS port
-                    };
-                    
-                    // Create a new LMSLibrary
-                    warn!("Creating new LMS library instance");
-                    let library = crate::players::lms::library::LMSLibrary::with_connection(server, port);
-                    
-                    info!("Created new LMS library for server: {} (storing in controller)", server);
-                    
-                    // Store it for future use
-                    if let Ok(mut lib_lock) = self.library.write() {
-                        *lib_lock = Some(library.clone());
-                    }
-                    
-                    return Some(Box::new(library));
-                }
+            let connected_server_guard = self.connected_server.read();
+            if let Some(server) = connected_server_guard.as_ref() {
+                // Get port from config
+                let port = self.config.read().port;
+
+                // Create a new LMSLibrary
+                warn!("Creating new LMS library instance");
+                let library = crate::players::lms::library::LMSLibrary::with_connection(server, port);
+
+                info!("Created new LMS library for server: {} (storing in controller)", server);
+
+                // Store it for future use
+                { let mut lib_lock = self.library.write(); *lib_lock = Some(library.clone()); }
+
+                return Some(Box::new(library));
             }
         }
         
@@ -1346,10 +1269,9 @@ impl PlayerController for LMSAudioController {
 impl AudioControllerRef for LMSAudioController {
     /// Update the last_seen timestamp to the current time
     fn seen(&self) {
-        if let Ok(mut last_seen) = self.last_seen.write() {
-            *last_seen = Some(SystemTime::now());
-            debug!("Updated last_seen timestamp for LMS player");
-        }
+        let mut last_seen = self.last_seen.write();
+        *last_seen = Some(SystemTime::now());
+        debug!("Updated last_seen timestamp for LMS player");
     }
     
     /// Handle state change notifications from CLI listener

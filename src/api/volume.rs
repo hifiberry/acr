@@ -112,15 +112,11 @@ pub fn get_volume_info() -> Json<VolumeInfoResponse> {
         
         // Try to get raw value (this might fail for some implementations)
         let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-            if let Ok(control) = control.lock() {
-                control.get_raw_value().ok()
-            } else {
-                None
-            }
+            control.lock().get_raw_value().ok()
         } else {
             None
         };
-        
+
         percentage.map(|p| VolumeStateResponse {
             percentage: p,
             decibels,
@@ -162,15 +158,11 @@ pub fn get_volume_state() -> Result<Json<VolumeStateResponse>, Custom<Json<Volum
     
     // Try to get raw value
     let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-        if let Ok(control) = control.lock() {
-            control.get_raw_value().ok()
-        } else {
-            None
-        }
+        control.lock().get_raw_value().ok()
     } else {
         None
     };
-    
+
     Ok(Json(VolumeStateResponse {
         percentage,
         decibels,
@@ -205,11 +197,7 @@ pub fn set_volume(request: Json<SetVolumeRequest>) -> Json<VolumeOperationRespon
         global_volume::set_volume_db(db)
     } else if let Some(raw) = request.raw_value {
         if let Ok(control) = global_volume::get_global_volume_control() {
-            if let Ok(control) = control.lock() {
-                control.set_raw_value(raw).is_ok()
-            } else {
-                false
-            }
+            control.lock().set_raw_value(raw).is_ok()
         } else {
             false
         }
@@ -226,15 +214,11 @@ pub fn set_volume(request: Json<SetVolumeRequest>) -> Json<VolumeOperationRespon
         let new_state = if let Some(percentage) = global_volume::get_volume_percentage() {
             let decibels = global_volume::get_volume_db();
             let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-                if let Ok(control) = control.lock() {
-                    control.get_raw_value().ok()
-                } else {
-                    None
-                }
+                control.lock().get_raw_value().ok()
             } else {
                 None
             };
-            
+
             Some(VolumeStateResponse {
                 percentage,
                 decibels,
@@ -243,7 +227,7 @@ pub fn set_volume(request: Json<SetVolumeRequest>) -> Json<VolumeOperationRespon
         } else {
             None
         };
-        
+
         Json(VolumeOperationResponse {
             success: true,
             message: "Volume set successfully".to_string(),
@@ -280,22 +264,18 @@ pub fn increase_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
             let new_state = global_volume::get_volume_percentage().map(|percentage| {
                 let decibels = global_volume::get_volume_db();
                 let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-                    if let Ok(control) = control.lock() {
-                        control.get_raw_value().ok()
-                    } else {
-                        None
-                    }
+                    control.lock().get_raw_value().ok()
                 } else {
                     None
                 };
-                
+
                 VolumeStateResponse {
                     percentage,
                     decibels,
                     raw_value,
                 }
             });
-            
+
             Json(VolumeOperationResponse {
                 success: true,
                 message: format!("Volume increased to {:.1}%", new_volume),
@@ -339,22 +319,18 @@ pub fn decrease_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
             let new_state = global_volume::get_volume_percentage().map(|percentage| {
                 let decibels = global_volume::get_volume_db();
                 let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-                    if let Ok(control) = control.lock() {
-                        control.get_raw_value().ok()
-                    } else {
-                        None
-                    }
+                    control.lock().get_raw_value().ok()
                 } else {
                     None
                 };
-                
+
                 VolumeStateResponse {
                     percentage,
                     decibels,
                     raw_value,
                 }
             });
-            
+
             Json(VolumeOperationResponse {
                 success: true,
                 message: format!("Volume decreased to {:.1}%", new_volume),
@@ -399,22 +375,18 @@ pub fn toggle_mute() -> Json<VolumeOperationResponse> {
             let new_state = global_volume::get_volume_percentage().map(|percentage| {
                 let decibels = global_volume::get_volume_db();
                 let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-                    if let Ok(control) = control.lock() {
-                        control.get_raw_value().ok()
-                    } else {
-                        None
-                    }
+                    control.lock().get_raw_value().ok()
                 } else {
                     None
                 };
-                
+
                 VolumeStateResponse {
                     percentage,
                     decibels,
                     raw_value,
                 }
             });
-            
+
             let action = if new_volume == 0.0 { "muted" } else { "unmuted" };
             Json(VolumeOperationResponse {
                 success: true,

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, UdpSocket};
 use std::time::Duration;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use log::{debug, info, warn};
 use std::io;
 use get_if_addrs::get_if_addrs;
@@ -162,29 +162,20 @@ impl LmsServerRegistry {
 
 /// Get all known LMS servers
 pub fn get_known_servers() -> Vec<LmsServer> {
-    if let Ok(registry) = SERVER_REGISTRY.lock() {
-        registry.get_servers()
-    } else {
-        Vec::new()
-    }
+    let registry = SERVER_REGISTRY.lock();
+    registry.get_servers()
 }
 
 /// Get the currently connected LMS server
 pub fn get_connected_server() -> Option<LmsServer> {
-    if let Ok(registry) = SERVER_REGISTRY.lock() {
-        registry.get_connected().cloned()
-    } else {
-        None
-    }
+    let registry = SERVER_REGISTRY.lock();
+    registry.get_connected().cloned()
 }
 
 /// Set the currently connected LMS server
 pub fn set_connected_server(ip: Option<&IpAddr>) -> bool {
-    if let Ok(mut registry) = SERVER_REGISTRY.lock() {
-        registry.set_connected(ip)
-    } else {
-        false
-    }
+    let mut registry = SERVER_REGISTRY.lock();
+    registry.set_connected(ip)
 }
 
 /// Discovered LMS server information
@@ -313,7 +304,8 @@ pub fn find_local_servers(timeout_secs: Option<u64>) -> io::Result<Vec<LmsServer
 
 /// Update the global server registry with newly discovered servers
 fn update_server_registry(new_servers: &HashMap<IpAddr, LmsServer>) {
-    if let Ok(mut registry) = SERVER_REGISTRY.lock() {
+    {
+        let mut registry = SERVER_REGISTRY.lock();
         // Track servers to remove (not found in the current discovery)
         let mut servers_to_remove = Vec::new();
         

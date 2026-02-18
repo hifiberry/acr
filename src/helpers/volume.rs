@@ -2,7 +2,8 @@ use std::error::Error;
 use std::fmt;
 use std::thread;
 use std::time::Duration;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 use crate::data::PlayerEvent;
 use crate::audiocontrol::eventbus::EventBus;
@@ -600,7 +601,7 @@ impl DummyVolumeControl {
 
     /// Get the current volume percentage (for testing)
     pub fn get_current_percent(&self) -> f64 {
-        *self.current_percent.read().unwrap()
+        *self.current_percent.read()
     }
 }
 
@@ -609,7 +610,7 @@ impl VolumeControl for DummyVolumeControl {
         if !self.is_available {
             return Err(VolumeError::DeviceError("Dummy device not available".to_string()));
         }
-        Ok(*self.current_percent.read().unwrap())
+        Ok(*self.current_percent.read())
     }
 
     fn set_volume_percent(&self, percent: f64) -> Result<(), VolumeError> {
@@ -622,7 +623,7 @@ impl VolumeControl for DummyVolumeControl {
         }
 
         // Update the current value
-        *self.current_percent.write().unwrap() = percent;
+        *self.current_percent.write() = percent;
         
         // Publish volume change event
         let db_value = self.get_volume_db().ok();
@@ -657,7 +658,7 @@ impl VolumeControl for DummyVolumeControl {
         if !self.is_available {
             return Err(VolumeError::DeviceError("Dummy device not available".to_string()));
         }
-        Ok(*self.current_percent.read().unwrap() as i64)
+        Ok(*self.current_percent.read() as i64)
     }
 
     fn set_raw_value(&self, value: i64) -> Result<(), VolumeError> {
@@ -671,7 +672,7 @@ impl VolumeControl for DummyVolumeControl {
 
         // Update the current value
         let percent = value as f64;
-        *self.current_percent.write().unwrap() = percent;
+        *self.current_percent.write() = percent;
         
         // Publish volume change event
         let db_value = self.get_volume_db().ok();

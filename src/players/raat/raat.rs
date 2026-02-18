@@ -3,14 +3,15 @@ use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, Playbac
 use crate::players::raat::metadata_pipe_reader::MetadataPipeReader;
 use crate::data::stream_details::StreamDetails;
 use delegate::delegate;
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::Arc;
+use parking_lot::{RwLock, Mutex};
 use log::{debug, info, warn, error, trace};
 use std::thread;
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 
 /// RAAT player controller implementation
 /// This controller interfaces with RAAT (Roon Audio Advanced Transport) metadata pipes
@@ -65,9 +66,7 @@ struct PlayerInstanceData {
 
 /// A map to store running state for each player instance
 type PlayerStateMap = HashMap<usize, PlayerInstanceData>;
-lazy_static! {
-    static ref PLAYER_STATE: Mutex<PlayerStateMap> = Mutex::new(HashMap::new());
-}
+static PLAYER_STATE: Lazy<Mutex<PlayerStateMap>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 impl RAATPlayerController {
     /// Create a new RAAT player controller with default settings
@@ -277,14 +276,15 @@ impl RAATPlayerController {
     fn update_metadata(&self, song: Song, player_state: PlayerState, 
                        capabilities: PlayerCapabilitySet, stream_details: StreamDetails) {
         // Update the last update timestamp
-        if let Ok(mut last_update) = self.last_update_time.write() {
+        {
+            let mut last_update = self.last_update_time.write();
             *last_update = Instant::now();
         }
         
         // Store the new song if different from current
         let mut song_to_notify: Option<Song> = None;
         {
-            let mut current_song = self.current_song.write().unwrap();
+            let mut current_song = self.current_song.write();
             let song_changed = match (&*current_song, &song) {
                 (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
                 (None, _) => true,
@@ -302,11 +302,8 @@ impl RAATPlayerController {
         if let Some(position) = player_state.position {
             // Get the previously stored position
             let old_position = {
-                if let Ok(state) = self.current_state.read() {
-                    state.position
-                } else {
-                    None
-                }
+                let state = self.current_state.read();
+                state.position
             };
             
             // If position has changed by more than 1 second or we don't have a previous position, notify
@@ -322,45 +319,44 @@ impl RAATPlayerController {
         }
         
         // Update stored player state
-        if let Ok(mut current_state) = self.current_state.write() {
+        {
+            let mut current_state = self.current_state.write();
             // Update playback state if it has changed
             if current_state.state != player_state.state {
-                debug!("Playback state changed from {:?} to {:?}", 
+                debug!("Playback state changed from {:?} to {:?}",
                       current_state.state, player_state.state);
                 let new_state = player_state.state;
                 current_state.state = new_state;
-                
+
                 // Notify listeners of playback state change
                 self.base.notify_state_changed(new_state);
             }
-            
+
             // Update position
             if let Some(pos) = player_state.position {
                 current_state.position = Some(pos);
             }
-            
+
             // Update loop mode if it has changed
             if current_state.loop_mode != player_state.loop_mode {
-                debug!("Loop mode changed from {:?} to {:?}", 
+                debug!("Loop mode changed from {:?} to {:?}",
                       current_state.loop_mode, player_state.loop_mode);
                 let new_loop_mode = player_state.loop_mode;
                 current_state.loop_mode = new_loop_mode;
-                
+
                 // Notify listeners of loop mode change
                 self.base.notify_loop_mode_changed(new_loop_mode);
             }
-            
+
             // Update shuffle if it has changed
             if current_state.shuffle != player_state.shuffle {
-                debug!("Shuffle changed from {} to {}", 
+                debug!("Shuffle changed from {} to {}",
                       current_state.shuffle, player_state.shuffle);
                 current_state.shuffle = player_state.shuffle;
             }
-            
+
             // Update metadata
             current_state.metadata = player_state.metadata.clone();
-        } else {
-            warn!("Failed to acquire lock on current state");
         }
         
         // Update stored capabilities
@@ -371,7 +367,8 @@ impl RAATPlayerController {
         }
         
         // Update stored stream details
-        if let Ok(mut details) = self.stream_details.write() {
+        {
+            let mut details = self.stream_details.write();
             *details = Some(stream_details);
         }
         
@@ -389,19 +386,20 @@ impl RAATPlayerController {
     #[allow(dead_code)]
     pub fn update_current_song(&self, song: Option<Song>) {
         // Store the new song
-        if let Ok(mut current_song) = self.current_song.write() {
+        {
+            let mut current_song = self.current_song.write();
             let song_changed = match (&*current_song, &song) {
                 (Some(old), Some(new)) => old.title != new.title || old.artist != new.artist || old.album != new.album,
                 (None, Some(_)) => true,
                 (Some(_), None) => true,
                 (None, None) => false,
             };
-            
+
             if song_changed {
                 debug!("Updating current song");
                 // Update the stored song
                 *current_song = song.clone();
-                
+
                 // Notify listeners of the song change
                 drop(current_song); // Release the lock before notifying
                 if let Some(s) = &song {
@@ -410,8 +408,6 @@ impl RAATPlayerController {
                     self.base.notify_song_changed(None);
                 }
             }
-        } else {
-            warn!("Failed to acquire write lock for current song");
         }
     }
 
@@ -474,35 +470,34 @@ impl RAATPlayerController {
                 
                 // Check if we're currently playing
                 let is_playing = {
-                    if let Ok(state) = self_arc.current_state.try_read() {
+                    if let Some(state) = self_arc.current_state.try_read() {
                         state.state == PlaybackState::Playing
                     } else {
                         false
                     }
                 };
-                
+
                 if is_playing {
                     // Check if we've exceeded the timeout
                     let last_update = {
-                        if let Ok(time) = self_arc.last_update_time.try_read() {
+                        if let Some(time) = self_arc.last_update_time.try_read() {
                             *time
                         } else {
                             continue; // Skip this check if we can't get the time
                         }
                     };
-                    
+
                     let elapsed = last_update.elapsed();
                     if elapsed > Duration::from_secs(10) {
                         warn!("RAAT player timeout: no updates for {} seconds while playing, setting state to Unknown", elapsed.as_secs());
-                        
+
                         // Update state to Unknown
-                        if let Ok(mut state) = self_arc.current_state.write() {
-                            if state.state == PlaybackState::Playing {
-                                state.state = PlaybackState::Unknown;
-                                // Release lock before notifying
-                                drop(state);
-                                self_arc.base.notify_state_changed(PlaybackState::Unknown);
-                            }
+                        let mut state = self_arc.current_state.write();
+                        if state.state == PlaybackState::Playing {
+                            state.state = PlaybackState::Unknown;
+                            // Release lock before notifying
+                            drop(state);
+                            self_arc.base.notify_state_changed(PlaybackState::Unknown);
                         }
                     }
                 }
@@ -525,39 +520,40 @@ impl PlayerController for RAATPlayerController {
         debug!("RAATPlayerController received update: {:?}", update); // It's good practice to log the received update for debugging.
         
         // Update the last update timestamp
-        if let Ok(mut last_update) = self.last_update_time.write() {
+        {
+            let mut last_update = self.last_update_time.write();
             *last_update = Instant::now();
         }
         
         match update {
             PlayerUpdate::SongChanged(new_song) => {
-                let mut current_song_locked = self.current_song.write().unwrap();
+                let mut current_song_locked = self.current_song.write();
                 *current_song_locked = new_song.clone();
                 drop(current_song_locked); // Release lock before notifying
                 self.base.notify_song_changed(new_song.as_ref());
             }
             PlayerUpdate::PositionChanged(new_position) => {
                 if let Some(pos) = new_position {
-                    let mut current_state_locked = self.current_state.write().unwrap();
+                    let mut current_state_locked = self.current_state.write();
                     current_state_locked.position = Some(pos);
                     drop(current_state_locked); // Release lock before notifying
                     self.base.notify_position_changed(pos);
                 }
             }
             PlayerUpdate::StateChanged(new_state) => {
-                let mut current_state_locked = self.current_state.write().unwrap();
+                let mut current_state_locked = self.current_state.write();
                 current_state_locked.state = new_state;
                 drop(current_state_locked); // Release lock before notifying
                 self.base.notify_state_changed(new_state);
             }
             PlayerUpdate::LoopModeChanged(new_loop_mode) => {
-                let mut current_state_locked = self.current_state.write().unwrap();
+                let mut current_state_locked = self.current_state.write();
                 current_state_locked.loop_mode = new_loop_mode;
                 drop(current_state_locked); // Release lock before notifying
                 self.base.notify_loop_mode_changed(new_loop_mode);
             }
             PlayerUpdate::ShuffleChanged(new_shuffle) => {
-                let mut current_state_locked = self.current_state.write().unwrap();
+                let mut current_state_locked = self.current_state.write();
                 current_state_locked.shuffle = new_shuffle;
                 // No specific notify_shuffle_changed method in BasePlayerController, so just update state.
                 // If shuffle changes should trigger a general state update or capabilities update,
@@ -570,23 +566,15 @@ impl PlayerController for RAATPlayerController {
     fn get_song(&self) -> Option<Song> {
         debug!("Getting current song from stored value");
         // Return a clone of the stored song
-        if let Ok(song) = self.current_song.read() {
-            song.clone()
-        } else {
-            warn!("Failed to acquire read lock for current song");
-            None
-        }
+        let song = self.current_song.read();
+        song.clone()
     }
     
     fn get_loop_mode(&self) -> LoopMode {
         debug!("Getting current loop mode");
         // Get the loop mode from the current state
-        if let Ok(state) = self.current_state.read() {
-            state.loop_mode
-        } else {
-            warn!("Failed to acquire read lock for current state");
-            LoopMode::None
-        }
+        let state = self.current_state.read();
+        state.loop_mode
     }
     
     fn get_playback_state(&self) -> PlaybackState {
@@ -594,14 +582,14 @@ impl PlayerController for RAATPlayerController {
         // Try to get the state from the current state with a timeout
         // Use try_read() to attempt a non-blocking read
         match self.current_state.try_read() {
-            Ok(state) => {
+            Some(state) => {
                 trace!("Got current playback state: {:?}", state.state);
-                return state.state;
+                state.state
             },
-            Err(_) => {
+            None => {
                 // If we can't get a read lock immediately, log a warning
                 warn!("Could not acquire immediate read lock for playback state, returning unknown state");
-                return PlaybackState::Unknown; // Return a default value if we can't read the state
+                PlaybackState::Unknown // Return a default value if we can't read the state
             }
         }
     }
@@ -610,25 +598,21 @@ impl PlayerController for RAATPlayerController {
         trace!("Getting current playback position");
         // Try to get the position from the current state with a non-blocking read
         match self.current_state.try_read() {
-            Ok(state) => {
+            Some(state) => {
                 trace!("Got current position: {:?}", state.position);
-                return state.position;
+                state.position
             },
-            Err(_) => {
+            None => {
                 warn!("Could not acquire immediate read lock for position, returning None");
-                return None; // Return None if we can't read the position
+                None // Return None if we can't read the position
             }
         }
     }
     
     fn get_shuffle(&self) -> bool {
         debug!("Getting current shuffle state");
-        if let Ok(state) = self.current_state.read() {
-            state.shuffle
-        } else {
-            warn!("Failed to acquire read lock for current state");
-            false
-        }
+        let state = self.current_state.read();
+        state.shuffle
     }
     
     fn get_player_name(&self) -> String {
@@ -703,30 +687,28 @@ impl PlayerController for RAATPlayerController {
         let timeout_flag = Arc::new(AtomicBool::new(true));
         
         // Store the running flags in the player instance
-        if let Ok(mut state) = PLAYER_STATE.lock() {
+        {
+            let mut state = PLAYER_STATE.lock();
             let instance_id = self as *const _ as usize;
-            
+
             if let Some(data) = state.get(&instance_id) {
                 // Stop any existing threads
                 data.running_flag.store(false, Ordering::SeqCst);
                 data.timeout_thread_flag.store(false, Ordering::SeqCst);
             }
-            
+
             // Start the metadata listener thread
             self.start_metadata_listener(running.clone(), player_arc.clone());
-            
+
             // Start the timeout monitor thread
             self.start_timeout_monitor(timeout_flag.clone(), player_arc.clone());
-            
+
             // Store the running flags
-            state.insert(instance_id, PlayerInstanceData { 
+            state.insert(instance_id, PlayerInstanceData {
                 running_flag: running,
                 timeout_thread_flag: timeout_flag,
             });
             true
-        } else {
-            error!("Failed to acquire lock for player state");
-            false
         }
     }
     
@@ -734,9 +716,10 @@ impl PlayerController for RAATPlayerController {
         info!("Stopping RAAT player controller");
         
         // Signal both threads to stop
-        if let Ok(mut state) = PLAYER_STATE.lock() {
+        {
+            let mut state = PLAYER_STATE.lock();
             let instance_id = self as *const _ as usize;
-            
+
             if let Some(data) = state.remove(&instance_id) {
                 data.running_flag.store(false, Ordering::SeqCst);
                 data.timeout_thread_flag.store(false, Ordering::SeqCst);
@@ -744,7 +727,7 @@ impl PlayerController for RAATPlayerController {
                 return true;
             }
         }
-        
+
         debug!("No active threads found");
         false
     }

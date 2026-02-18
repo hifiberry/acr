@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use log::debug;

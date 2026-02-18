@@ -92,62 +92,61 @@ pub fn get_lyrics_by_id(
     let controllers = audio_controller.list_controllers();
     
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            // Check if this is an MPD controller with library support
-            if ctrl.get_player_name().to_lowercase().contains("mpd") {
-                if let Some(library) = ctrl.get_library() {
-                    // Cast to MPDLibrary to access lyrics methods
-                    if let Some(mpd_library) = library.as_any().downcast_ref::<crate::players::mpd::library::MPDLibrary>() {
-                        // Try to decode the song_id as a base64-encoded file path first
-                        match crate::helpers::url_encoding::decode_url_safe(song_id) {
-                            Some(decoded_path) => {
-                                // Use the decoded file path to get lyrics
-                                match mpd_library.get_lyrics_by_url(&decoded_path) {
-                                    Ok(lyrics) => {
-                                        return Ok(Json(LyricsResponse {
-                                            found: true,
-                                            lyrics: Some(lyrics.into()),
-                                            error: None,
-                                        }));
-                                    }
-                                    Err(crate::helpers::lyrics::LyricsError::NotFound) => {
-                                        return Ok(Json(LyricsResponse {
-                                            found: false,
-                                            lyrics: None,
-                                            error: Some("Lyrics not found for this song".to_string()),
-                                        }));
-                                    }
-                                    Err(e) => {
-                                        return Err(Custom(
-                                            Status::InternalServerError,
-                                            format!("Error retrieving lyrics: {}", e),
-                                        ));
-                                    }
+        let ctrl = ctrl_lock.read();
+        // Check if this is an MPD controller with library support
+        if ctrl.get_player_name().to_lowercase().contains("mpd") {
+            if let Some(library) = ctrl.get_library() {
+                // Cast to MPDLibrary to access lyrics methods
+                if let Some(mpd_library) = library.as_any().downcast_ref::<crate::players::mpd::library::MPDLibrary>() {
+                    // Try to decode the song_id as a base64-encoded file path first
+                    match crate::helpers::url_encoding::decode_url_safe(song_id) {
+                        Some(decoded_path) => {
+                            // Use the decoded file path to get lyrics
+                            match mpd_library.get_lyrics_by_url(&decoded_path) {
+                                Ok(lyrics) => {
+                                    return Ok(Json(LyricsResponse {
+                                        found: true,
+                                        lyrics: Some(lyrics.into()),
+                                        error: None,
+                                    }));
+                                }
+                                Err(crate::helpers::lyrics::LyricsError::NotFound) => {
+                                    return Ok(Json(LyricsResponse {
+                                        found: false,
+                                        lyrics: None,
+                                        error: Some("Lyrics not found for this song".to_string()),
+                                    }));
+                                }
+                                Err(e) => {
+                                    return Err(Custom(
+                                        Status::InternalServerError,
+                                        format!("Error retrieving lyrics: {}", e),
+                                    ));
                                 }
                             }
-                            None => {
-                                // If decoding fails, fall back to treating it as a literal song ID
-                                match mpd_library.get_lyrics_by_id(song_id) {
-                                    Ok(lyrics) => {
-                                        return Ok(Json(LyricsResponse {
-                                            found: true,
-                                            lyrics: Some(lyrics.into()),
-                                            error: None,
-                                        }));
-                                    }
-                                    Err(crate::helpers::lyrics::LyricsError::NotFound) => {
-                                        return Ok(Json(LyricsResponse {
-                                            found: false,
-                                            lyrics: None,
-                                            error: Some("Lyrics not found for this song".to_string()),
-                                        }));
-                                    }
-                                    Err(e) => {
-                                        return Err(Custom(
-                                            Status::InternalServerError,
-                                            format!("Error retrieving lyrics: {}", e),
-                                        ));
-                                    }
+                        }
+                        None => {
+                            // If decoding fails, fall back to treating it as a literal song ID
+                            match mpd_library.get_lyrics_by_id(song_id) {
+                                Ok(lyrics) => {
+                                    return Ok(Json(LyricsResponse {
+                                        found: true,
+                                        lyrics: Some(lyrics.into()),
+                                        error: None,
+                                    }));
+                                }
+                                Err(crate::helpers::lyrics::LyricsError::NotFound) => {
+                                    return Ok(Json(LyricsResponse {
+                                        found: false,
+                                        lyrics: None,
+                                        error: Some("Lyrics not found for this song".to_string()),
+                                    }));
+                                }
+                                Err(e) => {
+                                    return Err(Custom(
+                                        Status::InternalServerError,
+                                        format!("Error retrieving lyrics: {}", e),
+                                    ));
                                 }
                             }
                         }
@@ -156,7 +155,7 @@ pub fn get_lyrics_by_id(
             }
         }
     }
-    
+
     Err(Custom(
         Status::NotFound,
         "No MPD player with library support found".to_string(),
@@ -164,7 +163,7 @@ pub fn get_lyrics_by_id(
 }
 
 /// Get lyrics by artist, title, and optional metadata
-/// 
+///
 /// POST /api/lyrics/<provider>
 #[post("/<provider>", data = "<request>")]
 pub fn get_lyrics_by_metadata(
@@ -174,7 +173,7 @@ pub fn get_lyrics_by_metadata(
 ) -> Result<Json<LyricsResponse>, Custom<String>> {
     let audio_controller = controller.inner();
     let request = request.into_inner();
-    
+
     // Validate provider
     if provider != "mpd" {
         return Err(Custom(
@@ -182,49 +181,48 @@ pub fn get_lyrics_by_metadata(
             format!("Unsupported lyrics provider: {}. Currently supported: mpd", provider),
         ));
     }
-    
+
     // Create lyrics lookup from request
     let mut lookup = LyricsLookup::new(request.artist, request.title);
-    
+
     if let Some(duration) = request.duration {
         lookup = lookup.with_duration(duration);
     }
-    
+
     if let Some(album) = request.album {
         lookup = lookup.with_album(album);
     }
-    
+
     // Find MPD controller to get lyrics
     let controllers = audio_controller.list_controllers();
-    
+
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            // Check if this is an MPD controller with library support
-            if ctrl.get_player_name().to_lowercase().contains("mpd") {
-                if let Some(library) = ctrl.get_library() {
-                    // Cast to MPDLibrary to access lyrics methods
-                    if let Some(mpd_library) = library.as_any().downcast_ref::<crate::players::mpd::library::MPDLibrary>() {
-                        match mpd_library.get_lyrics_by_metadata(&lookup) {
-                            Ok(lyrics) => {
-                                return Ok(Json(LyricsResponse {
-                                    found: true,
-                                    lyrics: Some(lyrics.into()),
-                                    error: None,
-                                }));
-                            }
-                            Err(crate::helpers::lyrics::LyricsError::NotFound) => {
-                                return Ok(Json(LyricsResponse {
-                                    found: false,
-                                    lyrics: None, 
-                                    error: Some("Lyrics not found for this song".to_string()),
-                                }));
-                            }
-                            Err(e) => {
-                                return Err(Custom(
-                                    Status::InternalServerError,
-                                    format!("Error retrieving lyrics: {}", e),
-                                ));
-                            }
+        let ctrl = ctrl_lock.read();
+        // Check if this is an MPD controller with library support
+        if ctrl.get_player_name().to_lowercase().contains("mpd") {
+            if let Some(library) = ctrl.get_library() {
+                // Cast to MPDLibrary to access lyrics methods
+                if let Some(mpd_library) = library.as_any().downcast_ref::<crate::players::mpd::library::MPDLibrary>() {
+                    match mpd_library.get_lyrics_by_metadata(&lookup) {
+                        Ok(lyrics) => {
+                            return Ok(Json(LyricsResponse {
+                                found: true,
+                                lyrics: Some(lyrics.into()),
+                                error: None,
+                            }));
+                        }
+                        Err(crate::helpers::lyrics::LyricsError::NotFound) => {
+                            return Ok(Json(LyricsResponse {
+                                found: false,
+                                lyrics: None,
+                                error: Some("Lyrics not found for this song".to_string()),
+                            }));
+                        }
+                        Err(e) => {
+                            return Err(Custom(
+                                Status::InternalServerError,
+                                format!("Error retrieving lyrics: {}", e),
+                            ));
                         }
                     }
                 }

@@ -82,18 +82,24 @@ fn main() {
                 }
                 Err(e) => {
                     error!("Failed to parse {}: {}", config_path_str, e);
-                    panic!("Cannot continue without a valid configuration file");
+                    eprintln!("Error: Failed to parse {}: {}", config_path_str, e);
+                    eprintln!("Cannot continue without a valid configuration file.");
+                    std::process::exit(1);
                 }
             },
             Err(e) => {
                 error!("Failed to read {}: {}", config_path_str, e);
-                panic!("Cannot continue without a valid configuration file");
+                eprintln!("Error: Failed to read {}: {}", config_path_str, e);
+                eprintln!("Cannot continue without a valid configuration file.");
+                std::process::exit(1);
             }
         }
     } else {
         // No config file found
         error!("Configuration file not found at {}", config_path_str);
-        panic!("Cannot continue without a valid configuration file");
+        eprintln!("Error: Configuration file not found at {}", config_path_str);
+        eprintln!("Cannot continue without a valid configuration file.");
+        std::process::exit(1);
     }; // Initialize the Security Store (Moved Up)
     let security_store_path_str = get_service_config(&controllers_config, "security_store")
         .and_then(|s| s.get("path"))
@@ -123,7 +129,9 @@ fn main() {
 
     if let Err(e) = SecurityStore::initialize_with_defaults(Some(security_store_path.clone())) {
         error!("Failed to initialize security store at {}: {}. Please check permissions and configuration.", security_store_path.display(), e);
-        panic!("Critical component: Security store initialization failed. Application cannot continue. Error: {}", e);
+        eprintln!("Error: Security store initialization failed: {}", e);
+        eprintln!("Check permissions and configuration at {}", security_store_path.display());
+        std::process::exit(1);
     } else {
         info!(
             "Security store initialized successfully at {}",
@@ -306,7 +314,7 @@ fn main() {
     let r = running.clone();
 
     // Set up Ctrl+C handler
-    ctrlc::set_handler(move || {
+    if let Err(e) = ctrlc::set_handler(move || {
         info!("Received Ctrl+C, shutting down...");
         r.store(false, Ordering::SeqCst);
 
@@ -324,8 +332,10 @@ fn main() {
                 std::process::exit(0);
             }
         });
-    })
-    .expect("Error setting Ctrl+C handler");
+    }) {
+        eprintln!("Error: Failed to set Ctrl+C handler: {}", e);
+        std::process::exit(1);
+    }
 
     // Create an AudioController from the JSON configuration and store it in the singleton
     let controller = match AudioController::from_json(&controllers_config) {
@@ -335,7 +345,9 @@ fn main() {
         }
         Err(e) => {
             error!("Failed to create AudioController from JSON: {}", e);
-            panic!("Cannot continue without a valid AudioController");
+            eprintln!("Error: Failed to create AudioController: {}", e);
+            eprintln!("Check your player configuration in {}", config_path_str);
+            std::process::exit(1);
         }
     };
 

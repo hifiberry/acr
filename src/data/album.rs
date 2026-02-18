@@ -85,11 +85,13 @@ impl<'de> Deserialize<'de> for Album {
         
         // Convert old artist field to artists if needed
         let mut artists = helper.artists;
-        if artists.is_empty() && helper.artist.is_some() {
-            // Split the old artist field by commas and add each artist
-            for artist in helper.artist.unwrap().split(',').map(|s| s.trim().to_string()) {
-                if !artist.is_empty() {
-                    artists.push(artist);
+        if artists.is_empty() {
+            if let Some(artist_str) = helper.artist {
+                // Split the old artist field by commas and add each artist
+                for artist in artist_str.split(',').map(|s| s.trim().to_string()) {
+                    if !artist.is_empty() {
+                        artists.push(artist);
+                    }
                 }
             }
         }

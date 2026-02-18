@@ -62,7 +62,10 @@ pub fn get_setting(request: Json<GetSettingRequest>) -> Json<serde_json::Value> 
             };
             
             debug!("Successfully retrieved setting '{}', exists: {}", request.key, exists);
-            Json(serde_json::to_value(response).unwrap())
+            Json(serde_json::to_value(response).unwrap_or_else(|e| {
+                error!("Failed to serialize get response: {}", e);
+                serde_json::json!({"success": false, "message": "Internal serialization error"})
+            }))
         }
         Err(e) => {
             error!("Failed to get setting '{}': {}", request.key, e);
@@ -70,7 +73,10 @@ pub fn get_setting(request: Json<GetSettingRequest>) -> Json<serde_json::Value> 
                 success: false,
                 message: format!("Failed to get setting: {}", e),
             };
-            Json(serde_json::to_value(response).unwrap())
+            Json(serde_json::to_value(response).unwrap_or_else(|e| {
+                error!("Failed to serialize error response: {}", e);
+                serde_json::json!({"success": false, "message": "Internal serialization error"})
+            }))
         }
     }
 }
@@ -102,7 +108,10 @@ pub fn set_setting(request: Json<SetSettingRequest>) -> Json<serde_json::Value> 
                 value: request.value.clone(),
                 previous_value,
             };
-            Json(serde_json::to_value(response).unwrap())
+            Json(serde_json::to_value(response).unwrap_or_else(|e| {
+                error!("Failed to serialize set response: {}", e);
+                serde_json::json!({"success": false, "message": "Internal serialization error"})
+            }))
         }
         Err(e) => {
             error!("Failed to set setting '{}': {}", request.key, e);
@@ -110,7 +119,10 @@ pub fn set_setting(request: Json<SetSettingRequest>) -> Json<serde_json::Value> 
                 success: false,
                 message: format!("Failed to set setting: {}", e),
             };
-            Json(serde_json::to_value(response).unwrap())
+            Json(serde_json::to_value(response).unwrap_or_else(|e| {
+                error!("Failed to serialize error response: {}", e);
+                serde_json::json!({"success": false, "message": "Internal serialization error"})
+            }))
         }
     }
 }

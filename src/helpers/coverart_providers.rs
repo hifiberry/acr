@@ -283,7 +283,7 @@ pub fn register_all_providers() {
     info!("Starting provider registration...");
     
     let manager = get_coverart_manager();
-    let mut manager_lock = manager.lock().unwrap();
+    let mut manager_lock = manager.lock();
     
     info!("Manager lock acquired, current provider count: {}", manager_lock.provider_count());
     

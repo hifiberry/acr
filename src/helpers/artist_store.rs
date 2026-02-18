@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::io::Read;
 use log::{debug, info, warn};
@@ -328,12 +329,9 @@ impl ArtistStore {
 
         // Use the cover art system to find images
         let manager = get_coverart_manager();
-        let results = if let Ok(manager_guard) = manager.lock() {
-            manager_guard.get_artist_coverart(artist_name)
-        } else {
-            warn!("Failed to acquire lock on cover art manager");
-            return ArtistImageResult::Error("Failed to acquire cover art manager lock".to_string());
-        };
+        let manager_guard = manager.lock();
+        let results = manager_guard.get_artist_coverart(artist_name);
+        drop(manager_guard);
 
         if results.is_empty() {
             debug!("No cover art found for artist {}", artist_name);
@@ -630,14 +628,11 @@ pub fn get_artist_store() -> Arc<Mutex<ArtistStore>> {
 /// # Returns
 /// Option with the cache path if found
 pub fn get_artist_cached_image(artist_name: &str) -> Option<String> {
-    if let Ok(mut store) = get_artist_store().lock() {
-        match store.get_cached_image(artist_name) {
-            ArtistImageResult::Found { cache_path } => Some(cache_path),
-            _ => None,
-        }
-    } else {
-        warn!("Failed to acquire lock on artist store");
-        None
+    let store_arc = get_artist_store();
+    let mut store = store_arc.lock();
+    match store.get_cached_image(artist_name) {
+        ArtistImageResult::Found { cache_path } => Some(cache_path),
+        _ => None,
     }
 }
 
@@ -649,14 +644,11 @@ pub fn get_artist_cached_image(artist_name: &str) -> Option<String> {
 /// # Returns
 /// Option with the cache path if found or downloaded
 pub fn get_or_download_artist_image(artist_name: &str) -> Option<String> {
-    if let Ok(mut store) = get_artist_store().lock() {
-        match store.get_or_download_artist_image(artist_name) {
-            ArtistImageResult::Found { cache_path } => Some(cache_path),
-            _ => None,
-        }
-    } else {
-        warn!("Failed to acquire lock on artist store");
-        None
+    let store_arc = get_artist_store();
+    let mut store = store_arc.lock();
+    match store.get_or_download_artist_image(artist_name) {
+        ArtistImageResult::Found { cache_path } => Some(cache_path),
+        _ => None,
     }
 }
 
@@ -668,12 +660,9 @@ pub fn get_or_download_artist_image(artist_name: &str) -> Option<String> {
 /// # Returns
 /// The updated artist with cover art information
 pub fn update_artist_with_coverart(artist: Artist) -> Artist {
-    if let Ok(mut store) = get_artist_store().lock() {
-        store.update_artist_with_coverart(artist)
-    } else {
-        warn!("Failed to acquire lock on artist store");
-        artist
-    }
+    let store_arc = get_artist_store();
+    let mut store = store_arc.lock();
+    store.update_artist_with_coverart(artist)
 }
 
 /// Convenience function to lookup MusicBrainz IDs for an artist
@@ -686,12 +675,9 @@ pub fn update_artist_with_coverart(artist: Artist) -> Artist {
 /// * `Vec<String>` - Vector of MusicBrainz IDs if found, empty vector otherwise
 /// * `bool` - true if this is a partial match (only some artists in a multi-artist name found)
 pub fn lookup_artist_mbids(artist_name: &str) -> (Vec<String>, bool) {
-    if let Ok(store) = get_artist_store().lock() {
-        store.lookup_artist_mbids(artist_name)
-    } else {
-        warn!("Failed to acquire lock on artist store");
-        (Vec::new(), false)
-    }
+    let store_arc = get_artist_store();
+    let store = store_arc.lock();
+    store.lookup_artist_mbids(artist_name)
 }
 
 /// Convenience function to update artist data including metadata and cover art
@@ -702,12 +688,9 @@ pub fn lookup_artist_mbids(artist_name: &str) -> (Vec<String>, bool) {
 /// # Returns
 /// The updated artist with metadata and cover art information
 pub fn update_data_for_artist(artist: Artist) -> Artist {
-    if let Ok(mut store) = get_artist_store().lock() {
-        store.update_data_for_artist(artist)
-    } else {
-        warn!("Failed to acquire lock on artist store");
-        artist
-    }
+    let store_arc = get_artist_store();
+    let mut store = store_arc.lock();
+    store.update_data_for_artist(artist)
 }
 
 /// Start a background thread to update metadata for all artists in the library sequentially
@@ -718,7 +701,7 @@ pub fn update_data_for_artist(artist: Artist) -> Artist {
 /// # Arguments
 /// * `artists_collection` - Arc to the artists collection for updating
 pub fn update_library_artists_metadata_in_background(
-    artists_collection: std::sync::Arc<std::sync::RwLock<HashMap<String, Artist>>>
+    artists_collection: Arc<RwLock<HashMap<String, Artist>>>
 ) {
     debug!("Starting background thread to update artist metadata");
     
@@ -729,13 +712,9 @@ pub fn update_library_artists_metadata_in_background(
 
         // Get all artists from the collection
         let artists = {
-            if let Ok(artists_map) = artists_collection.read() {
-                // Clone all artists for processing
-                artists_map.values().cloned().collect::<Vec<_>>()
-            } else {
-                warn!("Failed to acquire read lock on artists collection");
-                Vec::new()
-            }
+            let artists_map = artists_collection.read();
+            // Clone all artists for processing
+            artists_map.values().cloned().collect::<Vec<_>>()
         };
 
         let total = artists.len();
@@ -751,11 +730,8 @@ pub fn update_library_artists_metadata_in_background(
             // Check if we found new metadata to log appropriately
             let has_new_metadata = {
                 let original_metadata = {
-                    if let Ok(artists_map) = artists_collection.read() {
-                        artists_map.get(&artist_name).and_then(|a| a.metadata.clone())
-                    } else {
-                        None
-                    }
+                    let artists_map = artists_collection.read();
+                    artists_map.get(&artist_name).and_then(|a| a.metadata.clone())
                 };
 
                 if let Some(new_metadata) = &updated_artist.metadata {
@@ -776,14 +752,13 @@ pub fn update_library_artists_metadata_in_background(
             };
 
             // Update the artist in the collection
-            if let Ok(mut artists_map) = artists_collection.write() {
+            {
+                let mut artists_map = artists_collection.write();
                 artists_map.insert(artist_name.clone(), updated_artist);
 
                 if has_new_metadata {
                     debug!("Successfully updated artist {} in library collection", artist_name);
                 }
-            } else {
-                warn!("Failed to acquire write lock on artists collection for {}", artist_name);
             }
 
             // Log progress periodically
@@ -807,11 +782,9 @@ pub fn update_library_artists_metadata_in_background(
 /// # Arguments
 /// * `artist_name` - The name of the artist
 pub fn clear_artist_cached_image(artist_name: &str) {
-    if let Ok(mut store) = get_artist_store().lock() {
-        store.clear_cached_image(artist_name);
-    } else {
-        warn!("Failed to acquire lock on artist store");
-    }
+    let store_arc = get_artist_store();
+    let mut store = store_arc.lock();
+    store.clear_cached_image(artist_name);
 }
 
 #[cfg(test)]

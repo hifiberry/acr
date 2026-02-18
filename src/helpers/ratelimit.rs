@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use log::debug;
 
 const DEFAULT_RATE_LIMIT_MS: u64 = 500; // Default to 500ms (2 requests per second)
@@ -21,9 +21,7 @@ pub struct RateLimiter {
 }
 
 // Global singleton for the rate limiter
-lazy_static! {
-    static ref RATE_LIMITER: Mutex<RateLimiter> = Mutex::new(RateLimiter::new());
-}
+static RATE_LIMITER: Lazy<Mutex<RateLimiter>> = Lazy::new(|| Mutex::new(RateLimiter::new()));
 
 impl RateLimiter {
     /// Create a new rate limiter
@@ -87,8 +85,8 @@ impl RateLimiter {
 }
 
 /// Get access to the global rate limiter instance
-fn get_rate_limiter() -> std::sync::MutexGuard<'static, RateLimiter> {
-    RATE_LIMITER.lock().unwrap()
+fn get_rate_limiter() -> parking_lot::MutexGuard<'static, RateLimiter> {
+    RATE_LIMITER.lock()
 }
 
 /// Register a rate limit for a specific service

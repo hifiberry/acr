@@ -1,5 +1,6 @@
 use std::mem;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use log::info;
 use crate::data::{Album, Artist, Track};
 
@@ -170,12 +171,8 @@ impl MemoryUsage {
         // Size of artists (Arc<Mutex<Vec<String>>>)
         let artists_size = mem::size_of::<Arc<Mutex<Vec<String>>>>();
         
-        // Try to access the artists to calculate their memory usage
-        let artists_content_size = if let Ok(artists_guard) = album.artists.lock() {
-            Self::string_vec_size(&artists_guard)
-        } else {
-            0 // If we can't get the lock, estimate as 0
-        };
+        // Access the artists to calculate their memory usage
+        let artists_content_size = Self::string_vec_size(&album.artists.lock());
         
         // Size of artists_flat if present
         let artists_flat_size = match &album.artists_flat {
@@ -205,38 +202,37 @@ impl MemoryUsage {
         // Add base size of Arc and Mutex
         size += std::mem::size_of::<Arc<Mutex<Vec<Track>>>>();
 
-        // Try to access the tracks to calculate their memory usage
-        if let Ok(tracks_guard) = tracks.lock() {
-            // Add base size of Vec
-            size += std::mem::size_of::<Vec<Track>>();
+        // Access the tracks to calculate their memory usage
+        let tracks_guard = tracks.lock();
+        // Add base size of Vec
+        size += std::mem::size_of::<Vec<Track>>();
 
-            // Add capacity overhead
-            size += tracks_guard.capacity() * std::mem::size_of::<Track>();
+        // Add capacity overhead
+        size += tracks_guard.capacity() * std::mem::size_of::<Track>();
 
-            // Add size of each track's data
-            for track in tracks_guard.iter() {
-                // Optional String data for disc_number
-                if let Some(disc_number) = &track.disc_number {
-                    size += mem::size_of::<String>() + disc_number.capacity();
-                }
-                
-                // Optional track_number (u16)
-                if track.track_number.is_some() {
-                    size += std::mem::size_of::<u16>();
-                }
-                
-                // String data for name
-                size += track.name.capacity();
-                
-                // Optional artist string data
-                if let Some(artist) = &track.artist {
-                    size += mem::size_of::<String>() + artist.capacity();
-                }
-                
-                // Optional URI string data
-                if let Some(uri) = &track.uri {
-                    size += mem::size_of::<String>() + uri.capacity();
-                }
+        // Add size of each track's data
+        for track in tracks_guard.iter() {
+            // Optional String data for disc_number
+            if let Some(disc_number) = &track.disc_number {
+                size += mem::size_of::<String>() + disc_number.capacity();
+            }
+
+            // Optional track_number (u16)
+            if track.track_number.is_some() {
+                size += std::mem::size_of::<u16>();
+            }
+
+            // String data for name
+            size += track.name.capacity();
+
+            // Optional artist string data
+            if let Some(artist) = &track.artist {
+                size += mem::size_of::<String>() + artist.capacity();
+            }
+
+            // Optional URI string data
+            if let Some(uri) = &track.uri {
+                size += mem::size_of::<String>() + uri.capacity();
             }
         }
         

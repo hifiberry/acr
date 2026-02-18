@@ -2,7 +2,8 @@ use log::{debug, info, warn};
 use crate::data::artist::Artist;
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 use crate::helpers::ArtistUpdater;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 
 /// Looks up MusicBrainz IDs for an artist and returns them if found
@@ -255,14 +256,9 @@ pub fn update_library_artists_metadata_in_background(
 
         // Get all artists from the collection
         let artists = {
-            if let Ok(artists_map) = artists_collection.read() {
-                // Clone all artists for processing
-                artists_map.values().cloned().collect::<Vec<_>>()
-            } else {
-                warn!("Failed to acquire read lock on artists collection");
-                let _ = crate::helpers::backgroundjobs::complete_job(&job_id);
-                return;
-            }
+            let artists_map = artists_collection.read();
+            // Clone all artists for processing
+            artists_map.values().cloned().collect::<Vec<_>>()
         };
 
         let total = artists.len();
@@ -300,11 +296,8 @@ pub fn update_library_artists_metadata_in_background(
             // Check if we found new metadata to log appropriately
             let has_new_metadata = {
                 let original_metadata = {
-                    if let Ok(artists_map) = artists_collection.read() {
-                        artists_map.get(&artist_name).and_then(|a| a.metadata.clone())
-                    } else {
-                        None
-                    }
+                    let artists_map = artists_collection.read();
+                    artists_map.get(&artist_name).and_then(|a| a.metadata.clone())
                 };
 
                 if let Some(new_metadata) = &updated_artist.metadata {
@@ -325,14 +318,13 @@ pub fn update_library_artists_metadata_in_background(
             };
 
             // Update the artist in the collection
-            if let Ok(mut artists_map) = artists_collection.write() {
+            {
+                let mut artists_map = artists_collection.write();
                 artists_map.insert(artist_name.clone(), updated_artist);
 
                 if has_new_metadata {
                     debug!("Successfully updated artist {} in library collection", artist_name);
                 }
-            } else {
-                warn!("Failed to acquire write lock on artists collection for {}", artist_name);
             }
 
             // Log progress periodically

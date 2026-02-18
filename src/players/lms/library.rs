@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
+use parking_lot::{Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
 use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface};
@@ -72,31 +73,19 @@ impl LMSLibrary {
 
     /// Get the current library loading progress (0.0 to 1.0)
     pub fn get_loading_progress(&self) -> f32 {
-        if let Ok(progress) = self.loading_progress.lock() {
-            *progress
-        } else {
-            0.0 // Default to 0 if we can't get the lock
-        }
+        *self.loading_progress.lock()
     }
     
     /// Set custom artist separators for use in library operations
     pub fn set_artist_separators(&mut self, separators: Vec<String>) {
         debug!("Setting custom artist separators in LMSLibrary: {:?}", separators);
-        if let Ok(mut sep_guard) = self.artist_separators.lock() {
-            *sep_guard = Some(separators);
-        } else {
-            warn!("Failed to acquire lock for setting artist separators");
-        }
+        let mut sep_guard = self.artist_separators.lock();
+        *sep_guard = Some(separators);
     }
     /// Get custom artist separators for artist name splitting
     pub fn get_artist_separators(&self) -> Option<Vec<String>> {
         // Return the stored separators if available
-        if let Ok(sep_guard) = self.artist_separators.lock() {
-            sep_guard.clone()
-        } else {
-            warn!("Failed to acquire lock for artist separators");
-            None
-        }
+        self.artist_separators.lock().clone()
     }
         
     /// Create artist objects from all album artist data
@@ -111,13 +100,7 @@ impl LMSLibrary {
         let mut created_count = 0;
         
         // First, get a read lock on the albums to extract all artist names
-        let albums = match self.albums.read() {
-            Ok(albums) => albums,
-            Err(_) => {
-                error!("Failed to acquire read lock on albums");
-                return Err(LibraryError::InternalError("Failed to acquire lock on albums".to_string()));
-            }
-        };
+        let albums = self.albums.read();
         
         // Collect all artist names from albums and their IDs
         let mut artist_names = HashSet::new();
@@ -126,35 +109,22 @@ impl LMSLibrary {
         // Go through all albums and collect artist names
         for album in albums.values() {
             // Extract artist names from the album's artists list
-            if let Ok(album_artists) = album.artists.lock() {
-                for artist_name in album_artists.iter() {
-                    artist_names.insert(artist_name.clone());
-                    
-                    // Store album-artist relationship for later
-                    album_artist_relations.push((album.id.clone(), artist_name.clone()));
-                }
+            let album_artists = album.artists.lock();
+            for artist_name in album_artists.iter() {
+                artist_names.insert(artist_name.clone());
+
+                // Store album-artist relationship for later
+                album_artist_relations.push((album.id.clone(), artist_name.clone()));
             }
         }
         
         debug!("Found {} unique artist names in albums", artist_names.len());
         
         // Now, get a write lock on the artists collection to add new artists
-        let mut artists = match self.artists.write() {
-            Ok(artists) => artists,
-            Err(_) => {
-                error!("Failed to acquire write lock on artists");
-                return Err(LibraryError::InternalError("Failed to acquire lock on artists".to_string()));
-            }
-        };
-        
+        let mut artists = self.artists.write();
+
         // Get a write lock on the album_artists relationships
-        let mut album_artists = match self.album_artists.write() {
-            Ok(album_artists) => album_artists,
-            Err(_) => {
-                error!("Failed to acquire write lock on album_artists");
-                return Err(LibraryError::InternalError("Failed to acquire lock on album_artists".to_string()));
-            }
-        };
+        let mut album_artists = self.album_artists.write();
         
         // Create a new artist object for each name that doesn't already exist
         for artist_name in artist_names {
@@ -233,106 +203,88 @@ impl LMSLibrary {
 
     /// Get album by ID
     pub fn get_album_by_id(&self, id: &crate::data::Identifier) -> Option<Album> {
-        if let Ok(albums) = self.albums.read() {
-            // Search through all albums to find one with matching ID
-            for album in albums.values() {
-                if &album.id == id {
-                    let mut album_clone = album.clone();
-                    self.populate_calculated_album_fields(&mut album_clone);
-                    return Some(album_clone);
-                }
+        let albums = self.albums.read();
+        // Search through all albums to find one with matching ID
+        for album in albums.values() {
+            if &album.id == id {
+                let mut album_clone = album.clone();
+                self.populate_calculated_album_fields(&mut album_clone);
+                return Some(album_clone);
             }
-            None
-        } else {
-            warn!("Failed to acquire read lock on albums");
-            None
         }
+        None
     }
 
     /// Get albums by artist ID
     pub fn get_albums_by_artist_id(&self, artist_id: &crate::data::Identifier) -> Vec<Album> {
         let mut result = Vec::new();
-        
+
         // Get albums associated with this artist ID from album_artists mapping
-        if let Ok(album_artists_mapping) = self.album_artists.read() {
-            let album_ids = album_artists_mapping.get_albums_for_artist(artist_id);
-            
-            // Get all albums and fetch the ones with matching IDs
-            if let Ok(albums) = self.albums.read() {
-                for album in albums.values() {
-                    if album_ids.contains(&album.id) {
-                        let mut album_clone = album.clone();
-                        self.populate_calculated_album_fields(&mut album_clone);
-                        result.push(album_clone);
-                    }
-                }
+        let album_artists_mapping = self.album_artists.read();
+        let album_ids = album_artists_mapping.get_albums_for_artist(artist_id);
+
+        // Get all albums and fetch the ones with matching IDs
+        let albums = self.albums.read();
+        for album in albums.values() {
+            if album_ids.contains(&album.id) {
+                let mut album_clone = album.clone();
+                self.populate_calculated_album_fields(&mut album_clone);
+                result.push(album_clone);
             }
         }
-        
+
         result
     }
 
     /// Get albums by artist name
     pub fn get_albums_by_artist(&self, artist_name: &str) -> Vec<Album> {
         let mut result = Vec::new();
-        
+
         // First get the artist by name to get the artist ID
         if let Some(artist) = self.get_artist_by_name(artist_name) {
             let artist_id = artist.id;
-            
+
             // Get albums associated with this artist from album_artists mapping
-            if let Ok(album_artists_mapping) = self.album_artists.read() {
-                let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id);
-                
-                // Get all albums and fetch the ones with matching IDs
-                if let Ok(albums) = self.albums.read() {
-                    for album in albums.values() {
-                        if album_ids.contains(&album.id) {
-                            let mut album_clone = album.clone();
-                            self.populate_calculated_album_fields(&mut album_clone);
-                            result.push(album_clone);
-                        }
-                    }
+            let album_artists_mapping = self.album_artists.read();
+            let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id);
+
+            // Get all albums and fetch the ones with matching IDs
+            let albums = self.albums.read();
+            for album in albums.values() {
+                if album_ids.contains(&album.id) {
+                    let mut album_clone = album.clone();
+                    self.populate_calculated_album_fields(&mut album_clone);
+                    result.push(album_clone);
                 }
             }
         }
-        
+
         result
     }
 
     /// Get album by artist and album name
     pub fn get_album_by_artist_and_name(&self, artist: &str, album: &str) -> Option<Album> {
         // Implementation to find album by both artist and album name
-        if let Ok(albums) = self.albums.read() {
-            // Look for an album with the specified name
-            if let Some(album_obj) = albums.get(album) {
-                // If we found the album, check if it has the specified artist
-                if let Ok(album_artists) = album_obj.artists.lock() {
-                    // If the album has the specified artist (case-insensitive comparison)
-                    if album_artists.iter().any(|a| a.to_lowercase() == artist.to_lowercase()) {
-                        let mut album_clone = album_obj.clone();
-                        self.populate_calculated_album_fields(&mut album_clone);
-                        return Some(album_clone);
-                    }
-                }
+        let albums = self.albums.read();
+        // Look for an album with the specified name
+        if let Some(album_obj) = albums.get(album) {
+            // If we found the album, check if it has the specified artist
+            let album_artists = album_obj.artists.lock();
+            // If the album has the specified artist (case-insensitive comparison)
+            if album_artists.iter().any(|a| a.to_lowercase() == artist.to_lowercase()) {
+                let mut album_clone = album_obj.clone();
+                self.populate_calculated_album_fields(&mut album_clone);
+                return Some(album_clone);
             }
-            
-            // Album not found or artist doesn't match
-            None
-        } else {
-            warn!("Failed to acquire read lock on albums");
-            None
         }
+
+        // Album not found or artist doesn't match
+        None
     }
 
     /// Get artist by name
     pub fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
-        if let Ok(artists) = self.artists.read() {
-            artists.get(name).cloned()
-        } else {
-            warn!("Failed to acquire read lock on artists");
-            None
-        }
+        self.artists.read().get(name).cloned()
     }    /// Returns the URL for a track's cover artwork
     /// 
     /// # Arguments
@@ -374,13 +326,9 @@ impl LibraryInterface for LMSLibrary {
         Self::with_connection("localhost", 9000) // Default LMS port is 9000
     }
     fn is_loaded(&self) -> bool {
-        if let Ok(loaded) = self.library_loaded.lock() {
-            debug!("Library is_loaded check returning: {}", *loaded);
-            *loaded
-        } else {
-            warn!("Failed to acquire lock on library_loaded flag");
-            false
-        }
+        let loaded = self.library_loaded.lock();
+        debug!("Library is_loaded check returning: {}", *loaded);
+        *loaded
     }
     
     fn refresh_library(&self) -> Result<(), LibraryError> {
@@ -398,31 +346,23 @@ impl LibraryInterface for LMSLibrary {
         let result = match loader.load_albums_from_lms(artist_separators) {
             Ok(albums) => {
                 // Mark as not loaded during update
-                if let Ok(mut loaded) = self.library_loaded.lock() {
-                    *loaded = false;
-                }
-                
+                { let mut loaded = self.library_loaded.lock(); *loaded = false; }
+
                 // Reset loading progress to 0
-                if let Ok(mut progress) = self.loading_progress.lock() {
-                    *progress = 0.0;
-                }
+                { let mut progress = self.loading_progress.lock(); *progress = 0.0; }
                 
                 // Update albums collection
                 {
-                    if let Ok(mut self_albums) = self.albums.write() {
-                        self_albums.clear();
-                        
-                        // Add each album to the collection with name as key
-                        for mut album in albums {
-                            self.populate_calculated_album_fields(&mut album);
-                            self_albums.insert(album.name.clone(), album);
-                        }
-                        
-                        info!("Updated library with {} albums", self_albums.len());
-                    } else {
-                        error!("Failed to acquire write lock on albums");
-                        return Err(LibraryError::InternalError("Failed to acquire locks".to_string()));
+                    let mut self_albums = self.albums.write();
+                    self_albums.clear();
+
+                    // Add each album to the collection with name as key
+                    for mut album in albums {
+                        self.populate_calculated_album_fields(&mut album);
+                        self_albums.insert(album.name.clone(), album);
                     }
+
+                    info!("Updated library with {} albums", self_albums.len());
                 }
                 
                 // Create artists and update album-artist relationships
@@ -430,16 +370,13 @@ impl LibraryInterface for LMSLibrary {
                     error!("Error creating artists: {}", e);
                 }
                 // Mark as loaded and update progress
-                if let Ok(mut loaded) = self.library_loaded.lock() {
+                {
+                    let mut loaded = self.library_loaded.lock();
                     *loaded = true;
                     info!("Setting library_loaded flag to true");
-                } else {
-                    error!("Failed to acquire lock on library_loaded");
                 }
-                
-                if let Ok(mut progress) = self.loading_progress.lock() {
-                    *progress = 1.0;
-                }
+
+                { let mut progress = self.loading_progress.lock(); *progress = 1.0; }
                 
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
@@ -465,30 +402,17 @@ impl LibraryInterface for LMSLibrary {
     
     fn get_albums(&self) -> Vec<Album> {
         warn!("Retrieving all albums from LMSLibrary");
-        // log number of albums
-        if let Ok(albums) = self.albums.read() {
-            info!("LMSLibrary contains {} albums", albums.len());
-        } else {
-            warn!("Failed to acquire read lock on albums");
-        }
-        if let Ok(albums) = self.albums.read() {
-            albums.values().cloned().map(|mut album| {
-                self.populate_calculated_album_fields(&mut album);
-                album
-            }).collect()
-        } else {
-            warn!("Failed to acquire read lock on albums");
-            Vec::new()
-        }
+        let albums = self.albums.read();
+        info!("LMSLibrary contains {} albums", albums.len());
+        albums.values().cloned().map(|mut album| {
+            self.populate_calculated_album_fields(&mut album);
+            album
+        }).collect()
     }
     fn get_artists(&self) -> Vec<Artist> {
-        if let Ok(artists) = self.artists.read() {
-            info!("LMSLibrary returning {} artists from get_artists", artists.len());
-            artists.values().cloned().collect()
-        } else {
-            warn!("Failed to acquire read lock on artists");
-            Vec::new()
-        }
+        let artists = self.artists.read();
+        info!("LMSLibrary returning {} artists from get_artists", artists.len());
+        artists.values().cloned().collect()
     }
     
     fn get_album_by_artist_and_name(&self, artist: &str, album: &str) -> Option<Album> {
@@ -530,15 +454,8 @@ impl LibraryInterface for LMSLibrary {
                     
                     // Get the first track from the album (if any) with proper lifetime handling
                     let track = album.and_then(|a| {
-                        if let Ok(tracks_guard) = a.tracks.lock() {
-                            if let Some(t) = tracks_guard.get(0) {
-                                Some(t.clone())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
+                        let tracks_guard = a.tracks.lock();
+                        tracks_guard.get(0).cloned()
                     });
 
                     // Extract the track ID if available, otherwise fall back to URI
@@ -616,30 +533,32 @@ impl LibraryInterface for LMSLibrary {
                 let mut usage = MemoryUsage::new();
                 
                 // Calculate size of albums and tracks
-                if let Ok(albums) = self.albums.read() {
+                {
+                    let albums = self.albums.read();
                     usage.album_count = albums.len();
-                    
+
                     for album in albums.values() {
                         usage.albums_memory += MemoryUsage::calculate_album_memory(album);
                         usage.tracks_memory += MemoryUsage::calculate_tracks_memory(&album.tracks);
-                        
+
                         // Count tracks
-                        if let Ok(tracks) = album.tracks.lock() {
-                            usage.track_count += tracks.len();
-                        }
+                        let tracks = album.tracks.lock();
+                        usage.track_count += tracks.len();
                     }
                 }
-                
+
                 // Calculate size of artists
-                if let Ok(artists) = self.artists.read() {
+                {
+                    let artists = self.artists.read();
                     usage.artist_count = artists.len();
                     for artist in artists.values() {
                         usage.artists_memory += MemoryUsage::calculate_artist_memory(artist);
                     }
                 }
-                
+
                 // Calculate album-artist relationships
-                if let Ok(album_artists) = self.album_artists.read() {
+                {
+                    let album_artists = self.album_artists.read();
                     usage.album_artists_count = album_artists.len();
                     usage.overhead_memory += album_artists.memory_usage();
                 }
@@ -677,27 +596,17 @@ impl LibraryInterface for LMSLibrary {
                 })).unwrap_or_else(|_| "{}".to_string()))
             },
             "album_count" => {
-                if let Ok(albums) = self.albums.read() {
-                    Some(albums.len().to_string())
-                } else {
-                    Some("0".to_string())
-                }
+                Some(self.albums.read().len().to_string())
             },
             "artist_count" => {
-                if let Ok(artists) = self.artists.read() {
-                    Some(artists.len().to_string())
-                } else {
-                    Some("0".to_string())
-                }
+                Some(self.artists.read().len().to_string())
             },
             "track_count" => {
                 let mut total_tracks = 0;
-                if let Ok(albums) = self.albums.read() {
-                    for album in albums.values() {
-                        if let Ok(tracks) = album.tracks.lock() {
-                            total_tracks += tracks.len();
-                        }
-                    }
+                let albums = self.albums.read();
+                for album in albums.values() {
+                    let tracks = album.tracks.lock();
+                    total_tracks += tracks.len();
                 }
                 Some(total_tracks.to_string())
             },
@@ -710,18 +619,10 @@ impl LibraryInterface for LMSLibrary {
             },
             "server_port" => Some(self.client.get_server_port().to_string()),
             "library_loaded" => {
-                if let Ok(loaded) = self.library_loaded.lock() {
-                    Some(loaded.to_string())
-                } else {
-                    Some("false".to_string())
-                }
+                Some(self.library_loaded.lock().to_string())
             },
             "loading_progress" => {
-                if let Ok(progress) = self.loading_progress.lock() {
-                    Some(format!("{:.2}", progress))
-                } else {
-                    Some("0.0".to_string())
-                }
+                Some(format!("{:.2}", *self.loading_progress.lock()))
             },
             "enhance_metadata" => Some(self.enhance_metadata.to_string()),
             _ => None,

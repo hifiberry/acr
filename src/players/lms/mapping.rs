@@ -1,6 +1,7 @@
 // Mapping utilities for converting between LMS-specific data structures and
 // the common data structures used throughout the application.
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use chrono::NaiveDate;
 use log::warn;
 
@@ -38,10 +39,9 @@ pub fn map_album(lms_album: &LmsAlbum) -> Option<AcrAlbum> {
     
     // Add any artist information if available
     if let Some(artist_name) = &lms_album.artist {
-        if let Ok(mut artists) = album.artists.lock() {
-            artists.push(artist_name.clone());
-            album.artists_flat = Some(artist_name.clone());
-        }
+        let mut artists = album.artists.lock();
+        artists.push(artist_name.clone());
+        album.artists_flat = Some(artist_name.clone());
     }
     
     // Add release year if available
@@ -150,14 +150,14 @@ pub fn map_tracks_to_album(
     
     // Add album artist if available
     if let Some(artist) = album_artist {
-        if let Ok(mut artists) = album.artists.lock() {
-            artists.push(artist.clone());
-            album.artists_flat = Some(artist);
-        }
+        let mut artists = album.artists.lock();
+        artists.push(artist.clone());
+        album.artists_flat = Some(artist);
     }
-    
+
     // Add all tracks to the album
-    if let Ok(mut album_tracks) = album.tracks.lock() {
+    {
+        let mut album_tracks = album.tracks.lock();
         for lms_track in lms_tracks {
             let acr_track = map_track(lms_track, album.artists_flat.as_deref());
             album_tracks.push(acr_track);

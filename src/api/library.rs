@@ -156,18 +156,14 @@ struct AlbumDTO {
 impl From<Album> for AlbumDTO {
     fn from(album: Album) -> Self {
         // Get the tracks for counting and optional inclusion
-        let tracks_lock = album.tracks.lock().unwrap_or_else(|_| {
-            // If poisoned, create an empty list
-            panic!("Tracks mutex poisoned")
-        });
-        
+        let tracks_lock = album.tracks.lock();
+
         let tracks_count = tracks_lock.len();
         let tracks_clone = Some(tracks_lock.clone());
-        
+
         // Get artists
-        let artists = album.artists.lock().unwrap_or_else(|_| panic!("Artists mutex poisoned"))
-            .clone();
-        
+        let artists = album.artists.lock().clone();
+
         // Drop the lock before returning
         drop(tracks_lock);
         
@@ -204,25 +200,24 @@ pub fn list_libraries(controller: &State<Arc<AudioController>>) -> Json<LibraryL
     
     // Iterate through all controllers and check their library status
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            let player_name = ctrl.get_player_name();
-            let player_id = ctrl.get_player_id();
-            let library = ctrl.get_library();
-            
-            // Determine library status
-            let (has_library, is_loaded) = match &library {
-                Some(lib) => (true, lib.is_loaded()),
-                None => (false, false),
-            };
-            
-            // Add player info to the list
-            players.push(LibraryPlayerInfo {
-                player_name,
-                player_id,
-                has_library,
-                is_loaded,
-            });
-        }
+        let ctrl = ctrl_lock.read();
+        let player_name = ctrl.get_player_name();
+        let player_id = ctrl.get_player_id();
+        let library = ctrl.get_library();
+
+        // Determine library status
+        let (has_library, is_loaded) = match &library {
+            Some(lib) => (true, lib.is_loaded()),
+            None => (false, false),
+        };
+
+        // Add player info to the list
+        players.push(LibraryPlayerInfo {
+            player_name,
+            player_id,
+            has_library,
+            is_loaded,
+        });
     }
     
     Json(LibraryListResponse { players })
@@ -235,41 +230,40 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Get basic library info
-                    let is_loaded = library.is_loaded();
-                    let albums = library.get_albums();
-                    let artists = library.get_artists();
-                    
-                    return Ok(Json(LibraryResponse {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Get basic library info
+                let is_loaded = library.is_loaded();
+                let albums = library.get_albums();
+                let artists = library.get_artists();
+
+                return Ok(Json(LibraryResponse {
+                    player_name: player_name.to_string(),
+                    player_id: ctrl.get_player_id(),
+                    has_library: true,
+                    is_loaded,
+                    albums_count: albums.len(),
+                    artists_count: artists.len(),
+                }));
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    Json(LibraryResponse {
                         player_name: player_name.to_string(),
                         player_id: ctrl.get_player_id(),
-                        has_library: true,
-                        is_loaded,
-                        albums_count: albums.len(),
-                        artists_count: artists.len(),
-                    }));
-                } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        Json(LibraryResponse {
-                            player_name: player_name.to_string(),
-                            player_id: ctrl.get_player_id(),
-                            has_library: false,
-                            is_loaded: false,
-                            albums_count: 0,
-                            artists_count: 0,
-                        }),
-                    ));
-                }
+                        has_library: false,
+                        is_loaded: false,
+                        albums_count: 0,
+                        artists_count: 0,
+                    }),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -296,34 +290,33 @@ pub fn get_player_albums(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Get all albums
-                    let albums = library.get_albums();
-                    
-                    // Convert albums to DTOs without including tracks
-                    let album_dtos = albums.into_iter()
-                        .map(|album| create_album_dto(album, false))
-                        .collect::<Vec<AlbumDTO>>();
-                    
-                    return Ok(Json(AlbumsDTOResponse {
-                        player_name: player_name.to_string(),
-                        count: album_dtos.len(),
-                        albums: album_dtos,
-                    }));
-                } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
-                    ));
-                }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Get all albums
+                let albums = library.get_albums();
+
+                // Convert albums to DTOs without including tracks
+                let album_dtos = albums.into_iter()
+                    .map(|album| create_album_dto(album, false))
+                    .collect::<Vec<AlbumDTO>>();
+
+                return Ok(Json(AlbumsDTOResponse {
+                    player_name: player_name.to_string(),
+                    count: album_dtos.len(),
+                    albums: album_dtos,
+                }));
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -341,63 +334,62 @@ pub fn get_player_artists(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Get all artists
-                    let mut artists = library.get_artists();
-                    
-                    // Sort artists by name
-                    artists.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-                    
-                    // Create a custom JSON response with only the required fields
-                    let mut artists_json = Vec::with_capacity(artists.len());
-                    
-                    for artist in &artists {
-                        // Get albums for this artist by name to determine the count
-                        let albums = library.get_albums_by_artist_id(&artist.id);
-                        let album_count = albums.len();
-                        
-                        // Extract all thumbnail URLs from metadata if available
-                        let thumb_urls = artist.metadata.as_ref()
-                            .map(|meta| meta.thumb_url.clone())
-                            .unwrap_or_default();
-                        
-                        // Create a struct with fields in the specific order
-                        let artist_data = ArtistCustomResponse {
-                            name: artist.name.clone(),
-                            id: artist.id.to_string(),
-                            is_multi: artist.is_multi,
-                            album_count,
-                            thumb_url: thumb_urls,
-                        };
-                        
-                        // Convert to serde_json::Value to include in the response
-                        if let Ok(json_value) = serde_json::to_value(artist_data) {
-                            artists_json.push(json_value);
-                        }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Get all artists
+                let mut artists = library.get_artists();
+
+                // Sort artists by name
+                artists.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+                // Create a custom JSON response with only the required fields
+                let mut artists_json = Vec::with_capacity(artists.len());
+
+                for artist in &artists {
+                    // Get albums for this artist by name to determine the count
+                    let albums = library.get_albums_by_artist_id(&artist.id);
+                    let album_count = albums.len();
+
+                    // Extract all thumbnail URLs from metadata if available
+                    let thumb_urls = artist.metadata.as_ref()
+                        .map(|meta| meta.thumb_url.clone())
+                        .unwrap_or_default();
+
+                    // Create a struct with fields in the specific order
+                    let artist_data = ArtistCustomResponse {
+                        name: artist.name.clone(),
+                        id: artist.id.to_string(),
+                        is_multi: artist.is_multi,
+                        album_count,
+                        thumb_url: thumb_urls,
+                    };
+
+                    // Convert to serde_json::Value to include in the response
+                    if let Ok(json_value) = serde_json::to_value(artist_data) {
+                        artists_json.push(json_value);
                     }
-                    
-                    // Build the final response
-                    let response = serde_json::json!({
-                        "player_name": player_name,
-                        "count": artists.len(),
-                        "artists": artists_json
-                    });
-                    
-                    return Ok(Json(response));
-                } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
-                    ));
                 }
+
+                // Build the final response
+                let response = serde_json::json!({
+                    "player_name": player_name,
+                    "count": artists.len(),
+                    "artists": artists_json
+                });
+
+                return Ok(Json(response));
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -418,38 +410,37 @@ pub fn get_album_by_id(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Create identifier based on album_id format
-                    let identifier = if let Ok(id) = album_id.parse::<u64>() {
-                        crate::data::Identifier::Numeric(id)
-                    } else {
-                        crate::data::Identifier::String(album_id.to_string())
-                    };
-                    
-                    // Get the album by ID
-                    let album_option = library.get_album_by_id(&identifier);
-                    
-                    // Convert album to DTO with tracks included
-                    let album_dto = album_option.map(|album| create_album_dto(album, true));
-                    
-                    return Ok(Json(AlbumDTOResponse {
-                        player_name: player_name.to_string(),
-                        album: album_dto,
-                    }));
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Create identifier based on album_id format
+                let identifier = if let Ok(id) = album_id.parse::<u64>() {
+                    crate::data::Identifier::Numeric(id)
                 } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
-                    ));
-                }
+                    crate::data::Identifier::String(album_id.to_string())
+                };
+                
+                // Get the album by ID
+                let album_option = library.get_album_by_id(&identifier);
+                
+                // Convert album to DTO with tracks included
+                let album_dto = album_option.map(|album| create_album_dto(album, true));
+                
+                return Ok(Json(AlbumDTOResponse {
+                    player_name: player_name.to_string(),
+                    album: album_dto,
+                }));
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -470,44 +461,43 @@ pub fn get_albums_by_artist(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // First get the artist to get their ID
-                    if let Some(artist) = library.get_artist_by_name(artist_name) {
-                        // Get albums by artist ID
-                        let albums = library.get_albums_by_artist_id(&artist.id);
-                        
-                        // Convert albums to DTOs without including tracks
-                        let album_dtos = albums.into_iter()
-                            .map(|album| create_album_dto(album, false))
-                            .collect::<Vec<AlbumDTO>>();
-                        
-                        return Ok(Json(ArtistAlbumsDTOResponse {
-                            player_name: player_name.to_string(),
-                            artist_name: artist_name.to_string(),
-                            count: album_dtos.len(),
-                            albums: album_dtos,
-                        }));
-                    } else {
-                        // Artist not found
-                        return Err(Custom(
-                            Status::NotFound,
-                            format!("Artist '{}' not found", artist_name),
-                        ));
-                    }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // First get the artist to get their ID
+                if let Some(artist) = library.get_artist_by_name(artist_name) {
+                    // Get albums by artist ID
+                    let albums = library.get_albums_by_artist_id(&artist.id);
+                    
+                    // Convert albums to DTOs without including tracks
+                    let album_dtos = albums.into_iter()
+                        .map(|album| create_album_dto(album, false))
+                        .collect::<Vec<AlbumDTO>>();
+                    
+                    return Ok(Json(ArtistAlbumsDTOResponse {
+                        player_name: player_name.to_string(),
+                        artist_name: artist_name.to_string(),
+                        count: album_dtos.len(),
+                        albums: album_dtos,
+                    }));
                 } else {
-                    // Player exists but doesn't have a library
+                    // Artist not found
                     return Err(Custom(
                         Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
+                        format!("Artist '{}' not found", artist_name),
                     ));
                 }
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -528,55 +518,54 @@ pub fn get_albums_by_artist_id(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Parse the artist ID
-                    let artist_id_parsed = match artist_id.parse::<u64>() {
-                        Ok(id) => id,
-                        Err(_) => {
-                            return Err(Custom(
-                                Status::BadRequest,
-                                format!("Invalid artist ID: {}", artist_id),
-                            ));
-                        }
-                    };
-                    
-                    // Create Identifier and get albums by artist ID
-                    let artist_id_identifier = crate::data::Identifier::Numeric(artist_id_parsed);
-                    let albums = library.get_albums_by_artist_id(&artist_id_identifier);
-                    
-                    // Convert albums to DTOs without including tracks
-                    let album_dtos = albums.into_iter()
-                        .map(|album| create_album_dto(album, false))
-                        .collect::<Vec<AlbumDTO>>();
-                    
-                    // Try to find the artist name for better response
-                    let artist_name = library.get_artists().into_iter()
-                        .find(|artist| artist.id == crate::data::Identifier::Numeric(artist_id_parsed))
-                        .map_or_else(
-                            || format!("Artist ID: {}", artist_id),
-                            |artist| artist.name
-                        );
-                    
-                    return Ok(Json(ArtistAlbumsDTOResponse {
-                        player_name: player_name.to_string(),
-                        artist_name,
-                        count: album_dtos.len(),
-                        albums: album_dtos,
-                    }));
-                } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
-                    ));
-                }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Parse the artist ID
+                let artist_id_parsed = match artist_id.parse::<u64>() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        return Err(Custom(
+                            Status::BadRequest,
+                            format!("Invalid artist ID: {}", artist_id),
+                        ));
+                    }
+                };
+                
+                // Create Identifier and get albums by artist ID
+                let artist_id_identifier = crate::data::Identifier::Numeric(artist_id_parsed);
+                let albums = library.get_albums_by_artist_id(&artist_id_identifier);
+                
+                // Convert albums to DTOs without including tracks
+                let album_dtos = albums.into_iter()
+                    .map(|album| create_album_dto(album, false))
+                    .collect::<Vec<AlbumDTO>>();
+                
+                // Try to find the artist name for better response
+                let artist_name = library.get_artists().into_iter()
+                    .find(|artist| artist.id == crate::data::Identifier::Numeric(artist_id_parsed))
+                    .map_or_else(
+                        || format!("Artist ID: {}", artist_id),
+                        |artist| artist.name
+                    );
+                
+                return Ok(Json(ArtistAlbumsDTOResponse {
+                    player_name: player_name.to_string(),
+                    artist_name,
+                    count: album_dtos.len(),
+                    albums: album_dtos,
+                }));
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -591,45 +580,44 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Trigger library refresh
-                    match library.refresh_library() {
-                        Ok(_) => {
-                            // Get updated library info
-                            let is_loaded = library.is_loaded();
-                            let albums = library.get_albums();
-                            let artists = library.get_artists();
-                            
-                            return Ok(Json(LibraryResponse {
-                                player_name: player_name.to_string(),
-                                player_id: ctrl.get_player_id(),
-                                has_library: true,
-                                is_loaded,
-                                albums_count: albums.len(),
-                                artists_count: artists.len(),
-                            }));
-                        },
-                        Err(e) => {
-                            return Err(Custom(
-                                Status::InternalServerError,
-                                format!("Failed to refresh library: {}", e),
-                            ));
-                        }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Trigger library refresh
+                match library.refresh_library() {
+                    Ok(_) => {
+                        // Get updated library info
+                        let is_loaded = library.is_loaded();
+                        let albums = library.get_albums();
+                        let artists = library.get_artists();
+                        
+                        return Ok(Json(LibraryResponse {
+                            player_name: player_name.to_string(),
+                            player_id: ctrl.get_player_id(),
+                            has_library: true,
+                            is_loaded,
+                            albums_count: albums.len(),
+                            artists_count: artists.len(),
+                        }));
+                    },
+                    Err(e) => {
+                        return Err(Custom(
+                            Status::InternalServerError,
+                            format!("Failed to refresh library: {}", e),
+                        ));
                     }
-                } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
-                    ));
                 }
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -650,29 +638,28 @@ pub fn update_player_library(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Force an update of the library
-                    let success = library.force_update();
-                    
-                    // Return the result
-                    return Ok(Json(serde_json::json!({
-                        "player_name": player_name,
-                        "update_started": success
-                    })));
-                } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
-                    ));
-                }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Force an update of the library
+                let success = library.force_update();
+                
+                // Return the result
+                return Ok(Json(serde_json::json!({
+                    "player_name": player_name,
+                    "update_started": success
+                })));
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -730,60 +717,59 @@ fn get_artist_internal(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Get the artist based on the lookup type
-                    let artist = match lookup_type {
-                        ArtistLookupType::ByName => {
-                            // Get artist by name
-                            library.get_artist_by_name(identifier)
-                        },
-                        ArtistLookupType::ById => {
-                            // Try to parse the ID as u64
-                            match identifier.parse::<u64>() {
-                                Ok(id) => {
-                                    // Find artist with matching ID
-                                    let all_artists = library.get_artists();
-                                    all_artists.into_iter().find(|a| a.id == crate::data::Identifier::Numeric(id))
-                                },
-                                Err(_) => {
-                                    return Err(Custom(
-                                        Status::BadRequest,
-                                        format!("Invalid artist ID format: {}", identifier),
-                                    ));
-                                }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Get the artist based on the lookup type
+                let artist = match lookup_type {
+                    ArtistLookupType::ByName => {
+                        // Get artist by name
+                        library.get_artist_by_name(identifier)
+                    },
+                    ArtistLookupType::ById => {
+                        // Try to parse the ID as u64
+                        match identifier.parse::<u64>() {
+                            Ok(id) => {
+                                // Find artist with matching ID
+                                let all_artists = library.get_artists();
+                                all_artists.into_iter().find(|a| a.id == crate::data::Identifier::Numeric(id))
+                            },
+                            Err(_) => {
+                                return Err(Custom(
+                                    Status::BadRequest,
+                                    format!("Invalid artist ID format: {}", identifier),
+                                ));
                             }
-                        },
-                        ArtistLookupType::ByMbid => {
-                            // Find artist with matching MBID
-                            let all_artists = library.get_artists();
-                            all_artists.into_iter().find(|a| {
-                                if let Some(meta) = &a.metadata {
-                                    meta.mbid.iter().any(|id| id == identifier)
-                                } else {
-                                    false
-                                }
-                            })
                         }
-                    };
-                    
-                    return Ok(Json(ArtistResponse {
-                        player_name: player_name.to_string(),
-                        artist,
-                    }));
-                } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
-                    ));
-                }
+                    },
+                    ArtistLookupType::ByMbid => {
+                        // Find artist with matching MBID
+                        let all_artists = library.get_artists();
+                        all_artists.into_iter().find(|a| {
+                            if let Some(meta) = &a.metadata {
+                                meta.mbid.iter().any(|id| id == identifier)
+                            } else {
+                                false
+                            }
+                        })
+                    }
+                };
+                
+                return Ok(Json(ArtistResponse {
+                    player_name: player_name.to_string(),
+                    artist,
+                }));
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -807,39 +793,38 @@ pub fn get_image(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Call the library's get_image function
-                    if let Some((data, mime_type)) = library.get_image(identifier.to_string()) {
-                        // Extract MIME type components
-                        let media_type = mime_type.split('/').next().unwrap_or("application").to_string();
-                        let media_subtype = mime_type.split('/').nth(1).unwrap_or("octet-stream").to_string();
-                        
-                        // Create a ContentType object
-                        let content_type = rocket::http::ContentType::new(media_type, media_subtype);
-                        
-                        // Return the content type paired with data, which implements Responder
-                        return Ok((content_type, data));
-                    } else {
-                        // Image not found
-                        return Err(Custom(
-                            Status::NotFound,
-                            format!("Image with identifier '{}' not found", identifier),
-                        ));
-                    }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Call the library's get_image function
+                if let Some((data, mime_type)) = library.get_image(identifier.to_string()) {
+                    // Extract MIME type components
+                    let media_type = mime_type.split('/').next().unwrap_or("application").to_string();
+                    let media_subtype = mime_type.split('/').nth(1).unwrap_or("octet-stream").to_string();
+                    
+                    // Create a ContentType object
+                    let content_type = rocket::http::ContentType::new(media_type, media_subtype);
+                    
+                    // Return the content type paired with data, which implements Responder
+                    return Ok((content_type, data));
                 } else {
-                    // Player exists but doesn't have a library
+                    // Image not found
                     return Err(Custom(
                         Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
+                        format!("Image with identifier '{}' not found", identifier),
                     ));
                 }
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -857,29 +842,28 @@ pub fn get_library_metadata(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Get all metadata as a HashMap
-                    let metadata = library.get_metadata()
-                        .unwrap_or_default();
-                    
-                    return Ok(Json(MetadataResponse {
-                        player_name: player_name.to_string(),
-                        metadata,
-                    }));
-                } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
-                    ));
-                }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Get all metadata as a HashMap
+                let metadata = library.get_metadata()
+                    .unwrap_or_default();
+                
+                return Ok(Json(MetadataResponse {
+                    player_name: player_name.to_string(),
+                    metadata,
+                }));
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,
@@ -898,33 +882,32 @@ pub fn get_library_metadata_key(
     
     // Find the controller with the matching name
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                // Check if the player has a library
-                if let Some(library) = ctrl.get_library() {
-                    // Get all metadata
-                    let metadata = library.get_metadata()
-                        .unwrap_or_default();
-                    
-                    // Get the specific key
-                    let value = metadata.get(key).cloned();
-                    
-                    return Ok(Json(MetadataKeyResponse {
-                        player_name: player_name.to_string(),
-                        key: key.to_string(),
-                        value,
-                    }));
-                } else {
-                    // Player exists but doesn't have a library
-                    return Err(Custom(
-                        Status::NotFound,
-                        format!("Player '{}' does not have a library", player_name),
-                    ));
-                }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            // Check if the player has a library
+            if let Some(library) = ctrl.get_library() {
+                // Get all metadata
+                let metadata = library.get_metadata()
+                    .unwrap_or_default();
+                
+                // Get the specific key
+                let value = metadata.get(key).cloned();
+                
+                return Ok(Json(MetadataKeyResponse {
+                    player_name: player_name.to_string(),
+                    key: key.to_string(),
+                    value,
+                }));
+            } else {
+                // Player exists but doesn't have a library
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
             }
         }
     }
-    
+
     // Player not found
     Err(Custom(
         Status::NotFound,

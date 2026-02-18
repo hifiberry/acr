@@ -51,7 +51,7 @@ pub fn get_artist_coverart(artist_b64: String) -> Json<CoverartResponse> {
     };
 
     let manager = get_coverart_manager();
-    let manager_lock = manager.lock().unwrap();
+    let manager_lock = manager.lock();
     let results = manager_lock.get_artist_coverart(&artist);
 
     Json(CoverartResponse { results })
@@ -85,7 +85,7 @@ pub fn get_song_coverart(title_b64: String, artist_b64: String) -> Json<Coverart
     };
 
     let manager = get_coverart_manager();
-    let manager_lock = manager.lock().unwrap();
+    let manager_lock = manager.lock();
     let results = manager_lock.get_song_coverart(&title, &artist);
 
     Json(CoverartResponse { results })
@@ -131,7 +131,7 @@ pub fn get_album_coverart_with_year(title_b64: String, artist_b64: String, year:
     };
 
     let manager = get_coverart_manager();
-    let manager_lock = manager.lock().unwrap();
+    let manager_lock = manager.lock();
     let results = manager_lock.get_album_coverart(&title, &artist, year);
 
     Json(CoverartResponse { results })
@@ -154,7 +154,7 @@ pub fn get_url_coverart(url_b64: String) -> Json<CoverartResponse> {
     };
 
     let manager = get_coverart_manager();
-    let manager_lock = manager.lock().unwrap();
+    let manager_lock = manager.lock();
     let results = manager_lock.get_url_coverart(&url);
 
     Json(CoverartResponse { results })
@@ -164,7 +164,7 @@ pub fn get_url_coverart(url_b64: String) -> Json<CoverartResponse> {
 #[get("/methods")]
 pub fn get_coverart_methods() -> Json<CoverartMethodsResponse> {
     let manager = get_coverart_manager();
-    let manager_lock = manager.lock().unwrap();
+    let manager_lock = manager.lock();
     let providers = manager_lock.get_providers();
     
     log::debug!("API: Total providers found: {}", providers.len());
@@ -266,7 +266,7 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
                 
                 // Use the global artist store to download the image to user directory
                 let artist_store = crate::helpers::artist_store::get_artist_store();
-                let mut store_lock = artist_store.lock().unwrap();
+                let mut store_lock = artist_store.lock();
                 
                 match store_lock.download_and_store_user_image(&artist_name, &request.url, "custom") {
                     crate::helpers::artist_store::ArtistImageResult::Found { cache_path } => {

@@ -9,7 +9,7 @@ use std::error::Error;
 use std::fmt;
 use std::time::SystemTime;
 use ureq;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 // Import SecurityStore and its error type
 use crate::helpers::security_store::{SecurityStore, SecurityStoreError};
 
@@ -260,7 +260,7 @@ impl LastfmClient {
 
         let client = ureq::agent();
 
-        let mut lastfm_guard = LASTFM_CLIENT.lock().unwrap();
+        let mut lastfm_guard = LASTFM_CLIENT.lock();
         *lastfm_guard = Some(LastfmClient {
             credentials,
             client,
@@ -298,7 +298,7 @@ impl LastfmClient {
 
     /// Get the singleton instance of LastfmClient
     pub fn get_instance() -> Result<LastfmClient, LastfmError> {
-        let lastfm_guard = LASTFM_CLIENT.lock().unwrap();
+        let lastfm_guard = LASTFM_CLIENT.lock();
         match &*lastfm_guard {
             Some(client) => Ok(client.clone()),
             None => Err(LastfmError::ConfigError(
@@ -658,7 +658,7 @@ impl LastfmClient {
             client: ureq::agent(),
         };
 
-        let mut lastfm_guard = LASTFM_CLIENT.lock().unwrap();
+        let mut lastfm_guard = LASTFM_CLIENT.lock();
         *lastfm_guard = Some(client);
 
         info!("Last.fm client initialized from stored credentials");
@@ -1041,7 +1041,7 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
         
         // Get the Last.fm client instance
         let lastfm_client = {
-            let guard = LASTFM_CLIENT.lock().unwrap();
+            let guard = LASTFM_CLIENT.lock();
             match guard.as_ref() {
                 Some(client) => client.clone(),
                 None => {

@@ -1,6 +1,6 @@
 use crate::config::get_service_config;
 use log::{debug, info, error};
-use std::sync::RwLock;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use ureq;
 
@@ -87,14 +87,16 @@ pub fn initialize_from_config(config: &serde_json::Value) {
             .and_then(|v| v.as_str())
             .unwrap_or(DEFAULT_CONFIGURATOR_URL);
         
-        if let Ok(mut url_guard) = CONFIGURATOR_URL.write() {
+        {
+            let mut url_guard = CONFIGURATOR_URL.write();
             *url_guard = url.to_string();
         }
-        
+
         info!("Configurator API initialized, URL: {}", url);
     } else {
         // Default URL if not in config
-        if let Ok(mut url_guard) = CONFIGURATOR_URL.write() {
+        {
+            let mut url_guard = CONFIGURATOR_URL.write();
             *url_guard = DEFAULT_CONFIGURATOR_URL.to_string();
         }
         info!("Configurator configuration not found, using default URL: {}", DEFAULT_CONFIGURATOR_URL);
@@ -108,14 +110,11 @@ pub fn is_enabled() -> bool {
 
 /// Get the configured configurator URL
 pub fn get_url() -> String {
-    if let Ok(url_guard) = CONFIGURATOR_URL.read() {
-        if url_guard.is_empty() {
-            DEFAULT_CONFIGURATOR_URL.to_string()
-        } else {
-            url_guard.clone()
-        }
-    } else {
+    let url_guard = CONFIGURATOR_URL.read();
+    if url_guard.is_empty() {
         DEFAULT_CONFIGURATOR_URL.to_string()
+    } else {
+        url_guard.clone()
     }
 }
 
@@ -168,14 +167,14 @@ pub fn get_system_info() -> Result<SystemInfo, String> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     // Use a mutex to ensure tests run sequentially to avoid state conflicts
     static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_initialize_from_config_with_url() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock();
         
         let config = json!({
             "services": {
@@ -193,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_initialize_from_config_default() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock();
         
         let config = json!({
             "services": {}

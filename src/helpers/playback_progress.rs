@@ -1,5 +1,6 @@
 use std::time::Instant;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 /// PlayerProgress tracks the current playback position and automatically
 /// updates it when the player is in a playing state.
@@ -37,7 +38,7 @@ impl PlayerProgress {
             return; // Ignore negative positions
         }
 
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         inner.position = position;
         inner.last_update = Instant::now();
     }
@@ -45,7 +46,7 @@ impl PlayerProgress {
     /// Get the current position in seconds
     /// If playing, this will return an updated position based on elapsed time
     pub fn get_position(&self) -> f64 {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         
         if inner.is_playing {
             // Update position based on elapsed time
@@ -62,7 +63,7 @@ impl PlayerProgress {
     /// When set to true, position will start auto-incrementing
     /// When set to false, position will remain static
     pub fn set_playing(&self, playing: bool) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         
         if inner.is_playing != playing {
             // Update position to current time before changing state
@@ -79,13 +80,13 @@ impl PlayerProgress {
 
     /// Get the current playing state
     pub fn is_playing(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         inner.is_playing
     }
 
     /// Reset position to 0 and stop playing
     pub fn reset(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         inner.position = 0.0;
         inner.is_playing = false;
         inner.last_update = Instant::now();

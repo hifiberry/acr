@@ -69,6 +69,8 @@ event-bus = "0.1.0" # Corrected version
 regex = "1.10"
 # For concurrent data structures and channels
 crossbeam = "0.8.2"
+# Non-poisoning Mutex/RwLock replacements
+parking_lot = "0.12"
 # For reading metadata from audio files
 lofty = "0.18.0"
 walkdir = "2.4.0"

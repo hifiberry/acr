@@ -1,9 +1,10 @@
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, Track, LoopMode, PlaybackState, PlayerCommand, PlayerEvent, PlayerSource, PlayerState, PlayerUpdate};
 use crate::data::library::LibraryInterface;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use std::any::Any;
 use std::time::SystemTime;
-use log::{debug, warn};
+use log::debug;
 
 /// PlayerController trait - abstract interface for player implementations
 /// 
@@ -259,52 +260,29 @@ impl BasePlayerController {
     
     /// Set the player name
     pub fn set_player_name(&self, name: &str) {
-        if let Ok(mut player_name) = self.player_name.write() {
-            *player_name = name.to_string();
-            debug!("Player name set to '{}'", name);
-        } else {
-            warn!("Failed to acquire write lock when setting player name");
-        }
+        *self.player_name.write() = name.to_string();
+        debug!("Player name set to '{}'", name);
     }
     
     /// Set the player ID
     pub fn set_player_id(&self, id: &str) {
-        if let Ok(mut player_id) = self.player_id.write() {
-            *player_id = id.to_string();
-            debug!("Player ID set to '{}'", id);
-        } else {
-            warn!("Failed to acquire write lock when setting player ID");
-        }
+        *self.player_id.write() = id.to_string();
+        debug!("Player ID set to '{}'", id);
     }
     
     /// Get the player name
     pub fn get_player_name(&self) -> String {
-        if let Ok(player_name) = self.player_name.read() {
-            player_name.clone()
-        } else {
-            warn!("Failed to acquire read lock for player name");
-            "unknown".to_string()
-        }
+        self.player_name.read().clone()
     }
     
     /// Get the player ID
     pub fn get_player_id(&self) -> String {
-        if let Ok(player_id) = self.player_id.read() {
-            player_id.clone()
-        } else {
-            warn!("Failed to acquire read lock for player ID");
-            "unknown".to_string()
-        }
+        self.player_id.read().clone()
     }
     
     /// Get the current capabilities
     pub fn get_capabilities(&self) -> PlayerCapabilitySet {
-        if let Ok(caps) = self.capabilities.read() {
-            *caps
-        } else {
-            warn!("Failed to acquire read lock for capabilities");
-            PlayerCapabilitySet::empty()
-        }
+        *self.capabilities.read()
     }
     
     /// Set multiple capabilities at once using a PlayerCapabilitySet
@@ -318,20 +296,17 @@ impl BasePlayerController {
         let mut changed = false;
         
         // Update stored capabilities
-        if let Ok(mut caps) = self.capabilities.write() {
-            // Check if there's any difference
-            if *caps != capabilities {
-                // Replace with new capabilities
-                *caps = capabilities;
-                debug!("Updated capabilities");
-                changed = true;
-            } else {
-                debug!("Capabilities unchanged, not updating");
-            }
+        let mut caps = self.capabilities.write();
+        // Check if there's any difference
+        if *caps != capabilities {
+            // Replace with new capabilities
+            *caps = capabilities;
+            debug!("Updated capabilities");
+            changed = true;
         } else {
-            warn!("Failed to acquire write lock when setting capabilities");
-            return false;
+            debug!("Capabilities unchanged, not updating");
         }
+        drop(caps);
         
         // If capabilities changed and auto_notify is true, notify listeners
         if changed && auto_notify {
@@ -365,24 +340,21 @@ impl BasePlayerController {
         let mut changed = false;
         
         // Update stored capabilities
-        if let Ok(mut caps) = self.capabilities.write() {
-            let had_capability = caps.has_capability(capability);
-            
-            if enabled && !had_capability {
-                // Add capability
-                caps.add_capability(capability);
-                debug!("Added capability {:?}", capability);
-                changed = true;
-            } else if !enabled && had_capability {
-                // Remove capability
-                caps.remove_capability(capability);
-                debug!("Removed capability {:?}", capability);
-                changed = true;
-            }
-        } else {
-            warn!("Failed to acquire write lock when setting capability");
-            return false;
+        let mut caps = self.capabilities.write();
+        let had_capability = caps.has_capability(capability);
+
+        if enabled && !had_capability {
+            // Add capability
+            caps.add_capability(capability);
+            debug!("Added capability {:?}", capability);
+            changed = true;
+        } else if !enabled && had_capability {
+            // Remove capability
+            caps.remove_capability(capability);
+            debug!("Removed capability {:?}", capability);
+            changed = true;
         }
+        drop(caps);
         
         // If capabilities changed and auto_notify is true, notify listeners
         if changed && auto_notify {
@@ -478,12 +450,10 @@ impl BasePlayerController {
         debug!("Notifying listeners of capabilities change");
         
         // Store the capabilities internally
-        if let Ok(mut caps) = self.capabilities.write() {
-            *caps = *capabilities;
-            debug!("Updated capabilities");
-        } else {
-            warn!("Failed to acquire write lock when updating capabilities");
-        }
+        let mut caps = self.capabilities.write();
+        *caps = *capabilities;
+        debug!("Updated capabilities");
+        drop(caps);
         
         let source = PlayerSource::new(player_name, player_id);
         
@@ -564,12 +534,7 @@ impl BasePlayerController {
 
     /// Get the last time this player was seen active
     pub fn get_last_seen(&self) -> Option<SystemTime> {
-        if let Ok(state) = self.player_state.read() {
-            state.last_seen
-        } else {
-            warn!("Failed to acquire read lock for player state");
-            None
-        }
+        self.player_state.read().last_seen
     }
 
     /// Update the last_seen timestamp for this player
@@ -577,23 +542,15 @@ impl BasePlayerController {
     /// This should be called by player implementations whenever they are accessed
     /// or when they update their status to indicate that the player is still active.
     pub fn alive(&self) {
-        if let Ok(mut state) = self.player_state.write() {
-            state.last_seen = Some(SystemTime::now());
-            debug!("Updated last_seen timestamp for player {}:{}", 
-                  self.get_player_name(), self.get_player_id());
-        } else {
-            warn!("Failed to acquire write lock for updating last_seen timestamp");
-        }
+        let mut state = self.player_state.write();
+        state.last_seen = Some(SystemTime::now());
+        debug!("Updated last_seen timestamp for player {}:{}",
+              self.get_player_name(), self.get_player_id());
     }
 
     /// Get the current playback position
     /// Implementation for the PlayerController trait
     pub fn get_position(&self) -> Option<f64> {
-        if let Ok(state) = self.player_state.read() {
-            state.position
-        } else {
-            warn!("Failed to acquire read lock for player state");
-            None
-        }
+        self.player_state.read().position
     }
 }

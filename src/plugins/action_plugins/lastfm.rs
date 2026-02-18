@@ -2,7 +2,8 @@ use std::any::Any;
 use std::sync::Weak;
 use std::thread;
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::time::SystemTime;
 use std::sync::atomic::{AtomicBool, Ordering}; // Added
 
@@ -121,7 +122,7 @@ fn lastfm_worker(
         thread::sleep(Duration::from_secs(1)); // Main loop delay
         loop_count += 1;
 
-        let mut track_data = track_data_arc.lock().unwrap();
+        let mut track_data = track_data_arc.lock();
 
         // Fetch track info if new song and not yet fetched
         if !track_data.track_info_fetched && client.is_authenticated() {
@@ -377,7 +378,7 @@ impl Lastfm {
     
     /// Handle a song changed event
     fn handle_song_changed(&mut self, song_event_opt: &Option<Song>, source: &PlayerSource) {
-        let mut track_data = self.current_track_data.lock().unwrap();
+        let mut track_data = self.current_track_data.lock();
         
         if let Some(song_event) = song_event_opt { 
             let new_name = song_event.title.clone(); 
@@ -461,7 +462,7 @@ impl Lastfm {
 
     /// Handle a state changed event
     fn handle_state_changed(&mut self, new_player_state: &PlaybackState, event_source: &PlayerSource) {
-        let mut track_data = self.current_track_data.lock().unwrap();
+        let mut track_data = self.current_track_data.lock();
 
         // If state changes, ensure player_source is consistent if a song is active
         if track_data.song_details.is_some() && track_data.player_source.as_ref() != Some(event_source) {
@@ -554,16 +555,14 @@ impl Lastfm {
         
         match &event {
             PlayerEvent::SongChanged { song: song_event_opt, source, .. } => {
-                // Get a mutable reference to self to handle the event
-                if let Ok(mut lastfm) = Arc::new(Mutex::new(self.clone())).lock() {
-                    lastfm.handle_song_changed(song_event_opt, source);
-                }
+                let lastfm_arc = Arc::new(Mutex::new(self.clone()));
+                let mut lastfm = lastfm_arc.lock();
+                lastfm.handle_song_changed(song_event_opt, source);
             }
             PlayerEvent::StateChanged { state: new_player_state, source: event_source, .. } => {
-                // Get a mutable reference to self to handle the event
-                if let Ok(mut lastfm) = Arc::new(Mutex::new(self.clone())).lock() {
-                    lastfm.handle_state_changed(new_player_state, event_source);
-                }
+                let lastfm_arc = Arc::new(Mutex::new(self.clone()));
+                let mut lastfm = lastfm_arc.lock();
+                lastfm.handle_state_changed(new_player_state, event_source);
             }
             _ => {
                 // Other events are ignored for now

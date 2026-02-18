@@ -4,7 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use log::{debug, warn, error};
 use once_cell::sync::Lazy;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// Configuration for genre cleanup
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -113,7 +113,7 @@ pub fn initialize_genre_cleanup_with_config(config: Option<&serde_json::Value>) 
                 if Path::new(config_path).exists() {
                     match GenreCleanup::from_config_file(config_path) {
                         Ok(cleanup) => {
-                            let mut global_cleanup = GENRE_CLEANUP.lock().unwrap();
+                            let mut global_cleanup = GENRE_CLEANUP.lock();
                             *global_cleanup = Some(cleanup);
                             debug!("Genre cleanup initialized from configured path: {}", config_path);
                             return Ok(());
@@ -136,7 +136,7 @@ pub fn initialize_genre_cleanup_with_config(config: Option<&serde_json::Value>) 
         if Path::new(path).exists() {
             match GenreCleanup::from_config_file(path) {
                 Ok(cleanup) => {
-                    let mut global_cleanup = GENRE_CLEANUP.lock().unwrap();
+                    let mut global_cleanup = GENRE_CLEANUP.lock();
                     *global_cleanup = Some(cleanup);
                     debug!("Genre cleanup initialized from: {}", path);
                     return Ok(());
@@ -154,8 +154,8 @@ pub fn initialize_genre_cleanup_with_config(config: Option<&serde_json::Value>) 
 }
 
 /// Get the global genre cleanup instance
-pub fn get_genre_cleanup() -> Result<std::sync::MutexGuard<'static, Option<GenreCleanup>>, Box<dyn std::error::Error>> {
-    Ok(GENRE_CLEANUP.lock().unwrap())
+pub fn get_genre_cleanup() -> Result<parking_lot::MutexGuard<'static, Option<GenreCleanup>>, Box<dyn std::error::Error>> {
+    Ok(GENRE_CLEANUP.lock())
 }
 
 /// Clean up genres using the global instance

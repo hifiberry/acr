@@ -6,7 +6,8 @@ use crate::helpers::shairportsync_messages::{
 };
 use crate::helpers::process_helper::{systemd, SystemdAction};
 use crate::helpers::imagecache;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use log::{debug, info, warn, error, trace};
 use std::net::UdpSocket;
 use std::thread;
@@ -155,7 +156,7 @@ impl ShairportController {
     
     /// Start the UDP listener thread
     fn start_listener(&self) -> bool {
-        if self.listener_thread.lock().unwrap().is_some() {
+        if self.listener_thread.lock().is_some() {
             warn!("ShairportSync listener already running");
             return false;
         }
@@ -173,13 +174,13 @@ impl ShairportController {
             Self::listener_loop(port, stop_flag, current_song, pending_song, current_state, base);
         });
         
-        *self.listener_thread.lock().unwrap() = Some(handle);
+        *self.listener_thread.lock() = Some(handle);
         true
     }
     
     /// Start the directory watcher thread
     fn start_watcher(&self) -> bool {
-        if self.watcher_thread.lock().unwrap().is_some() {
+        if self.watcher_thread.lock().is_some() {
             warn!("ShairportSync directory watcher already running");
             return false;
         }
@@ -196,7 +197,7 @@ impl ShairportController {
             Self::watcher_loop(coverart_dir, stop_flag, current_song, pending_song, base);
         });
         
-        *self.watcher_thread.lock().unwrap() = Some(handle);
+        *self.watcher_thread.lock() = Some(handle);
         true
     }
     
@@ -206,7 +207,7 @@ impl ShairportController {
         
         self.stop_listener.store(true, Ordering::SeqCst);
         
-        if let Some(handle) = self.listener_thread.lock().unwrap().take() {
+        if let Some(handle) = self.listener_thread.lock().take() {
             match handle.join() {
                 Ok(_) => {
                     debug!("ShairportSync listener thread stopped successfully");
@@ -227,7 +228,7 @@ impl ShairportController {
     fn stop_watcher(&self) -> bool {
         debug!("Stopping ShairportSync directory watcher");
         
-        if let Some(handle) = self.watcher_thread.lock().unwrap().take() {
+        if let Some(handle) = self.watcher_thread.lock().take() {
             match handle.join() {
                 Ok(_) => {
                     debug!("ShairportSync watcher thread stopped successfully");
@@ -524,7 +525,7 @@ impl ShairportController {
     ) {
         // Update current song if it exists
         {
-            let mut current = current_song.lock().unwrap();
+            let mut current = current_song.lock();
             if let Some(ref mut song) = *current {
                 song.cover_art_url = Some(artwork_url.clone());
                 base.notify_song_changed(Some(song));
@@ -534,7 +535,7 @@ impl ShairportController {
         
         // Update pending song if it exists
         {
-            let mut pending = pending_song.lock().unwrap();
+            let mut pending = pending_song.lock();
             if let Some(ref mut song) = *pending {
                 song.cover_art_url = Some(artwork_url.clone());
                 // Don't notify yet for pending songs
@@ -544,7 +545,7 @@ impl ShairportController {
         
         // If no current or pending song, create a minimal song with just cover art
         {
-            let mut current = current_song.lock().unwrap();
+            let mut current = current_song.lock();
             let mut song = Song::default();
             song.cover_art_url = Some(artwork_url.clone());
             *current = Some(song.clone());
@@ -569,30 +570,30 @@ impl ShairportController {
                 match action.as_str() {
                     "PAUSE" => {
                         debug!("Processing PAUSE command");
-                        let mut state = current_state.lock().unwrap();
+                        let mut state = current_state.lock();
                         state.state = PlaybackState::Paused;
                         base.notify_state_changed(PlaybackState::Paused);
                     }
                     "RESUME" => {
                         debug!("Processing RESUME command");
-                        let mut state = current_state.lock().unwrap();
+                        let mut state = current_state.lock();
                         state.state = PlaybackState::Playing;
                         base.notify_state_changed(PlaybackState::Playing);
                     }
                     "SESSION_END" => {
                         debug!("Processing SESSION_END command");
-                        let mut state = current_state.lock().unwrap();
+                        let mut state = current_state.lock();
                         state.state = PlaybackState::Stopped;
                         base.notify_state_changed(PlaybackState::Stopped);
                         
                         // Clear current song on session end
-                        *current_song.lock().unwrap() = None;
-                        *pending_song.lock().unwrap() = None;
+                        *current_song.lock() = None;
+                        *pending_song.lock() = None;
                         base.notify_song_changed(None);
                     }
                     "AUDIO_BEGIN" | "PLAYBACK_BEGIN" => {
                         debug!("Processing {} command", action);
-                        let mut state = current_state.lock().unwrap();
+                        let mut state = current_state.lock();
                         state.state = PlaybackState::Playing;
                         base.notify_state_changed(PlaybackState::Playing);
                     }
@@ -609,23 +610,23 @@ impl ShairportController {
                                     "METADATA_START" => {
                                         debug!("Starting metadata collection - {}", value);
                                         // Initialize pending song or preserve existing one
-                                        let mut pending = pending_song.lock().unwrap();
+                                        let mut pending = pending_song.lock();
                                         if pending.is_none() {
                                             *pending = Some(Song::default());
                                         }
                                         // Assume playing when metadata starts
-                                        let mut state = current_state.lock().unwrap();
+                                        let mut state = current_state.lock();
                                         state.state = PlaybackState::Playing;
                                         base.notify_state_changed(PlaybackState::Playing);
                                     }
                                     "METADATA_END" => {
                                         debug!("Finalizing metadata collection - {}", value);
                                         // Move pending song to current and notify
-                                        let mut pending = pending_song.lock().unwrap();
+                                        let mut pending = pending_song.lock();
                                         if let Some(song) = pending.take() {
                                             if song_has_significant_metadata(&song) {
                                                 debug!("Publishing complete song metadata: {}", song);
-                                                *current_song.lock().unwrap() = Some(song.clone());
+                                                *current_song.lock() = Some(song.clone());
                                                 base.notify_song_changed(Some(&song));
                                             }
                                         }
@@ -634,7 +635,7 @@ impl ShairportController {
                                     "ALBUM_ARTIST" | "SONG_ALBUM_ARTIST" | "TRACK_NUMBER" | "TRACK_COUNT" => {
                                         debug!("Processing metadata - {}: {}", key, value);
                                         // Update pending song metadata
-                                        let mut pending = pending_song.lock().unwrap();
+                                        let mut pending = pending_song.lock();
                                         let mut song = pending.take().unwrap_or_default();
                                         update_song_from_message(&mut song, message);
                                         *pending = Some(song);
@@ -642,7 +643,7 @@ impl ShairportController {
                                     _ => {
                                         debug!("Processing other metadata - {}: {}", key, value);
                                         // Update pending song with other metadata
-                                        let mut pending = pending_song.lock().unwrap();
+                                        let mut pending = pending_song.lock();
                                         let mut song = pending.take().unwrap_or_default();
                                         update_song_from_message(&mut song, message);
                                         *pending = Some(song);
@@ -665,7 +666,7 @@ impl ShairportController {
                        clean_type, chunk_id, total_chunks, data.len());
                 
                 // Handle chunk data for metadata updates (but don't notify yet)
-                let mut pending = pending_song.lock().unwrap();
+                let mut pending = pending_song.lock();
                 let mut song = pending.take().unwrap_or_default();
                 update_song_from_message(&mut song, message);
                 *pending = Some(song);
@@ -676,17 +677,17 @@ impl ShairportController {
             ShairportMessage::SessionStart(session_id) => {
                 debug!("Session started: {}", session_id);
                 // Clear previous song data on new session
-                *current_song.lock().unwrap() = None;
-                *pending_song.lock().unwrap() = None;
+                *current_song.lock() = None;
+                *pending_song.lock() = None;
             }
             ShairportMessage::SessionEnd(session_id) => {
                 debug!("Session ended: {}", session_id);
-                let mut state = current_state.lock().unwrap();
+                let mut state = current_state.lock();
                 state.state = PlaybackState::Stopped;
                 base.notify_state_changed(PlaybackState::Stopped);
                 
-                *current_song.lock().unwrap() = None;
-                *pending_song.lock().unwrap() = None;
+                *current_song.lock() = None;
+                *pending_song.lock() = None;
                 base.notify_song_changed(None);
             }
             ShairportMessage::Unknown(data) => {
@@ -776,7 +777,7 @@ impl PlayerController for ShairportController {
     }
     
     fn get_song(&self) -> Option<Song> {
-        self.current_song.lock().unwrap().clone()
+        self.current_song.lock().clone()
     }
     
     fn get_queue(&self) -> Vec<Track> {
@@ -790,7 +791,7 @@ impl PlayerController for ShairportController {
     }
     
     fn get_playback_state(&self) -> PlaybackState {
-        self.current_state.lock().unwrap().state
+        self.current_state.lock().state
     }
     
     fn get_position(&self) -> Option<f64> {

@@ -1,13 +1,11 @@
 use std::error::Error;
 use std::fmt;
 use crate::data::song::Song;
-use std::sync::Mutex;
-use lazy_static::lazy_static;
+use parking_lot::Mutex;
+use once_cell::sync::Lazy;
 
 // Global favourite manager instance
-lazy_static! {
-    static ref GLOBAL_FAVOURITE_MANAGER: Mutex<FavouriteManager> = Mutex::new(FavouriteManager::new());
-}
+static GLOBAL_FAVOURITE_MANAGER: Lazy<Mutex<FavouriteManager>> = Lazy::new(|| Mutex::new(FavouriteManager::new()));
 
 /// Error types for favourite operations
 #[derive(Debug)]
@@ -294,7 +292,7 @@ impl Default for FavouriteManager {
 
 /// Initialize the global favourite manager with default providers
 pub fn initialize_favourite_providers() {
-    let mut manager = GLOBAL_FAVOURITE_MANAGER.lock().unwrap();
+    let mut manager = GLOBAL_FAVOURITE_MANAGER.lock();
     
     // Clear any existing providers
     manager.providers.clear();
@@ -314,8 +312,8 @@ pub fn initialize_favourite_providers() {
 }
 
 /// Get a reference to the global favourite manager
-pub fn get_favourite_manager() -> std::sync::MutexGuard<'static, FavouriteManager> {
-    GLOBAL_FAVOURITE_MANAGER.lock().unwrap()
+pub fn get_favourite_manager() -> parking_lot::MutexGuard<'static, FavouriteManager> {
+    GLOBAL_FAVOURITE_MANAGER.lock()
 }
 
 /// Check if a song is favourite using the global manager

@@ -13,34 +13,33 @@ pub fn pause_all_players(controller: &State<Arc<AudioController>>, except: Optio
     let controllers = audio_controller.list_controllers();
     
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            let player_name = ctrl.get_player_name();
-            let player_id = ctrl.get_player_id();
+        let ctrl = ctrl_lock.read();
+        let player_name = ctrl.get_player_name();
+        let player_id = ctrl.get_player_id();
+        
+        // Check if this player should be excluded
+        if let Some(ref except_name) = except {
+            let aliases = ctrl.get_aliases();
+            let should_skip = player_name.eq_ignore_ascii_case(except_name) 
+                || player_id.eq_ignore_ascii_case(except_name)
+                || aliases.iter().any(|alias| alias.eq_ignore_ascii_case(except_name));
             
-            // Check if this player should be excluded
-            if let Some(ref except_name) = except {
-                let aliases = ctrl.get_aliases();
-                let should_skip = player_name.eq_ignore_ascii_case(except_name) 
-                    || player_id.eq_ignore_ascii_case(except_name)
-                    || aliases.iter().any(|alias| alias.eq_ignore_ascii_case(except_name));
-                
-                if should_skip {
-                    skipped_count += 1;
-                    continue;
-                }
+            if should_skip {
+                skipped_count += 1;
+                continue;
             }
-            
-            let caps = ctrl.get_capabilities();
-            let did_pause = if caps.has_capability(crate::data::capabilities::PlayerCapability::Pause) {
-                ctrl.send_command(PlayerCommand::Pause)
-            } else if caps.has_capability(crate::data::capabilities::PlayerCapability::Stop) {
-                ctrl.send_command(PlayerCommand::Stop)
-            } else {
-                false
-            };
-            if did_pause {
-                success_count += 1;
-            }
+        }
+        
+        let caps = ctrl.get_capabilities();
+        let did_pause = if caps.has_capability(crate::data::capabilities::PlayerCapability::Pause) {
+            ctrl.send_command(PlayerCommand::Pause)
+        } else if caps.has_capability(crate::data::capabilities::PlayerCapability::Stop) {
+            ctrl.send_command(PlayerCommand::Stop)
+        } else {
+            false
+        };
+        if did_pause {
+            success_count += 1;
         }
     }
     
@@ -78,34 +77,33 @@ pub fn stop_all_players(controller: &State<Arc<AudioController>>, except: Option
     let controllers = audio_controller.list_controllers();
     
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            let player_name = ctrl.get_player_name();
-            let player_id = ctrl.get_player_id();
+        let ctrl = ctrl_lock.read();
+        let player_name = ctrl.get_player_name();
+        let player_id = ctrl.get_player_id();
+        
+        // Check if this player should be excluded
+        if let Some(ref except_name) = except {
+            let aliases = ctrl.get_aliases();
+            let should_skip = player_name.eq_ignore_ascii_case(except_name) 
+                || player_id.eq_ignore_ascii_case(except_name)
+                || aliases.iter().any(|alias| alias.eq_ignore_ascii_case(except_name));
             
-            // Check if this player should be excluded
-            if let Some(ref except_name) = except {
-                let aliases = ctrl.get_aliases();
-                let should_skip = player_name.eq_ignore_ascii_case(except_name) 
-                    || player_id.eq_ignore_ascii_case(except_name)
-                    || aliases.iter().any(|alias| alias.eq_ignore_ascii_case(except_name));
-                
-                if should_skip {
-                    skipped_count += 1;
-                    continue;
-                }
+            if should_skip {
+                skipped_count += 1;
+                continue;
             }
-            
-            let caps = ctrl.get_capabilities();
-            let did_stop = if caps.has_capability(crate::data::capabilities::PlayerCapability::Stop) {
-                ctrl.send_command(PlayerCommand::Stop)
-            } else if caps.has_capability(crate::data::capabilities::PlayerCapability::Pause) {
-                ctrl.send_command(PlayerCommand::Pause)
-            } else {
-                false
-            };
-            if did_stop {
-                success_count += 1;
-            }
+        }
+        
+        let caps = ctrl.get_capabilities();
+        let did_stop = if caps.has_capability(crate::data::capabilities::PlayerCapability::Stop) {
+            ctrl.send_command(PlayerCommand::Stop)
+        } else if caps.has_capability(crate::data::capabilities::PlayerCapability::Pause) {
+            ctrl.send_command(PlayerCommand::Pause)
+        } else {
+            false
+        };
+        if did_stop {
+            success_count += 1;
         }
     }
     
@@ -223,25 +221,24 @@ pub fn get_current_player(controller: &State<Arc<AudioController>>) -> Json<Curr
     let active_controller = controller.inner().get_active_controller();
     
     if let Some(active_ctrl) = active_controller {
-        if let Ok(player) = active_ctrl.read() {
-            let name = player.get_player_name();
-            let id = player.get_player_id();
-            let state = player.get_playback_state();
-            
-            // Format last_seen timestamp if available
-            let last_seen = player.get_last_seen()
-                .map(|time| {
-                    // Convert SystemTime to ISO 8601 format string
-                    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
-                });
-            
-            return Json(CurrentPlayerResponse {
-                name,
-                id,
-                state,
-                last_seen,
+        let player = active_ctrl.read();
+        let name = player.get_player_name();
+        let id = player.get_player_id();
+        let state = player.get_playback_state();
+
+        // Format last_seen timestamp if available
+        let last_seen = player.get_last_seen()
+            .map(|time| {
+                // Convert SystemTime to ISO 8601 format string
+                chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
             });
-        }
+
+        return Json(CurrentPlayerResponse {
+            name,
+            id,
+            state,
+            last_seen,
+        });
     }
     
     // Return a default response if no active player
@@ -266,45 +263,29 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
     
     let players_info: Vec<PlayerInfo> = controllers.iter()
         .map(|ctrl_lock| {
-            if let Ok(ctrl) = ctrl_lock.read() {
-                let name = ctrl.get_player_name();
-                let id = ctrl.get_player_id();
-                
-                // Format last_seen timestamp if available
-                let last_seen = ctrl.get_last_seen()
-                    .map(|time| {
-                        // Convert SystemTime to ISO 8601 format string
-                        chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
-                    });
-                
-                PlayerInfo {
-                    name: name.clone(),
-                    id: id.clone(),
-                    state: ctrl.get_playback_state(),
-                    is_active: name == current_player_name && id == current_player_id,
-                    has_library: ctrl.has_library(),
-                    supports_api_events: ctrl.supports_api_events(),
-                    last_seen,
-                    shuffle: ctrl.get_shuffle(),
-                    loop_mode: ctrl.get_loop_mode(),
-                    position: ctrl.get_position(),
-                    capabilities: ctrl.get_capabilities().to_vec(),
-                }
-            } else {
-                // Fallback for locked controllers
-                PlayerInfo {
-                    name: "unknown".to_string(),
-                    id: "unknown".to_string(),
-                    state: PlaybackState::Unknown,
-                    is_active: false,
-                    has_library: false,
-                    supports_api_events: false,
-                    last_seen: None,
-                    shuffle: false,
-                    loop_mode: LoopMode::None,
-                    position: None,
-                    capabilities: vec![],
-                }
+            let ctrl = ctrl_lock.read();
+            let name = ctrl.get_player_name();
+            let id = ctrl.get_player_id();
+
+            // Format last_seen timestamp if available
+            let last_seen = ctrl.get_last_seen()
+                .map(|time| {
+                    // Convert SystemTime to ISO 8601 format string
+                    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
+                });
+
+            PlayerInfo {
+                name: name.clone(),
+                id: id.clone(),
+                state: ctrl.get_playback_state(),
+                is_active: name == current_player_name && id == current_player_id,
+                has_library: ctrl.has_library(),
+                supports_api_events: ctrl.supports_api_events(),
+                last_seen,
+                shuffle: ctrl.get_shuffle(),
+                loop_mode: ctrl.get_loop_mode(),
+                position: ctrl.get_position(),
+                capabilities: ctrl.get_capabilities().to_vec(),
             }
         })
         .collect();
@@ -348,17 +329,7 @@ pub fn send_command_to_player_by_name(
         let active_controller = audio_controller.get_active_controller();
         
         if let Some(active_ctrl) = active_controller {
-            if let Ok(ctrl) = active_ctrl.read() {
-                ctrl.get_player_name()
-            } else {
-                return Err(Custom(
-                    Status::InternalServerError,
-                    Json(CommandResponse {
-                        success: false,
-                        message: "Failed to access active player".to_string(),
-                    })
-                ));
-            }
+            active_ctrl.read().get_player_name()
         } else {
             return Err(Custom(
                 Status::NotFound,
@@ -390,11 +361,10 @@ pub fn send_command_to_player_by_name(
     let controllers = audio_controller.list_controllers();
     let mut found_controller = None;
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                found_controller = Some(ctrl_lock.clone());
-                break;
-            }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            found_controller = Some(ctrl_lock.clone());
+            break;
         }
     }
     
@@ -413,11 +383,7 @@ pub fn send_command_to_player_by_name(
     };
     
     // Send the command to the found player
-    let success = if let Ok(ctrl) = target_controller.read() {
-        ctrl.send_command(parsed_command.clone())
-    } else {
-        false
-    };
+    let success = target_controller.read().send_command(parsed_command.clone());
     
     if success {
         Ok(Json(CommandResponse {
@@ -471,8 +437,8 @@ pub fn get_now_playing(controller: &State<Arc<AudioController>>) -> Json<NowPlay
     
     // Try to get a read lock without blocking
     let player = match active_controller.try_read() {
-        Ok(guard) => guard,
-        Err(_) => {
+        Some(guard) => guard,
+        None => {
             // If we can't get a lock, return default response
             return Json(default_response);
         }
@@ -537,17 +503,7 @@ pub fn get_player_queue(
         let active_controller = audio_controller.get_active_controller();
         
         if let Some(active_ctrl) = active_controller {
-            if let Ok(ctrl) = active_ctrl.read() {
-                ctrl.get_player_name()
-            } else {
-                return Err(Custom(
-                    Status::InternalServerError,
-                    Json(CommandResponse {
-                        success: false,
-                        message: "Failed to access active player".to_string(),
-                    })
-                ));
-            }
+            active_ctrl.read().get_player_name()
         } else {
             return Err(Custom(
                 Status::NotFound,
@@ -565,11 +521,10 @@ pub fn get_player_queue(
     let controllers = audio_controller.list_controllers();
     let mut found_controller = None;
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == player_name {
-                found_controller = Some(ctrl_lock.clone());
-                break;
-            }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            found_controller = Some(ctrl_lock.clone());
+            break;
         }
     }
     
@@ -588,11 +543,7 @@ pub fn get_player_queue(
     };
     
     // Get the queue from the found player
-    let queue = if let Ok(ctrl) = target_controller.read() {
-        ctrl.get_queue()
-    } else {
-        Vec::new()
-    };
+    let queue = target_controller.read().get_queue();
     
     Ok(Json(QueueResponse {
         player: player_name,
@@ -615,14 +566,7 @@ pub fn get_player_metadata(
         let active_controller = audio_controller.get_active_controller();
         
         if let Some(active_ctrl) = active_controller {
-            if let Ok(ctrl) = active_ctrl.read() {
-                ctrl.get_player_name()
-            } else {
-                return Err(Custom(
-                    Status::InternalServerError,
-                    "Failed to access active player".to_string(),
-                ));
-            }
+            active_ctrl.read().get_player_name()
         } else {
             return Err(Custom(
                 Status::NotFound,
@@ -637,17 +581,16 @@ pub fn get_player_metadata(
     let controllers = audio_controller.list_controllers();
     
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == effective_player_name {
-                // Get all metadata as a HashMap
-                let metadata = ctrl.get_metadata()
-                    .unwrap_or_default();
-                
-                return Ok(Json(MetadataResponse {
-                    player_name: effective_player_name,
-                    metadata,
-                }));
-            }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == effective_player_name {
+            // Get all metadata as a HashMap
+            let metadata = ctrl.get_metadata()
+                .unwrap_or_default();
+            
+            return Ok(Json(MetadataResponse {
+                player_name: effective_player_name,
+                metadata,
+            }));
         }
     }
     
@@ -674,14 +617,7 @@ pub fn get_player_metadata_key(
         let active_controller = audio_controller.get_active_controller();
         
         if let Some(active_ctrl) = active_controller {
-            if let Ok(ctrl) = active_ctrl.read() {
-                ctrl.get_player_name()
-            } else {
-                return Err(Custom(
-                    Status::InternalServerError,
-                    "Failed to access active player".to_string(),
-                ));
-            }
+            active_ctrl.read().get_player_name()
         } else {
             return Err(Custom(
                 Status::NotFound,
@@ -696,21 +632,20 @@ pub fn get_player_metadata_key(
     let controllers = audio_controller.list_controllers();
     
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            if ctrl.get_player_name() == effective_player_name {
-                // Get all metadata
-                let metadata = ctrl.get_metadata()
-                    .unwrap_or_default();
-                
-                // Get the specific key
-                let value = metadata.get(key).cloned();
-                
-                return Ok(Json(MetadataKeyResponse {
-                    player_name: effective_player_name,
-                    key: key.to_string(),
-                    value,
-                }));
-            }
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == effective_player_name {
+            // Get all metadata
+            let metadata = ctrl.get_metadata()
+                .unwrap_or_default();
+            
+            // Get the specific key
+            let value = metadata.get(key).cloned();
+            
+            return Ok(Json(MetadataKeyResponse {
+                player_name: effective_player_name,
+                key: key.to_string(),
+                value,
+            }));
         }
     }
     
@@ -732,17 +667,7 @@ pub fn update_player_state(
     let effective_player_name = if player_name.to_lowercase() == "active" {
         let active_controller = audio_controller.get_active_controller();
         if let Some(active_ctrl) = active_controller {
-            if let Ok(ctrl) = active_ctrl.read() {
-                ctrl.get_player_name()
-            } else {
-                return Err(Custom(
-                    Status::InternalServerError,
-                    Json(PlayerUpdateResponse {
-                        success: false,
-                        message: "Failed to access active player".to_string(),
-                    }),
-                ));
-            }
+            active_ctrl.read().get_player_name()
         } else {
             return Err(Custom(
                 Status::NotFound,
@@ -759,14 +684,13 @@ pub fn update_player_state(
     let controllers = audio_controller.list_controllers();
     let mut found_controller = None;
     for ctrl_lock in controllers {
-        if let Ok(ctrl) = ctrl_lock.read() {
-            // Match by player name or player id (case-insensitive)
-            if ctrl.get_player_name().eq_ignore_ascii_case(&effective_player_name)
-                || ctrl.get_player_id().eq_ignore_ascii_case(&effective_player_name)
-            {
-                found_controller = Some(ctrl_lock.clone());
-                break;
-            }
+        let ctrl = ctrl_lock.read();
+        // Match by player name or player id (case-insensitive)
+        if ctrl.get_player_name().eq_ignore_ascii_case(&effective_player_name)
+            || ctrl.get_player_id().eq_ignore_ascii_case(&effective_player_name)
+        {
+            found_controller = Some(ctrl_lock.clone());
+            break;
         }
     }
 
@@ -783,11 +707,7 @@ pub fn update_player_state(
         }
     };
 
-    let success = if let Ok(ctrl) = target_controller.read() {
-        ctrl.receive_update(update.into_inner())
-    } else {
-        false
-    };
+    let success = target_controller.read().receive_update(update.into_inner());
 
     if success {
         Ok(Json(PlayerUpdateResponse {

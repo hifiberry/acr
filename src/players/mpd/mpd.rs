@@ -8,7 +8,8 @@ use crate::helpers::songsplitmanager::SongSplitManager;
 use crate::helpers::attributecache;
 use crate::helpers::backgroundjobs::BackgroundJobs;
 use delegate::delegate;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use log::{debug, info, warn, error, trace};
@@ -20,7 +21,7 @@ use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::any::Any;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 
 /// Constant for MPD image API URL prefix including API prefix
 pub fn mpd_image_url() -> String {
@@ -288,7 +289,8 @@ impl MPDPlayerController {
         debug!("Setting music directory to: {}", directory);
         self.music_directory = directory;
         // Clear the cached effective music directory so it will be recalculated
-        if let Ok(mut cached) = self.effective_music_directory.lock() {
+        {
+            let mut cached = self.effective_music_directory.lock();
             *cached = None;
         }
     }
@@ -297,12 +299,13 @@ impl MPDPlayerController {
     /// If configured music_directory is empty, attempts to parse it from /etc/mpd.conf
     pub fn get_effective_music_directory(&self) -> Option<String> {
         // First check if we have a cached result
-        if let Ok(cached) = self.effective_music_directory.lock() {
+        {
+            let cached = self.effective_music_directory.lock();
             if let Some(ref cached_dir) = *cached {
                 return Some(cached_dir.clone());
             }
         }
-        
+
         // If music_directory is configured in the JSON, use it
         let effective_dir = if !self.music_directory.is_empty() {
             debug!("Using configured music directory: {}", self.music_directory);
@@ -312,12 +315,13 @@ impl MPDPlayerController {
             debug!("Music directory not configured, attempting to parse from /etc/mpd.conf");
             self.parse_music_directory_from_config()
         };
-        
+
         // Cache the result
-        if let Ok(mut cached) = self.effective_music_directory.lock() {
+        {
+            let mut cached = self.effective_music_directory.lock();
             *cached = effective_dir.clone();
         }
-        
+
         effective_dir
     }
     
@@ -377,7 +381,8 @@ impl MPDPlayerController {
     
     /// Reset the reconnection attempt counter
     fn reset_reconnect_attempts(&self) {
-        if let Ok(mut counter) = self.reconnect_attempts.lock() {
+        {
+            let mut counter = self.reconnect_attempts.lock();
             *counter = 0;
         }
         // Re-enable connections when we successfully connect
@@ -386,12 +391,9 @@ impl MPDPlayerController {
     
     /// Increment the reconnection attempt counter and return the new value
     fn increment_reconnect_attempts(&self) -> u32 {
-        if let Ok(mut counter) = self.reconnect_attempts.lock() {
-            *counter += 1;
-            *counter
-        } else {
-            1
-        }
+        let mut counter = self.reconnect_attempts.lock();
+        *counter += 1;
+        *counter
     }
     
     /// Disable further connection attempts after max attempts reached
@@ -407,11 +409,8 @@ impl MPDPlayerController {
     /// Get a reference to the MPD library, if available
     pub fn get_library(&self) -> Option<crate::players::mpd::library::MPDLibrary> {
         // Lock the mutex and clone the library if it exists
-        if let Ok(library_guard) = self.library.lock() {
-            // Clone the library if it exists
-            return library_guard.clone();
-        }
-        None
+        let library_guard = self.library.lock();
+        library_guard.clone()
     }
     
     /// Force a refresh of the MPD library
@@ -527,12 +526,10 @@ impl MPDPlayerController {
                         );
                         
                         // Store the library in the controller
-                        if let Ok(mut library_guard) = player_arc.library.lock() {
+                        {
+                            let mut library_guard = player_arc.library.lock();
                             *library_guard = Some(library.clone());
                             debug!("Library instance stored in controller");
-                        } else {
-                            warn!("Failed to store library in controller");
-                            return None;
                         }
                         
                         // Start the library refresh in the current thread
@@ -814,7 +811,7 @@ impl MPDPlayerController {
         let enhanced_song = song.map(|s| self.enhance_song_with_cache(s));
         
         // Store the new song
-        let mut current_song = self.current_song.lock().unwrap();
+        let mut current_song = self.current_song.lock();
         let song_changed = match (&*current_song, &enhanced_song) {
             (Some(old), Some(new)) => old.stream_url != new.stream_url || old.title != new.title,
             (None, Some(_)) => true,
@@ -879,7 +876,8 @@ impl MPDPlayerController {
         match client.status() {
             Ok(status) => {
                 // Get a lock on the current_state to update it
-                if let Ok(mut current_state) = player.current_state.lock() {
+                {
+                    let mut current_state = player.current_state.lock();
                     // Update playback state
                     current_state.state = match status.state {
                         mpd::State::Play => PlaybackState::Playing,
@@ -946,8 +944,6 @@ impl MPDPlayerController {
                         // Update metadata in state
                         current_state.metadata = metadata;
                     }
-                } else {
-                    warn!("Failed to acquire lock on player state for updating");
                 }
                 
                 // Total songs in playlist
@@ -1073,7 +1069,8 @@ impl MPDPlayerController {
                 }
                 
                 // Update state to reflect error condition
-                if let Ok(mut current_state) = player.current_state.lock() {
+                {
+                    let mut current_state = player.current_state.lock();
                     current_state.state = PlaybackState::Stopped;
                 }
             }
@@ -1088,16 +1085,12 @@ impl MPDPlayerController {
         let cover_url = if !mpd_song.file.is_empty() {
             // Try to use encoded URL if library is available
             if let Some(player) = &player_arc {
-                if let Ok(library_guard) = player.library.lock() {
-                    if let Some(library) = library_guard.as_ref() {
-                        // Use the library's create_encoded_image_url method
-                        Some(library.create_encoded_image_url(&mpd_song.file))
-                    } else {
-                        // Fallback to base64 encoded URL if library not available
-                        Some(format!("{}/{}", mpd_image_url(), url_encoding::encode_url_safe(&mpd_song.file)))
-                    }
+                let library_guard = player.library.lock();
+                if let Some(library) = library_guard.as_ref() {
+                    // Use the library's create_encoded_image_url method
+                    Some(library.create_encoded_image_url(&mpd_song.file))
                 } else {
-                    // Fallback to base64 encoded URL if can't access library
+                    // Fallback to base64 encoded URL if library not available
                     Some(format!("{}/{}", mpd_image_url(), url_encoding::encode_url_safe(&mpd_song.file)))
                 }
             } else {
@@ -1333,9 +1326,7 @@ struct PlayerInstanceData {
 
 /// A map to store running state for each player instance
 type PlayerStateMap = HashMap<usize, PlayerInstanceData>;
-lazy_static! {
-    static ref PLAYER_STATE: Mutex<PlayerStateMap> = Mutex::new(HashMap::new());
-}
+static PLAYER_STATE: Lazy<Mutex<PlayerStateMap>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 impl MPDPlayerController {
     /// Check MPD database update status and manage background job
@@ -1345,13 +1336,14 @@ impl MPDPlayerController {
         // Check if MPD is currently updating the database
         let is_updating = status.updating_db.is_some();
         
-        if let Ok(mut current_job_guard) = self.current_update_job_id.lock() {
+        {
+            let mut current_job_guard = self.current_update_job_id.lock();
             let has_active_job = current_job_guard.is_some();
-            
+
             if is_updating && !has_active_job {
                 // MPD started updating and we don't have an active job - start one
                 match BackgroundJobs::instance().register_job(
-                    job_id.to_string(), 
+                    job_id.to_string(),
                     "MPD Database Update".to_string()
                 ) {
                     Ok(_) => {
@@ -1380,8 +1372,6 @@ impl MPDPlayerController {
                     }
                 }
             }
-        } else {
-            warn!("Failed to acquire lock on current update job ID");
         }
     }
 }
@@ -1397,7 +1387,7 @@ impl PlayerController for MPDPlayerController {
     fn get_song(&self) -> Option<Song> {
         debug!("Getting current song from stored value");
         // Return a clone of the stored song with any fresh cache enhancements
-        let song_clone = self.current_song.lock().unwrap().clone();
+        let song_clone = self.current_song.lock().clone();
         if let Some(song) = song_clone {
             // Apply fresh cache enhancements in case cache was updated after the song was stored
             let enhanced_song = self.enhance_song_with_cache(song);
@@ -1777,23 +1767,21 @@ impl PlayerController for MPDPlayerController {
         }
         
         // Store the running flag in the MPD player instance
-        if let Ok(mut state) = PLAYER_STATE.lock() {
+        {
+            let mut state = PLAYER_STATE.lock();
             let instance_id = self as *const _ as usize;
-            
+
             if let Some(data) = state.get(&instance_id) {
                 // Stop any existing thread
                 data.running_flag.store(false, Ordering::SeqCst);
             }
-            
+
             // Start a new listener thread
             self.start_event_listener(running.clone(), player_arc.clone());
-            
+
             // Store the running flag
             state.insert(instance_id, PlayerInstanceData { running_flag: running });
             true
-        } else {
-            error!("Failed to acquire lock for player state");
-            false
         }
     }
     
@@ -1801,16 +1789,17 @@ impl PlayerController for MPDPlayerController {
         info!("Stopping MPD player controller");
         
         // Signal the event listener thread to stop
-        if let Ok(mut state) = PLAYER_STATE.lock() {
+        {
+            let mut state = PLAYER_STATE.lock();
             let instance_id = self as *const _ as usize;
-            
+
             if let Some(data) = state.remove(&instance_id) {
                 data.running_flag.store(false, Ordering::SeqCst);
                 debug!("Signaled event listener thread to stop");
                 return true;
             }
         }
-        
+
         debug!("No active event listener thread found");
         false
     }

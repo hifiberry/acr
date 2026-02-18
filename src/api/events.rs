@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use serde::{Serialize, Deserialize};
@@ -83,7 +84,8 @@ impl WebSocketManager {    /// Create a new WebSocket manager
         let (id, receiver) = event_bus.subscribe_all();
         
         // Store our subscription ID (we'll need it to unsubscribe later)
-        if let Ok(mut sub) = manager.event_bus_subscription.lock() {
+        {
+            let mut sub = manager.event_bus_subscription.lock();
             *sub = Some((id, receiver.clone()));
         }
 
@@ -107,7 +109,7 @@ impl WebSocketManager {    /// Create a new WebSocket manager
     
     /// Generate a new unique ID for a client
     fn next_id(&self) -> usize {
-        let mut id = self.next_id.lock().unwrap();
+        let mut id = self.next_id.lock();
         let current = *id;
         *id += 1;
         current
@@ -125,17 +127,12 @@ impl WebSocketManager {    /// Create a new WebSocket manager
         };
         
         // Update last activity timestamp
-        if let Ok(mut last_activity) = self.last_activity.lock() {
-            last_activity.insert(id, now);
-        }
-        
+        self.last_activity.lock().insert(id, now);
+
         // Store the subscription
-        if let Ok(mut subs) = self.subscriptions.lock() {
-            subs.insert(id, client_sub);
-            info!("WebSocket client registered (id: {}), total clients: {}", id, subs.len());
-        } else {
-            error!("Failed to acquire lock on WebSocket subscriptions");
-        }
+        let mut subs = self.subscriptions.lock();
+        subs.insert(id, client_sub);
+        info!("WebSocket client registered (id: {}), total clients: {}", id, subs.len());
         
         id
     }
@@ -143,28 +140,23 @@ impl WebSocketManager {    /// Create a new WebSocket manager
     /// Update a client's subscription
     pub fn update_subscription(&self, id: usize, subscription: EventSubscription) -> bool {
         // Update last activity timestamp
-        if let Ok(mut last_activity) = self.last_activity.lock() {
-            last_activity.insert(id, Instant::now());
-        }
-        
+        self.last_activity.lock().insert(id, Instant::now());
+
         // Update the subscription
-        if let Ok(mut subs) = self.subscriptions.lock() {
-            if let Some(sub) = subs.get_mut(&id) {
-                sub.players = subscription.players.map(|p| p.into_iter().collect());
-                sub.event_types = subscription.event_types.map(|e| e.into_iter().collect());
-                debug!("Updated subscription for client {}", id);
-                return true;
-            }
+        let mut subs = self.subscriptions.lock();
+        if let Some(sub) = subs.get_mut(&id) {
+            sub.players = subscription.players.map(|p| p.into_iter().collect());
+            sub.event_types = subscription.event_types.map(|e| e.into_iter().collect());
+            debug!("Updated subscription for client {}", id);
+            return true;
         }
-        
+
         false
     }
     
     /// Record client activity to prevent timeout
     pub fn record_activity(&self, id: usize) {
-        if let Ok(mut last_activity) = self.last_activity.lock() {
-            last_activity.insert(id, Instant::now());
-        }
+        self.last_activity.lock().insert(id, Instant::now());
     }
     
     /// Queue a new event to be sent to clients
@@ -172,18 +164,17 @@ impl WebSocketManager {    /// Create a new WebSocket manager
         let now = Instant::now();
         
         // Add the event to the recent events queue
-        if let Ok(mut events) = self.recent_events.lock() {
-            // Add to the back of the queue to maintain chronological order
-            events.push_back((event.clone(), now));
-            
-            // Limit the queue size to prevent memory issues
-            if events.len() > 100 {
-                events.pop_front();
-            }
-            
-            debug!("Event queued: Player: {}, Type: {:?}, Queue size: {}", 
-                  event.player_name().unwrap_or("system"), event_type_name(&event), events.len());
+        let mut events = self.recent_events.lock();
+        // Add to the back of the queue to maintain chronological order
+        events.push_back((event.clone(), now));
+
+        // Limit the queue size to prevent memory issues
+        if events.len() > 100 {
+            events.pop_front();
         }
+
+        debug!("Event queued: Player: {}, Type: {:?}, Queue size: {}",
+              event.player_name().unwrap_or("system"), event_type_name(&event), events.len());
     }
     
     /// Get events for a specific client that have occurred since the client last checked
@@ -193,16 +184,13 @@ impl WebSocketManager {    /// Create a new WebSocket manager
         // Get the client's subscription
         let mut last_event_time = Instant::now();
         let subscription = {
-            if let Ok(mut subs) = self.subscriptions.lock() {
-                if let Some(sub) = subs.get_mut(&client_id) {
-                    let sub_copy = sub.clone();
-                    // Update the last event time
-                    last_event_time = sub.last_event_time;
-                    sub.last_event_time = Instant::now();
-                    Some(sub_copy)
-                } else {
-                    None
-                }
+            let mut subs = self.subscriptions.lock();
+            if let Some(sub) = subs.get_mut(&client_id) {
+                let sub_copy = sub.clone();
+                // Update the last event time
+                last_event_time = sub.last_event_time;
+                sub.last_event_time = Instant::now();
+                Some(sub_copy)
             } else {
                 None
             }
@@ -213,20 +201,19 @@ impl WebSocketManager {    /// Create a new WebSocket manager
                   client_id, Instant::now().duration_since(last_event_time));
             
             // Get recent events that occurred after the client's last check
-            if let Ok(events) = self.recent_events.lock() {
-                debug!("Event queue size: {}", events.len());
-                
-                for (event, time) in events.iter() {
-                    // Only check events that happened after the client's last check
-                    if *time > last_event_time {
-                        let should_send = self.should_send_to_client(event, &sub);
-                        debug!("Event check: Player: {}, Type: {:?}, Time: {:?} ago, Should send: {}", 
-                              event.player_name().unwrap_or("system"), event_type_name(event), 
-                              Instant::now().duration_since(*time), should_send);
-                        
-                        if should_send {
-                            matching_events.push(event.clone());
-                        }
+            let events = self.recent_events.lock();
+            debug!("Event queue size: {}", events.len());
+
+            for (event, time) in events.iter() {
+                // Only check events that happened after the client's last check
+                if *time > last_event_time {
+                    let should_send = self.should_send_to_client(event, &sub);
+                    debug!("Event check: Player: {}, Type: {:?}, Time: {:?} ago, Should send: {}",
+                          event.player_name().unwrap_or("system"), event_type_name(event),
+                          Instant::now().duration_since(*time), should_send);
+
+                    if should_send {
+                        matching_events.push(event.clone());
                     }
                 }
             }
@@ -268,17 +255,15 @@ impl WebSocketManager {    /// Create a new WebSocket manager
     /// Remove a client subscription
     pub fn remove_client(&self, id: usize) {
         // Remove from subscriptions
-        if let Ok(mut subs) = self.subscriptions.lock() {
-            if subs.remove(&id).is_some() {
-                info!("WebSocket client disconnected (id: {}), remaining clients: {}", 
-                    id, subs.len());
-            }
+        let mut subs = self.subscriptions.lock();
+        if subs.remove(&id).is_some() {
+            info!("WebSocket client disconnected (id: {}), remaining clients: {}",
+                id, subs.len());
         }
-        
+        drop(subs);
+
         // Clean up activity tracker
-        if let Ok(mut last_activity) = self.last_activity.lock() {
-            last_activity.remove(&id);
-        }
+        self.last_activity.lock().remove(&id);
     }
     
     /// Prune inactive connections and old events
@@ -288,11 +273,10 @@ impl WebSocketManager {    /// Create a new WebSocket manager
         // Prune inactive clients
         let clients_to_remove = {
             let mut to_remove = Vec::new();
-            if let Ok(last_activity) = self.last_activity.lock() {
-                for (id, last) in last_activity.iter() {
-                    if now.duration_since(*last) > client_timeout {
-                        to_remove.push(*id);
-                    }
+            let last_activity = self.last_activity.lock();
+            for (id, last) in last_activity.iter() {
+                if now.duration_since(*last) > client_timeout {
+                    to_remove.push(*id);
                 }
             }
             to_remove
@@ -308,7 +292,8 @@ impl WebSocketManager {    /// Create a new WebSocket manager
         }
         
         // Prune old events
-        if let Ok(mut events) = self.recent_events.lock() {
+        {
+            let mut events = self.recent_events.lock();
             // Since events are now stored in chronological order (oldest first),
             // we need to remove elements from the front of the queue
             let mut to_remove = 0;
@@ -480,10 +465,9 @@ pub fn start_prune_task(ws_manager: Arc<WebSocketManager>) {
 /// Drop implementation to clean up event bus subscription
 impl Drop for WebSocketManager {
     fn drop(&mut self) {
-        if let Ok(sub_guard) = self.event_bus_subscription.lock() {
-            if let Some((id, _)) = &*sub_guard {
-                EventBus::instance().unsubscribe(*id);
-            }
+        let sub_guard = self.event_bus_subscription.lock();
+        if let Some((id, _)) = &*sub_guard {
+            EventBus::instance().unsubscribe(*id);
         }
     }
 }

@@ -229,7 +229,7 @@ pub fn initialize_volume_control(config: &Value) {
         };
         
         // Store the global volume control
-        if let Err(_) = GLOBAL_VOLUME_CONTROL.set(Arc::new(Mutex::new(control))) {
+        if GLOBAL_VOLUME_CONTROL.set(Arc::new(Mutex::new(control))).is_err() {
             error!("Failed to set global volume control - already initialized");
         } else {
             info!("Global volume control initialized successfully");

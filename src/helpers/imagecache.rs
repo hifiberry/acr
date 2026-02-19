@@ -611,22 +611,20 @@ impl ImageCache {
         fn scan_directory(dir: &Path, stats: &mut ImageCacheStats) -> Result<(), String> {
             match read_dir(dir) {
                 Ok(entries) => {
-                    for entry in entries {
-                        if let Ok(entry) = entry {
-                            let path = entry.path();
-                            if path.is_file() {
-                                // Skip metadata files
-                                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                                    if !name.starts_with('.') {
-                                        if let Ok(metadata) = entry.metadata() {
-                                            stats.total_images += 1;
-                                            stats.total_size += metadata.len();
-                                        }
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            // Skip metadata files
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                if !name.starts_with('.') {
+                                    if let Ok(metadata) = entry.metadata() {
+                                        stats.total_images += 1;
+                                        stats.total_size += metadata.len();
                                     }
                                 }
-                            } else if path.is_dir() {
-                                scan_directory(&path, stats)?;
                             }
+                        } else if path.is_dir() {
+                            scan_directory(&path, stats)?;
                         }
                     }
                 }

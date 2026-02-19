@@ -339,25 +339,23 @@ impl MPDPlayerController {
             Ok(file) => {
                 let reader = BufReader::new(file);
                 
-                for line in reader.lines() {
-                    if let Ok(line) = line {
-                        let trimmed = line.trim();
-                        
-                        // Skip comments and empty lines
-                        if trimmed.is_empty() || trimmed.starts_with('#') {
-                            continue;
-                        }
-                        
-                        // Look for music_directory line
-                        if trimmed.starts_with("music_directory") {
-                            // Parse the format: music_directory "/var/lib/mpd/music"
-                            if let Some(start_quote) = trimmed.find('"') {
-                                if let Some(end_quote) = trimmed.rfind('"') {
-                                    if start_quote < end_quote {
-                                        let directory = &trimmed[start_quote + 1..end_quote];
-                                        info!("Auto-detected MPD music directory from {}: {}", config_path, directory);
-                                        return Some(directory.to_string());
-                                    }
+                for line in reader.lines().map_while(Result::ok) {
+                    let trimmed = line.trim();
+
+                    // Skip comments and empty lines
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+
+                    // Look for music_directory line
+                    if trimmed.starts_with("music_directory") {
+                        // Parse the format: music_directory "/var/lib/mpd/music"
+                        if let Some(start_quote) = trimmed.find('"') {
+                            if let Some(end_quote) = trimmed.rfind('"') {
+                                if start_quote < end_quote {
+                                    let directory = &trimmed[start_quote + 1..end_quote];
+                                    info!("Auto-detected MPD music directory from {}: {}", config_path, directory);
+                                    return Some(directory.to_string());
                                 }
                             }
                         }

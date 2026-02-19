@@ -380,14 +380,14 @@ pub fn extract_song_from_mpris_metadata(metadata_variant: &dbus::arg::Variant<Bo
         return None;
     }
     
-    let mut song = Song::default();
-    
-    // Basic metadata
-    song.title = metadata.get("xesam:title").cloned();
-    song.artist = metadata.get("xesam:artist").cloned();
-    song.album = metadata.get("xesam:album").cloned();
-    song.album_artist = metadata.get("xesam:albumArtist").cloned();
-    song.cover_art_url = metadata.get("mpris:artUrl").cloned();
+    let mut song = Song {
+        title: metadata.get("xesam:title").cloned(),
+        artist: metadata.get("xesam:artist").cloned(),
+        album: metadata.get("xesam:album").cloned(),
+        album_artist: metadata.get("xesam:albumArtist").cloned(),
+        cover_art_url: metadata.get("mpris:artUrl").cloned(),
+        ..Default::default()
+    };
     
     // Track number
     if let Some(track_str) = metadata.get("xesam:trackNumber") {

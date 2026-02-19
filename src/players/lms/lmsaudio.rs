@@ -233,9 +233,7 @@ impl LMSAudioController {
         // Initialize the player using find_server_connection
         let (connected, server_opt, player_mac_opt, _) = controller.find_server_connection(&config);
         
-        if connected && server_opt.is_some() && player_mac_opt.is_some() {
-            let server = server_opt.unwrap();
-            let player_mac = player_mac_opt.unwrap();
+        if let (true, Some(server), Some(player_mac)) = (connected, server_opt, player_mac_opt) {
             
             info!("Found a matching LMS server: {} with player MAC: {}", server, player_mac);
             

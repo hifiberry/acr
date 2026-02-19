@@ -238,22 +238,14 @@ fn sanitize_artist_name_for_search(artist_name: &str) -> String {
     sanitized
 }
 
-/// Split an artist name using custom separators
-/// 
-/// This function has been moved to artistsplitter module for better organization.
-/// Use `crate::helpers::artistsplitter::split_artist_with_separators` instead.
-/// 
-/// # Arguments
-/// * `artist_name` - The artist name to split
-/// * `separators` - The separators to use for splitting
 /// Split an artist name that might contain multiple artists
-/// 
+///
 /// This function has been moved to artistsplitter module for better organization.
 /// Use `crate::helpers::artistsplitter::split_artist` instead.
-/// 
+///
 /// # Arguments
 /// * `artist_name` - The artist name to split
-/// 
+///
 /// # Returns
 /// * `Vec<String>` - Vector containing individual artist names
 pub fn split_artist(artist_name: &str) -> Vec<String> {

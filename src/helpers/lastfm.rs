@@ -789,16 +789,15 @@ impl LastfmClient {
         let track_num_str = track_number.map(|n| n.to_string());
         let duration_str = duration.map(|d| d.to_string());
           // Create a vector to hold owned strings
-        let mut param_vec = Vec::new();
-        
-        // Add required parameters
-        param_vec.push(("method", "track.scrobble".to_string()));
-        param_vec.push(("api_key", api_key));
-        param_vec.push(("sk", session_key));
-        param_vec.push(("artist", artist.to_string()));
-        param_vec.push(("track", track.to_string()));
-        param_vec.push(("timestamp", timestamp_str));
-        
+        let mut param_vec = vec![
+            ("method", "track.scrobble".to_string()),
+            ("api_key", api_key),
+            ("sk", session_key),
+            ("artist", artist.to_string()),
+            ("track", track.to_string()),
+            ("timestamp", timestamp_str),
+        ];
+
         // Add optional parameters
         if let Some(album_name) = album {
             param_vec.push(("album", album_name.to_string()));
@@ -865,15 +864,14 @@ impl LastfmClient {
         let track_num_str = track_number.map(|n| n.to_string());
         let duration_str = duration.map(|d| d.to_string());
           // Create a vector to hold owned strings
-        let mut param_vec = Vec::new();
-        
-        // Add required parameters
-        param_vec.push(("method", "track.updateNowPlaying".to_string()));
-        param_vec.push(("api_key", api_key));
-        param_vec.push(("sk", session_key));
-        param_vec.push(("artist", artist.to_string()));
-        param_vec.push(("track", track.to_string()));
-        
+        let mut param_vec = vec![
+            ("method", "track.updateNowPlaying".to_string()),
+            ("api_key", api_key),
+            ("sk", session_key),
+            ("artist", artist.to_string()),
+            ("track", track.to_string()),
+        ];
+
         // Add optional parameters
         if let Some(album_name) = album {
             param_vec.push(("album", album_name.to_string()));

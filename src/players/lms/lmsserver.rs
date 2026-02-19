@@ -553,18 +553,16 @@ pub fn get_local_mac_addresses() -> io::Result<Vec<MacAddress>> {
             
             if addresses.is_empty() {
                 // Fallback to getting all MAC addresses if the above method didn't work
-                if let Ok(all_macs) = mac_address::get_mac_address() {
-                    if let Some(mac) = all_macs {
-                        // Check if the MAC is non-zero
-                        let mac_str = mac.to_string();
-                        if mac_str != "00:00:00:00:00:00" && 
-                           mac_str != "00-00-00-00-00-00" && 
-                           mac_str != "000000000000" {
-                            debug!("Found MAC address using fallback method: {}", mac);
-                            addresses.push(mac);
-                        } else {
-                            debug!("Skipping zero MAC address from fallback method");
-                        }
+                if let Ok(Some(mac)) = mac_address::get_mac_address() {
+                    // Check if the MAC is non-zero
+                    let mac_str = mac.to_string();
+                    if mac_str != "00:00:00:00:00:00" &&
+                       mac_str != "00-00-00-00-00-00" &&
+                       mac_str != "000000000000" {
+                        debug!("Found MAC address using fallback method: {}", mac);
+                        addresses.push(mac);
+                    } else {
+                        debug!("Skipping zero MAC address from fallback method");
                     }
                 }
             }

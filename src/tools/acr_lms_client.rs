@@ -193,13 +193,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Check if this command requires a player ID
-    let requires_player = match cli.command {
+    let requires_player = !matches!(cli.command,
         Commands::ListPlayers
         | Commands::ListArtists
         | Commands::ListAlbums { .. }
-        | Commands::ListTracks { .. } => false,
-        _ => true,
-    };
+        | Commands::ListTracks { .. });
 
     // Get the first connected player if player_id is not specified and command requires a player
     let player_id = if !requires_player {

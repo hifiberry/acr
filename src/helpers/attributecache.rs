@@ -727,11 +727,8 @@ impl AttributeCache {
 
     /// List all cache keys, optionally filtered by prefix
     pub fn list_keys(&self, prefix_filter: Option<&str>) -> Result<Vec<String>, String> {
-        if self.db.is_none() {
-            return Err("Database connection is not available".to_string());
-        }
-
-        let db = self.db.as_ref().unwrap();
+        let db = self.db.as_ref()
+            .ok_or_else(|| "Database connection is not available".to_string())?;
         let mut keys = Vec::new();
         
         match prefix_filter {
@@ -773,11 +770,8 @@ impl AttributeCache {
             return Ok(Vec::new());
         }
 
-        if self.db.is_none() {
-            return Err("Database connection is not available".to_string());
-        }
-
-        let db = self.db.as_ref().unwrap();
+        let db = self.db.as_ref()
+            .ok_or_else(|| "Database connection is not available".to_string())?;
         let mut entries = Vec::new();
 
         match prefix_filter {
@@ -831,13 +825,11 @@ impl AttributeCache {
             return Ok(0);
         }
 
-        if self.db.is_none() {
-            return Err("Database connection is not available".to_string());
-        }
+        let db = self.db.as_ref()
+            .ok_or_else(|| "Database connection is not available".to_string())?;
 
         let pattern = format!("{}%", prefix);
-        let db = self.db.as_ref().unwrap();
-        
+
         // First, get the keys to remove from memory cache
         let mut stmt = db.prepare("SELECT key FROM cache WHERE key LIKE ?1")
             .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
@@ -881,13 +873,11 @@ impl AttributeCache {
             return Ok(0);
         }
 
-        if self.db.is_none() {
-            return Err("Database connection is not available".to_string());
-        }
+        let db = self.db.as_ref()
+            .ok_or_else(|| "Database connection is not available".to_string())?;
 
         let pattern = format!("{}%", prefix);
-        let db = self.db.as_ref().unwrap();
-        
+
         let mut stmt = db.prepare("SELECT key, value FROM cache WHERE key LIKE ?1")
             .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
         

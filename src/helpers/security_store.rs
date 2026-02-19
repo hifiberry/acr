@@ -353,7 +353,7 @@ impl SecurityStore {
         // Update the last_updated timestamp
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         data.last_updated = now;
 
@@ -383,7 +383,7 @@ impl SecurityStore {
         // Update the modified timestamp
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         data.modified.insert(key.to_string(), now);

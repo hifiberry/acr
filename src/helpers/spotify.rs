@@ -21,11 +21,6 @@ const SPOTIFY_TOKEN_EXPIRY_KEY: &str = "spotify_token_expiry";
 const SPOTIFY_USER_ID_KEY: &str = "spotify_user_id";
 const SPOTIFY_DISPLAY_NAME_KEY: &str = "spotify_display_name";
 
-// Constants for service configuration
-#[allow(dead_code)]
-// Make sure the default URL has the proper format with trailing slash
-const SPOTIFY_DEFAULT_OAUTH_URL: &str = "https://oauth.hifiberry.com/spotify/";
-
 // Global singleton instance of Spotify client
 pub(crate) static SPOTIFY_CLIENT: Lazy<Mutex<Option<Spotify>>> = Lazy::new(|| Mutex::new(None));
 

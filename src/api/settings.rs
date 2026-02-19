@@ -131,6 +131,7 @@ pub fn set_setting(request: Json<SetSettingRequest>) -> Json<serde_json::Value> 
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
     use tempfile::TempDir;
     use crate::helpers::settingsdb;
 
@@ -255,6 +256,7 @@ mod tests {
     // Basic database functionality tests - test the settings database directly
 
     #[test]
+    #[serial]
     fn test_database_set_and_get_string_value() {
         let _temp_dir = setup_test_env();
         
@@ -274,6 +276,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_database_nonexistent_key() {
         let _temp_dir = setup_test_env();
         

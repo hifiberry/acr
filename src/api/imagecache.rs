@@ -2,7 +2,7 @@ use rocket::get;
 use rocket::http::ContentType;
 use rocket::response::status::Custom;
 use rocket::http::Status;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use crate::helpers::imagecache;
 
 /// Retrieve an image from the image cache based on a filepath
@@ -39,7 +39,7 @@ pub fn get_image_from_cache(filepath: PathBuf) -> Result<(ContentType, Vec<u8>),
 }
 
 /// Detect the content type based on the file extension
-fn detect_content_type(path: &PathBuf) -> ContentType {
+fn detect_content_type(path: &Path) -> ContentType {
     match path.extension() {
         Some(ext) if ext == "jpg" || ext == "jpeg" => ContentType::JPEG,
         Some(ext) if ext == "png" => ContentType::PNG,

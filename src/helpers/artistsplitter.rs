@@ -3,7 +3,6 @@
 /// This module provides functionality to split artist names that contain multiple artists
 /// separated by various delimiters like commas, "&", "feat.", etc. It includes both
 /// simple text-based splitting and intelligent splitting using MusicBrainz MBID lookups.
-
 use log::debug;
 use crate::helpers::musicbrainz::{self, MusicBrainzSearchResult};
 use crate::helpers::attributecache;

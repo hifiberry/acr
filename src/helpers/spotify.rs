@@ -210,8 +210,8 @@ impl Spotify {
         
         // Ensure the OAuth URL has a trailing slash
         if !oauth_url.ends_with('/') {
-            info!("Adding trailing slash to OAuth URL: '{}' -> '{}'", oauth_url, format!("{}/", oauth_url));
             oauth_url = format!("{}/", oauth_url);
+            info!("Added trailing slash to OAuth URL: '{}'", oauth_url);
         }
         
         // Ensure the OAuth URL starts with http:// or https://

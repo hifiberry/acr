@@ -389,7 +389,7 @@ fn print_property_value(value: &dbus::arg::Variant<Box<dyn RefArg>>) {
         print!("{}", u);
     } else if let Some(f) = value.as_f64() {
         print!("{}", f);
-    } else if let Some(mut iter) = value.as_iter() {
+    } else if let Some(iter) = value.as_iter() {
         print!("[");
         let mut first = true;
         for item in iter {

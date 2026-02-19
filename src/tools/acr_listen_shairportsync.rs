@@ -495,8 +495,8 @@ fn display_shairport_message(message: &ShairportMessage, show_hex: bool) {
                 "ssncasal" => println!("     Content: Metadata - Album"),
                 "ssncastn" => println!("     Content: Metadata - Track name"),
                 _ => {
-                    if clean_type.starts_with("ssnc") {
-                        println!("     Content: Metadata - {}", &clean_type[4..]);
+                    if let Some(suffix) = clean_type.strip_prefix("ssnc") {
+                        println!("     Content: Metadata - {}", suffix);
                     } else {
                         println!("     Content: Unknown data type");
                     }

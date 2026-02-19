@@ -1,6 +1,5 @@
 /// Cover art providers implementation
 /// This module contains implementations of various cover art providers
-
 use std::collections::HashSet;
 use log::{debug, info, warn};
 use crate::helpers::coverart::{CoverartProvider, CoverartMethod};

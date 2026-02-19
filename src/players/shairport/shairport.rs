@@ -546,8 +546,7 @@ impl ShairportController {
         // If no current or pending song, create a minimal song with just cover art
         {
             let mut current = current_song.lock();
-            let mut song = Song::default();
-            song.cover_art_url = Some(artwork_url.clone());
+            let song = Song { cover_art_url: Some(artwork_url.clone()), ..Default::default() };
             *current = Some(song.clone());
             base.notify_song_changed(Some(&song));
         }

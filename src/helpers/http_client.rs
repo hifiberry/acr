@@ -70,17 +70,18 @@ pub struct UreqHttpClient {
     timeout: Duration,
 }
 
+impl Default for UreqHttpClient {
+    fn default() -> Self {
+        Self::new(5)
+    }
+}
+
 impl UreqHttpClient {
     /// Create a new HTTP client with the specified timeout
     pub fn new(timeout_secs: u64) -> Self {
         Self {
             timeout: Duration::from_secs(timeout_secs),
         }
-    }
-    
-    /// Create a new HTTP client with default timeout (5 seconds)
-    pub fn default() -> Self {
-        Self::new(5)
     }
 }
 

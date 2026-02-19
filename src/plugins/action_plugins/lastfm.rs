@@ -713,11 +713,11 @@ impl Clone for Lastfm {
 // It should be outside any impl blocks, typically as a free function in the module.
 
 fn calculate_updates(original_song: &Song, lastfm_data: &LastfmTrackInfoDetails) -> Song {
-    let mut updated_song = Song::default(); // Start with a default Song
-
-    // Always include title and artist for identification purposes in the event
-    updated_song.title = original_song.title.clone();
-    updated_song.artist = original_song.artist.clone();
+    let mut updated_song = Song {
+        title: original_song.title.clone(),
+        artist: original_song.artist.clone(),
+        ..Default::default()
+    };
 
     // --- 1. Handle cover_art_url ---
     let mut lastfm_provided_cover_art_url: Option<String> = None;

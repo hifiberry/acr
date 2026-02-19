@@ -46,10 +46,13 @@ fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     
-    ctrlc::set_handler(move || {
+    if let Err(e) = ctrlc::set_handler(move || {
         println!("\nReceived Ctrl+C, shutting down...");
         r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    }) {
+        eprintln!("Error: Failed to set Ctrl+C handler: {}", e);
+        std::process::exit(1);
+    }
     
     // Connect to the appropriate bus
     let conn = match player.bus_type {

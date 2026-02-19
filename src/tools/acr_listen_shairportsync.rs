@@ -77,10 +77,13 @@ fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     
-    ctrlc::set_handler(move || {
+    if let Err(e) = ctrlc::set_handler(move || {
         println!("\nReceived Ctrl+C, shutting down...");
         r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    }) {
+        eprintln!("Error: Failed to set Ctrl+C handler: {}", e);
+        std::process::exit(1);
+    }
     
     // Bind to UDP socket
     let bind_address = format!("0.0.0.0:{}", port);
@@ -97,8 +100,10 @@ fn main() {
     println!();
     
     // Set socket timeout to allow checking the running flag
-    socket.set_read_timeout(Some(std::time::Duration::from_millis(1000)))
-        .expect("Failed to set socket timeout");
+    if let Err(e) = socket.set_read_timeout(Some(std::time::Duration::from_millis(1000))) {
+        eprintln!("Error: Failed to set socket timeout: {}", e);
+        std::process::exit(1);
+    }
     
     let mut buffer = [0; 4096]; // 4KB buffer for incoming packets
     let mut packet_count = 0;

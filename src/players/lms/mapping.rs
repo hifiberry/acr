@@ -103,15 +103,15 @@ pub fn map_track(lms_track: &LmsTrack, album_artist: Option<&str>) -> AcrTrack {
 /// Maps an LMS Artist to the application's Artist structure
 pub fn map_artist(lms_artist: &LmsArtist) -> AcrArtist {
     // Create a new artist with the ID and name from LMS
-    let artist = AcrArtist {
+    
+    
+    AcrArtist {
         id: Identifier::String(lms_artist.id.clone()),
         name: lms_artist.artist.clone(),
         // Check if this is a multi-artist entry (contains comma in the name)
         is_multi: lms_artist.artist.contains(','),
         metadata: None,
-    };
-    
-    artist
+    }
 }
 
 /// Maps a collection of LMS albums to the application's Album structures

@@ -47,19 +47,15 @@ pub fn pause_all_players(controller: &State<Arc<AudioController>>, except: Optio
     let message = if let Some(ref except_name) = except {
         if success {
             format!("Paused or stopped {} players (skipped {} player '{}')", success_count, skipped_count, except_name)
-        } else {
-            if skipped_count > 0 {
-                format!("No players paused or stopped (skipped {} player '{}')", skipped_count, except_name)
-            } else {
-                "No players paused or stopped".to_string()
-            }
-        }
-    } else {
-        if success {
-            format!("Paused or stopped {} players", success_count)
+        } else if skipped_count > 0 {
+            format!("No players paused or stopped (skipped {} player '{}')", skipped_count, except_name)
         } else {
             "No players paused or stopped".to_string()
         }
+    } else if success {
+        format!("Paused or stopped {} players", success_count)
+    } else {
+        "No players paused or stopped".to_string()
     };
     
     Json(CommandResponse {
@@ -111,19 +107,15 @@ pub fn stop_all_players(controller: &State<Arc<AudioController>>, except: Option
     let message = if let Some(ref except_name) = except {
         if success {
             format!("Stopped or paused {} players (skipped {} player '{}')", success_count, skipped_count, except_name)
-        } else {
-            if skipped_count > 0 {
-                format!("No players stopped or paused (skipped {} player '{}')", skipped_count, except_name)
-            } else {
-                "No players stopped or paused".to_string()
-            }
-        }
-    } else {
-        if success {
-            format!("Stopped or paused {} players", success_count)
+        } else if skipped_count > 0 {
+            format!("No players stopped or paused (skipped {} player '{}')", skipped_count, except_name)
         } else {
             "No players stopped or paused".to_string()
         }
+    } else if success {
+        format!("Stopped or paused {} players", success_count)
+    } else {
+        "No players stopped or paused".to_string()
     };
     
     Json(CommandResponse {

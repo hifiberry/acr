@@ -148,7 +148,7 @@ pub fn get_oauth_config() -> Json<OAuthConfig> {
     
     // Get the base URL of the request to construct the redirect URI
     // We assume the app will be hosted at /example/spotify.html
-    let redirect_uri = format!("/example/spotify.html");
+    let redirect_uri = "/example/spotify.html".to_string();
     
     Json(OAuthConfig {
         oauth_url: spotify.get_oauth_url().to_string(),
@@ -207,14 +207,14 @@ pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
                     .replace("&quot;", "\"")
                     .replace("&lt;", "<")
                     .replace("&gt;", ">\\");
-                return Ok(Json(ApiResponse {
+                Ok(Json(ApiResponse {
                     status: "redirect".to_string(),
                     message: decoded_location,
                     expires_at: None,
-                }));
+                }))
             } else {
                 error!("OAuth server returned a redirect without Location header");
-                return Err(Status::InternalServerError);
+                Err(Status::InternalServerError)
             }
         },
         Ok(response) => {
@@ -239,24 +239,24 @@ pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
                     info!("Found Spotify references but couldn't extract the exact URL");
                 }
                 info!("Got response body of length {} with status {}", body.len(), status_code);
-                return Ok(Json(ApiResponse {
+                Ok(Json(ApiResponse {
                     status: "success".to_string(),
                     message: "Login request processed".to_string(),
                     expires_at: None,
-                }));
+                }))
             } else {
                 error!("Could not read response body");
-                return Err(Status::InternalServerError);
+                Err(Status::InternalServerError)
             }
         },
         Err(ureq::Error::Status(code, response)) => {
             let error_body = response.into_string().unwrap_or_else(|_| "<failed to read response body>".to_string());
             error!("OAuth server returned error {}: {}", code, error_body);
-            return Err(Status::InternalServerError);
+            Err(Status::InternalServerError)
         },
         Err(e) => {
             error!("Failed to proxy login request for session {}: {}", session_id, e);
-            return Err(Status::InternalServerError);
+            Err(Status::InternalServerError)
         }
     }
 }

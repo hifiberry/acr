@@ -99,6 +99,12 @@ impl Drop for BluetoothPlayerController {
     }
 }
 
+impl Default for BluetoothPlayerController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BluetoothPlayerController {
     /// Create a new BluetoothPlayerController with auto-discovery
     pub fn new() -> Self {
@@ -765,7 +771,7 @@ impl BluetoothPlayerController {
                     title: title.clone(),
                     artist: artist.clone(),
                     album: album.clone(),
-                    duration: duration,
+                    duration,
                     ..Song::default()
                 };
                 

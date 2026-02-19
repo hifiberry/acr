@@ -108,6 +108,12 @@ impl Clone for MPDPlayerController {
     }
 }
 
+impl Default for MPDPlayerController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MPDPlayerController {
     /// Create a new MPD player controller with default settings
     pub fn new() -> Self {
@@ -1305,16 +1311,16 @@ impl MPDPlayerController {
             match result {
                 Ok(_) => {
                     debug!("Successfully added URL to queue: {}", url);
-                    return true;
+                    true
                 },
                 Err(e) => {
                     warn!("Failed to add URL to queue: {} - Error: {}", url, e);
-                    return false;
+                    false
                 }
             }
         } else {
             warn!("Failed to get MPD client connection for queue_url");
-            return false;
+            false
         }
     }
 }

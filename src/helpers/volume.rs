@@ -352,7 +352,7 @@ impl VolumeControl for AlsaVolumeControl {
     }
 
     fn set_volume_percent(&self, percent: f64) -> Result<(), VolumeError> {
-        if percent < 0.0 || percent > 100.0 {
+        if !(0.0..=100.0).contains(&percent) {
             return Err(VolumeError::InvalidRange(format!("Volume percentage {} is out of range (0-100)", percent)));
         }
 
@@ -509,7 +509,7 @@ impl VolumeControl for AlsaVolumeControl {
                                 };
                                 
                                 // Only send event if volume actually changed
-                                if last_volume.map_or(true, |last: f64| (last - volume_percent).abs() > 0.1) {
+                                if last_volume.is_none_or(|last: f64| (last - volume_percent).abs() > 0.1) {
                                     last_volume = Some(volume_percent);
                                     
                                     // Try to get dB value
@@ -618,7 +618,7 @@ impl VolumeControl for DummyVolumeControl {
             return Err(VolumeError::DeviceError("Dummy device not available".to_string()));
         }
         
-        if percent < 0.0 || percent > 100.0 {
+        if !(0.0..=100.0).contains(&percent) {
             return Err(VolumeError::InvalidRange(format!("Volume percentage {} is out of range (0-100)", percent)));
         }
 
@@ -666,7 +666,7 @@ impl VolumeControl for DummyVolumeControl {
             return Err(VolumeError::DeviceError("Dummy device not available".to_string()));
         }
         
-        if value < 0 || value > 100 {
+        if !(0..=100).contains(&value) {
             return Err(VolumeError::InvalidRange(format!("Raw value {} is out of range (0-100)", value)));
         }
 

@@ -101,6 +101,12 @@ pub struct AttributeCache {
     current_memory_bytes: usize,
 }
 
+impl Default for AttributeCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AttributeCache {
     /// Create a new attribute cache with default settings
     pub fn new() -> Self {
@@ -169,20 +175,18 @@ impl AttributeCache {
                         // Check existing columns
                         if let Ok(mut stmt) = conn.prepare("PRAGMA table_info(cache)") {
                             let column_iter = stmt.query_map([], |row| {
-                                Ok(row.get::<_, String>(1)?) // Column name is at index 1
+                                row.get::<_, String>(1) // Column name is at index 1
                             });
                             
                             if let Ok(iter) = column_iter {
-                                for column in iter {
-                                    if let Ok(col_name) = column {
-                                        match col_name.as_str() {
-                                            "key" => has_key = true,
-                                            "value" => has_value = true,
-                                            "created_at" => has_created_at = true,
-                                            "updated_at" => has_updated_at = true,
-                                            "expires_at" => has_expires_at = true,
-                                            _ => {}
-                                        }
+                                for col_name in iter.flatten() {
+                                    match col_name.as_str() {
+                                        "key" => has_key = true,
+                                        "value" => has_value = true,
+                                        "created_at" => has_created_at = true,
+                                        "updated_at" => has_updated_at = true,
+                                        "expires_at" => has_expires_at = true,
+                                        _ => {}
                                     }
                                 }
                             }
@@ -536,7 +540,7 @@ impl AttributeCache {
 
         // Try memory cache first
         if let Some(data) = self.memory_cache.get(key) {
-            return match serde_json::from_slice(&data) {
+            return match serde_json::from_slice(data) {
                 Ok(value) => Ok(Some(value)),
                 Err(e) => Err(format!("Failed to deserialize from memory cache: {}", e)),
             };
@@ -738,7 +742,7 @@ impl AttributeCache {
                     .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
                 
                 let rows = stmt.query_map(params![pattern], |row: &rusqlite::Row| {
-                    Ok(row.get::<_, String>(0)?)
+                    row.get::<_, String>(0)
                 }).map_err(|e| format!("Failed to execute list query: {}", e))?;
                 
                 for row in rows {
@@ -751,7 +755,7 @@ impl AttributeCache {
                     .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
                 
                 let rows = stmt.query_map([], |row: &rusqlite::Row| {
-                    Ok(row.get::<_, String>(0)?)
+                    row.get::<_, String>(0)
                 }).map_err(|e| format!("Failed to execute list query: {}", e))?;
                 
                 for row in rows {
@@ -835,7 +839,7 @@ impl AttributeCache {
             .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
         
         let rows = stmt.query_map(params![pattern], |row| {
-            Ok(row.get::<_, String>(0)?)
+            row.get::<_, String>(0)
         }).map_err(|e| format!("Failed to execute select query: {}", e))?;
 
         let mut keys_to_remove = Vec::new();

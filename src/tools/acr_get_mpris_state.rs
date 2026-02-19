@@ -68,24 +68,24 @@ fn main() {
 
 fn print_help() {
     println!("AudioControl MPRIS State Inspector");
-    println!("");
+    println!();
     println!("USAGE:");
     println!("    audiocontrol_get_mpris_state <PLAYER_IDENTIFIER> [OPTIONS]");
-    println!("");
+    println!();
     println!("ARGUMENTS:");
     println!("    <PLAYER_IDENTIFIER>    Bus name or partial name of the MPRIS player");
-    println!("");
+    println!();
     println!("OPTIONS:");
     println!("    -h, --help    Print this help message");
-    println!("");
+    println!();
     println!("DESCRIPTION:");
     println!("    Displays all available MPRIS metadata and properties for a specified");
     println!("    media player. Use audiocontrol_list_mpris_players to see available players.");
-    println!("");
+    println!();
     println!("EXAMPLES:");
     println!("    audiocontrol_get_mpris_state org.mpris.MediaPlayer2.vlc");
     println!("        Show full MPRIS state for VLC player");
-    println!("");
+    println!();
     println!("    audiocontrol_get_mpris_state spotify");
     println!("        Show MPRIS state for Spotify (partial name match)");
 }
@@ -392,7 +392,7 @@ fn print_property_value(value: &dbus::arg::Variant<Box<dyn RefArg>>) {
     } else if let Some(mut iter) = value.as_iter() {
         print!("[");
         let mut first = true;
-        while let Some(item) = iter.next() {
+        for item in iter {
             if !first {
                 print!(", ");
             }

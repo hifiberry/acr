@@ -11,9 +11,11 @@ pub struct QueueTrackMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, EnumString)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum PlayerCommand {
     /// Simple playback commands
     #[serde(rename = "play")]
+    #[default]
     Play,
 
     #[serde(rename = "pause")]
@@ -66,11 +68,6 @@ pub enum PlayerCommand {
     PlayQueueIndex(usize), // Play specific track in the queue by its index
 }
 
-impl Default for PlayerCommand {
-    fn default() -> Self {
-        PlayerCommand::Play
-    }
-}
 
 impl std::fmt::Display for PlayerCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

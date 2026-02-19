@@ -1,5 +1,4 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use md5;
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
@@ -32,17 +31,15 @@ fn check_secrets_file(filename: &str, secrets: &mut HashMap<String, String>) {
     if path.exists() {
         if let Ok(file) = File::open(path) {
             let reader = BufReader::new(file);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with('#') {
-                        continue;
-                    }
-                    if let Some(pos) = line.find('=') {
-                        let key = line[..pos].trim().to_string();
-                        let value = line[pos + 1..].trim().to_string();
-                        secrets.insert(key.clone(), value.clone());
-                    }
+            for line in reader.lines().flatten() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some(pos) = line.find('=') {
+                    let key = line[..pos].trim().to_string();
+                    let value = line[pos + 1..].trim().to_string();
+                    secrets.insert(key.clone(), value.clone());
                 }
             }
         }
@@ -191,24 +188,12 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
     }
     content.push_str("    map\n}\n");
     // For compatibility, also provide the deobfuscated constants
-    content.push_str(&format!(
-        "\npub fn lastfm_api_key() -> String {{ r#do(LASTFM_API_KEY_OBF) }}\n"
-    ));
-    content.push_str(&format!(
-        "pub fn lastfm_api_secret() -> String {{ r#do(LASTFM_API_SECRET_OBF) }}\n"
-    ));
-    content.push_str(&format!(
-        "pub fn artistdb_api_key() -> String {{ r#do(ARTISTDB_API_KEY_OBF) }}\n"
-    ));
-    content.push_str(&format!(
-        "pub fn secrets_encryption_key() -> String {{ r#do(SECRETS_ENCRYPTION_KEY_OBF) }}\n"
-    ));
-    content.push_str(&format!(
-        "pub fn spotify_oauth_url() -> String {{ r#do(SPOTIFY_OAUTH_URL_OBF) }}\n"
-    ));
-    content.push_str(&format!(
-        "pub fn spotify_proxy_secret() -> String {{ r#do(SPOTIFY_PROXY_SECRET_OBF) }}\n"
-    ));
+    content.push_str("\npub fn lastfm_api_key() -> String { r#do(LASTFM_API_KEY_OBF) }\n");
+    content.push_str("pub fn lastfm_api_secret() -> String { r#do(LASTFM_API_SECRET_OBF) }\n");
+    content.push_str("pub fn artistdb_api_key() -> String { r#do(ARTISTDB_API_KEY_OBF) }\n");
+    content.push_str("pub fn secrets_encryption_key() -> String { r#do(SECRETS_ENCRYPTION_KEY_OBF) }\n");
+    content.push_str("pub fn spotify_oauth_url() -> String { r#do(SPOTIFY_OAUTH_URL_OBF) }\n");
+    content.push_str("pub fn spotify_proxy_secret() -> String { r#do(SPOTIFY_PROXY_SECRET_OBF) }\n");
     fs::write(&dest_path, content).unwrap();
     
     // Save the hash of current secrets for future comparison

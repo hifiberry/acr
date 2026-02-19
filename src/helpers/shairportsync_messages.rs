@@ -419,13 +419,12 @@ pub fn get_jpeg_dimensions(data: &[u8]) -> String {
             let marker = data[i + 1];
             
             // SOF0, SOF1, SOF2 markers contain dimension info
-            if marker >= 0xC0 && marker <= 0xC3 {
-                if i + 9 < data.len() {
+            if (0xC0..=0xC3).contains(&marker)
+                && i + 9 < data.len() {
                     let height = u16::from_be_bytes([data[i + 5], data[i + 6]]);
                     let width = u16::from_be_bytes([data[i + 7], data[i + 8]]);
                     return format!("{}x{}", width, height);
                 }
-            }
             
             // Skip this segment
             if i + 3 < data.len() {
@@ -747,6 +746,12 @@ pub struct ChunkedUdpCollector {
     chunk_collectors: HashMap<u32, ChunkCollector>, // packet_tag -> collector
 }
 
+impl Default for ChunkedUdpCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChunkedUdpCollector {
     pub fn new() -> Self {
         Self {
@@ -771,9 +776,7 @@ impl ChunkedUdpCollector {
         let chunk_data = &buffer[24..bytes_received];
         
         // Get or create collector for this packet tag
-        if !self.chunk_collectors.contains_key(&packet_tag) {
-            self.chunk_collectors.insert(packet_tag, ChunkCollector::new(chunk_total, format!("tag_{:08x}", packet_tag)));
-        }
+        self.chunk_collectors.entry(packet_tag).or_insert_with(|| ChunkCollector::new(chunk_total, format!("tag_{:08x}", packet_tag)));
         
         if let Some(collector) = self.chunk_collectors.get_mut(&packet_tag) {
             if let Some(complete_data) = collector.add_chunk(chunk_ix + 1, chunk_data.to_vec()) {

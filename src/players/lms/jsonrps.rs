@@ -150,7 +150,7 @@ impl LmsRpcClient {
             if tag == "?" {
                 // Just add "?" directly without the colon and value
                 command_values.push(Value::String("?".to_string()));
-            } else if tag == "" {
+            } else if tag.is_empty() {
                 // If the tag is empty, just add the value
                 command_values.push(Value::String(value.to_string()));
             } else {

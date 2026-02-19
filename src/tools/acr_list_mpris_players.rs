@@ -65,18 +65,18 @@ fn main() {
 
 fn print_help() {
     println!("AudioControl MPRIS Player Scanner");
-    println!("");
+    println!();
     println!("USAGE:");
     println!("    audiocontrol_list_mpris_players [OPTIONS]");
-    println!("");
+    println!();
     println!("OPTIONS:");
     println!("    -h, --help    Print this help message");
-    println!("");
+    println!();
     println!("DESCRIPTION:");
     println!("    Scans the system D-Bus for MPRIS-compatible media players and displays");
     println!("    their capabilities and bus names. Use this tool to identify players");
     println!("    that can be controlled via the MPRIS interface.");
-    println!("");
+    println!();
     println!("EXAMPLES:");
     println!("    audiocontrol_list_mpris_players");
     println!("        List all available MPRIS players");

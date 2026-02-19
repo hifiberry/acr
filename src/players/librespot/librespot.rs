@@ -192,7 +192,7 @@ impl PlayerController for LibrespotPlayerController {
             }
 
             // If we don't have a source URI set but it's in the metadata, add it
-            if enhanced_song.stream_url.is_none() || enhanced_song.stream_url.as_ref().map_or(true, |url| url.trim().is_empty()) {
+            if enhanced_song.stream_url.is_none() || enhanced_song.stream_url.as_ref().is_none_or(|url| url.trim().is_empty()) {
                 if let Some(uri) = song.metadata.get("uri").and_then(|v| v.as_str()) {
                     enhanced_song.stream_url = Some(uri.to_string());
                     log::debug!("Found URI in metadata: {}", uri);

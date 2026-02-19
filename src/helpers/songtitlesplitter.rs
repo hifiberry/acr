@@ -385,13 +385,12 @@ impl SongTitleSplitter {
             
             let percentage = (best_count as f64 / total_successful as f64) * 100.0;
             
-            if percentage >= 95.0 {
-                if self.default_order != Some(best_order.clone()) {
+            if percentage >= 95.0
+                && self.default_order != Some(best_order.clone()) {
                     info!("Setting default order to {:?} based on {:.1}% confidence ({}/{} successful detections)", 
                           best_order, percentage, best_count, total_successful);
                     self.default_order = Some(best_order);
                 }
-            }
         }
     }
     

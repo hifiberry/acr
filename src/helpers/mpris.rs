@@ -356,7 +356,7 @@ pub fn find_player_by_name_or_first(bus_type: BusType, player_name: Option<&str>
         // Look for specific player
         for player in players {
             if player.bus_name.contains(name) || 
-               player.identity.as_ref().map_or(false, |id| id.contains(name)) {
+               player.identity.as_ref().is_some_and(|id| id.contains(name)) {
                 return Ok(Some(player));
             }
         }

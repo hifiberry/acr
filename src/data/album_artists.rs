@@ -12,6 +12,12 @@ pub struct AlbumArtists {
     artist_to_albums: HashMap<Identifier, HashSet<Identifier>>,
 }
 
+impl Default for AlbumArtists {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AlbumArtists {
     /// Create a new empty AlbumArtists mapping
     pub fn new() -> Self {
@@ -26,13 +32,13 @@ impl AlbumArtists {
         // Add artist to album's vector
         self.album_to_artists
             .entry(album_id.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(artist_id.clone());
             
         // Add album to artist's set
         self.artist_to_albums
             .entry(artist_id)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(album_id);
     }
     
@@ -103,7 +109,7 @@ impl AlbumArtists {
     pub fn has_mapping(&self, album_id: &Identifier, artist_id: &Identifier) -> bool {
         self.album_to_artists
             .get(album_id)
-            .map_or(false, |artists| artists.contains(artist_id))
+            .is_some_and(|artists| artists.contains(artist_id))
     }
     
     // For backward compatibility with code that still uses u64

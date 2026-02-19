@@ -1,7 +1,5 @@
 use clap::{Arg, Command};
-use env_logger;
 use log::{error, info, warn};
-use serde_json;
 use std::fs;
 
 use audiocontrol::helpers::musicbrainz::{self, is_mbid};

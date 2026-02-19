@@ -424,7 +424,7 @@ impl Spotify {
         if let Some(client_id) = self.get_client_id() {
             if !client_id.is_empty() {
                 debug!("Sending X-Spotify-Client-Id: {}... ({} chars)", 
-                       sanitize::safe_truncate(&client_id, 6), client_id.len());
+                       sanitize::safe_truncate(client_id, 6), client_id.len());
                 headers.push(("X-Spotify-Client-Id", client_id.to_string()));
             } else {
                 debug!("Not sending X-Spotify-Client-Id: value is empty");
@@ -435,7 +435,7 @@ impl Spotify {
         if let Some(client_secret) = self.get_client_secret() {
             if !client_secret.is_empty() {
                 debug!("Sending X-Spotify-Client-Secret: {}... ({} chars)", 
-                       sanitize::safe_truncate(&client_secret, 6), client_secret.len());
+                       sanitize::safe_truncate(client_secret, 6), client_secret.len());
                 headers.push(("X-Spotify-Client-Secret", client_secret.to_string()));
             } else {
                 debug!("Not sending X-Spotify-Client-Secret: value is empty");
@@ -560,7 +560,7 @@ impl Spotify {
         info!("Fetching Spotify playback state");
         
         // Make the API request
-        let response = match http_client.get_json_with_headers(&endpoint_url, &headers) {
+        let response = match http_client.get_json_with_headers(endpoint_url, &headers) {
             Ok(value) => {
                 // Check if we got a 204 No Content (no active playback)
                 if value.is_null() {
@@ -868,6 +868,12 @@ impl Spotify {
 /// Spotify Favourite Provider for integration with the favourites system
 pub struct SpotifyFavouriteProvider;
 
+impl Default for SpotifyFavouriteProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SpotifyFavouriteProvider {
     pub fn new() -> Self {
         Self
@@ -952,10 +958,7 @@ impl crate::helpers::favourites::FavouriteProvider for SpotifyFavouriteProvider 
             Ok(spotify) => {
                 // Try to ensure we have valid tokens, refreshing if necessary
                 // This will automatically refresh expired tokens
-                match spotify.ensure_valid_token() {
-                    Ok(_) => true,
-                    Err(_) => false,
-                }
+                spotify.ensure_valid_token().is_ok()
             },
             Err(_) => false,
         }

@@ -455,15 +455,15 @@ impl LibraryInterface for LMSLibrary {
                     // Get the first track from the album (if any) with proper lifetime handling
                     let track = album.and_then(|a| {
                         let tracks_guard = a.tracks.lock();
-                        tracks_guard.get(0).cloned()
+                        tracks_guard.first().cloned()
                     });
 
                     // Extract the track ID if available, otherwise fall back to URI
                     let track_id = track.and_then(|t| {
                         // First try the id field
-                        t.id.and_then(|id| match id {
-                            crate::data::Identifier::String(s) => Some(s),
-                            crate::data::Identifier::Numeric(n) => Some(n.to_string()),
+                        t.id.map(|id| match id {
+                            crate::data::Identifier::String(s) => s,
+                            crate::data::Identifier::Numeric(n) => n.to_string(),
                         })
                         // Fall back to URI if no ID is available
                         .or_else(|| t.uri.clone())

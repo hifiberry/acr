@@ -10,10 +10,7 @@ use mac_address::MacAddress;
 pub fn normalize_mac_address(mac_str: &str) -> Result<MacAddress, String> {
     // Remove any separators and spaces
     let clean_mac = mac_str
-        .replace(':', "")
-        .replace('-', "")
-        .replace('.', "")
-        .replace(' ', "");
+        .replace([':', '-', '.', ' '], "");
     
     if clean_mac.len() != 12 {
         return Err(format!("Invalid MAC address length: {}", mac_str));
@@ -48,17 +45,11 @@ pub fn normalize_mac_address(mac_str: &str) -> Result<MacAddress, String> {
 pub fn mac_equal_ignore_case(mac1_str: &str, mac2_str: &str) -> bool {
     // Clean both MAC addresses to remove separators and make them lowercase
     let clean_mac1 = mac1_str
-        .replace(':', "")
-        .replace('-', "")
-        .replace('.', "")
-        .replace(' ', "")
+        .replace([':', '-', '.', ' '], "")
         .to_lowercase();
         
     let clean_mac2 = mac2_str
-        .replace(':', "")
-        .replace('-', "")
-        .replace('.', "")
-        .replace(' ', "")
+        .replace([':', '-', '.', ' '], "")
         .to_lowercase();
     
     // Debug log the comparison

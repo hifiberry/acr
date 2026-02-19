@@ -200,9 +200,9 @@ pub fn open_stream(source: &str, mode: AccessMode) -> io::Result<StreamWrapper> 
             let file = options.open(path)?;
             
             match mode {
-                AccessMode::Read => return Ok(StreamWrapper::ReadOnly(Box::new(file))),
-                AccessMode::Write => return Ok(StreamWrapper::WriteOnly(Box::new(file))),
-                AccessMode::ReadWrite => return Ok(StreamWrapper::ReadWrite(Box::new(file))),
+                AccessMode::Read => Ok(StreamWrapper::ReadOnly(Box::new(file))),
+                AccessMode::Write => Ok(StreamWrapper::WriteOnly(Box::new(file))),
+                AccessMode::ReadWrite => Ok(StreamWrapper::ReadWrite(Box::new(file))),
             }
         }
     }

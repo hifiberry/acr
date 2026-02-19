@@ -13,6 +13,12 @@ pub struct NullPlayerController {
     base: BasePlayerController,
 }
 
+impl Default for NullPlayerController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NullPlayerController {
     /// Create a new null player controller
     pub fn new() -> Self {

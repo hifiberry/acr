@@ -58,10 +58,7 @@ impl LMSPlayer {
         };
         
         // Normalize all local MAC addresses for comparison
-        let normalized_local_macs: Vec<mac_address::MacAddress> = mac_addresses
-            .iter()
-            .map(|mac| mac.clone())
-            .collect();
+        let normalized_local_macs: Vec<mac_address::MacAddress> = mac_addresses.to_vec();
         
         debug!("Local MAC addresses: {:?}", normalized_local_macs);
         
@@ -329,9 +326,7 @@ impl LMSPlayer {
         let song = self.get_current_song();
         
         // If there's no song playing, return None
-        if song.is_none() {
-            return None;
-        }
+        song.as_ref()?;
         
         // Get the position, defaulting to 0.0 if there was an error
         let position = self.get_current_position().unwrap_or(0.0);
@@ -663,7 +658,7 @@ impl LMSPlayer {
                                         if let Some(items) = playlist_loop.as_array() {
                                             if !items.is_empty() {
                                                 // Get the first playlist item
-                                                if let Some(current_item) = items.get(0).and_then(|i| i.as_object()) {
+                                                if let Some(current_item) = items.first().and_then(|i| i.as_object()) {
                                                     // Extract the ID from the item
                                                     if let Some(id_value) = current_item.get("id") {
                                                         // Handle the ID being either a number or string

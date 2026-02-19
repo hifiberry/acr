@@ -74,11 +74,10 @@ impl MPDLibraryLoader {
         use crate::data::Track;
         
         // Extract track title (default to filename if not present)
-        let track_name = song.title.as_ref()
-            .map(|title| title.as_str())
+        let track_name = song.title.as_deref()
             .unwrap_or_else(|| {
                 // Fall back to filename if title is missing
-                song.file.split('/').last().unwrap_or("Unknown Track")
+                song.file.split('/').next_back().unwrap_or("Unknown Track")
             });
             
         // Extract track number (default to 0 if not present)
@@ -408,8 +407,7 @@ impl MPDLibraryLoader {
                     .map(|(_, value)| value.as_str())
                     .unwrap_or("Unknown Artist").to_string();
                 
-                let song_name = song.title.as_ref()
-                    .map(|s| s.as_str())
+                let song_name = song.title.as_deref()
                     .unwrap_or("Unknown Song").to_string();
                 
                 // Update background job with current song processing
@@ -476,7 +474,7 @@ impl MPDLibraryLoader {
         );
         
         // Pass None for Window parameter to satisfy the Into<Window> trait
-        let songs = client.find(&query, None)
+        let songs = client.find(query, None)
             .map_err(|e| LibraryError::ConnectionError(format!("Failed to find songs for artist '{}': {}", artist_name, e)))?;
             
         debug!("Found {} songs for artist '{}'", songs.len(), artist_name);

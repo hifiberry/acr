@@ -185,7 +185,7 @@ pub fn set_volume(request: Json<SetVolumeRequest>) -> Json<VolumeOperationRespon
     
     // Determine which value to set based on what's provided
     let result = if let Some(percentage) = request.percentage {
-        if percentage < 0.0 || percentage > 100.0 {
+        if !(0.0..=100.0).contains(&percentage) {
             return Json(VolumeOperationResponse {
                 success: false,
                 message: format!("Volume percentage {} is out of range (0-100)", percentage),

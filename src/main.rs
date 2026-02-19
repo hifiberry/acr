@@ -15,7 +15,6 @@ use audiocontrol::AudioController;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
 use audiocontrol::players::lms::lmsaudio::LMSAudioController;
-use ctrlc;
 use log::{debug, error, info, warn};
 use std::env;
 use std::fs;

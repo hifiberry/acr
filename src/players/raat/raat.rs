@@ -69,59 +69,6 @@ type PlayerStateMap = HashMap<usize, PlayerInstanceData>;
 static PLAYER_STATE: Lazy<Mutex<PlayerStateMap>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 impl RAATPlayerController {
-    /// Create a new RAAT player controller with default settings
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        debug!("Creating new RAATPlayerController with default settings");
-        let source = "/var/run/raat/metadata_pipe"; // Default pipe path
-        let control = "/var/run/raat/control_pipe"; // Default control pipe path
-        
-        // Create a base controller with player name and ID
-        let base = BasePlayerController::with_player_info("raat", "raat");
-        
-        let player = Self {
-            base,
-            metadata_source: source.to_string(),
-            control_pipe: control.to_string(),
-            current_song: Arc::new(RwLock::new(None)),
-            current_state: Arc::new(RwLock::new(PlayerState::new())),
-            stream_details: Arc::new(RwLock::new(None)),
-            last_update_time: Arc::new(RwLock::new(Instant::now())),
-            reopen_metadata_pipe: true,
-        };
-        
-        // Set default capabilities
-        player.set_default_capabilities();
-        
-        player
-    }
-    
-    /// Create a new RAAT player controller with custom metadata source and reopen setting
-    #[allow(dead_code)]
-    pub fn with_source_and_reopen(source: &str, reopen: bool) -> Self {
-        debug!("Creating new RAATPlayerController with source: {} and reopen: {}", source, reopen);
-        let control = "/var/run/raat/control_pipe"; // Default control pipe path
-        
-        // Create a base controller with player name and ID
-        let base = BasePlayerController::with_player_info("raat", "raat");
-        
-        let player = Self {
-            base,
-            metadata_source: source.to_string(),
-            control_pipe: control.to_string(),
-            current_song: Arc::new(RwLock::new(None)),
-            current_state: Arc::new(RwLock::new(PlayerState::new())),
-            stream_details: Arc::new(RwLock::new(None)),
-            last_update_time: Arc::new(RwLock::new(Instant::now())),
-            reopen_metadata_pipe: reopen,
-        };
-        
-        // Set default capabilities
-        player.set_default_capabilities();
-        
-        player
-    }
-
     /// Create a new RAAT player controller with custom metadata source, control pipe, reopen setting, and systemd unit check
     pub fn with_pipes_and_reopen_and_systemd(metadata_source: &str, control_pipe: &str, reopen: bool, systemd_unit: Option<&str>) -> Self {
         debug!("Creating new RAATPlayerController with metadata_source: {}, control_pipe: {}, reopen: {}, systemd_unit: {:?}", 
@@ -176,32 +123,6 @@ impl RAATPlayerController {
             PlayerCapability::Stop,
             PlayerCapability::ReceivesUpdates, // Added ReceivesUpdates capability
         ], false); // Don't notify on initialization
-    }
-    
-    /// Update the metadata source
-    #[allow(dead_code)]
-    pub fn set_metadata_source(&mut self, source: &str) {
-        debug!("Updating RAAT metadata source to: {}", source);
-        self.metadata_source = source.to_string();
-    }
-    
-    /// Get the current metadata source
-    #[allow(dead_code)]
-    pub fn get_metadata_source(&self) -> &str {
-        &self.metadata_source
-    }
-    
-    /// Set whether to reopen the metadata pipe when it's closed
-    #[allow(dead_code)]
-    pub fn set_reopen_metadata_pipe(&mut self, reopen: bool) {
-        debug!("Setting RAAT metadata pipe reopen to: {}", reopen);
-        self.reopen_metadata_pipe = reopen;
-    }
-    
-    /// Get whether the metadata pipe will reopen when closed
-    #[allow(dead_code)]
-    pub fn get_reopen_metadata_pipe(&self) -> bool {
-        self.reopen_metadata_pipe
     }
     
     /// Starts a background thread that listens for RAAT metadata
@@ -380,35 +301,6 @@ impl RAATPlayerController {
         
         // Mark the player as alive since we got data
         self.base.alive();
-    }
-    
-    /// Update the current song and notify listeners (used for testing)
-    #[allow(dead_code)]
-    pub fn update_current_song(&self, song: Option<Song>) {
-        // Store the new song
-        {
-            let mut current_song = self.current_song.write();
-            let song_changed = match (&*current_song, &song) {
-                (Some(old), Some(new)) => old.title != new.title || old.artist != new.artist || old.album != new.album,
-                (None, Some(_)) => true,
-                (Some(_), None) => true,
-                (None, None) => false,
-            };
-
-            if song_changed {
-                debug!("Updating current song");
-                // Update the stored song
-                *current_song = song.clone();
-
-                // Notify listeners of the song change
-                drop(current_song); // Release the lock before notifying
-                if let Some(s) = &song {
-                    self.base.notify_song_changed(Some(s));
-                } else {
-                    self.base.notify_song_changed(None);
-                }
-            }
-        }
     }
 
     /// Write a command to the control pipe

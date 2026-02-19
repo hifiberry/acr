@@ -625,18 +625,6 @@ impl LastfmClient {
         }
     }
 
-    // Create an instance from credentials
-    #[allow(dead_code)] // Function not currently used
-    fn with_credentials(credentials: LastfmCredentials) -> Self {
-        // Register with rate limiter
-        ratelimit::register_service("lastfm", 1000);
-
-        LastfmClient {
-            credentials,
-            client: ureq::agent(),
-        }
-    }
-
     // Get credentials (useful for persisting them)
     pub fn get_credentials(&self) -> LastfmCredentials {
         self.credentials.clone()

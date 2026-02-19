@@ -306,6 +306,12 @@ pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
 /// A dedicated CoverArt provider for FanArt.tv that includes MusicBrainz integration
 pub struct FanarttvCoverartProvider;
 
+impl Default for FanarttvCoverartProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FanarttvCoverartProvider {
     pub fn new() -> Self {
         FanarttvCoverartProvider

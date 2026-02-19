@@ -562,7 +562,7 @@ impl LastfmClient {
                 }
             }
             Err(e) => { // Other errors like transport errors
-                error!("Last.fm API request failed (ureq error): {}", e.to_string());
+                error!("Last.fm API request failed (ureq error): {}", e);
                 Err(LastfmError::NetworkError(e.to_string()))
             }
         }
@@ -1007,6 +1007,12 @@ pub struct LovedTrack {
 /// Implements the ArtistUpdater trait to fetch artist information from Last.fm
 pub struct LastfmUpdater;
 
+impl Default for LastfmUpdater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LastfmUpdater {
     pub fn new() -> Self {
         LastfmUpdater
@@ -1169,6 +1175,12 @@ pub fn is_track_loved(artist: &str, track: &str) -> Result<bool, LastfmError> {
 
 /// Last.fm implementation of FavouriteProvider
 pub struct LastfmFavouriteProvider;
+
+impl Default for LastfmFavouriteProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl LastfmFavouriteProvider {
     pub fn new() -> Self {

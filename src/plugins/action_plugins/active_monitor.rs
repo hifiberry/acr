@@ -14,6 +14,12 @@ pub struct ActiveMonitor {
     base: BaseActionPlugin,
 }
 
+impl Default for ActiveMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ActiveMonitor {
     /// Create a new ActiveMonitor plugin
     pub fn new() -> Self {

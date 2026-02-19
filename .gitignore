@@ -69,3 +69,4 @@ debian/hifiberry-audiocontrol.substvars
 audiocontrol.json
 audiocontrol.dev.json
 audiocontrol.log
+CODE_QUALITY_TODO.md

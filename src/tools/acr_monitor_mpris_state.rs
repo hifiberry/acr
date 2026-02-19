@@ -105,43 +105,43 @@ fn main() {
 
 fn print_help() {
     println!("AudioControl MPRIS State Monitor");
-    println!("");
+    println!();
     println!("USAGE:");
     println!("    audiocontrol_monitor_mpris_state <PLAYER_IDENTIFIER>");
-    println!("");
+    println!();
     println!("ARGUMENTS:");
     println!("    <PLAYER_IDENTIFIER>    Bus name or partial name of the MPRIS player");
-    println!("");
+    println!();
     println!("OPTIONS:");
     println!("    -h, --help    Print this help message");
-    println!("");
+    println!();
     println!("DESCRIPTION:");
     println!("    Monitors MPRIS property changes for a specified media player in real-time.");
     println!("    Similar to running dbus-monitor but filtered for a specific MPRIS player.");
     println!("    Press Ctrl+C to stop monitoring.");
-    println!("");
+    println!();
     println!("    This tool listens for D-Bus PropertyChanged signals from the specified");
     println!("    player and displays the changes as they occur. It's equivalent to:");
-    println!("");
+    println!();
     println!("    dbus-monitor --system \"type='signal',\\");
     println!("      interface='org.freedesktop.DBus.Properties',\\");
     println!("      member='PropertiesChanged',\\");
     println!("      sender='org.mpris.MediaPlayer2.YourPlayer',\\");
     println!("      path='/org/mpris/MediaPlayer2'\"");
-    println!("");
+    println!();
     println!("    But with the convenience of using the same player selection as");
     println!("    audiocontrol_get_mpris_state and formatted output.");
-    println!("");
+    println!();
     println!("    Note: This tool uses polling (every 500ms) to detect changes rather");
     println!("    than true signal monitoring for better compatibility.");
-    println!("");
+    println!();
     println!("EXAMPLES:");
     println!("    audiocontrol_monitor_mpris_state org.mpris.MediaPlayer2.vlc");
     println!("        Monitor VLC player property changes");
-    println!("");
+    println!();
     println!("    audiocontrol_monitor_mpris_state spotify");
     println!("        Monitor Spotify player changes (partial name match)");
-    println!("");
+    println!();
     println!("    audiocontrol_monitor_mpris_state shairport");
     println!("        Monitor Shairport Sync player changes");
 }
@@ -267,11 +267,8 @@ fn detect_changes(old_state: &PlayerState, new_state: &PlayerState) -> Vec<Strin
     }
     
     if old_state.loop_status != new_state.loop_status {
-        match (&old_state.loop_status, &new_state.loop_status) {
-            (Some(old_loop), Some(new_loop)) => {
-                changes.push(format!("LoopStatus: {} → {}", old_loop, new_loop));
-            },
-            _ => {}
+        if let (Some(old_loop), Some(new_loop)) = (&old_state.loop_status, &new_state.loop_status) {
+            changes.push(format!("LoopStatus: {} → {}", old_loop, new_loop));
         }
     }
     

@@ -21,6 +21,12 @@ pub struct SettingsDb {
     memory_cache: HashMap<String, Arc<Vec<u8>>>,
 }
 
+impl Default for SettingsDb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SettingsDb {
     /// Create a new settings database with default settings
     pub fn new() -> Self {
@@ -197,7 +203,7 @@ impl SettingsDb {
 
         // Try memory cache first
         if let Some(data) = self.memory_cache.get(key) {
-            return match serde_json::from_slice(&data) {
+            return match serde_json::from_slice(data) {
                 Ok(value) => Ok(Some(value)),
                 Err(e) => Err(format!("Failed to deserialize from memory cache: {}", e)),
             };
@@ -335,7 +341,7 @@ impl SettingsDb {
                 };
                 
                 let key_iter = match stmt.query_map([], |row| {
-                    Ok(row.get::<_, String>(0)?)
+                    row.get::<_, String>(0)
                 }) {
                     Ok(iter) => iter,
                     Err(e) => return Err(format!("Failed to query keys: {}", e)),
@@ -549,6 +555,12 @@ fn sanitize_key_component(input: &str) -> String {
 
 /// Settings DB implementation of FavouriteProvider
 pub struct SettingsDbFavouriteProvider;
+
+impl Default for SettingsDbFavouriteProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl SettingsDbFavouriteProvider {
     pub fn new() -> Self {

@@ -266,7 +266,7 @@ impl fmt::Display for PlayerCapabilitySet {
 }
 
 // Implement IntoIterator for &PlayerCapabilitySet to allow iteration over capabilities
-impl<'a> IntoIterator for &'a PlayerCapabilitySet {
+impl IntoIterator for &PlayerCapabilitySet {
     type Item = PlayerCapability;
     type IntoIter = std::vec::IntoIter<PlayerCapability>;
 

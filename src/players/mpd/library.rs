@@ -1185,25 +1185,25 @@ impl LibraryInterface for MPDLibrary {
                         // Check if the response contains the update ID
                         if response.starts_with("updating_db:") {
                             debug!("MPD update command accepted: {}", response.trim());
-                            return true;
+                            true
                         } else if response == "OK\n" {
                             // Some MPD servers might just respond with OK
                             debug!("MPD update command accepted with OK response");
-                            return true;
+                            true
                         } else {
                             error!("Unexpected response from MPD update command: {}", response.trim());
-                            return false;
+                            false
                         }
                     },
                     Err(e) => {
                         error!("Failed to send update command to MPD: {}", e);
-                        return false;
+                        false
                     }
                 }
             },
             Err(e) => {
                 error!("Failed to connect to MPD server: {}", e);
-                return false;
+                false
             }
         }
     }

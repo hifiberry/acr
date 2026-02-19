@@ -47,17 +47,17 @@ pub fn pkill(process_name: &str, force: bool) -> Result<bool, io::Error> {
 
         if output.status.success() {
             info!("Successfully sent {} signal to process: {}", signal, process_name);
-            return Ok(true);
+            Ok(true)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if output.status.code() == Some(1) {
                 // Exit code 1 means no processes found
                 info!("No processes found matching: {}", process_name);
-                return Ok(false);
+                Ok(false)
             } else {
                 warn!("pkill command failed with exit code: {:?}, stderr: {}", 
                       output.status.code(), stderr);
-                return Ok(false);
+                Ok(false)
             }
         }
     }
@@ -122,14 +122,14 @@ pub fn systemd(unit_name: &str, action: SystemdAction) -> Result<bool, io::Error
 
         if output.status.success() {
             info!("Successfully executed systemctl {} for unit: {}", action, unit_name);
-            return Ok(true);
+            Ok(true)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
             
             warn!("systemctl {} failed for unit: {}, exit code: {:?}, stderr: {}, stdout: {}", 
                   action, unit_name, output.status.code(), stderr, stdout);
-            return Ok(false);
+            Ok(false)
         }
     }
 

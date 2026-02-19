@@ -293,7 +293,7 @@ impl LoggingConfig {
         
         // Group all levels for each path
         for (path, level) in filters {
-            path_levels.entry(path).or_insert_with(Vec::new).push(level);
+            path_levels.entry(path).or_default().push(level);
         }
         
         let mut resolved = HashMap::new();

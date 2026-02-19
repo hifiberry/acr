@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::Instant;
-use chrono;
 
 use audiocontrol::helpers::shairportsync_messages::{
     ShairportMessage, ChunkCollector, parse_shairport_message, 

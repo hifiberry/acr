@@ -111,7 +111,7 @@ impl SystemdHelper {
         if self.use_user_mode {
             cmd.arg("--user");
         }
-        cmd.args(&["list-unit-files", unit_name, "--no-legend", "--no-pager"]);
+        cmd.args(["list-unit-files", unit_name, "--no-legend", "--no-pager"]);
 
         debug!("Checking if unit exists: {}", unit_name);
         
@@ -145,7 +145,7 @@ impl SystemdHelper {
         if self.use_user_mode {
             cmd.arg("--user");
         }
-        cmd.args(&["is-active", unit_name]);
+        cmd.args(["is-active", unit_name]);
 
         debug!("Getting status for unit: {}", unit_name);
 
@@ -173,7 +173,7 @@ impl SystemdHelper {
         if self.use_user_mode {
             cmd.arg("--user");
         }
-        cmd.args(&["is-enabled", unit_name]);
+        cmd.args(["is-enabled", unit_name]);
 
         debug!("Checking if unit is enabled: {}", unit_name);
 
@@ -232,7 +232,7 @@ impl SystemdHelper {
         if self.use_user_mode {
             cmd.arg("--user");
         }
-        cmd.args(&["start", unit_name]);
+        cmd.args(["start", unit_name]);
 
         debug!("Starting unit: {}", unit_name);
 
@@ -264,7 +264,7 @@ impl SystemdHelper {
         if self.use_user_mode {
             cmd.arg("--user");
         }
-        cmd.args(&["stop", unit_name]);
+        cmd.args(["stop", unit_name]);
 
         debug!("Stopping unit: {}", unit_name);
 
@@ -296,7 +296,7 @@ impl SystemdHelper {
         if self.use_user_mode {
             cmd.arg("--user");
         }
-        cmd.args(&["restart", unit_name]);
+        cmd.args(["restart", unit_name]);
 
         debug!("Restarting unit: {}", unit_name);
 
@@ -328,7 +328,7 @@ impl SystemdHelper {
         if self.use_user_mode {
             cmd.arg("--user");
         }
-        cmd.args(&["enable", unit_name]);
+        cmd.args(["enable", unit_name]);
 
         debug!("Enabling unit: {}", unit_name);
 
@@ -360,7 +360,7 @@ impl SystemdHelper {
         if self.use_user_mode {
             cmd.arg("--user");
         }
-        cmd.args(&["disable", unit_name]);
+        cmd.args(["disable", unit_name]);
 
         debug!("Disabling unit: {}", unit_name);
 

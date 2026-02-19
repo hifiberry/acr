@@ -10,6 +10,7 @@ use super::loop_mode::LoopMode;
 /// Player state enumeration defining possible states a player can be in
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum PlaybackState {
     /// Player is actively playing media
     #[serde(rename = "playing")]
@@ -28,14 +29,10 @@ pub enum PlaybackState {
     Disconnected,
     /// Player state cannot be determined
     #[serde(rename = "unknown")]
+    #[default]
     Unknown,
 }
 
-impl Default for PlaybackState {
-    fn default() -> Self {
-        PlaybackState::Unknown
-    }
-}
 
 impl std::fmt::Display for PlaybackState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -78,6 +75,12 @@ pub struct PlayerState {
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<SystemTime>, // Timestamp of the last time the player was seen
+}
+
+impl Default for PlayerState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PlayerState {

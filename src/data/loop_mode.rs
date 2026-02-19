@@ -4,9 +4,11 @@ use strum_macros::EnumString;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum LoopMode {
     /// No loop
     #[serde(rename = "no")]
+    #[default]
     None,
     /// Loop current track/song
     #[serde(rename = "song")]
@@ -16,11 +18,6 @@ pub enum LoopMode {
     Playlist,
 }
 
-impl Default for LoopMode {
-    fn default() -> Self {
-        LoopMode::None
-    }
-}
 
 impl std::fmt::Display for LoopMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

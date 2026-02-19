@@ -111,7 +111,7 @@ impl BackgroundJobs {
     /// Get the global singleton instance
     pub fn instance() -> &'static BackgroundJobs {
         static INSTANCE: OnceLock<BackgroundJobs> = OnceLock::new();
-        INSTANCE.get_or_init(|| BackgroundJobs::new())
+        INSTANCE.get_or_init(BackgroundJobs::new)
     }
     
     /// Register a new background job

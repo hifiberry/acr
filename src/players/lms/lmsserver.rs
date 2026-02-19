@@ -37,6 +37,12 @@ pub struct LmsServerRegistry {
     connected_server: Option<IpAddr>,
 }
 
+impl Default for LmsServerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LmsServerRegistry {
     /// Create a new server registry
     pub fn new() -> Self {
@@ -322,7 +328,7 @@ fn update_server_registry(new_servers: &HashMap<IpAddr, LmsServer>) {
         }
         
         // Add or update new servers
-        for (_, server) in new_servers {
+        for server in new_servers.values() {
             registry.add_server(server.clone());
         }
     }
@@ -572,8 +578,7 @@ pub fn get_local_mac_addresses() -> io::Result<Vec<MacAddress>> {
             Ok(addresses)
         },
         Err(e) => {
-            Err(io::Error::new(io::ErrorKind::Other, 
-                               format!("Failed to get network interfaces: {}", e)))
+            Err(io::Error::other(format!("Failed to get network interfaces: {}", e)))
         }
     }
 }

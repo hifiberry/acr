@@ -126,7 +126,7 @@ impl MprisPlayerController {
     fn extract_player_name(bus_name: &str) -> String {
         // Extract the last part of the bus name as the player name
         // e.g., "org.mpris.MediaPlayer2.vlc" -> "vlc"
-        if let Some(last_part) = bus_name.split('.').last() {
+        if let Some(last_part) = bus_name.split('.').next_back() {
             last_part.to_string()
         } else {
             bus_name.to_string()

@@ -15,6 +15,12 @@ pub struct PluginFactory {
     registry: HashMap<String, Box<dyn Fn(Option<&Value>) -> Option<Box<dyn Plugin>>>>,
 }
 
+impl Default for PluginFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PluginFactory {
     /// Create a new plugin factory
     pub fn new() -> Self {

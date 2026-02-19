@@ -39,6 +39,12 @@ pub struct ImageCacheStats {
     pub last_updated: u64,
 }
 
+impl Default for ImageCacheStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ImageCacheStats {
     pub fn new() -> Self {
         Self {
@@ -62,6 +68,12 @@ pub struct ImageExpiryMetadata {
     pub expiry_map: HashMap<String, u64>,
 }
 
+impl Default for ImageExpiryMetadata {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ImageExpiryMetadata {
     pub fn new() -> Self {
         Self {
@@ -78,6 +90,12 @@ pub struct ImageCache {
     enabled: bool,
     /// Path to the expiry metadata file
     expiry_metadata_path: PathBuf,
+}
+
+impl Default for ImageCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ImageCache {

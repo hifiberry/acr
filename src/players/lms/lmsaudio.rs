@@ -147,7 +147,7 @@ impl LMSAudioController {
                 Ok(addresses) => {
                     // Format local MAC addresses as strings
                     let local_macs: Vec<String> = addresses.iter()
-                        .map(|mac| crate::helpers::macaddress::mac_to_lowercase_string(mac))
+                        .map(crate::helpers::macaddress::mac_to_lowercase_string)
                         .collect();
                     
                     // Add local MACs that aren't already in the list (case insensitive comparison)

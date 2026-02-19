@@ -202,7 +202,7 @@ fn normalize_artist_name_for_comparison(artist_name: &str) -> String {
     }
     
     // Step 4: Remove common words (as complete words only, not substrings)
-    let common_words = vec!["the", "and"];
+    let common_words = ["the", "and"];
     
     // Split into words, filter out common words, and rejoin
     let filtered_words: Vec<&str> = result
@@ -611,7 +611,7 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
     match result {
         MusicBrainzSearchResult::Found(_, _) => {
             // If we found results, return them
-            return result;
+            result
         },
         MusicBrainzSearchResult::NotFound => {
             // If no results and allow_multiple is true, try splitting
@@ -698,11 +698,11 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
             }
             
             // Return the original result
-            return result;
+            result
         },
         _ => {
             // For errors, just return the original result
-            return result;
+            result
         }
     }
 }

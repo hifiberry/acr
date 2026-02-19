@@ -137,17 +137,13 @@ impl SongSplitManager {
     /// * `Option<(u32, u32, u32, u32, bool)>` - Tuple of (artist_song_count, song_artist_count, unknown_count, undecided_count, has_default_order)
     pub fn get_splitter_stats(&self, splitter_id: &str) -> Option<(u32, u32, u32, u32, bool)> {
         let splitters = self.splitters.lock();
-        if let Some(splitter) = splitters.get(splitter_id) {
-            Some((
+        splitters.get(splitter_id).map(|splitter| (
                 splitter.get_artist_song_count(),
                 splitter.get_song_artist_count(),
                 splitter.get_unknown_count(),
                 splitter.get_undecided_count(),
                 splitter.has_default_order(),
             ))
-        } else {
-            None
-        }
     }
     
     /// Get a list of all splitter IDs

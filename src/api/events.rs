@@ -69,6 +69,12 @@ struct ClientSubscription {
     last_event_time: Instant,
 }
 
+impl Default for WebSocketManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebSocketManager {    /// Create a new WebSocket manager
     pub fn new() -> Self {
         let manager = WebSocketManager {
@@ -501,7 +507,7 @@ pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketMan
             
             if let Err(e) = stream.send(Message::Text(welcome_msg)).await {
                 error!("Failed to send welcome message: {}", e);
-                return Err(e.into());
+                return Err(e);
             }
             
             // Create a polling interval
@@ -630,7 +636,7 @@ pub fn player_event_messages(ws: WebSocket, player_name: &str, ws_manager: &rock
             
             if let Err(e) = stream.send(Message::Text(welcome_msg)).await {
                 error!("Failed to send welcome message: {}", e);
-                return Err(e.into());
+                return Err(e);
             }
             
             // Create a polling interval

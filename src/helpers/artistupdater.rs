@@ -115,7 +115,7 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     }
     
     // If the artist has MusicBrainz IDs, update from the coverart system
-    if artist.metadata.as_ref().map_or(false, |meta| !meta.mbid.is_empty()) {
+    if artist.metadata.as_ref().is_some_and(|meta| !meta.mbid.is_empty()) {
         debug!("Artist {} has MusicBrainz ID(s), updating with cover art system", artist.name);
         artist = update_artist_with_coverart(artist);
     } else {
@@ -128,14 +128,14 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     // Note: The coverart system handles images, but we need individual services for biography
     
     // Check if we need biography data or genre data
-    let needs_biography = artist.metadata.as_ref().map_or(true, |meta| meta.biography.is_none());
-    let needs_genres = artist.metadata.as_ref().map_or(true, |meta| meta.genres.is_empty());
+    let needs_biography = artist.metadata.as_ref().is_none_or(|meta| meta.biography.is_none());
+    let needs_genres = artist.metadata.as_ref().is_none_or(|meta| meta.genres.is_empty());
     
     if needs_biography || needs_genres {
         debug!("Artist {} needs biography or genre data, calling individual service updaters", artist.name);
         
         // Track what we had before updating
-        let had_biography_before = artist.metadata.as_ref().map_or(false, |meta| meta.biography.is_some());
+        let had_biography_before = artist.metadata.as_ref().is_some_and(|meta| meta.biography.is_some());
         let genres_count_before = artist.metadata.as_ref().map_or(0, |meta| meta.genres.len());
         
         // Try LastFM first for biography and genres (usually has good data)
@@ -143,7 +143,7 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         artist = lastfm_updater.update_artist(artist);
         
         // Check what we got from LastFM
-        let has_biography_after_lastfm = artist.metadata.as_ref().map_or(false, |meta| meta.biography.is_some());
+        let has_biography_after_lastfm = artist.metadata.as_ref().is_some_and(|meta| meta.biography.is_some());
         let genres_count_after_lastfm = artist.metadata.as_ref().map_or(0, |meta| meta.genres.len());
         
         if !had_biography_before && has_biography_after_lastfm {
@@ -155,23 +155,23 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
         }
         
         // Check what we still need after LastFM
-        let still_needs_biography = artist.metadata.as_ref().map_or(true, |meta| meta.biography.is_none());
-        let still_needs_genres = artist.metadata.as_ref().map_or(true, |meta| meta.genres.is_empty());
-        let has_mbid = artist.metadata.as_ref().map_or(false, |meta| !meta.mbid.is_empty());
+        let still_needs_biography = artist.metadata.as_ref().is_none_or(|meta| meta.biography.is_none());
+        let still_needs_genres = artist.metadata.as_ref().is_none_or(|meta| meta.genres.is_empty());
+        let has_mbid = artist.metadata.as_ref().is_some_and(|meta| !meta.mbid.is_empty());
         
         // If we still need data and have MusicBrainz ID, try TheAudioDB
         if (still_needs_biography || still_needs_genres) && has_mbid {
             debug!("Artist {} still needs biography or genres and has MBID, trying TheAudioDB", artist.name);
             
             // Track what we have before TheAudioDB
-            let had_biography_before_tadb = artist.metadata.as_ref().map_or(false, |meta| meta.biography.is_some());
+            let had_biography_before_tadb = artist.metadata.as_ref().is_some_and(|meta| meta.biography.is_some());
             let genres_count_before_tadb = artist.metadata.as_ref().map_or(0, |meta| meta.genres.len());
             
             let theaudiodb_updater = crate::helpers::theaudiodb::TheAudioDbUpdater;
             artist = theaudiodb_updater.update_artist(artist);
             
             // Check what we got from TheAudioDB
-            let has_biography_after_tadb = artist.metadata.as_ref().map_or(false, |meta| meta.biography.is_some());
+            let has_biography_after_tadb = artist.metadata.as_ref().is_some_and(|meta| meta.biography.is_some());
             let genres_count_after_tadb = artist.metadata.as_ref().map_or(0, |meta| meta.genres.len());
             
             if !had_biography_before_tadb && has_biography_after_tadb {
@@ -192,7 +192,7 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     }
     
     // Handle artists without MusicBrainz IDs but with existing thumbnails
-    if artist.metadata.as_ref().map_or(false, |meta| meta.mbid.is_empty()) {
+    if artist.metadata.as_ref().is_some_and(|meta| meta.mbid.is_empty()) {
         // Check if the artist has thumbnail images
         let has_thumbnails = match &artist.metadata {
             Some(meta) => !meta.thumb_url.is_empty(),

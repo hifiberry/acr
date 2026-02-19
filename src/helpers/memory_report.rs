@@ -24,6 +24,12 @@ pub struct MemoryUsage {
     pub overhead_memory: usize,
 }
 
+impl Default for MemoryUsage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemoryUsage {
     /// Create a new empty memory usage tracker
     pub fn new() -> Self {

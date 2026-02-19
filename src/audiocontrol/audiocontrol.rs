@@ -168,6 +168,12 @@ impl PlayerController for AudioController {
     }
 }
 
+impl Default for AudioController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AudioController {
     /// Create a new AudioController with no controllers
     pub fn new() -> Self {
@@ -229,11 +235,7 @@ impl AudioController {
         // Check if we have a self reference for listener registration
         let _self_weak = {
             let self_ref = self.self_ref.read();
-            if let Some(weak_ref) = self_ref.as_ref() {
-                Some(weak_ref.clone() as Weak<dyn PlayerController + Send + Sync>)
-            } else {
-                None
-            }
+            self_ref.as_ref().map(|weak_ref| weak_ref.clone() as Weak<dyn PlayerController + Send + Sync>)
         };
 
         // Wrap in Arc+RwLock and store

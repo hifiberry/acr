@@ -235,6 +235,12 @@ pub struct BasePlayerController {
     player_state: Arc<RwLock<PlayerState>>,
 }
 
+impl Default for BasePlayerController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BasePlayerController {
     /// Create a new BasePlayerController with no listeners
     pub fn new() -> Self {

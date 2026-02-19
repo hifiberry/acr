@@ -225,7 +225,7 @@ pub fn lookup_theaudiodb_by_mbid(mbid: &str) -> Result<serde_json::Value, String
                             } else {
                                 debug!("Cached negative result for MBID {}", mbid);
                             }
-                            return Err(format!("No artist found with MBID {}", mbid));
+                            Err(format!("No artist found with MBID {}", mbid))
                         },
                         1 => {
                             debug!("Successfully retrieved artist data for MBID {}", mbid);
@@ -240,20 +240,20 @@ pub fn lookup_theaudiodb_by_mbid(mbid: &str) -> Result<serde_json::Value, String
                             }
                             
                             // Return just the artist object, not the whole array
-                            return Ok(artist_data);
+                            Ok(artist_data)
                         },
                         n => {
                             debug!("Found {} artists for MBID {}, expected exactly 1", n, mbid);
-                            return Err(format!("Found {} artists for MBID {}, expected exactly 1", n, mbid));
+                            Err(format!("Found {} artists for MBID {}, expected exactly 1", n, mbid))
                         }
                     }
                 } else {
                     debug!("Invalid artists field format from TheAudioDB");
-                    return Err("Invalid response format from TheAudioDB (artists is not an array)".to_string());
+                    Err("Invalid response format from TheAudioDB (artists is not an array)".to_string())
                 }
             } else {
                 debug!("Invalid response format from TheAudioDB (no artists field)");
-                return Err("Invalid response format from TheAudioDB (no artists field)".to_string());
+                Err("Invalid response format from TheAudioDB (no artists field)".to_string())
             }
         },
         Err(e) => Err(format!("Failed to parse TheAudioDB response: {}", e))
@@ -358,7 +358,7 @@ pub fn lookup_theaudiodb_by_artist_name(artist_name: &str) -> Result<serde_json:
                         } else {
                             debug!("Cached negative result for artist '{}'", artist_name);
                         }
-                        return Err(format!("No artist found with name '{}'", artist_name));
+                        Err(format!("No artist found with name '{}'", artist_name))
                     } else {
                         debug!("Successfully retrieved artist data for name '{}'", artist_name);
                         let search_result = json_data.clone();
@@ -370,15 +370,15 @@ pub fn lookup_theaudiodb_by_artist_name(artist_name: &str) -> Result<serde_json:
                             debug!("Cached positive result for artist '{}'", artist_name);
                         }
                         
-                        return Ok(search_result);
+                        Ok(search_result)
                     }
                 } else {
                     debug!("Invalid artists field format from TheAudioDB");
-                    return Err("Invalid response format from TheAudioDB (artists is not an array)".to_string());
+                    Err("Invalid response format from TheAudioDB (artists is not an array)".to_string())
                 }
             } else {
                 debug!("Invalid response format from TheAudioDB (no artists field)");
-                return Err("Invalid response format from TheAudioDB (no artists field)".to_string());
+                Err("Invalid response format from TheAudioDB (no artists field)".to_string())
             }
         },
         Err(e) => Err(format!("Failed to parse TheAudioDB response: {}", e))
@@ -483,7 +483,7 @@ pub fn lookup_theaudiodb_albums_by_artist(artist_name: &str) -> Result<serde_jso
                         } else {
                             debug!("Cached negative result for artist albums '{}'", artist_name);
                         }
-                        return Err(format!("No albums found for artist '{}'", artist_name));
+                        Err(format!("No albums found for artist '{}'", artist_name))
                     } else {
                         debug!("Successfully retrieved album data for artist '{}'", artist_name);
                         let search_result = json_data.clone();
@@ -495,15 +495,15 @@ pub fn lookup_theaudiodb_albums_by_artist(artist_name: &str) -> Result<serde_jso
                             debug!("Cached positive result for artist albums '{}'", artist_name);
                         }
                         
-                        return Ok(search_result);
+                        Ok(search_result)
                     }
                 } else {
                     debug!("Invalid album field format from TheAudioDB");
-                    return Err("Invalid response format from TheAudioDB (album is not an array)".to_string());
+                    Err("Invalid response format from TheAudioDB (album is not an array)".to_string())
                 }
             } else {
                 debug!("Invalid response format from TheAudioDB (no album field)");
-                return Err("Invalid response format from TheAudioDB (no album field)".to_string());
+                Err("Invalid response format from TheAudioDB (no album field)".to_string())
             }
         },
         Err(e) => Err(format!("Failed to parse TheAudioDB response: {}", e))
@@ -610,7 +610,7 @@ pub fn lookup_theaudiodb_album_by_name(artist_name: &str, album_name: &str) -> R
                         } else {
                             debug!("Cached negative result for album '{}' by '{}'", album_name, artist_name);
                         }
-                        return Err(format!("No album '{}' found for artist '{}'", album_name, artist_name));
+                        Err(format!("No album '{}' found for artist '{}'", album_name, artist_name))
                     } else {
                         debug!("Successfully retrieved album data for '{}' by '{}'", album_name, artist_name);
                         let search_result = json_data.clone();
@@ -622,15 +622,15 @@ pub fn lookup_theaudiodb_album_by_name(artist_name: &str, album_name: &str) -> R
                             debug!("Cached positive result for album '{}' by '{}'", album_name, artist_name);
                         }
                         
-                        return Ok(search_result);
+                        Ok(search_result)
                     }
                 } else {
                     debug!("Invalid album field format from TheAudioDB");
-                    return Err("Invalid response format from TheAudioDB (album is not an array)".to_string());
+                    Err("Invalid response format from TheAudioDB (album is not an array)".to_string())
                 }
             } else {
                 debug!("Invalid response format from TheAudioDB (no album field)");
-                return Err("Invalid response format from TheAudioDB (no album field)".to_string());
+                Err("Invalid response format from TheAudioDB (no album field)".to_string())
             }
         },
         Err(e) => Err(format!("Failed to parse TheAudioDB response: {}", e))
@@ -829,6 +829,12 @@ pub fn get_album_coverart(album_name: &str, artist_name: &str, _year: Option<i32
 /// Implement the ArtistUpdater trait for TheAudioDB
 pub struct TheAudioDbUpdater;
 
+impl Default for TheAudioDbUpdater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TheAudioDbUpdater {
     pub fn new() -> Self {
         TheAudioDbUpdater
@@ -923,6 +929,12 @@ impl ArtistUpdater for TheAudioDbUpdater {
 
 /// Cover Art Provider implementation for TheAudioDB
 pub struct TheAudioDbCoverartProvider;
+
+impl Default for TheAudioDbCoverartProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TheAudioDbCoverartProvider {
     pub fn new() -> Self {

@@ -228,8 +228,8 @@ fn lastfm_worker(
             );
 
             // Only attempt to scrobble if the player is currently playing this song
-            if track_data.current_playback_state == PlaybackState::Playing {
-                if !track_data.scrobbled_song && scrobble_enabled { // Added scrobble_enabled check
+            if track_data.current_playback_state == PlaybackState::Playing
+                && !track_data.scrobbled_song && scrobble_enabled { // Added scrobble_enabled check
                     // let scrobble_point_duration_secs = *length_val / 2; // length_val is &u32
                     let scrobble_point_time_secs = 240; // 4 minutes in seconds, Last.fm recommendation
                     
@@ -299,14 +299,11 @@ fn lastfm_worker(
                         }
                     }
                 }
-            }
+        } else if track_data.name.is_none() {
+             debug!("LastFMWorker: No song actively tracked.");
         } else {
-            if track_data.name.is_none() {
-                 debug!("LastFMWorker: No song actively tracked.");
-            } else {
-                 debug!("LastFMWorker: Track data incomplete. Name: {:?}, Artists: {:?}, Length: {:?}, Started: {:?}",
-                    track_data.name.is_some(), track_data.artists.is_some(), track_data.length.is_some(), track_data.started_timestamp.is_some());
-            }
+             debug!("LastFMWorker: Track data incomplete. Name: {:?}, Artists: {:?}, Length: {:?}, Started: {:?}",
+                track_data.name.is_some(), track_data.artists.is_some(), track_data.length.is_some(), track_data.started_timestamp.is_some());
         }
     }
 }

@@ -122,7 +122,7 @@ pub fn initialize_volume_control(config: &Value) {
                                 break;
                             }
                             Err(e) => {
-                                last_error = format!("{}", e);
+                                last_error = e.to_string();
                                 if attempt < retry_count {
                                     warn!("Failed to get system info from configurator API (attempt {}/{}): {}. Retrying...", attempt + 1, retry_count + 1, e);
                                 } else {

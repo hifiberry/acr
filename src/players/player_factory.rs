@@ -172,7 +172,7 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
             "generic" => {
                 // Create GenericPlayerController from config
                 let player = GenericPlayerController::from_config(config_obj)
-                    .map_err(|e| PlayerCreationError::ParseError(e))?;
+                    .map_err(PlayerCreationError::ParseError)?;
                 Ok(Box::new(player))
             },
             "shairport" => {
@@ -198,7 +198,7 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                 
                 let poll_interval = config_obj.get("poll_interval")
                     .and_then(|v| v.as_f64())
-                    .map(|f| std::time::Duration::from_secs_f64(f))
+                    .map(std::time::Duration::from_secs_f64)
                     .unwrap_or_else(|| std::time::Duration::from_secs_f64(1.0));
                 
                 let player = MprisPlayerController::new_with_poll_interval(bus_name, poll_interval);

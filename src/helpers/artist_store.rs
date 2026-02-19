@@ -74,6 +74,12 @@ pub struct ArtistStore {
     downloading: HashMap<String, Arc<std::sync::atomic::AtomicBool>>,
 }
 
+impl Default for ArtistStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArtistStore {
     /// Create a new artist store with default configuration
     pub fn new() -> Self {
@@ -304,11 +310,8 @@ impl ArtistStore {
         debug!("Getting or downloading image for artist: {}", artist_name);
 
         // First check if we already have a cached image
-        match self.get_cached_image(artist_name) {
-            ArtistImageResult::Found { cache_path } => {
-                return ArtistImageResult::Found { cache_path };
-            },
-            _ => {}
+        if let ArtistImageResult::Found { cache_path } = self.get_cached_image(artist_name) {
+            return ArtistImageResult::Found { cache_path };
         }
 
         // If auto-download is disabled, return not found
@@ -491,7 +494,7 @@ impl ArtistStore {
         }
         
         // If the artist has MusicBrainz IDs, update from the coverart system
-        if artist.metadata.as_ref().map_or(false, |meta| !meta.mbid.is_empty()) {
+        if artist.metadata.as_ref().is_some_and(|meta| !meta.mbid.is_empty()) {
             debug!("Artist {} has MusicBrainz ID(s), updating with cover art system", artist.name);
             artist = self.update_artist_with_coverart(artist);
         } else {
@@ -504,7 +507,7 @@ impl ArtistStore {
         // No need for separate LastFM calls as the coverart system includes LastFM provider
         
         // Handle artists without MusicBrainz IDs but with existing thumbnails
-        if artist.metadata.as_ref().map_or(false, |meta| meta.mbid.is_empty()) {
+        if artist.metadata.as_ref().is_some_and(|meta| meta.mbid.is_empty()) {
             // Check if the artist has thumbnail images
             let has_thumbnails = match &artist.metadata {
                 Some(meta) => !meta.thumb_url.is_empty(),

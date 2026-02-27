@@ -79,9 +79,9 @@ impl GenericPlayerController {
             }
         }
         
-        // Apply any specific configuration
+        // Apply any specific configuration (may override default capabilities)
         controller.apply_config(config)?;
-        
+
         Ok(controller)
     }
     
@@ -117,13 +117,50 @@ impl GenericPlayerController {
                 "playlist" => LoopMode::Playlist,
                 _ => LoopMode::None,
             };
-            
+
             {
                 let mut loop_lock = self.current_loop_mode.write();
                 *loop_lock = loop_mode;
             }
         }
-        
+
+        // Override capabilities if explicitly provided in config
+        if let Some(caps_array) = config.get("capabilities").and_then(|c| c.as_array()) {
+            let mut capabilities = PlayerCapabilitySet::empty();
+            for cap_val in caps_array {
+                if let Some(cap_str) = cap_val.as_str() {
+                    match cap_str.to_lowercase().as_str() {
+                        "play" => capabilities.add_capability(PlayerCapability::Play),
+                        "pause" => capabilities.add_capability(PlayerCapability::Pause),
+                        "play_pause" | "playpause" => capabilities.add_capability(PlayerCapability::PlayPause),
+                        "stop" => capabilities.add_capability(PlayerCapability::Stop),
+                        "next" => capabilities.add_capability(PlayerCapability::Next),
+                        "previous" | "prev" => capabilities.add_capability(PlayerCapability::Previous),
+                        "seek" => capabilities.add_capability(PlayerCapability::Seek),
+                        "position" => capabilities.add_capability(PlayerCapability::Position),
+                        "length" => capabilities.add_capability(PlayerCapability::Length),
+                        "volume" => capabilities.add_capability(PlayerCapability::Volume),
+                        "mute" => capabilities.add_capability(PlayerCapability::Mute),
+                        "shuffle" => capabilities.add_capability(PlayerCapability::Shuffle),
+                        "loop" => capabilities.add_capability(PlayerCapability::Loop),
+                        "playlists" => capabilities.add_capability(PlayerCapability::Playlists),
+                        "queue" => capabilities.add_capability(PlayerCapability::Queue),
+                        "metadata" => capabilities.add_capability(PlayerCapability::Metadata),
+                        "album_art" => capabilities.add_capability(PlayerCapability::AlbumArt),
+                        "search" => capabilities.add_capability(PlayerCapability::Search),
+                        "browse" => capabilities.add_capability(PlayerCapability::Browse),
+                        "favorites" => capabilities.add_capability(PlayerCapability::Favorites),
+                        "db_update" => capabilities.add_capability(PlayerCapability::DatabaseUpdate),
+                        "killable" => capabilities.add_capability(PlayerCapability::Killable),
+                        "receives_updates" => capabilities.add_capability(PlayerCapability::ReceivesUpdates),
+                        unknown => warn!("Unknown capability '{}' for generic player '{}'", unknown, self.player_name),
+                    }
+                }
+            }
+            info!("Setting custom capabilities for '{}': {}", self.player_name, capabilities);
+            self.base.set_capabilities(capabilities.to_vec(), true);
+        }
+
         Ok(())
     }
     

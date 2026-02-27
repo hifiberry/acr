@@ -1,3 +1,17 @@
+hifiberry-audiocontrol (0.6.18) stable; urgency=medium
+
+  * Generic player now reads capabilities from JSON config
+  * Allows external players to declare only the controls they support
+
+ -- HiFiBerry <info@hifiberry.com>  Thu, 27 Feb 2026 13:00:00 +0000
+
+hifiberry-audiocontrol (0.6.17) stable; urgency=medium
+
+  * Added players.d/ include directory for modular player configuration
+  * External packages can register players by dropping JSON files into players.d/
+
+ -- HiFiBerry <info@hifiberry.com>  Thu, 27 Feb 2026 12:00:00 +0000
+
 hifiberry-audiocontrol (0.6.16) stable; urgency=medium
 
   * Fixed Debian maintainer scripts to properly enable and start systemd service

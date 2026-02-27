@@ -1,5 +1,5 @@
 use audiocontrol::api::server;
-use audiocontrol::config::get_service_config;
+use audiocontrol::config::{get_service_config, merge_player_includes};
 use audiocontrol::helpers::imagecache::ImageCache;
 use audiocontrol::helpers::lastfm;
 use audiocontrol::helpers::musicbrainz;
@@ -70,7 +70,7 @@ fn main() {
 
     // Check if the specified config file exists
     let config_path_obj = Path::new(&config_path_str);
-    let controllers_config: serde_json::Value = if config_path_obj.exists() {
+    let mut controllers_config: serde_json::Value = if config_path_obj.exists() {
         // Read the configuration from the specified file
         info!("Found configuration file at {}, using it", config_path_str);
         match fs::read_to_string(&config_path_str) {
@@ -99,7 +99,14 @@ fn main() {
         eprintln!("Error: Configuration file not found at {}", config_path_str);
         eprintln!("Cannot continue without a valid configuration file.");
         std::process::exit(1);
-    }; // Initialize the Security Store (Moved Up)
+    };
+
+    // Merge player configurations from players.d/ include directory
+    if let Some(config_dir) = config_path_obj.parent() {
+        merge_player_includes(&mut controllers_config, config_dir);
+    }
+
+    // Initialize the Security Store
     let security_store_path_str = get_service_config(&controllers_config, "security_store")
         .and_then(|s| s.get("path"))
         .and_then(|s| s.as_str())

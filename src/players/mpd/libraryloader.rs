@@ -441,9 +441,19 @@ impl MPDLibraryLoader {
         
         info!("Created {} unique albums from songs", albums_map.len());
         
-        // Move albums from HashMap to vector without copying
+        // Move albums from HashMap to vector; load any cached genres while we have ownership
         let mut albums = Vec::with_capacity(albums_map.len());
-        for (_, album) in albums_map.drain() {
+        for (_, mut album) in albums_map.drain() {
+            // If the album has no genres from file tags, try the attribute cache
+            if album.genres.is_empty() {
+                let album_id = album.id.to_string();
+                if let Some(cached) = crate::helpers::albumupdater::load_cached_genres(&album_id) {
+                    if !cached.is_empty() {
+                        debug!("Loaded {} cached genre(s) for album '{}'", cached.len(), album.name);
+                        album.genres = cached;
+                    }
+                }
+            }
             // Sort the tracks by disc and track number before adding to the result
             album.sort_tracks();
             albums.push(album);

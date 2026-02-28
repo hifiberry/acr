@@ -788,8 +788,89 @@ pub fn search_recording(artist: &str, title: &str) -> Result<MusicBrainzRecordin
 pub fn is_mbid(input: &str) -> bool {
     // MusicBrainz IDs are in UUID format:
     // 8 chars, dash, 4 chars, dash, 4 chars, dash, 4 chars, dash, 12 chars
-    input.len() == 36 
+    input.len() == 36
         && input.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
         && input.matches('-').count() == 4
+}
+
+/// Search MusicBrainz for a release group by artist and album name and return genres.
+///
+/// Searches the release-group endpoint, takes the top match's MBID, then fetches
+/// its genres via `?inc=genres`. Returns a sorted, deduplicated list of genre names.
+pub fn search_release_group_genres(artist: &str, album: &str) -> Vec<String> {
+    if !is_enabled() {
+        return Vec::new();
+    }
+
+    // Step 1: search for the release group
+    let query = format!(
+        "artist:\"{}\" AND releasegroup:\"{}\"",
+        artist.replace('"', "\\\""),
+        album.replace('"', "\\\"")
+    );
+    let encoded = query.chars().map(|c| match c {
+        ' ' => '+'.to_string(),
+        '"' => "%22".to_string(),
+        ':' => "%3A".to_string(),
+        _ => c.to_string(),
+    }).collect::<String>();
+
+    let search_url = format!("{}/release-group?query={}&limit=1&fmt=json", MUSICBRAINZ_API_BASE, encoded);
+
+    ratelimit::rate_limit("musicbrainz");
+    let body = match musicbrainz_api_get(&search_url) {
+        Ok(b) => b,
+        Err(e) => {
+            debug!("MusicBrainz release-group search failed for '{}' / '{}': {}", artist, album, e);
+            return Vec::new();
+        }
+    };
+
+    let json: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!("Failed to parse MusicBrainz search response: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let mbid = match json["release-groups"][0]["id"].as_str() {
+        Some(id) => id.to_string(),
+        None => {
+            debug!("No release-group found for '{}' / '{}'", artist, album);
+            return Vec::new();
+        }
+    };
+
+    // Step 2: fetch genres for this release group
+    let detail_url = format!("{}/release-group/{}?inc=genres&fmt=json", MUSICBRAINZ_API_BASE, mbid);
+
+    ratelimit::rate_limit("musicbrainz");
+    let body2 = match musicbrainz_api_get(&detail_url) {
+        Ok(b) => b,
+        Err(e) => {
+            debug!("MusicBrainz release-group genre fetch failed for {}: {}", mbid, e);
+            return Vec::new();
+        }
+    };
+
+    let json2: serde_json::Value = match serde_json::from_str(&body2) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!("Failed to parse MusicBrainz release-group detail: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let mut genres: Vec<String> = json2["genres"]
+        .as_array()
+        .map(|arr| arr.iter()
+            .filter_map(|g| g["name"].as_str().map(|s| s.to_lowercase()))
+            .collect())
+        .unwrap_or_default();
+
+    genres.sort();
+    genres.dedup();
+    genres
 }
 

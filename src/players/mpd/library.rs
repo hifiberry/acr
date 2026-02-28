@@ -1033,11 +1033,15 @@ impl LibraryInterface for MPDLibrary {
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
                 
-                // Start background update of artist metadata now that the library is fully loaded
+                // Start background metadata updates now that the library is fully loaded
                 if self.enhance_metadata {
                     info!("Starting background metadata update for artists");
                     crate::helpers::artistupdater::update_library_artists_metadata_in_background(
                         self.artists.clone()
+                    );
+                    info!("Starting background genre update for albums");
+                    crate::helpers::albumupdater::update_library_albums_genres_in_background(
+                        self.albums.clone()
                     );
                 }
                 
@@ -1082,8 +1086,14 @@ impl LibraryInterface for MPDLibrary {
     fn update_artist_metadata(&self) {
         if self.enhance_metadata {
             info!("Starting background metadata update for MPDLibrary artists");
-            // Use the generic function from artistupdater with only the artists collection
             crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
+        }
+    }
+
+    fn update_album_metadata(&self) {
+        if self.enhance_metadata {
+            info!("Starting background genre update for MPDLibrary albums");
+            crate::helpers::albumupdater::update_library_albums_genres_in_background(self.albums.clone());
         }
     }
     

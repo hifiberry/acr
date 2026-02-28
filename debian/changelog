@@ -1,3 +1,13 @@
+hifiberry-audiocontrol (0.7.9) stable; urgency=medium
+
+  * Add album genre updater: background job fetches genres from MusicBrainz
+    for albums without file-level genre tags, stores in attribute cache
+  * Library load now restores cached album genres from previous lookups
+  * get_albums_by_category now also matches via artist metadata genres
+  * Fix: categories page no longer shows empty results when clicking a category
+
+ -- HiFiBerry <info@hifiberry.com>  Sat, 28 Feb 2026 16:00:00 +0000
+
 hifiberry-audiocontrol (0.7.8) stable; urgency=medium
 
   * genres.json: add 13 new categories (dance, chill, instrumental, spoken,

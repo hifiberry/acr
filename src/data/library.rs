@@ -217,14 +217,36 @@ pub trait LibraryInterface {
         crate::helpers::genre_cleanup::map_to_categories_global(self.get_raw_genres())
     }
 
-    /// Get albums filtered by category (case-insensitive, explicit mappings only)
+    /// Get albums filtered by category (case-insensitive, explicit mappings only).
+    /// Checks both album-level genre tags and artist metadata genres.
     fn get_albums_by_category(&self, category: &str) -> Vec<Album> {
         let cat_lower = category.to_lowercase();
+
+        // Build a set of artist names whose metadata genres include this category
+        let artist_matches: std::collections::HashSet<String> = self.get_artists()
+            .into_iter()
+            .filter(|a| {
+                a.metadata.as_ref()
+                    .map(|m| {
+                        let cats = crate::helpers::genre_cleanup::map_to_categories_global(m.genres.clone());
+                        cats.iter().any(|c| c.to_lowercase() == cat_lower)
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|a| a.name.to_lowercase())
+            .collect();
+
         self.get_albums()
             .into_iter()
             .filter(|a| {
+                // Check album-level genre tags first
                 let cats = crate::helpers::genre_cleanup::map_to_categories_global(a.genres.clone());
-                cats.iter().any(|c| c.to_lowercase() == cat_lower)
+                if cats.iter().any(|c| c.to_lowercase() == cat_lower) {
+                    return true;
+                }
+                // Fall back to artist metadata genres
+                let artists = a.artists.lock();
+                artists.iter().any(|name| artist_matches.contains(&name.to_lowercase()))
             })
             .collect()
     }
@@ -255,10 +277,16 @@ pub trait LibraryInterface {
     fn get_image(&self, identifier: String) -> Option<(Vec<u8>, String)>;
     
     /// Update artist metadata in background
-    /// 
+    ///
     /// This method should update the metadata for all artists in the library using
     /// background worker thread. The default implementation does nothing.
     fn update_artist_metadata(&self);
+
+    /// Update album genre metadata in background
+    ///
+    /// Looks up genres from MusicBrainz for albums that have no genre tags and
+    /// caches the results locally. The default implementation does nothing.
+    fn update_album_metadata(&self) {}
 
     /// Get a list of meta keys for the library
     /// 

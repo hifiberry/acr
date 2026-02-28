@@ -3,6 +3,7 @@ pub mod imagecache;
 pub mod image_meta;
 pub mod image_grader;
 pub mod artistupdater;
+pub mod albumupdater;
 pub mod artist_store;
 pub mod artistsplitter;
 pub mod backgroundjobs;

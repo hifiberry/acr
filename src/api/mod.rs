@@ -1,6 +1,42 @@
 // Import constants for use in API modules
 pub use crate::constants::API_PREFIX;
 
+/// Rewrite internal API-relative URLs (starting with API_PREFIX) to the externally
+/// visible API base if a reverse proxy forwards `X-Forwarded-Prefix`.
+pub fn rewrite_api_relative_url(url: &str, forwarded_prefix: Option<&str>) -> String {
+	let Some(prefix) = normalize_forwarded_prefix(forwarded_prefix) else {
+		return url.to_string();
+	};
+
+	if url == API_PREFIX {
+		return prefix;
+	}
+
+	if let Some(suffix) = url.strip_prefix(API_PREFIX) {
+		return format!("{}{}", prefix, suffix);
+	}
+
+	url.to_string()
+}
+
+fn normalize_forwarded_prefix(prefix: Option<&str>) -> Option<String> {
+	let raw = prefix?.trim();
+	if raw.is_empty() {
+		return None;
+	}
+
+	let without_trailing = raw.trim_end_matches('/');
+	if without_trailing.is_empty() {
+		return None;
+	}
+
+	if without_trailing.starts_with('/') {
+		Some(without_trailing.to_string())
+	} else {
+		Some(format!("/{}", without_trailing))
+	}
+}
+
 // Export the players module
 pub mod players;
 

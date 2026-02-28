@@ -23,6 +23,8 @@ pub struct Album {
     pub cover_art: Option<String>,
     /// URI of the first song file in the album (useful for retrieving cover art)
     pub uri: Option<String>,
+    /// Musical genres associated with this album (from file tags or external sources)
+    pub genres: Vec<String>,
 }
 
 // Custom serialization implementation for Album
@@ -32,7 +34,7 @@ impl Serialize for Album {
         S: Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Album", 7)?;
+        let mut state = serializer.serialize_struct("Album", 8)?;
         
         // Serialize id using Identifier's serialization
         state.serialize_field("id", &self.id)?;
@@ -51,6 +53,9 @@ impl Serialize for Album {
         
         state.serialize_field("cover_art", &self.cover_art)?;
         state.serialize_field("uri", &self.uri)?;
+        if !self.genres.is_empty() {
+            state.serialize_field("genres", &self.genres)?;
+        }
         state.end()
     }
 }
@@ -78,6 +83,8 @@ impl<'de> Deserialize<'de> for Album {
             cover_art: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             uri: Option<String>,
+            #[serde(default)]
+            genres: Vec<String>,
         }
         
         // Deserialize to the helper struct first
@@ -106,6 +113,7 @@ impl<'de> Deserialize<'de> for Album {
             tracks: Arc::new(Mutex::new(helper.tracks)),
             cover_art: helper.cover_art,
             uri: helper.uri,
+            genres: helper.genres,
         })
     }
 }

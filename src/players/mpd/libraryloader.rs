@@ -185,7 +185,12 @@ impl MPDLibraryLoader {
 
         debug!("Album ID: {}, Name: {}, Artists: {:?}", album_id, album_name, artists.lock());
 
-        
+        // Extract genres from the Genre tag (MPD may report multiple Genre tags per song)
+        let genres: Vec<String> = song.tags.iter()
+            .filter(|(tag, _)| tag == "Genre")
+            .map(|(_, value)| value.clone())
+            .collect();
+
         // Create album object with new Identifier enum
         Album {
             id: Identifier::Numeric(album_id),
@@ -195,7 +200,8 @@ impl MPDLibraryLoader {
             release_date,
             tracks,
             cover_art: None,
-            uri: None
+            uri: None,
+            genres,
         }
     }
     
@@ -378,11 +384,22 @@ impl MPDLibraryLoader {
             let track = Self::track_from_mpd_song(song);
 
             // Add the track to the album's track list, but only if the track is not already present
+            // Also merge any new genres from this song into the album
             if let Some(album) = albums_map.get_mut(&album_key) {
                 // Check if the track is already present in the album's track list
                 let mut tracks = album.tracks.lock();
                 if !tracks.iter().any(|t| t.name == track.name && t.disc_number == track.disc_number) {
                     tracks.push(track);
+                }
+                drop(tracks);
+                // Merge genres from this song into the album (deduplicated)
+                for genre in song.tags.iter()
+                    .filter(|(tag, _)| tag == "Genre")
+                    .map(|(_, v)| v.as_str())
+                {
+                    if !album.genres.iter().any(|g| g == genre) {
+                        album.genres.push(genre.to_string());
+                    }
                 }
             } else {
                 error!("Album not found in map for key: {}", album_key);

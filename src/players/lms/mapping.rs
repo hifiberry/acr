@@ -35,6 +35,7 @@ pub fn map_album(lms_album: &LmsAlbum) -> Option<AcrAlbum> {
         tracks: Arc::new(Mutex::new(Vec::new())),
         cover_art: None,
         uri: None,
+        genres: Vec::new(),
     };
     
     // Add any artist information if available
@@ -146,6 +147,7 @@ pub fn map_tracks_to_album(
         tracks: Arc::new(Mutex::new(Vec::new())),
         cover_art: None,
         uri: None,
+        genres: Vec::new(),
     };
     
     // Add album artist if available

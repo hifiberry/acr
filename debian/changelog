@@ -1,3 +1,14 @@
+hifiberry-audiocontrol (0.7.5) stable; urgency=medium
+
+  * Genre cleanup: apply user config merging with system config (user overrides win)
+  * Genre cleanup: store user config in ~/.config/audiocontrol/genres.json
+  * Library: genre query methods now apply cleanup; get_raw_genres() skips cleanup
+  * Library: GET /library/<player>/genres?raw=true returns unprocessed tags
+  * Add genre config CRUD API: GET/PUT /genres/config, /genres/user-config,
+    POST/DELETE /genres/mapping, POST/DELETE /genres/ignore
+
+ -- HiFiBerry <info@hifiberry.com>  Fri, 28 Feb 2026 22:00:00 +0000
+
 hifiberry-audiocontrol (0.7.4) stable; urgency=medium
 
   * Fix proxied API media URLs by rewriting API-relative song cover URLs

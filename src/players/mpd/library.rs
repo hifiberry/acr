@@ -645,7 +645,15 @@ impl MPDLibrary {
     /// Get artist by name
     pub fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
         let artists = self.artists.read();
-        if let Some(mut artist) = artists.get(name).cloned() {
+        let name_lower = name.to_lowercase();
+        let found = artists.get(name)
+            .or_else(|| {
+                artists.iter()
+                    .find(|(k, _)| k.to_lowercase() == name_lower)
+                    .map(|(_, v)| v)
+            })
+            .cloned();
+        if let Some(mut artist) = found {
             self.populate_calculated_artist_fields(&mut artist);
             Some(artist)
         } else {

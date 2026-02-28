@@ -37,6 +37,27 @@ impl Error for LibraryError {}
 // Library Interface Definition
 //
 
+/// How well an artist name matched during a fuzzy search
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtistMatchType {
+    /// Exact case-sensitive match
+    Exact,
+    /// Case-insensitive match (different casing only)
+    CaseInsensitive,
+    /// Fuzzy/similarity match (typos or slight differences)
+    Fuzzy,
+}
+
+/// Result of a fuzzy artist search, including the match quality
+#[derive(Debug, Clone)]
+pub struct ArtistMatch {
+    pub artist: Artist,
+    pub match_type: ArtistMatchType,
+    /// Similarity score 0.0–1.0; always 1.0 for Exact/CaseInsensitive
+    pub score: f64,
+}
+
 /// Common trait for music library interfaces
 pub trait LibraryInterface {
     /// Create a new library instance with default connection parameters
@@ -62,6 +83,38 @@ pub trait LibraryInterface {
     
     /// Get artist by name
     fn get_artist_by_name(&self, name: &str) -> Option<Artist>;
+
+    /// Find artist with fuzzy matching.
+    ///
+    /// Tries in order:
+    /// 1. Exact case-sensitive match → `ArtistMatchType::Exact`
+    /// 2. Case-insensitive match     → `ArtistMatchType::CaseInsensitive`
+    /// 3. Jaro-Winkler similarity ≥ 0.85 (best score wins) → `ArtistMatchType::Fuzzy`
+    ///
+    /// Default behaviour (no `fuzzy`) is unchanged – call `get_artist_by_name` instead.
+    fn find_artist_fuzzy(&self, name: &str) -> Option<ArtistMatch> {
+        let artists = self.get_artists();
+        // Exact match
+        if let Some(artist) = artists.iter().find(|a| a.name == name) {
+            return Some(ArtistMatch { artist: artist.clone(), match_type: ArtistMatchType::Exact, score: 1.0 });
+        }
+        // Case-insensitive match
+        let name_lower = name.to_lowercase();
+        if let Some(artist) = artists.iter().find(|a| a.name.to_lowercase() == name_lower) {
+            return Some(ArtistMatch { artist: artist.clone(), match_type: ArtistMatchType::CaseInsensitive, score: 1.0 });
+        }
+        // Fuzzy match (Jaro-Winkler)
+        const THRESHOLD: f64 = 0.85;
+        artists.iter()
+            .map(|a| (strsim::jaro_winkler(&name_lower, &a.name.to_lowercase()), a))
+            .filter(|(score, _)| *score >= THRESHOLD)
+            .max_by(|(s1, _), (s2, _)| s1.partial_cmp(s2).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(score, artist)| ArtistMatch {
+                artist: artist.clone(),
+                match_type: ArtistMatchType::Fuzzy,
+                score,
+            })
+    }
     
     /// Get albums by artist ID
     fn get_albums_by_artist_id(&self, artist_id: &Identifier) -> Vec<Album>;
@@ -76,6 +129,86 @@ pub trait LibraryInterface {
         false
     }
     
+    /// Get all unique raw genres from album tags, sorted alphabetically (no cleanup applied)
+    fn get_raw_album_genres(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut genres: Vec<String> = self.get_albums()
+            .into_iter()
+            .flat_map(|a| a.genres)
+            .filter(|g| seen.insert(g.clone()))
+            .collect();
+        genres.sort_unstable();
+        genres
+    }
+
+    /// Get all unique raw genres from artist metadata, sorted alphabetically (no cleanup applied)
+    fn get_raw_artist_genres(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut genres: Vec<String> = self.get_artists()
+            .into_iter()
+            .filter_map(|a| a.metadata)
+            .flat_map(|m| m.genres)
+            .filter(|g| seen.insert(g.clone()))
+            .collect();
+        genres.sort_unstable();
+        genres
+    }
+
+    /// Get all unique raw genres (albums + artist metadata combined), no cleanup applied
+    fn get_raw_genres(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut genres: Vec<String> = self.get_raw_album_genres()
+            .into_iter()
+            .chain(self.get_raw_artist_genres())
+            .filter(|g| seen.insert(g.clone()))
+            .collect();
+        genres.sort_unstable();
+        genres
+    }
+
+    /// Get all unique genres from album tags, sorted alphabetically
+    fn get_album_genres(&self) -> Vec<String> {
+        crate::helpers::genre_cleanup::clean_genres_global(self.get_raw_album_genres())
+    }
+
+    /// Get all unique genres from artist metadata, sorted alphabetically
+    fn get_artist_genres(&self) -> Vec<String> {
+        crate::helpers::genre_cleanup::clean_genres_global(self.get_raw_artist_genres())
+    }
+
+    /// Get all unique genres from albums and artist metadata combined, sorted alphabetically
+    fn get_genres(&self) -> Vec<String> {
+        crate::helpers::genre_cleanup::clean_genres_global(self.get_raw_genres())
+    }
+
+    /// Get albums filtered by genre (case-insensitive, cleanup applied to album genres before matching)
+    fn get_albums_by_genre(&self, genre: &str) -> Vec<Album> {
+        let genre_lower = genre.to_lowercase();
+        self.get_albums()
+            .into_iter()
+            .filter(|a| {
+                let cleaned = crate::helpers::genre_cleanup::clean_genres_global(a.genres.clone());
+                cleaned.iter().any(|g| g.to_lowercase() == genre_lower)
+            })
+            .collect()
+    }
+
+    /// Get artists filtered by genre via their metadata (case-insensitive, cleanup applied)
+    fn get_artists_by_genre(&self, genre: &str) -> Vec<Artist> {
+        let genre_lower = genre.to_lowercase();
+        self.get_artists()
+            .into_iter()
+            .filter(|a| {
+                a.metadata.as_ref()
+                    .map(|m| {
+                        let cleaned = crate::helpers::genre_cleanup::clean_genres_global(m.genres.clone());
+                        cleaned.iter().any(|g| g.to_lowercase() == genre_lower)
+                    })
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
     /// Allow downcasting to concrete types
     fn as_any(&self) -> &dyn std::any::Any;
     

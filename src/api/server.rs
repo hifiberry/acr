@@ -1,7 +1,7 @@
 use crate::AudioController;
 use crate::api::{
-    players, plugins, library, imagecache, coverart, events, lastfm, spotify, 
-    theaudiodb, favourites, volume, lyrics, m3u, settings, cache, backgroundjobs
+    players, plugins, library, imagecache, coverart, events, lastfm, spotify,
+    theaudiodb, favourites, volume, lyrics, m3u, settings, cache, backgroundjobs, genres
 };
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
@@ -95,6 +95,9 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::get_image,
         library::get_library_metadata,
         library::get_library_metadata_key,
+        library::get_library_genres,
+        library::get_albums_by_genre,
+        library::get_artists_by_genre,
         
         // TheAudioDB routes
         theaudiodb::lookup_artist_by_mbid,
@@ -208,6 +211,17 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         backgroundjobs::get_background_jobs,
         backgroundjobs::get_background_job,
     ];
+
+    // Genre config routes
+    let genres_routes = routes![
+        genres::get_config,
+        genres::get_user_config_endpoint,
+        genres::put_user_config,
+        genres::post_mapping,
+        genres::delete_mapping,
+        genres::post_ignore,
+        genres::delete_ignore,
+    ];
       let mut rocket_builder = rocket::custom(config)
         .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting general api routes
         .mount(format!("{}/lastfm", API_PREFIX), lastfm_routes) // Mount Last.fm routes under /api/lastfm (or similar)
@@ -222,6 +236,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         .mount(format!("{}/settings", API_PREFIX), settings_routes) // Mount settings routes
         .mount(format!("{}/cache", API_PREFIX), cache_routes) // Mount cache routes
         .mount(format!("{}/background", API_PREFIX), backgroundjobs_routes) // Mount background jobs routes
+        .mount(format!("{}/genres", API_PREFIX), genres_routes) // Mount genre config routes
         .mount(format!("{}/volume", API_PREFIX), volume_routes) // Mount volume routes
         .mount(format!("{}/coverart", API_PREFIX), coverart_routes) // Mount coverart routes
         .manage(controller)

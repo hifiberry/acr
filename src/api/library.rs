@@ -1,11 +1,20 @@
 use crate::AudioController;
 use crate::data::{Album, Artist};
+use crate::data::library::ArtistMatchType;
 use rocket::serde::json::Json;
 use rocket::{get, post, State};
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
 use serde::Serialize;
+
+fn match_type_str(mt: &ArtistMatchType) -> String {
+    match mt {
+        ArtistMatchType::Exact => "exact".to_string(),
+        ArtistMatchType::CaseInsensitive => "case_insensitive".to_string(),
+        ArtistMatchType::Fuzzy => "fuzzy".to_string(),
+    }
+}
 
 /// Response structure for library information
 #[derive(serde::Serialize)]
@@ -91,6 +100,16 @@ pub struct ArtistResponse {
     player_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     artist: Option<Artist>,
+    /// Only present when a fuzzy search was requested
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_score: Option<f64>,
+    /// Actual name in the library (may differ from query when fuzzy/CI match)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matched_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query: Option<String>,
 }
 
 /// Response structure for a single album (always includes tracks)
@@ -127,6 +146,16 @@ pub struct ArtistAlbumsDTOResponse {
     count: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     albums: Vec<AlbumDTO>,
+    /// Only present when a fuzzy search was requested
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_score: Option<f64>,
+    /// Actual name in the library (may differ from query when fuzzy/CI match)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matched_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query: Option<String>,
 }
 
 /// Custom response structure for artist data with specific field order
@@ -151,6 +180,8 @@ struct AlbumDTO {
     tracks: Option<Vec<crate::data::track::Track>>,
     cover_art: Option<String>,
     uri: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    genres: Vec<String>,
 }
 
 impl From<Album> for AlbumDTO {
@@ -166,7 +197,7 @@ impl From<Album> for AlbumDTO {
 
         // Drop the lock before returning
         drop(tracks_lock);
-        
+
         AlbumDTO {
             id: album.id.to_string(),
             name: album.name,
@@ -176,6 +207,7 @@ impl From<Album> for AlbumDTO {
             tracks: tracks_clone,
             cover_art: album.cover_art,
             uri: album.uri,
+            genres: album.genres,
         }
     }
 }
@@ -449,47 +481,61 @@ pub fn get_album_by_id(
 }
 
 /// Get all albums by a specific artist
-/// 
-/// This endpoint returns albums without track data but includes track count
-#[get("/library/<player_name>/albums/by-artist/<artist_name>")]
+///
+/// Pass `?fuzzy=true` to enable fuzzy/flexible artist name matching.
+/// The response will then include `match_type`, `match_score`, `matched_name`
+/// and `query` fields to indicate how the artist was found.
+/// This endpoint returns albums without track data but includes track count.
+#[get("/library/<player_name>/albums/by-artist/<artist_name>?<fuzzy>")]
 pub fn get_albums_by_artist(
-    player_name: &str, 
+    player_name: &str,
     artist_name: &str,
+    fuzzy: Option<bool>,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistAlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
-    
-    // Find the controller with the matching name
+
     for ctrl_lock in controllers {
         let ctrl = ctrl_lock.read();
         if ctrl.get_player_name() == player_name {
-            // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
-                // First get the artist to get their ID
-                if let Some(artist) = library.get_artist_by_name(artist_name) {
-                    // Get albums by artist ID
-                    let albums = library.get_albums_by_artist_id(&artist.id);
-                    
-                    // Convert albums to DTOs without including tracks
-                    let album_dtos = albums.into_iter()
-                        .map(|album| create_album_dto(album, false))
-                        .collect::<Vec<AlbumDTO>>();
-                    
-                    return Ok(Json(ArtistAlbumsDTOResponse {
-                        player_name: player_name.to_string(),
-                        artist_name: artist_name.to_string(),
-                        count: album_dtos.len(),
-                        albums: album_dtos,
-                    }));
+                // Resolve artist – either via fuzzy or exact lookup
+                let (artist, mt, ms, mn) = if fuzzy.unwrap_or(false) {
+                    match library.find_artist_fuzzy(artist_name) {
+                        Some(m) => {
+                            let mt = match_type_str(&m.match_type);
+                            let mn = m.artist.name.clone();
+                            (Some(m.artist), Some(mt), Some(m.score), Some(mn))
+                        }
+                        None => (None, None, None, None),
+                    }
                 } else {
-                    // Artist not found
-                    return Err(Custom(
+                    (library.get_artist_by_name(artist_name), None, None, None)
+                };
+
+                return match artist {
+                    Some(a) => {
+                        let albums = library.get_albums_by_artist_id(&a.id);
+                        let album_dtos: Vec<AlbumDTO> = albums.into_iter()
+                            .map(|album| create_album_dto(album, false))
+                            .collect();
+                        Ok(Json(ArtistAlbumsDTOResponse {
+                            player_name: player_name.to_string(),
+                            artist_name: mn.clone().unwrap_or_else(|| artist_name.to_string()),
+                            count: album_dtos.len(),
+                            albums: album_dtos,
+                            match_type: mt,
+                            match_score: ms,
+                            matched_name: mn,
+                            query: fuzzy.unwrap_or(false).then(|| artist_name.to_string()),
+                        }))
+                    }
+                    None => Err(Custom(
                         Status::NotFound,
                         format!("Artist '{}' not found", artist_name),
-                    ));
-                }
+                    )),
+                };
             } else {
-                // Player exists but doesn't have a library
                 return Err(Custom(
                     Status::NotFound,
                     format!("Player '{}' does not have a library", player_name),
@@ -555,6 +601,10 @@ pub fn get_albums_by_artist_id(
                     artist_name,
                     count: album_dtos.len(),
                     albums: album_dtos,
+                    match_type: None,
+                    match_score: None,
+                    matched_name: None,
+                    query: None,
                 }));
             } else {
                 // Player exists but doesn't have a library
@@ -571,6 +621,124 @@ pub fn get_albums_by_artist_id(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
     ))
+}
+
+/// Response structure for genres list
+#[derive(serde::Serialize)]
+pub struct GenresResponse {
+    player_name: String,
+    count: usize,
+    genres: Vec<String>,
+}
+
+/// Get all genres available in the library (union of album tags and artist metadata)
+///
+/// Pass `?raw=true` to skip genre cleanup and return the raw tags from files/metadata.
+#[get("/library/<player_name>/genres?<raw>")]
+pub fn get_library_genres(
+    player_name: &str,
+    raw: Option<bool>,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<GenresResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    for ctrl_lock in controllers {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            if let Some(library) = ctrl.get_library() {
+                let genres = if raw.unwrap_or(false) {
+                    library.get_raw_genres()
+                } else {
+                    library.get_genres()
+                };
+                let count = genres.len();
+                return Ok(Json(GenresResponse {
+                    player_name: player_name.to_string(),
+                    count,
+                    genres,
+                }));
+            } else {
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
+            }
+        }
+    }
+    Err(Custom(Status::NotFound, format!("Player '{}' not found", player_name)))
+}
+
+/// Get all albums filtered by genre (case-insensitive)
+#[get("/library/<player_name>/albums/by-genre/<genre>")]
+pub fn get_albums_by_genre(
+    player_name: &str,
+    genre: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<AlbumsDTOResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    for ctrl_lock in controllers {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            if let Some(library) = ctrl.get_library() {
+                let albums = library.get_albums_by_genre(genre);
+                let album_dtos: Vec<AlbumDTO> = albums.into_iter()
+                    .map(|album| create_album_dto(album, false))
+                    .collect();
+                return Ok(Json(AlbumsDTOResponse {
+                    player_name: player_name.to_string(),
+                    count: album_dtos.len(),
+                    albums: album_dtos,
+                }));
+            } else {
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
+            }
+        }
+    }
+    Err(Custom(Status::NotFound, format!("Player '{}' not found", player_name)))
+}
+
+/// Get all artists filtered by genre via artist metadata (case-insensitive)
+#[get("/library/<player_name>/artists/by-genre/<genre>")]
+pub fn get_artists_by_genre(
+    player_name: &str,
+    genre: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<serde_json::Value>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    for ctrl_lock in controllers {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            if let Some(library) = ctrl.get_library() {
+                let artists = library.get_artists_by_genre(genre);
+                let all_albums = library.get_albums();
+                let enhanced: Vec<serde_json::Value> = artists.iter().map(|artist| {
+                    let albums_count = all_albums.iter().filter(|album| {
+                        album.artists.lock().iter().any(|a| a == &artist.name)
+                    }).count();
+                    serde_json::json!({
+                        "id": artist.id.to_string(),
+                        "name": artist.name,
+                        "is_multi": artist.is_multi,
+                        "albums_count": albums_count,
+                    })
+                }).collect();
+                return Ok(Json(serde_json::json!({
+                    "player_name": player_name,
+                    "genre": genre,
+                    "count": enhanced.len(),
+                    "artists": enhanced,
+                })));
+            } else {
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
+            }
+        }
+    }
+    Err(Custom(Status::NotFound, format!("Player '{}' not found", player_name)))
 }
 
 /// Refresh the library for a player
@@ -667,14 +835,56 @@ pub fn update_player_library(
     ))
 }
 
-/// Get a specific artist by name
-#[get("/library/<player_name>/artist/by-name/<artist_name>")]
+/// Get a specific artist by name.
+///
+/// Pass `?fuzzy=true` to enable fuzzy/flexible matching.
+/// When a fuzzy match is found, the response includes `match_type`,
+/// `match_score`, `matched_name` (actual library name), and `query`.
+#[get("/library/<player_name>/artist/by-name/<artist_name>?<fuzzy>")]
 pub fn get_artist_by_name(
-    player_name: &str, 
+    player_name: &str,
     artist_name: &str,
+    fuzzy: Option<bool>,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
-    get_artist_internal(player_name, artist_name, controller, ArtistLookupType::ByName)
+    if !fuzzy.unwrap_or(false) {
+        return get_artist_internal(player_name, artist_name, controller, ArtistLookupType::ByName);
+    }
+
+    // Flexible path
+    let controllers = controller.inner().list_controllers();
+    for ctrl_lock in controllers {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            if let Some(library) = ctrl.get_library() {
+                let (artist, mt, ms, mn) = match library.find_artist_fuzzy(artist_name) {
+                    Some(m) => {
+                        let mt = match_type_str(&m.match_type);
+                        let mn = m.artist.name.clone();
+                        (Some(m.artist), Some(mt), Some(m.score), Some(mn))
+                    }
+                    None => (None, None, None, None),
+                };
+                return Ok(Json(ArtistResponse {
+                    player_name: player_name.to_string(),
+                    artist,
+                    match_type: mt,
+                    match_score: ms,
+                    matched_name: mn,
+                    query: Some(artist_name.to_string()),
+                }));
+            } else {
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
+            }
+        }
+    }
+    Err(Custom(
+        Status::NotFound,
+        format!("Player '{}' not found", player_name),
+    ))
 }
 
 /// Get a specific artist by ID
@@ -759,6 +969,10 @@ fn get_artist_internal(
                 return Ok(Json(ArtistResponse {
                     player_name: player_name.to_string(),
                     artist,
+                    match_type: None,
+                    match_score: None,
+                    matched_name: None,
+                    query: None,
                 }));
             } else {
                 // Player exists but doesn't have a library

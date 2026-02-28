@@ -282,9 +282,17 @@ impl LMSLibrary {
         None
     }
 
-    /// Get artist by name
+    /// Get artist by name (case-insensitive)
     pub fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
-        self.artists.read().get(name).cloned()
+        let artists = self.artists.read();
+        let name_lower = name.to_lowercase();
+        artists.get(name)
+            .or_else(|| {
+                artists.iter()
+                    .find(|(k, _)| k.to_lowercase() == name_lower)
+                    .map(|(_, v)| v)
+            })
+            .cloned()
     }    /// Returns the URL for a track's cover artwork
     /// 
     /// # Arguments

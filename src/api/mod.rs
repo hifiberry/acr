@@ -85,5 +85,8 @@ pub mod cache;
 // Export the backgroundjobs module
 pub mod backgroundjobs;
 
+// Export the genres module
+pub mod genres;
+
 // Export the server module
 pub mod server;

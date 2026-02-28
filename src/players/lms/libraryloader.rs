@@ -192,6 +192,16 @@ impl LMSLibraryLoader {
           debug!("Created album: {} (ID: {}) by {:?}", 
                title, album_id, artists.lock());
         
+        // Extract genres from the 'genre' field (LMS returns comma-separated string)
+        let genres: Vec<String> = album_json["genre"].as_str()
+            .map(|s| {
+                s.split(',')
+                    .map(|g| g.trim().to_string())
+                    .filter(|g| !g.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // Create and return the Album object
         Some(Album {
             id: Identifier::Numeric(album_id),
@@ -201,7 +211,8 @@ impl LMSLibraryLoader {
             release_date,
             tracks,
             cover_art: None,
-            uri: None // LMS doesn't provide album URIs
+            uri: None, // LMS doesn't provide album URIs
+            genres,
         })
     }
 
@@ -223,7 +234,7 @@ impl LMSLibraryLoader {
                 "albums", 
                 start, 
                 BATCH_SIZE, 
-                vec![("tags", "aylD")]  // Include year, artist, title, and duration
+                vec![("tags", "aylDg")]  // Include year, artist, title, duration, and genre
             ) {
                 Ok(res) => res,
                 Err(e) => return Err(LibraryError::ConnectionError(format!(

@@ -160,6 +160,25 @@ impl GenreCleanup {
         self.clean_genres(genres.to_vec())
     }
 
+    /// Map genres to categories: only returns values that have an explicit mapping.
+    /// Genres without a mapping are excluded entirely.
+    /// Ignored genres are also excluded.
+    pub fn map_to_categories(&self, genres: Vec<String>) -> Vec<String> {
+        let mut categories = HashSet::new();
+        for genre in genres {
+            let genre_lower = genre.trim().to_lowercase();
+            if self.ignore_set.contains(&genre_lower) {
+                continue;
+            }
+            if let Some(mapped) = self.mapping_lowercase.get(&genre_lower) {
+                categories.insert(mapped.clone());
+            }
+        }
+        let mut result: Vec<String> = categories.into_iter().collect();
+        result.sort();
+        result
+    }
+
     /// Reload from the same paths (re-reads system and user config files)
     fn reload(&mut self) {
         let system_config = self.system_config_path.as_ref().and_then(|p| {
@@ -357,6 +376,17 @@ pub fn clean_genres_global(genres: Vec<String>) -> Vec<String> {
         let mut unique_genres: Vec<String> = genres.into_iter().collect::<HashSet<_>>().into_iter().collect();
         unique_genres.sort();
         unique_genres
+    }
+}
+
+/// Map genres to categories using the global instance.
+/// Only returns genres that have explicit mappings configured; unmapped genres are excluded.
+pub fn map_to_categories_global(genres: Vec<String>) -> Vec<String> {
+    let cleanup_guard = GENRE_CLEANUP.lock();
+    if let Some(ref cleanup) = *cleanup_guard {
+        cleanup.map_to_categories(genres)
+    } else {
+        Vec::new()
     }
 }
 

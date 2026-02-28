@@ -1,3 +1,20 @@
+hifiberry-audiocontrol (0.7.7) stable; urgency=medium
+
+  * Categories: only show explicitly mapped genres (not all cleaned genres)
+  * AlbumDTO: categories field now reflects explicit mappings only
+
+ -- HiFiBerry <info@hifiberry.com>  Sat, 28 Feb 2026 14:00:00 +0000
+
+hifiberry-audiocontrol (0.7.6) stable; urgency=medium
+
+  * Library: add categories (mapped genre labels) separate from raw genres
+  * AlbumDTO: include both genres (raw tags) and categories (mapped labels)
+  * Add GET /library/<player>/categories endpoint
+  * Add GET /library/<player>/albums/by-category/<category> endpoint
+  * Add GET /library/<player>/artists/by-category/<category> endpoint
+
+ -- HiFiBerry <info@hifiberry.com>  Fri, 28 Feb 2026 23:00:00 +0000
+
 hifiberry-audiocontrol (0.7.5) stable; urgency=medium
 
   * Genre cleanup: apply user config merging with system config (user overrides win)

@@ -182,6 +182,8 @@ struct AlbumDTO {
     uri: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     genres: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    categories: Vec<String>,
 }
 
 impl From<Album> for AlbumDTO {
@@ -198,6 +200,9 @@ impl From<Album> for AlbumDTO {
         // Drop the lock before returning
         drop(tracks_lock);
 
+        // Compute categories: only genres with explicit mappings configured
+        let categories = crate::helpers::genre_cleanup::map_to_categories_global(album.genres.clone());
+
         AlbumDTO {
             id: album.id.to_string(),
             name: album.name,
@@ -208,6 +213,7 @@ impl From<Album> for AlbumDTO {
             cover_art: album.cover_art,
             uri: album.uri,
             genres: album.genres,
+            categories,
         }
     }
 }
@@ -631,6 +637,14 @@ pub struct GenresResponse {
     genres: Vec<String>,
 }
 
+/// Response structure for categories list
+#[derive(serde::Serialize)]
+pub struct CategoriesResponse {
+    player_name: String,
+    count: usize,
+    categories: Vec<String>,
+}
+
 /// Get all genres available in the library (union of album tags and artist metadata)
 ///
 /// Pass `?raw=true` to skip genre cleanup and return the raw tags from files/metadata.
@@ -688,6 +702,109 @@ pub fn get_albums_by_genre(
                     count: album_dtos.len(),
                     albums: album_dtos,
                 }));
+            } else {
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
+            }
+        }
+    }
+    Err(Custom(Status::NotFound, format!("Player '{}' not found", player_name)))
+}
+
+/// Get all categories (mapped/cleaned genre labels) available in the library
+#[get("/library/<player_name>/categories")]
+pub fn get_library_categories(
+    player_name: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<CategoriesResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    for ctrl_lock in controllers {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            if let Some(library) = ctrl.get_library() {
+                let categories = library.get_categories();
+                let count = categories.len();
+                return Ok(Json(CategoriesResponse {
+                    player_name: player_name.to_string(),
+                    count,
+                    categories,
+                }));
+            } else {
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
+            }
+        }
+    }
+    Err(Custom(Status::NotFound, format!("Player '{}' not found", player_name)))
+}
+
+/// Get all albums filtered by category (case-insensitive, cleanup applied)
+#[get("/library/<player_name>/albums/by-category/<category>")]
+pub fn get_albums_by_category(
+    player_name: &str,
+    category: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<AlbumsDTOResponse>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    for ctrl_lock in controllers {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            if let Some(library) = ctrl.get_library() {
+                let albums = library.get_albums_by_category(category);
+                let album_dtos: Vec<AlbumDTO> = albums.into_iter()
+                    .map(|album| create_album_dto(album, false))
+                    .collect();
+                return Ok(Json(AlbumsDTOResponse {
+                    player_name: player_name.to_string(),
+                    count: album_dtos.len(),
+                    albums: album_dtos,
+                }));
+            } else {
+                return Err(Custom(
+                    Status::NotFound,
+                    format!("Player '{}' does not have a library", player_name),
+                ));
+            }
+        }
+    }
+    Err(Custom(Status::NotFound, format!("Player '{}' not found", player_name)))
+}
+
+/// Get all artists filtered by category via artist metadata (case-insensitive, cleanup applied)
+#[get("/library/<player_name>/artists/by-category/<category>")]
+pub fn get_artists_by_category(
+    player_name: &str,
+    category: &str,
+    controller: &State<Arc<AudioController>>
+) -> Result<Json<serde_json::Value>, Custom<String>> {
+    let controllers = controller.inner().list_controllers();
+    for ctrl_lock in controllers {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            if let Some(library) = ctrl.get_library() {
+                let artists = library.get_artists_by_category(category);
+                let all_albums = library.get_albums();
+                let enhanced: Vec<serde_json::Value> = artists.iter().map(|artist| {
+                    let albums_count = all_albums.iter().filter(|album| {
+                        album.artists.lock().iter().any(|a| a == &artist.name)
+                    }).count();
+                    serde_json::json!({
+                        "id": artist.id.to_string(),
+                        "name": artist.name,
+                        "is_multi": artist.is_multi,
+                        "albums_count": albums_count,
+                    })
+                }).collect();
+                return Ok(Json(serde_json::json!({
+                    "player_name": player_name,
+                    "category": category,
+                    "count": enhanced.len(),
+                    "artists": enhanced,
+                })));
             } else {
                 return Err(Custom(
                     Status::NotFound,

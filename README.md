@@ -97,6 +97,27 @@ AudioControl supports the following command line options:
 - [Library Management](doc/library.md)
 - [WebSocket Support](doc/websocket.md)
 
+## Genre Cleanup Bootstrap from MusicBrainz Dumps
+
+You can generate a starter genre cleanup mapping without importing MusicBrainz into PostgreSQL.
+
+The script streams `mbdump.tar.bz2` and `mbdump-derived.tar.bz2` directly from the MusicBrainz full export, aggregates official genre usage across entity tag tables, filters by a threshold, and maps to a compact base category set.
+
+Run from the `acr` directory:
+
+```bash
+python3 scripts/generate_genre_base_from_mb_dumps.py \
+  --threshold 200 \
+  --output-json configs/genres.generated.base.json \
+  --output-csv configs/genres.generated.counts.csv
+```
+
+Useful options:
+
+- `--snapshot 20260228-002116` to pin an exact MusicBrainz export snapshot
+- `--snapshot LATEST` (default) to use the newest snapshot
+- `--max-rows-per-table N` for quick smoke tests
+
 ## Database Architecture
 
 AudioControl uses SQLite for all persistent storage needs:

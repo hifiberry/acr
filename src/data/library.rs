@@ -209,6 +209,42 @@ pub trait LibraryInterface {
             .collect()
     }
 
+    /// Get all unique categories (explicitly mapped genre labels) from albums and artist metadata
+    ///
+    /// Categories are only genres that have an explicit mapping configured.
+    /// Genres without a mapping are excluded — use get_genres() for all cleaned genres.
+    fn get_categories(&self) -> Vec<String> {
+        crate::helpers::genre_cleanup::map_to_categories_global(self.get_raw_genres())
+    }
+
+    /// Get albums filtered by category (case-insensitive, explicit mappings only)
+    fn get_albums_by_category(&self, category: &str) -> Vec<Album> {
+        let cat_lower = category.to_lowercase();
+        self.get_albums()
+            .into_iter()
+            .filter(|a| {
+                let cats = crate::helpers::genre_cleanup::map_to_categories_global(a.genres.clone());
+                cats.iter().any(|c| c.to_lowercase() == cat_lower)
+            })
+            .collect()
+    }
+
+    /// Get artists filtered by category via their metadata (case-insensitive, explicit mappings only)
+    fn get_artists_by_category(&self, category: &str) -> Vec<Artist> {
+        let cat_lower = category.to_lowercase();
+        self.get_artists()
+            .into_iter()
+            .filter(|a| {
+                a.metadata.as_ref()
+                    .map(|m| {
+                        let cats = crate::helpers::genre_cleanup::map_to_categories_global(m.genres.clone());
+                        cats.iter().any(|c| c.to_lowercase() == cat_lower)
+                    })
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
     /// Allow downcasting to concrete types
     fn as_any(&self) -> &dyn std::any::Any;
     

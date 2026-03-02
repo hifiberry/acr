@@ -120,7 +120,7 @@ pub trait LibraryInterface {
     fn get_albums_by_artist_id(&self, artist_id: &Identifier) -> Vec<Album>;
     
     /// Force an update of the library data in the underlying system
-    /// 
+    ///
     /// This differs from refresh_library in that it asks the backend system
     /// to scan for new files or changes, rather than just refreshing our in-memory data.
     /// Returns true if the update was initiated successfully, false otherwise.
@@ -128,7 +128,29 @@ pub trait LibraryInterface {
         // Default implementation does nothing and returns false
         false
     }
-    
+
+    /// Whether this library supports deleting albums and tracks from disk.
+    /// Default is false; only backends with direct filesystem access should override.
+    fn supports_delete(&self) -> bool {
+        false
+    }
+
+    /// Delete an album and all its tracks from the underlying filesystem.
+    /// A library refresh is triggered automatically on success.
+    /// Returns Err if not supported or if deletion fails.
+    fn delete_album(&self, album_id: &Identifier) -> Result<(), LibraryError> {
+        let _ = album_id;
+        Err(LibraryError::InternalError("Delete not supported by this library".to_string()))
+    }
+
+    /// Delete a single track by its URI (relative path like `Artist/Album/01.flac`).
+    /// A library refresh is triggered automatically on success.
+    /// Returns Err if not supported or if deletion fails.
+    fn delete_track(&self, track_uri: &str) -> Result<(), LibraryError> {
+        let _ = track_uri;
+        Err(LibraryError::InternalError("Delete not supported by this library".to_string()))
+    }
+
     /// Get all unique raw genres from album tags, sorted alphabetically (no cleanup applied)
     fn get_raw_album_genres(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();

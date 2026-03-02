@@ -30,7 +30,10 @@ impl Error for PlayerCreationError {}
 /// Factory functions for creating PlayerController instances
 pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerController>, PlayerCreationError> {
     // Expect a single key-value pair where key is the player type
-    if let Some((player_type, config_obj)) = config.as_object().and_then(|obj| obj.iter().next()) {
+    // Skip internal metadata keys (e.g. _from_include) added by config merging
+    if let Some((player_type, config_obj)) = config.as_object().and_then(|obj| {
+        obj.iter().find(|(k, _)| k.as_str() != "_from_include")
+    }) {
         // Filter out players that start with underscore (commented/disabled convention)
         if player_type.starts_with('_') {
             return Err(PlayerCreationError::ParseError(
@@ -95,13 +98,19 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     .and_then(|v| v.as_str())
                     .unwrap_or("") // Default to empty string if not specified
                     .to_string();
-                
+
+                // Check if library_read_only is specified in the JSON
+                let library_read_only = config_obj.get("library_read_only")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false); // Default: deletion supported
+
                 let mut player = MPDPlayerController::with_connection(host, port);
                 player.set_load_mpd_library(load_library);
                 player.set_enhance_metadata(enhance_metadata);
                 player.set_extract_coverart(extract_coverart);
                 player.set_max_reconnect_attempts(max_reconnect_attempts);
                 player.set_music_directory(music_directory);
+                player.set_library_read_only(library_read_only);
                 
                 // Set custom artist separators if provided
                 if let Some(separators) = artist_separators {

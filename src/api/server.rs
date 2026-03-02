@@ -101,7 +101,9 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         library::get_library_categories,
         library::get_albums_by_category,
         library::get_artists_by_category,
-        
+        library::delete_library_album,
+        library::delete_library_track,
+
         // TheAudioDB routes
         theaudiodb::lookup_artist_by_mbid,
         

@@ -114,9 +114,17 @@ pub fn merge_player_includes(config: &mut serde_json::Value, config_dir: &Path) 
                         warn!("Skipping {}: not a JSON object or array", path.display());
                         continue;
                     };
-                    let count = items.len();
+                    // Tag each item so from_json() knows it came from an include
+                    let tagged: Vec<_> = items.into_iter().map(|mut item| {
+                        if let Some(obj) = item.as_object_mut() {
+                            obj.insert("_from_include".to_string(),
+                                       serde_json::Value::String(path.display().to_string()));
+                        }
+                        item
+                    }).collect();
+                    let count = tagged.len();
                     if let Some(players) = config["players"].as_array_mut() {
-                        players.extend(items);
+                        players.extend(tagged);
                     }
                     info!("Loaded {} player(s) from {}", count, path.display());
                 }

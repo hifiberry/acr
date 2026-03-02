@@ -378,6 +378,10 @@ impl AudioController {
             debug!("Creating AudioController players from JSON array with {} elements", players_config.len());
 
             for (idx, player_config) in players_config.iter().enumerate() {
+                let from_include = player_config.get("_from_include")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
                 match create_player_from_json(player_config) {
                     Ok(player) => {
                         debug!("Successfully created player {} from JSON configuration", idx);
@@ -389,6 +393,11 @@ impl AudioController {
                                 debug!("Skipping disabled/filtered player {}: {}", idx, msg);
                                 continue;
                             }
+                        }
+
+                        if let Some(source) = &from_include {
+                            error!("Skipping included player {} from {}: {}", idx, source, e);
+                            continue;
                         }
 
                         error!("Failed to create player {}: {}", idx, e);

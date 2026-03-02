@@ -1346,6 +1346,82 @@ impl LibraryInterface for MPDLibrary {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    fn supports_delete(&self) -> bool {
+        !self.controller.get_library_read_only()
+    }
+
+    fn delete_album(&self, album_id: &crate::data::Identifier) -> Result<(), crate::data::library::LibraryError> {
+        use std::collections::HashSet;
+        use std::path::PathBuf;
+
+        let album = self.get_album_by_id(album_id)
+            .ok_or_else(|| crate::data::library::LibraryError::QueryError(
+                format!("Album not found: {:?}", album_id)
+            ))?;
+
+        let music_dir = self.controller.get_effective_music_directory()
+            .ok_or_else(|| crate::data::library::LibraryError::InternalError(
+                "Music directory not configured".to_string()
+            ))?;
+
+        let mut dirs_to_clean: HashSet<PathBuf> = HashSet::new();
+        let tracks = album.tracks.lock();
+        for track in tracks.iter() {
+            if let Some(uri) = &track.uri {
+                let full_path = PathBuf::from(&music_dir).join(uri);
+                if let Some(parent) = full_path.parent() {
+                    dirs_to_clean.insert(parent.to_path_buf());
+                }
+                if let Err(e) = std::fs::remove_file(&full_path) {
+                    error!("Failed to delete track {:?}: {}", full_path, e);
+                    return Err(crate::data::library::LibraryError::InternalError(
+                        format!("Failed to delete file: {}", e)
+                    ));
+                }
+                info!("Deleted track file: {:?}", full_path);
+            }
+        }
+        drop(tracks);
+
+        // Remove now-empty album directories
+        for dir in &dirs_to_clean {
+            match dir.read_dir() {
+                Ok(mut entries) => {
+                    if entries.next().is_none() {
+                        if let Err(e) = std::fs::remove_dir(dir) {
+                            warn!("Could not remove empty directory {:?}: {}", dir, e);
+                        } else {
+                            info!("Removed empty album directory: {:?}", dir);
+                        }
+                    }
+                }
+                Err(e) => warn!("Could not read directory {:?}: {}", dir, e),
+            }
+        }
+
+        self.force_update();
+        Ok(())
+    }
+
+    fn delete_track(&self, track_uri: &str) -> Result<(), crate::data::library::LibraryError> {
+        use std::path::PathBuf;
+
+        let music_dir = self.controller.get_effective_music_directory()
+            .ok_or_else(|| crate::data::library::LibraryError::InternalError(
+                "Music directory not configured".to_string()
+            ))?;
+
+        let full_path = PathBuf::from(&music_dir).join(track_uri);
+        std::fs::remove_file(&full_path)
+            .map_err(|e| crate::data::library::LibraryError::InternalError(
+                format!("Failed to delete file {:?}: {}", full_path, e)
+            ))?;
+
+        info!("Deleted track file: {:?}", full_path);
+        self.force_update();
+        Ok(())
+    }
 }
 
 impl MPDLibrary {

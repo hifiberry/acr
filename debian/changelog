@@ -1,78 +1,33 @@
-hifiberry-audiocontrol (0.7.9) stable; urgency=medium
+hifiberry-audiocontrol (0.7.12) stable; urgency=medium
 
-  * Add album genre updater: background job fetches genres from MusicBrainz
-    for albums without file-level genre tags, stores in attribute cache
-  * Library load now restores cached album genres from previous lookups
-  * get_albums_by_category now also matches via artist metadata genres
-  * Fix: categories page no longer shows empty results when clicking a category
+  * Add supports_delete capability flag to library API response
+  * Add DELETE /library/<player>/album/<id> and DELETE /library/<player>/track/<uri> endpoints
+  * Add library_read_only config option for MPD player (default: true for safety)
+  * MPD: search mpd.conf in ~/etc/mpd.conf and ~/.config/mpd/mpd.conf via /etc/hifiberry.user
 
- -- HiFiBerry <info@hifiberry.com>  Sat, 28 Feb 2026 16:00:00 +0000
+ -- HiFiBerry <info@hifiberry.com>  Mon, 02 Mar 2026 23:30:00 +0000
 
-hifiberry-audiocontrol (0.7.8) stable; urgency=medium
+hifiberry-audiocontrol (0.7.11) stable; urgency=medium
 
-  * genres.json: add 13 new categories (dance, chill, instrumental, spoken,
-    darkwave, emo, psychedelic, synthwave, schlager, swing, children,
-    christmas, comedy) with 62 genre mappings moved out of "other"
+  * Gracefully skip included player configs (players.d/) that fail to load
+    instead of aborting startup
 
- -- HiFiBerry <info@hifiberry.com>  Sat, 28 Feb 2026 15:00:00 +0000
+ -- HiFiBerry <info@hifiberry.com>  Mon, 02 Mar 2026 10:00:00 +0000
 
-hifiberry-audiocontrol (0.7.7) stable; urgency=medium
+hifiberry-audiocontrol (0.7.10) stable; urgency=medium
 
-  * Categories: only show explicitly mapped genres (not all cleaned genres)
-  * AlbumDTO: categories field now reflects explicit mappings only
+  * Add genres/categories system: genre tags from MPD/LMS, genre cleanup with
+    user-overridable config, categories as mapped genre labels
+  * Add genre/category API endpoints: genres, categories, albums/artists
+    by-genre and by-category, genre config CRUD
+  * Add album genre updater: background MusicBrainz lookup for missing genres
+  * genres.json: 13 new categories with 62 genre mappings
+  * Add fuzzy artist name search (?fuzzy=true)
+  * Add tracks_count to library stats response
+  * Fix proxied API media URLs (X-Forwarded-Prefix rewriting)
+  * Add nginx include file for AudioControl API proxy
 
- -- HiFiBerry <info@hifiberry.com>  Sat, 28 Feb 2026 14:00:00 +0000
-
-hifiberry-audiocontrol (0.7.6) stable; urgency=medium
-
-  * Library: add categories (mapped genre labels) separate from raw genres
-  * AlbumDTO: include both genres (raw tags) and categories (mapped labels)
-  * Add GET /library/<player>/categories endpoint
-  * Add GET /library/<player>/albums/by-category/<category> endpoint
-  * Add GET /library/<player>/artists/by-category/<category> endpoint
-
- -- HiFiBerry <info@hifiberry.com>  Fri, 28 Feb 2026 23:00:00 +0000
-
-hifiberry-audiocontrol (0.7.5) stable; urgency=medium
-
-  * Genre cleanup: apply user config merging with system config (user overrides win)
-  * Genre cleanup: store user config in ~/.config/audiocontrol/genres.json
-  * Library: genre query methods now apply cleanup; get_raw_genres() skips cleanup
-  * Library: GET /library/<player>/genres?raw=true returns unprocessed tags
-  * Add genre config CRUD API: GET/PUT /genres/config, /genres/user-config,
-    POST/DELETE /genres/mapping, POST/DELETE /genres/ignore
-
- -- HiFiBerry <info@hifiberry.com>  Fri, 28 Feb 2026 22:00:00 +0000
-
-hifiberry-audiocontrol (0.7.4) stable; urgency=medium
-
-  * Fix proxied API media URLs by rewriting API-relative song cover URLs
-    using X-Forwarded-Prefix when present
-  * Add nginx forwarded prefix header for /api/audiocontrol proxy path
-
- -- HiFiBerry <info@hifiberry.com>  Sat, 28 Feb 2026 20:30:00 +0000
-
-hifiberry-audiocontrol (0.7.3) stable; urgency=medium
-
-  * Add genres field to Album (populated from MPD Genre tags and LMS genre data)
-  * Add genre filtering methods to LibraryInterface (get_genres, get_albums_by_genre, get_artists_by_genre)
-  * Add API endpoints: GET /library/{player}/genres, /albums/by-genre/{genre}, /artists/by-genre/{genre}
-  * Include genres field in AlbumDTO responses
-
- -- HiFiBerry <info@hifiberry.com>  Fri, 28 Feb 2026 18:00:00 +0000
-
-hifiberry-audiocontrol (0.7.2) stable; urgency=medium
-
-  * Add fuzzy/flexible artist name search (?fuzzy=true query param on artist endpoints)
-  * Fix case-insensitive artist lookup in LMS library
-
- -- HiFiBerry <info@hifiberry.com>  Sat, 28 Feb 2026 14:00:00 +0000
-
-hifiberry-audiocontrol (0.7.1) stable; urgency=medium
-
-  * Add nginx include file for AudioControl API proxy (/etc/nginx/hifiberry-api.d/)
-
- -- HiFiBerry <info@hifiberry.com>  Sat, 28 Feb 2026 12:00:00 +0000
+ -- HiFiBerry <info@hifiberry.com>  Sat, 01 Mar 2026 09:00:00 +0000
 
 hifiberry-audiocontrol (0.7.0) stable; urgency=medium
 

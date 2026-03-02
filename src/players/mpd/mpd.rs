@@ -59,6 +59,9 @@ pub struct MPDPlayerController {
     
     /// MPD music directory path (if empty, will attempt to read from /etc/mpd.conf)
     music_directory: String,
+
+    /// If true, the library is read-only and deletion is not supported
+    library_read_only: bool,
     
     /// Cached effective music directory (to avoid parsing /etc/mpd.conf repeatedly)
     effective_music_directory: Arc<Mutex<Option<String>>>,
@@ -104,6 +107,7 @@ impl Clone for MPDPlayerController {
             connection_disabled: Arc::clone(&self.connection_disabled),
             song_split_manager: self.song_split_manager.clone(),
             current_update_job_id: Arc::clone(&self.current_update_job_id),
+            library_read_only: self.library_read_only,
         }
     }
 }
@@ -135,6 +139,7 @@ impl MPDPlayerController {
             extract_coverart: true,
             artist_separators: None,
             music_directory: String::new(),
+            library_read_only: false,
             effective_music_directory: Arc::new(Mutex::new(None)),
             library: Arc::new(Mutex::new(None)),
             max_reconnect_attempts: 5, // Default value
@@ -168,6 +173,7 @@ impl MPDPlayerController {
             extract_coverart: true,
             artist_separators: None,
             music_directory: String::new(),
+            library_read_only: false,
             effective_music_directory: Arc::new(Mutex::new(None)),
             library: Arc::new(Mutex::new(None)),
             max_reconnect_attempts: 5, // Default value
@@ -300,6 +306,16 @@ impl MPDPlayerController {
             *cached = None;
         }
     }
+
+    /// Get whether the library is configured as read-only (deletion disabled)
+    pub fn get_library_read_only(&self) -> bool {
+        self.library_read_only
+    }
+
+    /// Set whether the library is read-only (disables deletion support)
+    pub fn set_library_read_only(&mut self, read_only: bool) {
+        self.library_read_only = read_only;
+    }
     
     /// Get the effective music directory path
     /// If configured music_directory is empty, attempts to parse it from /etc/mpd.conf
@@ -317,61 +333,140 @@ impl MPDPlayerController {
             debug!("Using configured music directory: {}", self.music_directory);
             Some(self.music_directory.clone())
         } else {
-            // Otherwise, try to parse it from /etc/mpd.conf
-            debug!("Music directory not configured, attempting to parse from /etc/mpd.conf");
+            // 1. Parse from mpd.conf in known locations (system-wide + hifiberry user home)
+            // 2. Fall back to asking MPD directly via the config command (requires admin password)
+            // 3. Fall back to well-known HiFiBerry OS default paths
             self.parse_music_directory_from_config()
+                .or_else(|| self.query_music_directory_from_mpd())
+                .or_else(|| {
+                    // Well-known defaults used by the HiFiBerry OS MPD package.
+                    // These match the fallback list already used by cover art extraction.
+                    for candidate in &["/var/lib/mpd/music", "/music", "/srv/music"] {
+                        if std::path::Path::new(candidate).is_dir() {
+                            info!("Using well-known fallback music directory: {}", candidate);
+                            return Some(candidate.to_string());
+                        }
+                    }
+                    warn!("Could not determine MPD music directory from any source");
+                    None
+                })
         };
 
-        // Cache the result
-        {
+        // Only cache on success to allow retrying after transient failures
+        if let Some(ref dir) = effective_dir {
             let mut cached = self.effective_music_directory.lock();
-            *cached = effective_dir.clone();
+            *cached = Some(dir.clone());
         }
 
         effective_dir
     }
     
-    /// Parse the music directory from /etc/mpd.conf
+    /// Parse the music directory from mpd.conf, trying multiple candidate paths.
+    ///
+    /// Search order:
+    /// 1. `/etc/mpd.conf` (system-wide, root-run MPD)
+    /// 2. `~<hifiberry_user>/etc/mpd.conf` (HiFiBerry user service, start-mpd.sh style)
+    /// 3. `~<hifiberry_user>/.config/mpd/mpd.conf` (XDG default for user MPD)
+    ///
+    /// The hifiberry user is read from `/etc/hifiberry.user`; their home directory
+    /// is resolved from `/etc/passwd`.
     fn parse_music_directory_from_config(&self) -> Option<String> {
-        let config_path = "/etc/mpd.conf";
-        
-        match fs::File::open(config_path) {
-            Ok(file) => {
-                let reader = BufReader::new(file);
-                
-                for line in reader.lines().map_while(Result::ok) {
-                    let trimmed = line.trim();
+        let mut candidates = vec!["/etc/mpd.conf".to_string()];
 
-                    // Skip comments and empty lines
-                    if trimmed.is_empty() || trimmed.starts_with('#') {
-                        continue;
-                    }
-
-                    // Look for music_directory line
-                    if trimmed.starts_with("music_directory") {
-                        // Parse the format: music_directory "/var/lib/mpd/music"
-                        if let Some(start_quote) = trimmed.find('"') {
-                            if let Some(end_quote) = trimmed.rfind('"') {
-                                if start_quote < end_quote {
-                                    let directory = &trimmed[start_quote + 1..end_quote];
-                                    info!("Auto-detected MPD music directory from {}: {}", config_path, directory);
-                                    return Some(directory.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                warn!("No music_directory found in {}", config_path);
-                None
-            }
-            Err(e) => {
-                warn!("Failed to read {}: {}", config_path, e);
-                None
+        // Read the hifiberry username and resolve their home dir
+        if let Ok(username) = fs::read_to_string("/etc/hifiberry.user") {
+            let username = username.trim();
+            if let Some(home) = Self::home_dir_for_user(username) {
+                candidates.push(format!("{}/etc/mpd.conf", home));
+                candidates.push(format!("{}/.config/mpd/mpd.conf", home));
             }
         }
+
+        for config_path in &candidates {
+            if let Some(dir) = Self::parse_music_directory_from_file(config_path) {
+                return Some(dir);
+            }
+        }
+
+        warn!("music_directory not found in any of: {:?}", candidates);
+        None
     }
-    
+
+    /// Extract the `music_directory` value from a single mpd.conf file.
+    fn parse_music_directory_from_file(config_path: &str) -> Option<String> {
+        let file = match fs::File::open(config_path) {
+            Ok(f) => f,
+            Err(_) => return None,
+        };
+
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if trimmed.starts_with("music_directory") {
+                if let (Some(s), Some(e)) = (trimmed.find('"'), trimmed.rfind('"')) {
+                    if s < e {
+                        let directory = &trimmed[s + 1..e];
+                        info!("Auto-detected MPD music directory from {}: {}", config_path, directory);
+                        return Some(directory.to_string());
+                    }
+                }
+            }
+        }
+
+        debug!("No music_directory found in {}", config_path);
+        None
+    }
+
+    /// Look up a user's home directory from `/etc/passwd`.
+    fn home_dir_for_user(username: &str) -> Option<String> {
+        let file = fs::File::open("/etc/passwd").ok()?;
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let fields: Vec<&str> = line.splitn(7, ':').collect();
+            if fields.len() >= 6 && fields[0] == username {
+                return Some(fields[5].to_string());
+            }
+        }
+        None
+    }
+
+    /// Query MPD directly for its music_directory via the `config` command.
+    fn query_music_directory_from_mpd(&self) -> Option<String> {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+
+        let stream = TcpStream::connect(format!("{}:{}", self.hostname, self.port)).ok()?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).ok()?;
+
+        let mut reader = BufReader::new(stream.try_clone().ok()?);
+        let mut writer = stream;
+
+        // Read welcome line
+        let mut welcome = String::new();
+        reader.read_line(&mut welcome).ok()?;
+        if !welcome.starts_with("OK") {
+            return None;
+        }
+
+        writer.write_all(b"config\n").ok()?;
+
+        for line in reader.lines().map_while(Result::ok) {
+            if line == "OK" {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix("music_directory: ") {
+                let dir = rest.trim().to_string();
+                info!("Auto-detected MPD music directory via config command: {}", dir);
+                return Some(dir);
+            }
+        }
+
+        warn!("MPD config command did not return music_directory");
+        None
+    }
+
+
     /// Get the maximum number of reconnection attempts
     pub fn get_max_reconnect_attempts(&self) -> u32 {
         self.max_reconnect_attempts

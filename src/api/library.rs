@@ -1,8 +1,8 @@
 use crate::AudioController;
-use crate::data::{Album, Artist};
+use crate::data::{Album, Artist, Identifier};
 use crate::data::library::ArtistMatchType;
 use rocket::serde::json::Json;
-use rocket::{get, post, State};
+use rocket::{delete, get, post, State};
 use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
@@ -25,6 +25,8 @@ pub struct LibraryResponse {
     is_loaded: bool,
     albums_count: usize,
     artists_count: usize,
+    tracks_count: usize,
+    supports_delete: bool,
 }
 
 /// Response structure for library list - lists all players with library info
@@ -55,6 +57,7 @@ pub struct LibraryPlayerInfo {
     player_id: String,
     has_library: bool,
     is_loaded: bool,
+    supports_delete: bool,
 }
 
 /// Response structure for albums list
@@ -244,9 +247,9 @@ pub fn list_libraries(controller: &State<Arc<AudioController>>) -> Json<LibraryL
         let library = ctrl.get_library();
 
         // Determine library status
-        let (has_library, is_loaded) = match &library {
-            Some(lib) => (true, lib.is_loaded()),
-            None => (false, false),
+        let (has_library, is_loaded, supports_delete) = match &library {
+            Some(lib) => (true, lib.is_loaded(), lib.supports_delete()),
+            None => (false, false, false),
         };
 
         // Add player info to the list
@@ -255,6 +258,7 @@ pub fn list_libraries(controller: &State<Arc<AudioController>>) -> Json<LibraryL
             player_id,
             has_library,
             is_loaded,
+            supports_delete,
         });
     }
     
@@ -274,8 +278,10 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
             if let Some(library) = ctrl.get_library() {
                 // Get basic library info
                 let is_loaded = library.is_loaded();
+                let supports_delete = library.supports_delete();
                 let albums = library.get_albums();
                 let artists = library.get_artists();
+                let tracks_count: usize = albums.iter().map(|a| a.tracks.lock().len()).sum();
 
                 return Ok(Json(LibraryResponse {
                     player_name: player_name.to_string(),
@@ -284,6 +290,8 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
                     is_loaded,
                     albums_count: albums.len(),
                     artists_count: artists.len(),
+                    tracks_count,
+                    supports_delete,
                 }));
             } else {
                 // Player exists but doesn't have a library
@@ -296,6 +304,8 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
                         is_loaded: false,
                         albums_count: 0,
                         artists_count: 0,
+                        tracks_count: 0,
+                        supports_delete: false,
                     }),
                 ));
             }
@@ -312,6 +322,8 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
             is_loaded: false,
             albums_count: 0,
             artists_count: 0,
+            tracks_count: 0,
+            supports_delete: false,
         }),
     ))
 }
@@ -876,7 +888,8 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                         let is_loaded = library.is_loaded();
                         let albums = library.get_albums();
                         let artists = library.get_artists();
-                        
+                        let tracks_count: usize = albums.iter().map(|a| a.tracks.lock().len()).sum();
+
                         return Ok(Json(LibraryResponse {
                             player_name: player_name.to_string(),
                             player_id: ctrl.get_player_id(),
@@ -884,6 +897,8 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                             is_loaded,
                             albums_count: albums.len(),
                             artists_count: artists.len(),
+                            tracks_count,
+                            supports_delete: library.supports_delete(),
                         }));
                     },
                     Err(e) => {
@@ -1244,4 +1259,141 @@ pub fn get_library_metadata_key(
         Status::NotFound,
         format!("Player '{}' not found", player_name),
     ))
+}
+
+/// Response structure for delete operations
+#[derive(serde::Serialize)]
+pub(crate) struct DeleteResponse {
+    success: bool,
+    message: String,
+}
+
+/// Delete an album and all its tracks from the library filesystem
+#[delete("/library/<player_name>/album/<album_id>")]
+pub fn delete_library_album(
+    player_name: &str,
+    album_id: &str,
+    controller: &State<Arc<AudioController>>,
+) -> Custom<Json<DeleteResponse>> {
+    let controllers = controller.inner().list_controllers();
+
+    for ctrl_lock in controllers {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            if let Some(library) = ctrl.get_library() {
+                if !library.supports_delete() {
+                    return Custom(
+                        Status::MethodNotAllowed,
+                        Json(DeleteResponse {
+                            success: false,
+                            message: format!("Player '{}' does not support deletion", player_name),
+                        }),
+                    );
+                }
+                let id = if let Ok(num) = album_id.parse::<u64>() {
+                    Identifier::Numeric(num)
+                } else {
+                    Identifier::String(album_id.to_string())
+                };
+                match library.delete_album(&id) {
+                    Ok(()) => return Custom(
+                        Status::Ok,
+                        Json(DeleteResponse {
+                            success: true,
+                            message: format!("Album '{}' deleted", album_id),
+                        }),
+                    ),
+                    Err(e) => return Custom(
+                        Status::InternalServerError,
+                        Json(DeleteResponse {
+                            success: false,
+                            message: format!("Failed to delete album: {}", e),
+                        }),
+                    ),
+                }
+            } else {
+                return Custom(
+                    Status::NotFound,
+                    Json(DeleteResponse {
+                        success: false,
+                        message: format!("Player '{}' does not have a library", player_name),
+                    }),
+                );
+            }
+        }
+    }
+
+    Custom(
+        Status::NotFound,
+        Json(DeleteResponse {
+            success: false,
+            message: format!("Player '{}' not found", player_name),
+        }),
+    )
+}
+
+/// Delete a single track from the library filesystem by its URI
+///
+/// The track_uri path segment is percent-encoded (standard URL encoding).
+#[delete("/library/<player_name>/track/<track_uri>")]
+pub fn delete_library_track(
+    player_name: &str,
+    track_uri: &str,
+    controller: &State<Arc<AudioController>>,
+) -> Custom<Json<DeleteResponse>> {
+    let controllers = controller.inner().list_controllers();
+
+    let decoded_uri = match urlencoding::decode(track_uri) {
+        Ok(s) => s.into_owned(),
+        Err(_) => track_uri.to_string(),
+    };
+
+    for ctrl_lock in controllers {
+        let ctrl = ctrl_lock.read();
+        if ctrl.get_player_name() == player_name {
+            if let Some(library) = ctrl.get_library() {
+                if !library.supports_delete() {
+                    return Custom(
+                        Status::MethodNotAllowed,
+                        Json(DeleteResponse {
+                            success: false,
+                            message: format!("Player '{}' does not support deletion", player_name),
+                        }),
+                    );
+                }
+                match library.delete_track(&decoded_uri) {
+                    Ok(()) => return Custom(
+                        Status::Ok,
+                        Json(DeleteResponse {
+                            success: true,
+                            message: format!("Track '{}' deleted", decoded_uri),
+                        }),
+                    ),
+                    Err(e) => return Custom(
+                        Status::InternalServerError,
+                        Json(DeleteResponse {
+                            success: false,
+                            message: format!("Failed to delete track: {}", e),
+                        }),
+                    ),
+                }
+            } else {
+                return Custom(
+                    Status::NotFound,
+                    Json(DeleteResponse {
+                        success: false,
+                        message: format!("Player '{}' does not have a library", player_name),
+                    }),
+                );
+            }
+        }
+    }
+
+    Custom(
+        Status::NotFound,
+        Json(DeleteResponse {
+            success: false,
+            message: format!("Player '{}' not found", player_name),
+        }),
+    )
 }

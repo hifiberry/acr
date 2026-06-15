@@ -48,9 +48,6 @@ pub struct BluetoothPlayerController {
     
     /// Flag to stop polling thread
     stop_polling: Arc<std::sync::atomic::AtomicBool>,
-    
-    /// Whether this controller was created in auto-discover mode
-    is_auto_discover: bool,
 }
 
 // Manually implement Clone for BluetoothPlayerController
@@ -68,7 +65,6 @@ impl Clone for BluetoothPlayerController {
             stop_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             poll_thread: Arc::new(RwLock::new(None)),
             stop_polling: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            is_auto_discover: self.is_auto_discover,
         }
     }
 }
@@ -113,11 +109,19 @@ impl BluetoothPlayerController {
     
     /// Create a new BluetoothPlayerController with a specific device address
     pub fn new_with_address(device_address: Option<String>) -> Self {
+        // Construct the player id WITH the "bluetooth:" prefix so it is the single
+        // source of truth. The base controller stores this id and the inherent
+        // BasePlayerController::notify_state_changed() stamps it onto every
+        // StateChanged event (PlayerSource). ActiveMonitor looks players up by the
+        // same id, so event id and lookup id must be identical. Previously the base
+        // id was the bare "auto-discover" while get_player_id() returned the prefixed
+        // "bluetooth:auto-discover", so the lookup never matched the event and the
+        // Bluetooth player was never promoted to active (hifiberry/acr#11).
         let player_id = match &device_address {
-            Some(addr) => addr.clone(),
-            None => "auto-discover".to_string(),
+            Some(addr) => format!("bluetooth:{}", addr),
+            None => "bluetooth:auto-discover".to_string(),
         };
-        
+
         let base = BasePlayerController::with_player_info("bluetooth", &player_id);
         
         // Set initial capabilities
@@ -129,9 +133,7 @@ impl BluetoothPlayerController {
             PlayerCapability::Previous,
         ]);
         base.set_capabilities_set(capabilities, false);
-        
-        let is_auto_discover = device_address.is_none();
-        
+
         let controller = BluetoothPlayerController {
             base,
             connection: Arc::new(Mutex::new(None)),
@@ -144,7 +146,6 @@ impl BluetoothPlayerController {
             stop_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             poll_thread: Arc::new(RwLock::new(None)),
             stop_polling: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            is_auto_discover,
         };
         
         info!("Created BluetoothPlayerController with address: {:?}", device_address);
@@ -977,16 +978,12 @@ impl PlayerController for BluetoothPlayerController {
     }
     
     fn get_player_id(&self) -> String {
-        // If controller was created in auto-discover mode, always return "bluetooth:auto-discover"
-        // If controller was created with specific device, return "bluetooth:<device_address>"
-        
-        if self.is_auto_discover {
-            "bluetooth:auto-discover".to_string()
-        } else {
-            // For specific device controllers, return the configured address with bluetooth prefix
-            let device_address = self.device_address.read().clone().unwrap_or_else(|| "unknown".to_string());
-            format!("bluetooth:{}", device_address)
-        }
+        // Delegate to the base controller, which holds the already-prefixed id
+        // ("bluetooth:auto-discover" or "bluetooth:<device_address>") set in
+        // new_with_address(). This keeps a single source of truth so the id on
+        // StateChanged events (stamped via the inherent base method) matches the id
+        // ActiveMonitor looks up (hifiberry/acr#11).
+        self.base.get_player_id()
     }
     
     fn send_command(&self, command: PlayerCommand) -> bool {

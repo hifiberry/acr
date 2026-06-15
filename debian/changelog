@@ -1,3 +1,19 @@
+hifiberry-audiocontrol (0.7.13) stable; urgency=medium
+
+  * Bluetooth: fix the auto-discover player never becoming the active player.
+    The controller registered (and was looked up by ActiveMonitor) under the
+    prefixed id "bluetooth:auto-discover" returned by the get_player_id() trait
+    override, but StateChanged events were stamped via the inherent
+    BasePlayerController::notify_state_changed() with the bare base id
+    "auto-discover". The ids never matched, so ActiveMonitor logged "Could not
+    find player bluetooth:auto-discover to set active" and the Bluetooth player
+    stayed is_active=false while music was playing. Construct the base
+    controller with the already-prefixed id and delegate the trait override to
+    the base so event id and lookup id share a single source of truth.
+    (hifiberry/acr#11)
+
+ -- HiFiBerry <info@hifiberry.com>  Mon, 15 Jun 2026 13:30:00 +0000
+
 hifiberry-audiocontrol (0.7.12) stable; urgency=medium
 
   * Add supports_delete capability flag to library API response

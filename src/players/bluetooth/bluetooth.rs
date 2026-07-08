@@ -230,6 +230,44 @@ impl BluetoothPlayerController {
         
         devices
     }
+
+    /// Read the A2DP audio stream format (codec, and sample rate for SBC) for a
+    /// device from its BlueZ `MediaTransport1` object. Returns None if no active
+    /// transport is found.
+    fn read_transport_stream_details(&self, device_address: &str) -> Option<crate::data::stream_details::StreamDetails> {
+        if !self.ensure_dbus_connection() {
+            return None;
+        }
+        let device_path_part = device_address.replace(':', "_");
+        let conn_guard = self.connection.lock();
+        let conn = conn_guard.as_ref()?;
+        let proxy = conn.with_proxy("org.bluez", "/", Duration::from_millis(5000));
+        let objects = proxy.get_managed_objects().ok()?;
+        let device_prefix = format!("/org/bluez/hci0/dev_{}/", device_path_part);
+
+        for (path, interfaces) in objects {
+            if !path.starts_with(&device_prefix)
+                || !interfaces.contains_key("org.bluez.MediaTransport1")
+            {
+                continue;
+            }
+            let tproxy = conn.with_proxy("org.bluez", &path, Duration::from_millis(1000));
+            let codec_byte = tproxy.get::<u8>("org.bluez.MediaTransport1", "Codec").ok()?;
+            let mut sd = crate::data::stream_details::StreamDetails::new();
+            sd.codec = Some(bt_codec_name(codec_byte));
+            sd.lossless = Some(false); // all common A2DP codecs are lossy
+            // Sample rate is encoded in the codec-specific Configuration; decode
+            // it for SBC (Codec 0), which is by far the most common.
+            if codec_byte == 0 {
+                if let Ok(config) = tproxy.get::<Vec<u8>>("org.bluez.MediaTransport1", "Configuration") {
+                    sd.sample_rate = sbc_sample_rate(&config);
+                }
+            }
+            return Some(sd);
+        }
+        None
+    }
+
     /// Find the active player path for a given device address
     /// This scans for MediaPlayer1 interfaces (player0, player1, player2, etc.)
     fn find_active_player(&self, device_address: &str) -> Option<String> {
@@ -922,6 +960,30 @@ impl BluetoothPlayerController {
     }
 }
 
+/// Map a BlueZ A2DP transport Codec id to a display name.
+fn bt_codec_name(codec: u8) -> String {
+    match codec {
+        0x00 => "SBC".to_string(),
+        0x01 => "MPEG-1,2 Audio".to_string(),
+        0x02 => "AAC".to_string(),
+        0x04 => "ATRAC".to_string(),
+        0xFF => "aptX/LDAC".to_string(),
+        other => format!("codec {}", other),
+    }
+}
+
+/// Decode the SBC sample rate from the A2DP codec Configuration bytes.
+/// The top nibble of the first byte holds the sampling-frequency flag.
+fn sbc_sample_rate(config: &[u8]) -> Option<u32> {
+    match config.first()? & 0xF0 {
+        0x80 => Some(16000),
+        0x40 => Some(32000),
+        0x20 => Some(44100),
+        0x10 => Some(48000),
+        _ => None,
+    }
+}
+
 impl PlayerController for BluetoothPlayerController {
     delegate! {
         to self.base {
@@ -933,10 +995,15 @@ impl PlayerController for BluetoothPlayerController {
     fn get_song(&self) -> Option<Song> {
         // Update song information from D-Bus before returning
         self.update_song_from_dbus();
-        
+
         self.current_song.read().clone()
     }
-    
+
+    fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {
+        let addr = self.device_address.read().clone()?;
+        self.read_transport_stream_details(&addr)
+    }
+
     fn get_queue(&self) -> Vec<Track> {
         // Bluetooth devices typically don't expose queue information via D-Bus
         Vec::new()

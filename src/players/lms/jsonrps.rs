@@ -3,6 +3,7 @@ use serde_json::Value;
 use log::{debug, error};
 use crate::helpers::macaddress::normalize_mac_address;
 use crate::helpers::http_client::{HttpClient, HttpClientError, new_http_client, post_json};
+use crate::data::stream_details::StreamDetails;
 use std::sync::Arc;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -284,8 +285,44 @@ impl LmsRpcClient {
         }
     }
     
+    /// Fetch the audio stream format (codec/sample rate/bit depth) for a track
+    /// via `songinfo` (tags o=type, T=samplerate, I=samplesize). This is
+    /// index-independent, so it works for the current track regardless of its
+    /// position in the playlist. Returns None if no format info is available.
+    pub fn get_stream_details(&self, track_id: &str) -> Option<StreamDetails> {
+        let result = self.request_raw(None, vec![
+            Value::from("songinfo"),
+            Value::from("0"),
+            Value::from("100"),
+            Value::from(format!("track_id:{}", track_id)),
+            Value::from("tags:oTI"),
+        ]).ok()?;
+
+        let items = result.get("songinfo_loop")?.as_array()?;
+        let mut sd = StreamDetails::new();
+        let mut any = false;
+        for item in items {
+            let obj = match item.as_object() { Some(o) => o, None => continue };
+            if let Some(t) = obj.get("type").and_then(|v| v.as_str()) {
+                let (name, lossless) = lms_codec_name(t);
+                sd.codec = Some(name);
+                sd.lossless = Some(lossless);
+                any = true;
+            }
+            if let Some(r) = obj.get("samplerate").and_then(value_to_u64) {
+                sd.sample_rate = Some(r as u32);
+                any = true;
+            }
+            if let Some(s) = obj.get("samplesize").and_then(value_to_u64) {
+                sd.bits_per_sample = Some(s as u8);
+                any = true;
+            }
+        }
+        if any { Some(sd) } else { None }
+    }
+
     /// Get the server address (hostname or IP) from the base URL
-    /// 
+    ///
     /// # Returns
     /// The server address as a String if it can be extracted
     pub fn get_server_address(&self) -> Result<String, LmsRpcError> {
@@ -631,6 +668,32 @@ pub struct Track {
     pub duration: Option<f32>,
     #[serde(default, rename = "playlist index")]
     pub playlist_index: Option<i32>,
+}
+
+/// Convert an LMS JSON value (which may be a number or a numeric string) to u64.
+fn value_to_u64(v: &Value) -> Option<u64> {
+    match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+/// Map an LMS content type (e.g. "flc", "ogg", "mp3") to a display codec name
+/// and whether it is lossless.
+fn lms_codec_name(ct: &str) -> (String, bool) {
+    match ct.to_lowercase().as_str() {
+        "flc" | "flac" => ("FLAC".to_string(), true),
+        "alc" | "alac" => ("ALAC".to_string(), true),
+        "wav" | "aif" | "aiff" | "pcm" => ("PCM".to_string(), true),
+        "dsf" | "dff" | "dsd" => ("DSD".to_string(), true),
+        "ogg" | "ogf" | "ogv" => ("Ogg Vorbis".to_string(), false),
+        "ops" | "opus" => ("Opus".to_string(), false),
+        "mp3" => ("MP3".to_string(), false),
+        "aac" | "mp4" | "m4a" => ("AAC".to_string(), false),
+        "wma" => ("WMA".to_string(), false),
+        other => (other.to_uppercase(), false),
+    }
 }
 
 /// Custom deserializer for track IDs that can be either strings or integers

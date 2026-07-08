@@ -680,7 +680,17 @@ impl PlayerController for LMSAudioController {
         }
 
         None
-    }    fn get_queue(&self) -> Vec<Track> {
+    }
+
+    fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {
+        if !self.is_connected.load(Ordering::SeqCst) {
+            return None;
+        }
+        let player_guard = self.player.read();
+        player_guard.as_ref().and_then(|p| p.get_stream_details())
+    }
+
+    fn get_queue(&self) -> Vec<Track> {
         // Check if we're connected first
         if !self.is_connected.load(Ordering::SeqCst) {
             debug!("Cannot get queue - LMS player is disconnected");

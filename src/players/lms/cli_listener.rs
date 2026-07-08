@@ -277,8 +277,17 @@ impl LMSListener {
                                         match cmd_parts[1].as_str() {
                                             "newsong" => {
                                                 let song_title = if cmd_parts.len() > 2 { &cmd_parts[2] } else { "Unknown" };
-                                                warn!("LMS event: Player {} started new song: {} (full command: playlist {})", 
+                                                debug!("LMS event: Player {} started new song: {} (full command: playlist {})",
                                                     mac_addr, song_title, all_args);
+                                                // A new song starting means this player is now playing.
+                                                // Emit Playing (so the active-player monitor switches to
+                                                // it) and refresh the song metadata.
+                                                if let Some(ctrl) = controller.upgrade() {
+                                                    ctrl.state_changed(PlaybackState::Playing);
+                                                    ctrl.update_song();
+                                                } else {
+                                                    error!("Failed to upgrade controller reference for newsong event");
+                                                }
                                             },
                                             "pause" => {
                                                 // is sent twice: as playlist pause (here) and as pause (below)
@@ -367,10 +376,27 @@ impl LMSListener {
                                         }
                                     }
                                 },
+                                "stop" => {
+                                    debug!("LMS event: Player {} stopped", mac_addr);
+                                    if let Some(ctrl) = controller.upgrade() {
+                                        ctrl.state_changed(PlaybackState::Stopped);
+                                    } else {
+                                        error!("Failed to upgrade controller reference on stop");
+                                    }
+                                },
+                                "play" => {
+                                    debug!("LMS event: Player {} play", mac_addr);
+                                    if let Some(ctrl) = controller.upgrade() {
+                                        ctrl.state_changed(PlaybackState::Playing);
+                                        ctrl.update_song();
+                                    } else {
+                                        error!("Failed to upgrade controller reference on play");
+                                    }
+                                },
                                 "client" => {
                                     let all_args = cmd_parts[1..].join(" ");
                                     if cmd_parts.len() > 1 {
-                                        warn!("LMS event: Player {} client {} (full command: client {})", 
+                                        warn!("LMS event: Player {} client {} (full command: client {})",
                                             mac_addr, cmd_parts[1], all_args);
                                         
                                         // Handle disconnect and reconnect events with state changes

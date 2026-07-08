@@ -6,6 +6,7 @@ use crate::players::lms::jsonrps::LmsRpcClient;
 use crate::players::lms::lmsserver::get_local_mac_addresses;
 use crate::helpers::macaddress::normalize_mac_address;
 use crate::data::song::Song;
+use crate::data::stream_details::StreamDetails;
 
 /// Represents a Logitech Media Server player with its client connection
 #[derive(Debug, Clone)]
@@ -631,6 +632,16 @@ impl LMSPlayer {
     /// 
     /// # Returns
     /// `Ok(String)` with the track ID if available, or an error message
+    /// Get the audio stream format (codec/sample rate/bit depth) of the
+    /// current track, or None if unavailable.
+    pub fn get_stream_details(&self) -> Option<StreamDetails> {
+        let track_id = self.get_current_track_id().ok()?;
+        if track_id.is_empty() {
+            return None;
+        }
+        self.client.get_stream_details(&track_id)
+    }
+
     pub fn get_current_track_id(&self) -> Result<String, String> {
         // Step 1: Get the current playlist index
         match self.client.control_request(&self.player_id, "status", vec!["0", "0"]) {

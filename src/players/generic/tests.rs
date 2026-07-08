@@ -140,13 +140,14 @@ mod tests {
             "song": {
                 "title": "Test Song",
                 "artist": "Test Artist",
-                "album": "Test Album"
+                "album": "Test Album",
+                "cover_art_url": "http://example.com/cover.jpg"
             }
         });
-        
+
         let result = controller.process_api_event(&song_event);
         assert!(result);
-        
+
         // Check that the current song was updated
         let current_song = controller.get_song();
         assert!(current_song.is_some());
@@ -154,6 +155,34 @@ mod tests {
         assert_eq!(song.title, Some("Test Song".to_string()));
         assert_eq!(song.artist, Some("Test Artist".to_string()));
         assert_eq!(song.album, Some("Test Album".to_string()));
+        assert_eq!(song.cover_art_url, Some("http://example.com/cover.jpg".to_string()));
+    }
+
+    #[test]
+    fn test_song_changed_artwork_url_alias() {
+        let controller = create_test_controller();
+
+        // Senders such as Sendspin/Music Assistant use "artwork_url" — it should
+        // map onto the song's cover_art_url just like the native "cover_art_url".
+        let song_event = json!({
+            "type": "song_changed",
+            "song": {
+                "title": "Artwork Song",
+                "artwork_url": "http://example.com/art.png"
+            }
+        });
+
+        assert!(controller.process_api_event(&song_event));
+        let song = controller.get_song().expect("song should be set");
+        assert_eq!(song.cover_art_url, Some("http://example.com/art.png".to_string()));
+
+        // An empty cover string must not set the field.
+        let empty_cover = json!({
+            "type": "song_changed",
+            "song": { "title": "No Art", "cover_art_url": "" }
+        });
+        assert!(controller.process_api_event(&empty_cover));
+        assert_eq!(controller.get_song().unwrap().cover_art_url, None);
     }
 
     #[test]

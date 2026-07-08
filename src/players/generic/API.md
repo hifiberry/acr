@@ -83,10 +83,18 @@ Update the currently playing song metadata.
     "artist": "Artist Name",
     "album": "Album Name",
     "duration": 240.5,
-    "uri": "file:///path/to/song.mp3"
+    "uri": "file:///path/to/song.mp3",
+    "cover_art_url": "https://example.com/cover.jpg"
   }
 }
 ```
+
+**Recognised `song` fields:** `title`, `artist`, `album`, `duration` (seconds),
+`uri` (stored as the stream URL), and `cover_art_url` (album artwork). For
+compatibility with senders such as Sendspin / Music Assistant, `artwork_url` is
+accepted as an alias for `cover_art_url`. Unknown fields are ignored; omit the
+`song` object entirely to clear the current track. An empty-string cover value
+leaves the artwork unset.
 
 #### 3. Position Change Events
 

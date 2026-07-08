@@ -343,7 +343,19 @@ impl GenericPlayerController {
         if let Some(uri) = song_data.get("uri").and_then(|u| u.as_str()) {
             song.stream_url = Some(uri.to_string());
         }
-        
+
+        // Cover art: accept "cover_art_url" (native ACR field name) or the
+        // "artwork_url" alias used by some senders (e.g. Sendspin/Music Assistant).
+        if let Some(cover) = song_data
+            .get("cover_art_url")
+            .or_else(|| song_data.get("artwork_url"))
+            .and_then(|c| c.as_str())
+        {
+            if !cover.is_empty() {
+                song.cover_art_url = Some(cover.to_string());
+            }
+        }
+
         Some(song)
     }
 }

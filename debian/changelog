@@ -1,3 +1,13 @@
+hifiberry-audiocontrol (0.7.14) stable; urgency=medium
+
+  * Generic player: parse cover art from song_changed events. The event API
+    now reads a "cover_art_url" field (with "artwork_url" accepted as an alias,
+    as used by Sendspin / Music Assistant) and sets it on the song's
+    cover_art_url. An empty string leaves the artwork unset. Previously the
+    generic push API dropped album artwork entirely.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 08 Jul 2026 07:47:26 +0000
+
 hifiberry-audiocontrol (0.7.13) stable; urgency=medium
 
   * Bluetooth: fix the auto-discover player never becoming the active player.

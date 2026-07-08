@@ -284,4 +284,54 @@ mod tests {
         assert_eq!(controller2.get_player_name(), "player2");
         assert_ne!(controller1.get_player_name(), controller2.get_player_name());
     }
+
+    #[test]
+    fn test_command_url_posts_on_send_command() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        use std::thread;
+
+        // Minimal one-shot HTTP server capturing the POST body.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                    .ok();
+                // ureq writes headers and body in separate TCP segments, so keep
+                // reading until we have both the request line and the body.
+                let mut req = String::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            req.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            if req.contains("\r\n\r\n") && req.contains("\"command\"") {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                let _ = tx.send(req);
+            }
+        });
+
+        let config = json!({
+            "name": "sendspin",
+            "supports_api_events": true,
+            "command_url": format!("http://{}/command", addr)
+        });
+        let controller = GenericPlayerController::from_config(&config).unwrap();
+        assert!(controller.send_command(PlayerCommand::Pause));
+
+        let req = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("no POST received");
+        assert!(req.contains("POST /command"));
+        assert!(req.contains("\"command\":\"pause\""));
+    }
 }

@@ -1,3 +1,10 @@
+hifiberry-audiocontrol (0.7.15) trixie; urgency=medium
+
+  * generic player: add optional command_url to POST transport commands to an
+    external player (used by the Sendspin player).
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 08 Jul 2026 12:00:00 +0000
+
 hifiberry-audiocontrol (0.7.14) stable; urgency=medium
 
   * Generic player: parse cover art from song_changed events. The event API

@@ -31,6 +31,9 @@ pub struct GenericPlayerController {
     
     /// Configuration from JSON
     config: Arc<RwLock<HashMap<String, Value>>>,
+
+    /// Optional URL to POST transport commands to (external player bridge).
+    command_url: Option<String>,
 }
 
 impl GenericPlayerController {
@@ -51,6 +54,7 @@ impl GenericPlayerController {
             current_position: Arc::new(RwLock::new(None)),
             current_queue: Arc::new(RwLock::new(Vec::new())),
             config: Arc::new(RwLock::new(HashMap::new())),
+            command_url: None,
         };
         
         // Set default capabilities - generic player can accept API events and basic commands
@@ -67,8 +71,14 @@ impl GenericPlayerController {
             
         debug!("Creating GenericPlayerController from config: {}", player_name);
         
-        let controller = Self::new(player_name.to_string());
-        
+        let mut controller = Self::new(player_name.to_string());
+
+        // Optional URL to POST transport commands to (external player bridge).
+        controller.command_url = config
+            .get("command_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         // Store the full configuration
         {
             let mut config_lock = controller.config.write();
@@ -373,6 +383,7 @@ impl Clone for GenericPlayerController {
             current_position: Arc::clone(&self.current_position),
             current_queue: Arc::clone(&self.current_queue),
             config: Arc::clone(&self.config),
+            command_url: self.command_url.clone(),
         }
     }
 }
@@ -440,7 +451,29 @@ impl PlayerController for GenericPlayerController {
     
     fn send_command(&self, command: PlayerCommand) -> bool {
         debug!("GenericPlayerController '{}' received command: {:?}", self.player_name, command);
-        
+
+        if let Some(url) = &self.command_url {
+            let verb = match command {
+                PlayerCommand::Play => Some("play"),
+                PlayerCommand::Pause => Some("pause"),
+                PlayerCommand::Stop => Some("stop"),
+                PlayerCommand::Next => Some("next"),
+                PlayerCommand::Previous => Some("previous"),
+                _ => None,
+            };
+            if let Some(verb) = verb {
+                let body = format!("{{\"command\":\"{}\"}}", verb);
+                let url = url.clone();
+                // Fire-and-forget; a slow/absent daemon must not block the UI thread.
+                std::thread::spawn(move || {
+                    let _ = ureq::post(&url)
+                        .set("Content-Type", "application/json")
+                        .timeout(std::time::Duration::from_secs(2))
+                        .send_string(&body);
+                });
+            }
+        }
+
         // Generic player just logs commands but doesn't actually do anything
         // In a real implementation, this would send commands to an external player
         match command {

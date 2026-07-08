@@ -44,6 +44,9 @@ pub struct MPDPlayerController {
 
     // current player state
     current_state: Arc<Mutex<PlayerState>>,
+
+    /// Current audio stream format (from MPD status `audio`)
+    current_stream_details: Arc<Mutex<Option<crate::data::stream_details::StreamDetails>>>,
     
     /// Whether to load the MPD library into memory
     load_mpd_library: bool,
@@ -95,6 +98,7 @@ impl Clone for MPDPlayerController {
             port: self.port,
             current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
+            current_stream_details: Arc::clone(&self.current_stream_details),
             load_mpd_library: self.load_mpd_library,
             enhance_metadata: self.enhance_metadata,
             extract_coverart: self.extract_coverart,
@@ -134,6 +138,7 @@ impl MPDPlayerController {
             port,
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
+            current_stream_details: Arc::new(Mutex::new(None)),
             load_mpd_library: true,
             enhance_metadata: true,
             extract_coverart: true,
@@ -168,6 +173,7 @@ impl MPDPlayerController {
             port,
             current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
+            current_stream_details: Arc::new(Mutex::new(None)),
             load_mpd_library: true,
             enhance_metadata: true,
             extract_coverart: true,
@@ -974,6 +980,17 @@ impl MPDPlayerController {
         // Try to get current status to determine playlist position and other state info
         match client.status() {
             Ok(status) => {
+                // Update audio stream format from MPD's status `audio` field
+                // (rate:bits:channels). MPD does not report the source codec.
+                {
+                    let mut sd = player.current_stream_details.lock();
+                    *sd = status.audio.map(|a| crate::data::stream_details::StreamDetails {
+                        sample_rate: Some(a.rate),
+                        bits_per_sample: Some(a.bits),
+                        channels: Some(a.chans),
+                        ..Default::default()
+                    });
+                }
                 // Get a lock on the current_state to update it
                 {
                     let mut current_state = player.current_state.lock();
@@ -1499,7 +1516,11 @@ impl PlayerController for MPDPlayerController {
             None
         }
     }
-    
+
+    fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {
+        self.current_stream_details.lock().clone()
+    }
+
     fn get_loop_mode(&self) -> LoopMode {
         trace!("MPDController: get_loop_mode called");
         if let Some(mut mpd_client) = self.get_fresh_client() {

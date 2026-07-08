@@ -1,3 +1,10 @@
+hifiberry-audiocontrol (0.7.17) trixie; urgency=medium
+
+  * Expose stream_details for the raat (Roon) and mpd players; mpd reports
+    sample rate/bit depth/channels from its status audio field (no codec).
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 08 Jul 2026 16:00:00 +0000
+
 hifiberry-audiocontrol (0.7.16) trixie; urgency=medium
 
   * generic player: add stream_info event carrying codec/sample_rate/

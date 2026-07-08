@@ -461,7 +461,11 @@ impl PlayerController for RAATPlayerController {
         let song = self.current_song.read();
         song.clone()
     }
-    
+
+    fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {
+        self.stream_details.read().clone()
+    }
+
     fn get_loop_mode(&self) -> LoopMode {
         debug!("Getting current loop mode");
         // Get the loop mode from the current state

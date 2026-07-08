@@ -17,9 +17,15 @@ pub trait PlayerController: Send + Sync {
     fn get_capabilities(&self) -> PlayerCapabilitySet;
     
     /// Get the current song being played
-    /// 
+    ///
     /// Returns the current song, or None if no song is playing
     fn get_song(&self) -> Option<Song>;
+
+    /// Get the current audio stream format details (sample rate, bit depth,
+    /// codec, ...). Returns None if the player does not expose them.
+    fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {
+        None
+    }
 
     /// Get the queue of songs
     /// 

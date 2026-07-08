@@ -195,11 +195,13 @@ pub struct CommandResponse {
 #[derive(serde::Serialize)]
 pub struct NowPlayingResponse {
     player: PlayerInfo,
-    song: Option<Song>, 
+    song: Option<Song>,
     state: PlaybackState,
     shuffle: bool,
     loop_mode: LoopMode,
     position: Option<f64>, // Current playback position in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_details: Option<crate::data::stream_details::StreamDetails>,
 }
 
 /// Response struct for the player queue
@@ -443,6 +445,7 @@ pub fn get_now_playing(
         shuffle: false,
         loop_mode: LoopMode::None,
         position: None,
+        stream_details: None,
     };
 
     // Get the audio controller safely
@@ -480,7 +483,8 @@ pub fn get_now_playing(
     let shuffle = player.get_shuffle();
     let loop_mode = player.get_loop_mode();
     let position = player.get_position();
-    
+    let stream_details = player.get_stream_details();
+
     // Format last_seen timestamp if available
     let last_seen = player.get_last_seen()
         .map(|time| {
@@ -507,6 +511,7 @@ pub fn get_now_playing(
         shuffle,
         loop_mode,
         position,
+        stream_details,
     })
 }
 

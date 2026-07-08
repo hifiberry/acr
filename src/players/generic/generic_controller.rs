@@ -7,9 +7,10 @@ use log::{debug, info, warn};
 use serde_json::Value;
 
 use crate::data::{
-    PlayerCapability, PlayerCapabilitySet, Song, Track, LoopMode, 
+    PlayerCapability, PlayerCapabilitySet, Song, Track, LoopMode,
     PlaybackState, PlayerCommand
 };
+use crate::data::stream_details::StreamDetails;
 use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
 
@@ -28,7 +29,8 @@ pub struct GenericPlayerController {
     current_shuffle: Arc<RwLock<bool>>,
     current_position: Arc<RwLock<Option<f64>>>,
     current_queue: Arc<RwLock<Vec<Track>>>,
-    
+    current_stream_details: Arc<RwLock<Option<StreamDetails>>>,
+
     /// Configuration from JSON
     config: Arc<RwLock<HashMap<String, Value>>>,
 
@@ -53,6 +55,7 @@ impl GenericPlayerController {
             current_shuffle: Arc::new(RwLock::new(false)),
             current_position: Arc::new(RwLock::new(None)),
             current_queue: Arc::new(RwLock::new(Vec::new())),
+            current_stream_details: Arc::new(RwLock::new(None)),
             config: Arc::new(RwLock::new(HashMap::new())),
             command_url: None,
         };
@@ -212,6 +215,7 @@ impl GenericPlayerController {
             "position_changed" => self.handle_position_change_event(event_data),
             "loop_mode_changed" => self.handle_loop_mode_change_event(event_data),
             "shuffle_changed" => self.handle_shuffle_change_event(event_data),
+            "stream_info" => self.handle_stream_info_event(event_data),
             _ => {
                 debug!("Unknown event type '{}' for generic player", event_type);
                 false
@@ -284,7 +288,43 @@ impl GenericPlayerController {
         }
         false
     }
-    
+
+    /// Handle stream-info events describing the audio format of the current
+    /// stream. Accepts a nested `stream` object with any of `codec`,
+    /// `sample_rate`, `bits_per_sample`, `channels`. An empty/absent `stream`
+    /// clears the stored details.
+    fn handle_stream_info_event(&self, event_data: &Value) -> bool {
+        let stream = match event_data.get("stream") {
+            Some(s) if s.is_object() => s,
+            _ => {
+                *self.current_stream_details.write() = None;
+                return true;
+            }
+        };
+
+        let mut details = StreamDetails::new();
+        if let Some(rate) = stream.get("sample_rate").and_then(|v| v.as_u64()) {
+            details.sample_rate = Some(rate as u32);
+        }
+        if let Some(bits) = stream.get("bits_per_sample").and_then(|v| v.as_u64()) {
+            details.bits_per_sample = Some(bits as u8);
+        }
+        if let Some(channels) = stream.get("channels").and_then(|v| v.as_u64()) {
+            details.channels = Some(channels as u8);
+        }
+        if let Some(codec) = stream.get("codec").and_then(|v| v.as_str()) {
+            if !codec.is_empty() {
+                details.codec = Some(codec.to_string());
+                // FLAC and PCM are lossless; Opus is lossy.
+                details.lossless = Some(!codec.eq_ignore_ascii_case("opus"));
+            }
+        }
+
+        debug!("Generic player '{}' stream info: {:?}", self.player_name, details);
+        *self.current_stream_details.write() = Some(details);
+        true
+    }
+
     /// Handle loop mode change events
     fn handle_loop_mode_change_event(&self, event_data: &Value) -> bool {
         if let Some(mode_str) = event_data.get("loop_mode").and_then(|m| m.as_str()) {
@@ -382,6 +422,7 @@ impl Clone for GenericPlayerController {
             current_shuffle: Arc::clone(&self.current_shuffle),
             current_position: Arc::clone(&self.current_position),
             current_queue: Arc::clone(&self.current_queue),
+            current_stream_details: Arc::clone(&self.current_stream_details),
             config: Arc::clone(&self.config),
             command_url: self.command_url.clone(),
         }
@@ -397,7 +438,11 @@ impl PlayerController for GenericPlayerController {
         let song = self.current_song.read();
         song.clone()
     }
-    
+
+    fn get_stream_details(&self) -> Option<StreamDetails> {
+        self.current_stream_details.read().clone()
+    }
+
     fn get_queue(&self) -> Vec<Track> {
         let queue = self.current_queue.read();
         queue.clone()

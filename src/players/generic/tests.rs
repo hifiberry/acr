@@ -200,6 +200,34 @@ mod tests {
     }
 
     #[test]
+    fn test_stream_info_event() {
+        let controller = create_test_controller();
+
+        let ev = json!({
+            "type": "stream_info",
+            "stream": { "codec": "flac", "sample_rate": 44100,
+                        "bits_per_sample": 16, "channels": 2 }
+        });
+        assert!(controller.process_api_event(&ev));
+        let sd = controller.get_stream_details().expect("stream details set");
+        assert_eq!(sd.sample_rate, Some(44100));
+        assert_eq!(sd.bits_per_sample, Some(16));
+        assert_eq!(sd.channels, Some(2));
+        assert_eq!(sd.codec, Some("flac".to_string()));
+        assert_eq!(sd.lossless, Some(true));
+
+        // Opus is lossy
+        let opus = json!({ "type": "stream_info", "stream": { "codec": "opus" } });
+        assert!(controller.process_api_event(&opus));
+        assert_eq!(controller.get_stream_details().unwrap().lossless, Some(false));
+
+        // stream_info without a stream object clears the details
+        let clear = json!({ "type": "stream_info" });
+        assert!(controller.process_api_event(&clear));
+        assert!(controller.get_stream_details().is_none());
+    }
+
+    #[test]
     fn test_shuffle_event() {
         let controller = create_test_controller();
         

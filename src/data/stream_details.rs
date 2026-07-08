@@ -18,10 +18,14 @@ pub struct StreamDetails {
     /// Type of sample encoding (e.g., "pcm", "dsd", "mqa")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_type: Option<String>,
-    
+
     /// Indicates if the stream is lossless or lossy
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lossless: Option<bool>,
+
+    /// Transport codec of the stream (e.g., "FLAC", "Opus", "PCM")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
 }
 
 impl StreamDetails {

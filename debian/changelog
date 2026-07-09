@@ -1,3 +1,14 @@
+hifiberry-audiocontrol (0.7.20) trixie; urgency=medium
+
+  * shairport: stop AirPlay via shairport-sync's D-Bus control interface
+    (org.gnome.ShairportSync) instead of the non-functional systemd path -
+    RemoteCommand "pause" (DACP, so the sender/Music Assistant stops) followed
+    by DropSession. This lets ActiveMonitor actually stop AirPlay when another
+    player starts (audiocontrol runs as its own user and cannot control the
+    shairport user service via systemctl).
+
+ -- HiFiBerry <support@hifiberry.com>  Thu, 09 Jul 2026 10:30:00 +0000
+
 hifiberry-audiocontrol (0.7.19) trixie; urgency=medium
 
   * ActiveMonitor: when a new player starts playing and becomes active, send

@@ -6,6 +6,7 @@ use crate::helpers::shairportsync_messages::{
 };
 use crate::helpers::process_helper::{systemd, SystemdAction};
 use crate::helpers::imagecache;
+use dbus::blocking::Connection;
 use std::sync::Arc;
 use parking_lot::Mutex;
 use log::{debug, info, warn, error, trace};
@@ -768,6 +769,53 @@ impl ShairportController {
             false
         }
     }
+
+    /// Stop AirPlay playback via shairport-sync's D-Bus control interface.
+    /// First asks the sender to pause (RemoteCommand / DACP — AirPlay 1), so the
+    /// controlling app (e.g. Music Assistant) stops its stream instead of
+    /// reconnecting, then drops the session (works for AirPlay 1 and 2). The
+    /// daemon keeps running and stays advertised. Requires shairport-sync to own
+    /// org.gnome.ShairportSync on the system bus (see the hifiberry-shairport
+    /// D-Bus policy generated from /etc/hifiberry.user).
+    fn stop_airplay(&self) -> bool {
+        let conn = match Connection::new_system() {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("ShairportSync: could not connect to system D-Bus: {}", e);
+                return false;
+            }
+        };
+        let proxy = conn.with_proxy(
+            "org.gnome.ShairportSync",
+            "/org/gnome/ShairportSync",
+            Duration::from_millis(2000),
+        );
+        // 1) Ask the sender to pause via DACP remote control (AirPlay 1). Best
+        //    effort — unavailable on AirPlay 2 / when no DACP server is active.
+        match proxy.method_call::<(), _, _, _>(
+            "org.gnome.ShairportSync",
+            "RemoteCommand",
+            ("pause",),
+        ) {
+            Ok(()) => debug!("ShairportSync: sent RemoteCommand(pause) to sender"),
+            Err(e) => debug!("ShairportSync: RemoteCommand(pause) unavailable ({}); dropping session", e),
+        }
+        // 2) Drop the session (AirPlay 1 and 2).
+        match proxy.method_call::<(), _, _, _>(
+            "org.gnome.ShairportSync",
+            "DropSession",
+            (),
+        ) {
+            Ok(()) => {
+                info!("ShairportSync: paused sender + dropped AirPlay session via D-Bus");
+                true
+            }
+            Err(e) => {
+                warn!("ShairportSync: D-Bus DropSession failed (is org.gnome.ShairportSync owned on the system bus?): {}", e);
+                false
+            }
+        }
+    }
 }
 
 impl PlayerController for ShairportController {
@@ -820,30 +868,30 @@ impl PlayerController for ShairportController {
     }
     
     fn send_command(&self, command: PlayerCommand) -> bool {
-        // If systemd unit is configured, we can control playback via systemd
-        if self.systemd_unit.is_some() {
-            match command {
-                PlayerCommand::Play => {
+        match command {
+            // An AirPlay receiver can't pause/stop its own playback (the sender
+            // drives it), but shairport-sync's D-Bus interface can drop the
+            // current session, which is what we want when another player takes
+            // over. This works for AirPlay 1 and 2 and keeps the daemon running.
+            PlayerCommand::Stop | PlayerCommand::Pause => {
+                debug!("ShairportSync received {:?}, stopping AirPlay via D-Bus (pause + drop)", command);
+                self.stop_airplay()
+            }
+            PlayerCommand::Play => {
+                // Can't force an AirPlay sender to start; if a systemd unit is
+                // configured, restart the service so it re-advertises.
+                if self.systemd_unit.is_some() {
                     debug!("ShairportSync received Play command, restarting systemd service");
                     self.control_systemd_service("restart")
-                }
-                PlayerCommand::Pause => {
-                    debug!("ShairportSync received Pause command, stopping systemd service");
-                    self.control_systemd_service("stop")
-                }
-                PlayerCommand::Stop => {
-                    debug!("ShairportSync received Stop command, stopping systemd service");
-                    self.control_systemd_service("stop")
-                }
-                _ => {
-                    debug!("ShairportSync received unsupported command {:?}", command);
+                } else {
+                    debug!("ShairportSync received Play command, no action available");
                     false
                 }
             }
-        } else {
-            // ShairportSync is a passive listener, it can't control playback without systemd
-            debug!("ShairportSync received command {:?} but no systemd unit configured", command);
-            false
+            _ => {
+                debug!("ShairportSync received unsupported command {:?}", command);
+                false
+            }
         }
     }
     

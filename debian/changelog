@@ -1,3 +1,12 @@
+hifiberry-audiocontrol (0.7.19) trixie; urgency=medium
+
+  * ActiveMonitor: when a new player starts playing and becomes active, send
+    Stop to all now-inactive players so two sources can't play at once. The
+    send_command_to_inactives mechanism existed but was never called; only the
+    active flag was reassigned, leaving the previous player still playing.
+
+ -- HiFiBerry <support@hifiberry.com>  Thu, 09 Jul 2026 08:00:00 +0000
+
 hifiberry-audiocontrol (0.7.18) trixie; urgency=medium
 
   * Expose stream_details for the lms and bluetooth players: lms reports

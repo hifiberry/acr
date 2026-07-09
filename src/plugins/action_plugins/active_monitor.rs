@@ -1,6 +1,6 @@
 use std::sync::{Arc, Weak};
 use std::any::Any;
-use crate::data::{PlayerEvent, PlaybackState};
+use crate::data::{PlayerEvent, PlaybackState, PlayerCommand};
 use crate::plugins::plugin::Plugin;
 use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
 use crate::audiocontrol::AudioController;
@@ -61,6 +61,17 @@ impl ActiveMonitor {
                 if controller.set_active_controller(idx) {
                     info!("ActiveMonitor: Successfully set active player to {}:{}",
                           player_name, player_id);
+                    // Only one source should play at a time. Now that a new
+                    // player has started and become active, stop every other
+                    // (now-inactive) player so we don't end up with two sources
+                    // playing simultaneously. We reach this point only on a real
+                    // active-player change (set_active_player returns early when
+                    // the player is already active), so this won't fire on a
+                    // track change within the same player.
+                    let stopped = controller.send_command_to_inactives(PlayerCommand::Stop);
+                    if stopped > 0 {
+                        info!("ActiveMonitor: sent Stop to {} now-inactive player(s)", stopped);
+                    }
                 } else {
                     warn!("ActiveMonitor: Failed to set active player");
                 }

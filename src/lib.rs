@@ -13,6 +13,9 @@ pub mod audiocontrol;
 /// Plugin system for event filtering and extensions
 pub mod plugins;
 
+/// Input sources (USB HID remotes, and future rotary/IR sources)
+pub mod inputs;
+
 /// Helper utilities for I/O and other common tasks
 pub mod helpers;
 

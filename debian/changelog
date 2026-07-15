@@ -9,8 +9,14 @@ hifiberry-audiocontrol (0.8.0) trixie; urgency=medium
   * Fix a race in the /api/volume/increase and /decrease handlers, which did
     their read-modify-write outside the volume lock.
   * The audiocontrol user is now added to the 'input' group.
+  * Fix the package build on hosts whose system rustc is older than 1.86:
+    the toolchain check accepted any 1.80-1.99 and only inspected cargo, so
+    it never installed a working toolchain. It now compares rustc against a
+    declared minimum (also recorded as rust-version in Cargo.toml).
+  * Package builds no longer delete Cargo.lock, so dependency versions are
+    those the crate was tested against rather than re-resolved per build.
 
- -- HiFiBerry <support@hifiberry.com>  Wed, 15 Jul 2026 10:00:17 +0200
+ -- HiFiBerry <support@hifiberry.com>  Wed, 15 Jul 2026 11:05:00 +0200
 
 hifiberry-audiocontrol (0.7.20) trixie; urgency=medium
 

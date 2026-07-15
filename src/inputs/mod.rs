@@ -6,6 +6,36 @@
 //! dispatch code is required.
 
 pub mod keyboard;
+pub mod dispatch;
+
+pub use dispatch::ActionSink;
+
+/// Errors an input source can fail to start with.
+#[derive(Debug, thiserror::Error)]
+pub enum InputError {
+    #[error("permission denied opening {path}: add the 'audiocontrol' user to the 'input' group")]
+    PermissionDenied { path: String },
+
+    #[error("i/o error on {path}: {message}")]
+    Io { path: String, message: String },
+}
+
+/// An input source: hardware that produces [`Action`]s.
+pub trait InputController: Send {
+    /// Stable identifier, used as the config key and in the status API.
+    fn name(&self) -> &str;
+
+    /// Begin producing actions into `sink`.
+    ///
+    /// Must not block: long-running work belongs on its own thread.
+    fn start(&mut self, sink: ActionSink) -> Result<(), InputError>;
+
+    /// Stop producing actions.
+    fn stop(&mut self);
+
+    /// Status for `GET /api/inputs`.
+    fn status(&self) -> serde_json::Value;
+}
 
 /// An abstract control action produced by an input source.
 ///

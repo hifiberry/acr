@@ -75,6 +75,55 @@ pub fn device_name_matches(filter: &str, name: &str) -> bool {
     filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
 }
 
+/// What a device is, for keyboard-input purposes.
+///
+/// This is the one place the "would audiocontrol bind this device" rule
+/// lives. Both `scan_devices` (which only needs the devices it binds) and
+/// `audiocontrol_input_devices` (which needs to explain every device, matched
+/// or not) decide from this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceVerdict {
+    /// Advertises at least one mapped key. Carries the mapped keycodes.
+    Matched(Vec<u16>),
+    /// Excluded by the `device` name filter, before capabilities were checked.
+    FilteredOut,
+    /// Passed the name filter but advertises none of the keymap's keycodes
+    /// (including devices with no key capability at all, i.e.
+    /// `supported_keys()` returned `None`).
+    NoMappedKeys,
+}
+
+/// Decide what one device is, given its name and the keycodes it supports.
+///
+/// Takes plain data rather than a live evdev `Device` so this -- the only rule
+/// that decides what audiocontrol would bind -- is unit-testable without
+/// hardware. `keys` is `None` when `Device::supported_keys()` returned `None`.
+///
+/// The name filter is applied before the capability check, matching
+/// audiocontrol2.
+pub fn evaluate_device(config: &KeyboardConfig, name: &str, keys: Option<&[u16]>) -> DeviceVerdict {
+    if !device_name_matches(&config.device, name) {
+        return DeviceVerdict::FilteredOut;
+    }
+
+    let Some(keys) = keys else {
+        return DeviceVerdict::NoMappedKeys;
+    };
+
+    let matched: Vec<u16> = config
+        .keymap
+        .codes()
+        .into_iter()
+        .filter(|c| keys.contains(c))
+        .collect();
+
+    if matched.is_empty() {
+        DeviceVerdict::NoMappedKeys
+    } else {
+        DeviceVerdict::Matched(matched)
+    }
+}
+
 /// Handle one key event, dispatching the mapped action if the repeat rule allows.
 ///
 /// `value` follows the evdev convention: 0 = release, 1 = press, 2 = autorepeat.
@@ -316,5 +365,67 @@ mod tests {
         assert!(device_name_matches("usbremote", "HiFiBerry USBRemote"));
         assert!(device_name_matches("USBRemote", "HiFiBerry USBRemote"));
         assert!(!device_name_matches("USBRemote", "Power Button"));
+    }
+
+    // --- evaluate_device ---
+
+    fn device_verdict_config(device_filter: &str) -> KeyboardConfig {
+        let mut c = KeyboardConfig::from_config(None);
+        c.device = device_filter.to_string();
+        c
+    }
+
+    #[test]
+    fn test_evaluate_device_filtered_out_before_capability_check() {
+        // A device that would match on keys but fails the name filter must be
+        // FilteredOut, not NoMappedKeys -- the filter runs first.
+        let c = device_verdict_config("USBRemote");
+        let keys = [115u16]; // KEY_VOLUMEUP, present in the default map
+        assert_eq!(
+            evaluate_device(&c, "Power Button", Some(&keys)),
+            DeviceVerdict::FilteredOut
+        );
+    }
+
+    #[test]
+    fn test_evaluate_device_no_key_capability() {
+        // supported_keys() returned None: the device has no key capability at all.
+        let c = device_verdict_config("");
+        assert_eq!(evaluate_device(&c, "Some Mouse", None), DeviceVerdict::NoMappedKeys);
+    }
+
+    #[test]
+    fn test_evaluate_device_opens_but_no_mapped_keys() {
+        let c = device_verdict_config("");
+        let keys = [999u16]; // not in the default map
+        assert_eq!(
+            evaluate_device(&c, "Random Keyboard", Some(&keys)),
+            DeviceVerdict::NoMappedKeys
+        );
+    }
+
+    #[test]
+    fn test_evaluate_device_matched_carries_mapped_codes() {
+        let c = device_verdict_config("USBRemote");
+        // Device advertises far more keys than the mapped set; only the
+        // intersection should come back.
+        let keys = [115u16, 114, 999, 1000];
+        match evaluate_device(&c, "HiFiBerry USBRemote", Some(&keys)) {
+            DeviceVerdict::Matched(mut matched) => {
+                matched.sort();
+                assert_eq!(matched, vec![114, 115]);
+            }
+            other => panic!("expected Matched, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_device_empty_filter_matches_any_name() {
+        let c = device_verdict_config("");
+        let keys = [115u16];
+        assert!(matches!(
+            evaluate_device(&c, "anything at all", Some(&keys)),
+            DeviceVerdict::Matched(_)
+        ));
     }
 }

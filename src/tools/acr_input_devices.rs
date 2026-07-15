@@ -23,11 +23,9 @@ struct Args {
 
 #[cfg(target_os = "linux")]
 fn run(args: Args) -> i32 {
-    use audiocontrol::inputs::keyboard::evdev_source::{
-        evaluate_device, probe_permission_denied, DeviceVerdict,
-    };
+    use audiocontrol::inputs::keyboard::evdev_source::probe_permission_denied;
     use audiocontrol::inputs::keyboard::keymap::key_display_name;
-    use audiocontrol::inputs::keyboard::KeyboardConfig;
+    use audiocontrol::inputs::keyboard::{evaluate_device, DeviceVerdict, KeyboardConfig};
     use evdev::EventType;
 
     // A missing or malformed config is not fatal: fall back to defaults, since
@@ -84,11 +82,17 @@ fn run(args: Args) -> i32 {
         println!("{:<20} {:<28} PERMISSION DENIED -- could not open", path, "");
     }
 
+    // Exit-code contract: non-zero means a permission problem was detected --
+    // that is always worth a script noticing. No hardware at all is not by
+    // itself an error (most systems have no remote plugged in; scan_devices
+    // treats it the same way), so it does not affect the exit code.
+    let exit_code = if !denied.is_empty() { 1 } else { 0 };
+
     if !any && denied.is_empty() {
         eprintln!("No input devices found. If this is unexpected, check permissions:");
         eprintln!("  ls -l /dev/input/event*   # should be group 'input'");
         eprintln!("  id audiocontrol           # should include the 'input' group");
-        return 1;
+        return exit_code;
     }
 
     if !denied.is_empty() {
@@ -108,7 +112,7 @@ fn run(args: Args) -> i32 {
     }
 
     if !args.watch {
-        return 0;
+        return exit_code;
     }
 
     if matched_devices.is_empty() {
@@ -152,7 +156,7 @@ fn run(args: Args) -> i32 {
     for h in handles {
         let _ = h.join();
     }
-    0
+    exit_code
 }
 
 #[cfg(not(target_os = "linux"))]

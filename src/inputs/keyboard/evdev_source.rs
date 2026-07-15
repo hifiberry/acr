@@ -5,7 +5,7 @@
 
 use crate::inputs::dispatch::ActionSink;
 use crate::inputs::keyboard::{
-    device_name_matches, handle_key_event, KeyboardConfig, KeyboardStatus, LastKey,
+    evaluate_device, handle_key_event, DeviceVerdict, KeyboardConfig, KeyboardStatus, LastKey,
 };
 use crate::inputs::keyboard::keymap::{key_display_name, key_name_from_code};
 use crate::inputs::InputError;
@@ -22,55 +22,6 @@ pub struct DiscoveredDevice {
     /// Mapped keycodes this device advertises.
     pub matched: Vec<u16>,
     pub device: Device,
-}
-
-/// What a device is, for keyboard-input purposes.
-///
-/// This is the one place the "would audiocontrol bind this device" rule
-/// lives. Both [`scan_devices`] (which only needs the devices it binds) and
-/// `audiocontrol_input_devices` (which needs to explain every device, matched
-/// or not) decide from this.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeviceVerdict {
-    /// Advertises at least one mapped key. Carries the mapped keycodes.
-    Matched(Vec<u16>),
-    /// Excluded by the `device` name filter, before capabilities were checked.
-    FilteredOut,
-    /// Passed the name filter but advertises none of the keymap's keycodes
-    /// (including devices with no key capability at all, i.e.
-    /// `supported_keys()` returned `None`).
-    NoMappedKeys,
-}
-
-/// Decide what one device is, given its name and the keycodes it supports.
-///
-/// Takes plain data rather than a live [`Device`] so this -- the only rule
-/// that decides what audiocontrol would bind -- is unit-testable without
-/// hardware. `keys` is `None` when `Device::supported_keys()` returned `None`.
-///
-/// The name filter is applied before the capability check, matching
-/// audiocontrol2.
-pub fn evaluate_device(config: &KeyboardConfig, name: &str, keys: Option<&[u16]>) -> DeviceVerdict {
-    if !device_name_matches(&config.device, name) {
-        return DeviceVerdict::FilteredOut;
-    }
-
-    let Some(keys) = keys else {
-        return DeviceVerdict::NoMappedKeys;
-    };
-
-    let matched: Vec<u16> = config
-        .keymap
-        .codes()
-        .into_iter()
-        .filter(|c| keys.contains(c))
-        .collect();
-
-    if matched.is_empty() {
-        DeviceVerdict::NoMappedKeys
-    } else {
-        DeviceVerdict::Matched(matched)
-    }
 }
 
 /// Probe `/dev/input/event*` for nodes that cannot be opened for reading.
@@ -242,76 +193,7 @@ pub fn start_readers(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn config(device_filter: &str) -> KeyboardConfig {
-        let mut c = KeyboardConfig::from_config(None);
-        c.device = device_filter.to_string();
-        c
-    }
-
-    #[test]
-    fn test_evaluate_device_filtered_out_before_capability_check() {
-        // A device that would match on keys but fails the name filter must be
-        // FilteredOut, not NoMappedKeys -- the filter runs first.
-        let c = config("USBRemote");
-        let keys = [115u16]; // KEY_VOLUMEUP, present in the default map
-        assert_eq!(
-            evaluate_device(&c, "Power Button", Some(&keys)),
-            DeviceVerdict::FilteredOut
-        );
-    }
-
-    #[test]
-    fn test_evaluate_device_no_key_capability() {
-        // supported_keys() returned None: the device has no key capability at all.
-        let c = config("");
-        assert_eq!(evaluate_device(&c, "Some Mouse", None), DeviceVerdict::NoMappedKeys);
-    }
-
-    #[test]
-    fn test_evaluate_device_opens_but_no_mapped_keys() {
-        let c = config("");
-        let keys = [999u16]; // not in the default map
-        assert_eq!(
-            evaluate_device(&c, "Random Keyboard", Some(&keys)),
-            DeviceVerdict::NoMappedKeys
-        );
-    }
-
-    #[test]
-    fn test_evaluate_device_matched_carries_mapped_codes() {
-        let c = config("USBRemote");
-        // Device advertises far more keys than the mapped set; only the
-        // intersection should come back.
-        let keys = [115u16, 114, 999, 1000];
-        match evaluate_device(&c, "HiFiBerry USBRemote", Some(&keys)) {
-            DeviceVerdict::Matched(mut matched) => {
-                matched.sort();
-                assert_eq!(matched, vec![114, 115]);
-            }
-            other => panic!("expected Matched, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_evaluate_device_empty_filter_matches_any_name() {
-        let c = config("");
-        let keys = [115u16];
-        assert!(matches!(
-            evaluate_device(&c, "anything at all", Some(&keys)),
-            DeviceVerdict::Matched(_)
-        ));
-    }
-
-    #[test]
-    fn test_probe_permission_denied_does_not_panic() {
-        // No assertion on contents: real /dev/input contents are
-        // environment-dependent (root vs. non-root test runs). This just
-        // guards that the walk is total and never panics, e.g. if
-        // /dev/input does not exist on some test host.
-        let _ = probe_permission_denied();
-    }
-}
+// `evaluate_device` and its unit tests now live in `keyboard/mod.rs`, which is
+// portable and compiles on every platform (see that module's doc comment).
+// `probe_permission_denied` above is genuinely platform-bound -- it walks
+// `/dev/input` -- so it has no unit test here; it is exercised on hardware.

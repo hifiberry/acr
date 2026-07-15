@@ -5,7 +5,8 @@
 
 use crate::inputs::dispatch::ActionSink;
 use crate::inputs::keyboard::{
-    evaluate_device, handle_key_event, DeviceVerdict, KeyboardConfig, KeyboardStatus, LastKey,
+    evaluate_device, handle_key_event, unbound_reason, DeviceVerdict, KeyboardConfig,
+    KeyboardStatus, LastKey, UnboundDevice,
 };
 use crate::inputs::keyboard::keymap::{key_display_name, key_name_from_code};
 use crate::inputs::InputError;
@@ -27,12 +28,10 @@ pub struct DiscoveredDevice {
 /// Probe `/dev/input/event*` for nodes that cannot be opened for reading.
 ///
 /// `evdev::enumerate()` silently skips devices it cannot open, so this walk
-/// is the only way to see a permission problem at all. Shared by
-/// [`scan_devices`] (fatal only when nothing else matched -- most systems
-/// have no remote at all, and that is not an error) and
-/// `audiocontrol_input_devices` (which reports every denied path, since an
-/// unrelated device opening fine -- a power button, an HDMI-CEC node -- must
-/// not hide a denied remote).
+/// is the only way to see a permission problem at all. Called unconditionally
+/// by [`scan_devices`] -- a device binding fine must not hide an unrelated
+/// denied path -- and by `audiocontrol_input_devices`, which reports every
+/// denied path the same way.
 pub fn probe_permission_denied() -> Vec<String> {
     let mut denied = Vec::new();
     let Ok(entries) = std::fs::read_dir("/dev/input") else {
@@ -52,18 +51,28 @@ pub fn probe_permission_denied() -> Vec<String> {
     denied
 }
 
-/// Scan `/dev/input/event*` and return devices that pass the name filter and
-/// advertise at least one mapped key.
+/// Everything the startup scan saw.
 ///
-/// This is audiocontrol2's rule: match by capability intersection. It is a
-/// startup-only scan; hotplug is out of scope (the unit orders after
-/// systemd-udev-settle, so a dongle present at boot is always seen).
+/// Total by construction: a permission failure is data here, not an error, so
+/// the snapshot survives to be reported even when nothing could be bound.
+/// `start_readers` turns it into the `Err` the caller expects.
+pub struct ScanResult {
+    pub bound: Vec<DiscoveredDevice>,
+    pub unbound: Vec<UnboundDevice>,
+    pub denied_paths: Vec<String>,
+}
+
+/// Scan `/dev/input/event*` and report every device, bound or not.
 ///
-/// Returns `Err` if no device was bound and the permission probe found an
-/// unreadable `/dev/input/event*` node. No matching device with no
-/// permission problem is not an error: most systems have no remote.
-pub fn scan_devices(config: &KeyboardConfig) -> Result<Vec<DiscoveredDevice>, InputError> {
-    let mut found = Vec::new();
+/// Binds devices that pass the `device` name filter and advertise at least one
+/// mapped key -- audiocontrol2's capability-intersection rule. Startup-only;
+/// hotplug is out of scope.
+///
+/// Never fails: a permission problem is recorded in `denied_paths` so the
+/// status API can explain it. `start_readers` decides whether that is fatal.
+pub fn scan_devices(config: &KeyboardConfig) -> ScanResult {
+    let mut bound = Vec::new();
+    let mut unbound = Vec::new();
 
     for (path, device) in evdev::enumerate() {
         let path_str = path.to_string_lossy().to_string();
@@ -73,12 +82,6 @@ pub fn scan_devices(config: &KeyboardConfig) -> Result<Vec<DiscoveredDevice>, In
             .map(|ks| ks.iter().map(KeyCode::code).collect());
 
         match evaluate_device(config, &name, keys.as_deref()) {
-            DeviceVerdict::FilteredOut => {
-                debug!("keyboard: {} '{}' filtered out by device filter", path_str, name);
-            }
-            DeviceVerdict::NoMappedKeys => {
-                debug!("keyboard: {} '{}' has no mapped keys", path_str, name);
-            }
             DeviceVerdict::Matched(matched) => {
                 info!(
                     "keyboard: bound {} '{}' ({} mapped keys)",
@@ -86,21 +89,34 @@ pub fn scan_devices(config: &KeyboardConfig) -> Result<Vec<DiscoveredDevice>, In
                     name,
                     matched.len()
                 );
-                found.push(DiscoveredDevice { path: path_str, name, matched, device });
+                bound.push(DiscoveredDevice { path: path_str, name, matched, device });
+            }
+            verdict => {
+                if let Some(reason) = unbound_reason(&verdict) {
+                    debug!("keyboard: {} '{}' not bound: {}", path_str, name, reason);
+                    unbound.push(UnboundDevice {
+                        path: path_str,
+                        name: Some(name),
+                        reason: reason.to_string(),
+                    });
+                }
             }
         }
     }
 
-    // evdev::enumerate() silently skips devices it cannot open, so probe for
-    // the permission problem explicitly -- it is the most likely failure.
-    if found.is_empty() {
-        if let Some(path) = probe_permission_denied().into_iter().next() {
-            return Err(InputError::PermissionDenied { path });
-        }
-        info!("keyboard: no input devices with mapped keys found");
+    // Probe unconditionally: evdev::enumerate() silently omits devices it
+    // cannot open, so a denied remote is invisible above -- and an unrelated
+    // device binding fine must not hide it.
+    let denied_paths = probe_permission_denied();
+    for path in &denied_paths {
+        unbound.push(UnboundDevice {
+            path: path.clone(),
+            name: None,
+            reason: "permission_denied".to_string(),
+        });
     }
 
-    Ok(found)
+    ScanResult { bound, unbound, denied_paths }
 }
 
 /// Start a reader thread per discovered device.
@@ -114,9 +130,20 @@ pub fn start_readers(
     status: Arc<Mutex<KeyboardStatus>>,
     running: Arc<AtomicBool>,
 ) -> Result<(), InputError> {
-    let devices = scan_devices(config)?;
+    let scan = scan_devices(config);
 
-    for mut discovered in devices {
+    // Record the snapshot before any error path: a permission failure is
+    // exactly when the status API most needs to explain itself.
+    status.lock().unbound_devices = scan.unbound;
+
+    if scan.bound.is_empty() {
+        if let Some(path) = scan.denied_paths.into_iter().next() {
+            return Err(InputError::PermissionDenied { path });
+        }
+        info!("keyboard: no input devices with mapped keys found");
+    }
+
+    for mut discovered in scan.bound {
         let path = discovered.path.clone();
         let name = discovered.name.clone();
 

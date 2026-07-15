@@ -4,6 +4,7 @@ debian/man/audiocontrol_dump_cache.1
 debian/man/audiocontrol_dump_store.1
 debian/man/audiocontrol_favourites.1
 debian/man/audiocontrol_get_mpris_state.1
+debian/man/audiocontrol_input_devices.1
 debian/man/audiocontrol_list_mpris_players.1
 debian/man/audiocontrol_listen_shairportsync.1
 debian/man/audiocontrol_lms_client.1

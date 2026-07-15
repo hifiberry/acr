@@ -21,6 +21,35 @@ struct Args {
     config: String,
 }
 
+/// Whether the `audiocontrol` service user is a member of the `input` group,
+/// checked directly via `getent group input` rather than by looking at the
+/// invoking process's own groups.
+///
+/// This matters because `probe_permission_denied()` (and the `denied` list it
+/// produces) only reflects what *this process* can open. Support engineers
+/// almost always run this tool as root, where every device opens fine and
+/// `denied` is empty -- even when the `audiocontrol` user itself is not in
+/// `input` and the service would be unable to see any remote at all.
+///
+/// Returns `None` when the check is inconclusive (no `getent` binary, no
+/// `input` group, or the output could not be parsed) rather than guessing --
+/// this is the normal case on a development box where `audiocontrol` is not a
+/// real user, and callers must not treat that as an error.
+#[cfg(target_os = "linux")]
+fn audiocontrol_in_input_group() -> Option<bool> {
+    let output = std::process::Command::new("getent")
+        .args(["group", "input"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // getent group format: name:password:GID:member1,member2,...
+    let text = String::from_utf8_lossy(&output.stdout);
+    let members = text.trim_end().split(':').nth(3)?;
+    Some(members.split(',').any(|u| u == "audiocontrol"))
+}
+
 #[cfg(target_os = "linux")]
 fn run(args: Args) -> i32 {
     use audiocontrol::inputs::keyboard::evdev_source::probe_permission_denied;
@@ -51,7 +80,13 @@ fn run(args: Args) -> i32 {
     // an HDMI-CEC node) opens fine and the listing below looks normal.
     let denied = probe_permission_denied();
 
-    let mut matched_devices = Vec::new();
+    // Devices worth listening to in --watch mode: every device that passes the
+    // configured `device` name filter, whether or not it currently matches the
+    // keymap. Watch mode exists specifically to discover the codes an
+    // unmatched remote emits, so restricting it to already-matched devices
+    // would defeat its purpose.
+    let mut watch_devices = Vec::new();
+    let mut matched_count = 0usize;
     let mut any = false;
 
     for (path, device) in evdev::enumerate() {
@@ -69,11 +104,13 @@ fn run(args: Args) -> i32 {
             }
             DeviceVerdict::NoMappedKeys => {
                 println!("{:<20} {:<28} no mapped keys", path_str, format!("\"{}\"", name));
+                watch_devices.push((path_str, name, device));
             }
             DeviceVerdict::Matched(matched) => {
                 println!("{:<20} {:<28} MATCHED ({} mapped keys)",
                          path_str, format!("\"{}\"", name), matched.len());
-                matched_devices.push((path_str, name, device));
+                matched_count += 1;
+                watch_devices.push((path_str, name, device));
             }
         }
     }
@@ -105,7 +142,20 @@ fn run(args: Args) -> i32 {
         eprintln!("  id audiocontrol           # should include the 'input' group");
     }
 
-    if matched_devices.is_empty() {
+    // This is deliberately unconditional on `denied`: `denied` only reflects
+    // what *this* process can open, and this tool is normally run as root by a
+    // support engineer -- root can open everything, so `denied` is empty even
+    // when the `audiocontrol` service user is locked out entirely. Check the
+    // service user's actual group membership directly instead.
+    if audiocontrol_in_input_group() == Some(false) {
+        eprintln!();
+        eprintln!("warning: the 'audiocontrol' user is not in the 'input' group.");
+        eprintln!("The listing above reflects what THIS process can see, not what the");
+        eprintln!("audiocontrol service can open -- it may not see any device at all. Fix:");
+        eprintln!("  sudo usermod -a -G input audiocontrol && sudo systemctl restart audiocontrol");
+    }
+
+    if matched_count == 0 {
         println!();
         println!("No device advertises any mapped key.");
         println!("Run with --watch and press a button to see what your remote emits.");
@@ -115,22 +165,11 @@ fn run(args: Args) -> i32 {
         return exit_code;
     }
 
-    if matched_devices.is_empty() {
-        // In watch mode, listen to everything: the whole point is to find codes
-        // that are not mapped yet.
-        matched_devices = evdev::enumerate()
-            .map(|(p, d)| {
-                let n = d.name().unwrap_or("unknown").to_string();
-                (p.to_string_lossy().to_string(), n, d)
-            })
-            .collect();
-    }
-
     println!();
     println!("press a key... (Ctrl-C to stop)");
 
     let mut handles = Vec::new();
-    for (_path, name, mut device) in matched_devices {
+    for (_path, name, mut device) in watch_devices {
         let keymap = kb_config.keymap.clone();
         handles.push(std::thread::spawn(move || loop {
             let events = match device.fetch_events() {

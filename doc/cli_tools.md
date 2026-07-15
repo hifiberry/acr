@@ -567,6 +567,36 @@ audiocontrol_favourites --url http://192.168.1.100:1080 \
   check --artist "David Bowie" --title "Heroes"
 ```
 
+### audiocontrol_input_devices
+
+The `audiocontrol_input_devices` tool is the support tool for "my remote does nothing": it lists the input devices AudioControl's keyboard/remote input source can see, and reports whether each one was matched against the configured keymap, filtered out, or could not be opened due to a permission problem.
+
+**Key Features:**
+
+- Lists input devices with their MATCHED / no-mapped-keys / permission-denied verdict
+- `--watch` live-dumps keycodes as they are pressed, including devices with no currently-mapped keys, so an unrecognised remote's codes can be found and added to `keymap`
+- Reads the same config file (and keymap) the running service uses
+
+**Usage:**
+
+```bash
+audiocontrol_input_devices [OPTIONS]
+```
+
+**Options:**
+
+- `-w, --watch` - Live-dump keycodes as keys are pressed
+- `-c, --config <FILE>` - Config file to read the keymap from (default: `/etc/audiocontrol/audiocontrol.json`)
+
+**Example:**
+
+```bash
+audiocontrol_input_devices
+audiocontrol_input_devices --watch
+```
+
+See [Input Sources](inputs.md) for the full configuration reference, the default keymap, and step-by-step troubleshooting.
+
 ## Building the Tools
 
 All tools are built automatically when you build the Audiocontrol project:

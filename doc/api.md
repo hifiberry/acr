@@ -9,6 +9,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Player Events](#player-events)
 - [Core API](#core-api)
   - [Get API Version](#get-api-version)
+  - [Get Input Status](#get-input-status)
 - [Player API](#player-api)
   - [Get Current Player](#get-current-player)
   - [List Available Players](#list-available-players)
@@ -137,6 +138,46 @@ Retrieves the current version of the API.
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/version
+```
+
+### Get Input Status
+
+Reports the configured input sources (USB HID remotes and keyboards), the devices currently bound to them, and the last mapped keypress seen. This is the "is my remote detected?" endpoint.
+
+- **Endpoint**: `/api/inputs`
+- **Method**: GET
+- **Response**:
+  ```json
+  {
+    "inputs": [
+      {
+        "name": "keyboard",
+        "status": {
+          "enabled": true,
+          "volume_step": 5.0,
+          "grab": false,
+          "device_filter": "",
+          "mapped_keys": 14,
+          "devices": [
+            { "path": "/dev/input/event0", "name": "HiFiBerry USBRemote", "matched_keys": ["KEY_VOLUMEUP", "KEY_VOLUMEDOWN"] }
+          ],
+          "last_key": {
+            "code": 115,
+            "name": "KEY_VOLUMEUP",
+            "action": "volume_up",
+            "device": "HiFiBerry USBRemote"
+          }
+        }
+      }
+    ]
+  }
+  ```
+
+`devices` only lists devices that matched the configured keymap, and `last_key` is `null` until a mapped key has been pressed. A device that is unmatched, filtered out, or hidden by a permission problem does not appear here at all -- use `audiocontrol_input_devices` (see [CLI Tools](cli_tools.md#audiocontrol_input_devices)) for that, and see [Input Sources](inputs.md) for the full configuration reference.
+
+#### Example
+```bash
+curl http://<device-ip>:1080/api/inputs
 ```
 
 

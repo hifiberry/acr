@@ -1,0 +1,117 @@
+.TH AUDIOCONTROL_INPUT_DEVICES 1 "July 2026" "AudioControl Manual" "User Commands"
+.SH NAME
+audiocontrol_input_devices \- list input devices usable as remote controls and diagnose why a remote is not working
+.SH SYNOPSIS
+.B audiocontrol_input_devices
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol_input_devices
+is the support tool for "my remote does nothing". It enumerates the same
+input devices AudioControl's keyboard/remote input source would consider,
+evaluates each one against the configured
+.B inputs.keyboard
+settings, and reports whether it was matched, filtered out, has no mapped
+keys, or could not be opened at all because of a permission problem.
+.PP
+It reads its keymap and filter settings from the same configuration file
+used by the running
+.B audiocontrol
+service (by default
+.IR /etc/audiocontrol/audiocontrol.json ),
+so its verdicts reflect exactly what the service would do. A missing or
+unparsable configuration file is not fatal: the tool falls back to the
+built-in default keymap, since diagnosing a broken configuration is one of
+its jobs.
+.SH OPTIONS
+.TP
+.BR \-w ", " \-\-watch
+Live-dump keycodes as keys are pressed. The tool attaches to every
+enumerated device that passes the configured
+.B device
+name filter (not only devices already recognised as MATCHED), and prints
+each key event together with the action it maps to, or
+.B unmapped
+if it does not appear in the keymap. This is how the exact code for an
+unrecognised remote button is found, so it can be added to
+.B keymap
+in the configuration file. Runs until interrupted with Ctrl-C.
+.TP
+.BR \-c ", " \-\-config " " \fIFILE\fR
+Configuration file to read the
+.B inputs.keyboard
+section from (default:
+.IR /etc/audiocontrol/audiocontrol.json ).
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit
+.TP
+.BR \-V ", " \-\-version
+Display version information and exit
+.SH OUTPUT FORMAT
+.SS Device Listing
+Without
+.BR \-\-watch ,
+each enumerated device is printed as one line: its
+.IR /dev/input/eventN
+path, its name, and its verdict:
+.PP
+.nf
+/dev/input/event0    "HiFiBerry USBRemote"        MATCHED (8 mapped keys)
+/dev/input/event1    "Power Button"               no mapped keys
+.fi
+.PP
+A device can also be reported as filtered out by the
+.B device
+name filter, or as
+.B PERMISSION DENIED
+when it could not be opened at all -- the latter is checked independently of
+what is shown in the listing, since a permission problem can hide a device
+completely even while other devices open normally.
+.SS Watch Mode
+With
+.BR \-\-watch ,
+after the listing the tool prints each key press as it happens:
+.PP
+.nf
+press a key... (Ctrl-C to stop)
+  KEY_VOLUMEUP (115)  \-> volume_up
+  KEY_HOMEPAGE (172)  \-> unmapped
+.fi
+.SH DIAGNOSTIC HINTS
+When one or more devices could not be opened, or when the
+.B audiocontrol
+service user is not a member of the
+.B input
+group, the tool prints a hint pointing at:
+.PP
+.nf
+ls -l /dev/input/event*   # should be group 'input'
+id audiocontrol           # should include the 'input' group
+.fi
+.PP
+The group-membership check is performed directly (independent of the user
+running this tool), because this tool is typically run as root by a support
+engineer, under which every device opens fine regardless of whether the
+.B audiocontrol
+service itself has access.
+.SH EXIT STATUS
+.TP
+.B 0
+Success; no permission problem was detected. A system with no input devices
+at all is not itself treated as an error.
+.TP
+.B 1
+A device could not be opened due to a permission problem.
+.SH SEE ALSO
+.BR audiocontrol (1)
+.PP
+See the AudioControl project's
+.I doc/inputs.md
+for the full
+.B inputs.keyboard
+configuration reference, the default keymap, and step-by-step
+troubleshooting.
+.SH AUTHORS
+Written as part of the AudioControl project.
+.SH REPORTING BUGS
+Report bugs to the AudioControl project maintainers.

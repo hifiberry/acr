@@ -1,3 +1,17 @@
+hifiberry-audiocontrol (0.8.0) trixie; urgency=medium
+
+  * Add USB HID remote control support (inputs.keyboard), restoring the
+    remote control functionality audiocontrol2 provided. Enabled by default;
+    devices are discovered at startup.
+  * Add audiocontrol_input_devices tool and GET /api/inputs for diagnostics.
+  * Fix unmute jumping to a hardcoded 50% instead of restoring the previous
+    volume level.
+  * Fix a race in the /api/volume/increase and /decrease handlers, which did
+    their read-modify-write outside the volume lock.
+  * The audiocontrol user is now added to the 'input' group.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 15 Jul 2026 10:00:17 +0200
+
 hifiberry-audiocontrol (0.7.20) trixie; urgency=medium
 
   * shairport: stop AirPlay via shairport-sync's D-Bus control interface

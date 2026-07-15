@@ -16,7 +16,7 @@ RestartSec=5
 User=audiocontrol
 Group=audiocontrol
 # Add audio group for sound device access
-SupplementaryGroups=audio
+SupplementaryGroups=audio input
 WorkingDirectory=/etc/audiocontrol
 RuntimeDirectory=audiocontrol
 RuntimeDirectoryMode=0755

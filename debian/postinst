@@ -20,7 +20,14 @@ setup_user_and_dirs() {
         echo "Adding audiocontrol user to audio group..."
         usermod -a -G audio audiocontrol
     fi
-    
+
+    # Input device access for USB HID remotes. /dev/input/event* is root:input
+    # 0640, so audiocontrol must be in the input group to read a remote.
+    if ! getent group input >/dev/null; then
+        groupadd --system input
+    fi
+    usermod -a -G input audiocontrol
+
     # Create directory structure
     echo "Setting up directory structure..."
     mkdir -p /etc/audiocontrol

@@ -30,6 +30,15 @@
                 "scrobble": true
             }
         }    ],
+    "inputs": {
+        "keyboard": {
+            "_comment": "USB HID remote control support. Enabled by default. keymap replaces the built-in map when present; keys may be KEY_* names or raw numeric codes. Run audiocontrol_input_devices --watch to discover codes.",
+            "enable": true,
+            "volume_step": 5,
+            "grab": false,
+            "device": ""
+        }
+    },
     "services": {
         "webserver": {
             "enable": true,

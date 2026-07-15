@@ -9,6 +9,7 @@ This directory contains documentation for various aspects of the HiFiBerry Audio
 - [CLI Tools](cli_tools.md) - Command-line tools for interacting with Audiocontrol
 - [Generic Player Controller](generic_player_controller.md) - Configurable player implementation
 - [Image Grading System](imagegrading.md) - Quality scoring system for cover art images
+- [Input sources](inputs.md) - USB HID remote controls and keyboard input configuration
 - [Last.fm Authentication](lastfm.md) - How to authenticate with Last.fm
 - [Library Management](library.md) - How Audiocontrol manages music libraries
 - [External Links](links.md) - Links to external tools and documentation

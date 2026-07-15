@@ -54,7 +54,7 @@ keyboards (`vc4-hdmi-0`, `vc4-hdmi-1`) also match the default keymap (10 of the
 14 keys above), so a TV remote can drive playback over CEC as well. This is
 expected, and generally desirable; use `device` if you need to exclude it.
 
-Holding a volume key ramps the volume. Holding a transport key acts once.
+Holding a volume key ramps the volume; all other keys act once per press.
 
 ## Diagnostics
 
@@ -72,7 +72,9 @@ press a key... (Ctrl-C to stop)
 `audiocontrol_input_devices` also takes `--config`/`-c` to point at a
 non-default config file (default `/etc/audiocontrol/audiocontrol.json`).
 
-`GET /api/inputs` reports the same information as JSON.
+`GET /api/inputs` reports bound devices and the last keypress as JSON. Use
+`audiocontrol_input_devices` to see unmatched devices and permission problems —
+those do not appear in the API response.
 
 ## Troubleshooting
 

@@ -5,6 +5,11 @@ export SKIP_BUILD
 export CARGO_HOME = $(CURDIR)/debian/cargo_home
 export RUSTUP_HOME = $(CURDIR)/debian/rustup_home
 
+# Minimum rustc that can compile these sources: they use trait upcasting,
+# stabilised in Rust 1.86. Anything older fails with E0658 regardless of which
+# dependency versions are selected. Keep in sync with rust-version in Cargo.toml.
+RUST_MIN_VERSION = 1.86
+
 # Optimize Rust compilation for space efficiency
 export CARGO_BUILD_JOBS = 1
 export CARGO_INCREMENTAL = 0
@@ -14,8 +19,23 @@ export RUST_BACKTRACE = 0
 	dh $@
 
 override_dh_auto_configure:
-	# Install Rust via rustup if not available or if cargo version is too old
-	if ! which cargo >/dev/null 2>&1 || ! cargo --version | grep -q "1\.[8-9][0-9]\|1\.[0-9][0-9][0-9]"; then \
+	# Install Rust via rustup if the system toolchain is missing or too old.
+	#
+	# Check rustc, not cargo: it is rustc's version that decides whether the
+	# sources compile, and the two can be a mismatched pair (a build host with a
+	# newer cargo in /usr/local/bin alongside the distribution's older rustc in
+	# /usr/bin passes a cargo-only check while still failing to build).
+	#
+	# Compare versions numerically rather than by pattern. The previous check
+	# accepted any 1.80-1.99, so it silently accepted a rustc too old to build
+	# this crate and then never installed a working toolchain.
+	set -e; \
+	rustc_version=$$(rustc --version 2>/dev/null | awk '{print $$2}'); \
+	if [ -n "$$rustc_version" ] && \
+	   [ "$$(printf '%s\n%s\n' "$(RUST_MIN_VERSION)" "$$rustc_version" | sort -V | head -n1)" = "$(RUST_MIN_VERSION)" ]; then \
+		echo "Using system rustc $$rustc_version (>= $(RUST_MIN_VERSION))"; \
+	else \
+		echo "System rustc ($${rustc_version:-not found}) is older than $(RUST_MIN_VERSION); installing a toolchain via rustup"; \
 		mkdir -p $(RUSTUP_HOME) $(CARGO_HOME); \
 		curl https://sh.rustup.rs -sSf | \
 		RUSTUP_HOME=$(RUSTUP_HOME) CARGO_HOME=$(CARGO_HOME) \
@@ -101,8 +121,11 @@ override_dh_auto_clean:
 	rm -f debian/*.debhelper.log
 	rm -f debian/*.postrm.debhelper
 	rm -f debian/*.substvars
-	# Clean any cargo lock files and caches
-	rm -f Cargo.lock
+	# Cargo.lock is a committed source file, not a build artefact: deleting it
+	# made every package build re-resolve dependencies to the newest
+	# semver-compatible versions. That is non-reproducible, and it raises the
+	# rustc needed at build time to whatever the newest dependencies demand
+	# today rather than what this crate was tested against.
 	find . -name "*.rlib" -delete 2>/dev/null || true
 	find . -name "*.rmeta" -delete 2>/dev/null || true
 

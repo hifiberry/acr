@@ -3,6 +3,10 @@ name = "audiocontrol"
 version = "0.8.0"
 authors = ["HiFiBerry <support@hifiberry.com>"]
 edition = "2021"
+# The sources use trait upcasting, stabilised in Rust 1.86. Declaring it makes
+# an older toolchain fail with a clear message instead of E0658 deep in a build.
+# Keep in sync with RUST_MIN_VERSION in debian/rules.
+rust-version = "1.86"
 description = "AudioControl server"
 homepage = "https://www.hifiberry.com"
 repository = "https://github.com/hifiberry/hifiberry-os"

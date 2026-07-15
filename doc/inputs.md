@@ -77,15 +77,30 @@ keypress as JSON:
 
 ```json
 {
-  "devices": [
-    { "path": "/dev/input/event0", "name": "HiFiBerry USBRemote", "matched_keys": ["KEY_VOLUMEUP", "..."] }
-  ],
-  "unbound_devices": [
-    { "path": "/dev/input/event1", "name": "Power Button", "reason": "no_mapped_keys" }
-  ],
-  "last_key": null
+  "inputs": [
+    {
+      "name": "keyboard",
+      "status": {
+        "enabled": true,
+        "volume_step": 5.0,
+        "grab": false,
+        "device_filter": "",
+        "mapped_keys": 14,
+        "devices": [
+          { "path": "/dev/input/event0", "name": "HiFiBerry USBRemote", "matched_keys": ["KEY_VOLUMEUP", "KEY_MUTE"] }
+        ],
+        "unbound_devices": [
+          { "path": "/dev/input/event1", "name": "Power Button", "reason": "no_mapped_keys" }
+        ],
+        "last_key": null
+      }
+    }
+  ]
 }
 ```
+
+Each top-level entry in `inputs` is one input source (currently only `keyboard`
+exists); its `status` object carries the fields shown above.
 
 Each entry in `unbound_devices` carries a `reason`:
 

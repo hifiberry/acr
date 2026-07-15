@@ -1,7 +1,8 @@
 use crate::AudioController;
 use crate::api::{
     players, plugins, library, imagecache, coverart, events, lastfm, spotify,
-    theaudiodb, favourites, volume, lyrics, m3u, settings, cache, backgroundjobs, genres
+    theaudiodb, favourites, volume, lyrics, m3u, settings, cache, backgroundjobs, genres,
+    inputs
 };
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
@@ -125,6 +126,11 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         volume::toggle_mute,
     ];
 
+    // Define inputs routes
+    let inputs_routes = routes![
+        inputs::get_inputs_status,
+    ];
+
     // Define coverart routes
     let coverart_routes = routes![
         coverart::get_artist_coverart,
@@ -243,6 +249,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         .mount(format!("{}/background", API_PREFIX), backgroundjobs_routes) // Mount background jobs routes
         .mount(format!("{}/genres", API_PREFIX), genres_routes) // Mount genre config routes
         .mount(format!("{}/volume", API_PREFIX), volume_routes) // Mount volume routes
+        .mount(format!("{}/inputs", API_PREFIX), inputs_routes) // Mount inputs status routes
         .mount(format!("{}/coverart", API_PREFIX), coverart_routes) // Mount coverart routes
         .manage(controller)
         .manage(ws_manager); // Add WebSocket manager as managed state

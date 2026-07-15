@@ -70,6 +70,9 @@ pub mod favourites;
 // Export the volume module
 pub mod volume;
 
+// Export the inputs module
+pub mod inputs;
+
 // Export the lyrics module
 pub mod lyrics;
 

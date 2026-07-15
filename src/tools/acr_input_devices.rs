@@ -23,9 +23,12 @@ struct Args {
 
 #[cfg(target_os = "linux")]
 fn run(args: Args) -> i32 {
-    use audiocontrol::inputs::keyboard::keymap::key_name_from_code;
-    use audiocontrol::inputs::keyboard::{device_name_matches, KeyboardConfig};
-    use evdev::{EventType, KeyCode};
+    use audiocontrol::inputs::keyboard::evdev_source::{
+        evaluate_device, probe_permission_denied, DeviceVerdict,
+    };
+    use audiocontrol::inputs::keyboard::keymap::key_display_name;
+    use audiocontrol::inputs::keyboard::KeyboardConfig;
+    use evdev::EventType;
 
     // A missing or malformed config is not fatal: fall back to defaults, since
     // the point of this tool is to diagnose a broken setup.
@@ -43,7 +46,12 @@ fn run(args: Args) -> i32 {
     let kb_config = KeyboardConfig::from_config(
         config_value.get("inputs").and_then(|v| v.get("keyboard")),
     );
-    let wanted = kb_config.keymap.codes();
+
+    // Probe before enumerating: evdev::enumerate() silently skips devices it
+    // cannot open, so this walk is the only way to see a remote hidden by a
+    // permission problem -- even when some unrelated device (a power button,
+    // an HDMI-CEC node) opens fine and the listing below looks normal.
+    let denied = probe_permission_denied();
 
     let mut matched_devices = Vec::new();
     let mut any = false;
@@ -52,32 +60,45 @@ fn run(args: Args) -> i32 {
         any = true;
         let path_str = path.to_string_lossy().to_string();
         let name = device.name().unwrap_or("unknown").to_string();
+        let keys: Option<Vec<u16>> = device
+            .supported_keys()
+            .map(|ks| ks.iter().map(evdev::KeyCode::code).collect());
 
-        if !device_name_matches(&kb_config.device, &name) {
-            println!("{:<20} {:<28} filtered out by device filter '{}'",
-                     path_str, format!("\"{}\"", name), kb_config.device);
-            continue;
-        }
-
-        let matched: Vec<u16> = match device.supported_keys() {
-            Some(keys) => wanted.iter().copied().filter(|c| keys.contains(KeyCode::new(*c))).collect(),
-            None => Vec::new(),
-        };
-
-        if matched.is_empty() {
-            println!("{:<20} {:<28} no mapped keys", path_str, format!("\"{}\"", name));
-        } else {
-            println!("{:<20} {:<28} MATCHED ({} mapped keys)",
-                     path_str, format!("\"{}\"", name), matched.len());
-            matched_devices.push((path_str, name, device));
+        match evaluate_device(&kb_config, &name, keys.as_deref()) {
+            DeviceVerdict::FilteredOut => {
+                println!("{:<20} {:<28} filtered out by device filter '{}'",
+                         path_str, format!("\"{}\"", name), kb_config.device);
+            }
+            DeviceVerdict::NoMappedKeys => {
+                println!("{:<20} {:<28} no mapped keys", path_str, format!("\"{}\"", name));
+            }
+            DeviceVerdict::Matched(matched) => {
+                println!("{:<20} {:<28} MATCHED ({} mapped keys)",
+                         path_str, format!("\"{}\"", name), matched.len());
+                matched_devices.push((path_str, name, device));
+            }
         }
     }
 
-    if !any {
+    for path in &denied {
+        println!("{:<20} {:<28} PERMISSION DENIED -- could not open", path, "");
+    }
+
+    if !any && denied.is_empty() {
         eprintln!("No input devices found. If this is unexpected, check permissions:");
         eprintln!("  ls -l /dev/input/event*   # should be group 'input'");
         eprintln!("  id audiocontrol           # should include the 'input' group");
         return 1;
+    }
+
+    if !denied.is_empty() {
+        eprintln!();
+        eprintln!(
+            "{} device(s) above could not be opened -- a remote may be hidden by this:",
+            denied.len()
+        );
+        eprintln!("  ls -l /dev/input/event*   # should be group 'input'");
+        eprintln!("  id audiocontrol           # should include the 'input' group");
     }
 
     if matched_devices.is_empty() {
@@ -120,7 +141,7 @@ fn run(args: Args) -> i32 {
                     continue;
                 }
                 let code = event.code();
-                let key_name = key_name_from_code(code).unwrap_or("(unnamed)");
+                let key_name = key_display_name(code);
                 match keymap.get(code) {
                     Some(action) => println!("  {} ({})  -> {}", key_name, code, action.as_str()),
                     None => println!("  {} ({})  -> unmapped", key_name, code),

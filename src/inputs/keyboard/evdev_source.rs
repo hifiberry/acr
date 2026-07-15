@@ -24,6 +24,83 @@ pub struct DiscoveredDevice {
     pub device: Device,
 }
 
+/// What a device is, for keyboard-input purposes.
+///
+/// This is the one place the "would audiocontrol bind this device" rule
+/// lives. Both [`scan_devices`] (which only needs the devices it binds) and
+/// `audiocontrol_input_devices` (which needs to explain every device, matched
+/// or not) decide from this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceVerdict {
+    /// Advertises at least one mapped key. Carries the mapped keycodes.
+    Matched(Vec<u16>),
+    /// Excluded by the `device` name filter, before capabilities were checked.
+    FilteredOut,
+    /// Passed the name filter but advertises none of the keymap's keycodes
+    /// (including devices with no key capability at all, i.e.
+    /// `supported_keys()` returned `None`).
+    NoMappedKeys,
+}
+
+/// Decide what one device is, given its name and the keycodes it supports.
+///
+/// Takes plain data rather than a live [`Device`] so this -- the only rule
+/// that decides what audiocontrol would bind -- is unit-testable without
+/// hardware. `keys` is `None` when `Device::supported_keys()` returned `None`.
+///
+/// The name filter is applied before the capability check, matching
+/// audiocontrol2.
+pub fn evaluate_device(config: &KeyboardConfig, name: &str, keys: Option<&[u16]>) -> DeviceVerdict {
+    if !device_name_matches(&config.device, name) {
+        return DeviceVerdict::FilteredOut;
+    }
+
+    let Some(keys) = keys else {
+        return DeviceVerdict::NoMappedKeys;
+    };
+
+    let matched: Vec<u16> = config
+        .keymap
+        .codes()
+        .into_iter()
+        .filter(|c| keys.contains(c))
+        .collect();
+
+    if matched.is_empty() {
+        DeviceVerdict::NoMappedKeys
+    } else {
+        DeviceVerdict::Matched(matched)
+    }
+}
+
+/// Probe `/dev/input/event*` for nodes that cannot be opened for reading.
+///
+/// `evdev::enumerate()` silently skips devices it cannot open, so this walk
+/// is the only way to see a permission problem at all. Shared by
+/// [`scan_devices`] (fatal only when nothing else matched -- most systems
+/// have no remote at all, and that is not an error) and
+/// `audiocontrol_input_devices` (which reports every denied path, since an
+/// unrelated device opening fine -- a power button, an HDMI-CEC node -- must
+/// not hide a denied remote).
+pub fn probe_permission_denied() -> Vec<String> {
+    let mut denied = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/dev/input") else {
+        return denied;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.to_string_lossy().contains("event") {
+            continue;
+        }
+        if let Err(e) = std::fs::File::open(&p) {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                denied.push(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    denied
+}
+
 /// Scan `/dev/input/event*` and return devices that pass the name filter and
 /// advertise at least one mapped key.
 ///
@@ -35,68 +112,44 @@ pub struct DiscoveredDevice {
 /// unreadable `/dev/input/event*` node. No matching device with no
 /// permission problem is not an error: most systems have no remote.
 pub fn scan_devices(config: &KeyboardConfig) -> Result<Vec<DiscoveredDevice>, InputError> {
-    let wanted = config.keymap.codes();
     let mut found = Vec::new();
-    let mut permission_denied_path: Option<String> = None;
 
     for (path, device) in evdev::enumerate() {
         let path_str = path.to_string_lossy().to_string();
         let name = device.name().unwrap_or("unknown").to_string();
+        let keys: Option<Vec<u16>> = device
+            .supported_keys()
+            .map(|ks| ks.iter().map(KeyCode::code).collect());
 
-        if !device_name_matches(&config.device, &name) {
-            debug!("keyboard: {} '{}' filtered out by device filter", path_str, name);
-            continue;
+        match evaluate_device(config, &name, keys.as_deref()) {
+            DeviceVerdict::FilteredOut => {
+                debug!("keyboard: {} '{}' filtered out by device filter", path_str, name);
+            }
+            DeviceVerdict::NoMappedKeys => {
+                debug!("keyboard: {} '{}' has no mapped keys", path_str, name);
+            }
+            DeviceVerdict::Matched(matched) => {
+                info!(
+                    "keyboard: bound {} '{}' ({} mapped keys)",
+                    path_str,
+                    name,
+                    matched.len()
+                );
+                found.push(DiscoveredDevice { path: path_str, name, matched, device });
+            }
         }
-
-        let Some(keys) = device.supported_keys() else {
-            continue;
-        };
-        let matched: Vec<u16> = wanted
-            .iter()
-            .copied()
-            .filter(|c| keys.contains(KeyCode::new(*c)))
-            .collect();
-
-        if matched.is_empty() {
-            debug!("keyboard: {} '{}' has no mapped keys", path_str, name);
-            continue;
-        }
-
-        info!(
-            "keyboard: bound {} '{}' ({} mapped keys)",
-            path_str,
-            name,
-            matched.len()
-        );
-        found.push(DiscoveredDevice { path: path_str, name, matched, device });
     }
 
     // evdev::enumerate() silently skips devices it cannot open, so probe for
     // the permission problem explicitly -- it is the most likely failure.
     if found.is_empty() {
-        if let Ok(entries) = std::fs::read_dir("/dev/input") {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if !p.to_string_lossy().contains("event") {
-                    continue;
-                }
-                if let Err(e) = std::fs::File::open(&p) {
-                    if e.kind() == std::io::ErrorKind::PermissionDenied {
-                        permission_denied_path = Some(p.to_string_lossy().to_string());
-                        break;
-                    }
-                }
-            }
+        if let Some(path) = probe_permission_denied().into_iter().next() {
+            return Err(InputError::PermissionDenied { path });
         }
-        if permission_denied_path.is_none() {
-            info!("keyboard: no input devices with mapped keys found");
-        }
+        info!("keyboard: no input devices with mapped keys found");
     }
 
-    match permission_denied_path {
-        Some(path) => Err(InputError::PermissionDenied { path }),
-        None => Ok(found),
-    }
+    Ok(found)
 }
 
 /// Start a reader thread per discovered device.
@@ -187,4 +240,78 @@ pub fn start_readers(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(device_filter: &str) -> KeyboardConfig {
+        let mut c = KeyboardConfig::from_config(None);
+        c.device = device_filter.to_string();
+        c
+    }
+
+    #[test]
+    fn test_evaluate_device_filtered_out_before_capability_check() {
+        // A device that would match on keys but fails the name filter must be
+        // FilteredOut, not NoMappedKeys -- the filter runs first.
+        let c = config("USBRemote");
+        let keys = [115u16]; // KEY_VOLUMEUP, present in the default map
+        assert_eq!(
+            evaluate_device(&c, "Power Button", Some(&keys)),
+            DeviceVerdict::FilteredOut
+        );
+    }
+
+    #[test]
+    fn test_evaluate_device_no_key_capability() {
+        // supported_keys() returned None: the device has no key capability at all.
+        let c = config("");
+        assert_eq!(evaluate_device(&c, "Some Mouse", None), DeviceVerdict::NoMappedKeys);
+    }
+
+    #[test]
+    fn test_evaluate_device_opens_but_no_mapped_keys() {
+        let c = config("");
+        let keys = [999u16]; // not in the default map
+        assert_eq!(
+            evaluate_device(&c, "Random Keyboard", Some(&keys)),
+            DeviceVerdict::NoMappedKeys
+        );
+    }
+
+    #[test]
+    fn test_evaluate_device_matched_carries_mapped_codes() {
+        let c = config("USBRemote");
+        // Device advertises far more keys than the mapped set; only the
+        // intersection should come back.
+        let keys = [115u16, 114, 999, 1000];
+        match evaluate_device(&c, "HiFiBerry USBRemote", Some(&keys)) {
+            DeviceVerdict::Matched(mut matched) => {
+                matched.sort();
+                assert_eq!(matched, vec![114, 115]);
+            }
+            other => panic!("expected Matched, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_device_empty_filter_matches_any_name() {
+        let c = config("");
+        let keys = [115u16];
+        assert!(matches!(
+            evaluate_device(&c, "anything at all", Some(&keys)),
+            DeviceVerdict::Matched(_)
+        ));
+    }
+
+    #[test]
+    fn test_probe_permission_denied_does_not_panic() {
+        // No assertion on contents: real /dev/input contents are
+        // environment-dependent (root vs. non-root test runs). This just
+        // guards that the walk is total and never panics, e.g. if
+        // /dev/input does not exist on some test host.
+        let _ = probe_permission_denied();
+    }
 }

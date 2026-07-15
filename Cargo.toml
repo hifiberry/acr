@@ -92,7 +92,7 @@ dbus = "0.9"
 alsa = { version = "0.9", optional = true }
 
 # Linux-only: evdev input device support for USB HID remotes.
-# Pure-Rust ioctls (bitvec/cfg-if/libc/nix/thiserror), no libevdev C library,
+# Pure-Rust ioctls (bitvec/cfg-if/libc/nix), no libevdev C library,
 # so this adds no Debian build-dependency.
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"

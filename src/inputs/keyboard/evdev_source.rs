@@ -7,10 +7,10 @@ use crate::inputs::dispatch::ActionSink;
 use crate::inputs::keyboard::{
     device_name_matches, handle_key_event, KeyboardConfig, KeyboardStatus, LastKey,
 };
-use crate::inputs::keyboard::keymap::key_name_from_code;
+use crate::inputs::keyboard::keymap::{key_display_name, key_name_from_code};
 use crate::inputs::InputError;
 use evdev::{Device, EventType, KeyCode};
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,10 +30,14 @@ pub struct DiscoveredDevice {
 /// This is audiocontrol2's rule: match by capability intersection. It is a
 /// startup-only scan; hotplug is out of scope (the unit orders after
 /// systemd-udev-settle, so a dongle present at boot is always seen).
-pub fn scan_devices(config: &KeyboardConfig) -> Vec<DiscoveredDevice> {
+///
+/// Returns `Err` if no device was bound and the permission probe found an
+/// unreadable `/dev/input/event*` node. No matching device with no
+/// permission problem is not an error: most systems have no remote.
+pub fn scan_devices(config: &KeyboardConfig) -> Result<Vec<DiscoveredDevice>, InputError> {
     let wanted = config.keymap.codes();
     let mut found = Vec::new();
-    let mut permission_denied = false;
+    let mut permission_denied_path: Option<String> = None;
 
     for (path, device) in evdev::enumerate() {
         let path_str = path.to_string_lossy().to_string();
@@ -78,37 +82,35 @@ pub fn scan_devices(config: &KeyboardConfig) -> Vec<DiscoveredDevice> {
                 }
                 if let Err(e) = std::fs::File::open(&p) {
                     if e.kind() == std::io::ErrorKind::PermissionDenied {
-                        permission_denied = true;
+                        permission_denied_path = Some(p.to_string_lossy().to_string());
                         break;
                     }
                 }
             }
         }
-        if permission_denied {
-            error!(
-                "keyboard: permission denied reading /dev/input/event*. \
-                 Add the 'audiocontrol' user to the 'input' group \
-                 (usermod -a -G input audiocontrol) and restart audiocontrol."
-            );
-        } else {
+        if permission_denied_path.is_none() {
             info!("keyboard: no input devices with mapped keys found");
         }
     }
 
-    found
+    match permission_denied_path {
+        Some(path) => Err(InputError::PermissionDenied { path }),
+        None => Ok(found),
+    }
 }
 
 /// Start a reader thread per discovered device.
 ///
-/// Returns `Err` only if the devices could not be scanned at all. No matching
-/// device is not an error: most systems have no remote.
+/// Returns `Err` if [`scan_devices`] found no bindable device because
+/// `/dev/input/event*` was unreadable. No matching device is not an error:
+/// most systems have no remote.
 pub fn start_readers(
     config: &KeyboardConfig,
     sink: ActionSink,
     status: Arc<Mutex<KeyboardStatus>>,
     running: Arc<AtomicBool>,
 ) -> Result<(), InputError> {
-    let devices = scan_devices(config);
+    let devices = scan_devices(config)?;
 
     for mut discovered in devices {
         let path = discovered.path.clone();
@@ -126,8 +128,7 @@ pub fn start_readers(
             matched_keys: discovered
                 .matched
                 .iter()
-                .map(|c| key_name_from_code(*c).unwrap_or("").to_string())
-                .filter(|s| !s.is_empty())
+                .map(|c| key_display_name(*c))
                 .collect(),
         });
 
@@ -148,6 +149,13 @@ pub fn start_readers(
             while running.load(Ordering::Relaxed) {
                 let events = match device.fetch_events() {
                     Ok(events) => events,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                        // EINTR: a signal interrupted the blocking read. The
+                        // device is still there -- retry instead of killing
+                        // the listener.
+                        debug!("keyboard: '{}' interrupted read, retrying", name);
+                        continue;
+                    }
                     Err(e) => {
                         warn!("keyboard: '{}' read error ({}), listener stopping", name, e);
                         return;

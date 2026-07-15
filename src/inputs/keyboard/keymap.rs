@@ -90,6 +90,16 @@ pub fn key_name_from_code(code: u16) -> Option<&'static str> {
         .map(|(n, _)| *n)
 }
 
+/// Render a keycode for display: its `KEY_*` name if known, else the decimal
+/// number as a string. Unlike [`key_name_from_code`], this never drops a
+/// code -- raw numeric codes are a supported escape hatch in `resolve_key`,
+/// and status output must not silently omit devices' unnamed keys.
+pub fn key_display_name(code: u16) -> String {
+    key_name_from_code(code)
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| code.to_string())
+}
+
 /// Resolve a config keymap key: a `KEY_*` name, or a raw numeric code as an
 /// escape hatch for remotes emitting codes with no name in `KEY_NAMES`.
 fn resolve_key(key: &str) -> Option<u16> {
@@ -201,6 +211,16 @@ mod tests {
     fn test_code_to_name() {
         assert_eq!(key_name_from_code(115), Some("KEY_VOLUMEUP"));
         assert_eq!(key_name_from_code(60000), None);
+    }
+
+    #[test]
+    fn test_display_name_known_code() {
+        assert_eq!(key_display_name(115), "KEY_VOLUMEUP");
+    }
+
+    #[test]
+    fn test_display_name_unnamed_code_falls_back_to_number() {
+        assert_eq!(key_display_name(190), "190");
     }
 
     #[test]

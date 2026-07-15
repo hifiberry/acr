@@ -9,13 +9,18 @@ pub mod keymap;
 pub mod evdev_source;
 
 use crate::inputs::dispatch::ActionSink;
-use crate::inputs::Action;
+use crate::inputs::{Action, InputController, InputError};
 use keymap::KeyMap;
 use log::debug;
+use parking_lot::Mutex;
+use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Default volume percentage points per volume action. Matches audiocontrol2's
-/// `change_volume_percent(5)`.
-const DEFAULT_VOLUME_STEP: f64 = 5.0;
+/// `change_volume_percent(5)`. Visible outside this module so `inputs::init_inputs`'s
+/// per-source-type fallback can reference it instead of duplicating the literal.
+pub(crate) const DEFAULT_VOLUME_STEP: f64 = 5.0;
 
 /// Parsed `inputs.keyboard` configuration.
 #[derive(Debug, Clone)]
@@ -99,12 +104,6 @@ pub fn handle_key_event(
     sink.dispatch(action);
     Some(action)
 }
-
-use crate::inputs::{InputController, InputError};
-use parking_lot::Mutex;
-use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 /// A device the keyboard source is listening to.
 #[derive(Debug, Clone, Serialize, Default)]

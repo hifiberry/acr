@@ -7,8 +7,16 @@
 
 pub mod keyboard;
 pub mod dispatch;
+pub mod registry;
 
 pub use dispatch::ActionSink;
+
+use crate::audiocontrol::audiocontrol::AudioController;
+use dispatch::GlobalActionTarget;
+use log::{error, info, warn};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use std::sync::{Arc, Weak};
 
 /// Errors an input source can fail to start with.
 #[derive(Debug, thiserror::Error)]
@@ -37,15 +45,6 @@ pub trait InputController: Send {
     fn status(&self) -> serde_json::Value;
 }
 
-pub mod registry;
-
-use crate::audiocontrol::audiocontrol::AudioController;
-use dispatch::GlobalActionTarget;
-use log::{info, warn};
-use once_cell::sync::Lazy;
-use parking_lot::Mutex;
-use std::sync::{Arc, Weak};
-
 /// The started input sources, kept so `GET /api/inputs` can report status.
 static INPUTS: Lazy<Mutex<Vec<Box<dyn InputController>>>> =
     Lazy::new(|| Mutex::new(Vec::new()));
@@ -70,11 +69,14 @@ pub fn init_inputs(config: &serde_json::Value, controller: Weak<AudioController>
                 config.get("inputs").and_then(|v| v.get("keyboard")),
             )
             .volume_step,
-            _ => 5.0,
+            _ => keyboard::DEFAULT_VOLUME_STEP,
         };
         let sink = ActionSink::new(target.clone(), step);
         match input.start(sink) {
             Ok(()) => info!("inputs: started '{}'", input.name()),
+            Err(e @ InputError::PermissionDenied { .. }) => {
+                error!("inputs: could not start '{}': {}", input.name(), e)
+            }
             Err(e) => warn!("inputs: could not start '{}': {}", input.name(), e),
         }
     }

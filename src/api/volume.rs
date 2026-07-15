@@ -196,11 +196,7 @@ pub fn set_volume(request: Json<SetVolumeRequest>) -> Json<VolumeOperationRespon
     } else if let Some(db) = request.decibels {
         global_volume::set_volume_db(db)
     } else if let Some(raw) = request.raw_value {
-        if let Ok(control) = global_volume::get_global_volume_control() {
-            control.lock().set_raw_value(raw).is_ok()
-        } else {
-            false
-        }
+        global_volume::set_volume_raw(raw)
     } else {
         return Json(VolumeOperationResponse {
             success: false,
@@ -210,23 +206,7 @@ pub fn set_volume(request: Json<SetVolumeRequest>) -> Json<VolumeOperationRespon
     };
     
     if result {
-        // Get the updated state
-        let new_state = if let Some(percentage) = global_volume::get_volume_percentage() {
-            let decibels = global_volume::get_volume_db();
-            let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-                control.lock().get_raw_value().ok()
-            } else {
-                None
-            };
-
-            Some(VolumeStateResponse {
-                percentage,
-                decibels,
-                raw_value,
-            })
-        } else {
-            None
-        };
+        let new_state = current_volume_state();
 
         Json(VolumeOperationResponse {
             success: true,
@@ -260,9 +240,12 @@ fn current_volume_state() -> Option<VolumeStateResponse> {
     })
 }
 
-/// Adjust the volume by `delta` and build the response. `verb` is used only for
-/// the human-readable message ("increase" / "decrease").
-fn adjust_and_respond(delta: f64, verb: &str) -> Json<VolumeOperationResponse> {
+/// Adjust the volume by `delta` and build the response. `present` and `past`
+/// give the verb tense used in the human-readable message ("increase" /
+/// "increased", "decrease" / "decreased") — passed explicitly by the caller
+/// rather than derived from `delta`'s sign, so an unrecognised value can't
+/// silently fall through to the wrong tense.
+fn adjust_and_respond(delta: f64, present: &str, past: &str) -> Json<VolumeOperationResponse> {
     if !global_volume::is_volume_control_available() {
         return Json(VolumeOperationResponse {
             success: false,
@@ -274,14 +257,13 @@ fn adjust_and_respond(delta: f64, verb: &str) -> Json<VolumeOperationResponse> {
     if !global_volume::adjust_volume_percentage(delta) {
         return Json(VolumeOperationResponse {
             success: false,
-            message: format!("Failed to {} volume", verb),
+            message: format!("Failed to {} volume", present),
             new_state: None,
         });
     }
 
     let new_state = current_volume_state();
     let percentage = new_state.as_ref().map(|s| s.percentage).unwrap_or(0.0);
-    let past = if verb == "increase" { "increased" } else { "decreased" };
     Json(VolumeOperationResponse {
         success: true,
         message: format!("Volume {} to {:.1}%", past, percentage),
@@ -294,7 +276,7 @@ fn adjust_and_respond(delta: f64, verb: &str) -> Json<VolumeOperationResponse> {
 pub fn increase_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
     let increase_amount = amount.unwrap_or(5.0); // Default 5% increase
     debug!("API: Increasing volume by {}%", increase_amount);
-    adjust_and_respond(increase_amount, "increase")
+    adjust_and_respond(increase_amount, "increase", "increased")
 }
 
 /// Decrease volume by a percentage amount
@@ -302,7 +284,7 @@ pub fn increase_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
 pub fn decrease_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
     let decrease_amount = amount.unwrap_or(5.0); // Default 5% decrease
     debug!("API: Decreasing volume by {}%", decrease_amount);
-    adjust_and_respond(-decrease_amount, "decrease")
+    adjust_and_respond(-decrease_amount, "decrease", "decreased")
 }
 
 /// Mute or unmute volume
@@ -320,6 +302,8 @@ pub fn toggle_mute() -> Json<VolumeOperationResponse> {
         });
     }
 
+    let was_muted = global_volume::is_muted();
+
     if !global_volume::toggle_mute() {
         return Json(VolumeOperationResponse {
             success: false,
@@ -328,12 +312,25 @@ pub fn toggle_mute() -> Json<VolumeOperationResponse> {
         });
     }
 
-    let action = if global_volume::is_muted() { "muted" } else { "unmuted" };
+    let now_muted = global_volume::is_muted();
     let new_state = current_volume_state();
     let percentage = new_state.as_ref().map(|s| s.percentage).unwrap_or(0.0);
+
+    // Muting at 0% is a deliberate no-op (nothing to save/restore later), so
+    // `is_muted()` stays false even though the caller pressed "mute" rather
+    // than "unmute". Report that case accurately instead of claiming an
+    // unmute that never happened.
+    let message = if now_muted {
+        format!("Volume muted at {:.1}%", percentage)
+    } else if was_muted {
+        format!("Volume unmuted at {:.1}%", percentage)
+    } else {
+        format!("Volume already at {:.1}%, nothing to mute", percentage)
+    };
+
     Json(VolumeOperationResponse {
         success: true,
-        message: format!("Volume {} at {:.1}%", action, percentage),
+        message,
         new_state,
     })
 }

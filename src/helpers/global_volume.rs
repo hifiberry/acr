@@ -395,17 +395,47 @@ pub fn get_volume_db() -> Option<f64> {
 }
 
 /// Set the volume in decibels
-/// 
+///
+/// An explicit volume set clears any saved mute level, so changing volume
+/// while muted (e.g. via the WebUI) does not leave stale mute state behind.
+///
 /// # Arguments
-/// 
+///
 /// * `db` - Volume level in decibels
-/// 
+///
 /// # Returns
-/// 
+///
 /// true if the volume was set successfully, false otherwise
 pub fn set_volume_db(db: f64) -> bool {
     if let Ok(control) = get_global_volume_control() {
-        return control.lock().set_volume_db(db).is_ok();
+        let ok = control.lock().set_volume_db(db).is_ok();
+        if ok {
+            *MUTE_STATE.lock() = None;
+        }
+        return ok;
+    }
+    false
+}
+
+/// Set the raw (implementation-specific) volume value.
+///
+/// An explicit volume set clears any saved mute level, so changing volume
+/// while muted (e.g. via the WebUI) does not leave stale mute state behind.
+///
+/// # Arguments
+///
+/// * `raw` - Raw control value, implementation specific (see `get_raw_range`)
+///
+/// # Returns
+///
+/// true if the volume was set successfully, false otherwise
+pub fn set_volume_raw(raw: i64) -> bool {
+    if let Ok(control) = get_global_volume_control() {
+        let ok = control.lock().set_raw_value(raw).is_ok();
+        if ok {
+            *MUTE_STATE.lock() = None;
+        }
+        return ok;
     }
     false
 }
@@ -471,6 +501,7 @@ mod tests {
     // In a real application, you'd want separate instances for testing
     
     #[test]
+    #[serial]
     fn test_volume_control_api() {
         // Test the volume control API functions regardless of which control is initialized
         
@@ -639,5 +670,33 @@ mod tests {
         assert!(adjust_volume_percentage(5.0));
         assert!(!is_muted());
         assert_eq!(get_volume_percentage(), Some(5.0));
+    }
+
+    /// `POST /volume/set` with `{"decibels": ...}` must clear stale mute state
+    /// just like the percentage path, or a later mute press will "unmute" by
+    /// raising volume to the old pre-mute level instead of muting.
+    #[test]
+    #[serial]
+    fn test_set_db_clears_mute_state() {
+        init_dummy_at(20.0);
+        assert!(toggle_mute());
+        assert!(is_muted());
+
+        assert!(set_volume_db(-10.0));
+        assert!(!is_muted());
+    }
+
+    /// Same as above for `POST /volume/set` with `{"raw_value": ...}`.
+    #[test]
+    #[serial]
+    fn test_set_raw_clears_mute_state() {
+        init_dummy_at(20.0);
+        assert!(toggle_mute());
+        assert!(is_muted());
+
+        // DummyVolumeControl's raw range is 0..100, 1:1 with percent.
+        assert!(set_volume_raw(50));
+        assert!(!is_muted());
+        assert_eq!(get_volume_percentage(), Some(50.0));
     }
 }

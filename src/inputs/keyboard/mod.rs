@@ -256,6 +256,7 @@ impl InputController for KeyboardInput {
             "device_filter": self.config.device,
             "mapped_keys": self.config.keymap.len(),
             "devices": status.devices,
+            "unbound_devices": status.unbound_devices,
             "last_key": status.last_key,
         })
     }

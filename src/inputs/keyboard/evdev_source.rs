@@ -121,9 +121,13 @@ pub fn scan_devices(config: &KeyboardConfig) -> ScanResult {
 
 /// Start a reader thread per discovered device.
 ///
-/// Returns `Err` if [`scan_devices`] found no bindable device because
-/// `/dev/input/event*` was unreadable. No matching device is not an error:
-/// most systems have no remote.
+/// Records the scan's `unbound` snapshot into `status` first, before any error
+/// path -- that is the whole reason ordering matters here: a permission
+/// failure is exactly when the status API most needs to explain itself.
+///
+/// Returns `Err` only when nothing bound *and* a path was denied
+/// (`InputError::PermissionDenied`). No matching device with no denied path is
+/// not an error: most systems have no remote.
 pub fn start_readers(
     config: &KeyboardConfig,
     sink: ActionSink,

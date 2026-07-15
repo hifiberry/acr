@@ -72,9 +72,34 @@ press a key... (Ctrl-C to stop)
 `audiocontrol_input_devices` also takes `--config`/`-c` to point at a
 non-default config file (default `/etc/audiocontrol/audiocontrol.json`).
 
-`GET /api/inputs` reports bound devices and the last keypress as JSON. Use
-`audiocontrol_input_devices` to see unmatched devices and permission problems —
-those do not appear in the API response.
+`GET /api/inputs` reports bound devices, unbound devices, and the last
+keypress as JSON:
+
+```json
+{
+  "devices": [
+    { "path": "/dev/input/event0", "name": "HiFiBerry USBRemote", "matched_keys": ["KEY_VOLUMEUP", "..."] }
+  ],
+  "unbound_devices": [
+    { "path": "/dev/input/event1", "name": "Power Button", "reason": "no_mapped_keys" }
+  ],
+  "last_key": null
+}
+```
+
+Each entry in `unbound_devices` carries a `reason`:
+
+| Reason | Meaning |
+|---|---|
+| `no_mapped_keys` | The device passed the `device` name filter but advertises none of the keymap's keycodes (or has no key capability at all). |
+| `filtered_out` | Excluded by the `device` name filter before its keys were even checked. |
+| `permission_denied` | `/dev/input/event*` could not be opened for reading. `name` is `null` for this reason — a device that cannot be opened cannot report a name. |
+
+Both the API and the CLI use the same matching rule, but they see different
+moments in time: `GET /api/inputs` reports what was bound and unbound at
+**startup** — a snapshot, so a remote plugged in after boot will not appear
+until audiocontrol restarts. `audiocontrol_input_devices` re-scans every time
+it runs, so it reports what is plugged in **now**.
 
 ## Troubleshooting
 

@@ -1,3 +1,12 @@
+hifiberry-audiocontrol (0.8.1) trixie; urgency=medium
+
+  * GET /api/inputs now also reports devices the startup scan saw but did not
+    bind, each with a reason (no_mapped_keys, filtered_out, permission_denied).
+    It previously reported only bound devices, so it could confirm a working
+    remote but not explain a broken one.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 15 Jul 2026 13:12:39 +0200
+
 hifiberry-audiocontrol (0.8.0) trixie; urgency=medium
 
   * Add USB HID remote control support (inputs.keyboard), restoring the

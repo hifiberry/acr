@@ -13,6 +13,13 @@ use crate::config::get_service_config;
 /// Global volume control instance
 static GLOBAL_VOLUME_CONTROL: OnceCell<Arc<Mutex<Box<dyn VolumeControl + Send + Sync>>>> = OnceCell::new();
 
+/// Volume level saved when muting, restored on unmute. `None` means not muted.
+///
+/// Lock order is always GLOBAL_VOLUME_CONTROL first, then this. parking_lot
+/// mutexes are not reentrant, so functions holding the volume guard must never
+/// call the public helpers below.
+static MUTE_STATE: Mutex<Option<f64>> = Mutex::new(None);
+
 /// Initialize the global volume control from configuration
 pub fn initialize_volume_control(config: &Value) {
     info!("Initializing volume control from configuration");
@@ -272,19 +279,110 @@ pub fn get_volume_percentage() -> Option<f64> {
 }
 
 /// Set the volume as a percentage (0-100%)
-/// 
+///
+/// An explicit volume set clears any saved mute level, so changing volume
+/// while muted (e.g. via the WebUI) does not leave stale mute state behind.
+///
 /// # Arguments
-/// 
+///
 /// * `percentage` - Volume level as a percentage (0.0 to 100.0)
-/// 
+///
 /// # Returns
-/// 
+///
 /// true if the volume was set successfully, false otherwise
 pub fn set_volume_percentage(percentage: f64) -> bool {
     if let Ok(control) = get_global_volume_control() {
-        return control.lock().set_volume_percent(percentage).is_ok();
+        let ok = control.lock().set_volume_percent(percentage).is_ok();
+        if ok {
+            *MUTE_STATE.lock() = None;
+        }
+        return ok;
     }
     false
+}
+
+/// Adjust the volume by a relative amount, clamped to 0-100%.
+///
+/// The read-modify-write happens inside a single lock acquisition, unlike the
+/// previous per-handler implementations in `api::volume`, which raced. This
+/// matters under keyboard autorepeat, which drives ~20 adjustments/second.
+///
+/// Clears any saved mute level: adjusting volume is an explicit volume change.
+///
+/// # Arguments
+///
+/// * `delta` - Percentage points to add (negative to reduce)
+///
+/// # Returns
+///
+/// true if the volume was adjusted successfully, false otherwise
+pub fn adjust_volume_percentage(delta: f64) -> bool {
+    let Ok(control) = get_global_volume_control() else {
+        return false;
+    };
+    let guard = control.lock();
+    let Ok(current) = guard.get_volume_percent() else {
+        return false;
+    };
+    let target = (current + delta).clamp(0.0, 100.0);
+    let ok = guard.set_volume_percent(target).is_ok();
+    drop(guard);
+    if ok {
+        *MUTE_STATE.lock() = None;
+    }
+    ok
+}
+
+/// Toggle mute.
+///
+/// Muting saves the current level and sets 0%; unmuting restores the saved
+/// level. This replaces the previous behaviour of unmuting to a hardcoded 50%,
+/// which blasted anyone listening below that.
+///
+/// Muting while already at 0% is a no-op: there is nothing meaningful to
+/// restore later.
+///
+/// # Returns
+///
+/// true if the operation succeeded, false otherwise
+pub fn toggle_mute() -> bool {
+    let Ok(control) = get_global_volume_control() else {
+        return false;
+    };
+    let guard = control.lock();
+    let mut mute_state = MUTE_STATE.lock();
+
+    match *mute_state {
+        Some(saved) => {
+            // Unmute: restore the pre-mute level.
+            if guard.set_volume_percent(saved).is_ok() {
+                *mute_state = None;
+                true
+            } else {
+                false
+            }
+        }
+        None => {
+            let Ok(current) = guard.get_volume_percent() else {
+                return false;
+            };
+            if current <= 0.0 {
+                // Already silent; nothing worth saving.
+                return true;
+            }
+            if guard.set_volume_percent(0.0).is_ok() {
+                *mute_state = Some(current);
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Whether the volume is currently muted via `toggle_mute`.
+pub fn is_muted() -> bool {
+    MUTE_STATE.lock().is_some()
 }
 
 /// Get the current volume in decibels
@@ -366,6 +464,7 @@ pub fn supports_volume_change_monitoring() -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
 
     // Since GLOBAL_VOLUME_CONTROL is a OnceCell, we can only set it once per test run
     // These tests demonstrate the functionality but may interfere with each other
@@ -451,5 +550,94 @@ mod tests {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         assert!(!enabled);
+    }
+
+    /// The global control is a OnceCell, so it can only be set once per test
+    /// process. Initialise it as a dummy and reset to a known level per test.
+    /// All tests here must be #[serial]: they share this one global.
+    fn init_dummy_at(percent: f64) {
+        initialize_volume_control(&json!({
+            "services": { "volume": { "enable": true, "type": "dummy", "initial_percent": 50.0 } }
+        }));
+        assert!(set_volume_percentage(percent));
+        assert!(!is_muted(), "mute state must be clear at test start");
+    }
+
+    #[test]
+    #[serial]
+    fn test_adjust_up_and_down() {
+        init_dummy_at(50.0);
+        assert!(adjust_volume_percentage(5.0));
+        assert_eq!(get_volume_percentage(), Some(55.0));
+        assert!(adjust_volume_percentage(-15.0));
+        assert_eq!(get_volume_percentage(), Some(40.0));
+    }
+
+    #[test]
+    #[serial]
+    fn test_adjust_clamps_at_bounds() {
+        init_dummy_at(98.0);
+        assert!(adjust_volume_percentage(5.0));
+        assert_eq!(get_volume_percentage(), Some(100.0));
+
+        init_dummy_at(2.0);
+        assert!(adjust_volume_percentage(-5.0));
+        assert_eq!(get_volume_percentage(), Some(0.0));
+    }
+
+    /// The audiocontrol2 / old-API bug: unmuting must restore the previous
+    /// level, not jump to a hardcoded 50%.
+    #[test]
+    #[serial]
+    fn test_mute_restores_previous_level() {
+        init_dummy_at(20.0);
+        assert!(toggle_mute());
+        assert!(is_muted());
+        assert_eq!(get_volume_percentage(), Some(0.0));
+
+        assert!(toggle_mute());
+        assert!(!is_muted());
+        assert_eq!(get_volume_percentage(), Some(20.0));
+    }
+
+    #[test]
+    #[serial]
+    fn test_mute_at_zero_is_noop() {
+        init_dummy_at(0.0);
+        assert!(toggle_mute());
+        assert!(!is_muted(), "muting at 0% stores nothing to restore");
+        assert_eq!(get_volume_percentage(), Some(0.0));
+    }
+
+    #[test]
+    #[serial]
+    fn test_explicit_set_clears_mute_state() {
+        init_dummy_at(20.0);
+        assert!(toggle_mute());
+        assert!(is_muted());
+
+        // e.g. the user moves the WebUI volume slider while muted.
+        assert!(set_volume_percentage(35.0));
+        assert!(!is_muted());
+
+        // Toggling now mutes from 35, and restores to 35 -- not the stale 20.
+        assert!(toggle_mute());
+        assert_eq!(get_volume_percentage(), Some(0.0));
+        assert!(toggle_mute());
+        assert_eq!(get_volume_percentage(), Some(35.0));
+    }
+
+    #[test]
+    #[serial]
+    fn test_adjust_clears_mute_state() {
+        init_dummy_at(20.0);
+        assert!(toggle_mute());
+        assert!(is_muted());
+
+        // Pressing volume-up on the remote while muted is an explicit volume
+        // change: it must not leave a stale restore level behind.
+        assert!(adjust_volume_percentage(5.0));
+        assert!(!is_muted());
+        assert_eq!(get_volume_percentage(), Some(5.0));
     }
 }

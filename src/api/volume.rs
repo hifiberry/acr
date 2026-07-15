@@ -242,12 +242,27 @@ pub fn set_volume(request: Json<SetVolumeRequest>) -> Json<VolumeOperationRespon
     }
 }
 
-/// Increase volume by a percentage amount
-#[post("/increase?<amount>")]
-pub fn increase_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
-    let increase_amount = amount.unwrap_or(5.0); // Default 5% increase
-    debug!("API: Increasing volume by {}%", increase_amount);
-    
+/// Build the current volume state for an API response.
+fn current_volume_state() -> Option<VolumeStateResponse> {
+    global_volume::get_volume_percentage().map(|percentage| {
+        let decibels = global_volume::get_volume_db();
+        let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
+            control.lock().get_raw_value().ok()
+        } else {
+            None
+        };
+
+        VolumeStateResponse {
+            percentage,
+            decibels,
+            raw_value,
+        }
+    })
+}
+
+/// Adjust the volume by `delta` and build the response. `verb` is used only for
+/// the human-readable message ("increase" / "decrease").
+fn adjust_and_respond(delta: f64, verb: &str) -> Json<VolumeOperationResponse> {
     if !global_volume::is_volume_control_available() {
         return Json(VolumeOperationResponse {
             success: false,
@@ -255,46 +270,31 @@ pub fn increase_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
             new_state: None,
         });
     }
-    
-    if let Some(current) = global_volume::get_volume_percentage() {
-        let new_volume = (current + increase_amount).clamp(0.0, 100.0);
-        let result = global_volume::set_volume_percentage(new_volume);
-        
-        if result {
-            let new_state = global_volume::get_volume_percentage().map(|percentage| {
-                let decibels = global_volume::get_volume_db();
-                let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-                    control.lock().get_raw_value().ok()
-                } else {
-                    None
-                };
 
-                VolumeStateResponse {
-                    percentage,
-                    decibels,
-                    raw_value,
-                }
-            });
-
-            Json(VolumeOperationResponse {
-                success: true,
-                message: format!("Volume increased to {:.1}%", new_volume),
-                new_state,
-            })
-        } else {
-            Json(VolumeOperationResponse {
-                success: false,
-                message: "Failed to increase volume".to_string(),
-                new_state: None,
-            })
-        }
-    } else {
-        Json(VolumeOperationResponse {
+    if !global_volume::adjust_volume_percentage(delta) {
+        return Json(VolumeOperationResponse {
             success: false,
-            message: "Failed to get current volume".to_string(),
+            message: format!("Failed to {} volume", verb),
             new_state: None,
-        })
+        });
     }
+
+    let new_state = current_volume_state();
+    let percentage = new_state.as_ref().map(|s| s.percentage).unwrap_or(0.0);
+    let past = if verb == "increase" { "increased" } else { "decreased" };
+    Json(VolumeOperationResponse {
+        success: true,
+        message: format!("Volume {} to {:.1}%", past, percentage),
+        new_state,
+    })
+}
+
+/// Increase volume by a percentage amount
+#[post("/increase?<amount>")]
+pub fn increase_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
+    let increase_amount = amount.unwrap_or(5.0); // Default 5% increase
+    debug!("API: Increasing volume by {}%", increase_amount);
+    adjust_and_respond(increase_amount, "increase")
 }
 
 /// Decrease volume by a percentage amount
@@ -302,63 +302,16 @@ pub fn increase_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
 pub fn decrease_volume(amount: Option<f64>) -> Json<VolumeOperationResponse> {
     let decrease_amount = amount.unwrap_or(5.0); // Default 5% decrease
     debug!("API: Decreasing volume by {}%", decrease_amount);
-    
-    if !global_volume::is_volume_control_available() {
-        return Json(VolumeOperationResponse {
-            success: false,
-            message: "Volume control not available".to_string(),
-            new_state: None,
-        });
-    }
-    
-    if let Some(current) = global_volume::get_volume_percentage() {
-        let new_volume = (current - decrease_amount).clamp(0.0, 100.0);
-        let result = global_volume::set_volume_percentage(new_volume);
-        
-        if result {
-            let new_state = global_volume::get_volume_percentage().map(|percentage| {
-                let decibels = global_volume::get_volume_db();
-                let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-                    control.lock().get_raw_value().ok()
-                } else {
-                    None
-                };
-
-                VolumeStateResponse {
-                    percentage,
-                    decibels,
-                    raw_value,
-                }
-            });
-
-            Json(VolumeOperationResponse {
-                success: true,
-                message: format!("Volume decreased to {:.1}%", new_volume),
-                new_state,
-            })
-        } else {
-            Json(VolumeOperationResponse {
-                success: false,
-                message: "Failed to decrease volume".to_string(),
-                new_state: None,
-            })
-        }
-    } else {
-        Json(VolumeOperationResponse {
-            success: false,
-            message: "Failed to get current volume".to_string(),
-            new_state: None,
-        })
-    }
+    adjust_and_respond(-decrease_amount, "decrease")
 }
 
 /// Mute or unmute volume
+///
+/// Muting saves the current level; unmuting restores it.
 #[post("/mute")]
 pub fn toggle_mute() -> Json<VolumeOperationResponse> {
     debug!("API: Toggling mute");
-    
-    // For now, implement mute as setting volume to 0
-    // In a more sophisticated implementation, you might store the previous volume
+
     if !global_volume::is_volume_control_available() {
         return Json(VolumeOperationResponse {
             success: false,
@@ -366,47 +319,23 @@ pub fn toggle_mute() -> Json<VolumeOperationResponse> {
             new_state: None,
         });
     }
-    
-    if let Some(current) = global_volume::get_volume_percentage() {
-        let new_volume = if current > 0.0 { 0.0 } else { 50.0 }; // Toggle between 0 and 50%
-        let result = global_volume::set_volume_percentage(new_volume);
-        
-        if result {
-            let new_state = global_volume::get_volume_percentage().map(|percentage| {
-                let decibels = global_volume::get_volume_db();
-                let raw_value = if let Ok(control) = global_volume::get_global_volume_control() {
-                    control.lock().get_raw_value().ok()
-                } else {
-                    None
-                };
 
-                VolumeStateResponse {
-                    percentage,
-                    decibels,
-                    raw_value,
-                }
-            });
-
-            let action = if new_volume == 0.0 { "muted" } else { "unmuted" };
-            Json(VolumeOperationResponse {
-                success: true,
-                message: format!("Volume {} at {:.1}%", action, new_volume),
-                new_state,
-            })
-        } else {
-            Json(VolumeOperationResponse {
-                success: false,
-                message: "Failed to toggle mute".to_string(),
-                new_state: None,
-            })
-        }
-    } else {
-        Json(VolumeOperationResponse {
+    if !global_volume::toggle_mute() {
+        return Json(VolumeOperationResponse {
             success: false,
-            message: "Failed to get current volume".to_string(),
+            message: "Failed to toggle mute".to_string(),
             new_state: None,
-        })
+        });
     }
+
+    let action = if global_volume::is_muted() { "muted" } else { "unmuted" };
+    let new_state = current_volume_state();
+    let percentage = new_state.as_ref().map(|s| s.percentage).unwrap_or(0.0);
+    Json(VolumeOperationResponse {
+        success: true,
+        message: format!("Volume {} at {:.1}%", action, percentage),
+        new_state,
+    })
 }
 
 #[cfg(test)]

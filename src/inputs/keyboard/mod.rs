@@ -162,6 +162,29 @@ pub struct BoundDevice {
     pub matched_keys: Vec<String>,
 }
 
+/// A device the startup scan saw but did not bind, and why.
+///
+/// `name` is `None` for `permission_denied`: that verdict comes from probing
+/// `/dev/input` paths, and a device that cannot be opened cannot report a name.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct UnboundDevice {
+    pub path: String,
+    pub name: Option<String>,
+    pub reason: String,
+}
+
+/// The `reason` string for a verdict that did not bind, or `None` if it did.
+///
+/// These strings are API surface: `GET /api/inputs` reports them and the WebUI
+/// switches on them.
+pub fn unbound_reason(verdict: &DeviceVerdict) -> Option<&'static str> {
+    match verdict {
+        DeviceVerdict::Matched(_) => None,
+        DeviceVerdict::FilteredOut => Some("filtered_out"),
+        DeviceVerdict::NoMappedKeys => Some("no_mapped_keys"),
+    }
+}
+
 /// The most recent mapped keypress, for diagnostics.
 #[derive(Debug, Clone, Serialize)]
 pub struct LastKey {
@@ -174,7 +197,10 @@ pub struct LastKey {
 /// Status reported by `GET /api/inputs`.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct KeyboardStatus {
+    /// Devices the startup scan bound. Published in 0.8.0 -- do not change.
     pub devices: Vec<BoundDevice>,
+    /// Devices the startup scan saw but did not bind. Added in 0.8.1.
+    pub unbound_devices: Vec<UnboundDevice>,
     pub last_key: Option<LastKey>,
 }
 
@@ -427,5 +453,54 @@ mod tests {
             evaluate_device(&c, "anything at all", Some(&keys)),
             DeviceVerdict::Matched(_)
         ));
+    }
+
+    // --- unbound devices ---
+
+    #[test]
+    fn test_unbound_reason_maps_each_verdict() {
+        assert_eq!(unbound_reason(&DeviceVerdict::FilteredOut), Some("filtered_out"));
+        assert_eq!(unbound_reason(&DeviceVerdict::NoMappedKeys), Some("no_mapped_keys"));
+    }
+
+    /// A matched device belongs in `devices`, never in `unbound_devices`.
+    #[test]
+    fn test_matched_verdict_has_no_unbound_reason() {
+        assert_eq!(unbound_reason(&DeviceVerdict::Matched(vec![115])), None);
+        assert_eq!(unbound_reason(&DeviceVerdict::Matched(vec![])), None);
+    }
+
+    #[test]
+    fn test_status_defaults_to_no_unbound_devices() {
+        let s = KeyboardStatus::default();
+        assert!(s.unbound_devices.is_empty());
+        assert!(s.devices.is_empty());
+    }
+
+    /// The API contract: field names the WebUI reads.
+    #[test]
+    fn test_unbound_device_serializes_with_expected_field_names() {
+        let d = UnboundDevice {
+            path: "/dev/input/event1".to_string(),
+            name: Some("ADW USB DOGLE".to_string()),
+            reason: "no_mapped_keys".to_string(),
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["path"], "/dev/input/event1");
+        assert_eq!(v["name"], "ADW USB DOGLE");
+        assert_eq!(v["reason"], "no_mapped_keys");
+    }
+
+    /// `name` is null for permission_denied: the probe only knows the path.
+    #[test]
+    fn test_unbound_device_serializes_null_name() {
+        let d = UnboundDevice {
+            path: "/dev/input/event5".to_string(),
+            name: None,
+            reason: "permission_denied".to_string(),
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(v["name"].is_null());
+        assert_eq!(v["reason"], "permission_denied");
     }
 }

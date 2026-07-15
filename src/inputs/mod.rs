@@ -37,6 +37,61 @@ pub trait InputController: Send {
     fn status(&self) -> serde_json::Value;
 }
 
+pub mod registry;
+
+use crate::audiocontrol::audiocontrol::AudioController;
+use dispatch::GlobalActionTarget;
+use log::{info, warn};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use std::sync::{Arc, Weak};
+
+/// The started input sources, kept so `GET /api/inputs` can report status.
+static INPUTS: Lazy<Mutex<Vec<Box<dyn InputController>>>> =
+    Lazy::new(|| Mutex::new(Vec::new()));
+
+/// Build and start the configured input sources.
+///
+/// Must be called after the volume control and the `AudioController` singleton
+/// are initialised, so the first keypress can act. Never fails: an input
+/// problem must not stop audio.
+pub fn init_inputs(config: &serde_json::Value, controller: Weak<AudioController>) {
+    let mut inputs = registry::build_inputs(config);
+    if inputs.is_empty() {
+        info!("inputs: no input sources configured");
+        return;
+    }
+
+    let target = Arc::new(GlobalActionTarget::new(controller));
+
+    for input in inputs.iter_mut() {
+        let step = match input.name() {
+            "keyboard" => keyboard::KeyboardConfig::from_config(
+                config.get("inputs").and_then(|v| v.get("keyboard")),
+            )
+            .volume_step,
+            _ => 5.0,
+        };
+        let sink = ActionSink::new(target.clone(), step);
+        match input.start(sink) {
+            Ok(()) => info!("inputs: started '{}'", input.name()),
+            Err(e) => warn!("inputs: could not start '{}': {}", input.name(), e),
+        }
+    }
+
+    INPUTS.lock().extend(inputs);
+}
+
+/// Status of all input sources, for `GET /api/inputs`.
+pub fn inputs_status() -> serde_json::Value {
+    let inputs = INPUTS.lock();
+    let entries: Vec<serde_json::Value> = inputs
+        .iter()
+        .map(|i| serde_json::json!({ "name": i.name(), "status": i.status() }))
+        .collect();
+    serde_json::json!({ "inputs": entries })
+}
+
 /// An abstract control action produced by an input source.
 ///
 /// The string forms are the ones audiocontrol2 used in its code tables, so old

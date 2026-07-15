@@ -91,6 +91,12 @@ dbus = "0.9"
 # For ALSA audio system volume control (Linux only) - optional
 alsa = { version = "0.9", optional = true }
 
+# Linux-only: evdev input device support for USB HID remotes.
+# Pure-Rust ioctls (bitvec/cfg-if/libc/nix/thiserror), no libevdev C library,
+# so this adds no Debian build-dependency.
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
+
 # Build dependencies
 [build-dependencies]
 base64 = "0.21.0"

@@ -100,6 +100,93 @@ pub fn handle_key_event(
     Some(action)
 }
 
+use crate::inputs::{InputController, InputError};
+use parking_lot::Mutex;
+use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+/// A device the keyboard source is listening to.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct BoundDevice {
+    pub path: String,
+    pub name: String,
+    pub matched_keys: Vec<String>,
+}
+
+/// The most recent mapped keypress, for diagnostics.
+#[derive(Debug, Clone, Serialize)]
+pub struct LastKey {
+    pub code: u16,
+    pub name: Option<String>,
+    pub action: Option<String>,
+    pub device: String,
+}
+
+/// Status reported by `GET /api/inputs`.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct KeyboardStatus {
+    pub devices: Vec<BoundDevice>,
+    pub last_key: Option<LastKey>,
+}
+
+/// The keyboard / USB HID remote input source.
+pub struct KeyboardInput {
+    config: KeyboardConfig,
+    status: Arc<Mutex<KeyboardStatus>>,
+    running: Arc<AtomicBool>,
+}
+
+impl KeyboardInput {
+    pub fn new(config: KeyboardConfig) -> Self {
+        KeyboardInput {
+            config,
+            status: Arc::new(Mutex::new(KeyboardStatus::default())),
+            running: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl InputController for KeyboardInput {
+    fn name(&self) -> &str {
+        "keyboard"
+    }
+
+    #[cfg(target_os = "linux")]
+    fn start(&mut self, sink: ActionSink) -> Result<(), InputError> {
+        self.running.store(true, Ordering::Relaxed);
+        evdev_source::start_readers(
+            &self.config,
+            sink,
+            self.status.clone(),
+            self.running.clone(),
+        )
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn start(&mut self, _sink: ActionSink) -> Result<(), InputError> {
+        log::info!("keyboard: input devices are only supported on Linux");
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+    }
+
+    fn status(&self) -> serde_json::Value {
+        let status = self.status.lock().clone();
+        serde_json::json!({
+            "enabled": self.config.enable,
+            "volume_step": self.config.volume_step,
+            "grab": self.config.grab,
+            "device_filter": self.config.device,
+            "mapped_keys": self.config.keymap.len(),
+            "devices": status.devices,
+            "last_key": status.last_key,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

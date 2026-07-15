@@ -369,6 +369,10 @@ fn main() {
     // Get a reference to the AudioController singleton
     let controller = AudioController::instance();
 
+    // Start input sources (USB HID remotes). Must come after the volume control
+    // and the AudioController singleton exist, so the first keypress can act.
+    audiocontrol::inputs::init_inputs(&controllers_config, Arc::downgrade(&controller));
+
     // Wrap the AudioController in a Box that implements PlayerController
     let player: Box<dyn PlayerController + Send + Sync> = Box::new(controller.as_ref().clone());
 

@@ -1,0 +1,15 @@
+{ "service":"audiocontrol", "match_prefix":"/api/audiocontrol", "default_tier":"risky", "rules":[
+  { "tier":"ok","methods":["GET"],"paths":[
+    "/version","/player","/players","/now-playing","/player/*/queue","/player/*/meta",
+    "/player/*/meta/*","/library","/library/*","/library/*/*","/library/*/*/*","/library/*/*/*/*",
+    "/coverart/*","/coverart/*/*","/coverart/*/*/*","/imagecache/*","/audiodb/*/*","/lyrics/*/*",
+    "/volume/info","/volume/state","/favourites/is_favourite","/favourites/providers",
+    "/inputs","/inputs/","/cache/stats","/background/jobs","/background/jobs/*",
+    "/genres/config","/genres/user-config","/events","/events/*","/plugins/actions",
+    "/spotify/playback","/spotify/currently_playing","/spotify/check_server"] },
+  { "tier":"ok","methods":["POST"],"paths":[
+    "/player/*/command/*","/players/pause-all","/players/stop-all","/player/*/update",
+    "/volume/set","/volume/increase","/volume/decrease","/volume/mute",
+    "/favourites/add","/lyrics/*","/spotify/command/*","/spotify/search"] },
+  { "tier":"ok","methods":["DELETE"],"paths":["/favourites/remove"] },
+  { "tier":"risky","methods":["*"],"paths":["/**"] } ]}

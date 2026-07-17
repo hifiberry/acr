@@ -4,3 +4,4 @@ configs/audiocontrol.json etc/audiocontrol/
 configs/logging.json etc/audiocontrol/
 configs/genres.json etc/audiocontrol/
 debian/hifiberry-audiocontrol.nginx etc/nginx/hifiberry-api.d/
+auth.d/audiocontrol-auth.json etc/hifiberry/auth.d/

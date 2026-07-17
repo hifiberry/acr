@@ -1,6 +1,6 @@
 [package]
 name = "audiocontrol"
-version = "0.8.2"
+version = "0.8.3"
 authors = ["HiFiBerry <support@hifiberry.com>"]
 edition = "2021"
 # The sources use trait upcasting, stabilised in Rust 1.86. Declaring it makes

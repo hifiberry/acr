@@ -6,7 +6,8 @@
     "/volume/info","/volume/state","/favourites/is_favourite","/favourites/providers",
     "/inputs","/inputs/","/cache/stats","/background/jobs","/background/jobs/*",
     "/genres/config","/genres/user-config","/events","/events/*","/plugins/actions",
-    "/spotify/playback","/spotify/currently_playing","/spotify/check_server"] },
+    "/spotify/playback","/spotify/currently_playing","/spotify/check_server",
+    "/spotify/status","/lastfm/status"] },
   { "tier":"ok","methods":["POST"],"paths":[
     "/player/*/command/*","/players/pause-all","/players/stop-all","/player/*/update",
     "/volume/set","/volume/increase","/volume/decrease","/volume/mute",

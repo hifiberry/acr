@@ -1,3 +1,13 @@
+hifiberry-audiocontrol (0.8.3) trixie; urgency=medium
+
+  * auth manifest: classify GET /spotify/status and /lastfm/status as "ok".
+    They report only connection state (authenticated / username, no tokens) and
+    load on the respective settings cards; they 401'd once the gateway is
+    active. Token-bearing endpoints (spotify/poll, spotify/tokens, lastfm/auth)
+    remain risky.
+
+ -- HiFiBerry <support@hifiberry.com>  Fri, 17 Jul 2026 16:00:00 +0000
+
 hifiberry-audiocontrol (0.8.2) trixie; urgency=medium
 
   * Ship the auth-gateway classification manifest

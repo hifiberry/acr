@@ -1,3 +1,13 @@
+hifiberry-audiocontrol (0.8.2) trixie; urgency=medium
+
+  * Ship the auth-gateway classification manifest
+    (etc/hifiberry/auth.d/audiocontrol-auth.json): now-playing, metadata,
+    library and cover-art reads plus player transport, volume and favourites
+    are "ok" (no password); everything else under /api/audiocontrol is "risky"
+    and requires authentication through the gateway.
+
+ -- HiFiBerry <support@hifiberry.com>  Fri, 17 Jul 2026 12:00:00 +0000
+
 hifiberry-audiocontrol (0.8.1) trixie; urgency=medium
 
   * GET /api/inputs now also reports devices the startup scan saw but did not

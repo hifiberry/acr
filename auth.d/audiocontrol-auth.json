@@ -10,6 +10,7 @@
     "/spotify/status","/lastfm/status"] },
   { "tier":"ok","methods":["POST"],"paths":[
     "/player/*/command/*","/players/pause-all","/players/stop-all","/player/*/update",
+    "/library/*/update",
     "/volume/set","/volume/increase","/volume/decrease","/volume/mute",
     "/favourites/add","/lyrics/*","/spotify/command/*","/spotify/search"] },
   { "tier":"ok","methods":["DELETE"],"paths":["/favourites/remove"] },

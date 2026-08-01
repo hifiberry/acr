@@ -1,3 +1,11 @@
+hifiberry-audiocontrol (0.8.5) trixie; urgency=medium
+
+  * Fix credentials.
+  * auth manifest: classify POST /m3u/parse as "ok".
+  * auth manifest: classify POST /coverart/artist/*/update as "ok".
+
+ -- HiFiBerry <support@hifiberry.com>  Sat, 01 Aug 2026 08:00:00 +0000
+
 hifiberry-audiocontrol (0.8.4) trixie; urgency=medium
 
   * auth manifest: classify POST /library/*/update as "ok". Rescanning the

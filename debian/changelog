@@ -1,3 +1,12 @@
+hifiberry-audiocontrol (0.8.6) trixie; urgency=medium
+
+  * Restart on player-include changes via a dpkg trigger on
+    /etc/audiocontrol/players.d. merge_player_includes() reads that directory
+    only at startup, so a player shipped by another package (hifiberry-usbaudio)
+    stayed invisible until audiocontrol happened to be restarted.
+
+ -- HiFiBerry <support@hifiberry.com>  Sat, 01 Aug 2026 10:00:00 +0000
+
 hifiberry-audiocontrol (0.8.5) trixie; urgency=medium
 
   * Fix credentials.

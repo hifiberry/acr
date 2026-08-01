@@ -1,0 +1,6 @@
+# merge_player_includes() reads /etc/audiocontrol/players.d/*.json once at
+# startup (main.rs), so a package dropping a player definition there - e.g.
+# hifiberry-usbaudio - stays invisible until audiocontrol is restarted.
+# noawait: the activating package need not wait for us, and dpkg coalesces all
+# activations in a run into a single restart at the end.
+interest-noawait /etc/audiocontrol/players.d

@@ -48,6 +48,16 @@ case "$1" in
     configure)
         setup_user_and_dirs
         ;;
+
+    triggered)
+        # A package added, changed or removed a player definition in
+        # /etc/audiocontrol/players.d. merge_player_includes() only reads that
+        # directory at startup, so without this the new player never shows up.
+        # try-restart is a no-op while the service is not running yet.
+        if [ -d /run/systemd/system ]; then
+            systemctl try-restart audiocontrol.service || true
+        fi
+        ;;
 esac
 
 #DEBHELPER#

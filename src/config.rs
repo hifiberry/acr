@@ -135,6 +135,54 @@ pub fn merge_player_includes(config: &mut serde_json::Value, config_dir: &Path) 
     }
 }
 
+/// Player types that used to be shipped in the `players` array of
+/// audiocontrol.json and are now provided by per-package include files in
+/// players.d. Entries of these types are removed from an existing config on
+/// upgrade so the player is not defined twice - merge_player_includes()
+/// appends without deduplicating, and from_json() would create one controller
+/// per entry.
+const MIGRATED_PLAYER_TYPES: &[&str] = &[
+    "mpd", "raat", "librespot", "lms", "bluetooth", "_mpris", "shairport",
+];
+
+/// Remove player entries that have moved to players.d.
+///
+/// Returns true when the config was modified. Anything not in
+/// MIGRATED_PLAYER_TYPES is kept, so a hand-added player survives. The
+/// `players` key is dropped entirely when nothing is left.
+pub fn strip_migrated_players(config: &mut serde_json::Value) -> bool {
+    let Some(players) = config.get("players").and_then(|v| v.as_array()) else {
+        return false;
+    };
+
+    let kept: Vec<serde_json::Value> = players
+        .iter()
+        .filter(|entry| {
+            let player_type = entry
+                .as_object()
+                .and_then(|obj| obj.keys().find(|k| k.as_str() != "_from_include"));
+            match player_type {
+                Some(t) => !MIGRATED_PLAYER_TYPES.contains(&t.as_str()),
+                None => true,
+            }
+        })
+        .cloned()
+        .collect();
+
+    if kept.len() == players.len() {
+        return false;
+    }
+
+    if let Some(obj) = config.as_object_mut() {
+        if kept.is_empty() {
+            obj.remove("players");
+        } else {
+            obj.insert("players".to_string(), serde_json::Value::Array(kept));
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +329,51 @@ mod tests {
         let players = config["players"].as_array().unwrap();
         assert_eq!(players.len(), 1);
         assert_eq!(players[0]["generic"]["name"], "ok");
+    }
+
+    #[test]
+    fn test_strip_migrated_players_removes_shipped_types() {
+        let mut config = json!({
+            "players": [
+                {"mpd": {"enable": true}},
+                {"librespot": {"enable": true}},
+                {"shairport": {"enable": true}},
+                {"raat": {"enable": true}},
+                {"lms": {"enable": true}},
+                {"bluetooth": {"enable": true}},
+                {"_mpris": {"enable": true}}
+            ]
+        });
+        assert!(strip_migrated_players(&mut config));
+        assert!(config.get("players").is_none(),
+                "players key should be dropped when empty: {}", config);
+    }
+
+    #[test]
+    fn test_strip_migrated_players_keeps_custom_players() {
+        let mut config = json!({
+            "players": [
+                {"mpd": {"enable": true}},
+                {"generic": {"name": "my-player", "enable": true}}
+            ]
+        });
+        assert!(strip_migrated_players(&mut config));
+        let players = config["players"].as_array().unwrap();
+        assert_eq!(players.len(), 1);
+        assert!(players[0].get("generic").is_some());
+    }
+
+    #[test]
+    fn test_strip_migrated_players_is_idempotent() {
+        let mut config = json!({"players": [{"generic": {"name": "keep"}}]});
+        assert!(!strip_migrated_players(&mut config),
+                "already-migrated config must report no change");
+    }
+
+    #[test]
+    fn test_strip_migrated_players_without_players_key() {
+        let mut config = json!({"services": {}});
+        assert!(!strip_migrated_players(&mut config));
+        assert!(config.get("services").is_some());
     }
 }

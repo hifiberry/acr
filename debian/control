@@ -10,6 +10,12 @@ Package: hifiberry-audiocontrol
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, libdbus-1-3, libasound2, python3
 Suggests: python3-websocket
+Breaks: hifiberry-librespot (<< 0.8.0.7),
+        hifiberry-shairport (<< 1:5.2.1.2),
+        hifiberry-squeezelite (<< 2.0.0.1562),
+        hifiberry-mpd (<< 0.24.13.2),
+        hifiberry-raat (<< 1.1.43.24),
+        hifiberry-bluetooth (<< 1.0.6)
 Description: HiFiBerry AudioControl/Rust application
  A Rust application for audio control functionality.
  This package provides tools for managing audio playback

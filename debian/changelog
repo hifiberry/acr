@@ -1,3 +1,11 @@
+hifiberry-audiocontrol (0.8.8) trixie; urgency=medium
+
+  * Move player definitions into /etc/audiocontrol/players.d/, one file per
+    providing package. audiocontrol.json no longer ships a players array, and
+    an existing one is migrated on upgrade.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 03 Aug 2026 13:24:53 +0000
+
 hifiberry-audiocontrol (0.8.7) trixie; urgency=medium
 
   * mpd: stop generating a cover art URL for radio streams. For a stream MPD

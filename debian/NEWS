@@ -1,0 +1,21 @@
+hifiberry-audiocontrol (0.8.8) trixie; urgency=medium
+
+  Player definitions have moved out of /etc/audiocontrol/audiocontrol.json into
+  /etc/audiocontrol/players.d/, one file per package that provides a player.
+  The players array is removed from an existing audiocontrol.json on upgrade; a
+  copy of the previous file is left as audiocontrol.json.bak.
+
+  Two consequences:
+
+  * A player you disabled with "enable": false in audiocontrol.json becomes
+    enabled again, because that entry is removed and the package default
+    applies. Re-apply the setting in the matching file under
+    /etc/audiocontrol/players.d/. This is most visible for librespot, which
+    reappears as a Spotify Connect endpoint on the network.
+
+  * Devices where /etc/audiocontrol/players.d/ files were created by hand will
+    see conffile prompts for librespot.json and shairport.json, whose packaged
+    content differs from the hand-written version. Accept the packaged version
+    unless you deliberately changed it.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 03 Aug 2026 13:24:53 +0000

@@ -47,6 +47,15 @@ setup_user_and_dirs() {
 case "$1" in
     configure)
         setup_user_and_dirs
+
+        # Player definitions moved from audiocontrol.json into players.d, one
+        # file per providing package. An entry left behind in the main config
+        # would be a duplicate: merge_player_includes() appends without
+        # deduplicating, so the player would be instantiated twice.
+        if [ -x /usr/bin/audiocontrol_migrate_players ]; then
+            audiocontrol_migrate_players /etc/audiocontrol/audiocontrol.json || \
+                echo "WARNING: could not migrate audiocontrol.json; check it for duplicate players" >&2
+        fi
         ;;
 
     triggered)

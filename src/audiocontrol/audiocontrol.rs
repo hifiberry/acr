@@ -540,5 +540,13 @@ impl AudioController {
 
 #[cfg(test)]
 mod tests {
-    // Add tests here later
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_from_json_without_players_key() {
+        let config = json!({"services": {}});
+        let controller = AudioController::from_json(&config).expect("must start with no players");
+        assert_eq!(controller.list_controllers().len(), 0);
+    }
 }

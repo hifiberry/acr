@@ -22,9 +22,11 @@ hifiberry-audiocontrol (0.8.8) trixie; urgency=medium
     unless you deliberately changed it.
 
   * If a player was in use without its matching HiFiBerry package installed -
-    for example a "bluetooth" entry running against stock Debian bluez, or an
-    "mpd" entry talking to Debian's own mpd rather than hifiberry-mpd - its
-    definition is removed from audiocontrol.json and nothing replaces it,
+    for example a "bluetooth" entry running against stock Debian bluez, an
+    "mpd" entry talking to Debian's own mpd rather than hifiberry-mpd, or an
+    "lms" entry talking to a Logitech Media Server/LMS on the network without
+    hifiberry-squeezelite installed - its definition is removed from
+    audiocontrol.json and nothing replaces it,
     since no HiFiBerry package is present to install the include. Re-create it
     by hand as a file under /etc/audiocontrol/players.d/; the previous
     definition is preserved in audiocontrol.json.bak to copy from.

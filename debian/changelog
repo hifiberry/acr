@@ -1,3 +1,17 @@
+hifiberry-audiocontrol (0.8.7) trixie; urgency=medium
+
+  * mpd: stop generating a cover art URL for radio streams. For a stream MPD
+    reports the stream URL as the song's "file", so the generated
+    /library/mpd/image/<base64> URL asked MPD for album art of a stream, which
+    it can never provide ("Cannot get size for stream"). Every radio track was
+    served a cover art URL that was guaranteed to 404, which sent the web UI
+    into an endless retry loop on the Now Playing page.
+  * mpd: use the station logo (coverart_url/logo_url from the cached URL
+    metadata) as cover art when a song has none, so radio stations show their
+    logo instead of a placeholder.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 03 Aug 2026 09:40:00 +0000
+
 hifiberry-audiocontrol (0.8.6) trixie; urgency=medium
 
   * Restart on player-include changes via a dpkg trigger on

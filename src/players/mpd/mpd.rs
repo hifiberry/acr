@@ -28,6 +28,24 @@ pub fn mpd_image_url() -> String {
     format!("{}/library/mpd/image", API_PREFIX)
 }
 
+/// Check whether an MPD song URI refers to a remote stream rather than a file
+/// in the local library. For streams MPD reports the stream URL as the song's
+/// "file", and neither seeking nor album art retrieval is possible for those.
+pub fn is_stream_uri(uri: &str) -> bool {
+    uri.contains("://")
+}
+
+/// Pick the cover art URL a station provides through its cached URL metadata.
+/// Radio stations carry their logo in `coverart_url` (or `logo_url`), which is
+/// the only cover art available for a stream.
+fn cover_art_from_metadata(metadata: &HashMap<String, serde_json::Value>) -> Option<String> {
+    metadata.get("coverart_url")
+        .or_else(|| metadata.get("logo_url"))
+        .and_then(|value| value.as_str())
+        .filter(|url| !url.is_empty())
+        .map(|url| url.to_string())
+}
+
 /// MPD player controller implementation
 pub struct MPDPlayerController {
     /// Base controller for managing state listeners
@@ -906,7 +924,17 @@ impl MPDPlayerController {
                 }
             }
         }
-        
+
+        // A stream has no cover art in the library, so fall back to the station
+        // logo from the URL metadata. Without this the song would reach the
+        // clients with no usable cover art at all.
+        if song.cover_art_url.is_none() {
+            if let Some(url) = cover_art_from_metadata(&song.metadata) {
+                debug!("Using station logo as cover art: {}", url);
+                song.cover_art_url = Some(url);
+            }
+        }
+
         song
     }
     
@@ -1110,12 +1138,9 @@ impl MPDPlayerController {
                         // Check if the song has a duration
                         if let Some(duration) = current_song.duration {
                             // Check if the file is not a streaming URL
-                            // Common streaming URLs start with http://, https://, or contain specific keywords
                             let file_path = current_song.stream_url.as_deref().unwrap_or("");
-                            let is_stream = file_path.starts_with("http://") ||
-                                           file_path.starts_with("https://") ||
-                                           file_path.contains("://") ;
-                            
+                            let is_stream = is_stream_uri(file_path);
+
                             // Seekable if it has duration and is not a stream
                             let seekable = duration > 0.0 && !is_stream;
                             debug!("Song seekability check: duration={:?}s, is_stream={}, seekable={}", 
@@ -1197,8 +1222,13 @@ impl MPDPlayerController {
     
     /// Convert an MPD song to our Song format
     fn convert_mpd_song(mpd_song: mpd::Song, player_arc: Option<Arc<Self>>) -> Song {
-        // Generate cover art URL using the file path/URI from MPD song
-        let cover_url = if !mpd_song.file.is_empty() {
+        // Generate cover art URL using the file path/URI from MPD song.
+        // Streams are skipped: their "file" is the stream URL itself, and MPD
+        // cannot serve album art for one ("Cannot get size for stream"), so any
+        // URL generated here would be guaranteed to 404. Radio stations get
+        // their cover art from the cached URL metadata instead, see
+        // enhance_song_with_cache().
+        let cover_url = if !mpd_song.file.is_empty() && !is_stream_uri(&mpd_song.file) {
             // Try to use encoded URL if library is available
             if let Some(player) = &player_arc {
                 let library_guard = player.library.lock();
@@ -2121,5 +2151,142 @@ mod tests {
         // Verify that no cached metadata was added, but existing metadata is preserved
         assert_eq!(enhanced_song.metadata.len(), 1);
         assert_eq!(enhanced_song.metadata.get("existing"), Some(&Value::String("data".to_string())));
+    }
+
+    fn mpd_song_with_file(file: &str) -> mpd::Song {
+        mpd::Song {
+            file: file.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// A library track gets a cover art URL pointing at the image endpoint
+    #[test]
+    fn test_library_track_gets_cover_art_url() {
+        let song = MPDPlayerController::convert_mpd_song(
+            mpd_song_with_file("music/Artist/Album/01 - Track.flac"),
+            None,
+        );
+
+        let cover_art_url = song.cover_art_url.expect("library track should have cover art URL");
+        assert!(
+            cover_art_url.starts_with(&mpd_image_url()),
+            "unexpected cover art URL: {}",
+            cover_art_url
+        );
+    }
+
+    /// A radio stream must not get a library cover art URL: MPD cannot serve
+    /// album art for a stream, so such a URL would always be a 404.
+    #[test]
+    fn test_stream_gets_no_library_cover_art_url() {
+        for uri in [
+            "https://bytefm.cast.addradio.de/bytefm/main/high/stream",
+            "http://example.com/stream.mp3",
+            "rtsp://example.com/stream",
+        ] {
+            let song = MPDPlayerController::convert_mpd_song(mpd_song_with_file(uri), None);
+            assert_eq!(
+                song.cover_art_url, None,
+                "stream {} should not get a library cover art URL",
+                uri
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_stream_uri() {
+        assert!(is_stream_uri("https://example.com/stream"));
+        assert!(is_stream_uri("http://example.com/stream"));
+        assert!(!is_stream_uri("music/Artist/Album/01 - Track.flac"));
+        assert!(!is_stream_uri(""));
+    }
+
+    /// The station logo from the URL metadata is used as cover art
+    #[test]
+    fn test_station_logo_used_as_cover_art() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://www.byte.fm/favicon.png".to_string()),
+        );
+
+        assert_eq!(
+            cover_art_from_metadata(&metadata),
+            Some("https://www.byte.fm/favicon.png".to_string())
+        );
+    }
+
+    /// logo_url is accepted when coverart_url is absent
+    #[test]
+    fn test_logo_url_used_as_fallback() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "logo_url".to_string(),
+            Value::String("https://example.com/logo.png".to_string()),
+        );
+
+        assert_eq!(
+            cover_art_from_metadata(&metadata),
+            Some("https://example.com/logo.png".to_string())
+        );
+    }
+
+    /// Metadata without any usable logo yields no cover art
+    #[test]
+    fn test_no_station_logo_in_metadata() {
+        let mut metadata = HashMap::new();
+        assert_eq!(cover_art_from_metadata(&metadata), None);
+
+        metadata.insert("coverart_url".to_string(), Value::String(String::new()));
+        assert_eq!(cover_art_from_metadata(&metadata), None, "empty URL is not cover art");
+
+        metadata.insert("coverart_url".to_string(), Value::Bool(true));
+        assert_eq!(cover_art_from_metadata(&metadata), None, "non-string is not cover art");
+    }
+
+    /// A cover art URL that is already set is never replaced by the station logo
+    #[test]
+    fn test_existing_cover_art_wins_over_station_logo() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        attributecache::AttributeCache::initialize_global(temp_dir.path()).expect("Failed to configure cache");
+
+        let mut song = Song::default();
+        song.stream_url = Some("http://example.com/uncached-stream".to_string());
+        song.cover_art_url = Some("/api/audiocontrol/library/mpd/image/abc".to_string());
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://example.com/logo.png".to_string()),
+        );
+
+        let player = MPDPlayerController::with_connection("localhost", 6600);
+        let enhanced_song = player.enhance_song_with_cache(song);
+
+        assert_eq!(
+            enhanced_song.cover_art_url,
+            Some("/api/audiocontrol/library/mpd/image/abc".to_string())
+        );
+    }
+
+    /// A stream carrying a station logo in its metadata ends up with cover art
+    #[test]
+    fn test_stream_metadata_logo_becomes_cover_art() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        attributecache::AttributeCache::initialize_global(temp_dir.path()).expect("Failed to configure cache");
+
+        let mut song = Song::default();
+        song.stream_url = Some("http://example.com/another-uncached-stream".to_string());
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://www.byte.fm/favicon.png".to_string()),
+        );
+
+        let player = MPDPlayerController::with_connection("localhost", 6600);
+        let enhanced_song = player.enhance_song_with_cache(song);
+
+        assert_eq!(
+            enhanced_song.cover_art_url,
+            Some("https://www.byte.fm/favicon.png".to_string())
+        );
     }
 }

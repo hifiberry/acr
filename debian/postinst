@@ -52,8 +52,20 @@ case "$1" in
         # file per providing package. An entry left behind in the main config
         # would be a duplicate: merge_player_includes() appends without
         # deduplicating, so the player would be instantiated twice.
-        if [ -x /usr/bin/audiocontrol_migrate_players ]; then
-            audiocontrol_migrate_players /etc/audiocontrol/audiocontrol.json || \
+        #
+        # Gate on the previously-installed version ($2): this migration must
+        # run exactly once, for installs upgrading from before 0.8.8. Without
+        # the gate it would run on every future upgrade too, and since
+        # strip_migrated_players() deletes any entry whose type is in its
+        # static list unconditionally, it would silently delete a second,
+        # user-added instance of a type (e.g. a second "mpd" block pointing at
+        # a NAS) every time - the only place a second instance of a type can
+        # live, since players.d/<type>.json is a conffile owned by the
+        # providing package. [ -n "$2" ] also makes the fresh-install case an
+        # explicit no-op rather than an incidental one.
+        if [ -x /usr/bin/audiocontrol_migrate_players ] && \
+           [ -n "$2" ] && dpkg --compare-versions "$2" lt 0.8.8; then
+            /usr/bin/audiocontrol_migrate_players /etc/audiocontrol/audiocontrol.json || \
                 echo "WARNING: could not migrate audiocontrol.json; check it for duplicate players" >&2
         fi
         ;;

@@ -183,6 +183,35 @@ pub fn strip_migrated_players(config: &mut serde_json::Value) -> bool {
     true
 }
 
+/// Apply strip_migrated_players to a config file in place.
+///
+/// Writes a .bak copy before changing anything and leaves the file untouched
+/// when there is nothing to remove. Returns true when the file was rewritten.
+pub fn migrate_config_file(path: &Path) -> Result<bool, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let mut config: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("cannot parse {}: {}", path.display(), e))?;
+
+    if !strip_migrated_players(&mut config) {
+        return Ok(false);
+    }
+
+    let backup = path.with_extension("json.bak");
+    fs::write(&backup, &content)
+        .map_err(|e| format!("cannot write {}: {}", backup.display(), e))?;
+
+    let serialized = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("cannot serialize config: {}", e))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serialized)
+        .map_err(|e| format!("cannot write {}: {}", tmp.display(), e))?;
+    fs::rename(&tmp, path)
+        .map_err(|e| format!("cannot replace {}: {}", path.display(), e))?;
+
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,5 +404,32 @@ mod tests {
         let mut config = json!({"services": {}});
         assert!(!strip_migrated_players(&mut config));
         assert!(config.get("services").is_some());
+    }
+
+    #[test]
+    fn test_migrate_config_file_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("audiocontrol.json");
+        fs::write(&path, r#"{"players":[{"mpd":{"enable":true}},{"generic":{"name":"keep"}}],"services":{}}"#).unwrap();
+
+        assert!(migrate_config_file(&path).unwrap());
+
+        let result: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let players = result["players"].as_array().unwrap();
+        assert_eq!(players.len(), 1);
+        assert!(players[0].get("generic").is_some());
+        assert!(result.get("services").is_some(), "unrelated keys preserved");
+        assert!(path.with_extension("json.bak").exists(), "backup written");
+    }
+
+    #[test]
+    fn test_migrate_config_file_leaves_malformed_json_alone() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("audiocontrol.json");
+        fs::write(&path, "{not json").unwrap();
+
+        assert!(migrate_config_file(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{not json");
     }
 }

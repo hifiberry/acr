@@ -166,6 +166,10 @@ path = "src/tools/acr_favourites.rs"
 name = "audiocontrol_input_devices"
 path = "src/tools/acr_input_devices.rs"
 
+[[bin]]
+name = "audiocontrol_migrate_players"
+path = "src/tools/acr_migrate_players.rs"
+
 [profile.release]
 # Optimize for smaller binary size and reduced build space usage
 opt-level = "s"          # Optimize for size

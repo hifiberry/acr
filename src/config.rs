@@ -197,6 +197,12 @@ pub fn migrate_config_file(path: &Path) -> Result<bool, String> {
         return Ok(false);
     }
 
+    // Capture the original file's metadata before touching anything, so the
+    // replacement can be given the same mode/owner instead of picking up
+    // whatever this process's umask and uid happen to be.
+    let original_metadata = fs::metadata(path)
+        .map_err(|e| format!("cannot stat {}: {}", path.display(), e))?;
+
     let backup = path.with_extension("json.bak");
     fs::write(&backup, &content)
         .map_err(|e| format!("cannot write {}: {}", backup.display(), e))?;
@@ -206,11 +212,40 @@ pub fn migrate_config_file(path: &Path) -> Result<bool, String> {
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, serialized)
         .map_err(|e| format!("cannot write {}: {}", tmp.display(), e))?;
+
+    // Restore mode and ownership on the temp file before the rename, so
+    // there is never a window where the live path has the wrong permissions.
+    fs::set_permissions(&tmp, original_metadata.permissions())
+        .map_err(|e| format!("cannot set permissions on {}: {}", tmp.display(), e))?;
+    restore_ownership(&tmp, &original_metadata);
+
     fs::rename(&tmp, path)
         .map_err(|e| format!("cannot replace {}: {}", path.display(), e))?;
 
     Ok(true)
 }
+
+/// Best-effort restoration of the original file's owner/group on Unix.
+///
+/// Not fatal on failure: a non-root invocation (or Windows, where this is a
+/// no-op) should still complete the migration rather than abort over an
+/// owner it was never going to be allowed to set anyway.
+#[cfg(unix)]
+fn restore_ownership(tmp: &Path, original_metadata: &fs::Metadata) {
+    use std::os::unix::fs::MetadataExt;
+
+    let uid = original_metadata.uid();
+    let gid = original_metadata.gid();
+    if let Err(e) = std::os::unix::fs::chown(tmp, Some(uid), Some(gid)) {
+        warn!(
+            "could not restore owner {}:{} on {}: {}",
+            uid, gid, tmp.display(), e
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_ownership(_tmp: &Path, _original_metadata: &fs::Metadata) {}
 
 #[cfg(test)]
 mod tests {
@@ -410,7 +445,8 @@ mod tests {
     fn test_migrate_config_file_round_trip() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("audiocontrol.json");
-        fs::write(&path, r#"{"players":[{"mpd":{"enable":true}},{"generic":{"name":"keep"}}],"services":{}}"#).unwrap();
+        let original = r#"{"players":[{"mpd":{"enable":true}},{"generic":{"name":"keep"}}],"services":{}}"#;
+        fs::write(&path, original).unwrap();
 
         assert!(migrate_config_file(&path).unwrap());
 
@@ -420,7 +456,30 @@ mod tests {
         assert_eq!(players.len(), 1);
         assert!(players[0].get("generic").is_some());
         assert!(result.get("services").is_some(), "unrelated keys preserved");
-        assert!(path.with_extension("json.bak").exists(), "backup written");
+
+        let backup_path = path.with_extension("json.bak");
+        assert!(backup_path.exists(), "backup written");
+        assert_eq!(
+            fs::read_to_string(&backup_path).unwrap(),
+            original,
+            "backup must hold the pre-migration content, not the stripped result"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_migrate_config_file_preserves_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("audiocontrol.json");
+        fs::write(&path, r#"{"players":[{"mpd":{"enable":true}},{"generic":{"name":"keep"}}]}"#).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+
+        assert!(migrate_config_file(&path).unwrap());
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640, "mode should survive the rewrite");
     }
 
     #[test]

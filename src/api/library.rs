@@ -1263,7 +1263,7 @@ pub fn get_library_metadata_key(
 
 /// Response structure for delete operations
 #[derive(serde::Serialize)]
-pub(crate) struct DeleteResponse {
+pub struct DeleteResponse {
     success: bool,
     message: String,
 }

@@ -882,6 +882,49 @@ impl MPDLibrary {
         None
     }
     
+    /// Find the album a track belongs to, given the track's URI
+    ///
+    /// Tracks of an album normally share one directory, so the directory of the
+    /// album's first track is compared first - that only touches one track per
+    /// album. Multi-disc albums keep their tracks in per-disc subdirectories, so
+    /// a full scan of the track lists is used as a fallback.
+    fn get_album_by_track_uri(&self, track_uri: &str) -> Option<Album> {
+        let track_dir = self.get_album_directory(track_uri);
+
+        let albums = self.albums.read();
+
+        if let Some(ref dir) = track_dir {
+            for album in albums.values() {
+                let first_uri = {
+                    let tracks = album.tracks.lock();
+                    tracks.first().and_then(|t| t.uri.clone())
+                };
+
+                if let Some(first_uri) = first_uri {
+                    if self.get_album_directory(&first_uri).as_ref() == Some(dir) {
+                        debug!("Track '{}' belongs to album '{}' (same directory)", track_uri, album.name);
+                        return Some(album.clone());
+                    }
+                }
+            }
+        }
+
+        for album in albums.values() {
+            let matches = {
+                let tracks = album.tracks.lock();
+                tracks.iter().any(|t| t.uri.as_deref() == Some(track_uri))
+            };
+
+            if matches {
+                debug!("Track '{}' belongs to album '{}' (exact track match)", track_uri, album.name);
+                return Some(album.clone());
+            }
+        }
+
+        debug!("No album found containing track '{}'", track_uri);
+        None
+    }
+
     /// Extract cover art from music files in a directory
     fn extract_cover_from_music_files(&self, dir_path: &str) -> Option<(Vec<u8>, String)> {
         debug!("Extracting cover art from music files in directory: {}", dir_path);
@@ -1155,14 +1198,26 @@ impl LibraryInterface for MPDLibrary {
         debug!("Treating identifier as track URL: {}", identifier);
         
         // Use get_track_cover with the identifier as a URL
-        let result = self.get_track_cover(&identifier, None);
-        
-        if result.is_some() {
+        if let Some(result) = self.get_track_cover(&identifier, None) {
             debug!("Successfully retrieved image for track URL: {}", identifier);
-        } else {
-            debug!("No image found for track URL: {}", identifier);
+            return Some(result);
         }
-        
+
+        // The track itself carries no cover art: MPD found neither an embedded
+        // picture nor a cover file next to it. The album it belongs to may still
+        // have one - typically fetched from an online source and kept in the
+        // image cache - so fall back to the album cover before giving up.
+        debug!("No image found for track URL: {}, falling back to the album cover", identifier);
+
+        let album = self.get_album_by_track_uri(&identifier)?;
+        let result = self.get_album_cover(&album.id);
+
+        if result.is_some() {
+            debug!("Retrieved album cover for track URL '{}' via album '{}'", identifier, album.name);
+        } else {
+            debug!("No album cover available for track URL '{}' either", identifier);
+        }
+
         result
     }
 
@@ -1466,5 +1521,96 @@ impl MPDLibrary {
         // For now, return NotFound as we'd need to implement track search by metadata
         log::debug!("Lyrics lookup by metadata not yet implemented for MPD: {} - {}", lookup.artist, lookup.title);
         Err(crate::helpers::lyrics::LyricsError::NotFound)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::{Identifier, Track};
+
+    /// Build a library with a single album whose tracks live at the given URIs.
+    fn library_with_album(album_name: &str, track_uris: &[&str]) -> (MPDLibrary, Identifier) {
+        let controller = Arc::new(MPDPlayerController::with_connection("localhost", 6600));
+        let library = MPDLibrary::with_connection("localhost", 6600, controller);
+
+        let album_id = Identifier::Numeric(4242);
+        let tracks: Vec<Track> = track_uris
+            .iter()
+            .enumerate()
+            .map(|(i, uri)| Track {
+                id: None,
+                disc_number: None,
+                track_number: Some(i as u16 + 1),
+                name: format!("Track {}", i + 1),
+                artist: None,
+                uri: Some(uri.to_string()),
+            })
+            .collect();
+
+        let album = Album {
+            id: album_id.clone(),
+            name: album_name.to_string(),
+            artists: Arc::new(Mutex::new(vec!["Some Artist".to_string()])),
+            artists_flat: None,
+            release_date: None,
+            tracks: Arc::new(Mutex::new(tracks)),
+            cover_art: None,
+            uri: None,
+            genres: Vec::new(),
+        };
+
+        library.albums.write().insert(album_name.to_string(), album);
+        (library, album_id)
+    }
+
+    /// A track is resolved to its album via the directory it sits in. This is the
+    /// common case: every track of an album shares one folder.
+    #[test]
+    fn test_album_lookup_by_track_uri_uses_directory() {
+        let (library, album_id) = library_with_album(
+            "The Rock: Original Motion Picture Score",
+            &[
+                "music/Nick Glennie-Smith/[1996] The Rock/01 Hummell Gets the Rockets.wav",
+                "music/Nick Glennie-Smith/[1996] The Rock/08 The Chase.wav",
+            ],
+        );
+
+        let found = library
+            .get_album_by_track_uri("music/Nick Glennie-Smith/[1996] The Rock/08 The Chase.wav")
+            .expect("track in a known album directory should resolve to that album");
+        assert_eq!(found.id, album_id);
+    }
+
+    /// Multi-disc albums keep their tracks in per-disc subdirectories, so the
+    /// directory of a disc-2 track differs from the directory of the first track.
+    /// The lookup must still find the album.
+    #[test]
+    fn test_album_lookup_by_track_uri_handles_disc_subdirectories() {
+        let (library, album_id) = library_with_album(
+            "A Double Album",
+            &[
+                "music/Some Artist/A Double Album/CD1/01 First.flac",
+                "music/Some Artist/A Double Album/CD2/03 Third.flac",
+            ],
+        );
+
+        let found = library
+            .get_album_by_track_uri("music/Some Artist/A Double Album/CD2/03 Third.flac")
+            .expect("track on a second disc should still resolve to its album");
+        assert_eq!(found.id, album_id);
+    }
+
+    /// A track that belongs to no known album must not be matched to one.
+    #[test]
+    fn test_album_lookup_by_track_uri_unknown_track() {
+        let (library, _) = library_with_album(
+            "A Known Album",
+            &["music/Some Artist/A Known Album/01 First.flac"],
+        );
+
+        assert!(library
+            .get_album_by_track_uri("music/Other Artist/Other Album/01 Other.flac")
+            .is_none());
     }
 }

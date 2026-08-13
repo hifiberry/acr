@@ -1,3 +1,16 @@
+hifiberry-audiocontrol (0.8.9) trixie; urgency=medium
+
+  * mpd: fall back to the album cover when a track has no cover art of its own.
+    /library/mpd/image/<base64 track path> only asked MPD for the track's art,
+    so an album whose files carry no embedded picture and whose directory holds
+    no cover.jpg returned 404 - even when audiocontrol already had that album's
+    cover in its image cache from an online lookup. The Now Playing page then
+    showed a placeholder for such albums (typically WAV rips) while the very
+    same artwork was served fine under /library/mpd/image/album:<id>. The track
+    URL is now resolved to its album and the album cover is used as a fallback.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 10 Aug 2026 12:00:00 +0000
+
 hifiberry-audiocontrol (0.8.8) trixie; urgency=medium
 
   * Move player definitions into /etc/audiocontrol/players.d/, one file per

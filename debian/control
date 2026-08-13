@@ -8,7 +8,7 @@ Homepage: https://github.com/hifiberry/acr
 
 Package: hifiberry-audiocontrol
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, libdbus-1-3, libasound2, python3
+Depends: ${shlibs:Depends}, ${misc:Depends}, libdbus-1-3, libasound2 | libasound2t64, python3
 Suggests: python3-websocket
 Breaks: hifiberry-librespot (<< 0.8.0.7),
         hifiberry-shairport (<< 1:5.2.1.2),

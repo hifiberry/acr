@@ -497,4 +497,44 @@ mod tests {
         let controller = GenericPlayerController::from_config(&config).unwrap();
         assert!(controller.get_capabilities().has_capability(PlayerCapability::Queue));
     }
+
+    #[test]
+    fn test_position_advances_while_playing() {
+        let controller = create_test_controller();
+
+        controller.process_api_event(&json!({ "type": "state_changed", "state": "playing" }));
+        controller.process_api_event(&json!({ "type": "position_changed", "position": 10.0 }));
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let position = controller.get_position().expect("position should be known");
+        assert!(
+            position > 10.05,
+            "position should have advanced past 10.0 while playing, got {}",
+            position
+        );
+    }
+
+    #[test]
+    fn test_position_frozen_while_paused() {
+        let controller = create_test_controller();
+
+        controller.process_api_event(&json!({ "type": "state_changed", "state": "paused" }));
+        controller.process_api_event(&json!({ "type": "position_changed", "position": 10.0 }));
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let position = controller.get_position().expect("position should be known");
+        assert!(
+            (position - 10.0).abs() < 0.01,
+            "position should not advance while paused, got {}",
+            position
+        );
+    }
+
+    #[test]
+    fn test_position_is_none_until_reported() {
+        let controller = create_test_controller();
+        assert_eq!(controller.get_position(), None);
+    }
 }

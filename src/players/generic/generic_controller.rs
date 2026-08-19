@@ -13,6 +13,7 @@ use crate::data::{
 use crate::data::stream_details::StreamDetails;
 use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
+use crate::helpers::playback_progress::PlayerProgress;
 
 /// A generic player controller that can be configured via JSON and accepts API updates
 pub struct GenericPlayerController {
@@ -27,7 +28,10 @@ pub struct GenericPlayerController {
     current_state: Arc<RwLock<PlaybackState>>,
     current_loop_mode: Arc<RwLock<LoopMode>>,
     current_shuffle: Arc<RwLock<bool>>,
-    current_position: Arc<RwLock<Option<f64>>>,
+    /// Playback position, interpolated from the last reported value while playing
+    progress: PlayerProgress,
+    /// Whether any position has been reported yet; get_position() returns None until then
+    position_known: Arc<RwLock<bool>>,
     current_queue: Arc<RwLock<Vec<Track>>>,
     current_stream_details: Arc<RwLock<Option<StreamDetails>>>,
 
@@ -53,7 +57,8 @@ impl GenericPlayerController {
             current_state: Arc::new(RwLock::new(PlaybackState::Unknown)),
             current_loop_mode: Arc::new(RwLock::new(LoopMode::None)),
             current_shuffle: Arc::new(RwLock::new(false)),
-            current_position: Arc::new(RwLock::new(None)),
+            progress: PlayerProgress::new(),
+            position_known: Arc::new(RwLock::new(false)),
             current_queue: Arc::new(RwLock::new(Vec::new())),
             current_stream_details: Arc::new(RwLock::new(None)),
             config: Arc::new(RwLock::new(HashMap::new())),
@@ -246,11 +251,14 @@ impl GenericPlayerController {
 
             // Notify the event bus about the state change after releasing the lock
             self.base.notify_state_changed(playback_state);
+
+            // Drive the interpolator: position only advances while playing.
+            self.progress.set_playing(playback_state == PlaybackState::Playing);
             return true;
         }
         false
     }
-    
+
     /// Handle song change events
     fn handle_song_change_event(&self, event_data: &Value) -> bool {
         // Try to parse song information from the event
@@ -276,14 +284,10 @@ impl GenericPlayerController {
     /// Handle position change events
     fn handle_position_change_event(&self, event_data: &Value) -> bool {
         if let Some(position) = event_data.get("position").and_then(|p| p.as_f64()) {
-            // Update the state first, then release the lock before notifying
-            {
-                let mut pos = self.current_position.write();
-                *pos = Some(position);
-                debug!("Generic player '{}' position changed to: {}", self.player_name, position);
-            } // Lock is released here
+            self.progress.set_position(position);
+            *self.position_known.write() = true;
+            debug!("Generic player '{}' position changed to: {}", self.player_name, position);
 
-            // Notify the event bus about the position change after releasing the lock
             self.base.notify_position_changed(position);
             return true;
         }
@@ -470,7 +474,8 @@ impl Clone for GenericPlayerController {
             current_state: Arc::clone(&self.current_state),
             current_loop_mode: Arc::clone(&self.current_loop_mode),
             current_shuffle: Arc::clone(&self.current_shuffle),
-            current_position: Arc::clone(&self.current_position),
+            progress: self.progress.clone(),
+            position_known: Arc::clone(&self.position_known),
             current_queue: Arc::clone(&self.current_queue),
             current_stream_details: Arc::clone(&self.current_stream_details),
             config: Arc::clone(&self.config),
@@ -509,8 +514,11 @@ impl PlayerController for GenericPlayerController {
     }
     
     fn get_position(&self) -> Option<f64> {
-        let pos = self.current_position.read();
-        *pos
+        if *self.position_known.read() {
+            Some(self.progress.get_position())
+        } else {
+            None
+        }
     }
     
     fn get_shuffle(&self) -> bool {
@@ -618,9 +626,8 @@ impl PlayerController for GenericPlayerController {
                 true
             }
             PlayerCommand::Seek(position) => {
-                let mut pos = self.current_position.write();
-                *pos = Some(position);
-                drop(pos);
+                self.progress.set_position(position);
+                *self.position_known.write() = true;
                 true
             }
             _ => {

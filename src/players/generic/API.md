@@ -129,6 +129,15 @@ Update the current playback position.
 }
 ```
 
+Position is in **seconds**. AudioControl interpolates between updates: while the
+player state is `playing`, the reported position advances with wall-clock time
+from the last value you sent. Senders therefore do not need to post
+`position_changed` every second — send it on seek, on track change, and
+whenever your own source of truth resyncs.
+
+Send `state_changed` promptly on pause and resume, since that is what starts
+and stops the interpolation.
+
 #### 4. Loop Mode Change Events
 
 Update the loop/repeat mode.

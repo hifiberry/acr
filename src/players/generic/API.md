@@ -150,6 +150,12 @@ Update the loop/repeat mode.
 }
 ```
 
+The inbound handler accepts both loop-mode vocabularies: `no` or `none` for
+off, `song` or `track` for single-track repeat, and `playlist`. This means a
+bridge that simply echoes back the exact string AudioControl sent it via
+`set_loop_mode` (`no` / `song` / `playlist`, see the outbound table above)
+round-trips correctly.
+
 #### 5. Shuffle Change Events
 
 Update the shuffle state.

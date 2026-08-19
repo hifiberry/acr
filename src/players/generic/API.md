@@ -153,6 +153,32 @@ Update the shuffle state.
 }
 ```
 
+#### 6. Queue Change Events
+
+Replace the player's queue.
+
+**Event Structure:**
+```json
+{
+  "type": "queue_changed",
+  "queue": [
+    { "title": "Next Song", "artist": "Artist Name", "uri": "spotify:track:..." },
+    { "title": "Song After That", "artist": "Someone Else" }
+  ]
+}
+```
+
+**Recognised entry fields:** `title` (or `name` as an alias), `artist` and
+`uri`. AudioControl's queue entries hold nothing else, so `album`, `duration`
+and cover-art fields are accepted and ignored. An entry with no title is
+skipped.
+
+Send `"queue": []` to clear the queue. An event with no `queue` array at all is
+rejected as malformed and leaves the existing queue untouched.
+
+Declare the `queue` capability in the player configuration for the queue to be
+offered in the UI.
+
 ## Example Usage
 
 ### Linux (using curl)

@@ -215,6 +215,7 @@ impl GenericPlayerController {
             "position_changed" => self.handle_position_change_event(event_data),
             "loop_mode_changed" => self.handle_loop_mode_change_event(event_data),
             "shuffle_changed" => self.handle_shuffle_change_event(event_data),
+            "queue_changed" => self.handle_queue_change_event(event_data),
             "stream_info" => self.handle_stream_info_event(event_data),
             _ => {
                 debug!("Unknown event type '{}' for generic player", event_type);
@@ -368,7 +369,56 @@ impl GenericPlayerController {
         }
         false
     }
-    
+
+    /// Handle queue change events. The `queue` array holds one object per
+    /// track; `title` (or `name`), `artist` and `uri` are read and anything
+    /// else is ignored, since ACR's Track has nowhere to put album, duration
+    /// or artwork. A missing `queue` array is a malformed event and is
+    /// rejected rather than treated as "clear the queue" -- an empty array is
+    /// the way to clear it.
+    fn handle_queue_change_event(&self, event_data: &Value) -> bool {
+        let entries = match event_data.get("queue").and_then(|q| q.as_array()) {
+            Some(entries) => entries,
+            None => {
+                warn!("queue_changed event for '{}' has no 'queue' array", self.player_name);
+                return false;
+            }
+        };
+
+        let tracks: Vec<Track> = entries
+            .iter()
+            .filter_map(|entry| {
+                let name = entry
+                    .get("title")
+                    .or_else(|| entry.get("name"))
+                    .and_then(|v| v.as_str())?;
+                let mut track = Track::new(None, None, name.to_string());
+                track.artist = entry
+                    .get("artist")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                track.uri = entry
+                    .get("uri")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                Some(track)
+            })
+            .collect();
+
+        {
+            let mut queue = self.current_queue.write();
+            *queue = tracks;
+            debug!(
+                "Generic player '{}' queue changed, {} tracks",
+                self.player_name,
+                queue.len()
+            );
+        } // Lock released before notifying
+
+        self.base.notify_queue_changed();
+        true
+    }
+
     /// Parse a song from JSON data
     fn parse_song_from_json(&self, song_data: &Value) -> Option<Song> {
         let mut song = Song::default();

@@ -5,6 +5,7 @@ use crate::players::player_controller::PlayerController;
 use crate::data::loop_mode::LoopMode;
 use crate::data::player_command::PlayerCommand;
 use crate::data::PlaybackState;
+use crate::data::PlayerCapability;
 use serde_json::json;
 
 #[cfg(test)]
@@ -417,5 +418,83 @@ mod tests {
         let req = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("no POST received");
         assert!(req.contains("\"command\":\"set_shuffle\""), "body was: {}", req);
         assert!(req.contains("\"shuffle\":true"), "body was: {}", req);
+    }
+
+    #[test]
+    fn test_queue_changed_event_populates_queue() {
+        let controller = create_test_controller();
+        let event = json!({
+            "type": "queue_changed",
+            "queue": [
+                { "title": "First", "artist": "A", "uri": "spotify:track:1" },
+                { "name": "Second", "uri": "spotify:track:2" }
+            ]
+        });
+
+        assert!(controller.process_api_event(&event));
+
+        let queue = controller.get_queue();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].name, "First");
+        assert_eq!(queue[0].artist, Some("A".to_string()));
+        assert_eq!(queue[0].uri, Some("spotify:track:1".to_string()));
+        // "name" is accepted as well as "title"
+        assert_eq!(queue[1].name, "Second");
+        assert_eq!(queue[1].artist, None);
+    }
+
+    #[test]
+    fn test_queue_changed_event_ignores_unmappable_fields() {
+        let controller = create_test_controller();
+        let event = json!({
+            "type": "queue_changed",
+            "queue": [
+                { "title": "Song", "album": "Album", "duration": 210.0,
+                  "cover_art_url": "http://example.com/a.jpg" }
+            ]
+        });
+
+        assert!(controller.process_api_event(&event));
+        let queue = controller.get_queue();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].name, "Song");
+    }
+
+    #[test]
+    fn test_queue_changed_event_with_empty_queue_clears_it() {
+        let controller = create_test_controller();
+        controller.process_api_event(&json!({
+            "type": "queue_changed",
+            "queue": [{ "title": "Song" }]
+        }));
+        assert_eq!(controller.get_queue().len(), 1);
+
+        assert!(controller.process_api_event(&json!({
+            "type": "queue_changed",
+            "queue": []
+        })));
+        assert!(controller.get_queue().is_empty());
+    }
+
+    #[test]
+    fn test_queue_changed_event_without_queue_field_is_rejected() {
+        let controller = create_test_controller();
+        // A malformed event must not silently clear the queue.
+        controller.process_api_event(&json!({
+            "type": "queue_changed",
+            "queue": [{ "title": "Song" }]
+        }));
+        assert!(!controller.process_api_event(&json!({ "type": "queue_changed" })));
+        assert_eq!(controller.get_queue().len(), 1);
+    }
+
+    #[test]
+    fn test_queue_capability_is_recognised() {
+        let config = json!({
+            "name": "bridge",
+            "capabilities": ["play", "queue"]
+        });
+        let controller = GenericPlayerController::from_config(&config).unwrap();
+        assert!(controller.get_capabilities().has_capability(PlayerCapability::Queue));
     }
 }

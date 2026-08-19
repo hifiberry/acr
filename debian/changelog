@@ -1,4 +1,4 @@
-hifiberry-audiocontrol (0.8.10) trixie; urgency=medium
+hifiberry-audiocontrol (0.9.0) trixie; urgency=medium
 
   * generic player: forward seek, set_loop_mode and set_shuffle to the
     external player's command_url instead of only updating local state, so

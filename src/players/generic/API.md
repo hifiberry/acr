@@ -46,6 +46,27 @@ Add a generic player to your AudioControl configuration:
 - `shuffle`: Initial shuffle state (`true` or `false`)
 - `loop_mode`: Initial loop mode (`"none"`, `"track"`, `"playlist"`)
 
+### Outbound Transport Commands (`command_url`)
+
+When `command_url` is configured, transport commands received by AudioControl
+are POSTed to that URL as JSON. The external player is expected to act on them;
+AudioControl also updates its own state optimistically and does not wait for a
+reply (the POST times out after 2 seconds and the result is ignored).
+
+| AudioControl command | POST body |
+|---|---|
+| Play | `{"command": "play"}` |
+| Pause | `{"command": "pause"}` |
+| Stop | `{"command": "stop"}` |
+| Next | `{"command": "next"}` |
+| Previous | `{"command": "previous"}` |
+| Seek | `{"command": "seek", "position": 42.5}` |
+| Set loop mode | `{"command": "set_loop_mode", "loop_mode": "no"}` |
+| Set shuffle | `{"command": "set_shuffle", "shuffle": true}` |
+
+`position` is in **seconds** as a float. `loop_mode` is one of `no`, `song` or
+`playlist`. Any command not listed here is not forwarded.
+
 ## API Endpoints
 
 ### Player Update Endpoint

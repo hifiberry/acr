@@ -368,4 +368,54 @@ mod tests {
         assert!(req.contains("POST /command"));
         assert!(req.contains("\"command\":\"pause\""));
     }
+
+    #[test]
+    fn test_command_url_posts_seek_with_position() {
+        let (addr, rx) = capture_one_post();
+        let config = json!({
+            "name": "bridge",
+            "supports_api_events": true,
+            "command_url": format!("http://{}/command", addr)
+        });
+        let controller = GenericPlayerController::from_config(&config).unwrap();
+        assert!(controller.send_command(PlayerCommand::Seek(42.5)));
+
+        let req = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("no POST received");
+        assert!(req.contains("\"command\":\"seek\""), "body was: {}", req);
+        assert!(req.contains("\"position\":42.5"), "body was: {}", req);
+    }
+
+    #[test]
+    fn test_command_url_posts_loop_mode_using_display_vocabulary() {
+        let (addr, rx) = capture_one_post();
+        let config = json!({
+            "name": "bridge",
+            "supports_api_events": true,
+            "command_url": format!("http://{}/command", addr)
+        });
+        let controller = GenericPlayerController::from_config(&config).unwrap();
+        assert!(controller.send_command(PlayerCommand::SetLoopMode(LoopMode::Track)));
+
+        let req = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("no POST received");
+        assert!(req.contains("\"command\":\"set_loop_mode\""), "body was: {}", req);
+        // LoopMode::Track renders as "song", not "track" -- same vocabulary
+        // PlayerCommand's Display impl already uses.
+        assert!(req.contains("\"loop_mode\":\"song\""), "body was: {}", req);
+    }
+
+    #[test]
+    fn test_command_url_posts_shuffle() {
+        let (addr, rx) = capture_one_post();
+        let config = json!({
+            "name": "bridge",
+            "supports_api_events": true,
+            "command_url": format!("http://{}/command", addr)
+        });
+        let controller = GenericPlayerController::from_config(&config).unwrap();
+        assert!(controller.send_command(PlayerCommand::SetRandom(true)));
+
+        let req = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("no POST received");
+        assert!(req.contains("\"command\":\"set_shuffle\""), "body was: {}", req);
+        assert!(req.contains("\"shuffle\":true"), "body was: {}", req);
+    }
 }

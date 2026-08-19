@@ -498,16 +498,31 @@ impl PlayerController for GenericPlayerController {
         debug!("GenericPlayerController '{}' received command: {:?}", self.player_name, command);
 
         if let Some(url) = &self.command_url {
-            let verb = match command {
-                PlayerCommand::Play => Some("play"),
-                PlayerCommand::Pause => Some("pause"),
-                PlayerCommand::Stop => Some("stop"),
-                PlayerCommand::Next => Some("next"),
-                PlayerCommand::Previous => Some("previous"),
+            // Build the outbound body with serde rather than format!, so f64
+            // and bool render correctly and any string is escaped properly.
+            let body = match &command {
+                PlayerCommand::Play => Some(serde_json::json!({"command": "play"})),
+                PlayerCommand::Pause => Some(serde_json::json!({"command": "pause"})),
+                PlayerCommand::Stop => Some(serde_json::json!({"command": "stop"})),
+                PlayerCommand::Next => Some(serde_json::json!({"command": "next"})),
+                PlayerCommand::Previous => Some(serde_json::json!({"command": "previous"})),
+                PlayerCommand::Seek(position) => Some(serde_json::json!({
+                    "command": "seek",
+                    "position": position,
+                })),
+                PlayerCommand::SetLoopMode(mode) => Some(serde_json::json!({
+                    "command": "set_loop_mode",
+                    // LoopMode's Display impl: "no" | "song" | "playlist".
+                    "loop_mode": mode.to_string(),
+                })),
+                PlayerCommand::SetRandom(enabled) => Some(serde_json::json!({
+                    "command": "set_shuffle",
+                    "shuffle": enabled,
+                })),
                 _ => None,
             };
-            if let Some(verb) = verb {
-                let body = format!("{{\"command\":\"{}\"}}", verb);
+            if let Some(body) = body {
+                let body = body.to_string();
                 let url = url.clone();
                 // Fire-and-forget; a slow/absent daemon must not block the UI thread.
                 std::thread::spawn(move || {

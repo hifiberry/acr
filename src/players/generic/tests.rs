@@ -537,4 +537,164 @@ mod tests {
         let controller = create_test_controller();
         assert_eq!(controller.get_position(), None);
     }
+
+    #[test]
+    fn test_send_command_pause_freezes_position() {
+        let controller = create_test_controller();
+
+        controller.process_api_event(&json!({ "type": "state_changed", "state": "playing" }));
+        controller.process_api_event(&json!({ "type": "position_changed", "position": 10.0 }));
+
+        assert!(controller.send_command(PlayerCommand::Pause));
+        assert_eq!(controller.get_playback_state(), PlaybackState::Paused);
+
+        let position_immediately = controller.get_position().expect("position should be known");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let position_after_sleep = controller.get_position().expect("position should be known");
+
+        assert!(
+            (position_after_sleep - position_immediately).abs() < 0.01,
+            "position should not advance after a Pause command, got {} then {}",
+            position_immediately,
+            position_after_sleep
+        );
+    }
+
+    #[test]
+    fn test_send_command_play_advances_position() {
+        let controller = create_test_controller();
+
+        // create_test_controller starts "stopped", so position is frozen at 10.0
+        // until the Play command below sets it moving.
+        controller.process_api_event(&json!({ "type": "position_changed", "position": 10.0 }));
+
+        assert!(controller.send_command(PlayerCommand::Play));
+        assert_eq!(controller.get_playback_state(), PlaybackState::Playing);
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let position = controller.get_position().expect("position should be known");
+        assert!(
+            position > 10.05,
+            "position should have advanced past 10.0 after a Play command, got {}",
+            position
+        );
+    }
+
+    #[test]
+    fn test_send_command_stop_freezes_position() {
+        let controller = create_test_controller();
+
+        controller.process_api_event(&json!({ "type": "state_changed", "state": "playing" }));
+        controller.process_api_event(&json!({ "type": "position_changed", "position": 10.0 }));
+
+        assert!(controller.send_command(PlayerCommand::Stop));
+        assert_eq!(controller.get_playback_state(), PlaybackState::Stopped);
+
+        let position_immediately = controller.get_position().expect("position should be known");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let position_after_sleep = controller.get_position().expect("position should be known");
+
+        assert!(
+            (position_after_sleep - position_immediately).abs() < 0.01,
+            "position should not advance after a Stop command, got {} then {}",
+            position_immediately,
+            position_after_sleep
+        );
+    }
+
+    #[test]
+    fn test_song_change_resets_position_on_genuine_change() {
+        let controller = create_test_controller();
+
+        controller.process_api_event(&json!({
+            "type": "song_changed",
+            "song": { "title": "First Song", "artist": "Artist A", "uri": "spotify:track:1" }
+        }));
+        controller.process_api_event(&json!({ "type": "state_changed", "state": "playing" }));
+        controller.process_api_event(&json!({ "type": "position_changed", "position": 42.0 }));
+
+        assert!((controller.get_position().unwrap() - 42.0).abs() < 1.0);
+
+        // Genuine song change: different title/artist/uri.
+        controller.process_api_event(&json!({
+            "type": "song_changed",
+            "song": { "title": "Second Song", "artist": "Artist B", "uri": "spotify:track:2" }
+        }));
+
+        let position = controller.get_position().expect("position should be known");
+        assert!(
+            position < 1.0,
+            "position should reset to ~0 on a genuine song change, got {}",
+            position
+        );
+    }
+
+    #[test]
+    fn test_song_change_same_song_does_not_reset_position() {
+        let controller = create_test_controller();
+
+        controller.process_api_event(&json!({
+            "type": "song_changed",
+            "song": { "title": "Same Song", "artist": "Artist A", "uri": "spotify:track:1" }
+        }));
+        controller.process_api_event(&json!({ "type": "state_changed", "state": "playing" }));
+        controller.process_api_event(&json!({ "type": "position_changed", "position": 42.0 }));
+
+        // Metadata-only refresh for the SAME song: late artwork arriving.
+        controller.process_api_event(&json!({
+            "type": "song_changed",
+            "song": {
+                "title": "Same Song",
+                "artist": "Artist A",
+                "uri": "spotify:track:1",
+                "cover_art_url": "http://example.com/late-art.jpg"
+            }
+        }));
+
+        let position = controller.get_position().expect("position should be known");
+        assert!(
+            position >= 42.0,
+            "a metadata-only refresh of the same song must not reset position, got {}",
+            position
+        );
+    }
+
+    #[test]
+    fn test_queue_changed_event_skips_entries_without_title() {
+        let controller = create_test_controller();
+        let event = json!({
+            "type": "queue_changed",
+            "queue": [
+                { "artist": "No Title Here" },
+                { "title": "First", "artist": "A" },
+                { "title": "Second", "artist": "B" }
+            ]
+        });
+
+        assert!(controller.process_api_event(&event));
+        let queue = controller.get_queue();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].name, "First");
+        assert_eq!(queue[1].name, "Second");
+    }
+
+    #[test]
+    fn test_queue_changed_event_falls_back_to_name_when_title_is_wrong_type() {
+        let controller = create_test_controller();
+        // {"title": 123, "name": "Real Title"}: .or_else() only fires on None,
+        // so a naive title.or_else(name).as_str() would drop this entry even
+        // though "name" is documented as a valid alias.
+        let event = json!({
+            "type": "queue_changed",
+            "queue": [
+                { "title": 123, "name": "Real Title" }
+            ]
+        });
+
+        assert!(controller.process_api_event(&event));
+        let queue = controller.get_queue();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].name, "Real Title");
+    }
 }

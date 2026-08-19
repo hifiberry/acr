@@ -249,11 +249,14 @@ impl GenericPlayerController {
                 debug!("Generic player '{}' state changed to: {:?}", self.player_name, playback_state);
             } // Lock is released here
 
+            // Drive the interpolator: position only advances while playing.
+            // This must happen before notifying, since EventBus::publish is a
+            // non-blocking try_send -- a subscriber could otherwise observe the
+            // new state and call get_position() before the interpolator agrees.
+            self.progress.set_playing(playback_state == PlaybackState::Playing);
+
             // Notify the event bus about the state change after releasing the lock
             self.base.notify_state_changed(playback_state);
-
-            // Drive the interpolator: position only advances while playing.
-            self.progress.set_playing(playback_state == PlaybackState::Playing);
             return true;
         }
         false
@@ -271,8 +274,26 @@ impl GenericPlayerController {
         // Update the state first, then release the lock before notifying
         let song_for_notify = {
             let mut current_song = self.current_song.write();
+
+            // Identity comparison: a metadata-only refresh of the SAME song
+            // (e.g. cover art arriving late) must not reset playback position.
+            let song_changed = match (&*current_song, &song) {
+                (Some(old), Some(new)) => {
+                    old.title != new.title
+                        || old.artist != new.artist
+                        || old.stream_url != new.stream_url
+                }
+                (None, None) => false,
+                _ => true,
+            };
+
             *current_song = song.clone();
             debug!("Generic player '{}' song changed", self.player_name);
+
+            if song_changed {
+                self.progress.set_position(0.0);
+            }
+
             song.clone()
         }; // Lock is released here
 
@@ -394,8 +415,8 @@ impl GenericPlayerController {
             .filter_map(|entry| {
                 let name = entry
                     .get("title")
-                    .or_else(|| entry.get("name"))
-                    .and_then(|v| v.as_str())?;
+                    .and_then(|v| v.as_str())
+                    .or_else(|| entry.get("name").and_then(|v| v.as_str()))?;
                 let mut track = Track::new(None, None, name.to_string());
                 track.artist = entry
                     .get("artist")
@@ -599,18 +620,21 @@ impl PlayerController for GenericPlayerController {
                 let mut state = self.current_state.write();
                 *state = PlaybackState::Playing;
                 drop(state);
+                self.progress.set_playing(true);
                 true
             }
             PlayerCommand::Pause => {
                 let mut state = self.current_state.write();
                 *state = PlaybackState::Paused;
                 drop(state);
+                self.progress.set_playing(false);
                 true
             }
             PlayerCommand::Stop => {
                 let mut state = self.current_state.write();
                 *state = PlaybackState::Stopped;
                 drop(state);
+                self.progress.set_playing(false);
                 true
             }
             PlayerCommand::SetLoopMode(mode) => {

@@ -1,0 +1,146 @@
+# Architecture
+
+This document gives a system-level overview of AudioControl (ACR): what it is, how its
+pieces fit together, and how a few concrete events flow through it. For per-subsystem
+detail, see the other documents in this directory (linked from [README.md](README.md)).
+
+## What it is
+
+AudioControl is the successor to `audiocontrol2`, HiFiBerry's original Python control
+daemon. The rewrite trades dynamic typing for a trait-based architecture: every audio
+backend implements one `PlayerController` trait, every state change flows through one
+typed event bus, and the plugin system is a small, statically-checked set of
+`ActionPlugin`s.
+
+In the wider HiFiBerry OS stack, ACR sits directly on top of PipeWire (which arbitrates
+the sound card) and directly under the WebUI, which it serves itself. Audio players ship
+as independent Debian packages; ACR is what makes them look like a single, switchable
+device to the WebUI and to any external controller. A `generic` backend accepts the same
+push API used internally, so a third-party player can register and report state without
+a Rust code change.
+
+## System overview
+
+Eight source types feed player-backend modules behind a common trait. The
+`AudioController` owns which one is "active" while the `EventBus` fans state changes out
+to plugins and API clients. `acr-webmcp` is a separate Python process that turns the
+REST API into MCP tools for AI assistants; nginx fronts both for LAN/WAN access.
+
+![ACR system architecture diagram](architecture.svg)
+
+Reading it top to bottom: each source feeds its matching ingestion module in
+`src/players/*` (or `src/inputs` for the USB remote). All player modules implement the
+same `PlayerController` trait and register with the `AudioController`, which tracks which
+one is currently active, and publish events onto the `EventBus`. The `ActiveMonitor`
+plugin listens to that bus and switches the active player automatically — there is no
+manual "switch source" step. The Rocket API layer serves REST, WebSocket, and the static
+WebUI on port 1080; `acr-webmcp` calls that same REST API to expose MCP tools on port
+13180; nginx proxies both on port 80.
+
+## Core abstractions
+
+| Abstraction | Location | Role |
+|---|---|---|
+| `PlayerController` | `src/players/player_controller.rs` | One trait every backend implements: `get_song`, `get_playback_state`, `send_command`, `get_capabilities`. A shared `BaseController` supplies the `notify_*` helpers that publish to the EventBus, so backends never touch it directly. |
+| `AudioController` | `src/audiocontrol/audiocontrol.rs` | Holds every registered controller in a `Vec` plus one `active_index`, and itself implements `PlayerController` by delegating to whichever entry is active — a composite that lets API code treat "the system" as one player. |
+| `EventBus` | `src/audiocontrol/eventbus.rs` | Typed pub/sub for `PlayerEvent` (state, song, queue, volume, capabilities…). Every player, plugin, and the WebSocket layer subscribe independently — nothing polls anything else inside the process. |
+| `ActionPlugin` | `src/plugins/action_plugin.rs` | Subscribes to the bus and reacts. `ActiveMonitor` is the one that matters most: any player that starts *Playing* automatically becomes the active player. |
+
+## Player backends
+
+Configured under `players` in `/etc/audiocontrol/audiocontrol.json`. "Push" backends are
+notified when something changes; "poll" backends are asked.
+
+| Backend | Source | Mechanism | Address | Direction |
+|---|---|---|---|---|
+| `mpd` | MPD server | MPD binary protocol | `localhost:6600` | poll |
+| `librespot` | librespot process | process watch + `--onevent` hook → REST | `POST /player/librespot/update` | push |
+| `raat` | Roon Bridge | named pipes | `/var/lib/raat/{metadata,control}_pipe` | push |
+| `lms` | Lyrion/Logitech Media Server | JSON-RPC, autodiscovery | `:9000` | poll |
+| `bluetooth` | paired BT device | D-Bus (BlueZ `MediaPlayer1`) | system bus | poll |
+| `mpris` | any MPRIS2 app (e.g. VLC) | D-Bus, 1s poll | session bus | poll |
+| `shairport` | shairport-sync | UDP metadata protocol, listened in-process | `:5555` | push |
+| `generic` | any third-party player | same REST push API, by name | `POST /player/<name>/update` | push |
+
+## Module map (`src/`)
+
+| Module | Responsibility | Key files |
+|---|---|---|
+| `api/` | Rocket server and every REST/WebSocket route, grouped by domain (players, library, volume, coverart, lastfm, spotify, genres, settings…). | `server.rs`, `players.rs`, `events.rs`, `library.rs` |
+| `audiocontrol/` | The engine: `AudioController` (player registry + active selection) and `EventBus` (pub/sub). | `audiocontrol.rs`, `eventbus.rs` |
+| `players/` | `PlayerController` trait, shared `BaseController`, the eight backend implementations, a JSON-driven factory, and the generic push endpoint. | `player_controller.rs`, `player_factory.rs`, `event_api.rs`, `mpd/`, `librespot/`, `raat/`, `lms/`, `bluetooth/`, `mpris/`, `shairport/`, `generic/` |
+| `data/` | Shared domain types passed between every layer: `Song`, `Track`, `PlayerCommand`, `PlayerEvent`, `PlaybackState`, capability sets. | `song.rs`, `player_command.rs`, `player_event.rs`, `capabilities.rs` |
+| `helpers/` | Cross-cutting services: SQLite attribute cache and settings DB, image cache, MusicBrainz/TheAudioDB/FanartTV/Last.fm/Spotify clients, AES-GCM secret storage, genre cleanup, lyrics, rate limiting. | `attributecache.rs`, `settingsdb.rs`, `musicbrainz.rs`, `security_store.rs`, `genre_cleanup.rs` |
+| `plugins/` | `ActionPlugin` trait plus the built-ins that react to bus events: active-player switching, structured event logging, Last.fm scrobbling. | `action_plugin.rs`, `action_plugins/active_monitor.rs`, `event_logger.rs`, `lastfm.rs` |
+| `inputs/` | Hardware input, deliberately separate from streaming players: USB HID remotes turn into `Action`s and reach the controller through an `ActionSink`, so a new rotary or IR source needs no new dispatch code. | `mod.rs`, `keyboard/evdev_source.rs`, `dispatch.rs` |
+| `tools/` | 13 standalone `acr_*` binaries — integration hooks, CLI clients, and diagnostics. See [CLI Tools](cli_tools.md). | `src/tools/*.rs` |
+
+## The acr-webmcp bridge
+
+`acr-webmcp` is not part of the Rust binary — it's a separate, dependency-free Python
+HTTP server (`packages/acr-webmcp/src/acr-webmcp`) that translates MCP tool calls into
+REST calls against ACR's own API and hands the JSON straight back. It holds no state of
+its own.
+
+| Tool group | Examples |
+|---|---|
+| Playback | `players_list`, `now_playing`, `playback_command` |
+| Queue | `player_queue`, `queue_add_track`, `queue_play_index` |
+| Library | `library_albums`, `library_albums_by_artist`, `library_categories` |
+| Genre config | `genre_mapping_set`, `genre_ignore_add`, `genre_config_get` |
+
+Full tool list: `docs/acr-webmcp.md` (repository root). No authentication is required on
+the local network.
+
+## Data flow traces
+
+### Spotify track change (event flowing outward)
+
+1. librespot's `--onevent` hook runs `audiocontrol_notify_librespot` with
+   `PLAYER_EVENT=track_changed`.
+2. The tool `POST`s the new track as JSON to `/api/player/librespot/update`.
+3. Rocket routes it to `players::event_api::player_event_update`, which finds the
+   controller named `librespot` and calls `process_api_event()`.
+4. `players::librespot` updates its song, then calls
+   `BaseController::notify_song_changed()`.
+5. `EventBus` publishes `PlayerEvent::SongChanged` to every subscriber.
+6. `ActiveMonitor` makes librespot the active player; WebSocket clients get the new
+   track; the Last.fm plugin scrobbles it.
+
+### "Pause the music" via Claude (command flowing inward)
+
+1. Claude calls `playback_command` on `acr-webmcp` with
+   `{player: "active", command: "pause"}`.
+2. `acr-webmcp` `POST`s to `/api/player/active/command/pause` on ACR's REST API.
+3. `send_command_to_player_by_name` resolves `"active"` via
+   `AudioController::get_active_controller()` — say, `players::mpd`.
+4. The string `"pause"` parses to `PlayerCommand::Pause` and is sent straight to that
+   controller.
+5. `players::mpd` issues MPD's own `pause` command over its TCP connection to the
+   daemon.
+6. MPD pauses; on its next status poll, `players::mpd` observes the change and
+   publishes `StateChanged` back out.
+
+## Deployment
+
+| Component | Process | Address | Config / unit |
+|---|---|---|---|
+| ACR core | `/usr/bin/audiocontrol` | `0.0.0.0:1080` | `audiocontrol.service` · `/etc/audiocontrol/audiocontrol.json` · runs as user `audiocontrol` |
+| acr-webmcp | `/usr/bin/acr-webmcp` | `127.0.0.1:13180` | `acr-webmcp.service` (user unit) · `ACR_API_BASE_URL` env var |
+| Reverse proxy | nginx | `:80` | `/api/audiocontrol/*` → :1080, `/api/acr-webmcp/*` → :13180 |
+
+| Path | Contents |
+|---|---|
+| `/etc/audiocontrol/audiocontrol.json` | Main config: `services`, `players`, `action_plugins`, `inputs`. |
+| `/var/lib/audiocontrol/cache/attributes/cache.db` | SQLite attribute cache — metadata and lookups, in-memory-accelerated. |
+| `/var/lib/audiocontrol/cache/images` | Cached cover art and images. |
+| `/var/lib/audiocontrol/db/settings.db` | SQLite settings database — user configuration. |
+| `auth.d/audiocontrol-auth.json` | AES-GCM encrypted secrets, managed by `SecurityStore`. |
+
+## See also
+
+- [API Documentation](api.md)
+- [CLI Tools](cli_tools.md)
+- [Generic Player Controller](generic_player_controller.md)
+- [SystemD Integration](systemd_integration.md)
+- `docs/acr-webmcp.md` (repository root)

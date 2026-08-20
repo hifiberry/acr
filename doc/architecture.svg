@@ -1,0 +1,205 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1250" font-family="Consolas, 'Liberation Mono', Menlo, monospace" role="img"
+     aria-label="ACR system diagram: eight external sources (USB remote, MPD, librespot, RAAT, LMS, Bluetooth, MPRIS, shairport-sync) feed matching ACR ingestion modules, which converge on the AudioController and EventBus core; helpers and action plugins hang off each; the Rocket API layer exposes REST, WebSocket and static WebUI on port 1080; acr-webmcp calls that API to expose MCP tools on port 13180; nginx on port 80 proxies both to browser, AI-assistant and third-party clients.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4E5B5F"/>
+    </marker>
+    <marker id="arrowAccent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7A431A"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1920" height="1250" fill="#FFFFFF"/>
+
+  <!-- row labels -->
+  <g font-size="16" letter-spacing="1" fill="#7C8A8D" font-weight="600">
+    <text x="20" y="26">SOURCES — DAEMONS &amp; HARDWARE</text>
+    <text x="20" y="172">ACR INGESTION — src/players/*, src/inputs</text>
+    <text x="20" y="406">CORE — src/audiocontrol</text>
+    <text x="20" y="526">HELPERS &amp; PLUGINS</text>
+    <text x="20" y="656">SERVICE LAYER — src/api</text>
+    <text x="20" y="951">EDGE / PROXY</text>
+    <text x="20" y="1106">CLIENTS</text>
+  </g>
+
+  <!-- ===== Band 1: external sources ===== -->
+  <g>
+    <rect x="50"  y="40" width="200" height="66" rx="8" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="280" y="40" width="200" height="66" rx="8" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="510" y="40" width="200" height="66" rx="8" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="740" y="40" width="200" height="66" rx="8" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="970" y="40" width="200" height="66" rx="8" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="1200" y="40" width="200" height="66" rx="8" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="1430" y="40" width="200" height="66" rx="8" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="1660" y="40" width="200" height="66" rx="8" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+
+    <g font-size="17" font-weight="700" fill="#1A2225" text-anchor="middle">
+      <text x="150" y="68">USB HID remote</text>
+      <text x="380" y="68">MPD server</text>
+      <text x="610" y="68">librespot</text>
+      <text x="840" y="68">RAAT / Roon Bridge</text>
+      <text x="1070" y="68">LMS server</text>
+      <text x="1300" y="68">Bluetooth device</text>
+      <text x="1530" y="68">MPRIS app</text>
+      <text x="1760" y="68">shairport-sync</text>
+    </g>
+    <g font-size="13.5" fill="#7C8A8D" text-anchor="middle">
+      <text x="150" y="90">hardware</text>
+      <text x="380" y="90">daemon</text>
+      <text x="610" y="90">Spotify Connect process</text>
+      <text x="840" y="90">daemon</text>
+      <text x="1070" y="90">Squeezelite backend</text>
+      <text x="1300" y="90">BlueZ MediaPlayer1</text>
+      <text x="1530" y="90">e.g. VLC</text>
+      <text x="1760" y="90">AirPlay daemon</text>
+    </g>
+  </g>
+
+  <!-- arrows band1 -> band2, with mechanism labels -->
+  <g font-size="14" fill="#4E5B5F">
+    <line x1="150" y1="106" x2="150" y2="186" stroke="#4E5B5F" marker-end="url(#arrow)"/>
+    <text x="160" y="150" text-anchor="start">evdev</text>
+
+    <line x1="380" y1="106" x2="380" y2="186" stroke="#4E5B5F" marker-end="url(#arrow)"/>
+    <text x="380" y="150" text-anchor="middle">TCP :6600</text>
+
+    <line x1="610" y1="106" x2="610" y2="186" stroke="#4E5B5F" marker-end="url(#arrow)"/>
+    <text x="610" y="150" text-anchor="middle">REST push</text>
+
+    <line x1="840" y1="106" x2="840" y2="186" stroke="#4E5B5F" marker-end="url(#arrow)"/>
+    <text x="840" y="150" text-anchor="middle">named pipe</text>
+
+    <line x1="1070" y1="106" x2="1070" y2="186" stroke="#4E5B5F" marker-end="url(#arrow)"/>
+    <text x="1070" y="150" text-anchor="middle">JSON-RPC :9000</text>
+
+    <line x1="1300" y1="106" x2="1300" y2="186" stroke="#4E5B5F" marker-end="url(#arrow)"/>
+    <text x="1300" y="150" text-anchor="middle">D-Bus</text>
+
+    <line x1="1530" y1="106" x2="1530" y2="186" stroke="#4E5B5F" marker-end="url(#arrow)"/>
+    <text x="1530" y="150" text-anchor="middle">D-Bus</text>
+
+    <line x1="1760" y1="106" x2="1760" y2="186" stroke="#4E5B5F" marker-end="url(#arrow)"/>
+    <text x="1760" y="150" text-anchor="middle">UDP :5555</text>
+  </g>
+
+  <!-- ===== Band 2: ACR ingestion modules ===== -->
+  <g>
+    <rect x="50"  y="186" width="200" height="66" rx="8" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="280" y="186" width="200" height="66" rx="8" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="510" y="186" width="200" height="66" rx="8" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="740" y="186" width="200" height="66" rx="8" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="970" y="186" width="200" height="66" rx="8" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="1200" y="186" width="200" height="66" rx="8" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="1430" y="186" width="200" height="66" rx="8" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+    <rect x="1660" y="186" width="200" height="66" rx="8" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+
+    <g font-size="17" font-weight="700" fill="#1A2225" text-anchor="middle">
+      <text x="150" y="225">inputs::keyboard</text>
+      <text x="380" y="225">players::mpd</text>
+      <text x="610" y="225">players::librespot</text>
+      <text x="840" y="225">players::raat</text>
+      <text x="1070" y="225">players::lms</text>
+      <text x="1300" y="225">players::bluetooth</text>
+      <text x="1530" y="225">players::mpris</text>
+      <text x="1760" y="225">players::shairport</text>
+    </g>
+  </g>
+  <text x="960" y="360" text-anchor="middle" font-size="15" fill="#4E5B5F">all seven player modules implement the same <tspan font-weight="700" fill="#7A431A">PlayerController trait</tspan></text>
+
+  <!-- collector: players (cols 2..8) converge -->
+  <g stroke="#4E5B5F" fill="none" stroke-width="1.5">
+    <line x1="380" y1="252" x2="380" y2="286"/>
+    <line x1="610" y1="252" x2="610" y2="286"/>
+    <line x1="840" y1="252" x2="840" y2="286"/>
+    <line x1="1070" y1="252" x2="1070" y2="286"/>
+    <line x1="1300" y1="252" x2="1300" y2="286"/>
+    <line x1="1530" y1="252" x2="1530" y2="286"/>
+    <line x1="1760" y1="252" x2="1760" y2="286"/>
+    <line x1="380" y1="286" x2="1760" y2="286"/>
+  </g>
+  <!-- keyboard: separate dashed action line straight to AudioController -->
+  <path d="M150,252 L150,300 L420,300 L420,420" fill="none" stroke="#7A431A" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arrowAccent)"/>
+  <text x="165" y="316" font-size="13.5" fill="#7A431A">Action (volume / transport)</text>
+
+  <!-- collector fans into AudioController + EventBus -->
+  <path d="M1070,286 L1070,320 L660,320 L660,420" fill="none" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M1070,286 L1070,320 L1510,320 L1510,420" fill="none" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="1070" y="312" text-anchor="middle" font-size="13.5" fill="#4E5B5F">register / notify_*()</text>
+
+  <!-- ===== Core row ===== -->
+  <rect x="280" y="420" width="760" height="100" rx="9" fill="#FFFFFF" stroke="#E3C29C" stroke-width="2"/>
+  <text x="660" y="458" text-anchor="middle" font-size="24" font-weight="700" fill="#1A2225">AudioController</text>
+  <text x="660" y="483" text-anchor="middle" font-size="14.5" fill="#7C8A8D">Vec&lt;PlayerController&gt; + active_index — facade over the active player</text>
+  <text x="660" y="502" text-anchor="middle" font-size="14.5" fill="#7C8A8D">also implements PlayerController itself</text>
+
+  <rect x="1130" y="420" width="760" height="100" rx="9" fill="#F3E3D2" stroke="#E3C29C" stroke-width="2"/>
+  <text x="1510" y="458" text-anchor="middle" font-size="24" font-weight="700" fill="#1A2225">EventBus</text>
+  <text x="1510" y="483" text-anchor="middle" font-size="14.5" fill="#7C8A8D">pub/sub for PlayerEvent — decouples every producer from every consumer</text>
+  <text x="1510" y="502" text-anchor="middle" font-size="14.5" fill="#7C8A8D">StateChanged · SongChanged · QueueChanged · VolumeChanged …</text>
+
+  <!-- ===== Helpers / Plugins row ===== -->
+  <rect x="280" y="540" width="760" height="90" rx="9" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+  <text x="660" y="570" text-anchor="middle" font-size="18" font-weight="700" fill="#1A2225">helpers::*</text>
+  <text x="660" y="593" text-anchor="middle" font-size="14" fill="#7C8A8D">SQLite attribute cache · settings db · image cache</text>
+  <text x="660" y="613" text-anchor="middle" font-size="14" fill="#7C8A8D">MusicBrainz · TheAudioDB · FanartTV · Last.fm · Spotify</text>
+
+  <rect x="1130" y="540" width="760" height="90" rx="9" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+  <text x="1510" y="570" text-anchor="middle" font-size="18" font-weight="700" fill="#1A2225">plugins::action_plugins::*</text>
+  <text x="1510" y="593" text-anchor="middle" font-size="14" fill="#7C8A8D">ActiveMonitor · EventLogger · Last.fm scrobbler</text>
+
+  <line x1="660" y1="520" x2="660" y2="540" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="672" y="534" font-size="13" fill="#4E5B5F">lookups / cache</text>
+
+  <line x1="1510" y1="520" x2="1510" y2="540" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="1522" y="534" font-size="13" fill="#4E5B5F">subscribe(all)</text>
+
+  <!-- feedback: ActiveMonitor sets active player -->
+  <path d="M1130,575 L1090,575 L1090,470 L1040,470" fill="none" stroke="#7A431A" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arrowAccent)"/>
+  <text x="1103" y="525" font-size="13" fill="#7A431A" text-anchor="middle" transform="rotate(-90 1103 525)">set_active_controller()</text>
+
+  <!-- ===== Service layer ===== -->
+  <line x1="660" y1="630" x2="660" y2="670" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="672" y="654" font-size="13" fill="#4E5B5F">reads / commands</text>
+  <line x1="1510" y1="630" x2="1510" y2="670" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="1522" y="654" font-size="13" fill="#4E5B5F">WS push</text>
+
+  <rect x="280" y="670" width="1610" height="90" rx="9" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="2"/>
+  <text x="1085" y="708" text-anchor="middle" font-size="21" font-weight="700" fill="#1A2225">api:: (Rocket) — REST + WebSocket + static WebUI</text>
+  <text x="1085" y="734" text-anchor="middle" font-size="14.5" fill="#7C8A8D">0.0.0.0:1080 — /api/player/*, /api/library/*, /api/volume/*, /api/events (WS) …</text>
+
+  <!-- webmcp -->
+  <rect x="755" y="820" width="660" height="90" rx="9" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+  <text x="1085" y="858" text-anchor="middle" font-size="19" font-weight="700" fill="#1A2225">acr-webmcp (Python)</text>
+  <text x="1085" y="884" text-anchor="middle" font-size="14" fill="#7C8A8D">stateless MCP tool server · 127.0.0.1:13180</text>
+  <line x1="1085" y1="820" x2="1085" y2="760" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="1097" y="792" font-size="13" fill="#4E5B5F">REST :1080 (ACR_API_BASE_URL)</text>
+
+  <!-- nginx -->
+  <rect x="280" y="965" width="1610" height="70" rx="9" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+  <text x="1085" y="997" text-anchor="middle" font-size="19" font-weight="700" fill="#1A2225">nginx — reverse proxy · :80</text>
+  <text x="1085" y="1020" text-anchor="middle" font-size="14" fill="#7C8A8D">/api/audiocontrol/* → :1080     ·     /api/acr-webmcp/* → :13180</text>
+
+  <path d="M460,965 L460,760" fill="none" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M1085,965 L1085,910" fill="none" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- clients -->
+  <rect x="280"  y="1120" width="480" height="90" rx="9" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+  <text x="520" y="1158" text-anchor="middle" font-size="19" font-weight="700" fill="#1A2225">Browser</text>
+  <text x="520" y="1182" text-anchor="middle" font-size="14" fill="#7C8A8D">HiFiBerry WebUI</text>
+
+  <rect x="845" y="1120" width="480" height="90" rx="9" fill="#F3E3D2" stroke="#E3C29C" stroke-width="2"/>
+  <text x="1085" y="1158" text-anchor="middle" font-size="19" font-weight="700" fill="#1A2225">Claude / AI assistant</text>
+  <text x="1085" y="1182" text-anchor="middle" font-size="14" fill="#7C8A8D">MCP client</text>
+
+  <rect x="1410" y="1120" width="480" height="90" rx="9" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+  <text x="1650" y="1158" text-anchor="middle" font-size="19" font-weight="700" fill="#1A2225">curl / third-party app</text>
+  <text x="1650" y="1182" text-anchor="middle" font-size="14" fill="#7C8A8D">any REST/WS client</text>
+
+  <line x1="520" y1="1120" x2="520" y2="1035" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="533" y="1080" font-size="13" fill="#4E5B5F">HTTP / WS</text>
+  <line x1="1085" y1="1120" x2="1085" y2="1035" stroke="#7A431A" stroke-width="2" marker-end="url(#arrowAccent)"/>
+  <text x="1098" y="1080" font-size="13" fill="#7A431A">MCP JSON-RPC</text>
+  <line x1="1650" y1="1120" x2="1650" y2="1035" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="1637" y="1080" font-size="13" fill="#4E5B5F" text-anchor="end">REST / WS</text>
+
+</svg>

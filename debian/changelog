@@ -1,3 +1,16 @@
+hifiberry-audiocontrol (0.9.0) trixie; urgency=medium
+
+  * generic player: forward seek, set_loop_mode and set_shuffle to the
+    external player's command_url instead of only updating local state, so
+    the external player learns about seeks and loop/shuffle changes made
+    through audiocontrol.
+  * generic player: accept an inbound queue_changed API event to populate
+    the player's queue.
+  * generic player: interpolate playback position between position updates
+    via PlayerProgress, so a bridge no longer needs to post position at 1 Hz.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 19 Aug 2026 13:34:15 +0000
+
 hifiberry-audiocontrol (0.8.9) trixie; urgency=medium
 
   * mpd: fall back to the album cover when a track has no cover art of its own.

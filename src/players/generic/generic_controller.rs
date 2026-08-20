@@ -13,6 +13,7 @@ use crate::data::{
 use crate::data::stream_details::StreamDetails;
 use crate::data::library::LibraryInterface;
 use crate::players::player_controller::{BasePlayerController, PlayerController};
+use crate::helpers::playback_progress::PlayerProgress;
 
 /// A generic player controller that can be configured via JSON and accepts API updates
 pub struct GenericPlayerController {
@@ -27,7 +28,10 @@ pub struct GenericPlayerController {
     current_state: Arc<RwLock<PlaybackState>>,
     current_loop_mode: Arc<RwLock<LoopMode>>,
     current_shuffle: Arc<RwLock<bool>>,
-    current_position: Arc<RwLock<Option<f64>>>,
+    /// Playback position, interpolated from the last reported value while playing
+    progress: PlayerProgress,
+    /// Whether any position has been reported yet; get_position() returns None until then
+    position_known: Arc<RwLock<bool>>,
     current_queue: Arc<RwLock<Vec<Track>>>,
     current_stream_details: Arc<RwLock<Option<StreamDetails>>>,
 
@@ -53,7 +57,8 @@ impl GenericPlayerController {
             current_state: Arc::new(RwLock::new(PlaybackState::Unknown)),
             current_loop_mode: Arc::new(RwLock::new(LoopMode::None)),
             current_shuffle: Arc::new(RwLock::new(false)),
-            current_position: Arc::new(RwLock::new(None)),
+            progress: PlayerProgress::new(),
+            position_known: Arc::new(RwLock::new(false)),
             current_queue: Arc::new(RwLock::new(Vec::new())),
             current_stream_details: Arc::new(RwLock::new(None)),
             config: Arc::new(RwLock::new(HashMap::new())),
@@ -215,6 +220,7 @@ impl GenericPlayerController {
             "position_changed" => self.handle_position_change_event(event_data),
             "loop_mode_changed" => self.handle_loop_mode_change_event(event_data),
             "shuffle_changed" => self.handle_shuffle_change_event(event_data),
+            "queue_changed" => self.handle_queue_change_event(event_data),
             "stream_info" => self.handle_stream_info_event(event_data),
             _ => {
                 debug!("Unknown event type '{}' for generic player", event_type);
@@ -243,13 +249,19 @@ impl GenericPlayerController {
                 debug!("Generic player '{}' state changed to: {:?}", self.player_name, playback_state);
             } // Lock is released here
 
+            // Drive the interpolator: position only advances while playing.
+            // This must happen before notifying, since EventBus::publish is a
+            // non-blocking try_send -- a subscriber could otherwise observe the
+            // new state and call get_position() before the interpolator agrees.
+            self.progress.set_playing(playback_state == PlaybackState::Playing);
+
             // Notify the event bus about the state change after releasing the lock
             self.base.notify_state_changed(playback_state);
             return true;
         }
         false
     }
-    
+
     /// Handle song change events
     fn handle_song_change_event(&self, event_data: &Value) -> bool {
         // Try to parse song information from the event
@@ -262,8 +274,26 @@ impl GenericPlayerController {
         // Update the state first, then release the lock before notifying
         let song_for_notify = {
             let mut current_song = self.current_song.write();
+
+            // Identity comparison: a metadata-only refresh of the SAME song
+            // (e.g. cover art arriving late) must not reset playback position.
+            let song_changed = match (&*current_song, &song) {
+                (Some(old), Some(new)) => {
+                    old.title != new.title
+                        || old.artist != new.artist
+                        || old.stream_url != new.stream_url
+                }
+                (None, None) => false,
+                _ => true,
+            };
+
             *current_song = song.clone();
             debug!("Generic player '{}' song changed", self.player_name);
+
+            if song_changed {
+                self.progress.set_position(0.0);
+            }
+
             song.clone()
         }; // Lock is released here
 
@@ -275,14 +305,10 @@ impl GenericPlayerController {
     /// Handle position change events
     fn handle_position_change_event(&self, event_data: &Value) -> bool {
         if let Some(position) = event_data.get("position").and_then(|p| p.as_f64()) {
-            // Update the state first, then release the lock before notifying
-            {
-                let mut pos = self.current_position.write();
-                *pos = Some(position);
-                debug!("Generic player '{}' position changed to: {}", self.player_name, position);
-            } // Lock is released here
+            self.progress.set_position(position);
+            *self.position_known.write() = true;
+            debug!("Generic player '{}' position changed to: {}", self.player_name, position);
 
-            // Notify the event bus about the position change after releasing the lock
             self.base.notify_position_changed(position);
             return true;
         }
@@ -368,7 +394,56 @@ impl GenericPlayerController {
         }
         false
     }
-    
+
+    /// Handle queue change events. The `queue` array holds one object per
+    /// track; `title` (or `name`), `artist` and `uri` are read and anything
+    /// else is ignored, since ACR's Track has nowhere to put album, duration
+    /// or artwork. A missing `queue` array is a malformed event and is
+    /// rejected rather than treated as "clear the queue" -- an empty array is
+    /// the way to clear it.
+    fn handle_queue_change_event(&self, event_data: &Value) -> bool {
+        let entries = match event_data.get("queue").and_then(|q| q.as_array()) {
+            Some(entries) => entries,
+            None => {
+                warn!("queue_changed event for '{}' has no 'queue' array", self.player_name);
+                return false;
+            }
+        };
+
+        let tracks: Vec<Track> = entries
+            .iter()
+            .filter_map(|entry| {
+                let name = entry
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| entry.get("name").and_then(|v| v.as_str()))?;
+                let mut track = Track::new(None, None, name.to_string());
+                track.artist = entry
+                    .get("artist")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                track.uri = entry
+                    .get("uri")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                Some(track)
+            })
+            .collect();
+
+        {
+            let mut queue = self.current_queue.write();
+            *queue = tracks;
+            debug!(
+                "Generic player '{}' queue changed, {} tracks",
+                self.player_name,
+                queue.len()
+            );
+        } // Lock released before notifying
+
+        self.base.notify_queue_changed();
+        true
+    }
+
     /// Parse a song from JSON data
     fn parse_song_from_json(&self, song_data: &Value) -> Option<Song> {
         let mut song = Song::default();
@@ -420,7 +495,8 @@ impl Clone for GenericPlayerController {
             current_state: Arc::clone(&self.current_state),
             current_loop_mode: Arc::clone(&self.current_loop_mode),
             current_shuffle: Arc::clone(&self.current_shuffle),
-            current_position: Arc::clone(&self.current_position),
+            progress: self.progress.clone(),
+            position_known: Arc::clone(&self.position_known),
             current_queue: Arc::clone(&self.current_queue),
             current_stream_details: Arc::clone(&self.current_stream_details),
             config: Arc::clone(&self.config),
@@ -459,8 +535,11 @@ impl PlayerController for GenericPlayerController {
     }
     
     fn get_position(&self) -> Option<f64> {
-        let pos = self.current_position.read();
-        *pos
+        if *self.position_known.read() {
+            Some(self.progress.get_position())
+        } else {
+            None
+        }
     }
     
     fn get_shuffle(&self) -> bool {
@@ -498,16 +577,31 @@ impl PlayerController for GenericPlayerController {
         debug!("GenericPlayerController '{}' received command: {:?}", self.player_name, command);
 
         if let Some(url) = &self.command_url {
-            let verb = match command {
-                PlayerCommand::Play => Some("play"),
-                PlayerCommand::Pause => Some("pause"),
-                PlayerCommand::Stop => Some("stop"),
-                PlayerCommand::Next => Some("next"),
-                PlayerCommand::Previous => Some("previous"),
+            // Build the outbound body with serde rather than format!, so f64
+            // and bool render correctly and any string is escaped properly.
+            let body = match &command {
+                PlayerCommand::Play => Some(serde_json::json!({"command": "play"})),
+                PlayerCommand::Pause => Some(serde_json::json!({"command": "pause"})),
+                PlayerCommand::Stop => Some(serde_json::json!({"command": "stop"})),
+                PlayerCommand::Next => Some(serde_json::json!({"command": "next"})),
+                PlayerCommand::Previous => Some(serde_json::json!({"command": "previous"})),
+                PlayerCommand::Seek(position) => Some(serde_json::json!({
+                    "command": "seek",
+                    "position": position,
+                })),
+                PlayerCommand::SetLoopMode(mode) => Some(serde_json::json!({
+                    "command": "set_loop_mode",
+                    // LoopMode's Display impl: "no" | "song" | "playlist".
+                    "loop_mode": mode.to_string(),
+                })),
+                PlayerCommand::SetRandom(enabled) => Some(serde_json::json!({
+                    "command": "set_shuffle",
+                    "shuffle": enabled,
+                })),
                 _ => None,
             };
-            if let Some(verb) = verb {
-                let body = format!("{{\"command\":\"{}\"}}", verb);
+            if let Some(body) = body {
+                let body = body.to_string();
                 let url = url.clone();
                 // Fire-and-forget; a slow/absent daemon must not block the UI thread.
                 std::thread::spawn(move || {
@@ -526,18 +620,21 @@ impl PlayerController for GenericPlayerController {
                 let mut state = self.current_state.write();
                 *state = PlaybackState::Playing;
                 drop(state);
+                self.progress.set_playing(true);
                 true
             }
             PlayerCommand::Pause => {
                 let mut state = self.current_state.write();
                 *state = PlaybackState::Paused;
                 drop(state);
+                self.progress.set_playing(false);
                 true
             }
             PlayerCommand::Stop => {
                 let mut state = self.current_state.write();
                 *state = PlaybackState::Stopped;
                 drop(state);
+                self.progress.set_playing(false);
                 true
             }
             PlayerCommand::SetLoopMode(mode) => {
@@ -553,9 +650,8 @@ impl PlayerController for GenericPlayerController {
                 true
             }
             PlayerCommand::Seek(position) => {
-                let mut pos = self.current_position.write();
-                *pos = Some(position);
-                drop(pos);
+                self.progress.set_position(position);
+                *self.position_known.write() = true;
                 true
             }
             _ => {

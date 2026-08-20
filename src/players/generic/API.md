@@ -46,6 +46,27 @@ Add a generic player to your AudioControl configuration:
 - `shuffle`: Initial shuffle state (`true` or `false`)
 - `loop_mode`: Initial loop mode (`"none"`, `"track"`, `"playlist"`)
 
+### Outbound Transport Commands (`command_url`)
+
+When `command_url` is configured, transport commands received by AudioControl
+are POSTed to that URL as JSON. The external player is expected to act on them;
+AudioControl also updates its own state optimistically and does not wait for a
+reply (the POST times out after 2 seconds and the result is ignored).
+
+| AudioControl command | POST body |
+|---|---|
+| Play | `{"command": "play"}` |
+| Pause | `{"command": "pause"}` |
+| Stop | `{"command": "stop"}` |
+| Next | `{"command": "next"}` |
+| Previous | `{"command": "previous"}` |
+| Seek | `{"command": "seek", "position": 42.5}` |
+| Set loop mode | `{"command": "set_loop_mode", "loop_mode": "no"}` |
+| Set shuffle | `{"command": "set_shuffle", "shuffle": true}` |
+
+`position` is in **seconds** as a float. `loop_mode` is one of `no`, `song` or
+`playlist`. Any command not listed here is not forwarded.
+
 ## API Endpoints
 
 ### Player Update Endpoint
@@ -108,6 +129,15 @@ Update the current playback position.
 }
 ```
 
+Position is in **seconds**. AudioControl interpolates between updates: while the
+player state is `playing`, the reported position advances with wall-clock time
+from the last value you sent. Senders therefore do not need to post
+`position_changed` every second — send it on seek, on track change, and
+whenever your own source of truth resyncs.
+
+Send `state_changed` promptly on pause and resume, since that is what starts
+and stops the interpolation.
+
 #### 4. Loop Mode Change Events
 
 Update the loop/repeat mode.
@@ -120,6 +150,12 @@ Update the loop/repeat mode.
 }
 ```
 
+The inbound handler accepts both loop-mode vocabularies: `no` or `none` for
+off, `song` or `track` for single-track repeat, and `playlist`. This means a
+bridge that simply echoes back the exact string AudioControl sent it via
+`set_loop_mode` (`no` / `song` / `playlist`, see the outbound table above)
+round-trips correctly.
+
 #### 5. Shuffle Change Events
 
 Update the shuffle state.
@@ -131,6 +167,32 @@ Update the shuffle state.
   "shuffle": true
 }
 ```
+
+#### 6. Queue Change Events
+
+Replace the player's queue.
+
+**Event Structure:**
+```json
+{
+  "type": "queue_changed",
+  "queue": [
+    { "title": "Next Song", "artist": "Artist Name", "uri": "spotify:track:..." },
+    { "title": "Song After That", "artist": "Someone Else" }
+  ]
+}
+```
+
+**Recognised entry fields:** `title` (or `name` as an alias), `artist` and
+`uri`. AudioControl's queue entries hold nothing else, so `album`, `duration`
+and cover-art fields are accepted and ignored. An entry with no title is
+skipped.
+
+Send `"queue": []` to clear the queue. An event with no `queue` array at all is
+rejected as malformed and leaves the existing queue untouched.
+
+Declare the `queue` capability in the player configuration for the queue to be
+offered in the UI.
 
 ## Example Usage
 

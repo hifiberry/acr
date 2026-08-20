@@ -21,7 +21,7 @@ a Rust code change.
 
 ## System overview
 
-Eight source types feed player-backend modules behind a common trait. The
+Nine source types feed player-backend modules behind a common trait. The
 `AudioController` owns which one is "active" while the `EventBus` fans state changes out
 to plugins and API clients. `acr-webmcp` is a separate Python process that turns the
 REST API into MCP tools for AI assistants; nginx fronts both for LAN/WAN access.
@@ -29,13 +29,18 @@ REST API into MCP tools for AI assistants; nginx fronts both for LAN/WAN access.
 ![ACR system architecture diagram](architecture.svg)
 
 Reading it top to bottom: each source feeds its matching ingestion module in
-`src/players/*` (or `src/inputs` for the USB remote). All player modules implement the
-same `PlayerController` trait and register with the `AudioController`, which tracks which
-one is currently active, and publish events onto the `EventBus`. The `ActiveMonitor`
-plugin listens to that bus and switches the active player automatically — there is no
-manual "switch source" step. The Rocket API layer serves REST, WebSocket, and the static
-WebUI on port 1080; `acr-webmcp` calls that same REST API to expose MCP tools on port
-13180; nginx proxies both on port 80.
+`src/players/*` (or `src/inputs` for the USB remote). All eight player modules
+(everything except the keyboard input) implement the same `PlayerController` trait and
+register with the `AudioController`, which tracks which one is currently active, and
+publish events onto the `EventBus`. The `ActiveMonitor` plugin listens to that bus and
+switches the active player automatically — there is no manual "switch source" step. The
+Rocket API layer serves REST, WebSocket, and the static WebUI on port 1080;
+`acr-webmcp` calls that same REST API to expose MCP tools on port 13180; nginx proxies
+both on port 80.
+
+The eighth player module, `players::generic`, is different from the other seven: it has
+no daemon of its own. It is a two-way bridge that any external player can drive over
+plain REST — see [Generic backend interface](#generic-backend-interface) below.
 
 ## Core abstractions
 
@@ -61,6 +66,37 @@ notified when something changes; "poll" backends are asked.
 | `mpris` | any MPRIS2 app (e.g. VLC) | D-Bus, 1s poll | session bus | poll |
 | `shairport` | shairport-sync | UDP metadata protocol, listened in-process | `:5555` | push |
 | `generic` | any third-party player | same REST push API, by name | `POST /player/<name>/update` | push |
+
+## Generic backend interface
+
+`players::generic` (`GenericPlayerController`, `src/players/generic/generic_controller.rs`)
+is the escape hatch for anything that isn't one of the seven named backends: it holds no
+connection to a real daemon, just whatever state the last API call gave it. One instance
+is created per configured player name, so several independent bridges (e.g. one per room)
+can run at once.
+
+![How the generic player backend works](generic-interface.svg)
+
+Two flows run through it, independently and in opposite directions:
+
+- **Inbound (state in).** The bridge `POST`s to `/api/player/<name>/update` with one of
+  six event types: `state_changed`, `song_changed`, `position_changed`,
+  `shuffle_changed`, `loop_mode_changed`, `queue_changed`. These update the controller's
+  internal state and flow out through the normal `notify_*()` → `EventBus` path, exactly
+  like any other backend. While the state is `Playing`, `get_position()` interpolates
+  from the last reported position using wall-clock time, so the bridge does not need to
+  push `position_changed` every second.
+- **Outbound (commands out).** When `AudioController` dispatches a `PlayerCommand` to
+  this controller — `Play`, `Pause`, `Stop`, `Next`, `Previous`, `Seek`,
+  `SetLoopMode`, `SetRandom` — it updates its own state immediately, and *if* a
+  `command_url` was configured for this player, also fires a `POST {"command": ...}` to
+  that URL on a background thread with a 2-second timeout. The result is not
+  awaited or checked: a slow or absent bridge cannot block playback control for
+  everything else.
+
+Full request/response shapes for both directions are in
+[`src/players/generic/API.md`](../src/players/generic/API.md) and
+[Generic Player Controller](generic_player_controller.md).
 
 ## Module map (`src/`)
 

@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1900 500" font-family="Consolas, 'Liberation Mono', Menlo, monospace" role="img"
+     aria-label="How the generic player backend works: an external player or bridge POSTs state events to players::generic, which forwards them to the EventBus like any other backend; in the other direction, AudioController dispatches PlayerCommands to players::generic, which updates its own state immediately and, if a command_url is configured, fires a best-effort POST to the bridge without waiting for a reply.">
+  <defs>
+    <marker id="arrow2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4E5B5F"/>
+    </marker>
+    <marker id="arrow2Accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7A431A"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1900" height="500" fill="#FFFFFF"/>
+
+  <!-- ===== Left: external bridge ===== -->
+  <rect x="40" y="150" width="380" height="180" rx="9" fill="#ECEFEF" stroke="#9AA6A6" stroke-width="1.5"/>
+  <text x="230" y="192" text-anchor="middle" font-size="19" font-weight="700" fill="#1A2225">External player / bridge</text>
+  <text x="230" y="218" text-anchor="middle" font-size="13.5" fill="#7C8A8D">e.g. Music Assistant, Sendspin</text>
+  <text x="230" y="240" text-anchor="middle" font-size="13.5" fill="#7C8A8D">or a custom script</text>
+
+  <!-- ===== Middle: players::generic ===== -->
+  <rect x="670" y="40" width="560" height="420" rx="9" fill="#FFFFFF" stroke="#E3C29C" stroke-width="2"/>
+  <text x="950" y="80" text-anchor="middle" font-size="21" font-weight="700" fill="#1A2225">players::generic</text>
+  <text x="950" y="104" text-anchor="middle" font-size="14" fill="#7C8A8D">(GenericPlayerController)</text>
+  <text x="950" y="124" text-anchor="middle" font-size="12.5" fill="#7C8A8D">one instance per configured name — state lives here</text>
+
+  <line x1="670" y1="136" x2="1230" y2="136" stroke="#CBD3D3"/>
+  <line x1="950" y1="140" x2="950" y2="350" stroke="#CBD3D3"/>
+
+  <text x="810" y="158" text-anchor="middle" font-size="12.5" font-weight="700" letter-spacing="0.5" fill="#7A431A">INBOUND — EVENT TYPES</text>
+  <text x="1090" y="158" text-anchor="middle" font-size="12.5" font-weight="700" letter-spacing="0.5" fill="#7A431A">OUTBOUND — VIA command_url</text>
+
+  <g font-size="14" fill="#1A2225">
+    <text x="710" y="184">state_changed</text>
+    <text x="710" y="208">song_changed</text>
+    <text x="710" y="232">position_changed</text>
+    <text x="710" y="256">shuffle_changed</text>
+    <text x="710" y="280">loop_mode_changed</text>
+    <text x="710" y="304">queue_changed</text>
+
+    <text x="990" y="184">play / pause / stop</text>
+    <text x="990" y="208">next / previous</text>
+    <text x="990" y="232">seek</text>
+    <text x="990" y="256">set_loop_mode</text>
+    <text x="990" y="280">set_shuffle</text>
+  </g>
+
+  <line x1="680" y1="356" x2="1220" y2="356" stroke="#CBD3D3"/>
+  <rect x="680" y="368" width="540" height="76" rx="6" fill="none" stroke="#E3C29C" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <g font-size="12" fill="#4E5B5F">
+    <text x="700" y="388">Position interpolator: while state = Playing, get_position()</text>
+    <text x="700" y="406">advances from the last reported value using wall-clock time.</text>
+    <text x="700" y="424">Commands update local state immediately — AudioControl does</text>
+    <text x="700" y="440">not wait for the bridge's HTTP response before reporting it.</text>
+  </g>
+
+  <!-- ===== Right: core ===== -->
+  <rect x="1480" y="150" width="380" height="180" rx="9" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
+  <text x="1670" y="192" text-anchor="middle" font-size="18" font-weight="700" fill="#1A2225">AudioController / EventBus</text>
+  <text x="1670" y="218" text-anchor="middle" font-size="13.5" fill="#7C8A8D">same path as every other backend</text>
+  <text x="1670" y="240" text-anchor="middle" font-size="13.5" fill="#7C8A8D">→ REST · WebSocket · plugins</text>
+
+  <!-- ===== Arrows: bridge <-> generic ===== -->
+  <line x1="420" y1="210" x2="670" y2="210" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <text x="545" y="194" text-anchor="middle" font-size="12.5" fill="#4E5B5F">POST /api/player/&lt;name&gt;/update</text>
+
+  <line x1="670" y1="300" x2="420" y2="300" stroke="#7A431A" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow2Accent)"/>
+  <text x="545" y="284" text-anchor="middle" font-size="12.5" fill="#7A431A">command_url POST (if configured)</text>
+  <text x="545" y="318" text-anchor="middle" font-size="11.5" fill="#7A431A">fire-and-forget · 2s timeout · reply ignored</text>
+
+  <!-- ===== Arrows: generic <-> core ===== -->
+  <line x1="1230" y1="210" x2="1480" y2="210" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <text x="1355" y="194" text-anchor="middle" font-size="12.5" fill="#4E5B5F">notify_*() → EventBus</text>
+
+  <line x1="1480" y1="300" x2="1230" y2="300" stroke="#4E5B5F" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <text x="1355" y="284" text-anchor="middle" font-size="12.5" fill="#4E5B5F">PlayerCommand (Play, Pause, Seek, …)</text>
+  <text x="1355" y="318" text-anchor="middle" font-size="11.5" fill="#7C8A8D">same dispatch path as every other backend</text>
+
+</svg>

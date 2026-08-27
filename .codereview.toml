@@ -1,0 +1,23 @@
+effort = "high"
+
+instructions = """
+AudioControl is a long-running Rust daemon on the device: it holds player
+state, serves the WebUI, and must not stop. Alongside the usual defects,
+report these:
+
+- `unwrap()`, `expect()`, slice indexing, or arithmetic that can overflow, on
+  any path reachable from the HTTP API, a player event, or a file on disk. A
+  panic there takes down audio control for the whole device.
+- Blocking work inside async: filesystem or network calls, `thread::sleep`,
+  or SQLite access on the async executor, and any lock held across an
+  `.await`.
+- Lock ordering between player state, the event bus and the caches that can
+  deadlock, and channels that can grow without bound when a consumer stalls.
+- Credential handling in `secrets.rs`: a reused AES-GCM nonce, a key or token
+  written to the SQLite cache in the clear, or a secret in a log line.
+- A change to the API or the event vocabulary that existing player backends
+  or the WebUI depend on, made without a compatibility path — the WebUI ships
+  separately and will meet the old and the new version.
+- New behaviour with no test, where the crate already has one covering that
+  area.
+"""

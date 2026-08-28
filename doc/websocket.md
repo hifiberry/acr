@@ -14,6 +14,12 @@ Where:
 - `<host>` is the address of the Audiocontrol server
 - `<port>` is the port number (default is 1080)
 
+> **On a HiFiBerryOS device, clients do not connect to port 1080.** nginx fronts
+> the device on port 80 and proxies `/api/audiocontrol/` to `127.0.0.1:1080/api/`,
+> so the WebSocket URL a client uses is `ws://<device>/api/audiocontrol/events`.
+> The port 1080 form above is for direct access when testing against audiocontrol
+> on its own.
+
 ## Message Format
 
 All messages are JSON-formatted and follow these conventions:
@@ -66,38 +72,50 @@ Event messages follow this general format:
 ```json
 {
   "type": "event_type",
-  "player_name": "player_id",
+  "player_name": "mpd",
+  "player_id": "mpd:6600",
   "source": {
-    "player_id": "player_id",
-    "player_name": "player_name",
-    "is_active": true|false
-  },
+    "player_name": "mpd",
+    "player_id": "mpd:6600"
+  }
   // Additional fields specific to the event type
 }
 ```
 
+`player_name` and `player_id` appear both at the top level and inside `source`.
+
+> **Known issue.** The `player_id` inside `source` is currently built by appending
+> the hardcoded MPD port `6600` to the player name, so it is wrong for every player
+> other than MPD. The top-level `player_id`, which comes from the event's own
+> source, is correct. **Clients should read the top-level `player_id` and ignore
+> `source.player_id`.** For `volume_changed`, which has no player source at all,
+> `source` degrades to `{"player_name": null, "player_id": "system:6600"}`.
+
+`source` contains only `player_name` and `player_id`. It has no `is_active` field.
+
 ## Event Types
+
+The authoritative list is `convert_to_websocket_message` in `src/api/events.rs`.
+Every event below carries the common `player_name`, `player_id` and `source`
+fields documented above; only the event-specific fields are shown.
 
 ### `state_changed`
 
-Sent when player state changes (playing, paused, stopped):
+Sent when player state changes.
 
 ```json
 {
   "type": "state_changed",
-  "state": "playing|paused|stopped",
-  "player_name": "mpd",
-  "source": {
-    "player_id": "mpd:6600",
-    "player_name": "mpd",
-    "is_active": true
-  }
+  "state": "playing"
 }
 ```
 
+`state` is the string form of `PlaybackState`.
+
 ### `song_changed`
 
-Sent when the current song changes:
+Sent when the current song changes. `song` may be `null` when playback stops with
+no track loaded.
 
 ```json
 {
@@ -108,134 +126,146 @@ Sent when the current song changes:
     "album": "Album Name",
     "duration": 180,
     "uri": "spotify:track:1234567890",
-    "artwork_url": "http://example.com/image.jpg"
-  },
-  "player_name": "spotify",
-  "source": {
-    "player_id": "spotify",
-    "player_name": "spotify",
-    "is_active": true
+    "cover_art_url": "/api/library/mpd/image/..."
   }
 }
 ```
+
+### `song_information_update`
+
+Sent when information about the *current* song is enriched after the fact — cover
+art resolved, metadata looked up.
+
+```json
+{
+  "type": "song_information_update",
+  "song": { "title": "Song Title", "artist": "Artist Name", "cover_art_url": "..." }
+}
+```
+
+**This is a partial update.** `title` and `artist` are present only so a client can
+confirm the update still applies to the song it is showing; they are not themselves
+updated. Every other field is optional, and an absent field means **unchanged** — it
+does not mean "cleared". A client that overwrites its current song wholesale with
+this payload will blank out fields that were previously populated.
 
 ### `position_changed`
 
-Sent periodically when the playback position changes:
+Sent periodically as playback position advances.
 
 ```json
 {
   "type": "position_changed",
-  "position": {
-    "position": 45.5,
-    "duration": 180.0
-  },
-  "player_name": "mpd",
-  "source": {
-    "player_id": "mpd:6600",
-    "player_name": "mpd"
-  }
+  "position": 45.5
 }
 ```
 
-Note: Some players might send a simplified version with just the position as a number:
-
-```json
-{
-  "type": "position_changed",
-  "position": 45.5,
-  "player_name": "raat",
-  "source": {
-    "player_id": "raat",
-    "player_name": "raat"
-  }
-}
-```
+`position` is a number — seconds, as a float. It is never an object. Duration is
+not included; take it from the current song.
 
 ### `loop_mode_changed`
-
-Sent when the loop mode changes:
 
 ```json
 {
   "type": "loop_mode_changed",
-  "mode": "none|track|playlist",
-  "player_name": "mpd",
-  "source": {
-    "player_id": "mpd:6600",
-    "player_name": "mpd"
-  }
+  "mode": "song"
 }
 ```
 
+`mode` is one of `"no"`, `"song"`, `"playlist"` — the `Display` form of `LoopMode`.
+Note these are not the enum's Rust variant names (`None`, `Track`, `Playlist`), and
+the field is `mode`, not `loop_mode`.
+
 ### `shuffle_changed`
 
-Sent when shuffle mode changes:
+Sent when shuffle mode changes.
 
 ```json
 {
   "type": "shuffle_changed",
-  "shuffle": true|false,
-  "player_name": "spotify",
-  "source": {
-    "player_id": "spotify",
-    "player_name": "spotify"
-  }
+  "shuffle": true,
+  "enabled": true
 }
 ```
 
-### `capabilities_changed`
+`shuffle` is the canonical field. `enabled` carries the same value and is emitted
+only for compatibility with clients written before the rename described below; new
+clients should read `shuffle` and treat `enabled` as deprecated.
 
-Sent when the player's capabilities change:
+> **Renamed.** This event was previously emitted as `random_changed`. The name was
+> inconsistent with the rest of the API, where the capability is `shuffle` and the
+> inbound update event is `shuffle_changed` — and because the server filters
+> subscriptions by event name, a client subscribing to `shuffle_changed` (as the
+> WebUI did) never received it. The subscription filter still accepts
+> `random_changed`, so clients that subscribed to the old name keep working.
+
+### `capabilities_changed`
 
 ```json
 {
   "type": "capabilities_changed",
-  "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop", "queue"],
-  "player_name": "spotify",
-  "source": {
-    "player_id": "spotify",
-    "player_name": "spotify"
-  }
+  "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop", "queue"]
 }
 ```
 
-### `metadata_changed`
+### `queue_changed`
 
-Sent when metadata for the current track is updated:
+Sent when the queue contents change. Carries no payload beyond the common fields —
+clients must re-fetch `/api/player/<player-name>/queue`.
 
 ```json
 {
-  "type": "metadata_changed",
-  "metadata": {
-    "title": "Updated Song Title",
-    "artist": "Updated Artist",
-    "album": "Updated Album",
-    "artwork_url": "http://example.com/updated_image.jpg"
-  },
-  "player_name": "mpd",
-  "source": {
-    "player_id": "mpd:6600",
-    "player_name": "mpd"
-  }
+  "type": "queue_changed"
+}
+```
+
+### `active_player_changed`
+
+Sent when the active player changes. `new_player_id` is the player becoming active;
+the common `player_id` still refers to the event's source.
+
+```json
+{
+  "type": "active_player_changed",
+  "new_player_id": "spotify:librespot"
 }
 ```
 
 ### `database_updating`
 
-Sent when a player's database/library is being updated:
+Sent while a player's library is being scanned. All four payload fields are
+optional.
 
 ```json
 {
   "type": "database_updating",
-  "percentage": 75,
-  "player_name": "mpd",
-  "source": {
-    "player_id": "mpd:6600",
-    "player_name": "mpd"
-  }
+  "artist": "Artist Name",
+  "album": "Album Name",
+  "song": "Song Title",
+  "percentage": 75
 }
 ```
+
+### `volume_changed`
+
+A system-wide event with no player source. `decibels` and `raw_value` are optional.
+
+```json
+{
+  "type": "volume_changed",
+  "control_name": "Digital",
+  "display_name": "Digital",
+  "percentage": 65.0,
+  "decibels": -18.5,
+  "raw_value": 168
+}
+```
+
+### Events that do not exist
+
+Earlier revisions of this document listed `metadata_changed`. It has never been
+emitted and there is no such event type; `song_information_update` covers that
+case. It is noted here because clients were written against it.
 
 ## Example Client Implementation
 
@@ -253,11 +283,12 @@ socket.addEventListener('open', (event) => {
         event_types: [
             "state_changed",
             "song_changed",
+            "song_information_update",
             "position_changed",
             "loop_mode_changed",
             "shuffle_changed",
             "capabilities_changed",
-            "metadata_changed"
+            "queue_changed"
         ]
     };
     socket.send(JSON.stringify(subscription));

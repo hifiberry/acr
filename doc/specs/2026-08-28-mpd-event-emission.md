@@ -1,7 +1,8 @@
 # Emitting shuffle, loop and position events from the MPD controller
 
 **Date:** 2026-08-28
-**Status:** Proposed, not implemented
+**Status:** In-scope part implemented (`shuffle_changed`, `loop_mode_changed`).
+`position_changed` and the discoverability contract remain proposed.
 **Affects:** `src/players/mpd/mpd.rs`, the WebSocket event contract, every API client
 
 ## Problem

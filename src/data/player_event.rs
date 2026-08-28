@@ -156,7 +156,7 @@ impl PlayerEvent {
             PlayerEvent::StateChanged { .. } => "state_changed",
             PlayerEvent::SongChanged { .. } => "song_changed",
             PlayerEvent::LoopModeChanged { .. } => "loop_mode_changed",
-            PlayerEvent::RandomChanged { .. } => "random_changed",
+            PlayerEvent::RandomChanged { .. } => "shuffle_changed",
             PlayerEvent::CapabilitiesChanged { .. } => "capabilities_changed",
             PlayerEvent::PositionChanged { .. } => "position_changed",
             PlayerEvent::DatabaseUpdating { .. } => "database_updating",

@@ -100,6 +100,19 @@ This document describes the REST API endpoints available in the Audio Control RE
 - **Content Type**: All responses are in JSON format
 - **Version**: As per current package version
 
+> **On a HiFiBerryOS device, clients do not talk to port 1080.** nginx fronts the
+> device on port 80 and proxies `/api/audiocontrol/` to `127.0.0.1:1080/api/`,
+> setting `X-Forwarded-Prefix: /api/audiocontrol`. An endpoint documented below as
+> `/api/now-playing` is therefore reached at
+> `http://<device>/api/audiocontrol/now-playing`. The port 1080 base URL is for
+> direct access when testing audiocontrol on its own.
+>
+> Authentication is also applied at the proxy, not here: when the `hifiberry-auth`
+> package is installed, nginx gates every `/api/<service>/` location with
+> `auth_request`, so any endpoint below can return `401` with a
+> `WWW-Authenticate-Hint` header even though audiocontrol itself never produces
+> one.
+
 ## Events
 
 The Audiocontrol system uses an event-based architecture to communicate state changes between components. Events can be monitored via WebSockets or server-sent events (SSE).

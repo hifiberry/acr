@@ -1,3 +1,23 @@
+hifiberry-audiocontrol (0.9.1) trixie; urgency=medium
+
+  * websocket: rename the outbound shuffle event from random_changed to
+    shuffle_changed, matching the rest of the API, where the capability is
+    "shuffle" and the inbound update event is already shuffle_changed. The
+    old name meant a client subscribing to shuffle_changed - as the WebUI
+    does, following the example in doc/websocket.md - never received the
+    event at all, because subscriptions are filtered by exact event name.
+    The event now carries both "shuffle" and the previous "enabled" field,
+    and the subscription filter still accepts random_changed, so clients
+    written against either name keep working.
+  * doc/websocket.md described events that are not emitted and omitted five
+    that are. Corrected against the implementation, including that
+    position_changed sends a float rather than a {position, duration}
+    object, that song_information_update is a partial update where an absent
+    field means unchanged, and that source.player_id is built with a
+    hardcoded MPD port and is wrong for other players.
+
+ -- HiFiBerry <support@hifiberry.com>  Fri, 28 Aug 2026 17:52:00 +0000
+
 hifiberry-audiocontrol (0.9.0) trixie; urgency=medium
 
   * generic player: forward seek, set_loop_mode and set_shuffle to the

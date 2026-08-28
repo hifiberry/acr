@@ -249,8 +249,17 @@ impl WebSocketManager {    /// Create a new WebSocket manager
         if let Some(event_types) = &subscription.event_types {
             // Get event type as string
             let event_type = event_type_name(event);
-            
-            if !event_types.contains(event_type) {
+
+            // Accept the pre-rename name so clients that subscribed to
+            // `random_changed` keep receiving the event.
+            let legacy_alias = match event_type {
+                "shuffle_changed" => Some("random_changed"),
+                _ => None,
+            };
+
+            if !event_types.contains(event_type)
+                && !legacy_alias.is_some_and(|alias| event_types.contains(alias))
+            {
                 return false;
             }
         }
@@ -359,9 +368,13 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
         },
         PlayerEvent::RandomChanged { source, enabled } => {
             serde_json::json!({
-                "type": "random_changed",
+                "type": "shuffle_changed",
                 "player_name": source.player_name(),
                 "player_id": source.player_id(),
+                // `shuffle` is the canonical field; `enabled` is emitted alongside
+                // it for clients written against the previous `random_changed`
+                // event and can be dropped once those have aged out.
+                "shuffle": enabled,
                 "enabled": enabled
             })
         },
@@ -439,7 +452,7 @@ fn event_type_name(event: &PlayerEvent) -> &'static str {
         PlayerEvent::StateChanged { .. } => "state_changed",
         PlayerEvent::SongChanged { .. } => "song_changed",
         PlayerEvent::LoopModeChanged { .. } => "loop_mode_changed",
-        PlayerEvent::RandomChanged { .. } => "random_changed",
+        PlayerEvent::RandomChanged { .. } => "shuffle_changed",
         PlayerEvent::CapabilitiesChanged { .. } => "capabilities_changed",
         PlayerEvent::PositionChanged { .. } => "position_changed",
         PlayerEvent::DatabaseUpdating { .. } => "database_updating",

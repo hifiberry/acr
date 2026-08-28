@@ -40,7 +40,7 @@ setup_user_and_dirs() {
     chown audiocontrol:audiocontrol /etc/audiocontrol
     chmod 755 /etc/audiocontrol
     
-    chown audiocontrol:audiocontrol /var/lib/audiocontrol /var/lib/audiocontrol/cache /var/lib/audiocontrol/cache/attributes /var/lib/audiocontrol/cache/images
+    chown -R audiocontrol:audiocontrol /var/lib/audiocontrol /var/lib/audiocontrol/cache /var/lib/audiocontrol/cache/attributes /var/lib/audiocontrol/cache/images
     chmod 755 /var/lib/audiocontrol /var/lib/audiocontrol/cache /var/lib/audiocontrol/cache/attributes /var/lib/audiocontrol/cache/images
 }
 

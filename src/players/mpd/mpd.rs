@@ -46,6 +46,70 @@ fn cover_art_from_metadata(metadata: &HashMap<String, serde_json::Value>) -> Opt
         .map(|url| url.to_string())
 }
 
+/// Derive the loop mode that MPD's `repeat` and `single` flags represent.
+///
+/// MPD has no single "loop mode" setting: `repeat` says whether playback
+/// repeats at all, and `single` says whether it repeats one song or the whole
+/// queue. `single` alone, without `repeat`, stops after the current song and
+/// is not a loop.
+fn loop_mode_from_mpd(repeat: bool, single: bool) -> LoopMode {
+    match (repeat, single) {
+        (false, _) => LoopMode::None,
+        (true, true) => LoopMode::Track,
+        (true, false) => LoopMode::Playlist,
+    }
+}
+
+/// What changed between two observations of MPD's option flags. `None` means
+/// the value did not move and no event is owed for it.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OptionsTransition {
+    shuffle: Option<bool>,
+    loop_mode: Option<LoopMode>,
+}
+
+impl OptionsTransition {
+    /// Whether anything at all changed.
+    fn is_empty(&self) -> bool {
+        self.shuffle.is_none() && self.loop_mode.is_none()
+    }
+}
+
+/// Last-known values of the MPD options we emit events for.
+///
+/// `Subsystem::Options` fires for any option change, `consume` and crossfade
+/// included, so the controller has to diff against what it last saw rather
+/// than emit on every event.
+#[derive(Debug, Default)]
+struct OptionsSnapshot {
+    /// `(random, repeat, single)` as of the last observation, or `None` before
+    /// the first one.
+    seen: Option<(bool, bool, bool)>,
+}
+
+impl OptionsSnapshot {
+    /// Record an observation and report what changed since the previous one.
+    ///
+    /// The first observation after a connect establishes the baseline and
+    /// reports nothing: a reconnect must not look like someone toggling a
+    /// setting.
+    fn observe(&mut self, random: bool, repeat: bool, single: bool) -> OptionsTransition {
+        let previous = self.seen.replace((random, repeat, single));
+
+        let Some((was_random, was_repeat, was_single)) = previous else {
+            return OptionsTransition::default();
+        };
+
+        let mode = loop_mode_from_mpd(repeat, single);
+        let was_mode = loop_mode_from_mpd(was_repeat, was_single);
+
+        OptionsTransition {
+            shuffle: (random != was_random).then_some(random),
+            loop_mode: (mode != was_mode).then_some(mode),
+        }
+    }
+}
+
 /// MPD player controller implementation
 pub struct MPDPlayerController {
     /// Base controller for managing state listeners
@@ -104,6 +168,10 @@ pub struct MPDPlayerController {
     
     /// Current MPD database update job ID (if any)
     current_update_job_id: Arc<Mutex<Option<String>>>,
+
+    /// Last-known MPD option flags, so `Subsystem::Options` events emit only
+    /// on an actual transition
+    option_snapshot: Arc<Mutex<OptionsSnapshot>>,
 }
 
 // Manually implement Clone for MPDPlayerController
@@ -129,6 +197,7 @@ impl Clone for MPDPlayerController {
             connection_disabled: Arc::clone(&self.connection_disabled),
             song_split_manager: self.song_split_manager.clone(),
             current_update_job_id: Arc::clone(&self.current_update_job_id),
+            option_snapshot: Arc::clone(&self.option_snapshot),
             library_read_only: self.library_read_only,
         }
     }
@@ -170,6 +239,7 @@ impl MPDPlayerController {
             connection_disabled: Arc::new(AtomicBool::new(false)),
             song_split_manager: SongSplitManager::new(),
             current_update_job_id: Arc::new(Mutex::new(None)),
+            option_snapshot: Arc::new(Mutex::new(OptionsSnapshot::default())),
         };
         
         // Set default capabilities
@@ -205,6 +275,7 @@ impl MPDPlayerController {
             connection_disabled: Arc::new(AtomicBool::new(false)),
             song_split_manager: SongSplitManager::new(),
             current_update_job_id: Arc::new(Mutex::new(None)),
+            option_snapshot: Arc::new(Mutex::new(OptionsSnapshot::default())),
         };
         
         // Set default capabilities
@@ -817,8 +888,8 @@ impl MPDPlayerController {
                 // Could notify about playlist/song changes
             },
             Subsystem::Options => {
-                warn!("Options changed (repeat, random, etc.)");
-                // Could query and notify about repeat/random state
+                debug!("Options changed (repeat, random, etc.)");
+                Self::handle_options_event(client, player);
             },
             Subsystem::Mixer => {
                 debug!("Mixer changed (volume)");
@@ -859,6 +930,46 @@ impl MPDPlayerController {
         }
     }
     
+    /// Handle an MPD `Options` event: emit shuffle and loop mode changes.
+    ///
+    /// MPD raises this subsystem for any option change, `consume` and
+    /// crossfade included, so the values are diffed against the last
+    /// observation and only real transitions are reported. The first
+    /// observation after a connect only establishes the baseline.
+    fn handle_options_event(client: &mut Client<TcpStream>, player: Arc<Self>) {
+        let status = match client.status() {
+            Ok(status) => status,
+            Err(e) => {
+                // Leave the snapshot untouched: the next Options event
+                // re-synchronises and no transition is lost.
+                warn!("Failed to get MPD status for options event: {}", e);
+                return;
+            }
+        };
+
+        // Take the transition and release the lock before notifying. The
+        // notify path reaches the event bus and every subscribed WebSocket
+        // client, and holding a player lock across it risks a deadlock.
+        let transition = {
+            let mut snapshot = player.option_snapshot.lock();
+            snapshot.observe(status.random, status.repeat, status.single)
+        };
+
+        if transition.is_empty() {
+            return;
+        }
+
+        if let Some(enabled) = transition.shuffle {
+            debug!("MPD random is now {}", enabled);
+            player.base.notify_random_changed(enabled);
+        }
+
+        if let Some(mode) = transition.loop_mode {
+            debug!("MPD loop mode is now {}", mode);
+            player.base.notify_loop_mode_changed(mode);
+        }
+    }
+
     /// Handle player events and log song information
     fn handle_player_event(client: &mut Client<TcpStream>, player: Arc<Self>) {
 
@@ -2288,5 +2399,106 @@ mod tests {
             enhanced_song.cover_art_url,
             Some("https://www.byte.fm/favicon.png".to_string())
         );
+    }
+
+    // --- MPD options -> events ---------------------------------------------
+
+    #[test]
+    fn loop_mode_is_none_when_repeat_is_off() {
+        assert_eq!(loop_mode_from_mpd(false, false), LoopMode::None);
+    }
+
+    /// `single` without `repeat` means "stop after this song", not a loop.
+    #[test]
+    fn loop_mode_is_none_when_single_is_set_without_repeat() {
+        assert_eq!(loop_mode_from_mpd(false, true), LoopMode::None);
+    }
+
+    #[test]
+    fn loop_mode_is_playlist_when_repeat_is_on_alone() {
+        assert_eq!(loop_mode_from_mpd(true, false), LoopMode::Playlist);
+    }
+
+    #[test]
+    fn loop_mode_is_track_when_repeat_and_single_are_both_on() {
+        assert_eq!(loop_mode_from_mpd(true, true), LoopMode::Track);
+    }
+
+    #[test]
+    fn first_observation_establishes_a_baseline_and_emits_nothing() {
+        let mut snapshot = OptionsSnapshot::default();
+
+        let transition = snapshot.observe(true, true, true);
+
+        assert!(transition.is_empty(), "a reconnect must not look like a user toggle");
+    }
+
+    #[test]
+    fn unchanged_options_emit_nothing() {
+        let mut snapshot = OptionsSnapshot::default();
+        snapshot.observe(false, false, false);
+
+        // An Options event caused by something we do not report, consume say.
+        let transition = snapshot.observe(false, false, false);
+
+        assert!(transition.is_empty());
+    }
+
+    #[test]
+    fn toggling_random_emits_shuffle_only() {
+        let mut snapshot = OptionsSnapshot::default();
+        snapshot.observe(false, false, false);
+
+        let transition = snapshot.observe(true, false, false);
+
+        assert_eq!(transition.shuffle, Some(true));
+        assert_eq!(transition.loop_mode, None);
+    }
+
+    #[test]
+    fn toggling_repeat_emits_loop_mode_only() {
+        let mut snapshot = OptionsSnapshot::default();
+        snapshot.observe(false, false, false);
+
+        let transition = snapshot.observe(false, true, false);
+
+        assert_eq!(transition.shuffle, None);
+        assert_eq!(transition.loop_mode, Some(LoopMode::Playlist));
+    }
+
+    /// One Options event can carry both changes, and both are owed.
+    #[test]
+    fn changing_random_and_loop_together_emits_both() {
+        let mut snapshot = OptionsSnapshot::default();
+        snapshot.observe(false, false, false);
+
+        let transition = snapshot.observe(true, true, true);
+
+        assert_eq!(transition.shuffle, Some(true));
+        assert_eq!(transition.loop_mode, Some(LoopMode::Track));
+    }
+
+    /// single alone flips repeat=true from Playlist to Track; repeat=false
+    /// keeps LoopMode::None either way, so no event is owed.
+    #[test]
+    fn toggling_single_without_repeat_emits_nothing() {
+        let mut snapshot = OptionsSnapshot::default();
+        snapshot.observe(false, false, false);
+
+        let transition = snapshot.observe(false, false, true);
+
+        assert!(transition.is_empty());
+    }
+
+    #[test]
+    fn each_observation_becomes_the_new_baseline() {
+        let mut snapshot = OptionsSnapshot::default();
+        snapshot.observe(false, false, false);
+        snapshot.observe(true, false, false);
+
+        // Same values as the previous observation, so nothing further is owed.
+        let transition = snapshot.observe(true, false, false);
+
+        assert!(transition.is_empty());
     }
 }

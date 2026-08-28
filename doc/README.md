@@ -8,6 +8,7 @@ This directory contains documentation for various aspects of the HiFiBerry Audio
 - [API Documentation](api.md) - REST API and WebSocket endpoints
 - [Caching](caching.md) - Information about the caching mechanisms used in Audiocontrol
 - [CLI Tools](cli_tools.md) - Command-line tools for interacting with Audiocontrol
+- [Development Tooling](tooling.md) - Worktrees, building and testing on Linux or in a container, packaging, and review conventions
 - [Generic Player Controller](generic_player_controller.md) - Configurable player implementation
 - [Image Grading System](imagegrading.md) - Quality scoring system for cover art images
 - [Input sources](inputs.md) - USB HID remote controls and keyboard input configuration

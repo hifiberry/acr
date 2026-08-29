@@ -1,3 +1,27 @@
+hifiberry-audiocontrol (0.9.2) trixie; urgency=medium
+
+  * mpd: emit shuffle_changed and loop_mode_changed. The MPD controller
+    subscribed to MPD's Options subsystem but its handler was a stub, so
+    toggling shuffle or cycling the loop mode on the default player produced
+    no WebSocket event at all - a client subscribed, waited, and nothing
+    arrived. Options fires for any option change, consume and crossfade
+    included, so the controller now holds the last-seen random/repeat/single
+    and emits only on a real transition; the first observation after a
+    connect establishes the baseline, so a reconnect does not look like
+    someone toggling a setting.
+  * postinst: chown /var/lib/audiocontrol recursively. Installs that at some
+    point ran audiocontrol as root leave root-owned files under the cache
+    directories, which the non-recursive chown did not fix, so the daemon
+    still could not overwrite them after an upgrade. /etc/audiocontrol stays
+    non-recursive: its dpkg conffiles, some shipped by other packages, remain
+    root-owned.
+  * control: accept libasound2t64 as an alternative to libasound2, so the
+    dependency is satisfiable on trixie.
+  * build.sh no longer sources the cross-compile environment; that setup is
+    supplied by the surrounding OS build.
+
+ -- HiFiBerry <support@hifiberry.com>  Sat, 29 Aug 2026 04:03:45 +0000
+
 hifiberry-audiocontrol (0.9.1) trixie; urgency=medium
 
   * websocket: rename the outbound shuffle event from random_changed to

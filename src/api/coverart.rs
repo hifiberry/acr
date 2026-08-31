@@ -338,9 +338,13 @@ fn variant_base_for(cache_path: &str, size: u32) -> String {
 
 /// Read a variant of an artist image, generating it beside the original on first use.
 ///
+/// `original` is the bytes of `cache_path`, which the caller has already read; this
+/// function must not read the file a second time. A sized request would otherwise
+/// pay two full reads of the same image, one of them thrown away.
+///
 /// Returns `None` whenever anything goes wrong, so the caller falls back to the
 /// original rather than failing a request that would otherwise succeed.
-fn artist_image_variant(cache_path: &str, size: u32) -> Option<(Vec<u8>, String)> {
+fn artist_image_variant(cache_path: &str, original: &[u8], size: u32) -> Option<(Vec<u8>, String)> {
     let base = variant_base_for(cache_path, size);
     let png_path = format!("{}.png", base);
     let jpg_path = format!("{}.jpg", base);
@@ -354,8 +358,7 @@ fn artist_image_variant(cache_path: &str, size: u32) -> Option<(Vec<u8>, String)
         return Some((data, "image/jpeg".to_string()));
     }
 
-    let original = std::fs::read(cache_path).ok()?;
-    match crate::helpers::imageresize::resize(&original, size) {
+    match crate::helpers::imageresize::resize(original, size) {
         Ok(crate::helpers::imageresize::Resized::Original) => None,
         Ok(crate::helpers::imageresize::Resized::Image(data, mime)) => {
             // The stored extension must match what was actually encoded, and must be
@@ -457,7 +460,8 @@ pub fn get_artist_image(
                     };
 
                     let (image_data, mime) = match target {
-                        Some(rung) => artist_image_variant(&cache_path, rung)
+                        // The original is handed over rather than re-read from disk.
+                        Some(rung) => artist_image_variant(&cache_path, &image_data, rung)
                             .unwrap_or((image_data, mime.to_string())),
                         None => (image_data, mime.to_string()),
                     };
@@ -537,10 +541,11 @@ mod tests {
         // The artist store names every original `.jpg` regardless of content, so an
         // alpha source living under a `.jpg` filename is exactly the real-world shape.
         let original = dir.path().join("cover.jpg");
-        std::fs::write(&original, alpha_png(800, 800)).unwrap();
+        let original_bytes = alpha_png(800, 800);
+        std::fs::write(&original, &original_bytes).unwrap();
         let cache_path = original.to_str().unwrap();
 
-        let (first_data, first_mime) = artist_image_variant(cache_path, 200)
+        let (first_data, first_mime) = artist_image_variant(cache_path, &original_bytes, 200)
             .expect("an 800px alpha source resized to 200px should produce a variant");
         assert_eq!(first_mime, "image/png");
 
@@ -557,7 +562,7 @@ mod tests {
         // pass if every call silently re-resized instead of reading the cache.
         std::fs::write(&variant_path, b"SENTINEL").unwrap();
 
-        let (second_data, second_mime) = artist_image_variant(cache_path, 200)
+        let (second_data, second_mime) = artist_image_variant(cache_path, &original_bytes, 200)
             .expect("the cached variant should be served on the second call");
         assert_eq!(second_data, b"SENTINEL", "second call must reuse the on-disk variant, not regenerate it");
         assert_eq!(second_mime, "image/png");

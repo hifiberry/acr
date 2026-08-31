@@ -1227,15 +1227,29 @@ pub fn get_image(
         if ctrl.get_player_name() == player_name {
             // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
-                // Call the library's get_image function
-                if let Some((data, mime_type)) = library.get_image(identifier.to_string()) {
-                    // A variant is only possible for art the cache holds; anything else
-                    // is served at full size, exactly as before.
-                    let (data, mime_type) = match target {
-                        Some(rung) => resize_via_cache(library.as_ref(), identifier, rung)
-                            .unwrap_or((data, mime_type)),
-                        None => (data, mime_type),
-                    };
+                // Try the variant first when one was asked for. The original is only
+                // fetched if that finds nothing, because fetching it unconditionally
+                // costs a ~243KB read per thumbnail on MPD and a full HTTP round trip
+                // to the server on LMS -- paid on every request, and thrown away
+                // whenever a variant is served.
+                //
+                // This cannot turn a 404 into a 200: `resize_via_cache` only answers
+                // for an `album:` identifier whose album resolves and whose cover is
+                // in the image cache, and every library that populates that cache
+                // consults it first in `get_image` too. With no `size`, `target` is
+                // `None`, nothing here runs, and the original bytes are returned
+                // exactly as before -- the compatibility guarantee this whole feature
+                // rests on.
+                let resized = target
+                    .and_then(|rung| resize_via_cache(library.as_ref(), identifier, rung));
+
+                let image = match resized {
+                    Some(variant) => Some(variant),
+                    // Call the library's get_image function
+                    None => library.get_image(identifier.to_string()),
+                };
+
+                if let Some((data, mime_type)) = image {
                     return Ok(reply(data, &mime_type, cache_control, if_none_match.0));
                 } else {
                     // Image not found

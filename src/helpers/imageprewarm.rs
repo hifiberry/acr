@@ -8,7 +8,7 @@ use log::{debug, info, warn};
 use parking_lot::RwLock;
 
 use crate::data::Album;
-use crate::helpers::imageresize::PREWARM_SIZES;
+use crate::helpers::imageresize::prewarm_sizes;
 
 /// How long to wait after a variant that actually cost something.
 ///
@@ -22,9 +22,9 @@ use crate::helpers::imageresize::PREWARM_SIZES;
 /// exactly the window in which a client is scrolling the new library. 250ms brings
 /// the working share into the minority for any plausible per-variant cost.
 ///
-/// The pause is per variant rather than per album, so widening `PREWARM_SIZES`
-/// widens the throttle with it: an album with a cover now costs three decodes,
-/// and three pauses to go with them.
+/// The pause is per variant rather than per album, so widening the configured
+/// pre-warm sizes widens the throttle with it: an album with a cover now costs
+/// three decodes, and three pauses to go with them.
 ///
 /// This pause follows work actually performed, not every iteration: the common
 /// case by far is an album with no cached cover at all, where
@@ -61,12 +61,13 @@ impl Drop for RunningGuard {
 
 /// Generate the album-grid variants for every album, in the background.
 ///
-/// Every rung in `PREWARM_SIZES` is generated for each album, because a client
-/// picks its grid size from the display scale and any of them may be the first
-/// thing asked for. Variants that already exist are skipped, so a restart
-/// mid-walk is cheap and a rescan is nearly free. A process-wide re-entrancy
-/// guard — not the fixed job id — is what stops a second library refresh from
-/// starting a second, concurrently-writing copy of this walk.
+/// Every rung in the configured pre-warm sizes is generated for each album,
+/// because a client picks its grid size from the display scale and any of
+/// them may be the first thing asked for. Variants that already exist are
+/// skipped, so a restart mid-walk is cheap and a rescan is nearly free. A
+/// process-wide re-entrancy guard — not the fixed job id — is what stops a
+/// second library refresh from starting a second, concurrently-writing copy
+/// of this walk.
 pub fn prewarm_album_variants_in_background(
     albums_collection: Arc<RwLock<HashMap<String, Album>>>,
 ) {
@@ -79,6 +80,11 @@ pub fn prewarm_album_variants_in_background(
             return;
         }
         let _guard = RunningGuard;
+
+        if prewarm_sizes().is_empty() {
+            info!("Thumbnail pre-warm disabled: no pre-warm sizes configured");
+            return;
+        }
 
         let job_id = "imagecache_prewarm".to_string();
 
@@ -107,7 +113,7 @@ pub fn prewarm_album_variants_in_background(
         let total = albums.len();
         info!(
             "Pre-warming {:?}px cover art thumbnails for {} albums",
-            PREWARM_SIZES, total
+            prewarm_sizes(), total
         );
 
         let _ = crate::helpers::backgroundjobs::update_job(
@@ -126,7 +132,7 @@ pub fn prewarm_album_variants_in_background(
             );
 
             let mut covered = true;
-            for size in PREWARM_SIZES {
+            for size in prewarm_sizes().iter().copied() {
                 match crate::helpers::imagecache::get_or_create_variant(&base, size) {
                     Ok(_) => {
                         // Only pause after work that actually cost something (a decode,
@@ -161,7 +167,7 @@ pub fn prewarm_album_variants_in_background(
 
         info!(
             "Thumbnail pre-warm finished: {} of {} albums have {:?}px variants",
-            generated, total, PREWARM_SIZES
+            generated, total, prewarm_sizes()
         );
 
         if let Err(e) = crate::helpers::backgroundjobs::complete_job(&job_id) {

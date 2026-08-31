@@ -28,6 +28,10 @@ pub struct LibraryResponse {
     artists_count: usize,
     tracks_count: usize,
     supports_delete: bool,
+    /// Increases whenever the library's contents change. Absent for a backend
+    /// that does not track changes - the same signal as a missing ETag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    library_version: Option<String>,
 }
 
 /// Response structure for library list - lists all players with library info
@@ -293,6 +297,7 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
                     artists_count: artists.len(),
                     tracks_count,
                     supports_delete,
+                    library_version: library.library_version(),
                 }));
             } else {
                 // Player exists but doesn't have a library
@@ -307,6 +312,7 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
                         artists_count: 0,
                         tracks_count: 0,
                         supports_delete: false,
+                        library_version: None,
                     }),
                 ));
             }
@@ -325,6 +331,7 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
             artists_count: 0,
             tracks_count: 0,
             supports_delete: false,
+            library_version: None,
         }),
     ))
 }
@@ -934,6 +941,7 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                             artists_count: artists.len(),
                             tracks_count,
                             supports_delete: library.supports_delete(),
+                            library_version: library.library_version(),
                         }));
                     },
                     Err(e) => {

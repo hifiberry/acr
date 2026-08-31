@@ -32,7 +32,7 @@ pub fn current_capabilities() -> CapabilitiesResponse {
     CapabilitiesResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
         images: ImageCapabilities {
-            sizes: crate::helpers::imageresize::SIZE_LADDER.to_vec(),
+            sizes: crate::helpers::imageresize::sizes().to_vec(),
         },
     }
 }

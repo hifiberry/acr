@@ -1150,7 +1150,7 @@ pub fn parse_size(raw: Option<&str>) -> Result<Option<u32>, String> {
 pub fn size_error_body(message: &str) -> String {
     serde_json::json!({
         "error": message,
-        "image_sizes": crate::helpers::imageresize::SIZE_LADDER,
+        "image_sizes": crate::helpers::imageresize::sizes(),
     })
     .to_string()
 }

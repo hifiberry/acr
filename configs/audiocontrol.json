@@ -67,6 +67,11 @@
                 "auto_download": true
             }
         },
+        "images": {
+            "sizes": [100, 140, 200, 280, 400, 800],
+            "prewarm_sizes": [140, 200, 280],
+            "_comment": "Sizes the image endpoints offer via ?size=, and the subset the background job pre-generates. Both optional; these are the defaults. Each entry must be a non-negative integer no larger than u32::MAX; negative, non-integer, out-of-range, or duplicate entries are dropped with a warning, and if a key is present but not an array of numbers the default ladder is used, also with a warning. Pre-warm sizes outside the ladder are ignored. An empty prewarm_sizes turns pre-warming off."
+        },
         "genre_cleanup": {
             "config_path": "/etc/audiocontrol/genre.json",
             "_comment": "Genre cleanup configuration file. Maps genres to normalized forms and specifies which genres to ignore."

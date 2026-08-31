@@ -10,7 +10,7 @@ use parking_lot::RwLock;
 use crate::data::Album;
 use crate::helpers::imageresize::GRID_SIZE;
 
-/// How long to wait between albums.
+/// How long to wait after an album that actually cost something.
 ///
 /// The job exists to make the first scroll fast, not to win a race with playback,
 /// so the intent is that it spends the clear minority of its wall time working.
@@ -21,6 +21,14 @@ use crate::helpers::imageresize::GRID_SIZE;
 /// machine working ~94% of the one to two hours after every library load, which is
 /// exactly the window in which a client is scrolling the new library. 250ms brings
 /// the working share into the minority for any plausible per-album cost.
+///
+/// This pause follows work actually performed, not every iteration: the common
+/// case by far is an album with no cached cover at all, where
+/// `get_or_create_variant` returns `Err` after a cheap directory-existence check
+/// and there is nothing to throttle. Against the measured library of 11,318
+/// albums, sleeping unconditionally cost roughly 47 minutes of wall time asleep
+/// for no reason, versus about 3.8 minutes' worth of real throttling — largely
+/// missing the freshly-scanned-library window the job exists to serve.
 const PAUSE_BETWEEN_ALBUMS: Duration = Duration::from_millis(250);
 
 /// Re-entrancy guard for the pre-warm walk.
@@ -109,8 +117,16 @@ pub fn prewarm_album_variants_in_background(
             );
 
             match crate::helpers::imagecache::get_or_create_variant(&base, GRID_SIZE) {
-                Ok(_) => generated += 1,
-                // An album with no cached cover is the common case, not an error.
+                Ok(_) => {
+                    generated += 1;
+                    // Only pause after work that actually cost something (a decode,
+                    // scale and encode, or at worst a disk read of an existing
+                    // variant) — see PAUSE_BETWEEN_ALBUMS for why.
+                    std::thread::sleep(PAUSE_BETWEEN_ALBUMS);
+                }
+                // An album with no cached cover is the common case, not an error,
+                // and costs only a cheap directory-existence check — nothing to
+                // throttle, so no pause here.
                 Err(e) => debug!("No thumbnail for {}: {}", base, e),
             }
 
@@ -122,8 +138,6 @@ pub fn prewarm_album_variants_in_background(
                     Some(total),
                 );
             }
-
-            std::thread::sleep(PAUSE_BETWEEN_ALBUMS);
         }
 
         info!("Thumbnail pre-warm finished: {} of {} albums have a {}px variant", generated, total, GRID_SIZE);

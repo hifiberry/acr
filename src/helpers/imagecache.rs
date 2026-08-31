@@ -447,7 +447,9 @@ impl ImageCache {
         // would then see the old art at grid size and the new art at full size, with
         // nothing reporting an error.
         if crate::helpers::imageresize::variant_size_of(&path_str).is_none() {
-            let _ = self.remove_variants_for(&path_with_extension);
+            if let Err(e) = self.remove_variants_for(&path_with_extension) {
+                warn!("Failed to invalidate variants of {}: {}", path_with_extension, e);
+            }
         }
 
         let full_path = self.get_full_path(&path_with_extension);
@@ -837,15 +839,21 @@ impl ImageCache {
     }
 
     /// Delete every variant of one original. Called whenever the original changes.
-    pub fn remove_variants_for<P: AsRef<Path>>(&self, base_path: P) -> Result<usize, String> {
-        let base_path = base_path.as_ref();
-        let base_stem = base_path
+    ///
+    /// Unlike `base_path` elsewhere in this file, `original_path` must carry the
+    /// original's extension (e.g. `albums/<artist>/<album>/cover.jpg`). Deriving the
+    /// stem from an extension-less path would be wrong whenever the stem itself
+    /// contains a dot: `file_stem("cover.art.jpg")` is `cover.art`, but
+    /// `file_stem("cover.art")` is `cover`.
+    pub fn remove_variants_for<P: AsRef<Path>>(&self, original_path: P) -> Result<usize, String> {
+        let original_path = original_path.as_ref();
+        let base_stem = original_path
             .file_stem()
             .and_then(|s| s.to_str())
             .ok_or_else(|| "Invalid path: no file name".to_string())?
             .to_string();
 
-        let dir = self.get_full_path(base_path.parent().unwrap_or(Path::new("")));
+        let dir = self.get_full_path(original_path.parent().unwrap_or(Path::new("")));
         if !dir.exists() {
             return Ok(0);
         }
@@ -875,7 +883,7 @@ impl ImageCache {
         }
 
         if removed > 0 {
-            debug!("Removed {} variant(s) of {}", removed, base_path.display());
+            debug!("Removed {} variant(s) of {}", removed, original_path.display());
         }
         Ok(removed)
     }
@@ -1411,11 +1419,17 @@ mod tests {
         let variant = temp_dir.path().join("albums/artist/album/cover@200.jpg");
         assert!(variant.exists(), "variant should be stored beside the original");
 
-        // A second call serves the stored bytes rather than re-encoding.
+        // Overwrite the stored variant with a sentinel the resizer could never
+        // produce. Re-encoding the same source at the same quality is deterministic,
+        // so comparing against the first call's bytes would not distinguish "served
+        // from disk" from "re-encoded" — only a distinguishable sentinel does.
+        let sentinel = b"not a real jpeg, just a marker".to_vec();
+        std::fs::write(&variant, &sentinel).unwrap();
+
         let (again, _) = cache
             .get_or_create_variant("albums/artist/album/cover", 200)
             .unwrap();
-        assert_eq!(data, again);
+        assert_eq!(again, sentinel, "a second call must serve the stored file, not re-encode");
     }
 
     #[test]
@@ -1460,6 +1474,21 @@ mod tests {
         cache.get_or_create_variant("albums/a/b/cover", 200).unwrap();
         assert!(temp_dir.path().join("albums/a/b/cover@200.jpg").exists());
 
+        // A same-directory original whose name is "cover" plus more characters: its
+        // variant must never be matched as belonging to "cover".
+        cache
+            .store_image_from_data("albums/a/b/covers", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/covers", 400).unwrap();
+        assert!(temp_dir.path().join("albums/a/b/covers@400.jpg").exists());
+
+        // A second, unrelated original in the same directory.
+        cache
+            .store_image_from_data("albums/a/b/back", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/back", 200).unwrap();
+        assert!(temp_dir.path().join("albums/a/b/back@200.jpg").exists());
+
         // Someone replaces the cover art.
         cache
             .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
@@ -1468,6 +1497,14 @@ mod tests {
         assert!(
             !temp_dir.path().join("albums/a/b/cover@200.jpg").exists(),
             "a replaced original must not leave a stale thumbnail behind"
+        );
+        assert!(
+            temp_dir.path().join("albums/a/b/covers@400.jpg").exists(),
+            "\"cover@400\" must not be matched against the unrelated base \"covers\""
+        );
+        assert!(
+            temp_dir.path().join("albums/a/b/back@200.jpg").exists(),
+            "re-storing one original must not touch another original's variants"
         );
     }
 

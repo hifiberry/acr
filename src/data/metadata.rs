@@ -1,7 +1,7 @@
 use serde::{Serialize, Deserialize};
 
 /// Metadata for Artists including external IDs and image URLs
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ArtistMeta {
     /// MusicBrainz ID for the artist
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -335,10 +335,11 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
 #[get("/library/<player_name>/albums")]
 pub fn get_player_albums(
     player_name: &str,
+    if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<AlbumsDTOResponse>, Custom<String>> {
+) -> Result<crate::api::validated::Validated<AlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
-    
+
     // Find the controller with the matching name
     for ctrl_lock in controllers {
         let ctrl = ctrl_lock.read();
@@ -353,11 +354,19 @@ pub fn get_player_albums(
                     .map(|album| create_album_dto(album, false))
                     .collect::<Vec<AlbumDTO>>();
 
-                return Ok(Json(AlbumsDTOResponse {
+                let response = AlbumsDTOResponse {
                     player_name: player_name.to_string(),
                     count: album_dtos.len(),
                     albums: album_dtos,
-                }));
+                };
+
+                let version = library.library_version();
+                return Ok(crate::api::validated::validated(
+                    response,
+                    "albums",
+                    version,
+                    if_none_match.0,
+                ));
             } else {
                 // Player exists but doesn't have a library
                 return Err(Custom(
@@ -379,8 +388,9 @@ pub fn get_player_albums(
 #[get("/library/<player_name>/artists")]
 pub fn get_player_artists(
     player_name: &str,
+    if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<serde_json::Value>, Custom<String>> {
+) -> Result<crate::api::validated::Validated<serde_json::Value>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -430,7 +440,13 @@ pub fn get_player_artists(
                     "artists": artists_json
                 });
 
-                return Ok(Json(response));
+                let version = library.library_version();
+                return Ok(crate::api::validated::validated(
+                    response,
+                    "artists",
+                    version,
+                    if_none_match.0,
+                ));
             } else {
                 // Player exists but doesn't have a library
                 return Err(Custom(

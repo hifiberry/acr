@@ -1477,6 +1477,21 @@ Retrieves all albums for a specific player.
   ```
 - **Error Response** (404 Not Found): String error message
 
+**Caching**
+
+The response carries a weak `ETag` derived from the library version, for example
+`W/"albums-a3f9c1d2-42"`. Send it back as `If-None-Match` and an unchanged library answers
+`304 Not Modified` with no body, instead of re-sending the list.
+
+The version moves whenever the library's contents change, including the
+background genre and metadata updates that continue for a while after a scan -
+so during that window a conditional request will usually still return a full
+response. That is the library genuinely changing, not the validator failing.
+
+**A player whose backend does not track changes sends no `ETag`.** MPD does;
+LMS does not. A client must treat the header's absence as "cannot revalidate"
+rather than assuming the list is stable.
+
 #### Examples
 ```bash
 curl http://<device-ip>:1080/api/library/mpd/albums
@@ -1508,6 +1523,21 @@ Retrieves all artists for a specific player.
   }
   ```
 - **Error Response** (404 Not Found): String error message
+
+**Caching**
+
+The response carries a weak `ETag` derived from the library version, for example
+`W/"albums-a3f9c1d2-42"`. Send it back as `If-None-Match` and an unchanged library answers
+`304 Not Modified` with no body, instead of re-sending the list.
+
+The version moves whenever the library's contents change, including the
+background genre and metadata updates that continue for a while after a scan -
+so during that window a conditional request will usually still return a full
+response. That is the library genuinely changing, not the validator failing.
+
+**A player whose backend does not track changes sends no `ETag`.** MPD does;
+LMS does not. A client must treat the header's absence as "cannot revalidate"
+rather than assuming the list is stable.
 
 #### Examples
 ```bash

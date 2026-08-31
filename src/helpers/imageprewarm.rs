@@ -8,19 +8,23 @@ use log::{debug, info, warn};
 use parking_lot::RwLock;
 
 use crate::data::Album;
-use crate::helpers::imageresize::GRID_SIZE;
+use crate::helpers::imageresize::PREWARM_SIZES;
 
-/// How long to wait after an album that actually cost something.
+/// How long to wait after a variant that actually cost something.
 ///
 /// The job exists to make the first scroll fast, not to win a race with playback,
 /// so the intent is that it spends the clear minority of its wall time working.
 /// That is what sets this number: it is not a "short sleep", it is the other side
-/// of a duty cycle. One album costs a decode, a scale and an encode — measured at
-/// 300-600ms per album on a Pi 4 with Lanczos3, and a fraction of that since the
-/// switch to CatmullRom — against which 20ms was not a pause at all: it left the
+/// of a duty cycle. One variant costs a decode, a scale and an encode — measured
+/// at 300-600ms per album on a Pi 4 with Lanczos3, and a fraction of that since
+/// the switch to CatmullRom — against which 20ms was not a pause at all: it left the
 /// machine working ~94% of the one to two hours after every library load, which is
 /// exactly the window in which a client is scrolling the new library. 250ms brings
-/// the working share into the minority for any plausible per-album cost.
+/// the working share into the minority for any plausible per-variant cost.
+///
+/// The pause is per variant rather than per album, so widening `PREWARM_SIZES`
+/// widens the throttle with it: an album with a cover now costs three decodes,
+/// and three pauses to go with them.
 ///
 /// This pause follows work actually performed, not every iteration: the common
 /// case by far is an album with no cached cover at all, where
@@ -29,7 +33,7 @@ use crate::helpers::imageresize::GRID_SIZE;
 /// albums, sleeping unconditionally cost roughly 47 minutes of wall time asleep
 /// for no reason, versus about 3.8 minutes' worth of real throttling — largely
 /// missing the freshly-scanned-library window the job exists to serve.
-const PAUSE_BETWEEN_ALBUMS: Duration = Duration::from_millis(250);
+const PAUSE_BETWEEN_VARIANTS: Duration = Duration::from_millis(250);
 
 /// Re-entrancy guard for the pre-warm walk.
 ///
@@ -55,12 +59,14 @@ impl Drop for RunningGuard {
     }
 }
 
-/// Generate the album-grid variant for every album, in the background.
+/// Generate the album-grid variants for every album, in the background.
 ///
-/// Albums whose variant already exists are skipped, so a restart mid-walk is cheap
-/// and a rescan is nearly free. A process-wide re-entrancy guard — not the fixed
-/// job id — is what stops a second library refresh from starting a second,
-/// concurrently-writing copy of this walk.
+/// Every rung in `PREWARM_SIZES` is generated for each album, because a client
+/// picks its grid size from the display scale and any of them may be the first
+/// thing asked for. Variants that already exist are skipped, so a restart
+/// mid-walk is cheap and a rescan is nearly free. A process-wide re-entrancy
+/// guard — not the fixed job id — is what stops a second library refresh from
+/// starting a second, concurrently-writing copy of this walk.
 pub fn prewarm_album_variants_in_background(
     albums_collection: Arc<RwLock<HashMap<String, Album>>>,
 ) {
@@ -99,7 +105,10 @@ pub fn prewarm_album_variants_in_background(
         };
 
         let total = albums.len();
-        info!("Pre-warming {}px cover art thumbnails for {} albums", GRID_SIZE, total);
+        info!(
+            "Pre-warming {:?}px cover art thumbnails for {} albums",
+            PREWARM_SIZES, total
+        );
 
         let _ = crate::helpers::backgroundjobs::update_job(
             &job_id,
@@ -116,18 +125,28 @@ pub fn prewarm_album_variants_in_background(
                 crate::helpers::local_coverart::album_cache_key(&artist, &album_name, year)
             );
 
-            match crate::helpers::imagecache::get_or_create_variant(&base, GRID_SIZE) {
-                Ok(_) => {
-                    generated += 1;
-                    // Only pause after work that actually cost something (a decode,
-                    // scale and encode, or at worst a disk read of an existing
-                    // variant) — see PAUSE_BETWEEN_ALBUMS for why.
-                    std::thread::sleep(PAUSE_BETWEEN_ALBUMS);
+            let mut covered = true;
+            for size in PREWARM_SIZES {
+                match crate::helpers::imagecache::get_or_create_variant(&base, size) {
+                    Ok(_) => {
+                        // Only pause after work that actually cost something (a decode,
+                        // scale and encode, or at worst a disk read of an existing
+                        // variant) — see PAUSE_BETWEEN_VARIANTS for why.
+                        std::thread::sleep(PAUSE_BETWEEN_VARIANTS);
+                    }
+                    // An album with no cached cover is the common case, not an error,
+                    // and costs only a cheap directory-existence check — nothing to
+                    // throttle, so no pause here. The remaining rungs would fail on
+                    // the same missing original, so stop asking for them.
+                    Err(e) => {
+                        debug!("No {}px thumbnail for {}: {}", size, base, e);
+                        covered = false;
+                        break;
+                    }
                 }
-                // An album with no cached cover is the common case, not an error,
-                // and costs only a cheap directory-existence check — nothing to
-                // throttle, so no pause here.
-                Err(e) => debug!("No thumbnail for {}: {}", base, e),
+            }
+            if covered {
+                generated += 1;
             }
 
             if index % 50 == 0 {
@@ -140,7 +159,10 @@ pub fn prewarm_album_variants_in_background(
             }
         }
 
-        info!("Thumbnail pre-warm finished: {} of {} albums have a {}px variant", generated, total, GRID_SIZE);
+        info!(
+            "Thumbnail pre-warm finished: {} of {} albums have {:?}px variants",
+            generated, total, PREWARM_SIZES
+        );
 
         if let Err(e) = crate::helpers::backgroundjobs::complete_job(&job_id) {
             warn!("Failed to complete thumbnail pre-warm job: {}", e);

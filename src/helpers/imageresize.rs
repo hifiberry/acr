@@ -68,10 +68,11 @@ pub fn resize(data: &[u8], target_px: u32) -> Result<Resized, ResizeError> {
     }
 
     // CatmullRom, not Lanczos3: Lanczos3 is the most expensive filter the crate
-    // offers, and this runs on a Raspberry Pi. For a 400px thumbnail drawn in a
-    // 120pt grid cell the two are visually indistinguishable, while CatmullRom is
-    // several times faster — and the pre-warm job pays this cost once per album
-    // across a whole library, so the difference is measured in hours.
+    // offers, and this runs on a Raspberry Pi. For a thumbnail drawn in a grid
+    // cell at roughly its own size the two are visually indistinguishable, while
+    // CatmullRom is several times faster — and the pre-warm job pays this cost
+    // once per rung per album across a whole library, so the difference is
+    // measured in hours.
     let scaled = img.resize(target_px, target_px, FilterType::CatmullRom);
     let has_alpha = img.color().has_alpha();
     let mut buf = Cursor::new(Vec::new());
@@ -112,13 +113,21 @@ fn decode_within_limits(data: &[u8]) -> Result<image::DynamicImage, ResizeError>
 
 /// The only sizes acr will ever generate.
 ///
-/// A fixed ladder bounds the cache at four variants per image no matter what
+/// A fixed ladder bounds the cache at six variants per image no matter what
 /// clients ask for. Requested sizes snap up to the next rung.
-pub const SIZE_LADDER: [u32; 4] = [100, 200, 400, 800];
+///
+/// The rungs between 100 and 400 are spaced for grid cells at the display
+/// scales clients actually run at: a 100 pt cell is 100, 140, 200 or 280 px at
+/// 1x, 1.4x, 2x and 2.8x. Without them a 2x grid snapped all the way up to 400,
+/// which is four times the pixels it can show.
+pub const SIZE_LADDER: [u32; 6] = [100, 140, 200, 280, 400, 800];
 
-/// The rung an album grid uses: 120 pt at 3x. This is the size the pre-warm job
-/// generates.
-pub const GRID_SIZE: u32 = 400;
+/// The rungs the pre-warm job generates: the grid sizes a client asks for on
+/// first scroll, at 1x, 2x and the fractional scales in between.
+///
+/// The larger rungs are left to be generated on demand — they are asked for one
+/// image at a time, when a single cover is opened, not a screenful at once.
+pub const PREWARM_SIZES: [u32; 3] = [140, 200, 280];
 
 /// Separator between a base name and its variant size in a file name.
 const VARIANT_MARKER: char = '@';
@@ -274,6 +283,13 @@ mod tests {
         assert_eq!(snap_to_rung(1), Some(100));
         assert_eq!(snap_to_rung(100), Some(100));
         assert_eq!(snap_to_rung(800), Some(800));
+        // The rungs added for fractional display scales: a request must land on
+        // the nearest one at or above it, not skip past to 400.
+        assert_eq!(snap_to_rung(101), Some(140));
+        assert_eq!(snap_to_rung(140), Some(140));
+        assert_eq!(snap_to_rung(200), Some(200));
+        assert_eq!(snap_to_rung(201), Some(280));
+        assert_eq!(snap_to_rung(280), Some(280));
     }
 
     #[test]
@@ -300,6 +316,6 @@ mod tests {
 
     #[test]
     fn fingerprint_describes_the_ladder() {
-        assert_eq!(ladder_fingerprint(), "100-200-400-800");
+        assert_eq!(ladder_fingerprint(), "100-140-200-280-400-800");
     }
 }

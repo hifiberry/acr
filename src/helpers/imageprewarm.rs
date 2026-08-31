@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,15 +16,49 @@ use crate::helpers::imageresize::GRID_SIZE;
 /// A short sleep keeps a Pi responsive while it works through 11,000 albums.
 const PAUSE_BETWEEN_ALBUMS: Duration = Duration::from_millis(20);
 
+/// Re-entrancy guard for the pre-warm walk.
+///
+/// `backgroundjobs::register_job` does not reject a duplicate id — it just
+/// overwrites the existing job's bookkeeping and always returns `Ok`. A fixed
+/// job id is therefore a display label, not a lock: without this flag, two
+/// library refreshes in quick succession would spawn two threads that both
+/// walk `albums_collection` and both call `get_or_create_variant` for the
+/// same albums concurrently. `imagecache::store_image_from_data` writes the
+/// variant straight to its final path with `File::create` + `write_all`, so
+/// two concurrent writers to the same path can interleave and leave a torn
+/// file that gets served to clients until something overwrites it.
+static PREWARM_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Clears `PREWARM_RUNNING` when dropped, so every exit path from the
+/// spawned thread releases the guard — an early return, the normal end of
+/// the walk, or a panic partway through it.
+struct RunningGuard;
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        PREWARM_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Generate the album-grid variant for every album, in the background.
 ///
 /// Albums whose variant already exists are skipped, so a restart mid-walk is cheap
-/// and a rescan is nearly free. Registering under a fixed job id means a second
-/// library refresh cannot start a second copy.
+/// and a rescan is nearly free. A process-wide re-entrancy guard — not the fixed
+/// job id — is what stops a second library refresh from starting a second,
+/// concurrently-writing copy of this walk.
 pub fn prewarm_album_variants_in_background(
     albums_collection: Arc<RwLock<HashMap<String, Album>>>,
 ) {
     std::thread::spawn(move || {
+        if PREWARM_RUNNING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            debug!("Thumbnail pre-warm already running; skipping this request");
+            return;
+        }
+        let _guard = RunningGuard;
+
         let job_id = "imagecache_prewarm".to_string();
 
         if let Err(e) = crate::helpers::backgroundjobs::register_job(
@@ -90,4 +125,61 @@ pub fn prewarm_album_variants_in_background(
             warn!("Failed to complete thumbnail pre-warm job: {}", e);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exercises the `PREWARM_RUNNING` + `RunningGuard` primitive directly —
+    /// not `prewarm_album_variants_in_background` itself, which spawns a real
+    /// thread that reaches the live `backgroundjobs` and `imagecache`
+    /// singletons and has no injection seam for a unit test. This confirms
+    /// the two properties the re-entrancy guard exists for: a second
+    /// `compare_exchange` while the flag is held fails immediately (mirroring
+    /// the early `return` at the top of the spawned thread), and dropping the
+    /// guard releases the flag on every exit path, panics included.
+    #[test]
+    fn reentrancy_guard_blocks_concurrent_entry_and_releases_on_drop() {
+        // `PREWARM_RUNNING` is a single process-wide static; force it back to
+        // its idle state first so this test doesn't depend on run order.
+        PREWARM_RUNNING.store(false, Ordering::SeqCst);
+
+        // First entry acquires the guard, exactly as the spawned thread does.
+        assert!(
+            PREWARM_RUNNING
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok(),
+            "first entry should acquire the flag"
+        );
+
+        // A second, concurrent entry must be rejected while the first holds it.
+        assert!(
+            PREWARM_RUNNING
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err(),
+            "second entry must not acquire the flag while the first is running"
+        );
+
+        // Dropping the guard — the normal end of the walk, an early return,
+        // or a panic — releases the flag.
+        {
+            let _guard = RunningGuard;
+        }
+        assert!(
+            !PREWARM_RUNNING.load(Ordering::SeqCst),
+            "dropping the guard must release the flag"
+        );
+
+        // A fresh entry can now succeed again.
+        assert!(
+            PREWARM_RUNNING
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok(),
+            "a later entry should succeed once the flag has been released"
+        );
+
+        // Leave the static idle for any other test that runs in this process.
+        PREWARM_RUNNING.store(false, Ordering::SeqCst);
+    }
 }

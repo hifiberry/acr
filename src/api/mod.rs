@@ -102,3 +102,6 @@ pub mod imageresponse;
 
 // Export the capabilities module
 pub mod capabilities;
+
+// Export the validated module
+pub mod validated;

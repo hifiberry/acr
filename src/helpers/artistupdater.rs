@@ -230,12 +230,11 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
 
 /// Store an updated artist and record a real change.
 ///
-/// `Artist`'s own `PartialEq` compares only `id` (it is used for identity —
-/// dedup and lookup — not content), and `Artist` cannot derive a
-/// content-based `PartialEq` because it holds lock-bearing fields. So the
-/// change check compares `ArtistMeta`, which holds none and derives
-/// `PartialEq` cleanly, plus the `is_multi` flag: both are part of what a
-/// client observes (`Artist`'s `Serialize` impl includes both), and
+/// `Artist`'s own `PartialEq` (see `src/data/artist.rs`) is hand-written to
+/// compare only `id` — that's for identity (dedup and lookup), not content,
+/// so it can't be reused here. So the change check compares `ArtistMeta`,
+/// which derives `PartialEq` cleanly, plus the `is_multi` flag: both are
+/// part of what a client observes (`Artist`'s `Serialize` impl includes both), and
 /// `is_multi` can flip independently of metadata content (e.g. clearing an
 /// already-empty `metadata` when a name turns out to be multi-artist).
 ///

@@ -174,6 +174,15 @@ configured per installation** via `services.images.sizes` in
 `audiocontrol.json` and defaults to `[100, 140, 200, 280, 400, 800]` — so a
 client must read it rather than assuming a fixed ladder.
 
+**This is a daemon-level capability, not a per-player guarantee.** It says which
+sizes this release understands, not that every image can be served at them.
+Resizing works from acr's own image cache, so on `/api/library/<player>/image/<id>`
+it applies to `album:` identifiers on players that populate that cache -- MPD
+does, LMS does not. `artist:` identifiers, bare track URLs, base64 identifiers,
+and GIF or BMP sources are served at full size. See
+[Get Image from Library](#get-image-from-library) for the full list; a request
+that cannot be resized still returns `200` with the original.
+
 **A release that answers this endpoint with 404 does not resize images.** That
 is a complete answer — ask for originals rather than probing.
 

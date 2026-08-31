@@ -281,6 +281,14 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
         if ctrl.get_player_name() == player_name {
             // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
+                // Read the version before the data - see the comment in
+                // get_player_albums below for why the order matters. It is
+                // benign for this handler today, since it emits no ETag,
+                // but this is the endpoint a client is meant to poll instead
+                // of revalidating each list, which makes it the most likely
+                // place to grow one next - so keep the ordering right now.
+                let library_version = library.library_version();
+
                 // Get basic library info
                 let is_loaded = library.is_loaded();
                 let supports_delete = library.supports_delete();
@@ -297,7 +305,7 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
                     artists_count: artists.len(),
                     tracks_count,
                     supports_delete,
-                    library_version: library.library_version(),
+                    library_version,
                 }));
             } else {
                 // Player exists but doesn't have a library
@@ -926,6 +934,10 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                 // Trigger library refresh
                 match library.refresh_library() {
                     Ok(_) => {
+                        // Read the version before the data - see the comment
+                        // in get_player_albums for why the order matters.
+                        let library_version = library.library_version();
+
                         // Get updated library info
                         let is_loaded = library.is_loaded();
                         let albums = library.get_albums();
@@ -941,7 +953,7 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                             artists_count: artists.len(),
                             tracks_count,
                             supports_delete: library.supports_delete(),
-                            library_version: library.library_version(),
+                            library_version,
                         }));
                     },
                     Err(e) => {

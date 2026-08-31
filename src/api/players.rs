@@ -321,6 +321,17 @@ pub struct AddTrackRequest {
     metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
+/// Request body for the add_tracks command
+#[derive(serde::Deserialize)]
+pub struct AddTracksRequest {
+    uris: Vec<String>,
+    #[serde(default)]
+    insert_at_beginning: bool,
+    /// Optional per-track metadata, positional: entry `i` describes `uris[i]`.
+    #[serde(default)]
+    metadata: Option<Vec<Option<std::collections::HashMap<String, serde_json::Value>>>>,
+}
+
 /// Send a command to a specific player by name
 /// 
 /// If the player name is "active", the currently active player will be used.
@@ -334,6 +345,8 @@ pub struct AddTrackRequest {
 ///   - set_random:true|false - Toggle shuffle mode
 ///   - remove_track:<uri> - Remove a track from the queue
 /// - add_track - Add a track to the queue (requires JSON body with uri field)
+/// - add_tracks - Add several tracks in one request (requires JSON body with
+///   a uris array; optional insert_at_beginning and positional metadata)
 #[post("/player/<n>/command/<command>", data = "<request_data>")]
 pub fn send_command_to_player_by_name(
     n: &str,
@@ -792,6 +805,41 @@ fn parse_player_command(cmd_str: &str, request_data: Option<&Json<serde_json::Va
                 return Err("add_track command requires JSON body with 'uri' field".to_string());
             }
         },
+        "add_tracks" => {
+            let data = request_data.ok_or_else(||
+                "add_tracks command requires JSON body with 'uris' array".to_string())?;
+            let request: AddTracksRequest = serde_json::from_value(data.0.clone())
+                .map_err(|e| format!(
+                    "add_tracks command requires JSON body with 'uris' array: {}", e))?;
+
+            debug!("Adding {} tracks to queue", request.uris.len());
+
+            // Metadata is positional, so pad a short list out to the track
+            // count rather than letting it shift onto the wrong track. More
+            // entries than tracks means the caller built the batch wrongly.
+            let mut metadata: Vec<Option<crate::data::player_command::QueueTrackMetadata>> =
+                request.metadata
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| m.map(|metadata| {
+                        crate::data::player_command::QueueTrackMetadata { metadata }
+                    }))
+                    .collect();
+            if metadata.len() > request.uris.len() {
+                return Err(format!(
+                    "add_tracks got {} metadata entries for {} uris",
+                    metadata.len(),
+                    request.uris.len()
+                ));
+            }
+            metadata.resize(request.uris.len(), None);
+
+            return Ok(PlayerCommand::QueueTracks {
+                uris: request.uris,
+                insert_at_beginning: request.insert_at_beginning,
+                metadata,
+            });
+        },
         _ => {} // continue to complex command parsing
     }
     
@@ -848,4 +896,136 @@ fn parse_player_command(cmd_str: &str, request_data: Option<&Json<serde_json::Va
     
     // If we get here, we couldn't parse the command
     Err(format!("Unknown command format: {}", cmd_str))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::player_command::QueueTrackMetadata;
+    use std::collections::HashMap;
+
+    fn body(value: serde_json::Value) -> Json<serde_json::Value> {
+        Json(value)
+    }
+
+    fn meta(pairs: &[(&str, &str)]) -> QueueTrackMetadata {
+        let mut map = HashMap::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), serde_json::Value::String(v.to_string()));
+        }
+        QueueTrackMetadata { metadata: map }
+    }
+
+    /// Queueing an album was one request per track. `add_tracks` takes the
+    /// whole list, so the server owns the batch instead of the client.
+    #[test]
+    fn add_tracks_queues_every_uri_in_the_given_order() {
+        let data = body(serde_json::json!({
+            "uris": ["a.flac", "b.flac", "c.flac"]
+        }));
+
+        let command = parse_player_command("add_tracks", Some(&data)).expect("should parse");
+
+        assert_eq!(
+            command,
+            PlayerCommand::QueueTracks {
+                uris: vec!["a.flac".into(), "b.flac".into(), "c.flac".into()],
+                insert_at_beginning: false,
+                metadata: vec![None, None, None],
+            }
+        );
+    }
+
+    #[test]
+    fn add_tracks_honours_insert_at_beginning() {
+        let data = body(serde_json::json!({
+            "uris": ["a.flac"],
+            "insert_at_beginning": true
+        }));
+
+        let command = parse_player_command("add_tracks", Some(&data)).expect("should parse");
+
+        match command {
+            PlayerCommand::QueueTracks { insert_at_beginning, .. } => {
+                assert!(insert_at_beginning)
+            }
+            other => panic!("expected QueueTracks, got {:?}", other),
+        }
+    }
+
+    /// Metadata is positional: entry `i` describes `uris[i]`. A short or absent
+    /// list must not shift metadata onto the wrong track.
+    #[test]
+    fn add_tracks_aligns_metadata_with_uris_and_pads_the_rest() {
+        let data = body(serde_json::json!({
+            "uris": ["a.flac", "b.flac", "c.flac"],
+            "metadata": [{"title": "A"}, null]
+        }));
+
+        let command = parse_player_command("add_tracks", Some(&data)).expect("should parse");
+
+        match command {
+            PlayerCommand::QueueTracks { metadata, .. } => {
+                assert_eq!(metadata, vec![Some(meta(&[("title", "A")])), None, None]);
+            }
+            other => panic!("expected QueueTracks, got {:?}", other),
+        }
+    }
+
+    /// More metadata than tracks is a malformed batch; it must not silently
+    /// queue tracks with the wrong titles attached.
+    #[test]
+    fn add_tracks_rejects_more_metadata_entries_than_uris() {
+        let data = body(serde_json::json!({
+            "uris": ["a.flac"],
+            "metadata": [{"title": "A"}, {"title": "B"}]
+        }));
+
+        assert!(parse_player_command("add_tracks", Some(&data)).is_err());
+    }
+
+    #[test]
+    fn add_tracks_accepts_an_empty_list_as_a_no_op() {
+        let data = body(serde_json::json!({ "uris": [] }));
+
+        let command = parse_player_command("add_tracks", Some(&data)).expect("should parse");
+
+        match command {
+            PlayerCommand::QueueTracks { uris, metadata, .. } => {
+                assert!(uris.is_empty());
+                assert!(metadata.is_empty());
+            }
+            other => panic!("expected QueueTracks, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn add_tracks_without_a_body_is_an_error() {
+        assert!(parse_player_command("add_tracks", None).is_err());
+    }
+
+    #[test]
+    fn add_tracks_without_a_uris_field_is_an_error() {
+        let data = body(serde_json::json!({ "uri": "a.flac" }));
+
+        assert!(parse_player_command("add_tracks", Some(&data)).is_err());
+    }
+
+    /// The single-track command keeps working; clients on the old API are not
+    /// expected to migrate.
+    #[test]
+    fn add_track_still_queues_a_single_uri() {
+        let data = body(serde_json::json!({ "uri": "a.flac" }));
+
+        let command = parse_player_command("add_track", Some(&data)).expect("should parse");
+
+        assert_eq!(
+            command,
+            PlayerCommand::QueueTracks {
+                uris: vec!["a.flac".into()],
+                insert_at_beginning: false,
+                metadata: vec![None],
+            }
+        );
+    }
 }

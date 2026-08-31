@@ -12,9 +12,16 @@ use crate::helpers::imageresize::GRID_SIZE;
 
 /// How long to wait between albums.
 ///
-/// The job exists to make the first scroll fast, not to win a race with playback.
-/// A short sleep keeps a Pi responsive while it works through 11,000 albums.
-const PAUSE_BETWEEN_ALBUMS: Duration = Duration::from_millis(20);
+/// The job exists to make the first scroll fast, not to win a race with playback,
+/// so the intent is that it spends the clear minority of its wall time working.
+/// That is what sets this number: it is not a "short sleep", it is the other side
+/// of a duty cycle. One album costs a decode, a scale and an encode — measured at
+/// 300-600ms per album on a Pi 4 with Lanczos3, and a fraction of that since the
+/// switch to CatmullRom — against which 20ms was not a pause at all: it left the
+/// machine working ~94% of the one to two hours after every library load, which is
+/// exactly the window in which a client is scrolling the new library. 250ms brings
+/// the working share into the minority for any plausible per-album cost.
+const PAUSE_BETWEEN_ALBUMS: Duration = Duration::from_millis(250);
 
 /// Re-entrancy guard for the pre-warm walk.
 ///

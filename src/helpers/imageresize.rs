@@ -41,7 +41,12 @@ pub fn resize(data: &[u8], target_px: u32) -> Result<Resized, ResizeError> {
         return Ok(Resized::Original);
     }
 
-    let scaled = img.resize(target_px, target_px, FilterType::Lanczos3);
+    // CatmullRom, not Lanczos3: Lanczos3 is the most expensive filter the crate
+    // offers, and this runs on a Raspberry Pi. For a 400px thumbnail drawn in a
+    // 120pt grid cell the two are visually indistinguishable, while CatmullRom is
+    // several times faster — and the pre-warm job pays this cost once per album
+    // across a whole library, so the difference is measured in hours.
+    let scaled = img.resize(target_px, target_px, FilterType::CatmullRom);
     let has_alpha = img.color().has_alpha();
     let mut buf = Cursor::new(Vec::new());
 

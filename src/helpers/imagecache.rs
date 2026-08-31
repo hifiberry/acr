@@ -820,6 +820,13 @@ impl ImageCache {
     /// When the original is at or below `size` it is returned unchanged and nothing is
     /// written — acr never upscales, and storing a copy of the original under a variant
     /// name would waste the disk twice.
+    ///
+    /// **Callers holding the global cache guard must not use this.** It performs the
+    /// whole decode/scale/encode inline, so reaching it through `get_image_cache()`
+    /// pins the process-wide mutex for hundreds of milliseconds. The module-level
+    /// [`get_or_create_variant`] does the same work while taking the lock only for the
+    /// short I/O steps, and is what the API and the pre-warm job call. This method
+    /// stays for callers that already own an `ImageCache` of their own — the tests do.
     pub fn get_or_create_variant<P: AsRef<Path>>(
         &self,
         base_path: P,
@@ -1061,8 +1068,52 @@ pub fn get_image_with_mime_type<P: AsRef<Path>>(base_path: P) -> Result<(Vec<u8>
 }
 
 /// Get a downscaled version of a cached image, generating it on first use.
+///
+/// This is the variant path the API handlers and the pre-warm job use, and it
+/// deliberately does **not** delegate to `ImageCache::get_or_create_variant`.
+/// `get_image_cache()` hands out a guard on one process-wide mutex, and a guard
+/// passed straight into that method would live for the whole call — decode, scale
+/// and encode included, which is 300-600 ms per album on a Raspberry Pi 4. Every
+/// other user of the cache (`get_album_cover` on the now-playing path,
+/// `store_album_cover`, `/api/imagecache/<path>`, the statistics scan, the
+/// shairport artwork store) would then queue behind thumbnail generation, and the
+/// pre-warm walk would hold the lock for most of an hour after every library load.
+///
+/// So each step below goes through a module-level wrapper that takes the guard for
+/// its own short piece of I/O and drops it again. The resize itself runs with the
+/// lock free.
 pub fn get_or_create_variant<P: AsRef<Path>>(base_path: P, size: u32) -> Result<(Vec<u8>, String), String> {
-    get_image_cache().get_or_create_variant(base_path, size)
+    let base_path = base_path.as_ref();
+    let base_str = base_path.to_string_lossy().to_string();
+    let variant_path = crate::helpers::imageresize::variant_stem(&base_str, size);
+
+    // Lock held only for this lookup.
+    if let Ok((data, mime)) = get_image_with_mime_type(&variant_path) {
+        debug!("Serving stored variant {} ({} bytes)", variant_path, data.len());
+        return Ok((data, mime));
+    }
+
+    // Lock held only for this read. A disabled cache reports itself here with the
+    // same "Image cache is disabled" message the method returns.
+    let (original, original_mime) = get_image_with_mime_type(base_path)?;
+
+    // No lock is held across the decode, the scale or the encode below.
+    match crate::helpers::imageresize::resize(&original, size) {
+        Ok(crate::helpers::imageresize::Resized::Original) => {
+            debug!("Original {} is already at or below {}px", base_str, size);
+            Ok((original, original_mime))
+        }
+        Ok(crate::helpers::imageresize::Resized::Image(data, mime)) => {
+            // Lock retaken only for the write.
+            if let Err(e) = store_image_from_data(&variant_path, data.clone(), mime.clone()) {
+                // A variant that cannot be stored is still a valid response; the next
+                // request simply pays for it again.
+                warn!("Failed to store variant {}: {}", variant_path, e);
+            }
+            Ok((data, mime))
+        }
+        Err(e) => Err(format!("Failed to resize {}: {}", base_str, e)),
+    }
 }
 
 /// Delete every generated variant in the cache.

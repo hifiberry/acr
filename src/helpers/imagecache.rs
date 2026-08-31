@@ -1162,7 +1162,15 @@ mod tests {
         let cache_path = temp_dir.path().to_str().unwrap();
         let expiry_path = temp_dir.path().join("expiry.json");
         
-        // Initialize attribute cache for this test
+        // This test needs its own attribute cache, isolated from the shared one the
+        // other tests in this module use via `init_test_attribute_cache`, so that the
+        // `total_images == 0` assertion below is not thrown off by entries other
+        // tests left behind. `AttributeCache::initialize_global` re-points the
+        // *process-wide* singleton at this directory for the rest of the test
+        // binary's run, so — exactly like `init_test_attribute_cache` does — the
+        // directory must outlive this function; otherwise every `#[serial]` test
+        // that runs afterwards finds the global pointing at a deleted directory and
+        // fails with "attempt to write a readonly database" (see below).
         let attr_cache_path = temp_dir.path().join("attributes");
         AttributeCache::initialize_global(&attr_cache_path).unwrap();
         
@@ -1215,6 +1223,10 @@ mod tests {
         // Verify metadata was removed
         let metadata1_after = cache.get_image_metadata_info("test1.jpg");
         assert!(metadata1_after.is_none());
+
+        // Leak the directory rather than let `temp_dir` delete it on drop: the
+        // process-wide attribute cache singleton still points at it (see above).
+        std::mem::forget(temp_dir);
     }
 
     #[test]

@@ -65,16 +65,23 @@ pub fn fetch_album_genres(album_id: &str, artist: &str, album_name: &str) -> Vec
 /// move the version serves stale lists to every client holding a cached copy,
 /// and no test can catch that. Keeping them in one function is the only thing
 /// that makes forgetting hard.
+///
+/// `version` is `None` for backends that do not track a library version at all
+/// (currently LMS): there is nothing to bump, and no client is ever handed a
+/// validator for those lists, so silently doing nothing is correct rather than
+/// a gap.
 fn set_genres(
     target: &mut Vec<String>,
     genres: Vec<String>,
-    version: &crate::data::library::LibraryVersion,
+    version: Option<&crate::data::library::LibraryVersion>,
 ) {
     if genres.is_empty() {
         return;
     }
     *target = genres;
-    version.bump();
+    if let Some(version) = version {
+        version.bump();
+    }
 }
 
 /// Start a background thread to update genre tags for all albums in the library.
@@ -83,7 +90,7 @@ fn set_genres(
 /// them in the album struct and in the attribute cache.
 pub fn update_library_albums_genres_in_background(
     albums_collection: Arc<RwLock<HashMap<String, Album>>>,
-    version: crate::data::library::LibraryVersion,
+    version: Option<crate::data::library::LibraryVersion>,
 ) {
     debug!("Starting background thread to update album genres");
 
@@ -144,7 +151,7 @@ pub fn update_library_albums_genres_in_background(
                 let mut map = albums_collection.write();
                 if let Some(album) = map.get_mut(&album_name) {
                     if album.genres.is_empty() {
-                        set_genres(&mut album.genres, cached, &version);
+                        set_genres(&mut album.genres, cached, version.as_ref());
                         updated += 1;
                     }
                 }
@@ -161,7 +168,7 @@ pub fn update_library_albums_genres_in_background(
             if !genres.is_empty() {
                 let mut map = albums_collection.write();
                 if let Some(album) = map.get_mut(&album_name) {
-                    set_genres(&mut album.genres, genres, &version);
+                    set_genres(&mut album.genres, genres, version.as_ref());
                     updated += 1;
                 }
             }
@@ -196,7 +203,7 @@ mod tests {
     fn writing_genres_stores_them_and_bumps_the_version() {
         let version = LibraryVersion::new();
         let mut target: Vec<String> = Vec::new();
-        set_genres(&mut target, vec!["rock".to_string()], &version);
+        set_genres(&mut target, vec!["rock".to_string()], Some(&version));
         assert_eq!(target, vec!["rock".to_string()]);
         assert_eq!(version.get(), 1, "a genre write must move the version");
     }
@@ -205,8 +212,17 @@ mod tests {
     fn writing_nothing_leaves_both_alone() {
         let version = LibraryVersion::new();
         let mut target = vec!["existing".to_string()];
-        set_genres(&mut target, Vec::new(), &version);
+        set_genres(&mut target, Vec::new(), Some(&version));
         assert_eq!(target, vec!["existing".to_string()], "an empty write must not clear");
         assert_eq!(version.get(), 0, "an empty write is not a change");
+    }
+
+    #[test]
+    fn writing_genres_with_no_version_still_stores_them() {
+        // The LMS path: no LibraryVersion is tracked, so `version` is `None`.
+        // The write must still happen; there is simply nothing to bump.
+        let mut target: Vec<String> = Vec::new();
+        set_genres(&mut target, vec!["rock".to_string()], None);
+        assert_eq!(target, vec!["rock".to_string()]);
     }
 }

@@ -392,12 +392,11 @@ impl LibraryInterface for LMSLibrary {
                 // Start background update of artist metadata now that the library is fully loaded
                 if self.enhance_metadata {
                     info!("Starting background metadata update for artists");
-                    // LMSLibrary does not expose a LibraryVersion (library_version() defaults
-                    // to None for this backend), so there is no shared counter to pass through
-                    // here yet; a fresh, unread instance keeps the call compiling.
+                    // LMS does not track library versions, so its lists carry no
+                    // validator — pass None rather than a live counter nothing reads.
                     crate::helpers::artistupdater::update_library_artists_metadata_in_background(
                         self.artists.clone(),
-                        crate::data::library::LibraryVersion::new(),
+                        None,
                     );
                 }
 
@@ -439,10 +438,11 @@ impl LibraryInterface for LMSLibrary {
         if self.enhance_metadata {
             info!("Starting background metadata update for LMSLibrary artists");
             // Use the generic function from artistupdater with only the artists collection.
-            // See the load-time call above for why a fresh LibraryVersion is passed here.
+            // LMS does not track library versions, so its lists carry no validator —
+            // pass None rather than a live counter nothing reads.
             crate::helpers::artistupdater::update_library_artists_metadata_in_background(
                 self.artists.clone(),
-                crate::data::library::LibraryVersion::new(),
+                None,
             );
         }
     }

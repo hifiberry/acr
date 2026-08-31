@@ -237,7 +237,7 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
 /// * `artists_collection` - Arc to the artists collection for updating
 pub fn update_library_artists_metadata_in_background(
     artists_collection: Arc<RwLock<HashMap<String, Artist>>>,
-    version: crate::data::library::LibraryVersion,
+    version: Option<crate::data::library::LibraryVersion>,
 ) {
     debug!("Starting background thread to update artist metadata");
     
@@ -322,7 +322,11 @@ pub fn update_library_artists_metadata_in_background(
             {
                 let mut artists_map = artists_collection.write();
                 artists_map.insert(artist_name.clone(), updated_artist);
-                version.bump();
+                // `version` is `None` for backends that do not track a library version
+                // (currently LMS); there is nothing to bump there.
+                if let Some(version) = &version {
+                    version.bump();
+                }
 
                 if has_new_metadata {
                     debug!("Successfully updated artist {} in library collection", artist_name);

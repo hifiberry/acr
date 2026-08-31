@@ -3070,6 +3070,8 @@ Retrieves comprehensive statistics about the current cache state, including memo
   "image_cache_stats": {
     "total_images": 150,
     "total_size": 25165824,
+    "variant_images": 48,
+    "variant_size": 921600,
     "last_updated": 1722254400
   },
   "message": null
@@ -3084,9 +3086,16 @@ Retrieves comprehensive statistics about the current cache state, including memo
   - `memory_bytes` (number): Current memory usage in bytes
   - `memory_limit_bytes` (number): Maximum memory limit in bytes (null if no limit)
 - `image_cache_stats` (object|null): Image cache statistics object containing:
-  - `total_images` (number): Total number of cached images
-  - `total_size` (number): Total size of all cached images in bytes
+  - `total_images` (number): Total number of cached images, generated variants included
+  - `total_size` (number): Total size of all cached images in bytes, generated variants included
+  - `variant_images` (number): How many of `total_images` are generated thumbnails (see the `size` parameter on the image endpoints)
+  - `variant_size` (number): How many of `total_size` bytes are generated thumbnails
   - `last_updated` (number): Timestamp when statistics were last updated (Unix epoch seconds)
+
+`variant_images` and `variant_size` are a subset of the totals, not an
+addition to them. They are the figures to watch before and after
+`POST /api/imagecache/variants/purge`: the image cache has no eviction policy,
+and thumbnails are the only content in it that grows without bound.
 - `message` (string|null): Error message if success is false, null otherwise
 
 **Example Request**:
@@ -3107,6 +3116,8 @@ curl -X GET "http://localhost:8080/api/cache/stats"
   "image_cache_stats": {
     "total_images": 342,
     "total_size": 67108864,
+    "variant_images": 120,
+    "variant_size": 2359296,
     "last_updated": 1722254400
   },
   "message": null

@@ -17,8 +17,19 @@ pub struct CacheStatsResponse {
 /// Image cache statistics for API response
 #[derive(Serialize, Deserialize)]
 pub struct ImageCacheStats {
+    /// Everything on disk, generated variants included.
     pub total_images: usize,
+    /// Every byte on disk, generated variants included.
     pub total_size: u64,
+    /// How many of `total_images` are generated thumbnails.
+    ///
+    /// Variants are the only cache content that can grow without bound, and
+    /// `POST /api/imagecache/variants/purge` is the only lever against that
+    /// growth. Reporting them separately is what lets an operator see how much
+    /// a purge would reclaim, and whether it worked.
+    pub variant_images: usize,
+    /// How many of `total_size` bytes are generated thumbnails.
+    pub variant_size: u64,
     pub last_updated: u64,
 }
 
@@ -53,11 +64,13 @@ pub fn get_cache_statistics() -> Json<CacheStatsResponse> {
     // Get image cache stats
     let image_stats = match imagecache::get_cache_statistics() {
         Ok(stats) => {
-            debug!("Successfully retrieved image cache stats: total_images={}, total_size={}, last_updated={}", 
-                stats.total_images, stats.total_size, stats.last_updated);
+            debug!("Successfully retrieved image cache stats: total_images={}, total_size={}, variant_images={}, variant_size={}, last_updated={}",
+                stats.total_images, stats.total_size, stats.variant_images, stats.variant_size, stats.last_updated);
             Some(ImageCacheStats {
                 total_images: stats.total_images,
                 total_size: stats.total_size,
+                variant_images: stats.variant_images,
+                variant_size: stats.variant_size,
                 last_updated: stats.last_updated,
             })
         }

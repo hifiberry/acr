@@ -1143,6 +1143,18 @@ pub fn parse_size(raw: Option<&str>) -> Result<Option<u32>, String> {
     Ok(crate::helpers::imageresize::snap_to_rung(requested))
 }
 
+/// Build the body of a 400 for a bad `size`, including the sizes that would work.
+///
+/// Being told only that a value was wrong leaves a client guessing; the list costs
+/// a few bytes on a path that is already an error.
+pub fn size_error_body(message: &str) -> String {
+    serde_json::json!({
+        "error": message,
+        "image_sizes": crate::helpers::imageresize::SIZE_LADDER,
+    })
+    .to_string()
+}
+
 /// Produce a downscaled version of a library image through the image cache.
 ///
 /// Returns `None` when the identifier does not correspond to a cached album cover,
@@ -1194,7 +1206,8 @@ pub fn get_image(
 ) -> Result<crate::api::imageresponse::ImageReply, Custom<String>> {
     use crate::api::imageresponse::{reply, IMMUTABLE_CACHE, REVALIDATE_DAILY_CACHE};
 
-    let target = parse_size(size).map_err(|e| Custom(Status::BadRequest, e))?;
+    let target = parse_size(size)
+        .map_err(|e| Custom(Status::BadRequest, size_error_body(&e)))?;
 
     // Only `album:` identifiers are immutable under their id. `artist:` art can be
     // replaced by the user (see `src/api/coverart.rs`), and bare track URLs are not
@@ -1495,6 +1508,14 @@ mod tests {
         assert!(parse_size(Some("0")).is_err());
         assert!(parse_size(Some("-40")).is_err());
         assert!(parse_size(Some("")).is_err());
+    }
+
+    #[test]
+    fn size_errors_carry_the_valid_sizes() {
+        let body: serde_json::Value =
+            serde_json::from_str(&size_error_body("Invalid size 'wide'")).unwrap();
+        assert_eq!(body["error"], "Invalid size 'wide'");
+        assert_eq!(body["image_sizes"], serde_json::json!([100, 200, 400, 800]));
     }
 
     // Both `resize_via_cache` tests below only need to reach the identifier

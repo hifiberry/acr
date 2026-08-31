@@ -153,6 +153,25 @@ Retrieves the current version of the API.
 curl http://<device-ip>:1080/api/version
 ```
 
+### GET /capabilities
+
+What this daemon supports, as opposed to which release it is.
+
+```json
+{
+  "version": "0.9.3",
+  "images": {
+    "sizes": [100, 200, 400, 800]
+  }
+}
+```
+
+`images.sizes` lists the sizes accepted by the `size` parameter on the image
+endpoints; requests are rounded up to the next listed size.
+
+**A release that answers this endpoint with 404 does not resize images.** That is
+a complete answer -- ask for originals rather than probing.
+
 ### Get Input Status
 
 Reports the configured input sources (USB HID remotes and keyboards), the devices currently bound to them, and the last mapped keypress seen. This is the "is my remote detected?" endpoint.

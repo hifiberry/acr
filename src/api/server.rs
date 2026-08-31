@@ -2,7 +2,7 @@ use crate::AudioController;
 use crate::api::{
     players, plugins, library, imagecache, coverart, events, lastfm, spotify,
     theaudiodb, favourites, volume, lyrics, m3u, settings, cache, backgroundjobs, genres,
-    inputs
+    inputs, capabilities
 };
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
@@ -66,7 +66,8 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     
     let api_routes = routes![
         get_version,
-        
+        capabilities::get_capabilities,
+
         // Player routes
         players::get_current_player,
         players::list_players,

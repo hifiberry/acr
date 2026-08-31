@@ -419,7 +419,8 @@ pub fn get_artist_image(
     use rocket::response::status::Custom;
     use crate::api::imageresponse::{reply, REVALIDATE_DAILY_CACHE};
 
-    let target = crate::api::library::parse_size(size).map_err(|e| Custom(Status::BadRequest, e))?;
+    let target = crate::api::library::parse_size(size)
+        .map_err(|e| Custom(Status::BadRequest, crate::api::library::size_error_body(&e)))?;
 
     let artist_name = match decode_url_safe(&artist_b64) {
         Some(decoded) => decoded,

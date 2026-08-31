@@ -97,6 +97,16 @@ impl AlbumArtists {
             .unwrap_or_else(HashSet::new)
     }
     
+    /// Count the albums associated with an artist.
+    ///
+    /// Same answer as `get_albums_for_artist(..).len()`, but without cloning
+    /// the set. Callers that only need the size should use this.
+    pub fn count_albums_for_artist(&self, artist_id: &Identifier) -> usize {
+        self.artist_to_albums
+            .get(artist_id)
+            .map_or(0, |albums| albums.len())
+    }
+
     // For backward compatibility with code that still uses u64
     pub fn get_albums_for_artist_u64(&self, artist_id: &u64) -> HashSet<u64> {
         self.get_albums_for_artist(&Identifier::Numeric(*artist_id))
@@ -205,5 +215,58 @@ impl AlbumArtists {
     /// Check if the collection is empty
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(n: u64) -> Identifier {
+        Identifier::Numeric(n)
+    }
+
+    #[test]
+    fn count_albums_for_artist_counts_the_mapped_albums() {
+        let mut mapping = AlbumArtists::new();
+        mapping.add_mapping(id(1), id(10));
+        mapping.add_mapping(id(2), id(10));
+        mapping.add_mapping(id(3), id(20));
+
+        assert_eq!(mapping.count_albums_for_artist(&id(10)), 2);
+        assert_eq!(mapping.count_albums_for_artist(&id(20)), 1);
+    }
+
+    #[test]
+    fn count_albums_for_artist_is_zero_for_an_unknown_artist() {
+        let mapping = AlbumArtists::new();
+
+        assert_eq!(mapping.count_albums_for_artist(&id(99)), 0);
+    }
+
+    /// An album that lists the same artist twice is added twice, so the count
+    /// has to follow the set semantics of `get_albums_for_artist` rather than
+    /// the raw number of `add_mapping` calls.
+    #[test]
+    fn count_albums_for_artist_counts_an_album_once() {
+        let mut mapping = AlbumArtists::new();
+        mapping.add_mapping(id(1), id(10));
+        mapping.add_mapping(id(1), id(10));
+
+        assert_eq!(mapping.count_albums_for_artist(&id(10)), 1);
+    }
+
+    /// The count must stay in step with the collection it summarises.
+    #[test]
+    fn count_albums_for_artist_agrees_with_get_albums_for_artist() {
+        let mut mapping = AlbumArtists::new();
+        for album in 1..=5u64 {
+            mapping.add_mapping(id(album), id(10));
+        }
+        mapping.remove_mapping(&id(3), &id(10));
+
+        assert_eq!(
+            mapping.count_albums_for_artist(&id(10)),
+            mapping.get_albums_for_artist(&id(10)).len()
+        );
     }
 }

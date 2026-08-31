@@ -1137,7 +1137,7 @@ pub fn parse_size(raw: Option<&str>) -> Result<Option<u32>, String> {
         .parse()
         .map_err(|_| format!("Invalid size '{}': expected a positive integer", raw))?;
     if requested == 0 {
-        return Err("Invalid size '0': expected a positive integer".to_string());
+        return Err(format!("Invalid size '{}': expected a positive integer", raw));
     }
 
     Ok(crate::helpers::imageresize::snap_to_rung(requested))
@@ -1192,9 +1192,19 @@ pub fn get_image(
     if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
     controller: &State<Arc<AudioController>>
 ) -> Result<crate::api::imageresponse::ImageReply, Custom<String>> {
-    use crate::api::imageresponse::{reply, IMMUTABLE_CACHE};
+    use crate::api::imageresponse::{reply, IMMUTABLE_CACHE, REVALIDATE_DAILY_CACHE};
 
     let target = parse_size(size).map_err(|e| Custom(Status::BadRequest, e))?;
+
+    // Only `album:` identifiers are immutable under their id. `artist:` art can be
+    // replaced by the user (see `src/api/coverart.rs`), and bare track URLs are not
+    // addressed by a stable id either, so both must revalidate rather than being
+    // cached for a year with no server-side remedy.
+    let cache_control = if identifier.starts_with("album:") {
+        IMMUTABLE_CACHE
+    } else {
+        REVALIDATE_DAILY_CACHE
+    };
 
     let controllers = controller.inner().list_controllers();
 
@@ -1213,7 +1223,7 @@ pub fn get_image(
                             .unwrap_or((data, mime_type)),
                         None => (data, mime_type),
                     };
-                    return Ok(reply(data, &mime_type, IMMUTABLE_CACHE, if_none_match.0));
+                    return Ok(reply(data, &mime_type, cache_control, if_none_match.0));
                 } else {
                     // Image not found
                     return Err(Custom(
@@ -1461,6 +1471,7 @@ pub fn delete_library_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn absent_size_means_the_original() {
@@ -1484,5 +1495,39 @@ mod tests {
         assert!(parse_size(Some("0")).is_err());
         assert!(parse_size(Some("-40")).is_err());
         assert!(parse_size(Some("")).is_err());
+    }
+
+    // Both `resize_via_cache` tests below only need to reach the identifier
+    // and album-id parsing at the top of the function, so they never actually
+    // touch the cache — but they still point the global image cache at a
+    // `TempDir` (the seam `ImageCache::initialize` provides) rather than the
+    // real `/var/lib/audiocontrol/cache/images`, and are `#[serial]` because
+    // that cache is process-global, same as imagecache.rs's own tests.
+    #[test]
+    #[serial]
+    fn resize_via_cache_ignores_non_album_identifiers() {
+        use crate::data::library::LibraryInterface;
+        use crate::helpers::imagecache::ImageCache;
+        use crate::players::mpd::library::MPDLibrary;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        ImageCache::initialize(temp_dir.path()).unwrap();
+
+        let library = MPDLibrary::new();
+        assert_eq!(resize_via_cache(&library, "artist:Foo", 400), None);
+    }
+
+    #[test]
+    #[serial]
+    fn resize_via_cache_ignores_unparseable_album_ids() {
+        use crate::data::library::LibraryInterface;
+        use crate::helpers::imagecache::ImageCache;
+        use crate::players::mpd::library::MPDLibrary;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        ImageCache::initialize(temp_dir.path()).unwrap();
+
+        let library = MPDLibrary::new();
+        assert_eq!(resize_via_cache(&library, "album:not-a-number", 400), None);
     }
 }

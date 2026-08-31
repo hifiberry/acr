@@ -1566,15 +1566,20 @@ Retrieves an image (such as album art) from a player's library.
 
 | Name | Type | Meaning |
 |---|---|---|
-| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. |
+| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. Only takes effect for `album:` identifiers — for `artist:` identifiers and bare track URLs it is accepted and validated but then ignored, and the response is the full-size original with no signal that resizing did not happen. |
 
 A size larger than the top rung, or larger than the image itself, returns the
 original: acr never upscales. A size that is not a positive integer is a
 `400`, not a silent fallback.
 
-Responses carry `ETag` and `Cache-Control: public, max-age=31536000, immutable`,
-and honour `If-None-Match` with a `304`. Album art does not change under a given
-album id, so clients can hold it indefinitely.
+Responses carry an `ETag` and honour `If-None-Match` with a `304`. The
+`Cache-Control` header depends on the identifier: `album:` art does not
+change under a given album id, so those responses get
+`public, max-age=31536000, immutable` and clients can hold them
+indefinitely. Every other identifier — `artist:` art (which a user can
+replace with a new upload) and bare track URLs — gets
+`public, max-age=86400` instead, so clients revalidate daily rather than
+being stuck with a stale image for a year.
 
 - **Response**: Binary image data with appropriate Content-Type header
 - **Error Response** (404 Not Found): String error message

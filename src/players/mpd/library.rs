@@ -1086,6 +1086,9 @@ impl LibraryInterface for MPDLibrary {
                     crate::helpers::albumupdater::update_library_albums_genres_in_background(
                         self.albums.clone()
                     );
+                    crate::helpers::imageprewarm::prewarm_album_variants_in_background(
+                        self.albums.clone(),
+                    );
                 }
                 
                 Ok(())
@@ -1137,6 +1140,7 @@ impl LibraryInterface for MPDLibrary {
         if self.enhance_metadata {
             info!("Starting background genre update for MPDLibrary albums");
             crate::helpers::albumupdater::update_library_albums_genres_in_background(self.albums.clone());
+            crate::helpers::imageprewarm::prewarm_album_variants_in_background(self.albums.clone());
         }
     }
     

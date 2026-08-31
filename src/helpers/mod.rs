@@ -1,6 +1,7 @@
 pub mod attributecache;
 pub mod imagecache;
 pub mod imageresize;
+pub mod imageprewarm;
 pub mod image_meta;
 pub mod image_grader;
 pub mod artistupdater;

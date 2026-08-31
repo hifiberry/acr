@@ -1046,8 +1046,8 @@ impl LibraryInterface for MPDLibrary {
         *loaded
     }
 
-    fn library_version(&self) -> Option<u64> {
-        Some(self.library_version.get())
+    fn library_version(&self) -> Option<String> {
+        Some(self.library_version.token())
     }
 
     fn refresh_library(&self) -> Result<(), LibraryError> {
@@ -1738,6 +1738,6 @@ mod tests {
         let lib = MPDLibrary::new();
         let before = lib.library_version().unwrap();
         lib.version().bump();
-        assert_eq!(lib.library_version(), Some(before + 1));
+        assert_ne!(lib.library_version().unwrap(), before);
     }
 }

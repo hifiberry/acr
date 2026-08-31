@@ -1,8 +1,9 @@
 use std::io::Cursor;
+use std::sync::OnceLock;
 
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use log::debug;
+use log::{debug, warn};
 
 /// JPEG quality for generated variants. 82 is visually transparent for cover art
 /// at grid sizes while staying far below the original's byte count.
@@ -111,7 +112,7 @@ fn decode_within_limits(data: &[u8]) -> Result<image::DynamicImage, ResizeError>
     reader.decode().map_err(|e| ResizeError::Decode(e.to_string()))
 }
 
-/// The only sizes acr will ever generate.
+/// The ladder used when configuration does not specify one.
 ///
 /// A fixed ladder bounds the cache at six variants per image no matter what
 /// clients ask for. Requested sizes snap up to the next rung.
@@ -120,14 +121,100 @@ fn decode_within_limits(data: &[u8]) -> Result<image::DynamicImage, ResizeError>
 /// scales clients actually run at: a 100 pt cell is 100, 140, 200 or 280 px at
 /// 1x, 1.4x, 2x and 2.8x. Without them a 2x grid snapped all the way up to 400,
 /// which is four times the pixels it can show.
-pub const SIZE_LADDER: [u32; 6] = [100, 140, 200, 280, 400, 800];
+pub const DEFAULT_SIZES: [u32; 6] = [100, 140, 200, 280, 400, 800];
 
-/// The rungs the pre-warm job generates: the grid sizes a client asks for on
-/// first scroll, at 1x, 2x and the fractional scales in between.
+/// The pre-warm rungs used when configuration does not specify them.
 ///
 /// The larger rungs are left to be generated on demand — they are asked for one
 /// image at a time, when a single cover is opened, not a screenful at once.
-pub const PREWARM_SIZES: [u32; 3] = [140, 200, 280];
+pub const DEFAULT_PREWARM_SIZES: [u32; 3] = [140, 200, 280];
+
+static SIZES: OnceLock<Vec<u32>> = OnceLock::new();
+static PREWARM: OnceLock<Vec<u32>> = OnceLock::new();
+
+/// The sizes this daemon offers, in ascending order.
+///
+/// Falls back to the built-in default when configuration was never applied, so
+/// the module answers correctly in tests and in any start-up path that has not
+/// reached `configure` yet.
+pub fn sizes() -> &'static [u32] {
+    SIZES.get().map(|v| v.as_slice()).unwrap_or(&DEFAULT_SIZES)
+}
+
+/// The sizes the pre-warm job generates. May legitimately be empty.
+pub fn prewarm_sizes() -> &'static [u32] {
+    PREWARM.get().map(|v| v.as_slice()).unwrap_or(&DEFAULT_PREWARM_SIZES)
+}
+
+/// Apply configuration. Call once, during start-up, before anything reads the
+/// accessors. A second call is ignored rather than panicking.
+pub fn configure(raw_sizes: Option<Vec<u32>>, raw_prewarm: Option<Vec<u32>>) {
+    let ladder = match raw_sizes {
+        Some(v) => sanitise_sizes(v),
+        None => DEFAULT_SIZES.to_vec(),
+    };
+    let prewarm = match raw_prewarm {
+        Some(v) => sanitise_prewarm(v, &ladder),
+        None => DEFAULT_PREWARM_SIZES
+            .iter()
+            .copied()
+            .filter(|s| ladder.contains(s))
+            .collect(),
+    };
+    let _ = SIZES.set(ladder);
+    let _ = PREWARM.set(prewarm);
+}
+
+/// Drop invalid and duplicate rungs, sort, and fall back if nothing survives.
+///
+/// Sorting is not cosmetic: `snap_to_rung` returns the first rung greater than
+/// or equal to the request and depends on ascending order.
+pub fn sanitise_sizes(raw: Vec<u32>) -> Vec<u32> {
+    let mut cleaned: Vec<u32> = Vec::new();
+    for size in raw {
+        if size == 0 {
+            warn!("Ignoring image size 0 in configuration: sizes must be positive");
+            continue;
+        }
+        if cleaned.contains(&size) {
+            warn!("Ignoring duplicate image size {} in configuration", size);
+            continue;
+        }
+        cleaned.push(size);
+    }
+    if cleaned.is_empty() {
+        warn!(
+            "No usable image sizes in configuration, using the default ladder {:?}",
+            DEFAULT_SIZES
+        );
+        return DEFAULT_SIZES.to_vec();
+    }
+    cleaned.sort_unstable();
+    cleaned
+}
+
+/// Keep only pre-warm rungs the ladder actually offers.
+///
+/// An empty result is legitimate — it means pre-warming is off — so this never
+/// falls back to the default.
+pub fn sanitise_prewarm(raw: Vec<u32>, ladder: &[u32]) -> Vec<u32> {
+    let mut cleaned: Vec<u32> = Vec::new();
+    for size in raw {
+        if !ladder.contains(&size) {
+            warn!(
+                "Ignoring pre-warm size {}: it is not in the configured ladder {:?}",
+                size, ladder
+            );
+            continue;
+        }
+        if cleaned.contains(&size) {
+            continue;
+        }
+        cleaned.push(size);
+    }
+    cleaned.sort_unstable();
+    cleaned
+}
 
 /// Separator between a base name and its variant size in a file name.
 const VARIANT_MARKER: char = '@';
@@ -137,7 +224,7 @@ const VARIANT_MARKER: char = '@';
 /// Returns `None` when the request is larger than the biggest rung, which the
 /// caller must treat as "serve the original untouched".
 pub fn snap_to_rung(requested: u32) -> Option<u32> {
-    SIZE_LADDER.iter().copied().find(|rung| *rung >= requested)
+    sizes().iter().copied().find(|rung| *rung >= requested)
 }
 
 /// Build the file stem for a variant: `("cover", 400)` becomes `"cover@400"`.
@@ -169,7 +256,7 @@ pub fn is_variant_file_name(file_name: &str) -> bool {
 /// A stable description of the ladder, stored beside the cache so a future change
 /// to the rungs can purge variants that no longer correspond to anything.
 pub fn ladder_fingerprint() -> String {
-    SIZE_LADDER
+    sizes()
         .iter()
         .map(|s| s.to_string())
         .collect::<Vec<_>>()
@@ -317,5 +404,46 @@ mod tests {
     #[test]
     fn fingerprint_describes_the_ladder() {
         assert_eq!(ladder_fingerprint(), "100-140-200-280-400-800");
+    }
+
+    #[test]
+    fn sanitising_drops_zero_negative_and_duplicates_and_sorts() {
+        // u32 cannot be negative; zero is the representable invalid value.
+        assert_eq!(sanitise_sizes(vec![400, 100, 0, 200, 100]), vec![100, 200, 400]);
+    }
+
+    #[test]
+    fn an_entirely_invalid_ladder_falls_back_to_the_default() {
+        assert_eq!(sanitise_sizes(vec![0, 0]), DEFAULT_SIZES.to_vec());
+        assert_eq!(sanitise_sizes(Vec::new()), DEFAULT_SIZES.to_vec());
+    }
+
+    #[test]
+    fn prewarm_entries_outside_the_ladder_are_dropped() {
+        let ladder = vec![100, 200, 400];
+        assert_eq!(sanitise_prewarm(vec![200, 999, 100], &ladder), vec![100, 200]);
+    }
+
+    #[test]
+    fn an_empty_prewarm_list_is_honoured_not_defaulted() {
+        // This is how an operator turns pre-warming off. Replacing it with the
+        // default would silently override that choice.
+        let ladder = vec![100, 200, 400];
+        assert!(sanitise_prewarm(Vec::new(), &ladder).is_empty());
+    }
+
+    #[test]
+    fn without_configuration_the_accessors_return_the_defaults() {
+        // The module must answer correctly when config was never initialised,
+        // which is what keeps these unit tests meaningful without a fixture.
+        assert_eq!(sizes(), DEFAULT_SIZES);
+        assert_eq!(prewarm_sizes(), DEFAULT_PREWARM_SIZES);
+    }
+
+    #[test]
+    fn snapping_uses_the_active_ladder() {
+        // 140 is a rung in the default ladder; 120 must snap up to it.
+        assert_eq!(snap_to_rung(120), Some(140));
+        assert_eq!(snap_to_rung(801), None);
     }
 }

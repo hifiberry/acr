@@ -1,3 +1,18 @@
+hifiberry-audiocontrol (0.11.1) trixie; urgency=medium
+
+  * auth: allow GET /capabilities without authentication. The endpoint was
+    absent from auth.d/audiocontrol-auth.json, so it fell through to the
+    manifest's default_tier of risky and nginx answered 401 on a gated
+    device. That defeats the endpoint's own purpose: a client is told a 404
+    means the daemon does not resize images, but a 401 leaves it unable to
+    tell "not supported" from "not allowed", which is exactly the guessing
+    the endpoint exists to remove. It sits beside /version in the
+    unauthenticated GET tier, since it reports only which image sizes the
+    build offers. POST /imagecache/variants/purge deliberately stays gated:
+    it deletes files.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 31 Aug 2026 15:08:37 +0000
+
 hifiberry-audiocontrol (0.11.0) trixie; urgency=medium
 
   * api: serve resized cover art through a size parameter on the library and

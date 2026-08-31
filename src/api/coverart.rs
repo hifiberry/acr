@@ -321,29 +321,47 @@ fn variant_path_for(cache_path: &str, size: u32) -> String {
     )
 }
 
+/// Build the base path (directory + variant stem) of a variant, with no extension.
+///
+/// The stored extension depends on what `resize()` actually encodes (PNG for alpha
+/// sources, JPEG otherwise), not on the original's extension — the artist store
+/// names every original `.jpg` regardless of content, so a lookup that assumed the
+/// original's extension would only ever check `…@<size>.jpg` and would never find a
+/// PNG variant that was written for an alpha source. Callers probe both extensions.
+fn variant_base_for(cache_path: &str, size: u32) -> String {
+    let with_extension = variant_path_for(cache_path, size);
+    match with_extension.rsplit_once('.') {
+        Some((base, _extension)) => base.to_string(),
+        None => with_extension,
+    }
+}
+
 /// Read a variant of an artist image, generating it beside the original on first use.
 ///
 /// Returns `None` whenever anything goes wrong, so the caller falls back to the
 /// original rather than failing a request that would otherwise succeed.
 fn artist_image_variant(cache_path: &str, size: u32) -> Option<(Vec<u8>, String)> {
-    let variant_path = variant_path_for(cache_path, size);
+    let base = variant_base_for(cache_path, size);
+    let png_path = format!("{}.png", base);
+    let jpg_path = format!("{}.jpg", base);
 
-    if let Ok(data) = std::fs::read(&variant_path) {
-        let mime = if variant_path.ends_with(".png") { "image/png" } else { "image/jpeg" };
-        return Some((data, mime.to_string()));
+    // The extension on disk depends on what was actually encoded, not on the
+    // original's extension, so both must be probed.
+    if let Ok(data) = std::fs::read(&png_path) {
+        return Some((data, "image/png".to_string()));
+    }
+    if let Ok(data) = std::fs::read(&jpg_path) {
+        return Some((data, "image/jpeg".to_string()));
     }
 
     let original = std::fs::read(cache_path).ok()?;
     match crate::helpers::imageresize::resize(&original, size) {
         Ok(crate::helpers::imageresize::Resized::Original) => None,
         Ok(crate::helpers::imageresize::Resized::Image(data, mime)) => {
-            // The stored extension must match what was actually encoded.
-            let stored_path = if mime == "image/png" {
-                variant_path.replace(".jpg", ".png")
-            } else {
-                variant_path.replace(".png", ".jpg")
-            };
-            if let Err(e) = std::fs::write(&stored_path, &data) {
+            // The stored extension must match what was actually encoded, and must be
+            // the same path the lookup above would find on a subsequent call.
+            let stored_path = if mime == "image/png" { &png_path } else { &jpg_path };
+            if let Err(e) = std::fs::write(stored_path, &data) {
                 log::warn!("Failed to store artist image variant {}: {}", stored_path, e);
             }
             Some((data, mime))
@@ -462,6 +480,18 @@ pub fn get_artist_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{DynamicImage, RgbaImage};
+    use std::io::Cursor;
+
+    /// Encode a test image that has a real alpha channel, matching how the
+    /// artist store shapes real files: content decides the format, not the
+    /// (always `.jpg`) name it is saved under.
+    fn alpha_png(w: u32, h: u32) -> Vec<u8> {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(w, h, image::Rgba([10, 120, 200, 128])));
+        let mut buf = Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        buf.into_inner()
+    }
 
     #[test]
     fn variant_paths_sit_beside_the_original() {
@@ -492,5 +522,40 @@ mod tests {
         assert!(original.exists(), "the original image must survive");
         assert!(!stale_variant.exists(), "the stale variant must be removed");
         assert!(unrelated_variant.exists(), "an unrelated base's variant must survive");
+    }
+
+    #[test]
+    fn alpha_variant_of_a_jpg_named_original_is_cached_and_reused() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        // The artist store names every original `.jpg` regardless of content, so an
+        // alpha source living under a `.jpg` filename is exactly the real-world shape.
+        let original = dir.path().join("cover.jpg");
+        std::fs::write(&original, alpha_png(800, 800)).unwrap();
+        let cache_path = original.to_str().unwrap();
+
+        let (first_data, first_mime) = artist_image_variant(cache_path, 200)
+            .expect("an 800px alpha source resized to 200px should produce a variant");
+        assert_eq!(first_mime, "image/png");
+
+        // The variant must have been written to the PNG-extensioned path the next
+        // lookup will check, not to a `.jpg`-extensioned path assumed from the
+        // original's name.
+        let variant_path = dir.path().join("cover@200.png");
+        assert!(variant_path.exists(), "variant must be stored under the encoded format's extension");
+
+        // Overwrite the stored variant with a sentinel: if the second call reuses
+        // the cached file, it must return the sentinel rather than a freshly
+        // re-encoded image. This is the assertion that pins the cache-key bug —
+        // a test that only checked the returned bytes on both calls would also
+        // pass if every call silently re-resized instead of reading the cache.
+        std::fs::write(&variant_path, b"SENTINEL").unwrap();
+
+        let (second_data, second_mime) = artist_image_variant(cache_path, 200)
+            .expect("the cached variant should be served on the second call");
+        assert_eq!(second_data, b"SENTINEL", "second call must reuse the on-disk variant, not regenerate it");
+        assert_eq!(second_mime, "image/png");
+
+        // Sanity: the first call did produce real (non-sentinel) resized data.
+        assert_ne!(first_data, b"SENTINEL");
     }
 }

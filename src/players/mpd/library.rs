@@ -1105,11 +1105,11 @@ impl LibraryInterface for MPDLibrary {
                 if self.enhance_metadata {
                     info!("Starting background metadata update for artists");
                     crate::helpers::artistupdater::update_library_artists_metadata_in_background(
-                        self.artists.clone()
+                        self.artists.clone(), self.version()
                     );
                     info!("Starting background genre update for albums");
                     crate::helpers::albumupdater::update_library_albums_genres_in_background(
-                        self.albums.clone()
+                        self.albums.clone(), self.version()
                     );
                     crate::helpers::imageprewarm::prewarm_album_variants_in_background(
                         self.albums.clone(),
@@ -1157,14 +1157,14 @@ impl LibraryInterface for MPDLibrary {
     fn update_artist_metadata(&self) {
         if self.enhance_metadata {
             info!("Starting background metadata update for MPDLibrary artists");
-            crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
+            crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone(), self.version());
         }
     }
 
     fn update_album_metadata(&self) {
         if self.enhance_metadata {
             info!("Starting background genre update for MPDLibrary albums");
-            crate::helpers::albumupdater::update_library_albums_genres_in_background(self.albums.clone());
+            crate::helpers::albumupdater::update_library_albums_genres_in_background(self.albums.clone(), self.version());
             crate::helpers::imageprewarm::prewarm_album_variants_in_background(self.albums.clone());
         }
     }

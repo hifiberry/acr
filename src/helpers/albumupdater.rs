@@ -59,12 +59,31 @@ pub fn fetch_album_genres(album_id: &str, artist: &str, album_name: &str) -> Vec
     genres
 }
 
+/// Write genres and record that the library changed.
+///
+/// The write and the bump live together deliberately: a mutation that does not
+/// move the version serves stale lists to every client holding a cached copy,
+/// and no test can catch that. Keeping them in one function is the only thing
+/// that makes forgetting hard.
+fn set_genres(
+    target: &mut Vec<String>,
+    genres: Vec<String>,
+    version: &crate::data::library::LibraryVersion,
+) {
+    if genres.is_empty() {
+        return;
+    }
+    *target = genres;
+    version.bump();
+}
+
 /// Start a background thread to update genre tags for all albums in the library.
 ///
 /// For each album that has no genres, fetches genres from MusicBrainz and stores
 /// them in the album struct and in the attribute cache.
 pub fn update_library_albums_genres_in_background(
     albums_collection: Arc<RwLock<HashMap<String, Album>>>,
+    version: crate::data::library::LibraryVersion,
 ) {
     debug!("Starting background thread to update album genres");
 
@@ -125,7 +144,7 @@ pub fn update_library_albums_genres_in_background(
                 let mut map = albums_collection.write();
                 if let Some(album) = map.get_mut(&album_name) {
                     if album.genres.is_empty() {
-                        album.genres = cached;
+                        set_genres(&mut album.genres, cached, &version);
                         updated += 1;
                     }
                 }
@@ -142,7 +161,7 @@ pub fn update_library_albums_genres_in_background(
             if !genres.is_empty() {
                 let mut map = albums_collection.write();
                 if let Some(album) = map.get_mut(&album_name) {
-                    album.genres = genres;
+                    set_genres(&mut album.genres, genres, &version);
                     updated += 1;
                 }
             }
@@ -166,4 +185,28 @@ pub fn update_library_albums_genres_in_background(
         info!("Album genre update complete: {}/{} albums updated", updated, total);
         let _ = crate::helpers::backgroundjobs::complete_job(&job_id);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::library::LibraryVersion;
+
+    #[test]
+    fn writing_genres_stores_them_and_bumps_the_version() {
+        let version = LibraryVersion::new();
+        let mut target: Vec<String> = Vec::new();
+        set_genres(&mut target, vec!["rock".to_string()], &version);
+        assert_eq!(target, vec!["rock".to_string()]);
+        assert_eq!(version.get(), 1, "a genre write must move the version");
+    }
+
+    #[test]
+    fn writing_nothing_leaves_both_alone() {
+        let version = LibraryVersion::new();
+        let mut target = vec!["existing".to_string()];
+        set_genres(&mut target, Vec::new(), &version);
+        assert_eq!(target, vec!["existing".to_string()], "an empty write must not clear");
+        assert_eq!(version.get(), 0, "an empty write is not a change");
+    }
 }

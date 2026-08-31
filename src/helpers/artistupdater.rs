@@ -236,7 +236,8 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
 /// # Arguments
 /// * `artists_collection` - Arc to the artists collection for updating
 pub fn update_library_artists_metadata_in_background(
-    artists_collection: Arc<RwLock<HashMap<String, Artist>>>
+    artists_collection: Arc<RwLock<HashMap<String, Artist>>>,
+    version: crate::data::library::LibraryVersion,
 ) {
     debug!("Starting background thread to update artist metadata");
     
@@ -321,6 +322,7 @@ pub fn update_library_artists_metadata_in_background(
             {
                 let mut artists_map = artists_collection.write();
                 artists_map.insert(artist_name.clone(), updated_artist);
+                version.bump();
 
                 if has_new_metadata {
                     debug!("Successfully updated artist {} in library collection", artist_name);
@@ -356,4 +358,18 @@ pub fn update_library_artists_metadata_in_background(
     });
 
     info!("Background artist metadata update initiated");
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data::library::LibraryVersion;
+
+    #[test]
+    fn a_shared_version_is_visible_to_the_caller() {
+        // The updater holds a clone; the library reads its own handle.
+        let library_handle = LibraryVersion::new();
+        let updater_handle = library_handle.clone();
+        updater_handle.bump();
+        assert_eq!(library_handle.get(), 1);
+    }
 }

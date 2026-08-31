@@ -1551,53 +1551,73 @@ impl MPDPlayerController {
         player.update_current_song(final_song);
     }
 
-    /// Add a song URL to the MPD queue
-    /// 
+    /// Add URLs to the play queue in one connection.
+    ///
     /// # Arguments
-    /// * `url` - The URL/path of the song to add
-    /// * `at_beginning` - If Some(true), insert at the beginning of the queue, otherwise append to the end
-    /// 
+    /// * `urls` - The URLs/paths of the songs to add, in the order they should appear
+    /// * `at_beginning` - If true, insert at the front of the queue, otherwise append
+    ///
     /// # Returns
-    /// * `bool` - true if the operation was successful, false otherwise
-    pub fn queue_url(&self, url: &str, at_beginning: Option<bool>) -> bool {
-        debug!("Adding URL to queue: {}, at_beginning: {:?}", url, at_beginning);
-        
-        if let Some(mut client) = self.get_fresh_client() {
-            // Use the appropriate method based on whether to add at beginning or end
-            let result = if at_beginning.unwrap_or(false) {
-                // Insert at position 0 (beginning of queue)
-                debug!("Inserting track at position 0: {}", url);
-                // Create a song path that mpd library can use
-                let song_path = mpd::Song {
-                    file: url.to_string(),
-                    ..Default::default()
-                };
-                client.insert(&song_path, 0)
-            } else {
-                // Push to the end of the queue
-                debug!("Pushing track to end of queue: {}", url);
-                // Create a song path that mpd library can use
-                let song_path = mpd::Song {
-                    file: url.to_string(),
-                    ..Default::default()
-                };
-                client.push(&song_path).map(|_id| 0) // Convert Result<Id, Error> to Result<usize, Error>
+    /// * `bool` - true if every URL was added, false if any failed
+    pub fn queue_urls(&self, urls: &[String], at_beginning: bool) -> bool {
+        if urls.is_empty() {
+            return true;
+        }
+
+        debug!(
+            "Adding {} URLs to queue, at_beginning: {}",
+            urls.len(),
+            at_beginning
+        );
+
+        // One connection for the whole batch. Opening a fresh client per track
+        // meant queueing an album opened a connection per track.
+        let Some(mut client) = self.get_fresh_client() else {
+            warn!("Failed to get MPD client connection for queue_urls");
+            return false;
+        };
+
+        let mut all_success = true;
+        for (index, url) in urls.iter().enumerate() {
+            let song_path = mpd::Song {
+                file: url.to_string(),
+                ..Default::default()
             };
-            
+
+            let result = match queue_insert_position(index, at_beginning) {
+                Some(position) => {
+                    debug!("Inserting track at position {}: {}", position, url);
+                    client.insert(&song_path, position)
+                }
+                None => {
+                    debug!("Pushing track to end of queue: {}", url);
+                    client.push(&song_path).map(|_id| 0)
+                }
+            };
+
             match result {
-                Ok(_) => {
-                    debug!("Successfully added URL to queue: {}", url);
-                    true
-                },
+                Ok(_) => debug!("Successfully added URL to queue: {}", url),
                 Err(e) => {
                     warn!("Failed to add URL to queue: {} - Error: {}", url, e);
-                    false
+                    all_success = false;
                 }
             }
-        } else {
-            warn!("Failed to get MPD client connection for queue_url");
-            false
         }
+
+        all_success
+    }
+}
+
+/// Position for the nth track of a batch being queued.
+///
+/// Appending leaves placement to MPD. Inserting at the beginning has to
+/// advance one slot per track: inserting every track at 0 pushes the previous
+/// one down and lands the batch reversed.
+fn queue_insert_position(index: usize, at_beginning: bool) -> Option<usize> {
+    if at_beginning {
+        Some(index)
+    } else {
+        None
     }
 }
 
@@ -1919,13 +1939,11 @@ impl PlayerController for MPDPlayerController {
                         debug!("No URIs provided to queue");
                         success = true; // Nothing to do, but not an error
                     } else {
-                        let mut all_success = true;
-                        
-                        // Process each URI with its metadata using our new queue_url function
+                        // Cache any metadata first; it does not need MPD.
                         for (i, uri) in uris.iter().enumerate() {
                             // Get metadata for this URI if available
                             let track_metadata = metadata.get(i).and_then(|m| m.as_ref());
-                            
+
                             // Store metadata in cache if provided
                             if let Some(meta) = track_metadata {
                                 if !meta.metadata.is_empty() {
@@ -1943,14 +1961,10 @@ impl PlayerController for MPDPlayerController {
                                     }
                                 }
                             }
-                            
-                            let result = self.queue_url(uri, Some(insert_at_beginning));
-                            if !result {
-                                all_success = false;
-                            }
                         }
-                        
-                        success = all_success;
+
+                        // The whole batch goes over one connection.
+                        success = self.queue_urls(&uris, insert_at_beginning);
                     }
                     
                     if success {
@@ -2264,6 +2278,25 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use tempfile::TempDir;
+
+    /// Appending leaves placement to MPD, so every track of the batch gets the
+    /// same "no position" answer.
+    #[test]
+    fn queue_insert_position_is_absent_when_appending() {
+        let positions: Vec<_> = (0..4).map(|i| queue_insert_position(i, false)).collect();
+
+        assert_eq!(positions, vec![None, None, None, None]);
+    }
+
+    /// Inserting a batch at the front has to advance one slot per track.
+    /// Inserting every track at 0 pushes the previous one down, which lands a
+    /// 12-track album in the queue backwards.
+    #[test]
+    fn queue_insert_position_advances_so_a_batch_keeps_its_order() {
+        let positions: Vec<_> = (0..4).map(|i| queue_insert_position(i, true)).collect();
+
+        assert_eq!(positions, vec![Some(0), Some(1), Some(2), Some(3)]);
+    }
 
     /// Test that songs without cached metadata are not affected
     #[test]

@@ -1,9 +1,52 @@
-use crate::helpers::songtitlesplitter::SongTitleSplitter;
+use crate::helpers::songtitlesplitter::{OrderResult, SongTitleSplitter};
 use crate::helpers::attributecache;
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::Mutex;
 use log::{debug, info, warn};
+
+/// Everything known about one station's splitter.
+///
+/// Separates what was learned from what was set: a client needs to show the
+/// difference, and clearing a setting has to fall back to the learned value
+/// rather than to nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitterState {
+    /// Splitter id — the stream URL for radio stations
+    pub id: String,
+    /// Times the title was read as "artist - song"
+    pub artist_song_count: u32,
+    /// Times the title was read as "song - artist"
+    pub song_artist_count: u32,
+    /// Lookups that found neither reading
+    pub unknown_count: u32,
+    /// Lookups that found both readings
+    pub undecided_count: u32,
+    /// Order established by learning, if any
+    pub learned_order: Option<OrderResult>,
+    /// Separator established by learning, if any
+    pub learned_separator: Option<char>,
+    /// Order set explicitly for this station, if any
+    pub forced_order: Option<OrderResult>,
+    /// Separator set explicitly for this station, if any
+    pub forced_separator: Option<char>,
+}
+
+impl SplitterState {
+    fn of(id: &str, splitter: &SongTitleSplitter) -> Self {
+        SplitterState {
+            id: id.to_string(),
+            artist_song_count: splitter.get_artist_song_count(),
+            song_artist_count: splitter.get_song_artist_count(),
+            unknown_count: splitter.get_unknown_count(),
+            undecided_count: splitter.get_undecided_count(),
+            learned_order: splitter.get_default_order(),
+            learned_separator: splitter.get_default_separator(),
+            forced_order: splitter.get_forced_order(),
+            forced_separator: splitter.get_forced_separator(),
+        }
+    }
+}
 
 /// Manager for song title splitters that handles creation, reuse, and lifecycle
 /// 
@@ -196,6 +239,72 @@ impl SongSplitManager {
         }
     }
     
+    /// Set — or clear, with `None` — the order and separator for a station.
+    ///
+    /// Both are replaced together, so a caller always states the whole
+    /// setting. Nothing is persisted here; call `save` to keep it across a
+    /// restart.
+    ///
+    /// # Returns
+    /// * `Option<SplitterState>` - the resulting state, or None if no splitter
+    ///   could be created because the manager is at its limit
+    pub fn set_forced(
+        &self,
+        splitter_id: &str,
+        order: Option<OrderResult>,
+        separator: Option<char>,
+    ) -> Option<SplitterState> {
+        let mut splitters = self.splitters.lock();
+
+        if !splitters.contains_key(splitter_id) {
+            if splitters.len() >= self.max_splitters {
+                warn!("Maximum number of splitters ({}) reached, cannot create new splitter for ID: {}",
+                      self.max_splitters, splitter_id);
+                return None;
+            }
+
+            let new_splitter = if let Some(cached) = self.load_from_cache(splitter_id) {
+                debug!("Loaded splitter for ID '{}' from persistent storage to set its order", splitter_id);
+                cached
+            } else {
+                debug!("Creating new splitter for ID: {}", splitter_id);
+                SongTitleSplitter::new(splitter_id)
+            };
+            splitters.insert(splitter_id.to_string(), new_splitter);
+        }
+
+        let splitter = splitters.get_mut(splitter_id)?;
+        splitter.set_forced_order(order);
+        splitter.set_forced_separator(separator);
+        info!("Set order/separator for splitter '{}'", splitter_id);
+
+        Some(SplitterState::of(splitter_id, splitter))
+    }
+
+    /// Full state of one station, from memory or from persistent storage.
+    ///
+    /// Unlike `set_forced` this never creates a splitter: a station that has
+    /// never played has no state to report.
+    pub fn get_state(&self, splitter_id: &str) -> Option<SplitterState> {
+        let splitters = self.splitters.lock();
+        if let Some(splitter) = splitters.get(splitter_id) {
+            return Some(SplitterState::of(splitter_id, splitter));
+        }
+        drop(splitters);
+
+        self.load_from_cache(splitter_id)
+            .map(|splitter| SplitterState::of(splitter_id, &splitter))
+    }
+
+    /// Full state of every splitter currently held in memory.
+    pub fn get_all_states(&self) -> Vec<SplitterState> {
+        let splitters = self.splitters.lock();
+        splitters
+            .iter()
+            .map(|(id, splitter)| SplitterState::of(id, splitter))
+            .collect()
+    }
+
     /// Get the maximum number of splitters this manager will keep
     pub fn get_max_splitters(&self) -> usize {
         self.max_splitters
@@ -321,6 +430,82 @@ impl Clone for SongSplitManager {
 mod tests {
     use super::*;
     use std::thread;
+
+    use crate::helpers::songtitlesplitter::OrderResult;
+
+    /// Setting the order is only worth anything if it changes what playback
+    /// reports, so assert on the split rather than on the stored setting.
+    #[test]
+    fn a_set_order_changes_how_titles_split() {
+        let manager = SongSplitManager::new();
+        let id = "http://stream.example/announces-title-first";
+
+        manager.set_forced(id, Some(OrderResult::SongArtist), None);
+
+        assert_eq!(
+            manager.split_song(id, "Hey Jude - The Beatles"),
+            Some(("The Beatles".to_string(), "Hey Jude".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_set_separator_changes_where_titles_split() {
+        let manager = SongSplitManager::new();
+        let id = "http://stream.example/slashes-in-names";
+
+        manager.set_forced(id, Some(OrderResult::ArtistSong), Some('-'));
+
+        assert_eq!(
+            manager.split_song(id, "AC/DC - Highway to Hell"),
+            Some(("AC/DC".to_string(), "Highway to Hell".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_state_of_a_station_reports_what_was_set() {
+        let manager = SongSplitManager::new();
+        let id = "http://stream.example/one";
+
+        manager.set_forced(id, Some(OrderResult::SongArtist), Some('/'));
+        let state = manager.get_state(id).expect("station should have state");
+
+        assert_eq!(state.id, id);
+        assert_eq!(state.forced_order, Some(OrderResult::SongArtist));
+        assert_eq!(state.forced_separator, Some('/'));
+    }
+
+    /// Clearing has to restore guessing, not leave the last setting in place.
+    #[test]
+    fn clearing_a_set_order_returns_the_station_to_guessing() {
+        let manager = SongSplitManager::new();
+        let id = "http://stream.example/two";
+
+        manager.set_forced(id, Some(OrderResult::SongArtist), Some('/'));
+        manager.set_forced(id, None, None);
+        let state = manager.get_state(id).expect("station should still have state");
+
+        assert_eq!(state.forced_order, None);
+        assert_eq!(state.forced_separator, None);
+    }
+
+    #[test]
+    fn a_station_that_was_never_seen_has_no_state() {
+        let manager = SongSplitManager::new();
+
+        assert!(manager.get_state("http://stream.example/never-played").is_none());
+    }
+
+    #[test]
+    fn every_active_station_is_listed() {
+        let manager = SongSplitManager::new();
+        manager.set_forced("http://a", Some(OrderResult::ArtistSong), None);
+        manager.set_forced("http://b", Some(OrderResult::SongArtist), None);
+
+        let mut ids: Vec<String> = manager.get_all_states().into_iter().map(|s| s.id).collect();
+        ids.sort();
+
+        assert_eq!(ids, vec!["http://a".to_string(), "http://b".to_string()]);
+    }
 
     #[test]
     fn test_manager_creation() {

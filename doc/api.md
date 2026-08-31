@@ -23,6 +23,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Get Player Metadata](#get-player-metadata)
   - [Get Specific Player Metadata Key](#get-specific-player-metadata-key)
   - [Player Capabilities and Support Matrix](#player-capabilities-and-support-matrix)
+  - [Stream Title Splitting](#stream-title-splitting)
 - [Volume Control API](#volume-control-api)
   - [Get Volume Information](#get-volume-information)
   - [Get Current Volume State](#get-current-volume-state)
@@ -402,11 +403,11 @@ Sends a playback command to a specific player by name.
   - `command` (string): The command to send. Supported commands include:
     - **Basic playback**: `play`, `pause`, `playpause`, `stop`, `next`, `previous`, `kill`
     - **Playback control**: `seek:<position>`, `set_loop:none|track|playlist`, `set_random:true|false`
-    - **Queue management**: `add_track`, `remove_track:<position>`, `clear_queue`, `play_queue_index:<index>`
+    - **Queue management**: `add_track`, `add_tracks`, `remove_track:<position>`, `clear_queue`, `play_queue_index:<index>`
 
 **Note**: Queue management commands are only supported by certain players (MPD, LMS, Generic Players). See the [Queue Management Commands](#queue-management-commands) section for detailed information about player support and usage.
 
-- **Request Body** (for `add_track` command only):
+- **Request Body** (for `add_track` and `add_tracks` commands only):
   ```json
   {
     "uri": "string (required)",
@@ -414,6 +415,8 @@ Sends a playback command to a specific player by name.
     "coverart_url": "string (optional, future use)"
   }
   ```
+  `add_tracks` takes a `uris` array instead; see
+  [Add Several Tracks to Queue](#add-several-tracks-to-queue).
 - **Response**: Same as "Send Command to Active Player"
 - **Error Response** (400 Bad Request, 404 Not Found, 500 Internal Server Error): Same structure as above
 
@@ -443,6 +446,11 @@ curl -X POST http://<device-ip>:1080/api/player/mpd/command/seek:120.0
 curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_track \
   -H "Content-Type: application/json" \
   -d '{"uri": "artist/album/song.mp3"}'
+
+# Add a whole album in one request
+curl -X POST http://<device-ip>:1080/api/player/mpd/command/add_tracks \
+  -H "Content-Type: application/json" \
+  -d '{"uris": ["artist/album/01.flac", "artist/album/02.flac"]}'
 
 # Remove a track from the queue at position 2  
 curl -X POST http://<device-ip>:1080/api/player/lms/command/remove_track:2
@@ -664,6 +672,44 @@ Adds a single track to the player's queue.
 - **RAAT**: ❌ Not supported (queue managed by RAAT controller)
 - **Spotify**: ❌ Not supported (queue managed by Spotify service)
 
+#### Add Several Tracks to Queue
+
+Adds any number of tracks to the player's queue in a single request. Queueing an
+album with `add_track` costs one request per track; `add_tracks` takes the whole
+list, and the tracks are added over a single connection to the backend.
+
+- **Command**: `add_tracks`
+- **Method**: POST to `/api/player/<player-name>/command/add_tracks`
+- **Request Body** (JSON required):
+  ```json
+  {
+    "uris": ["artist/album/01.flac", "artist/album/02.flac"],
+    "insert_at_beginning": false,
+    "metadata": [
+      { "title": "First track" },
+      null
+    ]
+  }
+  ```
+  - `uris` (required): the tracks to add, in the order they should appear in the
+    queue. An empty array is accepted and does nothing.
+  - `insert_at_beginning` (optional, default `false`): insert the batch at the
+    front of the queue instead of appending it. The batch keeps its own order
+    either way.
+  - `metadata` (optional): positional — entry `i` describes `uris[i]`, and
+    `null` leaves a track without metadata. A shorter list is padded; more
+    entries than URIs is rejected with 400. Each entry takes the same shape as
+    the `metadata` object of [`add_track`](#add-track-to-queue).
+- **Supported URI Formats**: same as [`add_track`](#add-track-to-queue).
+- **Response**: `success` is true only if every track was added.
+
+**Player Support**: identical to `add_track` — the command maps onto the same
+queueing path, so any player that supports `add_track` supports `add_tracks`.
+
+**Compatibility**: `add_track` is unchanged and remains supported. Clients that
+cannot rely on the server version should fall back to it when `add_tracks`
+returns 400.
+
 #### Remove Track from Queue
 
 Removes a track at a specific position from the queue.
@@ -868,6 +914,120 @@ curl http://<device-ip>:1080/api/player/mpd/meta/volume
 
 # Get specific metadata for the currently active player
 curl http://<device-ip>:1080/api/player/active/meta/volume
+```
+
+### Stream Title Splitting
+
+Radio streams announce a single combined title such as `Nightwish - Nemo`. The
+server splits it into artist and song. The order is not fixed — some stations
+announce `Title - Artist` — so it is guessed per station with a MusicBrainz
+lookup, and the result is learned over time.
+
+Guessing has two limits: it can be wrong, and on a device with no internet
+access it cannot happen at all. These endpoints report what a station's
+splitter has learned and let the order and separator be **set** outright. A set
+value wins over anything guessed or learned, and is used without any lookup.
+
+When neither a set nor a learned order is available and the lookup cannot
+decide, the split falls back to reading the title as `Artist - Title`, which is
+what streams overwhelmingly announce.
+
+Splitting is MPD-only; other players return 400.
+
+The `<station>` path segment is the stream URL, URL-safe base64 encoded — the
+same encoding used elsewhere in this API.
+
+#### List Splitters
+
+- **Endpoint**: `/api/player/<player-name>/splitters`
+- **Method**: GET
+- **Response**:
+  ```json
+  {
+    "player_name": "mpd",
+    "count": 1,
+    "splitters": [
+      {
+        "station": "http://stream.example/radio",
+        "order": "song_artist",
+        "separator": "-",
+        "learned_order": "artist_song",
+        "learned_separator": null,
+        "artist_song_count": 12,
+        "song_artist_count": 3,
+        "unknown_count": 1,
+        "undecided_count": 0
+      }
+    ]
+  }
+  ```
+  `order` and `separator` are what was set explicitly; `learned_order` and
+  `learned_separator` are what the station taught the server. Either may be
+  `null`. The counts are lookup outcomes, not play counts.
+
+Only stations played since the last restart are listed.
+
+#### Get a Splitter
+
+- **Endpoint**: `/api/player/<player-name>/splitter/<station>`
+- **Method**: GET
+- **Response**: a single splitter object, as above.
+- **Errors**: 404 if the station has no splitter, 400 if `<station>` is not
+  URL-safe base64.
+
+Unlike the list, this also finds stations persisted by an earlier run.
+
+#### Set a Splitter
+
+- **Endpoint**: `/api/player/<player-name>/splitter/<station>`
+- **Method**: POST
+- **Request Body**:
+  ```json
+  {
+    "order": "artist_song",
+    "separator": "-"
+  }
+  ```
+  - `order`: `artist_song` or `song_artist`. Omit or send `null` to clear the
+    setting and return the station to guessing.
+  - `separator`: one of `-`, `/`, `:`. Omit or send `null` to clear it. A set
+    separator is tried before any other, which is how `AC/DC - Highway to Hell`
+    is made to split on the dash rather than inside the band name.
+
+  Both fields are replaced together, so a request always states the whole
+  setting: sending only `order` clears any separator that was set.
+- **Response**: the resulting splitter object.
+- **Errors**: 400 for an unrecognised order or separator (`unknown` and
+  `undecided` are detection outcomes and cannot be set), 500 if the setting was
+  applied but could not be persisted.
+
+The setting is saved, so it survives a restart.
+
+#### Delete a Splitter
+
+- **Endpoint**: `/api/player/<player-name>/splitter/<station>`
+- **Method**: DELETE
+- **Response**: 204 No Content.
+- **Errors**: 404 if the station has no splitter.
+
+Discards both what was set and what was learned; the station is guessed from
+scratch next time it plays.
+
+#### Examples
+
+```bash
+# The station announces "Title - Artist"; correct it once
+STATION=$(printf 'http://stream.example/radio' | basenc --base64url | tr -d '=')
+curl -X POST http://<device-ip>:1080/api/player/mpd/splitter/$STATION \
+  -H "Content-Type: application/json" \
+  -d '{"order": "song_artist", "separator": "-"}'
+
+# See what a station has learned
+curl http://<device-ip>:1080/api/player/mpd/splitter/$STATION
+
+# Back to guessing
+curl -X POST http://<device-ip>:1080/api/player/mpd/splitter/$STATION \
+  -H "Content-Type: application/json" -d '{}'
 ```
 
 ### Player Capabilities and Support Matrix

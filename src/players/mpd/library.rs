@@ -594,6 +594,16 @@ impl MPDLibrary {
         result
     }
 
+    /// Count the albums attributed to an artist.
+    ///
+    /// Reads the album-artist mapping directly instead of materialising every
+    /// album, which is what `get_albums_by_artist_id` has to do. The artist
+    /// list endpoint asks this once per artist, so the difference is the
+    /// difference between one map lookup and a pass over the whole library.
+    pub fn album_count_for_artist(&self, artist_id: &crate::data::Identifier) -> usize {
+        self.album_artists.read().count_albums_for_artist(artist_id)
+    }
+
     /// Get albums by artist name
     pub fn get_albums_by_artist(&self, artist_name: &str) -> Vec<Album> {
         let mut result = Vec::new();
@@ -1148,6 +1158,10 @@ impl LibraryInterface for MPDLibrary {
         self.get_album_by_id(id)
     }
     
+    fn album_count_for_artist(&self, artist_id: &crate::data::Identifier) -> usize {
+        self.album_count_for_artist(artist_id)
+    }
+
     fn get_albums_by_artist_id(&self, artist_id: &crate::data::Identifier) -> Vec<Album> {
         self.get_albums_by_artist_id(artist_id)
     }
@@ -1532,6 +1546,80 @@ impl MPDLibrary {
 mod tests {
     use super::*;
     use crate::data::{Identifier, Track};
+
+    /// Build an empty library plus a bare album carrying the given id.
+    fn empty_library() -> MPDLibrary {
+        let controller = Arc::new(MPDPlayerController::with_connection("localhost", 6600));
+        MPDLibrary::with_connection("localhost", 6600, controller)
+    }
+
+    fn bare_album(name: &str, id: u64) -> Album {
+        Album {
+            id: Identifier::Numeric(id),
+            name: name.to_string(),
+            artists: Arc::new(Mutex::new(Vec::new())),
+            artists_flat: None,
+            release_date: None,
+            tracks: Arc::new(Mutex::new(Vec::new())),
+            cover_art: None,
+            uri: None,
+            genres: Vec::new(),
+        }
+    }
+
+    /// Register `count` albums against `artist_id`, plus one album belonging to
+    /// somebody else so a count that ignores the mapping would be caught.
+    fn library_with_albums_for(artist_id: &Identifier, count: u64) -> MPDLibrary {
+        let library = empty_library();
+        {
+            let mut albums = library.albums.write();
+            let mut mapping = library.album_artists.write();
+            for i in 0..count {
+                let album = bare_album(&format!("Album {}", i), i);
+                mapping.add_mapping(album.id.clone(), artist_id.clone());
+                albums.insert(album.name.clone(), album);
+            }
+            let other = bare_album("Someone Else", 9_999);
+            mapping.add_mapping(other.id.clone(), Identifier::Numeric(4_242));
+            albums.insert(other.name.clone(), other);
+        }
+        library
+    }
+
+    /// The artist list endpoint needs one album count per artist. Deriving it by
+    /// materialising every album of that artist made the endpoint O(artists x
+    /// albums); the count has to come from the album-artist mapping instead.
+    #[test]
+    fn album_count_for_artist_matches_the_albums_listed_for_that_artist() {
+        let artist_id = Identifier::Numeric(7);
+        let library = library_with_albums_for(&artist_id, 3);
+
+        assert_eq!(library.album_count_for_artist(&artist_id), 3);
+        assert_eq!(
+            library.album_count_for_artist(&artist_id),
+            library.get_albums_by_artist_id(&artist_id).len()
+        );
+    }
+
+    #[test]
+    fn album_count_for_artist_is_zero_for_an_artist_with_no_albums() {
+        let library = library_with_albums_for(&Identifier::Numeric(7), 3);
+
+        assert_eq!(library.album_count_for_artist(&Identifier::Numeric(123)), 0);
+    }
+
+    /// The trait method is what the API actually calls, so the override has to
+    /// be reachable through `LibraryInterface`, not just as an inherent method.
+    #[test]
+    fn album_count_for_artist_is_reachable_through_the_trait() {
+        let artist_id = Identifier::Numeric(7);
+        let library = library_with_albums_for(&artist_id, 3);
+
+        assert_eq!(
+            <MPDLibrary as LibraryInterface>::album_count_for_artist(&library, &artist_id),
+            3
+        );
+    }
 
     /// Build a library with a single album whose tracks live at the given URIs.
     fn library_with_album(album_name: &str, track_uris: &[&str]) -> (MPDLibrary, Identifier) {

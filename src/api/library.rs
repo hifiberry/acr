@@ -399,9 +399,9 @@ pub fn get_player_artists(
                 let mut artists_json = Vec::with_capacity(artists.len());
 
                 for artist in &artists {
-                    // Get albums for this artist by name to determine the count
-                    let albums = library.get_albums_by_artist_id(&artist.id);
-                    let album_count = albums.len();
+                    // Count from the album-artist mapping. Listing the albums
+                    // here walked the whole library once per artist.
+                    let album_count = library.album_count_for_artist(&artist.id);
 
                     // Extract all thumbnail URLs from metadata if available
                     let thumb_urls = artist.metadata.as_ref()

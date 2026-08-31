@@ -118,6 +118,16 @@ pub trait LibraryInterface {
     
     /// Get albums by artist ID
     fn get_albums_by_artist_id(&self, artist_id: &Identifier) -> Vec<Album>;
+
+    /// Number of albums attributed to an artist.
+    ///
+    /// The default materialises the artist's albums and counts them. Backends
+    /// that keep an album-artist index should override this: callers such as
+    /// the artist list endpoint ask once per artist, so a default that walks
+    /// the library each time makes that endpoint quadratic.
+    fn album_count_for_artist(&self, artist_id: &Identifier) -> usize {
+        self.get_albums_by_artist_id(artist_id).len()
+    }
     
     /// Force an update of the library data in the underlying system
     ///
@@ -356,5 +366,74 @@ pub trait LibraryInterface {
         } else {
             Some(result)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use parking_lot::Mutex;
+
+    /// A library that knows nothing except which albums belong to one artist.
+    /// It exists to pin down the *default* `album_count_for_artist`, which is
+    /// what every backend that does not keep an album-artist index inherits.
+    struct CountingLibrary {
+        albums: Vec<Album>,
+        calls: Mutex<usize>,
+    }
+
+    fn album(id: u64) -> Album {
+        Album {
+            id: Identifier::Numeric(id),
+            name: format!("Album {}", id),
+            artists: Arc::new(Mutex::new(Vec::new())),
+            artists_flat: None,
+            release_date: None,
+            tracks: Arc::new(Mutex::new(Vec::new())),
+            cover_art: None,
+            uri: None,
+            genres: Vec::new(),
+        }
+    }
+
+    impl LibraryInterface for CountingLibrary {
+        fn new() -> Self {
+            CountingLibrary { albums: Vec::new(), calls: Mutex::new(0) }
+        }
+        fn is_loaded(&self) -> bool { true }
+        fn refresh_library(&self) -> Result<(), LibraryError> { Ok(()) }
+        fn get_albums(&self) -> Vec<Album> { self.albums.clone() }
+        fn get_artists(&self) -> Vec<Artist> { Vec::new() }
+        fn get_album_by_artist_and_name(&self, _artist: &str, _album: &str) -> Option<Album> { None }
+        fn get_album_by_id(&self, _id: &Identifier) -> Option<Album> { None }
+        fn get_artist_by_name(&self, _name: &str) -> Option<Artist> { None }
+        fn get_albums_by_artist_id(&self, _artist_id: &Identifier) -> Vec<Album> {
+            *self.calls.lock() += 1;
+            self.albums.clone()
+        }
+        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn get_image(&self, _identifier: String) -> Option<(Vec<u8>, String)> { None }
+        fn update_artist_metadata(&self) {}
+    }
+
+    /// A backend that does not override the method must keep the answer it gave
+    /// before the method existed: the length of the album list for that artist.
+    #[test]
+    fn default_album_count_for_artist_falls_back_to_listing_the_albums() {
+        let library = CountingLibrary {
+            albums: vec![album(1), album(2), album(3)],
+            calls: Mutex::new(0),
+        };
+
+        assert_eq!(library.album_count_for_artist(&Identifier::Numeric(7)), 3);
+        assert_eq!(*library.calls.lock(), 1, "default should delegate exactly once");
+    }
+
+    #[test]
+    fn default_album_count_for_artist_is_zero_without_albums() {
+        let library = CountingLibrary { albums: Vec::new(), calls: Mutex::new(0) };
+
+        assert_eq!(library.album_count_for_artist(&Identifier::Numeric(7)), 0);
     }
 }

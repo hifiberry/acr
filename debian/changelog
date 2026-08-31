@@ -1,3 +1,39 @@
+hifiberry-audiocontrol (0.10.0) trixie; urgency=medium
+
+  * library: count an artist's albums from the album-artist mapping rather
+    than by listing them. The artist list endpoint derived album_count by
+    calling get_albums_by_artist_id once per artist, and that call walks
+    every album in the library, so serving the list was O(artists x albums).
+    On a library of 1,904 artists and 11,318 albums /library/mpd/artists took
+    2.2 s for a 282 KB response, while /albums - ten times the payload -
+    returned in 0.5 s. The mapping already indexes artist to album ids, so
+    the count is a lookup; backends without such an index keep the previous
+    behaviour through a default implementation.
+  * api: add_tracks queues several tracks in one request. Queueing a
+    12-track album needed 14 requests, and partial failure was every
+    client's problem - if track 7 failed, the client held a half-built queue
+    and had to choose between playing an incomplete album and discarding
+    what worked. The new command takes the whole list and maps onto the
+    existing plural queue command, so no player backend changed and
+    add_track keeps working unchanged.
+  * mpd: queue a batch over one connection, and keep its order. Each track
+    was added through its own freshly opened connection, so a 12-track album
+    opened twelve; and inserting at the front placed every track at position
+    0, so each insert pushed the previous one down and the batch landed
+    reversed.
+  * mpd: stream title splitting no longer fails closed, and can be set per
+    station. The split returned nothing when the order lookup was undecided
+    or unknown - the permanent state on a device that cannot reach
+    MusicBrainz - leaving the title combined and the artist empty. It now
+    falls back to the "Artist - Title" reading that streams overwhelmingly
+    use. Order and separator can also be set per station through four new
+    endpoints, and a set value wins over anything guessed or learned; a set
+    separator is tried first, which is what lets "AC/DC - Highway to Hell"
+    split on the dash rather than inside the band name. Splitters cached by
+    an earlier version still load.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 31 Aug 2026 14:06:14 +0000
+
 hifiberry-audiocontrol (0.9.2) trixie; urgency=medium
 
   * mpd: emit shuffle_changed and loop_mode_changed. The MPD controller

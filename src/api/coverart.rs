@@ -271,6 +271,12 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
                 match store_lock.download_and_store_user_image(&artist_name, &request.url, "custom") {
                     crate::helpers::artist_store::ArtistImageResult::Found { cache_path } => {
                         info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
+                        // `cache_path` here is the real path the new image was just written to
+                        // (unlike the bogus one computed above for the dead `remove_file` call).
+                        // A re-upload overwrites this same file but leaves any variants generated
+                        // from the *previous* image beside it — drop those now so the grid does
+                        // not keep showing the old face at thumbnail size.
+                        remove_artist_image_variants(&cache_path);
                     }
                     crate::helpers::artist_store::ArtistImageResult::NotFound => {
                         warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
@@ -298,18 +304,105 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
     }
 }
 
+/// Build the path of a variant beside an artist-store image.
+///
+/// The artist store is a separate store from the image cache, but shares its shape:
+/// a directory per entity, a file per image. Only the naming convention is shared.
+fn variant_path_for(cache_path: &str, size: u32) -> String {
+    let path = std::path::Path::new(cache_path);
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+    let parent = path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    format!(
+        "{}/{}.{}",
+        parent,
+        crate::helpers::imageresize::variant_stem(stem, size),
+        extension
+    )
+}
+
+/// Read a variant of an artist image, generating it beside the original on first use.
+///
+/// Returns `None` whenever anything goes wrong, so the caller falls back to the
+/// original rather than failing a request that would otherwise succeed.
+fn artist_image_variant(cache_path: &str, size: u32) -> Option<(Vec<u8>, String)> {
+    let variant_path = variant_path_for(cache_path, size);
+
+    if let Ok(data) = std::fs::read(&variant_path) {
+        let mime = if variant_path.ends_with(".png") { "image/png" } else { "image/jpeg" };
+        return Some((data, mime.to_string()));
+    }
+
+    let original = std::fs::read(cache_path).ok()?;
+    match crate::helpers::imageresize::resize(&original, size) {
+        Ok(crate::helpers::imageresize::Resized::Original) => None,
+        Ok(crate::helpers::imageresize::Resized::Image(data, mime)) => {
+            // The stored extension must match what was actually encoded.
+            let stored_path = if mime == "image/png" {
+                variant_path.replace(".jpg", ".png")
+            } else {
+                variant_path.replace(".png", ".jpg")
+            };
+            if let Err(e) = std::fs::write(&stored_path, &data) {
+                log::warn!("Failed to store artist image variant {}: {}", stored_path, e);
+            }
+            Some((data, mime))
+        }
+        Err(e) => {
+            log::debug!("Failed to resize artist image {}: {}", cache_path, e);
+            None
+        }
+    }
+}
+
+/// Delete every variant beside an artist image. Called when the original is replaced.
+fn remove_artist_image_variants(cache_path: &str) {
+    let path = std::path::Path::new(cache_path);
+    let (Some(parent), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else { return };
+
+    for entry in entries.flatten() {
+        let candidate = entry.path();
+        let Some(candidate_stem) = candidate.file_stem().and_then(|s| s.to_str()) else { continue };
+        if crate::helpers::imageresize::variant_size_of(candidate_stem).is_none() {
+            continue;
+        }
+        if candidate_stem.rsplit_once('@').map(|(base, _)| base) != Some(stem) {
+            continue;
+        }
+        if let Err(e) = std::fs::remove_file(&candidate) {
+            log::warn!("Failed to remove artist image variant {}: {}", candidate.display(), e);
+        }
+    }
+}
+
 /// Get artist image directly
-/// 
+///
 /// This endpoint serves the actual artist image file if available in cache.
 /// Returns a 404 if no image is found.
-/// 
+///
+/// An optional `size` query parameter requests a downscaled variant, rounded up
+/// to the next rung of 100/200/400/800 pixels on the longest edge. Omitting it,
+/// or requesting a size above the top rung or the original's own size, serves the
+/// original bytes unchanged.
+///
 /// # Parameters
 /// * `artist_b64` - Base64 encoded artist name
-#[get("/artist/<artist_b64>/image")]
-pub fn get_artist_image(artist_b64: String) -> Result<(rocket::http::ContentType, Vec<u8>), rocket::response::status::Custom<String>> {
+/// * `size` - Optional requested size in pixels on the longest edge
+#[get("/artist/<artist_b64>/image?<size>")]
+pub fn get_artist_image(
+    artist_b64: String,
+    size: Option<&str>,
+    if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
+) -> Result<crate::api::imageresponse::ImageReply, rocket::response::status::Custom<String>> {
     use rocket::http::Status;
     use rocket::response::status::Custom;
-    
+    use crate::api::imageresponse::{reply, REVALIDATE_DAILY_CACHE};
+
+    let target = crate::api::library::parse_size(size).map_err(|e| Custom(Status::BadRequest, e))?;
+
     let artist_name = match decode_url_safe(&artist_b64) {
         Some(decoded) => decoded,
         None => {
@@ -328,18 +421,24 @@ pub fn get_artist_image(artist_b64: String) -> Result<(rocket::http::ContentType
             match std::fs::read(&cache_path) {
                 Ok(image_data) => {
                     // Determine content type based on file extension
-                    let content_type = if cache_path.ends_with(".png") {
-                        rocket::http::ContentType::PNG
+                    let mime = if cache_path.ends_with(".png") {
+                        "image/png"
                     } else if cache_path.ends_with(".gif") {
-                        rocket::http::ContentType::GIF
+                        "image/gif"
                     } else if cache_path.ends_with(".webp") {
-                        rocket::http::ContentType::new("image", "webp")
+                        "image/webp"
                     } else {
-                        rocket::http::ContentType::JPEG // Default to JPEG
+                        "image/jpeg" // Default to JPEG
                     };
-                    
+
+                    let (image_data, mime) = match target {
+                        Some(rung) => artist_image_variant(&cache_path, rung)
+                            .unwrap_or((image_data, mime.to_string())),
+                        None => (image_data, mime.to_string()),
+                    };
+
                     debug!("Serving artist image for '{}' from cache: {}", artist_name, cache_path);
-                    Ok((content_type, image_data))
+                    Ok(reply(image_data, &mime, REVALIDATE_DAILY_CACHE, if_none_match.0))
                 },
                 Err(e) => {
                     log::warn!("Failed to read cached image for artist '{}' at '{}': {}", artist_name, cache_path, e);
@@ -357,5 +456,41 @@ pub fn get_artist_image(artist_b64: String) -> Result<(rocket::http::ContentType
                 format!("No image found for artist '{}'", artist_name),
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variant_paths_sit_beside_the_original() {
+        assert_eq!(
+            variant_path_for("/var/lib/audiocontrol/cache/artists/Portishead/custom.jpg", 400),
+            "/var/lib/audiocontrol/cache/artists/Portishead/custom@400.jpg"
+        );
+    }
+
+    #[test]
+    fn variant_paths_keep_the_extension_they_are_given() {
+        assert_eq!(variant_path_for("/cache/artists/A/thumb.png", 100), "/cache/artists/A/thumb@100.png");
+    }
+
+    #[test]
+    fn removing_variants_deletes_only_the_matching_base() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let original = dir.path().join("custom.jpg");
+        let stale_variant = dir.path().join("custom@400.jpg");
+        let unrelated_variant = dir.path().join("cover@200.jpg");
+
+        std::fs::write(&original, b"original bytes").unwrap();
+        std::fs::write(&stale_variant, b"stale thumbnail").unwrap();
+        std::fs::write(&unrelated_variant, b"unrelated thumbnail").unwrap();
+
+        remove_artist_image_variants(original.to_str().unwrap());
+
+        assert!(original.exists(), "the original image must survive");
+        assert!(!stale_variant.exists(), "the stale variant must be removed");
+        assert!(unrelated_variant.exists(), "an unrelated base's variant must survive");
     }
 }

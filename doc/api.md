@@ -2340,11 +2340,26 @@ Directly serves the cached artist image file if available. This endpoint returns
 - **Method**: GET
 - **Parameters**:
   - `artist_b64` (string, required): URL-safe base64 encoded artist name
+
+**Query parameters**
+
+| Name | Type | Meaning |
+|---|---|---|
+| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. |
+
+A size larger than the top rung, or larger than the image itself, returns the
+original: acr never upscales. A size that is not a positive integer is a
+`400`, not a silent fallback.
+
+Responses carry `ETag` and `Cache-Control: public, max-age=86400`. The shorter
+lifetime is deliberate: an artist image can be replaced by uploading a custom
+one, so it is not immutable the way album art is.
+
 - **Response**: 
   - **Success (200)**: Binary image data with appropriate `Content-Type` header (`image/jpeg`, `image/png`, `image/gif`, or `image/webp`)
-  - **Not Found (404)**: JSON error message if no cached image is available
-  - **Bad Request (400)**: JSON error message for invalid artist name encoding
-  - **Internal Server Error (500)**: JSON error message if image file cannot be read
+  - **Not Found (404)**: String error message if no cached image is available
+  - **Bad Request (400)**: String error message for invalid artist name encoding or an invalid `size`
+  - **Internal Server Error (500)**: String error message if image file cannot be read
 
 #### Examples
 
@@ -2359,6 +2374,9 @@ curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image
 
 # Save image to file
 curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image -o beatles.jpg
+
+# Get a thumbnail-sized variant
+curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image?size=400 -o beatles-thumb.jpg
 
 # Use in HTML
 # <img src="http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image" alt="The Beatles">

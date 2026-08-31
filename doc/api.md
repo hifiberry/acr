@@ -79,6 +79,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Set Setting Value](#set-setting-value)
 - [Cache API](#cache-api)
   - [Get Cache Statistics](#get-cache-statistics)
+  - [Purge Image Variants](#purge-image-variants)
 - [Background Jobs API](#background-jobs-api)
   - [List Background Jobs](#list-background-jobs)
   - [Get Background Job by ID](#get-background-job-by-id)
@@ -153,6 +154,34 @@ Retrieves the current version of the API.
 ```bash
 curl http://<device-ip>:1080/api/version
 ```
+
+### GET /capabilities
+
+What this daemon supports, as opposed to which release it is.
+
+```json
+{
+  "version": "0.9.3",
+  "images": {
+    "sizes": [100, 200, 400, 800]
+  }
+}
+```
+
+`images.sizes` lists the sizes accepted by the `size` parameter on the image
+endpoints; requests are rounded up to the next listed size.
+
+**This is a daemon-level capability, not a per-player guarantee.** It says which
+sizes this release understands, not that every image can be served at them.
+Resizing works from acr's own image cache, so on `/api/library/<player>/image/<id>`
+it applies to `album:` identifiers on players that populate that cache -- MPD
+does, LMS does not. `artist:` identifiers, bare track URLs, base64 identifiers,
+and GIF or BMP sources are served at full size. See
+[Get Image from Library](#get-image-from-library) for the full list; a request
+that cannot be resized still returns `200` with the original.
+
+**A release that answers this endpoint with 404 does not resize images.** That is
+a complete answer -- ask for originals rather than probing.
 
 ### Get Input Status
 
@@ -1721,12 +1750,51 @@ Retrieves an image (such as album art) from a player's library.
 - **Path Parameters**:
   - `player-name` (string): The name of the player
   - `identifier` (string): The identifier for the image (e.g., "album:12345")
+
+**Query parameters**
+
+| Name | Type | Meaning |
+|---|---|---|
+| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. It takes effect for `album:` identifiers on players that keep cover art in acr's image cache; every other combination is accepted and validated but then ignored, and the response is the full-size original with no signal that resizing did not happen. |
+
+**When `size` does nothing.** Resizing works from acr's own image cache, so it
+applies only where two things are both true:
+
+- the identifier is an `album:` identifier. `artist:` identifiers, bare track
+  URLs and URL-safe-base64 identifiers are all served at full size.
+- the player keeps its cover art in acr's image cache. **MPD does; LMS does
+  not** — an LMS library fetches album art over HTTP from the LMS server on
+  every request and never populates the cache, so `?size=` on an LMS player is
+  a silent no-op today.
+
+In every one of those cases the response is the full-size original, with a
+normal `200` and no error. A client that must know whether it received a
+thumbnail should look at the image it got, not at the request it sent.
+
+GIF and BMP sources are never resized either: only the `jpeg`, `png` and
+`webp` decoders are compiled in, so anything else is served at full size.
+
+A size larger than the top rung, or larger than the image itself, returns the
+original: acr never upscales. A size that is not a positive integer is a
+`400`, not a silent fallback.
+
+Responses carry an `ETag` and honour `If-None-Match` with a `304`. The
+`Cache-Control` header depends on the identifier: `album:` art does not
+change under a given album id, so those responses get
+`public, max-age=31536000, immutable` and clients can hold them
+indefinitely. Every other identifier — `artist:` art (which a user can
+replace with a new upload) and bare track URLs — gets
+`public, max-age=86400` instead, so clients revalidate daily rather than
+being stuck with a stale image for a year.
+
 - **Response**: Binary image data with appropriate Content-Type header
 - **Error Response** (404 Not Found): String error message
+- **Error Response** (400 Bad Request): String error message when `size` is not a positive integer
 
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/library/mpd/image/album:12345 --output cover.jpg
+curl http://<device-ip>:1080/api/library/mpd/image/album:12345?size=400 --output cover-thumb.jpg
 ```
 
 ## External Services API
@@ -2478,11 +2546,28 @@ Directly serves the cached artist image file if available. This endpoint returns
 - **Method**: GET
 - **Parameters**:
   - `artist_b64` (string, required): URL-safe base64 encoded artist name
+
+**Query parameters**
+
+| Name | Type | Meaning |
+|---|---|---|
+| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. |
+
+A size larger than the top rung, or larger than the image itself, returns the
+original: acr never upscales. A size that is not a positive integer is a
+`400`, not a silent fallback. GIF and BMP sources are served at full size
+whatever `size` says, because only the `jpeg`, `png` and `webp` decoders are
+compiled in.
+
+Responses carry `ETag` and `Cache-Control: public, max-age=86400`. The shorter
+lifetime is deliberate: an artist image can be replaced by uploading a custom
+one, so it is not immutable the way album art is.
+
 - **Response**: 
   - **Success (200)**: Binary image data with appropriate `Content-Type` header (`image/jpeg`, `image/png`, `image/gif`, or `image/webp`)
-  - **Not Found (404)**: JSON error message if no cached image is available
-  - **Bad Request (400)**: JSON error message for invalid artist name encoding
-  - **Internal Server Error (500)**: JSON error message if image file cannot be read
+  - **Not Found (404)**: String error message if no cached image is available
+  - **Bad Request (400)**: String error message for invalid artist name encoding or an invalid `size`
+  - **Internal Server Error (500)**: String error message if image file cannot be read
 
 #### Examples
 
@@ -2497,6 +2582,9 @@ curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image
 
 # Save image to file
 curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image -o beatles.jpg
+
+# Get a thumbnail-sized variant
+curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image?size=400 -o beatles-thumb.jpg
 
 # Use in HTML
 # <img src="http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image" alt="The Beatles">
@@ -3150,7 +3238,7 @@ curl -X POST http://<device-ip>:1080/api/settings/set \
 
 ## Cache API
 
-The Cache API provides endpoints to retrieve information about the internal caching system used by the audio control service. This includes statistics about memory and disk cache usage, as well as image cache statistics.
+The Cache API provides endpoints to retrieve information about the internal caching system used by the audio control service. This includes statistics about memory and disk cache usage, as well as image cache statistics. It also carries the one maintenance operation the cache exposes: purging generated image variants.
 
 ### Get Cache Statistics
 
@@ -3171,6 +3259,8 @@ Retrieves comprehensive statistics about the current cache state, including memo
   "image_cache_stats": {
     "total_images": 150,
     "total_size": 25165824,
+    "variant_images": 48,
+    "variant_size": 921600,
     "last_updated": 1722254400
   },
   "message": null
@@ -3185,9 +3275,16 @@ Retrieves comprehensive statistics about the current cache state, including memo
   - `memory_bytes` (number): Current memory usage in bytes
   - `memory_limit_bytes` (number): Maximum memory limit in bytes (null if no limit)
 - `image_cache_stats` (object|null): Image cache statistics object containing:
-  - `total_images` (number): Total number of cached images
-  - `total_size` (number): Total size of all cached images in bytes
+  - `total_images` (number): Total number of cached images, generated variants included
+  - `total_size` (number): Total size of all cached images in bytes, generated variants included
+  - `variant_images` (number): How many of `total_images` are generated thumbnails (see the `size` parameter on the image endpoints)
+  - `variant_size` (number): How many of `total_size` bytes are generated thumbnails
   - `last_updated` (number): Timestamp when statistics were last updated (Unix epoch seconds)
+
+`variant_images` and `variant_size` are a subset of the totals, not an
+addition to them. They are the figures to watch before and after
+`POST /api/imagecache/variants/purge`: the image cache has no eviction policy,
+and thumbnails are the only content in it that grows without bound.
 - `message` (string|null): Error message if success is false, null otherwise
 
 **Example Request**:
@@ -3208,6 +3305,8 @@ curl -X GET "http://localhost:8080/api/cache/stats"
   "image_cache_stats": {
     "total_images": 342,
     "total_size": 67108864,
+    "variant_images": 120,
+    "variant_size": 2359296,
     "last_updated": 1722254400
   },
   "message": null
@@ -3227,6 +3326,47 @@ curl -X GET "http://localhost:8080/api/cache/stats"
 - Image cache statistics include metadata stored in the attribute cache
 - The `image_cache_stats` field may be null if image cache statistics are unavailable
 - Disk cache location is configurable via the application configuration
+
+### Purge Image Variants
+
+Deletes every generated thumbnail from the image cache, keeping all originals.
+
+**Endpoint**: `POST /api/imagecache/variants/purge`
+
+**Request Body**: none
+
+**Response Format**:
+```json
+{
+  "removed": 4271
+}
+```
+
+**Response Fields**:
+- `removed` (number): How many variant files were deleted
+
+**Example Request**:
+```bash
+curl -X POST "http://<device-ip>:1080/api/imagecache/variants/purge"
+```
+
+**Why it exists**: the image cache has no eviction policy and no size cap, and
+variants -- the thumbnails generated for the `size` parameter on the image
+endpoints -- are the only content in it that grows without bound. On a library
+of 11,000 albums the four sizes come to roughly 213 MB. This is the way to
+reclaim that space on a small SD card.
+
+**It is always safe.** Variants are derived data: every one of them is
+regenerated from its original the next time a client asks for that size, so a
+purge costs CPU on the next request, never an image. Originals are never
+touched.
+
+Watch `image_cache_stats.variant_size` from `GET /api/cache/stats` to see how
+much a purge would reclaim, and to confirm what it reclaimed.
+
+- **Response**:
+  - **Success (200)**: JSON object with the number of files removed
+  - **Internal Server Error (500)**: String error message if the cache could not be walked
 
 ## Background Jobs API
 

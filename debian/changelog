@@ -1,3 +1,50 @@
+hifiberry-audiocontrol (0.11.0) trixie; urgency=medium
+
+  * api: serve resized cover art through a size parameter on the library and
+    artist image endpoints. Cover art was served at full size only - a mean
+    243 KB at 1280x1280 measured over a library of 11,318 albums - while
+    clients draw it into 120 pt grid cells. A request snaps up to one of
+    100, 200, 400 or 800 px; at 400 the same image is about 19 KB, so a
+    client caches roughly 213 MB of thumbnails rather than 2.8 GB of
+    originals. Every client pays the old cost, not just new ones: the web UI
+    renders the same grids from the same full-size images. A request without
+    the parameter returns the original bytes unchanged, so existing clients
+    are unaffected, and a size above the image's own resolution serves the
+    original rather than upscaling it.
+  * api: image responses carry ETag and Cache-Control, and answer
+    If-None-Match with 304. They previously carried only Content-Length, so
+    every client had to build its own cache with no way to revalidate. The
+    policy follows the identifier rather than the endpoint: album art keyed
+    by album id gets a year and immutable, while artist images get a day,
+    because a user can replace one by uploading a custom image and a year of
+    immutability would strand that replacement behind every client cache in
+    the field.
+  * imagecache: store resized variants beside their originals, and drop them
+    when the original changes. A variant is derived data, regenerable at any
+    time, so it is named after the original it came from and lives in the
+    same directory. Re-storing an original removes its variants first -
+    without that a replaced cover would show the old art at grid size and the
+    new art at full size, with nothing reporting an error. Cache statistics
+    report the derived share separately from the total, and a new
+    POST /imagecache/variants/purge reclaims it.
+  * imagecache: generate the grid-size thumbnail in the background after a
+    library load. Serving on demand alone means the first scroll through a
+    freshly scanned library pays an image decode per cell. The walk generates
+    only the 400 px size, skips albums that already have one so a rescan is
+    nearly free, pauses between albums it actually worked on so it loses to
+    playback, and reports through the background job registry like the other
+    long-running tasks. A guard prevents a second walk starting on a rescan.
+  * api: add a capabilities endpoint. A version string identifies a build but
+    does not say what it supports, so a client reasoning from it has to carry
+    a table mapping versions to behaviour - and this API has varied underneath
+    clients before without saying so. GET /capabilities reports the available
+    image sizes; a release answering it with 404 does not resize, which is a
+    complete answer a client can act on without probing. Resizing applies to
+    album identifiers on players that keep cover art in the image cache, and
+    the API documentation says so rather than leaving it to be discovered.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 31 Aug 2026 14:41:07 +0000
+
 hifiberry-audiocontrol (0.10.0) trixie; urgency=medium
 
   * library: count an artist's albums from the album-artist mapping rather

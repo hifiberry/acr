@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
-use log::{info, error, debug};
+use log::{info, error, debug, warn};
 use serde::{Serialize, Deserialize};
 use crate::helpers::attributecache;
 
@@ -31,10 +31,16 @@ pub struct ImageMetadata {
 /// Statistics about the image cache
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ImageCacheStats {
-    /// Total number of cached images
+    /// Total number of cached images, variants included
     pub total_images: usize,
-    /// Total size of all cached images in bytes
+    /// Total size of all cached images in bytes, variants included
     pub total_size: u64,
+    /// How many of those are generated variants
+    #[serde(default)]
+    pub variant_images: usize,
+    /// How many of those bytes are generated variants
+    #[serde(default)]
+    pub variant_size: u64,
     /// Last time statistics were updated
     pub last_updated: u64,
 }
@@ -50,6 +56,8 @@ impl ImageCacheStats {
         Self {
             total_images: 0,
             total_size: 0,
+            variant_images: 0,
+            variant_size: 0,
             last_updated: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -146,9 +154,13 @@ impl ImageCache {
 
     /// Initialize the global image cache with a custom directory
     pub fn initialize<P: AsRef<Path>>(path: P) -> Result<(), String> {
-        match get_image_cache().reconfigure_with_directory(path) {
+        let result = get_image_cache().reconfigure_with_directory(path);
+        match result {
             Ok(_) => {
                 info!("Global image cache initialized with custom directory");
+                if let Err(e) = get_image_cache().purge_variants_if_ladder_changed() {
+                    warn!("Failed to check image variant ladder: {}", e);
+                }
                 Ok(())
             },
             Err(e) => {
@@ -442,9 +454,9 @@ impl ImageCache {
         // Create a new path with the extension
         let path_str = path.as_ref().to_string_lossy().to_string();
         let path_with_extension = format!("{}.{}", path_str, extension);
-        
+
         let full_path = self.get_full_path(&path_with_extension);
-        
+
         // Ensure parent directory exists
         if let Some(parent) = full_path.parent() {
             if !parent.exists() {
@@ -453,16 +465,27 @@ impl ImageCache {
                 }
             }
         }
-        
-        // Write the image data to file
-        match File::create(&full_path) {
-            Ok(mut file) => {
-                if let Err(e) = file.write_all(&data) {
-                    return Err(format!("Failed to write image data: {}", e));
-                }
-                debug!("Stored image at {}", full_path.display());
-            },
-            Err(e) => return Err(format!("Failed to create image file: {}", e)),
+
+        // Write the image data to file, atomically: a reader never sees a partial
+        // image, so two writers racing on the same path cannot leave a torn file.
+        if let Err(e) = write_file_atomically(&full_path, &data) {
+            return Err(format!("Failed to write image data to {}: {}", full_path.display(), e));
+        }
+        debug!("Stored image at {}", full_path.display());
+
+        // A replaced original must not leave stale thumbnails behind: every client
+        // would then see the old art at grid size and the new art at full size, with
+        // nothing reporting an error.
+        //
+        // This runs *after* the write, not before. Invalidating first opens a window
+        // in which a concurrent request regenerates the variant from the old original
+        // and that stale thumbnail then survives forever. Doing it afterwards can only
+        // fail the other way: if the write failed, the variants still match the
+        // unchanged original, so leaving them is correct.
+        if crate::helpers::imageresize::variant_size_of(&path_str).is_none() {
+            if let Err(e) = self.remove_variants_for(&path_with_extension) {
+                warn!("Failed to invalidate variants of {}: {}", path_with_extension, e);
+            }
         }
 
         // Create and store metadata
@@ -574,7 +597,7 @@ impl ImageCache {
     /// Update cache statistics
     fn update_cache_stats(&self) -> Result<ImageCacheStats, String> {
         let mut stats = ImageCacheStats::new();
-        
+
         // Get all image metadata entries
         let prefix = Some(IMAGECACHE_METADATA_PREFIX);
         match attributecache::list_keys(prefix) {
@@ -583,6 +606,10 @@ impl ImageCache {
                     if let Ok(Some(metadata)) = attributecache::get::<ImageMetadata>(&key) {
                         stats.total_images += 1;
                         stats.total_size += metadata.size;
+                        if crate::helpers::imageresize::is_variant_file_name(&metadata.name) {
+                            stats.variant_images += 1;
+                            stats.variant_size += metadata.size;
+                        }
                     }
                 }
             }
@@ -603,7 +630,7 @@ impl ImageCache {
     /// Fallback method to scan filesystem for cache statistics
     fn scan_filesystem_for_stats(&self) -> Result<ImageCacheStats, String> {
         let mut stats = ImageCacheStats::new();
-        
+
         if !self.base_path.exists() {
             return Ok(stats);
         }
@@ -620,6 +647,10 @@ impl ImageCache {
                                     if let Ok(metadata) = entry.metadata() {
                                         stats.total_images += 1;
                                         stats.total_size += metadata.len();
+                                        if crate::helpers::imageresize::is_variant_file_name(name) {
+                                            stats.variant_images += 1;
+                                            stats.variant_size += metadata.len();
+                                        }
                                     }
                                 }
                             }
@@ -636,7 +667,7 @@ impl ImageCache {
         }
 
         scan_directory(&self.base_path, &mut stats)?;
-        
+
         // Store scanned stats
         attributecache::set(IMAGECACHE_STATS_KEY, &stats)
             .map_err(|e| format!("Failed to store scanned cache stats: {}", e))?;
@@ -782,6 +813,234 @@ impl ImageCache {
         let path_str = path.as_ref().to_string_lossy().to_string();
         self.get_image_metadata(&path_str)
     }
+
+    /// Get a downscaled version of a cached image, generating and storing it on first use.
+    ///
+    /// `base_path` is the cache-relative base name of the original, without extension
+    /// (e.g. `albums/<artist>/<album>/cover`). `size` must already be a ladder rung.
+    ///
+    /// When the original is at or below `size` it is returned unchanged and nothing is
+    /// written — acr never upscales, and storing a copy of the original under a variant
+    /// name would waste the disk twice.
+    ///
+    /// **Callers holding the global cache guard must not use this.** It performs the
+    /// whole decode/scale/encode inline, so reaching it through `get_image_cache()`
+    /// pins the process-wide mutex for hundreds of milliseconds. The module-level
+    /// [`get_or_create_variant`] does the same work while taking the lock only for the
+    /// short I/O steps, and is what the API and the pre-warm job call. This method
+    /// stays for callers that already own an `ImageCache` of their own — the tests do.
+    pub fn get_or_create_variant<P: AsRef<Path>>(
+        &self,
+        base_path: P,
+        size: u32,
+    ) -> Result<(Vec<u8>, String), String> {
+        if !self.is_enabled() {
+            return Err("Image cache is disabled".to_string());
+        }
+
+        let base_path = base_path.as_ref();
+        let base_str = base_path.to_string_lossy().to_string();
+        let variant_path = crate::helpers::imageresize::variant_stem(&base_str, size);
+
+        // Already generated?
+        if let Ok((data, mime)) = self.get_image_with_mime_type(&variant_path) {
+            debug!("Serving stored variant {} ({} bytes)", variant_path, data.len());
+            return Ok((data, mime));
+        }
+
+        let (original, original_mime) = self.get_image_with_mime_type(base_path)?;
+
+        match crate::helpers::imageresize::resize(&original, size) {
+            Ok(crate::helpers::imageresize::Resized::Original) => {
+                debug!("Original {} is already at or below {}px", base_str, size);
+                Ok((original, original_mime))
+            }
+            Ok(crate::helpers::imageresize::Resized::Image(data, mime)) => {
+                if let Err(e) = self.store_image_from_data(&variant_path, data.clone(), mime.clone()) {
+                    // A variant that cannot be stored is still a valid response; the next
+                    // request simply pays for it again.
+                    warn!("Failed to store variant {}: {}", variant_path, e);
+                }
+                Ok((data, mime))
+            }
+            Err(e) => Err(format!("Failed to resize {}: {}", base_str, e)),
+        }
+    }
+
+    /// Delete every variant of one original. Called whenever the original changes.
+    ///
+    /// Unlike `base_path` elsewhere in this file, `original_path` must carry the
+    /// original's extension (e.g. `albums/<artist>/<album>/cover.jpg`). Deriving the
+    /// stem from an extension-less path would be wrong whenever the stem itself
+    /// contains a dot: `file_stem("cover.art.jpg")` is `cover.art`, but
+    /// `file_stem("cover.art")` is `cover`.
+    pub fn remove_variants_for<P: AsRef<Path>>(&self, original_path: P) -> Result<usize, String> {
+        let original_path = original_path.as_ref();
+        let base_stem = original_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| "Invalid path: no file name".to_string())?
+            .to_string();
+
+        let dir = self.get_full_path(original_path.parent().unwrap_or(Path::new("")));
+        if !dir.exists() {
+            return Ok(0);
+        }
+
+        let mut removed = 0usize;
+        for entry in read_dir(&dir)
+            .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?
+            .flatten()
+        {
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            let Some(_) = crate::helpers::imageresize::variant_size_of(stem) else { continue };
+            // "cover@400" belongs to "cover"
+            if stem.rsplit_once('@').map(|(base, _)| base) != Some(base_stem.as_str()) {
+                continue;
+            }
+            if let Err(e) = fs::remove_file(&path) {
+                warn!("Failed to remove variant {}: {}", path.display(), e);
+                continue;
+            }
+            let rel = path
+                .strip_prefix(&self.base_path)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let _ = self.remove_image_metadata(&rel);
+            removed += 1;
+        }
+
+        if removed > 0 {
+            debug!("Removed {} variant(s) of {}", removed, original_path.display());
+        }
+        Ok(removed)
+    }
+
+    /// Delete every variant in the cache. Variants are derived data and always
+    /// regenerable, so this is safe at any time.
+    pub fn purge_variants(&self) -> Result<usize, String> {
+        if !self.base_path.exists() {
+            return Ok(0);
+        }
+
+        fn walk(dir: &Path, base: &Path, cache: &ImageCache, removed: &mut usize) -> Result<(), String> {
+            for entry in read_dir(dir)
+                .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, base, cache, removed)?;
+                    continue;
+                }
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                if !crate::helpers::imageresize::is_variant_file_name(name) {
+                    continue;
+                }
+                if let Err(e) = fs::remove_file(&path) {
+                    warn!("Failed to remove variant {}: {}", path.display(), e);
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(base)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let _ = cache.remove_image_metadata(&rel);
+                *removed += 1;
+            }
+            Ok(())
+        }
+
+        let mut removed = 0usize;
+        let base = self.base_path.clone();
+        walk(&base, &base, self, &mut removed)?;
+        info!("Purged {} image variant(s)", removed);
+        Ok(removed)
+    }
+
+    /// Name of the file recording which ladder the stored variants belong to.
+    const LADDER_MARKER: &'static str = ".variant-ladder";
+
+    /// Drop every variant if the size ladder has changed since they were generated.
+    ///
+    /// Variants are derived data, so throwing them away costs only the time to make
+    /// them again — cheaper than serving sizes the current release no longer offers.
+    pub fn purge_variants_if_ladder_changed(&self) -> Result<usize, String> {
+        if !self.base_path.exists() {
+            return Ok(0);
+        }
+
+        let marker = self.base_path.join(Self::LADDER_MARKER);
+        let current = crate::helpers::imageresize::ladder_fingerprint();
+        let stored = fs::read_to_string(&marker).ok();
+
+        let removed = match stored.as_deref() {
+            Some(previous) if previous.trim() == current => 0,
+            Some(previous) => {
+                info!("Image size ladder changed from {} to {}, purging variants", previous.trim(), current);
+                self.purge_variants()?
+            }
+            None => 0,
+        };
+
+        if let Err(e) = fs::write(&marker, &current) {
+            warn!("Failed to record image size ladder: {}", e);
+        }
+        Ok(removed)
+    }
+}
+
+/// Write a file by creating a temporary sibling and renaming it into place.
+///
+/// `rename(2)` within one directory is atomic and replaces an existing file, so a
+/// reader sees either the previous file or the complete new one — never a
+/// half-written one, and two concurrent writers of the same path cannot interleave
+/// into a torn file. The pre-warm walk and an API request can both decide to
+/// generate the same variant, so that race is reachable in normal operation.
+///
+/// Getting it wrong is not transient. Variants are served with a strong ETag over
+/// the bytes and `Cache-Control: max-age=31536000, immutable`, so a truncated JPEG
+/// handed out once becomes a permanently broken thumbnail in every client that
+/// caught it, with no revalidation path back.
+///
+/// The temporary name carries the process id and a per-call counter, so two writers
+/// — in this process or another — cannot pick the same one. It is created in the
+/// destination's own directory, because `rename` is only atomic within a
+/// filesystem, and it starts with a dot so the statistics scan skips it and
+/// `is_variant_file_name` can never mistake it for a variant.
+///
+/// There is deliberately no `fsync`: the hazard here is a concurrent reader, not a
+/// power cut, and an fsync per file would be a real cost on an SD card across an
+/// 11,000-album pre-warm.
+pub fn write_file_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image");
+    let temp_path = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        file_name,
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let write_result = File::create(&temp_path).and_then(|mut file| file.write_all(data));
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+
+    if let Err(e) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+
+    Ok(())
 }
 
 /// Convert a MIME type to a file extension
@@ -860,6 +1119,60 @@ pub fn delete_image<P: AsRef<Path>>(path: P) -> Result<(), String> {
 /// Get an image from the cache by base name regardless of extension
 pub fn get_image_with_mime_type<P: AsRef<Path>>(base_path: P) -> Result<(Vec<u8>, String), String> {
     get_image_cache().get_image_with_mime_type(base_path)
+}
+
+/// Get a downscaled version of a cached image, generating it on first use.
+///
+/// This is the variant path the API handlers and the pre-warm job use, and it
+/// deliberately does **not** delegate to `ImageCache::get_or_create_variant`.
+/// `get_image_cache()` hands out a guard on one process-wide mutex, and a guard
+/// passed straight into that method would live for the whole call — decode, scale
+/// and encode included, which is 300-600 ms per album on a Raspberry Pi 4. Every
+/// other user of the cache (`get_album_cover` on the now-playing path,
+/// `store_album_cover`, `/api/imagecache/<path>`, the statistics scan, the
+/// shairport artwork store) would then queue behind thumbnail generation, and the
+/// pre-warm walk would hold the lock for most of an hour after every library load.
+///
+/// So each step below goes through a module-level wrapper that takes the guard for
+/// its own short piece of I/O and drops it again. The resize itself runs with the
+/// lock free.
+pub fn get_or_create_variant<P: AsRef<Path>>(base_path: P, size: u32) -> Result<(Vec<u8>, String), String> {
+    let base_path = base_path.as_ref();
+    let base_str = base_path.to_string_lossy().to_string();
+    let variant_path = crate::helpers::imageresize::variant_stem(&base_str, size);
+
+    // Lock held only for this lookup.
+    if let Ok((data, mime)) = get_image_with_mime_type(&variant_path) {
+        debug!("Serving stored variant {} ({} bytes)", variant_path, data.len());
+        return Ok((data, mime));
+    }
+
+    // Lock held only for this read. A disabled cache reports itself here with the
+    // same "Image cache is disabled" message the method returns.
+    let (original, original_mime) = get_image_with_mime_type(base_path)?;
+
+    // No lock is held across the decode, the scale or the encode below.
+    match crate::helpers::imageresize::resize(&original, size) {
+        Ok(crate::helpers::imageresize::Resized::Original) => {
+            debug!("Original {} is already at or below {}px", base_str, size);
+            Ok((original, original_mime))
+        }
+        Ok(crate::helpers::imageresize::Resized::Image(data, mime)) => {
+            // Lock retaken only for the write.
+            if let Err(e) = store_image_from_data(&variant_path, data.clone(), mime.clone()) {
+                // A variant that cannot be stored is still a valid response; the next
+                // request simply pays for it again.
+                warn!("Failed to store variant {}: {}", variant_path, e);
+            }
+            Ok((data, mime))
+        }
+        Err(e) => Err(format!("Failed to resize {}: {}", base_str, e)),
+    }
+}
+
+/// Delete every generated variant in the cache.
+pub fn purge_variants() -> Result<usize, String> {
+    get_image_cache().purge_variants()
 }
 
 /// Get album cover art using artist, album name, and optional year
@@ -1157,15 +1470,23 @@ mod tests {
     #[serial]
     fn test_image_cache_statistics() {
         use crate::helpers::attributecache::AttributeCache;
-        
+
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().to_str().unwrap();
         let expiry_path = temp_dir.path().join("expiry.json");
-        
-        // Initialize attribute cache for this test
+
+        // This test needs its own attribute cache, isolated from the shared one the
+        // other tests in this module use via `init_test_attribute_cache`, so that the
+        // `total_images == 0` assertion below is not thrown off by entries other
+        // tests left behind. `AttributeCache::initialize_global` re-points the
+        // *process-wide* singleton at this directory for the rest of the test
+        // binary's run, so — exactly like `init_test_attribute_cache` does — the
+        // directory must outlive this function; otherwise every `#[serial]` test
+        // that runs afterwards finds the global pointing at a deleted directory and
+        // fails with "attempt to write a readonly database" (see below).
         let attr_cache_path = temp_dir.path().join("attributes");
         AttributeCache::initialize_global(&attr_cache_path).unwrap();
-        
+
         let cache = ImageCache::with_custom_expiry_path(cache_path, &expiry_path);
         
         // Initially, stats should show no images
@@ -1215,39 +1536,305 @@ mod tests {
         // Verify metadata was removed
         let metadata1_after = cache.get_image_metadata_info("test1.jpg");
         assert!(metadata1_after.is_none());
+
+        // Leak the directory rather than let `temp_dir` delete it on drop: the
+        // process-wide attribute cache singleton still points at it (see above).
+        std::mem::forget(temp_dir);
+    }
+
+    /// A 600x600 opaque PNG, large enough that every ladder rung is a real downscale.
+    fn test_source_png() -> Vec<u8> {
+        use std::io::Cursor;
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            600, 600, image::Rgb([200, 30, 60]),
+        ));
+        let mut buf = Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    #[serial]
+    fn test_variant_is_created_then_reused() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
+
+        cache
+            .store_image_from_data("albums/artist/album/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+
+        let (data, mime) = cache
+            .get_or_create_variant("albums/artist/album/cover", 200)
+            .unwrap();
+        assert_eq!(mime, "image/jpeg");
+        let img = image::load_from_memory(&data).unwrap();
+        assert_eq!((img.width(), img.height()), (200, 200));
+
+        // The variant is now a file on disk next to the original.
+        let variant = temp_dir.path().join("albums/artist/album/cover@200.jpg");
+        assert!(variant.exists(), "variant should be stored beside the original");
+
+        // Overwrite the stored variant with a sentinel the resizer could never
+        // produce. Re-encoding the same source at the same quality is deterministic,
+        // so comparing against the first call's bytes would not distinguish "served
+        // from disk" from "re-encoded" — only a distinguishable sentinel does.
+        let sentinel = b"not a real jpeg, just a marker".to_vec();
+        std::fs::write(&variant, &sentinel).unwrap();
+
+        let (again, _) = cache
+            .get_or_create_variant("albums/artist/album/cover", 200)
+            .unwrap();
+        assert_eq!(again, sentinel, "a second call must serve the stored file, not re-encode");
+    }
+
+    #[test]
+    #[serial]
+    fn test_variant_of_small_original_returns_original() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
+
+        use std::io::Cursor;
+        let small = {
+            let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                80, 80, image::Rgb([1, 2, 3]),
+            ));
+            let mut buf = Cursor::new(Vec::new());
+            img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+            buf.into_inner()
+        };
+        cache
+            .store_image_from_data("albums/a/b/cover", small.clone(), "image/png".to_string())
+            .unwrap();
+
+        let (data, mime) = cache.get_or_create_variant("albums/a/b/cover", 400).unwrap();
+        assert_eq!(data, small, "an original smaller than the rung is served unchanged");
+        assert_eq!(mime, "image/png");
+        assert!(
+            !temp_dir.path().join("albums/a/b/cover@400.jpg").exists(),
+            "no variant file should be written when the original is served"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_restoring_an_original_drops_its_variants() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
+
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 200).unwrap();
+        assert!(temp_dir.path().join("albums/a/b/cover@200.jpg").exists());
+
+        // A same-directory original whose name is "cover" plus more characters: its
+        // variant must never be matched as belonging to "cover".
+        cache
+            .store_image_from_data("albums/a/b/covers", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/covers", 400).unwrap();
+        assert!(temp_dir.path().join("albums/a/b/covers@400.jpg").exists());
+
+        // A second, unrelated original in the same directory.
+        cache
+            .store_image_from_data("albums/a/b/back", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/back", 200).unwrap();
+        assert!(temp_dir.path().join("albums/a/b/back@200.jpg").exists());
+
+        // Someone replaces the cover art.
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+
+        assert!(
+            !temp_dir.path().join("albums/a/b/cover@200.jpg").exists(),
+            "a replaced original must not leave a stale thumbnail behind"
+        );
+        assert!(
+            temp_dir.path().join("albums/a/b/covers@400.jpg").exists(),
+            "\"cover@400\" must not be matched against the unrelated base \"covers\""
+        );
+        assert!(
+            temp_dir.path().join("albums/a/b/back@200.jpg").exists(),
+            "re-storing one original must not touch another original's variants"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_storing_leaves_no_temporary_file_behind() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
+
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+
+        let names: Vec<String> = read_dir(temp_dir.path().join("albums/a/b"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["cover.png".to_string()],
+            "the temporary file must be renamed into place, not left beside it"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_a_failed_write_keeps_the_existing_variants() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
+
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 200).unwrap();
+        let variant = temp_dir.path().join("albums/a/b/cover@200.jpg");
+        assert!(variant.exists());
+
+        // Make the destination unwritable in a way `rename` must refuse: replace the
+        // original with a non-empty directory of the same name.
+        let original = temp_dir.path().join("albums/a/b/cover.png");
+        fs::remove_file(&original).unwrap();
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("blocker"), b"x").unwrap();
+
+        assert!(
+            cache
+                .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+                .is_err(),
+            "the store must report the failed write"
+        );
+        assert!(
+            variant.exists(),
+            "a write that failed leaves the old original in place, so its variants are \
+             still correct and must not have been dropped"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_purge_variants_keeps_originals() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
+
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 100).unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 200).unwrap();
+
+        let removed = cache.purge_variants().unwrap();
+        assert_eq!(removed, 2);
+        assert!(temp_dir.path().join("albums/a/b/cover.png").exists());
+        assert!(!temp_dir.path().join("albums/a/b/cover@100.jpg").exists());
+        assert!(!temp_dir.path().join("albums/a/b/cover@200.jpg").exists());
     }
 
     #[test]
     #[serial]
     fn test_global_cache_statistics_functions() {
         init_test_attribute_cache();
-        
+
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().to_str().unwrap();
-        
+
         // Initialize global cache for testing
         ImageCache::initialize(cache_path).unwrap();
-        
+
         // Test global statistics functions
         let initial_stats = get_cache_statistics();
         assert!(initial_stats.is_ok());
-        
+
         // Store some data using global functions
         let test_data = b"global test data";
         store_image("global_test.jpg", test_data).unwrap();
-        
+
         // Get metadata using global function
         let metadata = get_image_metadata("global_test.jpg");
         assert!(metadata.is_some());
         let meta = metadata.unwrap();
         assert_eq!(meta.name, "global_test.jpg");
         assert_eq!(meta.size, test_data.len() as u64);
-        
+
         // Refresh stats using global function
         let refreshed_stats = refresh_cache_statistics();
         assert!(refreshed_stats.is_ok());
         let stats = refreshed_stats.unwrap();
         assert!(stats.total_images >= 1);
         assert!(stats.total_size >= test_data.len() as u64);
+    }
+
+    #[test]
+    #[serial]
+    fn test_statistics_separate_variants_from_originals() {
+        use crate::helpers::attributecache::AttributeCache;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().to_str().unwrap();
+
+        // This test needs its own attribute cache, isolated from the shared one the
+        // other tests in this module use via `init_test_attribute_cache`, so that the
+        // `total_images == 2` assertion is not thrown off by entries other tests left
+        // behind.
+        let attr_cache_path = temp_dir.path().join("attributes");
+        AttributeCache::initialize_global(&attr_cache_path).unwrap();
+
+        let cache = ImageCache::with_directory(cache_path);
+
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 100).unwrap();
+
+        let stats = cache.refresh_cache_statistics().unwrap();
+        assert_eq!(stats.total_images, 2, "total counts everything on disk");
+        assert_eq!(stats.variant_images, 1, "one of them is derived");
+        assert!(stats.variant_size > 0);
+        assert!(
+            stats.variant_size < stats.total_size,
+            "derived bytes are a subset of the total"
+        );
+
+        // Leak the directory rather than let `temp_dir` delete it on drop: the
+        // process-wide attribute cache singleton still points at it.
+        std::mem::forget(temp_dir);
+    }
+
+    #[test]
+    #[serial]
+    fn test_ladder_change_purges_variants() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
+
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 100).unwrap();
+
+        // First run records the current ladder and purges nothing.
+        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 0);
+        assert!(temp_dir.path().join("albums/a/b/cover@100.jpg").exists());
+
+        // Simulate a release that changed the rungs.
+        std::fs::write(temp_dir.path().join(".variant-ladder"), "50-250").unwrap();
+
+        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 1);
+        assert!(!temp_dir.path().join("albums/a/b/cover@100.jpg").exists());
+        assert!(temp_dir.path().join("albums/a/b/cover.png").exists());
+
+        // Subsequent call with matching ladder purges nothing.
+        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 0);
     }
 }

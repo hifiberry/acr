@@ -96,3 +96,9 @@ pub mod splitters;
 
 // Export the server module
 pub mod server;
+
+// Export the imageresponse module
+pub mod imageresponse;
+
+// Export the capabilities module
+pub mod capabilities;

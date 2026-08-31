@@ -7,6 +7,7 @@ use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
 use serde::Serialize;
+use chrono::Datelike;
 
 fn match_type_str(mt: &ArtistMatchType) -> String {
     match mt {
@@ -1123,37 +1124,133 @@ fn get_artist_internal(
      ))
 }
 
+/// Interpret the `size` query parameter.
+///
+/// `Ok(None)` means "serve the original": either no size was asked for, or the
+/// request is larger than the top rung and acr does not upscale. `Err` is a client
+/// mistake and must become a 400 — a client sending nonsense should find out rather
+/// than silently receive a 243 KB original.
+pub fn parse_size(raw: Option<&str>) -> Result<Option<u32>, String> {
+    let Some(raw) = raw else { return Ok(None) };
+
+    let requested: u32 = raw
+        .parse()
+        .map_err(|_| format!("Invalid size '{}': expected a positive integer", raw))?;
+    if requested == 0 {
+        return Err(format!("Invalid size '{}': expected a positive integer", raw));
+    }
+
+    Ok(crate::helpers::imageresize::snap_to_rung(requested))
+}
+
+/// Build the body of a 400 for a bad `size`, including the sizes that would work.
+///
+/// Being told only that a value was wrong leaves a client guessing; the list costs
+/// a few bytes on a path that is already an error.
+pub fn size_error_body(message: &str) -> String {
+    serde_json::json!({
+        "error": message,
+        "image_sizes": crate::helpers::imageresize::SIZE_LADDER,
+    })
+    .to_string()
+}
+
+/// Produce a downscaled version of a library image through the image cache.
+///
+/// Returns `None` when the identifier does not correspond to a cached album cover,
+/// in which case the caller serves the original. Resizing is a best-effort
+/// improvement, never a reason to fail a request that would otherwise succeed.
+fn resize_via_cache(
+    library: &dyn crate::data::library::LibraryInterface,
+    identifier: &str,
+    rung: u32,
+) -> Option<(Vec<u8>, String)> {
+    let album_id_str = identifier.strip_prefix("album:")?;
+    let album_id = crate::data::Identifier::Numeric(album_id_str.parse().ok()?);
+    let album = library.get_album_by_id(&album_id)?;
+
+    let artist = {
+        let artists = album.artists.lock();
+        artists.first().cloned().unwrap_or_else(|| "Unknown Artist".to_string())
+    };
+    let year = album.release_date.map(|d| d.year());
+    let base = crate::helpers::local_coverart::album_cache_key(&artist, &album.name, year);
+
+    match crate::helpers::imagecache::get_or_create_variant(format!("{}/cover", base), rung) {
+        Ok(result) => Some(result),
+        Err(e) => {
+            log::debug!("No variant for {} at {}px: {}", identifier, rung, e);
+            None
+        }
+    }
+}
+
 /// Retrieve an image from the library based on an identifier
-/// 
+///
 /// This endpoint maps directly to the library's get_image function, allowing
 /// access to image data like album covers and artist images through the REST API.
 /// The identifier format depends on the library implementation, but typically
 /// supports formats like "album:123" for album covers and "artist:Artist Name" for artist images.
-#[get("/library/<player_name>/image/<identifier>")]
+///
+/// An optional `size` query parameter requests a downscaled variant, rounded up
+/// to the next rung of 100/200/400/800 pixels on the longest edge. Omitting it,
+/// or requesting a size above the top rung or the original's own size, serves the
+/// original bytes unchanged.
+#[get("/library/<player_name>/image/<identifier>?<size>")]
 pub fn get_image(
     player_name: &str,
     identifier: &str,
+    size: Option<&str>,
+    if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
     controller: &State<Arc<AudioController>>
-) -> Result<(rocket::http::ContentType, Vec<u8>), Custom<String>> {
+) -> Result<crate::api::imageresponse::ImageReply, Custom<String>> {
+    use crate::api::imageresponse::{reply, IMMUTABLE_CACHE, REVALIDATE_DAILY_CACHE};
+
+    let target = parse_size(size)
+        .map_err(|e| Custom(Status::BadRequest, size_error_body(&e)))?;
+
+    // Only `album:` identifiers are immutable under their id. `artist:` art can be
+    // replaced by the user (see `src/api/coverart.rs`), and bare track URLs are not
+    // addressed by a stable id either, so both must revalidate rather than being
+    // cached for a year with no server-side remedy.
+    let cache_control = if identifier.starts_with("album:") {
+        IMMUTABLE_CACHE
+    } else {
+        REVALIDATE_DAILY_CACHE
+    };
+
     let controllers = controller.inner().list_controllers();
-    
+
     // Find the controller with the matching name
     for ctrl_lock in controllers {
         let ctrl = ctrl_lock.read();
         if ctrl.get_player_name() == player_name {
             // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
-                // Call the library's get_image function
-                if let Some((data, mime_type)) = library.get_image(identifier.to_string()) {
-                    // Extract MIME type components
-                    let media_type = mime_type.split('/').next().unwrap_or("application").to_string();
-                    let media_subtype = mime_type.split('/').nth(1).unwrap_or("octet-stream").to_string();
-                    
-                    // Create a ContentType object
-                    let content_type = rocket::http::ContentType::new(media_type, media_subtype);
-                    
-                    // Return the content type paired with data, which implements Responder
-                    return Ok((content_type, data));
+                // Try the variant first when one was asked for. The original is only
+                // fetched if that finds nothing, because fetching it unconditionally
+                // costs a ~243KB read per thumbnail on MPD and a full HTTP round trip
+                // to the server on LMS -- paid on every request, and thrown away
+                // whenever a variant is served.
+                //
+                // This cannot turn a 404 into a 200: `resize_via_cache` only answers
+                // for an `album:` identifier whose album resolves and whose cover is
+                // in the image cache, and every library that populates that cache
+                // consults it first in `get_image` too. With no `size`, `target` is
+                // `None`, nothing here runs, and the original bytes are returned
+                // exactly as before -- the compatibility guarantee this whole feature
+                // rests on.
+                let resized = target
+                    .and_then(|rung| resize_via_cache(library.as_ref(), identifier, rung));
+
+                let image = match resized {
+                    Some(variant) => Some(variant),
+                    // Call the library's get_image function
+                    None => library.get_image(identifier.to_string()),
+                };
+
+                if let Some((data, mime_type)) = image {
+                    return Ok(reply(data, &mime_type, cache_control, if_none_match.0));
                 } else {
                     // Image not found
                     return Err(Custom(
@@ -1396,4 +1493,76 @@ pub fn delete_library_track(
             message: format!("Player '{}' not found", player_name),
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    fn absent_size_means_the_original() {
+        assert_eq!(parse_size(None).unwrap(), None);
+    }
+
+    #[test]
+    fn a_valid_size_snaps_up_to_a_rung() {
+        assert_eq!(parse_size(Some("360")).unwrap(), Some(400));
+        assert_eq!(parse_size(Some("100")).unwrap(), Some(100));
+    }
+
+    #[test]
+    fn a_size_above_the_ladder_means_the_original() {
+        assert_eq!(parse_size(Some("2000")).unwrap(), None);
+    }
+
+    #[test]
+    fn nonsense_sizes_are_rejected_rather_than_ignored() {
+        assert!(parse_size(Some("wide")).is_err());
+        assert!(parse_size(Some("0")).is_err());
+        assert!(parse_size(Some("-40")).is_err());
+        assert!(parse_size(Some("")).is_err());
+    }
+
+    #[test]
+    fn size_errors_carry_the_valid_sizes() {
+        let body: serde_json::Value =
+            serde_json::from_str(&size_error_body("Invalid size 'wide'")).unwrap();
+        assert_eq!(body["error"], "Invalid size 'wide'");
+        assert_eq!(body["image_sizes"], serde_json::json!([100, 200, 400, 800]));
+    }
+
+    // Both `resize_via_cache` tests below only need to reach the identifier
+    // and album-id parsing at the top of the function, so they never actually
+    // touch the cache — but they still point the global image cache at a
+    // `TempDir` (the seam `ImageCache::initialize` provides) rather than the
+    // real `/var/lib/audiocontrol/cache/images`, and are `#[serial]` because
+    // that cache is process-global, same as imagecache.rs's own tests.
+    #[test]
+    #[serial]
+    fn resize_via_cache_ignores_non_album_identifiers() {
+        use crate::data::library::LibraryInterface;
+        use crate::helpers::imagecache::ImageCache;
+        use crate::players::mpd::library::MPDLibrary;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        ImageCache::initialize(temp_dir.path()).unwrap();
+
+        let library = MPDLibrary::new();
+        assert_eq!(resize_via_cache(&library, "artist:Foo", 400), None);
+    }
+
+    #[test]
+    #[serial]
+    fn resize_via_cache_ignores_unparseable_album_ids() {
+        use crate::data::library::LibraryInterface;
+        use crate::helpers::imagecache::ImageCache;
+        use crate::players::mpd::library::MPDLibrary;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        ImageCache::initialize(temp_dir.path()).unwrap();
+
+        let library = MPDLibrary::new();
+        assert_eq!(resize_via_cache(&library, "album:not-a-number", 400), None);
+    }
 }

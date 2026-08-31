@@ -169,6 +169,15 @@ What this daemon supports, as opposed to which release it is.
 `images.sizes` lists the sizes accepted by the `size` parameter on the image
 endpoints; requests are rounded up to the next listed size.
 
+**This is a daemon-level capability, not a per-player guarantee.** It says which
+sizes this release understands, not that every image can be served at them.
+Resizing works from acr's own image cache, so on `/api/library/<player>/image/<id>`
+it applies to `album:` identifiers on players that populate that cache -- MPD
+does, LMS does not. `artist:` identifiers, bare track URLs, base64 identifiers,
+and GIF or BMP sources are served at full size. See
+[Get Image from Library](#get-image-from-library) for the full list; a request
+that cannot be resized still returns `200` with the original.
+
 **A release that answers this endpoint with 404 does not resize images.** That is
 a complete answer -- ask for originals rather than probing.
 
@@ -1585,7 +1594,24 @@ Retrieves an image (such as album art) from a player's library.
 
 | Name | Type | Meaning |
 |---|---|---|
-| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. Only takes effect for `album:` identifiers — for `artist:` identifiers and bare track URLs it is accepted and validated but then ignored, and the response is the full-size original with no signal that resizing did not happen. |
+| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. It takes effect for `album:` identifiers on players that keep cover art in acr's image cache; every other combination is accepted and validated but then ignored, and the response is the full-size original with no signal that resizing did not happen. |
+
+**When `size` does nothing.** Resizing works from acr's own image cache, so it
+applies only where two things are both true:
+
+- the identifier is an `album:` identifier. `artist:` identifiers, bare track
+  URLs and URL-safe-base64 identifiers are all served at full size.
+- the player keeps its cover art in acr's image cache. **MPD does; LMS does
+  not** — an LMS library fetches album art over HTTP from the LMS server on
+  every request and never populates the cache, so `?size=` on an LMS player is
+  a silent no-op today.
+
+In every one of those cases the response is the full-size original, with a
+normal `200` and no error. A client that must know whether it received a
+thumbnail should look at the image it got, not at the request it sent.
+
+GIF and BMP sources are never resized either: only the `jpeg`, `png` and
+`webp` decoders are compiled in, so anything else is served at full size.
 
 A size larger than the top rung, or larger than the image itself, returns the
 original: acr never upscales. A size that is not a positive integer is a
@@ -2368,7 +2394,9 @@ Directly serves the cached artist image file if available. This endpoint returns
 
 A size larger than the top rung, or larger than the image itself, returns the
 original: acr never upscales. A size that is not a positive integer is a
-`400`, not a silent fallback.
+`400`, not a silent fallback. GIF and BMP sources are served at full size
+whatever `size` says, because only the `jpeg`, `png` and `webp` decoders are
+compiled in.
 
 Responses carry `ETag` and `Cache-Control: public, max-age=86400`. The shorter
 lifetime is deliberate: an artist image can be replaced by uploading a custom

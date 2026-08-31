@@ -1064,7 +1064,20 @@ impl LibraryInterface for MPDLibrary {
             Ok(albums) => {
                 // Mark as not loaded during update
                 *self.library_loaded.lock() = false;
-                
+
+                // Bump here too, not just at the end of this function. The
+                // mutation actually starts now - self_albums.clear() below,
+                // then the insert loop, then create_artists() - and runs for
+                // roughly a second on a large library. A conditional request
+                // arriving in that window would otherwise still carry the
+                // pre-refresh token, match it, and get a false 304 while the
+                // server already holds different content. Bumping now means
+                // such a request instead gets a 200 (a false miss, since the
+                // rebuild isn't done yet either) and the closing bump makes
+                // it revalidate once more - two false misses traded for the
+                // one false hit this would otherwise allow.
+                self.library_version.bump();
+
                 // Reset loading progress to 0
                 {
                     let mut progress = self.loading_progress.lock();
@@ -1096,6 +1109,11 @@ impl LibraryInterface for MPDLibrary {
                     let mut progress = self.loading_progress.lock();
                     *progress = 1.0;
                 }
+                // Second bump - see the one at the start of this Ok(albums)
+                // arm. That one covers the mutation window that opens
+                // before this point; this one covers the (much shorter)
+                // window between it and now. Neither is redundant with the
+                // other.
                 self.library_version.bump();
 
                 let total_time = start_time.elapsed();

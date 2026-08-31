@@ -1018,37 +1018,6 @@ impl ImageCache {
         }
         Ok(removed)
     }
-
-    /// Name of the file recording which ladder the stored variants belong to.
-    const LADDER_MARKER: &'static str = ".variant-ladder";
-
-    /// Drop every variant if the size ladder has changed since they were generated.
-    ///
-    /// Variants are derived data, so throwing them away costs only the time to make
-    /// them again — cheaper than serving sizes the current release no longer offers.
-    pub fn purge_variants_if_ladder_changed(&self) -> Result<usize, String> {
-        if !self.base_path.exists() {
-            return Ok(0);
-        }
-
-        let marker = self.base_path.join(Self::LADDER_MARKER);
-        let current = crate::helpers::imageresize::ladder_fingerprint();
-        let stored = fs::read_to_string(&marker).ok();
-
-        let removed = match stored.as_deref() {
-            Some(previous) if previous.trim() == current => 0,
-            Some(previous) => {
-                info!("Image size ladder changed from {} to {}, purging variants", previous.trim(), current);
-                self.purge_variants()?
-            }
-            None => 0,
-        };
-
-        if let Err(e) = fs::write(&marker, &current) {
-            warn!("Failed to record image size ladder: {}", e);
-        }
-        Ok(removed)
-    }
 }
 
 /// Write a file by creating a temporary sibling and renaming it into place.
@@ -1869,33 +1838,6 @@ mod tests {
         // Leak the directory rather than let `temp_dir` delete it on drop: the
         // process-wide attribute cache singleton still points at it.
         std::mem::forget(temp_dir);
-    }
-
-    #[test]
-    #[serial]
-    fn test_ladder_change_purges_variants() {
-        init_test_attribute_cache();
-        let temp_dir = TempDir::new().unwrap();
-        let cache = ImageCache::with_directory(temp_dir.path());
-
-        cache
-            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
-            .unwrap();
-        cache.get_or_create_variant("albums/a/b/cover", 100).unwrap();
-
-        // First run records the current ladder and purges nothing.
-        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 0);
-        assert!(temp_dir.path().join("albums/a/b/cover@100.jpg").exists());
-
-        // Simulate a release that changed the rungs.
-        std::fs::write(temp_dir.path().join(".variant-ladder"), "50-250").unwrap();
-
-        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 1);
-        assert!(!temp_dir.path().join("albums/a/b/cover@100.jpg").exists());
-        assert!(temp_dir.path().join("albums/a/b/cover.png").exists());
-
-        // Subsequent call with matching ladder purges nothing.
-        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 0);
     }
 
     #[test]

@@ -158,9 +158,6 @@ impl ImageCache {
         match result {
             Ok(_) => {
                 info!("Global image cache initialized with custom directory");
-                if let Err(e) = get_image_cache().purge_variants_if_ladder_changed() {
-                    warn!("Failed to check image variant ladder: {}", e);
-                }
                 Ok(())
             },
             Err(e) => {
@@ -195,6 +192,11 @@ impl ImageCache {
     /// Check if the cache is enabled
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Base directory this cache stores images under.
+    pub fn base_path(&self) -> &PathBuf {
+        &self.base_path
     }
 
     /// Load expiry metadata from disk

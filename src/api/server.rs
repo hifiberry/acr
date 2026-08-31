@@ -189,7 +189,8 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     
     // ImageCache routes
     let imagecache_routes = routes![
-        imagecache::get_image_from_cache
+        imagecache::get_image_from_cache,
+        imagecache::purge_variants
     ];
     
     // Favourites routes

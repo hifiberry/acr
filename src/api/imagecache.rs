@@ -1,4 +1,4 @@
-use rocket::get;
+use rocket::{get, post};
 use rocket::http::ContentType;
 use rocket::response::status::Custom;
 use rocket::http::Status;
@@ -35,6 +35,31 @@ pub fn get_image_from_cache(filepath: PathBuf) -> Result<(ContentType, Vec<u8>),
                 format!("Failed to retrieve image from cache: {}", e),
             ))
         }
+    }
+}
+
+/// Response for a variant purge.
+#[derive(serde::Serialize)]
+pub struct PurgeVariantsResponse {
+    pub removed: usize,
+}
+
+/// Delete every generated image variant.
+///
+/// Variants are derived data and are regenerated on demand, so this is safe at any
+/// time. It exists because the cache has no eviction policy: this is the way to
+/// reclaim the space thumbnails occupy.
+#[post("/variants/purge")]
+pub fn purge_variants() -> Result<rocket::serde::json::Json<PurgeVariantsResponse>, Custom<String>> {
+    match imagecache::purge_variants() {
+        Ok(removed) => {
+            log::info!("Purged {} image variant(s) on request", removed);
+            Ok(rocket::serde::json::Json(PurgeVariantsResponse { removed }))
+        }
+        Err(e) => Err(Custom(
+            rocket::http::Status::InternalServerError,
+            format!("Failed to purge variants: {}", e),
+        )),
     }
 }
 

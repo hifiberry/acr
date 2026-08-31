@@ -78,6 +78,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Set Setting Value](#set-setting-value)
 - [Cache API](#cache-api)
   - [Get Cache Statistics](#get-cache-statistics)
+  - [Purge Image Variants](#purge-image-variants)
 - [Background Jobs API](#background-jobs-api)
   - [List Background Jobs](#list-background-jobs)
   - [Get Background Job by ID](#get-background-job-by-id)
@@ -3077,7 +3078,7 @@ curl -X POST http://<device-ip>:1080/api/settings/set \
 
 ## Cache API
 
-The Cache API provides endpoints to retrieve information about the internal caching system used by the audio control service. This includes statistics about memory and disk cache usage, as well as image cache statistics.
+The Cache API provides endpoints to retrieve information about the internal caching system used by the audio control service. This includes statistics about memory and disk cache usage, as well as image cache statistics. It also carries the one maintenance operation the cache exposes: purging generated image variants.
 
 ### Get Cache Statistics
 
@@ -3165,6 +3166,47 @@ curl -X GET "http://localhost:8080/api/cache/stats"
 - Image cache statistics include metadata stored in the attribute cache
 - The `image_cache_stats` field may be null if image cache statistics are unavailable
 - Disk cache location is configurable via the application configuration
+
+### Purge Image Variants
+
+Deletes every generated thumbnail from the image cache, keeping all originals.
+
+**Endpoint**: `POST /api/imagecache/variants/purge`
+
+**Request Body**: none
+
+**Response Format**:
+```json
+{
+  "removed": 4271
+}
+```
+
+**Response Fields**:
+- `removed` (number): How many variant files were deleted
+
+**Example Request**:
+```bash
+curl -X POST "http://<device-ip>:1080/api/imagecache/variants/purge"
+```
+
+**Why it exists**: the image cache has no eviction policy and no size cap, and
+variants -- the thumbnails generated for the `size` parameter on the image
+endpoints -- are the only content in it that grows without bound. On a library
+of 11,000 albums the four sizes come to roughly 213 MB. This is the way to
+reclaim that space on a small SD card.
+
+**It is always safe.** Variants are derived data: every one of them is
+regenerated from its original the next time a client asks for that size, so a
+purge costs CPU on the next request, never an image. Originals are never
+touched.
+
+Watch `image_cache_stats.variant_size` from `GET /api/cache/stats` to see how
+much a purge would reclaim, and to confirm what it reclaimed.
+
+- **Response**:
+  - **Success (200)**: JSON object with the number of files removed
+  - **Internal Server Error (500)**: String error message if the cache could not be walked
 
 ## Background Jobs API
 

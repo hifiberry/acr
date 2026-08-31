@@ -1527,7 +1527,7 @@ Retrieves all artists for a specific player.
 **Caching**
 
 The response carries a weak `ETag` derived from the library version, for example
-`W/"albums-a3f9c1d2-42"`. Send it back as `If-None-Match` and an unchanged library answers
+`W/"artists-a3f9c1d2-42"`. Send it back as `If-None-Match` and an unchanged library answers
 `304 Not Modified` with no body, instead of re-sending the list.
 
 The version moves whenever the library's contents change, including the

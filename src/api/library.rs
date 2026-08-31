@@ -346,6 +346,18 @@ pub fn get_player_albums(
         if ctrl.get_player_name() == player_name {
             // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
+                // Read the version before the data. The background sweep
+                // writes to the library and only then bumps the version, on
+                // its own thread, under a lock this read does not share. If
+                // we read the data first, a sweep landing in between would
+                // let a client walk away with pre-update data labelled with
+                // the post-update token - a false 304 on every request until
+                // the next bump, serving stale data the whole time. Reading
+                // the version first can only make the token stale relative
+                // to the data, which costs one extra revalidation - never a
+                // false hit.
+                let version = library.library_version();
+
                 // Get all albums
                 let albums = library.get_albums();
 
@@ -360,7 +372,6 @@ pub fn get_player_albums(
                     albums: album_dtos,
                 };
 
-                let version = library.library_version();
                 return Ok(crate::api::validated::validated(
                     response,
                     "albums",
@@ -399,6 +410,14 @@ pub fn get_player_artists(
         if ctrl.get_player_name() == player_name {
             // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
+                // Read the version before the data - see the comment in
+                // get_player_albums above for why the order matters: reading
+                // it after the data risks labelling a pre-update list with a
+                // post-update token, which is a false 304 (a stale list that
+                // never revalidates until the next bump). Reading it first
+                // only risks the opposite - one wasted revalidation.
+                let version = library.library_version();
+
                 // Get all artists
                 let mut artists = library.get_artists();
 
@@ -440,7 +459,6 @@ pub fn get_player_artists(
                     "artists": artists_json
                 });
 
-                let version = library.library_version();
                 return Ok(crate::api::validated::validated(
                     response,
                     "artists",

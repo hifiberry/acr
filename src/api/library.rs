@@ -7,6 +7,7 @@ use std::sync::Arc;
 use rocket::response::status::Custom;
 use rocket::http::Status;
 use serde::Serialize;
+use chrono::Datelike;
 
 fn match_type_str(mt: &ArtistMatchType) -> String {
     match mt {
@@ -1123,20 +1124,80 @@ fn get_artist_internal(
      ))
 }
 
+/// Interpret the `size` query parameter.
+///
+/// `Ok(None)` means "serve the original": either no size was asked for, or the
+/// request is larger than the top rung and acr does not upscale. `Err` is a client
+/// mistake and must become a 400 — a client sending nonsense should find out rather
+/// than silently receive a 243 KB original.
+pub fn parse_size(raw: Option<&str>) -> Result<Option<u32>, String> {
+    let Some(raw) = raw else { return Ok(None) };
+
+    let requested: u32 = raw
+        .parse()
+        .map_err(|_| format!("Invalid size '{}': expected a positive integer", raw))?;
+    if requested == 0 {
+        return Err("Invalid size '0': expected a positive integer".to_string());
+    }
+
+    Ok(crate::helpers::imageresize::snap_to_rung(requested))
+}
+
+/// Produce a downscaled version of a library image through the image cache.
+///
+/// Returns `None` when the identifier does not correspond to a cached album cover,
+/// in which case the caller serves the original. Resizing is a best-effort
+/// improvement, never a reason to fail a request that would otherwise succeed.
+fn resize_via_cache(
+    library: &dyn crate::data::library::LibraryInterface,
+    identifier: &str,
+    rung: u32,
+) -> Option<(Vec<u8>, String)> {
+    let album_id_str = identifier.strip_prefix("album:")?;
+    let album_id = crate::data::Identifier::Numeric(album_id_str.parse().ok()?);
+    let album = library.get_album_by_id(&album_id)?;
+
+    let artist = {
+        let artists = album.artists.lock();
+        artists.first().cloned().unwrap_or_else(|| "Unknown Artist".to_string())
+    };
+    let year = album.release_date.map(|d| d.year());
+    let base = crate::helpers::local_coverart::album_cache_key(&artist, &album.name, year);
+
+    match crate::helpers::imagecache::get_or_create_variant(format!("{}/cover", base), rung) {
+        Ok(result) => Some(result),
+        Err(e) => {
+            log::debug!("No variant for {} at {}px: {}", identifier, rung, e);
+            None
+        }
+    }
+}
+
 /// Retrieve an image from the library based on an identifier
-/// 
+///
 /// This endpoint maps directly to the library's get_image function, allowing
 /// access to image data like album covers and artist images through the REST API.
 /// The identifier format depends on the library implementation, but typically
 /// supports formats like "album:123" for album covers and "artist:Artist Name" for artist images.
-#[get("/library/<player_name>/image/<identifier>")]
+///
+/// An optional `size` query parameter requests a downscaled variant, rounded up
+/// to the next rung of 100/200/400/800 pixels on the longest edge. Omitting it,
+/// or requesting a size above the top rung or the original's own size, serves the
+/// original bytes unchanged.
+#[get("/library/<player_name>/image/<identifier>?<size>")]
 pub fn get_image(
     player_name: &str,
     identifier: &str,
+    size: Option<&str>,
+    if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
     controller: &State<Arc<AudioController>>
-) -> Result<(rocket::http::ContentType, Vec<u8>), Custom<String>> {
+) -> Result<crate::api::imageresponse::ImageReply, Custom<String>> {
+    use crate::api::imageresponse::{reply, IMMUTABLE_CACHE};
+
+    let target = parse_size(size).map_err(|e| Custom(Status::BadRequest, e))?;
+
     let controllers = controller.inner().list_controllers();
-    
+
     // Find the controller with the matching name
     for ctrl_lock in controllers {
         let ctrl = ctrl_lock.read();
@@ -1145,15 +1206,14 @@ pub fn get_image(
             if let Some(library) = ctrl.get_library() {
                 // Call the library's get_image function
                 if let Some((data, mime_type)) = library.get_image(identifier.to_string()) {
-                    // Extract MIME type components
-                    let media_type = mime_type.split('/').next().unwrap_or("application").to_string();
-                    let media_subtype = mime_type.split('/').nth(1).unwrap_or("octet-stream").to_string();
-                    
-                    // Create a ContentType object
-                    let content_type = rocket::http::ContentType::new(media_type, media_subtype);
-                    
-                    // Return the content type paired with data, which implements Responder
-                    return Ok((content_type, data));
+                    // A variant is only possible for art the cache holds; anything else
+                    // is served at full size, exactly as before.
+                    let (data, mime_type) = match target {
+                        Some(rung) => resize_via_cache(library.as_ref(), identifier, rung)
+                            .unwrap_or((data, mime_type)),
+                        None => (data, mime_type),
+                    };
+                    return Ok(reply(data, &mime_type, IMMUTABLE_CACHE, if_none_match.0));
                 } else {
                     // Image not found
                     return Err(Custom(
@@ -1396,4 +1456,33 @@ pub fn delete_library_track(
             message: format!("Player '{}' not found", player_name),
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_size_means_the_original() {
+        assert_eq!(parse_size(None).unwrap(), None);
+    }
+
+    #[test]
+    fn a_valid_size_snaps_up_to_a_rung() {
+        assert_eq!(parse_size(Some("360")).unwrap(), Some(400));
+        assert_eq!(parse_size(Some("100")).unwrap(), Some(100));
+    }
+
+    #[test]
+    fn a_size_above_the_ladder_means_the_original() {
+        assert_eq!(parse_size(Some("2000")).unwrap(), None);
+    }
+
+    #[test]
+    fn nonsense_sizes_are_rejected_rather_than_ignored() {
+        assert!(parse_size(Some("wide")).is_err());
+        assert!(parse_size(Some("0")).is_err());
+        assert!(parse_size(Some("-40")).is_err());
+        assert!(parse_size(Some("")).is_err());
+    }
 }

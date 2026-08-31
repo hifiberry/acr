@@ -1561,12 +1561,29 @@ Retrieves an image (such as album art) from a player's library.
 - **Path Parameters**:
   - `player-name` (string): The name of the player
   - `identifier` (string): The identifier for the image (e.g., "album:12345")
+
+**Query parameters**
+
+| Name | Type | Meaning |
+|---|---|---|
+| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. |
+
+A size larger than the top rung, or larger than the image itself, returns the
+original: acr never upscales. A size that is not a positive integer is a
+`400`, not a silent fallback.
+
+Responses carry `ETag` and `Cache-Control: public, max-age=31536000, immutable`,
+and honour `If-None-Match` with a `304`. Album art does not change under a given
+album id, so clients can hold it indefinitely.
+
 - **Response**: Binary image data with appropriate Content-Type header
 - **Error Response** (404 Not Found): String error message
+- **Error Response** (400 Bad Request): String error message when `size` is not a positive integer
 
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/library/mpd/image/album:12345 --output cover.jpg
+curl http://<device-ip>:1080/api/library/mpd/image/album:12345?size=400 --output cover-thumb.jpg
 ```
 
 ## External Services API

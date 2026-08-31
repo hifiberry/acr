@@ -163,7 +163,7 @@ What this daemon supports, as opposed to which release it is.
 {
   "version": "0.9.3",
   "images": {
-    "sizes": [100, 200, 400, 800]
+    "sizes": [100, 140, 200, 280, 400, 800]
   }
 }
 ```
@@ -1755,7 +1755,7 @@ Retrieves an image (such as album art) from a player's library.
 
 | Name | Type | Meaning |
 |---|---|---|
-| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. It takes effect for `album:` identifiers on players that keep cover art in acr's image cache; every other combination is accepted and validated but then ignored, and the response is the full-size original with no signal that resizing did not happen. |
+| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 140, 200, 280, 400, 800. Omit it to get the original. It takes effect for `album:` identifiers on players that keep cover art in acr's image cache; every other combination is accepted and validated but then ignored, and the response is the full-size original with no signal that resizing did not happen. |
 
 **When `size` does nothing.** Resizing works from acr's own image cache, so it
 applies only where two things are both true:
@@ -2551,7 +2551,7 @@ Directly serves the cached artist image file if available. This endpoint returns
 
 | Name | Type | Meaning |
 |---|---|---|
-| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. |
+| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 140, 200, 280, 400, 800. Omit it to get the original. |
 
 A size larger than the top rung, or larger than the image itself, returns the
 original: acr never upscales. A size that is not a positive integer is a

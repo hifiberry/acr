@@ -1529,7 +1529,7 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_str(&size_error_body("Invalid size 'wide'")).unwrap();
         assert_eq!(body["error"], "Invalid size 'wide'");
-        assert_eq!(body["image_sizes"], serde_json::json!([100, 200, 400, 800]));
+        assert_eq!(body["image_sizes"], serde_json::json!([100, 140, 200, 280, 400, 800]));
     }
 
     // Both `resize_via_cache` tests below only need to reach the identifier

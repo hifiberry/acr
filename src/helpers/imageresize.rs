@@ -60,6 +60,63 @@ pub fn resize(data: &[u8], target_px: u32) -> Result<Resized, ResizeError> {
     }
 }
 
+/// The only sizes acr will ever generate.
+///
+/// A fixed ladder bounds the cache at four variants per image no matter what
+/// clients ask for. Requested sizes snap up to the next rung.
+pub const SIZE_LADDER: [u32; 4] = [100, 200, 400, 800];
+
+/// The rung an album grid uses: 120 pt at 3x. This is the size the pre-warm job
+/// generates.
+pub const GRID_SIZE: u32 = 400;
+
+/// Separator between a base name and its variant size in a file name.
+const VARIANT_MARKER: char = '@';
+
+/// Round a requested size up to the next ladder rung.
+///
+/// Returns `None` when the request is larger than the biggest rung, which the
+/// caller must treat as "serve the original untouched".
+pub fn snap_to_rung(requested: u32) -> Option<u32> {
+    SIZE_LADDER.iter().copied().find(|rung| *rung >= requested)
+}
+
+/// Build the file stem for a variant: `("cover", 400)` becomes `"cover@400"`.
+pub fn variant_stem(base_stem: &str, size: u32) -> String {
+    format!("{}{}{}", base_stem, VARIANT_MARKER, size)
+}
+
+/// Extract the size from a variant stem, or `None` if this is not a variant.
+pub fn variant_size_of(stem: &str) -> Option<u32> {
+    let (_, size) = stem.rsplit_once(VARIANT_MARKER)?;
+    if size.is_empty() || !size.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    size.parse().ok()
+}
+
+/// Whether a file name is a generated variant.
+///
+/// Classification is by name rather than stored metadata, because the filesystem
+/// scan that falls back on it runs exactly when metadata is missing.
+pub fn is_variant_file_name(file_name: &str) -> bool {
+    let stem = std::path::Path::new(file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    variant_size_of(stem).is_some()
+}
+
+/// A stable description of the ladder, stored beside the cache so a future change
+/// to the rungs can purge variants that no longer correspond to anything.
+pub fn ladder_fingerprint() -> String {
+    SIZE_LADDER
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +194,40 @@ mod tests {
     fn corrupt_input_is_an_error_not_a_panic() {
         let err = resize(b"this is not an image", 400).unwrap_err();
         assert!(matches!(err, ResizeError::Decode(_)));
+    }
+
+    #[test]
+    fn snaps_requested_size_up_to_the_next_rung() {
+        assert_eq!(snap_to_rung(360), Some(400));
+        assert_eq!(snap_to_rung(1), Some(100));
+        assert_eq!(snap_to_rung(100), Some(100));
+        assert_eq!(snap_to_rung(800), Some(800));
+    }
+
+    #[test]
+    fn sizes_above_the_ladder_have_no_rung() {
+        assert_eq!(snap_to_rung(801), None);
+        assert_eq!(snap_to_rung(4000), None);
+    }
+
+    #[test]
+    fn variant_stems_round_trip() {
+        assert_eq!(variant_stem("cover", 400), "cover@400");
+        assert_eq!(variant_size_of("cover@400"), Some(400));
+        assert_eq!(variant_size_of("cover"), None);
+    }
+
+    #[test]
+    fn variant_detection_works_on_file_names() {
+        assert!(is_variant_file_name("cover@400.jpg"));
+        assert!(!is_variant_file_name("cover.jpg"));
+        // An '@' that is not followed only by digits is not a variant marker.
+        assert!(!is_variant_file_name("live@wembley.jpg"));
+        assert!(!is_variant_file_name("cover@.jpg"));
+    }
+
+    #[test]
+    fn fingerprint_describes_the_ladder() {
+        assert_eq!(ladder_fingerprint(), "100-200-400-800");
     }
 }

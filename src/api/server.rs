@@ -2,7 +2,7 @@ use crate::AudioController;
 use crate::api::{
     players, plugins, library, imagecache, coverart, events, lastfm, spotify,
     theaudiodb, favourites, volume, lyrics, m3u, settings, cache, backgroundjobs, genres,
-    inputs
+    inputs, splitters
 };
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
@@ -80,6 +80,12 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         // Plugin routes
         plugins::list_action_plugins,
         
+        // Stream title splitter routes
+        splitters::list_splitters,
+        splitters::get_splitter,
+        splitters::set_splitter,
+        splitters::delete_splitter,
+
         // Library routes
         library::list_libraries,
         library::get_library_info,

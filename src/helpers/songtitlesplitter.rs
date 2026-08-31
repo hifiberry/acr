@@ -21,6 +21,10 @@ pub enum OrderResult {
     Undecided,
 }
 
+/// Order assumed when detection cannot decide. Streams overwhelmingly announce
+/// "Artist - Title", so that is the reading least likely to be wrong.
+const FALLBACK_ORDER: OrderResult = OrderResult::ArtistSong;
+
 /// Split a combined title into artist and song parts
 ///
 /// This function splits titles that contain both artist and song information
@@ -190,6 +194,13 @@ pub struct SongTitleSplitter {
     separator_stats: HashMap<char, u32>,
     /// Default separator to use when pattern is established (>90% confidence after 10+ successful splits)
     default_separator: Option<char>,
+    /// Order set explicitly for this station. Takes precedence over anything
+    /// learned or looked up, and is never overwritten by learning.
+    #[serde(default)]
+    forced_order: Option<OrderResult>,
+    /// Separator set explicitly for this station, tried before any other.
+    #[serde(default)]
+    forced_separator: Option<char>,
     /// Cache for MusicBrainz lookup results to avoid repeated API calls and counter updates
     #[serde(skip)]
     lookup_cache: HashMap<String, OrderResult>,
@@ -239,6 +250,8 @@ impl SongTitleSplitter {
             default_order: None,
             separator_stats: HashMap::new(),
             default_separator: None,
+            forced_order: None,
+            forced_separator: None,
             lookup_cache: HashMap::new(),
             cache_size_limit: cache_size,
         }
@@ -271,7 +284,8 @@ impl SongTitleSplitter {
         debug!("Splitting song: '{}'", song_title);
         
         // First try to split the title into parts using our learned separator
-        let (parts, separator_used) = if let Some((part1, part2, sep)) = split_song_with_separator_info(song_title, self.default_separator) {
+        let preferred_separator = self.forced_separator.or(self.default_separator);
+        let (parts, separator_used) = if let Some((part1, part2, sep)) = split_song_with_separator_info(song_title, preferred_separator) {
             ((part1, part2), Some(sep))
         } else if let Some((part1, part2)) = split_song(song_title) {
             // Fallback to original function that doesn't track separator
@@ -280,8 +294,12 @@ impl SongTitleSplitter {
             return None;
         };
         
-        // Determine the order using default, cache, or MusicBrainz lookup
-        let order = if let Some(default) = &self.default_order {
+        // Determine the order: an explicitly set order wins outright and skips
+        // the lookup, then the learned default, then MusicBrainz.
+        let order = if let Some(forced) = &self.forced_order {
+            debug!("Using forced order {:?} for '{}'", forced, song_title);
+            forced.clone()
+        } else if let Some(default) = &self.default_order {
             // Use the established default order
             debug!("Using established default order {:?} for '{}'", default, song_title);
             default.clone()
@@ -313,10 +331,17 @@ impl SongTitleSplitter {
                 Some((parts.1, parts.0))
             },
             OrderResult::Unknown | OrderResult::Undecided => {
-                debug!("Cannot determine order for '{}': {:?}", song_title, order);
-                // For unknown or undecided cases, we could implement fallback logic
-                // For now, return None to indicate we couldn't determine the order
-                None
+                // Returning None here left the title combined and the artist
+                // empty — the permanent state on a device that cannot reach
+                // MusicBrainz. Fall back to the near-universal stream
+                // convention instead; a station that gets it wrong can have
+                // its order set explicitly.
+                debug!("Cannot determine order for '{}': {:?}, falling back to {:?}",
+                       song_title, order, FALLBACK_ORDER);
+                match FALLBACK_ORDER {
+                    OrderResult::SongArtist => Some((parts.1, parts.0)),
+                    _ => Some((parts.0, parts.1)),
+                }
             }
         };
         
@@ -620,6 +645,35 @@ impl SongTitleSplitter {
     /// 
     /// # Returns
     /// The default OrderResult if established (>95% confidence after 20+ songs), None otherwise
+    /// Set the order for this station explicitly, or clear it with `None`.
+    ///
+    /// An explicit order wins over anything learned or looked up, so a station
+    /// that announces "Title - Artist" can be corrected once instead of being
+    /// re-guessed for every track.
+    pub fn set_forced_order(&mut self, order: Option<OrderResult>) {
+        info!("Setting forced order for '{}' to {:?}", self.id, order);
+        self.forced_order = order;
+    }
+
+    /// The explicitly set order, if any.
+    pub fn get_forced_order(&self) -> Option<OrderResult> {
+        self.forced_order.clone()
+    }
+
+    /// Set the separator for this station explicitly, or clear it with `None`.
+    ///
+    /// Tried before any other separator, which is what lets "AC/DC - Highway"
+    /// split on the dash rather than inside the band name.
+    pub fn set_forced_separator(&mut self, separator: Option<char>) {
+        info!("Setting forced separator for '{}' to {:?}", self.id, separator);
+        self.forced_separator = separator;
+    }
+
+    /// The explicitly set separator, if any.
+    pub fn get_forced_separator(&self) -> Option<char> {
+        self.forced_separator
+    }
+
     pub fn get_default_order(&self) -> Option<OrderResult> {
         self.default_order.clone()
     }
@@ -783,6 +837,8 @@ impl SongTitleSplitter {
             default_order: self.default_order.clone(),
             separator_stats: self.separator_stats.clone(),
             default_separator: self.default_separator,
+            forced_order: self.forced_order.clone(),
+            forced_separator: self.forced_separator,
             lookup_cache: self.lookup_cache.clone(),
             cache_size_limit: self.cache_size_limit,
         }
@@ -792,6 +848,121 @@ impl SongTitleSplitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A station whose order has been set must not consult MusicBrainz at all.
+    /// These devices are often offline, and stopping the lookup from deciding
+    /// is the whole point of setting the order.
+    #[test]
+    fn forced_order_splits_without_a_lookup() {
+        let mut splitter = SongTitleSplitter::new("station");
+        splitter.set_forced_order(Some(OrderResult::SongArtist));
+
+        let result = splitter.split_song("Hey Jude - The Beatles");
+
+        assert_eq!(result, Some(("The Beatles".to_string(), "Hey Jude".to_string())));
+        assert_eq!(splitter.get_total_count(), 0, "no lookup should have been recorded");
+    }
+
+    #[test]
+    fn forced_order_artist_song_keeps_the_first_part_as_the_artist() {
+        let mut splitter = SongTitleSplitter::new("station");
+        splitter.set_forced_order(Some(OrderResult::ArtistSong));
+
+        assert_eq!(
+            splitter.split_song("The Beatles - Hey Jude"),
+            Some(("The Beatles".to_string(), "Hey Jude".to_string()))
+        );
+    }
+
+    /// A forced separator has to beat the earliest separator in the string,
+    /// otherwise "AC/DC - Highway to Hell" splits inside the band name.
+    #[test]
+    fn forced_separator_wins_over_an_earlier_separator() {
+        let mut splitter = SongTitleSplitter::new("station");
+        splitter.set_forced_order(Some(OrderResult::ArtistSong));
+        splitter.set_forced_separator(Some('-'));
+
+        assert_eq!(
+            splitter.split_song("AC/DC - Highway to Hell"),
+            Some(("AC/DC".to_string(), "Highway to Hell".to_string()))
+        );
+    }
+
+    /// The behaviour a forced separator exists to override.
+    #[test]
+    fn without_a_forced_separator_the_earliest_one_is_used() {
+        let mut splitter = SongTitleSplitter::new("station");
+        splitter.set_forced_order(Some(OrderResult::ArtistSong));
+
+        assert_eq!(
+            splitter.split_song("AC/DC - Highway to Hell"),
+            Some(("AC".to_string(), "DC - Highway to Hell".to_string()))
+        );
+    }
+
+    /// An undecided lookup used to drop the split entirely, leaving radio with
+    /// a combined title and no artist at all.
+    #[test]
+    fn an_undecided_lookup_falls_back_to_the_artist_song_convention() {
+        let mut splitter = SongTitleSplitter::new("station");
+        splitter
+            .lookup_cache
+            .insert("Nightwish - Nemo".to_string(), OrderResult::Undecided);
+
+        assert_eq!(
+            splitter.split_song("Nightwish - Nemo"),
+            Some(("Nightwish".to_string(), "Nemo".to_string()))
+        );
+    }
+
+    /// The offline case: MusicBrainz unreachable answers Unknown for everything.
+    #[test]
+    fn an_unknown_lookup_falls_back_to_the_artist_song_convention() {
+        let mut splitter = SongTitleSplitter::new("station");
+        splitter
+            .lookup_cache
+            .insert("Nightwish - Nemo".to_string(), OrderResult::Unknown);
+
+        assert_eq!(
+            splitter.split_song("Nightwish - Nemo"),
+            Some(("Nightwish".to_string(), "Nemo".to_string()))
+        );
+    }
+
+    /// A title with no separator has nothing to split; the fallback must not
+    /// invent an artist out of the whole title.
+    #[test]
+    fn a_title_without_a_separator_still_does_not_split() {
+        let mut splitter = SongTitleSplitter::new("station");
+        splitter.set_forced_order(Some(OrderResult::ArtistSong));
+
+        assert_eq!(splitter.split_song("Just A Title"), None);
+    }
+
+    /// Forced settings are per station and have to survive a restart.
+    #[test]
+    fn forced_settings_survive_a_json_round_trip() {
+        let mut splitter = SongTitleSplitter::new("station");
+        splitter.set_forced_order(Some(OrderResult::SongArtist));
+        splitter.set_forced_separator(Some('/'));
+
+        let restored =
+            SongTitleSplitter::from_json(&splitter.to_json_compact().unwrap()).unwrap();
+
+        assert_eq!(restored.get_forced_order(), Some(OrderResult::SongArtist));
+        assert_eq!(restored.get_forced_separator(), Some('/'));
+    }
+
+    /// Splitters cached before forced settings existed must still load.
+    #[test]
+    fn a_splitter_cached_without_forced_settings_still_loads() {
+        let json = r#"{"id":"station","order_stats":{},"default_order":null,"separator_stats":{},"default_separator":null}"#;
+
+        let splitter = SongTitleSplitter::from_json(json).expect("old cached state should load");
+
+        assert_eq!(splitter.get_forced_order(), None);
+        assert_eq!(splitter.get_forced_separator(), None);
+    }
 
     #[test]
     fn test_split_with_dash() {

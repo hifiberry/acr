@@ -154,7 +154,8 @@ impl ImageCache {
 
     /// Initialize the global image cache with a custom directory
     pub fn initialize<P: AsRef<Path>>(path: P) -> Result<(), String> {
-        match get_image_cache().reconfigure_with_directory(path) {
+        let result = get_image_cache().reconfigure_with_directory(path);
+        match result {
             Ok(_) => {
                 info!("Global image cache initialized with custom directory");
                 if let Err(e) = get_image_cache().purge_variants_if_ladder_changed() {
@@ -1670,5 +1671,8 @@ mod tests {
         assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 1);
         assert!(!temp_dir.path().join("albums/a/b/cover@100.jpg").exists());
         assert!(temp_dir.path().join("albums/a/b/cover.png").exists());
+
+        // Subsequent call with matching ladder purges nothing.
+        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 0);
     }
 }

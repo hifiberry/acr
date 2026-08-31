@@ -1,4 +1,6 @@
 use std::error::Error;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use crate::data::album::Album;
 use crate::data::artist::Artist;
 use crate::data::Identifier;
@@ -32,6 +34,38 @@ impl std::fmt::Display for LibraryError {
 }
 
 impl Error for LibraryError {}
+
+//
+// Library Version Counter
+//
+
+/// A counter that increases whenever a library's contents change.
+///
+/// Cloning shares the counter: the library keeps one handle and hands clones to
+/// the background updaters that mutate it, so a bump from any of them is visible
+/// to the endpoints that serve the validator.
+#[derive(Debug, Clone, Default)]
+pub struct LibraryVersion(Arc<AtomicU64>);
+
+impl LibraryVersion {
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(0)))
+    }
+
+    /// The current value.
+    pub fn get(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Record that the library changed.
+    ///
+    /// Called as close to the mutation as the code allows. A mutation that does
+    /// not bump serves stale data to every client holding a cached list, and no
+    /// test can detect that, so proximity to the write is the only guard.
+    pub fn bump(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 //
 // Library Interface Definition
@@ -320,6 +354,15 @@ pub trait LibraryInterface {
     /// caches the results locally. The default implementation does nothing.
     fn update_album_metadata(&self) {}
 
+    /// A counter that increases whenever this library's contents change.
+    ///
+    /// `None` means the backend does not track changes. Callers must then emit
+    /// no validator: claiming one a backend cannot honour is worse than
+    /// omitting it.
+    fn library_version(&self) -> Option<u64> {
+        None
+    }
+
     /// Get a list of meta keys for the library
     /// 
     /// This method should return a list of meta keys that are available in the 
@@ -435,5 +478,36 @@ mod tests {
         let library = CountingLibrary { albums: Vec::new(), calls: Mutex::new(0) };
 
         assert_eq!(library.album_count_for_artist(&Identifier::Numeric(7)), 0);
+    }
+
+    #[test]
+    fn a_new_version_starts_at_zero() {
+        assert_eq!(LibraryVersion::new().get(), 0);
+    }
+
+    #[test]
+    fn bumping_increases_the_version() {
+        let v = LibraryVersion::new();
+        v.bump();
+        assert_eq!(v.get(), 1);
+        v.bump();
+        assert_eq!(v.get(), 2);
+    }
+
+    #[test]
+    fn clones_share_one_counter() {
+        // The updaters hold clones; a bump through one must be visible through
+        // the library's own handle, or the ETag would not move.
+        let v = LibraryVersion::new();
+        let handed_to_an_updater = v.clone();
+        handed_to_an_updater.bump();
+        assert_eq!(v.get(), 1);
+    }
+
+    #[test]
+    fn a_backend_that_does_not_opt_in_reports_no_version() {
+        // The mock in this module does not override library_version.
+        let lib = CountingLibrary::new();
+        assert_eq!(lib.library_version(), None);
     }
 }

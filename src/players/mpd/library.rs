@@ -5,6 +5,7 @@ use std::time::Instant;
 use log::{debug, info, warn, error};
 use chrono::Datelike;
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
+use crate::data::library::LibraryVersion;
 use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
 use crate::helpers::url_encoding;
 use crate::helpers::lyrics::LyricsProvider;
@@ -29,7 +30,10 @@ pub struct MPDLibrary {
     
     /// Flag indicating if library is loaded
     library_loaded: Arc<Mutex<bool>>,
-    
+
+    /// Increases whenever the library's contents change; drives the list ETags
+    library_version: LibraryVersion,
+
     /// Library loading progress (0.0 - 1.0)
     loading_progress: Arc<Mutex<f32>>,
     
@@ -58,6 +62,7 @@ impl MPDLibrary {
             artists: Arc::new(RwLock::new(HashMap::new())),
             album_artists: Arc::new(RwLock::new(AlbumArtists::new())),
             library_loaded: Arc::new(Mutex::new(false)),
+            library_version: LibraryVersion::new(),
             loading_progress: Arc::new(Mutex::new(0.0)),
             artist_separators: Arc::new(Mutex::new(None)),
             enhance_metadata,
@@ -110,6 +115,11 @@ impl MPDLibrary {
     pub fn get_loading_progress(&self) -> f32 {
         let progress = self.loading_progress.lock();
         *progress
+    }
+
+    /// A handle on this library's version counter, for the background updaters.
+    pub fn version(&self) -> LibraryVersion {
+        self.library_version.clone()
     }
     
     /// Set custom artist separators for use in library operations
@@ -1035,7 +1045,11 @@ impl LibraryInterface for MPDLibrary {
         let loaded = self.library_loaded.lock();
         *loaded
     }
-    
+
+    fn library_version(&self) -> Option<u64> {
+        Some(self.library_version.get())
+    }
+
     fn refresh_library(&self) -> Result<(), LibraryError> {
         debug!("Refreshing MPD library data using MPDLibraryLoader");
         let start_time = Instant::now();
@@ -1082,7 +1096,8 @@ impl LibraryInterface for MPDLibrary {
                     let mut progress = self.loading_progress.lock();
                     *progress = 1.0;
                 }
-                
+                self.library_version.bump();
+
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
                 
@@ -1474,6 +1489,7 @@ impl LibraryInterface for MPDLibrary {
         }
 
         self.force_update();
+        self.library_version.bump();
         Ok(())
     }
 
@@ -1493,6 +1509,7 @@ impl LibraryInterface for MPDLibrary {
 
         info!("Deleted track file: {:?}", full_path);
         self.force_update();
+        self.library_version.bump();
         Ok(())
     }
 }
@@ -1704,5 +1721,23 @@ mod tests {
         assert!(library
             .get_album_by_track_uri("music/Other Artist/Other Album/01 Other.flac")
             .is_none());
+    }
+
+    #[test]
+    fn a_fresh_library_reports_a_version() {
+        let lib = MPDLibrary::new();
+        // Some(_) rather than None: MPD opts in, unlike the trait default.
+        assert!(lib.library_version().is_some());
+    }
+
+    #[test]
+    fn a_bump_through_a_handed_out_handle_is_visible_on_the_library() {
+        // This is the property the updaters rely on: they hold a clone, and the
+        // endpoint reads the library's own handle. It does not exercise delete,
+        // which needs a live MPD connection.
+        let lib = MPDLibrary::new();
+        let before = lib.library_version().unwrap();
+        lib.version().bump();
+        assert_eq!(lib.library_version(), Some(before + 1));
     }
 }

@@ -30,10 +30,10 @@ const PAUSE_BETWEEN_ALBUMS: Duration = Duration::from_millis(250);
 /// job id is therefore a display label, not a lock: without this flag, two
 /// library refreshes in quick succession would spawn two threads that both
 /// walk `albums_collection` and both call `get_or_create_variant` for the
-/// same albums concurrently. `imagecache::store_image_from_data` writes the
-/// variant straight to its final path with `File::create` + `write_all`, so
-/// two concurrent writers to the same path can interleave and leave a torn
-/// file that gets served to clients until something overwrites it.
+/// same albums concurrently. Variant writes are atomic, so the result would
+/// not be a torn file, but it would be two Pi cores decoding and encoding the
+/// same 11,000 covers twice over — against a job whose entire design premise
+/// is that it stays out of playback's way.
 static PREWARM_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Clears `PREWARM_RUNNING` when dropped, so every exit path from the

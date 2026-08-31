@@ -455,17 +455,8 @@ impl ImageCache {
         let path_str = path.as_ref().to_string_lossy().to_string();
         let path_with_extension = format!("{}.{}", path_str, extension);
 
-        // A replaced original must not leave stale thumbnails behind: every client
-        // would then see the old art at grid size and the new art at full size, with
-        // nothing reporting an error.
-        if crate::helpers::imageresize::variant_size_of(&path_str).is_none() {
-            if let Err(e) = self.remove_variants_for(&path_with_extension) {
-                warn!("Failed to invalidate variants of {}: {}", path_with_extension, e);
-            }
-        }
-
         let full_path = self.get_full_path(&path_with_extension);
-        
+
         // Ensure parent directory exists
         if let Some(parent) = full_path.parent() {
             if !parent.exists() {
@@ -474,16 +465,27 @@ impl ImageCache {
                 }
             }
         }
-        
-        // Write the image data to file
-        match File::create(&full_path) {
-            Ok(mut file) => {
-                if let Err(e) = file.write_all(&data) {
-                    return Err(format!("Failed to write image data: {}", e));
-                }
-                debug!("Stored image at {}", full_path.display());
-            },
-            Err(e) => return Err(format!("Failed to create image file: {}", e)),
+
+        // Write the image data to file, atomically: a reader never sees a partial
+        // image, so two writers racing on the same path cannot leave a torn file.
+        if let Err(e) = write_file_atomically(&full_path, &data) {
+            return Err(format!("Failed to write image data to {}: {}", full_path.display(), e));
+        }
+        debug!("Stored image at {}", full_path.display());
+
+        // A replaced original must not leave stale thumbnails behind: every client
+        // would then see the old art at grid size and the new art at full size, with
+        // nothing reporting an error.
+        //
+        // This runs *after* the write, not before. Invalidating first opens a window
+        // in which a concurrent request regenerates the variant from the old original
+        // and that stale thumbnail then survives forever. Doing it afterwards can only
+        // fail the other way: if the write failed, the variants still match the
+        // unchanged original, so leaving them is correct.
+        if crate::helpers::imageresize::variant_size_of(&path_str).is_none() {
+            if let Err(e) = self.remove_variants_for(&path_with_extension) {
+                warn!("Failed to invalidate variants of {}: {}", path_with_extension, e);
+            }
         }
 
         // Create and store metadata
@@ -987,6 +989,58 @@ impl ImageCache {
         }
         Ok(removed)
     }
+}
+
+/// Write a file by creating a temporary sibling and renaming it into place.
+///
+/// `rename(2)` within one directory is atomic and replaces an existing file, so a
+/// reader sees either the previous file or the complete new one — never a
+/// half-written one, and two concurrent writers of the same path cannot interleave
+/// into a torn file. The pre-warm walk and an API request can both decide to
+/// generate the same variant, so that race is reachable in normal operation.
+///
+/// Getting it wrong is not transient. Variants are served with a strong ETag over
+/// the bytes and `Cache-Control: max-age=31536000, immutable`, so a truncated JPEG
+/// handed out once becomes a permanently broken thumbnail in every client that
+/// caught it, with no revalidation path back.
+///
+/// The temporary name carries the process id and a per-call counter, so two writers
+/// — in this process or another — cannot pick the same one. It is created in the
+/// destination's own directory, because `rename` is only atomic within a
+/// filesystem, and it starts with a dot so the statistics scan skips it and
+/// `is_variant_file_name` can never mistake it for a variant.
+///
+/// There is deliberately no `fsync`: the hazard here is a concurrent reader, not a
+/// power cut, and an fsync per file would be a real cost on an SD card across an
+/// 11,000-album pre-warm.
+pub fn write_file_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image");
+    let temp_path = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        file_name,
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let write_result = File::create(&temp_path).and_then(|mut file| file.write_all(data));
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+
+    if let Err(e) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+
+    Ok(())
 }
 
 /// Convert a MIME type to a file extension
@@ -1607,6 +1661,63 @@ mod tests {
         assert!(
             temp_dir.path().join("albums/a/b/back@200.jpg").exists(),
             "re-storing one original must not touch another original's variants"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_storing_leaves_no_temporary_file_behind() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
+
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+
+        let names: Vec<String> = read_dir(temp_dir.path().join("albums/a/b"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["cover.png".to_string()],
+            "the temporary file must be renamed into place, not left beside it"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_a_failed_write_keeps_the_existing_variants() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
+
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 200).unwrap();
+        let variant = temp_dir.path().join("albums/a/b/cover@200.jpg");
+        assert!(variant.exists());
+
+        // Make the destination unwritable in a way `rename` must refuse: replace the
+        // original with a non-empty directory of the same name.
+        let original = temp_dir.path().join("albums/a/b/cover.png");
+        fs::remove_file(&original).unwrap();
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("blocker"), b"x").unwrap();
+
+        assert!(
+            cache
+                .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+                .is_err(),
+            "the store must report the failed write"
+        );
+        assert!(
+            variant.exists(),
+            "a write that failed leaves the old original in place, so its variants are \
+             still correct and must not have been dropped"
         );
     }
 

@@ -361,7 +361,13 @@ fn artist_image_variant(cache_path: &str, size: u32) -> Option<(Vec<u8>, String)
             // The stored extension must match what was actually encoded, and must be
             // the same path the lookup above would find on a subsequent call.
             let stored_path = if mime == "image/png" { &png_path } else { &jpg_path };
-            if let Err(e) = std::fs::write(stored_path, &data) {
+            // Written atomically: two requests for the same artist at the same size
+            // can arrive concurrently, and a torn variant served once would be frozen
+            // into client caches by its strong ETag.
+            if let Err(e) = crate::helpers::imagecache::write_file_atomically(
+                std::path::Path::new(stored_path),
+                &data,
+            ) {
                 log::warn!("Failed to store artist image variant {}: {}", stored_path, e);
             }
             Some((data, mime))

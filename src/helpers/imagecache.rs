@@ -31,10 +31,16 @@ pub struct ImageMetadata {
 /// Statistics about the image cache
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ImageCacheStats {
-    /// Total number of cached images
+    /// Total number of cached images, variants included
     pub total_images: usize,
-    /// Total size of all cached images in bytes
+    /// Total size of all cached images in bytes, variants included
     pub total_size: u64,
+    /// How many of those are generated variants
+    #[serde(default)]
+    pub variant_images: usize,
+    /// How many of those bytes are generated variants
+    #[serde(default)]
+    pub variant_size: u64,
     /// Last time statistics were updated
     pub last_updated: u64,
 }
@@ -50,6 +56,8 @@ impl ImageCacheStats {
         Self {
             total_images: 0,
             total_size: 0,
+            variant_images: 0,
+            variant_size: 0,
             last_updated: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -583,7 +591,7 @@ impl ImageCache {
     /// Update cache statistics
     fn update_cache_stats(&self) -> Result<ImageCacheStats, String> {
         let mut stats = ImageCacheStats::new();
-        
+
         // Get all image metadata entries
         let prefix = Some(IMAGECACHE_METADATA_PREFIX);
         match attributecache::list_keys(prefix) {
@@ -592,6 +600,10 @@ impl ImageCache {
                     if let Ok(Some(metadata)) = attributecache::get::<ImageMetadata>(&key) {
                         stats.total_images += 1;
                         stats.total_size += metadata.size;
+                        if crate::helpers::imageresize::is_variant_file_name(&metadata.name) {
+                            stats.variant_images += 1;
+                            stats.variant_size += metadata.size;
+                        }
                     }
                 }
             }
@@ -612,7 +624,7 @@ impl ImageCache {
     /// Fallback method to scan filesystem for cache statistics
     fn scan_filesystem_for_stats(&self) -> Result<ImageCacheStats, String> {
         let mut stats = ImageCacheStats::new();
-        
+
         if !self.base_path.exists() {
             return Ok(stats);
         }
@@ -629,6 +641,10 @@ impl ImageCache {
                                     if let Ok(metadata) = entry.metadata() {
                                         stats.total_images += 1;
                                         stats.total_size += metadata.len();
+                                        if crate::helpers::imageresize::is_variant_file_name(name) {
+                                            stats.variant_images += 1;
+                                            stats.variant_size += metadata.len();
+                                        }
                                     }
                                 }
                             }
@@ -645,7 +661,7 @@ impl ImageCache {
         }
 
         scan_directory(&self.base_path, &mut stats)?;
-        
+
         // Store scanned stats
         attributecache::set(IMAGECACHE_STATS_KEY, &stats)
             .map_err(|e| format!("Failed to store scanned cache stats: {}", e))?;
@@ -1532,33 +1548,69 @@ mod tests {
     #[serial]
     fn test_global_cache_statistics_functions() {
         init_test_attribute_cache();
-        
+
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().to_str().unwrap();
-        
+
         // Initialize global cache for testing
         ImageCache::initialize(cache_path).unwrap();
-        
+
         // Test global statistics functions
         let initial_stats = get_cache_statistics();
         assert!(initial_stats.is_ok());
-        
+
         // Store some data using global functions
         let test_data = b"global test data";
         store_image("global_test.jpg", test_data).unwrap();
-        
+
         // Get metadata using global function
         let metadata = get_image_metadata("global_test.jpg");
         assert!(metadata.is_some());
         let meta = metadata.unwrap();
         assert_eq!(meta.name, "global_test.jpg");
         assert_eq!(meta.size, test_data.len() as u64);
-        
+
         // Refresh stats using global function
         let refreshed_stats = refresh_cache_statistics();
         assert!(refreshed_stats.is_ok());
         let stats = refreshed_stats.unwrap();
         assert!(stats.total_images >= 1);
         assert!(stats.total_size >= test_data.len() as u64);
+    }
+
+    #[test]
+    #[serial]
+    fn test_statistics_separate_variants_from_originals() {
+        use crate::helpers::attributecache::AttributeCache;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().to_str().unwrap();
+
+        // This test needs its own attribute cache, isolated from the shared one the
+        // other tests in this module use via `init_test_attribute_cache`, so that the
+        // `total_images == 2` assertion is not thrown off by entries other tests left
+        // behind.
+        let attr_cache_path = temp_dir.path().join("attributes");
+        AttributeCache::initialize_global(&attr_cache_path).unwrap();
+
+        let cache = ImageCache::with_directory(cache_path);
+
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 100).unwrap();
+
+        let stats = cache.refresh_cache_statistics().unwrap();
+        assert_eq!(stats.total_images, 2, "total counts everything on disk");
+        assert_eq!(stats.variant_images, 1, "one of them is derived");
+        assert!(stats.variant_size > 0);
+        assert!(
+            stats.variant_size < stats.total_size,
+            "derived bytes are a subset of the total"
+        );
+
+        // Leak the directory rather than let `temp_dir` delete it on drop: the
+        // process-wide attribute cache singleton still points at it.
+        std::mem::forget(temp_dir);
     }
 }

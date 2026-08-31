@@ -439,9 +439,9 @@ fn main() {
             .unwrap_or(1080)
     );
 
-    // Purge variants at retired ladder sizes now that the API listener is up.
-    // This used to run inside ImageCache::initialize, before the server bound
-    // its port, and held the global cache lock for the whole walk - the
+    // Purge variants at retired ladder sizes on its own thread, off the startup
+    // path. This used to run inside ImageCache::initialize, before the server
+    // bound its port, and held the global cache lock for the whole walk - the
     // daemon answered nothing for about a minute on the 0.12.0 upgrade.
     audiocontrol::helpers::imagepurge::purge_retired_in_background();
 

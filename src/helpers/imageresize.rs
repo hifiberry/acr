@@ -165,6 +165,68 @@ pub fn configure(raw_sizes: Option<Vec<u32>>, raw_prewarm: Option<Vec<u32>>) {
     let _ = PREWARM.set(prewarm);
 }
 
+/// Read a list of sizes out of a JSON config value, warning loudly about anything
+/// it must reject rather than dropping it silently.
+///
+/// `key` names the field being read (e.g. `"sizes"` or `"prewarm_sizes"`), used only
+/// to make the warnings actionable. `value` is the `services.images` section, or
+/// `None` when that section is absent from configuration altogether. When it is
+/// present but not a JSON object (e.g. `"images": "yes"`), that is warned about too
+/// rather than silently reading as "key absent".
+///
+/// Returns `None` when the key is absent, so "absent" (use the default) stays
+/// distinguishable from "present but every entry was rejected" (also use the
+/// default, but only after warning why). Returns `Some(vec)` — which may be empty —
+/// of the entries that survived; `sanitise_sizes` / `sanitise_prewarm` still do
+/// dedup, sort, ladder-membership and the empty-list decision on that result exactly
+/// as they did before this function existed.
+///
+/// A value outside `u32`'s range is rejected outright rather than cast: `as u32`
+/// wraps, so `4294967396` (2^32 + 100) would silently become `100` — a plausible,
+/// wrong rung with no sign anything went wrong.
+pub fn sizes_from_json(key: &str, value: Option<&serde_json::Value>) -> Option<Vec<u32>> {
+    let images = value?;
+    if !images.is_object() {
+        warn!(
+            "Ignoring 'images' configuration section: expected an object, got {}. Using the default.",
+            images
+        );
+        return None;
+    }
+    let field = match images.get(key) {
+        Some(f) => f,
+        None => return None,
+    };
+    let array = match field.as_array() {
+        Some(a) => a,
+        None => {
+            warn!(
+                "Ignoring configuration key '{}': expected an array, got {}. Using the default.",
+                key, field
+            );
+            return None;
+        }
+    };
+
+    let mut accepted = Vec::new();
+    for entry in array {
+        match entry.as_u64() {
+            Some(n) if n <= u32::MAX as u64 => accepted.push(n as u32),
+            Some(n) => warn!(
+                "Ignoring image size {} in configuration key '{}': larger than u32::MAX ({})",
+                n,
+                key,
+                u32::MAX
+            ),
+            None => warn!(
+                "Ignoring image size {} in configuration key '{}': not a non-negative integer",
+                entry, key
+            ),
+        }
+    }
+    Some(accepted)
+}
+
 /// Drop invalid and duplicate rungs, sort, and fall back if nothing survives.
 ///
 /// Sorting is not cosmetic: `snap_to_rung` returns the first rung greater than
@@ -445,5 +507,81 @@ mod tests {
         // 140 is a rung in the default ladder; 120 must snap up to it.
         assert_eq!(snap_to_rung(120), Some(140));
         assert_eq!(snap_to_rung(801), None);
+    }
+
+    mod sizes_from_json_tests {
+        use super::*;
+        use serde_json::json;
+
+        #[test]
+        fn absent_images_section_is_none() {
+            assert_eq!(sizes_from_json("sizes", None), None);
+        }
+
+        #[test]
+        fn absent_key_is_none() {
+            let images = json!({ "other": 1 });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), None);
+        }
+
+        #[test]
+        fn negative_entries_are_rejected_not_dropped_silently() {
+            let images = json!({ "sizes": [100, -50, 400] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(vec![100, 400]));
+        }
+
+        #[test]
+        fn non_integer_entries_are_rejected() {
+            let images = json!({ "sizes": [100, 200.5] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(vec![100]));
+        }
+
+        #[test]
+        fn a_non_array_value_is_none_not_the_default_indistinguishably() {
+            // Distinguishable from "absent" only via the log line the caller cannot
+            // see in a unit test, but the point tested here is that it does not
+            // silently succeed with a bogus single-element interpretation either.
+            let images = json!({ "sizes": 400 });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), None);
+        }
+
+        #[test]
+        fn a_non_object_images_section_is_none() {
+            // "images": "yes" -- the section itself is malformed, not just the key.
+            // This must fall back to the default (via None) the same as an absent
+            // section, but it is asserted here that this path is reached without
+            // panicking; the accompanying warning is what makes it distinguishable
+            // from a genuinely absent section in the daemon's log.
+            let images = json!("yes");
+            assert_eq!(sizes_from_json("sizes", Some(&images)), None);
+        }
+
+        #[test]
+        fn an_out_of_range_value_is_rejected_rather_than_wrapped() {
+            // 2^32 + 100. `as u32` would wrap this to 100, a plausible wrong value.
+            // It must be rejected outright instead.
+            let images = json!({ "sizes": [4294967396_u64] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(Vec::new()));
+        }
+
+        #[test]
+        fn valid_entries_all_pass_through() {
+            let images = json!({ "sizes": [100, 200, 400] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(vec![100, 200, 400]));
+        }
+
+        #[test]
+        fn empty_array_is_some_empty_not_none() {
+            // Distinguishes "present but empty" from "absent" -- sanitise_sizes is
+            // the one that decides whether an empty list falls back to the default.
+            let images = json!({ "sizes": [] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(Vec::new()));
+        }
+
+        #[test]
+        fn reads_the_prewarm_key_independently() {
+            let images = json!({ "sizes": [100], "prewarm_sizes": [100, -1] });
+            assert_eq!(sizes_from_json("prewarm_sizes", Some(&images)), Some(vec![100]));
+        }
     }
 }

@@ -239,14 +239,8 @@ fn main() {
     // Resolve the image size ladder before anything can read it.
     {
         let images = get_service_config(&controllers_config, "images");
-        let read_list = |key: &str| -> Option<Vec<u32>> {
-            images?
-                .get(key)?
-                .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
-        };
-        let sizes = read_list("sizes");
-        let prewarm = read_list("prewarm_sizes");
+        let sizes = audiocontrol::helpers::imageresize::sizes_from_json("sizes", images);
+        let prewarm = audiocontrol::helpers::imageresize::sizes_from_json("prewarm_sizes", images);
         audiocontrol::helpers::imageresize::configure(sizes, prewarm);
         info!(
             "Image sizes: {:?}, pre-warm sizes: {:?}",

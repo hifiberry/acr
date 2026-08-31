@@ -8,6 +8,27 @@ use log::debug;
 /// at grid sizes while staying far below the original's byte count.
 const JPEG_QUALITY: u8 = 82;
 
+/// Largest edge, in pixels, this module will decode.
+///
+/// The bytes reaching `resize` are not trusted: they are provider downloads
+/// (fanart.tv and friends) and art embedded in arbitrary files in the user's
+/// library, and the pre-warm job decodes every cover in that library unattended
+/// after each library load. Until this feature, acr never decoded an image at all —
+/// `helpers/image_meta` reads dimensions out of headers precisely to avoid it — so
+/// one decompression bomb, or merely one enormous scan, would be a new way to OOM
+/// the daemon on a 1GB Pi, repeatedly and with no user action.
+///
+/// 4096 is generous for cover art: the largest originals measured in a real library
+/// are 1280x1280.
+const MAX_DECODE_EDGE: u32 = 4096;
+
+/// Ceiling on what a single decode may allocate.
+///
+/// A 4096x4096 RGBA buffer is 64MiB; this leaves headroom for the decoder's own
+/// scratch space while staying far below what a Pi can spare. `image` refuses the
+/// decode rather than allocating past it.
+const MAX_DECODE_ALLOC: u64 = 128 * 1024 * 1024;
+
 /// The outcome of a resize request.
 #[derive(Debug)]
 pub enum Resized {
@@ -32,8 +53,13 @@ pub enum ResizeError {
 /// Opaque sources are re-encoded as JPEG; sources with an alpha channel stay PNG so
 /// transparency survives. Returns `Resized::Original` when the source is already
 /// small enough.
+///
+/// The decode is bounded by [`MAX_DECODE_EDGE`] and [`MAX_DECODE_ALLOC`]. An image
+/// beyond either is a `ResizeError::Decode`, which every caller already handles by
+/// serving the original — so an oversized source degrades to a full-size response
+/// rather than taking the daemon down with it.
 pub fn resize(data: &[u8], target_px: u32) -> Result<Resized, ResizeError> {
-    let img = image::load_from_memory(data).map_err(|e| ResizeError::Decode(e.to_string()))?;
+    let img = decode_within_limits(data)?;
 
     let longest = img.width().max(img.height());
     if longest <= target_px {
@@ -63,6 +89,25 @@ pub fn resize(data: &[u8], target_px: u32) -> Result<Resized, ResizeError> {
             .map_err(|e| ResizeError::Encode(e.to_string()))?;
         Ok(Resized::Image(buf.into_inner(), "image/jpeg".to_string()))
     }
+}
+
+/// Decode image bytes with explicit resource limits.
+///
+/// `image::load_from_memory` applies the crate's defaults, which do not bound the
+/// image's dimensions at all. Everything a limit violation produces is folded into
+/// `ResizeError::Decode`, because to every caller "this image is unusable" and "this
+/// image is too big to touch" have the same remedy: serve the original.
+fn decode_within_limits(data: &[u8]) -> Result<image::DynamicImage, ResizeError> {
+    let mut limits = image::Limits::no_limits();
+    limits.max_image_width = Some(MAX_DECODE_EDGE);
+    limits.max_image_height = Some(MAX_DECODE_EDGE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+
+    let mut reader = image::ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|e| ResizeError::Decode(e.to_string()))?;
+    reader.limits(limits);
+    reader.decode().map_err(|e| ResizeError::Decode(e.to_string()))
 }
 
 /// The only sizes acr will ever generate.
@@ -199,6 +244,28 @@ mod tests {
     fn corrupt_input_is_an_error_not_a_panic() {
         let err = resize(b"this is not an image", 400).unwrap_err();
         assert!(matches!(err, ResizeError::Decode(_)));
+    }
+
+    #[test]
+    fn an_image_beyond_the_decode_limit_is_refused_not_decoded() {
+        // One edge past MAX_DECODE_EDGE, the other tiny: the file is a few hundred
+        // bytes, so this asserts the limit without making the test allocate the
+        // thing the limit exists to prevent.
+        let src = opaque_png(MAX_DECODE_EDGE + 1, 4);
+        let err = resize(&src, 400).unwrap_err();
+        assert!(
+            matches!(err, ResizeError::Decode(_)),
+            "an oversized source must be a Decode error the caller can fall back from, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn an_image_at_the_decode_limit_still_resizes() {
+        // The boundary is inclusive: 4096 is generous for cover art, and a source
+        // that just reaches it must not be refused.
+        let src = opaque_png(MAX_DECODE_EDGE, 4);
+        assert!(matches!(resize(&src, 400).unwrap(), Resized::Image(_, _)));
     }
 
     #[test]

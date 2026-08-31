@@ -91,5 +91,8 @@ pub mod backgroundjobs;
 // Export the genres module
 pub mod genres;
 
+// Export the splitters module
+pub mod splitters;
+
 // Export the server module
 pub mod server;

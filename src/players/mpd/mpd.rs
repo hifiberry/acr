@@ -673,6 +673,31 @@ impl MPDPlayerController {
     pub fn remove_title_splitter(&self, url: &str) -> bool {
         self.song_split_manager.remove_splitter(url)
     }
+
+    /// Full splitting state for one station
+    pub fn get_splitter_state(&self, url: &str) -> Option<crate::helpers::songsplitmanager::SplitterState> {
+        self.song_split_manager.get_state(url)
+    }
+
+    /// Full splitting state for every station currently held in memory
+    pub fn get_all_splitter_states(&self) -> Vec<crate::helpers::songsplitmanager::SplitterState> {
+        self.song_split_manager.get_all_states()
+    }
+
+    /// Set — or clear, with `None` — a station's title order and separator
+    pub fn set_splitter_forced(
+        &self,
+        url: &str,
+        order: Option<crate::helpers::songtitlesplitter::OrderResult>,
+        separator: Option<char>,
+    ) -> Option<crate::helpers::songsplitmanager::SplitterState> {
+        self.song_split_manager.set_forced(url, order, separator)
+    }
+
+    /// Persist a station's splitter so its settings survive a restart
+    pub fn save_title_splitter(&self, url: &str) -> Result<(), String> {
+        self.song_split_manager.save(url)
+    }
       /// Notify all registered listeners that the database is being updated
     pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>, 
                                  song: Option<String>, percentage: Option<f32>) {

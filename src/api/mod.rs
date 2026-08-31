@@ -93,3 +93,6 @@ pub mod genres;
 
 // Export the server module
 pub mod server;
+
+// Export the imageresponse module
+pub mod imageresponse;

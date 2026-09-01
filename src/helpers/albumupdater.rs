@@ -168,8 +168,18 @@ pub fn update_library_albums_genres_in_background(
             if !genres.is_empty() {
                 let mut map = albums_collection.write();
                 if let Some(album) = map.get_mut(&album_name) {
-                    set_genres(&mut album.genres, genres, version.as_ref());
-                    updated += 1;
+                    // Mirror the cached-genres branch's guard above: the
+                    // snapshot this loop iterates was taken before this
+                    // fetch started, so another sweep may have already
+                    // populated this album's genres while the MusicBrainz
+                    // lookup was in flight. Without the guard this would
+                    // overwrite genres that are already set - and, now that
+                    // writes bump the library version, invalidate every
+                    // client's cache for a write that changed nothing.
+                    if album.genres.is_empty() {
+                        set_genres(&mut album.genres, genres, version.as_ref());
+                        updated += 1;
+                    }
                 }
             }
 

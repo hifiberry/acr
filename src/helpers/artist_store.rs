@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Read;
 use log::{debug, info, warn};
@@ -694,90 +694,6 @@ pub fn update_data_for_artist(artist: Artist) -> Artist {
     let store_arc = get_artist_store();
     let mut store = store_arc.lock();
     store.update_data_for_artist(artist)
-}
-
-/// Start a background thread to update metadata for all artists in the library sequentially
-///
-/// This function updates artist metadata using the update_data_for_artist method in a background process.
-/// It takes an Arc to the artists collection for direct updating and reading.
-///
-/// # Arguments
-/// * `artists_collection` - Arc to the artists collection for updating
-pub fn update_library_artists_metadata_in_background(
-    artists_collection: Arc<RwLock<HashMap<String, Artist>>>
-) {
-    debug!("Starting background thread to update artist metadata");
-    
-    // Spawn a new thread to handle the metadata updates
-    use std::thread;
-    thread::spawn(move || {
-        info!("Artist metadata update thread started");
-
-        // Get all artists from the collection
-        let artists = {
-            let artists_map = artists_collection.read();
-            // Clone all artists for processing
-            artists_map.values().cloned().collect::<Vec<_>>()
-        };
-
-        let total = artists.len();
-        info!("Processing metadata for {} artists", total);
-
-        for (index, artist) in artists.into_iter().enumerate() {
-            let artist_name = artist.name.clone();
-            debug!("Updating metadata for artist: {}", artist_name);
-
-            // Use the synchronous version of update_data_for_artist
-            let updated_artist = update_data_for_artist(artist);
-
-            // Check if we found new metadata to log appropriately
-            let has_new_metadata = {
-                let original_metadata = {
-                    let artists_map = artists_collection.read();
-                    artists_map.get(&artist_name).and_then(|a| a.metadata.clone())
-                };
-
-                if let Some(new_metadata) = &updated_artist.metadata {
-                    if !new_metadata.mbid.is_empty() {
-                        match original_metadata {
-                            Some(old_meta) if !old_meta.mbid.is_empty() => false,
-                            _ => {
-                                info!("Adding MusicBrainz ID(s) to artist {}", artist_name);
-                                true
-                            }
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            };
-
-            // Update the artist in the collection
-            {
-                let mut artists_map = artists_collection.write();
-                artists_map.insert(artist_name.clone(), updated_artist);
-
-                if has_new_metadata {
-                    debug!("Successfully updated artist {} in library collection", artist_name);
-                }
-            }
-
-            // Log progress periodically
-            let count = index + 1;
-            if count % 10 == 0 || count == total {
-                info!("Processed {}/{} artists for metadata", count, total);
-            }
-            
-            // Sleep between updates to avoid overwhelming external services
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-
-        info!("Artist metadata update process completed");
-    });
-
-    info!("Background artist metadata update initiated");
 }
 
 /// Convenience function to clear cached image for an artist

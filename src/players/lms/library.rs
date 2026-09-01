@@ -392,11 +392,14 @@ impl LibraryInterface for LMSLibrary {
                 // Start background update of artist metadata now that the library is fully loaded
                 if self.enhance_metadata {
                     info!("Starting background metadata update for artists");
+                    // LMS does not track library versions, so its lists carry no
+                    // validator — pass None rather than a live counter nothing reads.
                     crate::helpers::artistupdater::update_library_artists_metadata_in_background(
-                        self.artists.clone()
+                        self.artists.clone(),
+                        None,
                     );
                 }
-                
+
                 Ok(())
             },
             Err(e) => {
@@ -434,8 +437,13 @@ impl LibraryInterface for LMSLibrary {
     fn update_artist_metadata(&self) {
         if self.enhance_metadata {
             info!("Starting background metadata update for LMSLibrary artists");
-            // Use the generic function from artistupdater with only the artists collection
-            crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
+            // Use the generic function from artistupdater with only the artists collection.
+            // LMS does not track library versions, so its lists carry no validator —
+            // pass None rather than a live counter nothing reads.
+            crate::helpers::artistupdater::update_library_artists_metadata_in_background(
+                self.artists.clone(),
+                None,
+            );
         }
     }
     

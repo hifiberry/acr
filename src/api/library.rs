@@ -28,6 +28,10 @@ pub struct LibraryResponse {
     artists_count: usize,
     tracks_count: usize,
     supports_delete: bool,
+    /// Increases whenever the library's contents change. Absent for a backend
+    /// that does not track changes - the same signal as a missing ETag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    library_version: Option<String>,
 }
 
 /// Response structure for library list - lists all players with library info
@@ -277,6 +281,14 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
         if ctrl.get_player_name() == player_name {
             // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
+                // Read the version before the data - see the comment in
+                // get_player_albums below for why the order matters. It is
+                // benign for this handler today, since it emits no ETag,
+                // but this is the endpoint a client is meant to poll instead
+                // of revalidating each list, which makes it the most likely
+                // place to grow one next - so keep the ordering right now.
+                let library_version = library.library_version();
+
                 // Get basic library info
                 let is_loaded = library.is_loaded();
                 let supports_delete = library.supports_delete();
@@ -293,6 +305,7 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
                     artists_count: artists.len(),
                     tracks_count,
                     supports_delete,
+                    library_version,
                 }));
             } else {
                 // Player exists but doesn't have a library
@@ -307,6 +320,7 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
                         artists_count: 0,
                         tracks_count: 0,
                         supports_delete: false,
+                        library_version: None,
                     }),
                 ));
             }
@@ -325,6 +339,7 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
             artists_count: 0,
             tracks_count: 0,
             supports_delete: false,
+            library_version: None,
         }),
     ))
 }
@@ -335,16 +350,48 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
 #[get("/library/<player_name>/albums")]
 pub fn get_player_albums(
     player_name: &str,
+    if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<AlbumsDTOResponse>, Custom<String>> {
+) -> Result<crate::api::validated::Validated<AlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
-    
+
     // Find the controller with the matching name
     for ctrl_lock in controllers {
         let ctrl = ctrl_lock.read();
         if ctrl.get_player_name() == player_name {
             // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
+                // Read the version before the data. The background sweep
+                // writes to the library and only then bumps the version, on
+                // its own thread, under a lock this read does not share. If
+                // we read the data first, a sweep landing in between would
+                // let a client walk away with pre-update data labelled with
+                // the post-update token - a false 304 on every request until
+                // the next bump, serving stale data the whole time. Reading
+                // the version first can only make the token stale relative
+                // to the data, which costs one extra revalidation - never a
+                // false hit.
+                let version = library.library_version();
+
+                // Fast path: if the client's token already matches this
+                // version, return the 304 right here, before touching any
+                // data. Skipping straight past `get_albums()` and the DTO
+                // build is the whole point - on the test library that build
+                // costs ~0.37s on a Pi to send a few hundred bytes on a hit.
+                // This is safe, not just faster: `version` was just read
+                // above, before any data access, per the ordering rationale
+                // there, and a match here means the client's token equals a
+                // version read moments ago with no data access in between -
+                // there is nothing that could have changed in that gap for
+                // this to be wrong about.
+                if let Some(not_modified) = crate::api::validated::not_modified(
+                    "albums",
+                    &version,
+                    if_none_match.0,
+                ) {
+                    return Ok(not_modified);
+                }
+
                 // Get all albums
                 let albums = library.get_albums();
 
@@ -353,11 +400,18 @@ pub fn get_player_albums(
                     .map(|album| create_album_dto(album, false))
                     .collect::<Vec<AlbumDTO>>();
 
-                return Ok(Json(AlbumsDTOResponse {
+                let response = AlbumsDTOResponse {
                     player_name: player_name.to_string(),
                     count: album_dtos.len(),
                     albums: album_dtos,
-                }));
+                };
+
+                return Ok(crate::api::validated::validated(
+                    response,
+                    "albums",
+                    version,
+                    if_none_match.0,
+                ));
             } else {
                 // Player exists but doesn't have a library
                 return Err(Custom(
@@ -379,8 +433,9 @@ pub fn get_player_albums(
 #[get("/library/<player_name>/artists")]
 pub fn get_player_artists(
     player_name: &str,
+    if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
     controller: &State<Arc<AudioController>>
-) -> Result<Json<serde_json::Value>, Custom<String>> {
+) -> Result<crate::api::validated::Validated<serde_json::Value>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -389,6 +444,31 @@ pub fn get_player_artists(
         if ctrl.get_player_name() == player_name {
             // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
+                // Read the version before the data - see the comment in
+                // get_player_albums above for why the order matters: reading
+                // it after the data risks labelling a pre-update list with a
+                // post-update token, which is a false 304 (a stale list that
+                // never revalidates until the next bump). Reading it first
+                // only risks the opposite - one wasted revalidation.
+                let version = library.library_version();
+
+                // Fast path: if the client's token already matches this
+                // version, return the 304 right here, before touching any
+                // data - skipping `get_artists()`, the sort, and the
+                // per-artist album count below. See the comment on the same
+                // fast path in `get_player_albums` for why this cannot turn
+                // real content into a false 304: `version` was just read
+                // above, before any data access, and a match here means the
+                // client's token equals that just-read version, with nothing
+                // in between that could have changed it.
+                if let Some(not_modified) = crate::api::validated::not_modified(
+                    "artists",
+                    &version,
+                    if_none_match.0,
+                ) {
+                    return Ok(not_modified);
+                }
+
                 // Get all artists
                 let mut artists = library.get_artists();
 
@@ -430,7 +510,12 @@ pub fn get_player_artists(
                     "artists": artists_json
                 });
 
-                return Ok(Json(response));
+                return Ok(crate::api::validated::validated(
+                    response,
+                    "artists",
+                    version,
+                    if_none_match.0,
+                ));
             } else {
                 // Player exists but doesn't have a library
                 return Err(Custom(
@@ -885,6 +970,10 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                 // Trigger library refresh
                 match library.refresh_library() {
                     Ok(_) => {
+                        // Read the version before the data - see the comment
+                        // in get_player_albums for why the order matters.
+                        let library_version = library.library_version();
+
                         // Get updated library info
                         let is_loaded = library.is_loaded();
                         let albums = library.get_albums();
@@ -900,6 +989,7 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                             artists_count: artists.len(),
                             tracks_count,
                             supports_delete: library.supports_delete(),
+                            library_version,
                         }));
                     },
                     Err(e) => {

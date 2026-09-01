@@ -1450,10 +1450,27 @@ Retrieves library information for a specific player.
     "has_library": true,
     "is_loaded": true,
     "albums_count": 100,
-    "artists_count": 50
+    "artists_count": 50,
+    "tracks_count": 1000,
+    "supports_delete": false,
+    "library_version": "a3f9c1d2-42"
   }
   ```
 - **Error Response** (404 Not Found): Same structure as successful response but with `has_library: false`
+
+**Response Fields**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `player_name` | string | The name of the player |
+| `player_id` | string | The unique identifier of the player |
+| `has_library` | boolean | Whether the player has a library |
+| `is_loaded` | boolean | Whether the library is loaded |
+| `albums_count` | integer | Number of albums in the library |
+| `artists_count` | integer | Number of artists in the library |
+| `tracks_count` | integer | Total number of tracks in the library |
+| `supports_delete` | boolean | Whether the player supports deleting tracks |
+| `library_version` | string (opaque) | Changes whenever the library's contents change. Poll this one small response to learn whether any list needs re-fetching, rather than issuing a conditional request per list. **Compare it for equality only** - it is opaque, not ordered, and carries no arithmetic meaning. **Absent** when the backend does not track changes. It also changes when the daemon restarts, which costs one refetch and is what makes it safe to trust. |
 
 #### Example
 ```bash
@@ -1479,6 +1496,21 @@ Retrieves all albums for a specific player.
   }
   ```
 - **Error Response** (404 Not Found): String error message
+
+**Caching**
+
+The response carries a weak `ETag` derived from the library version, for example
+`W/"albums-a3f9c1d2-42"`. Send it back as `If-None-Match` and an unchanged library answers
+`304 Not Modified` with no body, instead of re-sending the list.
+
+The version moves whenever the library's contents change, including the
+background genre and metadata updates that continue for a while after a scan -
+so during that window a conditional request will usually still return a full
+response. That is the library genuinely changing, not the validator failing.
+
+**A player whose backend does not track changes sends no `ETag`.** MPD does;
+LMS does not. A client must treat the header's absence as "cannot revalidate"
+rather than assuming the list is stable.
 
 #### Examples
 ```bash
@@ -1511,6 +1543,21 @@ Retrieves all artists for a specific player.
   }
   ```
 - **Error Response** (404 Not Found): String error message
+
+**Caching**
+
+The response carries a weak `ETag` derived from the library version, for example
+`W/"artists-a3f9c1d2-42"`. Send it back as `If-None-Match` and an unchanged library answers
+`304 Not Modified` with no body, instead of re-sending the list.
+
+The version moves whenever the library's contents change, including the
+background genre and metadata updates that continue for a while after a scan -
+so during that window a conditional request will usually still return a full
+response. That is the library genuinely changing, not the validator failing.
+
+**A player whose backend does not track changes sends no `ETag`.** MPD does;
+LMS does not. A client must treat the header's absence as "cannot revalidate"
+rather than assuming the list is stable.
 
 #### Examples
 ```bash

@@ -5,6 +5,7 @@ use std::time::Instant;
 use log::{debug, info, warn, error};
 use chrono::Datelike;
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
+use crate::data::library::LibraryVersion;
 use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
 use crate::helpers::url_encoding;
 use crate::helpers::lyrics::LyricsProvider;
@@ -29,7 +30,10 @@ pub struct MPDLibrary {
     
     /// Flag indicating if library is loaded
     library_loaded: Arc<Mutex<bool>>,
-    
+
+    /// Increases whenever the library's contents change; drives the list ETags
+    library_version: LibraryVersion,
+
     /// Library loading progress (0.0 - 1.0)
     loading_progress: Arc<Mutex<f32>>,
     
@@ -58,6 +62,7 @@ impl MPDLibrary {
             artists: Arc::new(RwLock::new(HashMap::new())),
             album_artists: Arc::new(RwLock::new(AlbumArtists::new())),
             library_loaded: Arc::new(Mutex::new(false)),
+            library_version: LibraryVersion::new(),
             loading_progress: Arc::new(Mutex::new(0.0)),
             artist_separators: Arc::new(Mutex::new(None)),
             enhance_metadata,
@@ -110,6 +115,11 @@ impl MPDLibrary {
     pub fn get_loading_progress(&self) -> f32 {
         let progress = self.loading_progress.lock();
         *progress
+    }
+
+    /// A handle on this library's version counter, for the background updaters.
+    pub fn version(&self) -> LibraryVersion {
+        self.library_version.clone()
     }
     
     /// Set custom artist separators for use in library operations
@@ -1035,7 +1045,11 @@ impl LibraryInterface for MPDLibrary {
         let loaded = self.library_loaded.lock();
         *loaded
     }
-    
+
+    fn library_version(&self) -> Option<String> {
+        Some(self.library_version.token())
+    }
+
     fn refresh_library(&self) -> Result<(), LibraryError> {
         debug!("Refreshing MPD library data using MPDLibraryLoader");
         let start_time = Instant::now();
@@ -1050,7 +1064,20 @@ impl LibraryInterface for MPDLibrary {
             Ok(albums) => {
                 // Mark as not loaded during update
                 *self.library_loaded.lock() = false;
-                
+
+                // Bump here too, not just at the end of this function. The
+                // mutation actually starts now - self_albums.clear() below,
+                // then the insert loop, then create_artists() - and runs for
+                // roughly a second on a large library. A conditional request
+                // arriving in that window would otherwise still carry the
+                // pre-refresh token, match it, and get a false 304 while the
+                // server already holds different content. Bumping now means
+                // such a request instead gets a 200 (a false miss, since the
+                // rebuild isn't done yet either) and the closing bump makes
+                // it revalidate once more - two false misses traded for the
+                // one false hit this would otherwise allow.
+                self.library_version.bump();
+
                 // Reset loading progress to 0
                 {
                     let mut progress = self.loading_progress.lock();
@@ -1082,7 +1109,13 @@ impl LibraryInterface for MPDLibrary {
                     let mut progress = self.loading_progress.lock();
                     *progress = 1.0;
                 }
-                
+                // Second bump - see the one at the start of this Ok(albums)
+                // arm. That one covers the mutation window that opens
+                // before this point; this one covers the (much shorter)
+                // window between it and now. Neither is redundant with the
+                // other.
+                self.library_version.bump();
+
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
                 
@@ -1090,11 +1123,11 @@ impl LibraryInterface for MPDLibrary {
                 if self.enhance_metadata {
                     info!("Starting background metadata update for artists");
                     crate::helpers::artistupdater::update_library_artists_metadata_in_background(
-                        self.artists.clone()
+                        self.artists.clone(), Some(self.version())
                     );
                     info!("Starting background genre update for albums");
                     crate::helpers::albumupdater::update_library_albums_genres_in_background(
-                        self.albums.clone()
+                        self.albums.clone(), Some(self.version())
                     );
                     crate::helpers::imageprewarm::prewarm_album_variants_in_background(
                         self.albums.clone(),
@@ -1142,14 +1175,14 @@ impl LibraryInterface for MPDLibrary {
     fn update_artist_metadata(&self) {
         if self.enhance_metadata {
             info!("Starting background metadata update for MPDLibrary artists");
-            crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone());
+            crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone(), Some(self.version()));
         }
     }
 
     fn update_album_metadata(&self) {
         if self.enhance_metadata {
             info!("Starting background genre update for MPDLibrary albums");
-            crate::helpers::albumupdater::update_library_albums_genres_in_background(self.albums.clone());
+            crate::helpers::albumupdater::update_library_albums_genres_in_background(self.albums.clone(), Some(self.version()));
             crate::helpers::imageprewarm::prewarm_album_variants_in_background(self.albums.clone());
         }
     }
@@ -1474,6 +1507,7 @@ impl LibraryInterface for MPDLibrary {
         }
 
         self.force_update();
+        self.library_version.bump();
         Ok(())
     }
 
@@ -1493,6 +1527,7 @@ impl LibraryInterface for MPDLibrary {
 
         info!("Deleted track file: {:?}", full_path);
         self.force_update();
+        self.library_version.bump();
         Ok(())
     }
 }
@@ -1704,5 +1739,23 @@ mod tests {
         assert!(library
             .get_album_by_track_uri("music/Other Artist/Other Album/01 Other.flac")
             .is_none());
+    }
+
+    #[test]
+    fn a_fresh_library_reports_a_version() {
+        let lib = MPDLibrary::new();
+        // Some(_) rather than None: MPD opts in, unlike the trait default.
+        assert!(lib.library_version().is_some());
+    }
+
+    #[test]
+    fn a_bump_through_a_handed_out_handle_is_visible_on_the_library() {
+        // This is the property the updaters rely on: they hold a clone, and the
+        // endpoint reads the library's own handle. It does not exercise delete,
+        // which needs a live MPD connection.
+        let lib = MPDLibrary::new();
+        let before = lib.library_version().unwrap();
+        lib.version().bump();
+        assert_ne!(lib.library_version().unwrap(), before);
     }
 }

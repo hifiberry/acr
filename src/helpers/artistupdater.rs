@@ -228,6 +228,39 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     artist
 }
 
+/// Store an updated artist and record a real change.
+///
+/// `Artist`'s own `PartialEq` (see `src/data/artist.rs`) is hand-written to
+/// compare only `id` — that's for identity (dedup and lookup), not content,
+/// so it can't be reused here. So the change check compares `ArtistMeta`,
+/// which derives `PartialEq` cleanly, plus the `is_multi` flag: both are
+/// part of what a client observes (`Artist`'s `Serialize` impl includes both), and
+/// `is_multi` can flip independently of metadata content (e.g. clearing an
+/// already-empty `metadata` when a name turns out to be multi-artist).
+///
+/// Comparing against the collection's current entry — not the snapshot
+/// taken at the start of the sweep — is what actually tells us whether this
+/// write changes what a client can observe. The write and the bump live in
+/// one function so the two cannot drift apart, matching `set_genres` on the
+/// album path.
+fn store_artist(
+    map: &mut HashMap<String, Artist>,
+    name: String,
+    artist: Artist,
+    version: Option<&crate::data::library::LibraryVersion>,
+) {
+    let changed = match map.get(&name) {
+        Some(existing) => existing.metadata != artist.metadata || existing.is_multi != artist.is_multi,
+        None => true,
+    };
+    map.insert(name, artist);
+    if changed {
+        if let Some(version) = version {
+            version.bump();
+        }
+    }
+}
+
 /// Start a background thread to update metadata for all artists in the library sequentially
 ///
 /// This function updates artist metadata using the update_data_for_artist method in a background process.
@@ -236,7 +269,8 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
 /// # Arguments
 /// * `artists_collection` - Arc to the artists collection for updating
 pub fn update_library_artists_metadata_in_background(
-    artists_collection: Arc<RwLock<HashMap<String, Artist>>>
+    artists_collection: Arc<RwLock<HashMap<String, Artist>>>,
+    version: Option<crate::data::library::LibraryVersion>,
 ) {
     debug!("Starting background thread to update artist metadata");
     
@@ -320,7 +354,7 @@ pub fn update_library_artists_metadata_in_background(
             // Update the artist in the collection
             {
                 let mut artists_map = artists_collection.write();
-                artists_map.insert(artist_name.clone(), updated_artist);
+                store_artist(&mut artists_map, artist_name.clone(), updated_artist, version.as_ref());
 
                 if has_new_metadata {
                     debug!("Successfully updated artist {} in library collection", artist_name);
@@ -356,4 +390,72 @@ pub fn update_library_artists_metadata_in_background(
     });
 
     info!("Background artist metadata update initiated");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::library::LibraryVersion;
+    use crate::data::metadata::ArtistMeta;
+    use crate::data::Identifier;
+
+    fn artist(name: &str, metadata: Option<ArtistMeta>, is_multi: bool) -> Artist {
+        Artist {
+            id: Identifier::Numeric(1),
+            name: name.to_string(),
+            is_multi,
+            metadata,
+        }
+    }
+
+    #[test]
+    fn storing_a_changed_artist_stores_it_and_bumps_the_version() {
+        let version = LibraryVersion::new();
+        let mut map = HashMap::new();
+        map.insert("Radiohead".to_string(), artist("Radiohead", None, false));
+
+        let mut meta = ArtistMeta::new();
+        meta.add_genre("rock".to_string());
+        let updated = artist("Radiohead", Some(meta.clone()), false);
+
+        store_artist(&mut map, "Radiohead".to_string(), updated, Some(&version));
+
+        assert_eq!(map.get("Radiohead").unwrap().metadata, Some(meta));
+        assert_eq!(version.get(), 1, "a real change must move the version");
+    }
+
+    #[test]
+    fn storing_an_unchanged_artist_still_stores_it_but_does_not_bump() {
+        // Storing unconditionally (rather than skipping) keeps the map's contents
+        // exactly what was just computed even if a comparison bug ever treats two
+        // genuinely-equal values as equal for the wrong reason; only the *version*
+        // bump is conditional on there being a real change.
+        let version = LibraryVersion::new();
+        let mut meta = ArtistMeta::new();
+        meta.add_genre("rock".to_string());
+
+        let mut map = HashMap::new();
+        map.insert("Radiohead".to_string(), artist("Radiohead", Some(meta.clone()), false));
+
+        let unchanged = artist("Radiohead", Some(meta.clone()), false);
+        store_artist(&mut map, "Radiohead".to_string(), unchanged, Some(&version));
+
+        assert_eq!(map.get("Radiohead").unwrap().metadata, Some(meta));
+        assert_eq!(version.get(), 0, "no content changed, so the version must not move");
+    }
+
+    #[test]
+    fn storing_with_no_version_stores_and_never_bumps() {
+        // The LMS path: no LibraryVersion is tracked, so `version` is `None`.
+        let mut map = HashMap::new();
+        map.insert("Radiohead".to_string(), artist("Radiohead", None, false));
+
+        let mut meta = ArtistMeta::new();
+        meta.add_genre("rock".to_string());
+        let updated = artist("Radiohead", Some(meta.clone()), false);
+
+        store_artist(&mut map, "Radiohead".to_string(), updated, None);
+
+        assert_eq!(map.get("Radiohead").unwrap().metadata, Some(meta));
+    }
 }

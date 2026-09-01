@@ -1,3 +1,28 @@
+hifiberry-audiocontrol (0.15.1) trixie; urgency=medium
+
+  * audiocontrol exits when it is asked to stop. It never had: every stop,
+    restart and package upgrade ended in SIGKILL after systemd's stop timeout,
+    so nothing in the process ever got the chance to flush its state. The
+    signal was not being ignored -- Rocket received it and shut the HTTP
+    server down on time -- but the flag the main thread waits on was only
+    cleared from a ctrlc handler that Rocket's own signal handlers replace as
+    soon as the server launches. That handler had therefore never run, taking
+    with it the force-exit watchdog written to catch exactly this, which sat
+    inside it and could not fire. The main loop is now ended by the API server
+    returning, which happens precisely when Rocket has finished shutting down.
+    A stop takes about six seconds, which is Rocket's own grace and mercy
+    periods, rather than the full ten-second timeout followed by a kill.
+  * Starting the API server reports which of two things happened rather than a
+    bare success. "Rocket ran and has shut down" and "the webserver is
+    disabled, nothing was started" were the same value, so the caller had to
+    re-read the configuration to tell them apart. Both are now distinct
+    outcomes the compiler can check.
+  * The startup log no longer claims "API server started on port 1080" from a
+    thread that has not started anything. The webserver logs its own address
+    when it binds one, which is the code that knows.
+
+ -- HiFiBerry <support@hifiberry.com>  Tue, 01 Sep 2026 14:33:56 +0200
+
 hifiberry-audiocontrol (0.15.0) trixie; urgency=medium
 
   * Image and lyrics paths in every payload now carry the externally visible

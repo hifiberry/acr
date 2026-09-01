@@ -373,6 +373,25 @@ pub fn get_player_albums(
                 // false hit.
                 let version = library.library_version();
 
+                // Fast path: if the client's token already matches this
+                // version, return the 304 right here, before touching any
+                // data. Skipping straight past `get_albums()` and the DTO
+                // build is the whole point - on the test library that build
+                // costs ~0.37s on a Pi to send a few hundred bytes on a hit.
+                // This is safe, not just faster: `version` was just read
+                // above, before any data access, per the ordering rationale
+                // there, and a match here means the client's token equals a
+                // version read moments ago with no data access in between -
+                // there is nothing that could have changed in that gap for
+                // this to be wrong about.
+                if let Some(not_modified) = crate::api::validated::not_modified(
+                    "albums",
+                    &version,
+                    if_none_match.0,
+                ) {
+                    return Ok(not_modified);
+                }
+
                 // Get all albums
                 let albums = library.get_albums();
 
@@ -432,6 +451,23 @@ pub fn get_player_artists(
                 // never revalidates until the next bump). Reading it first
                 // only risks the opposite - one wasted revalidation.
                 let version = library.library_version();
+
+                // Fast path: if the client's token already matches this
+                // version, return the 304 right here, before touching any
+                // data - skipping `get_artists()`, the sort, and the
+                // per-artist album count below. See the comment on the same
+                // fast path in `get_player_albums` for why this cannot turn
+                // real content into a false 304: `version` was just read
+                // above, before any data access, and a match here means the
+                // client's token equals that just-read version, with nothing
+                // in between that could have changed it.
+                if let Some(not_modified) = crate::api::validated::not_modified(
+                    "artists",
+                    &version,
+                    if_none_match.0,
+                ) {
+                    return Ok(not_modified);
+                }
 
                 // Get all artists
                 let mut artists = library.get_artists();

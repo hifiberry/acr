@@ -28,6 +28,35 @@ pub enum Validated<T> {
     NotModified(String),
 }
 
+/// Fast-path check: does the client's `If-None-Match` already match this
+/// version, before any response body has been built?
+///
+/// Returns `Some` when it does, so the caller can return a 304 immediately
+/// without ever constructing the data that goes into a 200. Returns `None`
+/// when the body must still be built - either because the token names a real
+/// change, no token was sent, or `version` is `None` (the backend does not
+/// track changes, so nothing can ever short-circuit here).
+///
+/// Because `Validated::NotModified` carries no body, this is generic over any
+/// `T` without needing one in hand - the caller can call this before it has
+/// anything to serialize.
+///
+/// Safety: this makes the same comparison `validated` would make on a miss
+/// path, just earlier. It does not weaken the read-version-before-data rule
+/// documented at each call site - callers are expected to read `version`
+/// first, then call this, then touch the data only if it returns `None`. A
+/// `Some` here means the client's token equals a version read moments ago,
+/// with no data access in between, so it can only be an accurate 304.
+pub fn not_modified<T>(
+    kind: &str,
+    version: &Option<String>,
+    if_none_match: Option<&str>,
+) -> Option<Validated<T>> {
+    let token = version.as_ref()?;
+    let etag = weak_etag(kind, token);
+    matches(if_none_match, &etag).then(|| Validated::NotModified(etag))
+}
+
 /// Decide which of the two to send.
 ///
 /// `version: None` means the backend does not track changes; no validator is
@@ -111,6 +140,36 @@ mod tests {
     fn a_matching_request_is_not_modified() {
         let reply = validated(vec![1, 2, 3], "albums", Some("a3f9c1d2-42".to_string()), Some("W/\"albums-a3f9c1d2-42\""));
         assert!(matches!(reply, Validated::NotModified(_)));
+    }
+
+    #[test]
+    fn not_modified_fast_path_matches_without_a_body() {
+        let version = Some("a3f9c1d2-42".to_string());
+        let reply: Option<Validated<Vec<u32>>> =
+            not_modified("albums", &version, Some("W/\"albums-a3f9c1d2-42\""));
+        assert!(matches!(reply, Some(Validated::NotModified(_))));
+    }
+
+    #[test]
+    fn not_modified_fast_path_defers_on_a_different_token() {
+        let version = Some("a3f9c1d2-42".to_string());
+        let reply: Option<Validated<Vec<u32>>> =
+            not_modified("albums", &version, Some("W/\"albums-a3f9c1d2-41\""));
+        assert!(reply.is_none());
+    }
+
+    #[test]
+    fn not_modified_fast_path_defers_when_no_token_was_sent() {
+        let version = Some("a3f9c1d2-42".to_string());
+        let reply: Option<Validated<Vec<u32>>> = not_modified("albums", &version, None);
+        assert!(reply.is_none());
+    }
+
+    #[test]
+    fn not_modified_fast_path_defers_when_the_backend_has_no_version() {
+        let reply: Option<Validated<Vec<u32>>> =
+            not_modified("albums", &None, Some("W/\"albums-a3f9c1d2-42\""));
+        assert!(reply.is_none());
     }
 
     use rocket::local::blocking::Client;

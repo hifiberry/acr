@@ -8,6 +8,22 @@ hifiberry-audiocontrol (0.15.0) trixie; urgency=medium
     per transport. A path that fell through the proxy answered 200 with the
     web interface's index page rather than an error.
   * List responses declare Vary: X-Forwarded-Prefix.
+  * The library version token varies with the client's API prefix, both in the
+    ETags on the album and artist lists and in the library_version field of
+    /library/<player>. Without that, a prefixed and an un-prefixed response
+    shared one validator for one URL, so a conditional request could be
+    answered 304 for a representation the client never held, leaving it with
+    paths wrong for the route it was on. The field remains opaque and is still
+    compared for equality only.
+  * A forwarded prefix that is not a plain path is refused, and paths then go
+    out in their internal form exactly as they do when no prefix is reported.
+    A value beginning with two slashes made every emitted path
+    protocol-relative, so a browser resolved cover art against that host
+    instead of the device, and a value carrying a query or fragment marker
+    swallowed the rest of each path. Control characters are refused with them:
+    a URL parser removes tab, carriage return and line feed before parsing, so
+    a value containing one could otherwise be reassembled into either shape
+    after passing the check.
 
  -- HiFiBerry <support@hifiberry.com>  Tue, 01 Sep 2026 11:14:47 +0200
 

@@ -1,3 +1,16 @@
+hifiberry-audiocontrol (0.15.0) trixie; urgency=medium
+
+  * Image and lyrics paths in every payload now carry the externally visible
+    API prefix when audiocontrol is reached through a reverse proxy. Album
+    cover art, artist thumbnails and the song paths on the WebSocket
+    previously carried the internal path while the now-playing response
+    carried the external one, so a client needed one rule per endpoint and
+    per transport. A path that fell through the proxy answered 200 with the
+    web interface's index page rather than an error.
+  * List responses declare Vary: X-Forwarded-Prefix.
+
+ -- HiFiBerry <support@hifiberry.com>  Tue, 01 Sep 2026 11:14:47 +0200
+
 hifiberry-audiocontrol (0.14.0) trixie; urgency=medium
 
   * api: the album and artist list endpoints answer conditional requests. A

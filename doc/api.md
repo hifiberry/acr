@@ -5,6 +5,7 @@ This document describes the REST API endpoints available in the Audio Control RE
 ## Table of Contents
 
 - [Base Information](#base-information)
+- [Image and Lyrics Paths](#image-and-lyrics-paths)
 - [Events](#events)
   - [Player Events](#player-events)
 - [Core API](#core-api)
@@ -114,6 +115,54 @@ This document describes the REST API endpoints available in the Audio Control RE
 > `auth_request`, so any endpoint below can return `401` with a
 > `WWW-Authenticate-Hint` header even though audiocontrol itself never produces
 > one.
+
+## Image and Lyrics Paths
+
+Paths in responses are ready to use as they are. A client joins them to the
+host it is talking to and fetches them unmodified — it must not add a prefix
+of its own.
+
+Where audiocontrol sits behind a reverse proxy that reports
+`X-Forwarded-Prefix`, every path in a response already carries that prefix.
+Reached directly, the same paths come back in their internal form, which is
+correct for that route. This holds for album `cover_art`, artist `thumb_url`,
+`song.cover_art_url` and `song.metadata.lyrics_url`, over REST and over the
+WebSocket alike.
+
+Before 0.15.0 only the `now-playing` response carried the external form; the
+album, artist and album-detail responses carried the internal path even behind
+a proxy. A client that compensated for that by prepending the prefix itself
+should check whether the path already carries it, as the shipped clients do.
+
+External URLs — artist images from last.fm or theaudiodb, for instance — are
+absolute and are never rewritten.
+
+A song pushed in through `POST /api/player/<name>/update` is stored with
+whatever `cover_art_url` the sender supplied, and is served back as it was
+stored. A sender that supplies an already-external path — one that carries the
+proxy's prefix — therefore produces a value that is wrong for a client reached
+directly, whatever the rewrite does on the way out. Senders should supply
+either an absolute URL or a path in audiocontrol's own internal form.
+
+Because their bodies depend on the request header, the two library list
+responses — `/api/library/<player>/albums` and `/api/library/<player>/artists` —
+carry `Vary: X-Forwarded-Prefix`, and their `ETag`s, along with the
+`library_version` those endpoints and `/api/library/<player>` report, vary with
+the prefix as well as with the library's contents. The remaining
+prefix-dependent responses (`now-playing`, `library/<player>` - whose
+`library_version` varies with the prefix even though it carries no image path -
+`album/by-id`, `artist/by-id`,
+`artist/by-name`, `artist/by-mbid`, `albums/by-artist`, `albums/by-artist-id`,
+`albums/by-genre`, `albums/by-category`) return a plain JSON body with neither
+header; a shared cache in front of
+audiocontrol must not be keyed on URL alone for those.
+
+The forwarded prefix must not shadow an API route segment such as `library`,
+`coverart` or `lyrics`. A path is recognized as already carrying the prefix by
+a plain string match, so a prefix of `/api/library`, say, would make every
+unrewritten path under `/api/library/...` look like one that had already been
+rewritten — and those paths would then go out without the prefix, leaving the
+client with a path it cannot fetch.
 
 ## Events
 
@@ -1453,7 +1502,7 @@ Retrieves library information for a specific player.
     "artists_count": 50,
     "tracks_count": 1000,
     "supports_delete": false,
-    "library_version": "a3f9c1d2-42"
+    "library_version": "5e2b91c0-a3f9c1d2-42"
   }
   ```
 - **Error Response** (404 Not Found): Same structure as successful response but with `has_library: false`

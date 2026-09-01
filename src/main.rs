@@ -1,4 +1,4 @@
-use audiocontrol::api::server;
+use audiocontrol::api::server::{self, ServerOutcome};
 use audiocontrol::config::{get_service_config, merge_player_includes};
 use audiocontrol::helpers::imagecache::ImageCache;
 use audiocontrol::helpers::lastfm;
@@ -332,7 +332,13 @@ fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
-    // Set up Ctrl+C handler
+    // Set up Ctrl+C handler.
+    //
+    // This only covers the window before Rocket launches. Rocket installs its
+    // own SIGINT/SIGTERM handlers when the server starts, and a signal
+    // disposition is process-global, so the later registration replaces this
+    // one for the rest of the process's life. The API thread below is what
+    // clears `running` once Rocket is up.
     if let Err(e) = ctrlc::set_handler(move || {
         info!("Received Ctrl+C, shutting down...");
         r.store(false, Ordering::SeqCst);
@@ -420,24 +426,39 @@ fn main() {
 
     // Start the API server using the global Tokio runtime
     let controllers_config_clone = controllers_config.clone();
+    let api_running = running.clone();
     let _api_thread = thread::spawn(move || {
-        get_tokio_runtime().block_on(async {
+        let outcome = get_tokio_runtime().block_on(async {
             // Get a reference to the singleton AudioController for the server
             let controller = AudioController::instance();
-            if let Err(e) = server::start_rocket_server(controller, &controllers_config_clone).await
-            {
-                error!("API server error: {}", e);
-            }
+            server::start_rocket_server(controller, &controllers_config_clone).await
         });
-    });
 
-    info!(
-        "API server started on port {}",
-        get_service_config(&controllers_config, "webserver")
-            .and_then(|ws| ws.get("port"))
-            .and_then(|p| p.as_u64())
-            .unwrap_or(1080)
-    );
+        match outcome {
+            // Unchanged: a server that failed to come up leaves the rest of the
+            // daemon running, as it always has.
+            Err(e) => error!("API server error: {}", e),
+
+            // Rocket owns SIGTERM and SIGINT from the moment it launches: its
+            // handlers replace the ctrlc one registered above, so that closure
+            // never runs and never clears `running`. Without this store the
+            // main loop below spun forever after Rocket had shut down, and
+            // systemd SIGKILLed the process on every stop, restart and package
+            // upgrade -- so nothing ever got to flush its state.
+            //
+            // ShutDown is returned exactly when Rocket has finished its
+            // graceful shutdown, which is the event main is waiting for.
+            Ok(ServerOutcome::ShutDown) => {
+                info!("API server stopped, shutting down");
+                api_running.store(false, Ordering::SeqCst);
+            }
+
+            // Nothing was started, so nothing has shut down. Rocket never
+            // replaced the ctrlc handler either, so that one is still live and
+            // remains the way this process stops.
+            Ok(ServerOutcome::Disabled) => {}
+        }
+    });
 
     // Purge variants at retired ladder sizes on its own thread, off the startup
     // path. This used to run inside ImageCache::initialize, before the server
@@ -445,7 +466,8 @@ fn main() {
     // daemon answered nothing for about a minute on the 0.12.0 upgrade.
     audiocontrol::helpers::imagepurge::purge_retired_in_background();
 
-    // Keep the main thread alive until Ctrl+C is received
+    // Keep the main thread alive until the API server stops, or a signal
+    // arrives before Rocket has taken the handlers over.
     while running.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(100));
     }

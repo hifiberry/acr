@@ -30,8 +30,24 @@ fn get_version() -> Json<VersionResponse> {
     })
 }
 
+/// What became of the API server.
+///
+/// `Ok(())` used to mean both "Rocket ran and has now shut down" and "the
+/// webserver is disabled, nothing was started". The caller has to tell those
+/// apart -- the first is the process's signal to exit, the second must not be
+/// -- and reading the configuration a second time to do it produced two bugs:
+/// a shutdown flag cleared at startup, and a log line announcing a port that
+/// was never bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerOutcome {
+    /// Rocket launched, served, and has finished its graceful shutdown.
+    ShutDown,
+    /// The webserver is disabled in the configuration; nothing was started.
+    Disabled,
+}
+
 // Start the Rocket server
-pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: &serde_json::Value) -> Result<(), rocket::Error> {
+pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: &serde_json::Value) -> Result<ServerOutcome, rocket::Error> {
     // Check if webserver is enabled (default to true if not specified)
     let webserver_enabled = get_service_config(config_json, "webserver")
         .and_then(|ws| ws.get("enable"))
@@ -40,7 +56,7 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         
     if !webserver_enabled {
         info!("Webserver is disabled in configuration");
-        return Ok(());
+        return Ok(ServerOutcome::Disabled);
     }
     
     // Get webserver config or use defaults
@@ -280,5 +296,5 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
     
     let _rocket = rocket_builder.launch().await?;
     
-    Ok(())
+    Ok(ServerOutcome::ShutDown)
 }

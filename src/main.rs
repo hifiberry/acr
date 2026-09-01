@@ -332,19 +332,35 @@ fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
+    // Whether Rocket has taken over the shutdown signals. Set by
+    // start_rocket_server immediately before it launches.
+    let shutdown_owned_by_rocket = Arc::new(AtomicBool::new(false));
+    let owned_in_handler = shutdown_owned_by_rocket.clone();
+
     // Set up the SIGINT/SIGTERM handler.
     //
     // ctrlc only registers SIGTERM with its "termination" feature, which this
     // crate now enables -- without it this handler covered SIGINT alone, and
     // SIGTERM, the signal systemd actually sends, had no handler at all.
     //
-    // It covers the window before Rocket launches, and the case where the
-    // webserver is disabled so Rocket never launches. Once Rocket does start it
-    // installs its own handlers for both signals, and a signal disposition is
-    // process-global, so the later registration replaces this one; from that
-    // point the API thread below is what clears `running`.
+    // It is the whole shutdown path before Rocket launches, and when the
+    // webserver is disabled so Rocket never launches at all.
+    //
+    // Once Rocket is up it is not. Rocket registers through signal-hook, which
+    // chains onto this handler rather than replacing it, so both still run on
+    // every signal -- and if this one went on clearing `running`, main would
+    // return within 100ms while Rocket was still inside its 2s grace period,
+    // cutting in-flight requests and WebSockets and skipping the shutdown
+    // fairings. Measured at 151ms before this guard existed. From that point
+    // the API thread below is what clears `running`, once Rocket says it has
+    // finished.
     if let Err(e) = ctrlc::set_handler(move || {
-        info!("Received Ctrl+C, shutting down...");
+        if owned_in_handler.load(Ordering::SeqCst) {
+            info!("Shutdown signal received; Rocket is handling it");
+            return;
+        }
+
+        info!("Shutdown signal received, shutting down...");
         r.store(false, Ordering::SeqCst);
 
         // Set up a force shutdown after a timeout
@@ -435,14 +451,22 @@ fn main() {
         let outcome = get_tokio_runtime().block_on(async {
             // Get a reference to the singleton AudioController for the server
             let controller = AudioController::instance();
-            server::start_rocket_server(controller, &controllers_config_clone).await
+            server::start_rocket_server(
+                controller,
+                &controllers_config_clone,
+                shutdown_owned_by_rocket,
+            )
+            .await
         });
 
         match outcome {
-            // Rocket reports a shutdown that overran its grace and mercy
-            // windows as an error, not as Ok: outstanding background I/O,
-            // which long-lived WebSocket connections routinely produce, is one
-            // of the causes, along with the server still executing afterwards.
+            // Rocket reports several ways of stopping as an error rather than
+            // as Ok: a shutdown that overran its grace and mercy windows
+            // (outstanding background I/O, which long-lived WebSocket
+            // connections routinely produce), the server still executing after
+            // them, and a server that failed while serving without any
+            // shutdown having been requested. In all of them launch() has
+            // returned and Rocket is no longer serving.
             // Rocket has stopped serving either way, so this is the same cue to
             // exit as ShutDown.
             //

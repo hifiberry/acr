@@ -15,6 +15,7 @@ use rocket::serde::json::Json;
 use rocket::config::Config;
 use rocket::fs::FileServer;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // Define the version response struct
 #[derive(serde::Serialize)]
@@ -47,7 +48,13 @@ pub enum ServerOutcome {
 }
 
 // Start the Rocket server
-pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: &serde_json::Value) -> Result<ServerOutcome, rocket::Error> {
+pub async fn start_rocket_server(
+    controller: Arc<AudioController>,
+    config_json: &serde_json::Value,
+    // Set when Rocket is about to take over SIGINT and SIGTERM, so the
+    // handler registered before it knows to stop ending the process itself.
+    shutdown_owned_by_rocket: Arc<AtomicBool>,
+) -> Result<ServerOutcome, rocket::Error> {
     // Check if webserver is enabled (default to true if not specified)
     let webserver_enabled = get_service_config(config_json, "webserver")
         .and_then(|ws| ws.get("enable"))
@@ -294,6 +301,13 @@ pub async fn start_rocket_server(controller: Arc<AudioController>, config_json: 
         }
     }
     
+    // From here Rocket owns SIGINT and SIGTERM. It registers through
+    // signal-hook, which *chains* onto the handler set in main rather than
+    // replacing it, so both run on every signal -- and the earlier one must
+    // stop ending the process, or main returns during Rocket's grace period
+    // and cuts the shutdown short.
+    shutdown_owned_by_rocket.store(true, Ordering::SeqCst);
+
     let _rocket = rocket_builder.launch().await?;
     
     Ok(ServerOutcome::ShutDown)

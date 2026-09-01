@@ -334,7 +334,15 @@ impl WebSocketManager {    /// Create a new WebSocket manager
 }
 
 /// Convert PlayerEvent to WebSocketMessage format with source at top level
-fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
+///
+/// `forwarded_prefix` is the prefix captured when this connection was
+/// upgraded. Two clients on different prefixes - one through nginx, one
+/// direct - each get paths correct for themselves, because this runs inside
+/// each connection's own loop rather than once per event.
+fn convert_to_websocket_message(
+    event: &PlayerEvent,
+    forwarded_prefix: Option<&str>,
+) -> WebSocketMessage {
     // Extract source information
     let source = serde_json::json!({
         "player_name": event.player_name(),
@@ -351,6 +359,10 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
             })
         },
         PlayerEvent::SongChanged { source, song } => {
+            let song = song.clone().map(|mut song| {
+                crate::api::urlprefix::rewrite_song_urls(&mut song, forwarded_prefix);
+                song
+            });
             serde_json::json!({
                 "type": "song_changed",
                 "player_name": source.player_name(),
@@ -413,6 +425,8 @@ fn convert_to_websocket_message(event: &PlayerEvent) -> WebSocketMessage {
             })
         },
         PlayerEvent::SongInformationUpdate { source , song} => {
+            let mut song = song.clone();
+            crate::api::urlprefix::rewrite_song_urls(&mut song, forwarded_prefix);
             serde_json::json!({
                 "type": "song_information_update",
                 "player_name": source.player_name(),
@@ -496,9 +510,16 @@ impl Drop for WebSocketManager {
 
 // WebSocket handler for the event messages endpoint
 #[rocket::get("/events")]
-pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketManager>>) -> Channel<'static> { // Removed audio_controller
+pub fn event_messages(
+    ws: WebSocket,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
+    ws_manager: &rocket::State<Arc<WebSocketManager>>,
+) -> Channel<'static> { // Removed audio_controller
     // Clone the manager to avoid lifetime issues
     let manager = ws_manager.inner().clone();
+    // Captured once, for the life of the connection: the upgrade request is
+    // the only place the header is available.
+    let forwarded_prefix = forwarded_prefix.0;
 
     // Create a WebSocket channel
     ws.channel(move |mut stream| {
@@ -533,7 +554,7 @@ pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketMan
                         let events = manager.get_events_for_client(client_id);
                         for event in events {
                             // Convert to new format with source at top level
-                            let message = convert_to_websocket_message(&event);
+                            let message = convert_to_websocket_message(&event, forwarded_prefix.as_deref());
                             
                             if let Ok(json) = serde_json::to_string(&message) {
                                 debug!("sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
@@ -624,11 +645,19 @@ pub fn event_messages(ws: WebSocket, ws_manager: &rocket::State<Arc<WebSocketMan
 
 // WebSocket handler for the player-specific event messages endpoint
 #[rocket::get("/events/<player_name>")]
-pub fn player_event_messages(ws: WebSocket, player_name: &str, ws_manager: &rocket::State<Arc<WebSocketManager>>) -> Channel<'static> { // Removed audio_controller
+pub fn player_event_messages(
+    ws: WebSocket,
+    player_name: &str,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
+    ws_manager: &rocket::State<Arc<WebSocketManager>>,
+) -> Channel<'static> { // Removed audio_controller
     // Clone the manager and player name to avoid lifetime issues
     let manager = ws_manager.inner().clone();
     let player_filter = player_name.to_string();
-    
+    // Captured once, for the life of the connection: the upgrade request is
+    // the only place the header is available.
+    let forwarded_prefix = forwarded_prefix.0;
+
     // Create a WebSocket channel
     ws.channel(move |mut stream| {
         Box::pin(async move {
@@ -662,7 +691,7 @@ pub fn player_event_messages(ws: WebSocket, player_name: &str, ws_manager: &rock
                         let events = manager.get_events_for_client(client_id);
                         for event in events {
                             // Convert to new format with source at top level
-                            let message = convert_to_websocket_message(&event);
+                            let message = convert_to_websocket_message(&event, forwarded_prefix.as_deref());
                             
                             if let Ok(json) = serde_json::to_string(&message) {
                                 debug!("Sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
@@ -747,4 +776,80 @@ pub fn player_event_messages(ws: WebSocket, player_name: &str, ws_manager: &rock
             Ok(())
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::player_event::PlayerSource;
+    use crate::data::song::Song;
+
+    fn test_song() -> Song {
+        let mut song = Song::default();
+        song.title = Some("Test".to_string());
+        song.cover_art_url = Some("/api/library/mpd/image/album:7".to_string());
+        song
+    }
+
+    fn source() -> PlayerSource {
+        PlayerSource::new("mpd".to_string(), "mpd:6600".to_string())
+    }
+
+    // Note the two variants carry different types: SongChanged holds an
+    // Option<Song>, SongInformationUpdate holds a Song.
+    fn song_changed_event() -> PlayerEvent {
+        PlayerEvent::SongChanged {
+            source: source(),
+            song: Some(test_song()),
+        }
+    }
+
+    fn song_information_update_event() -> PlayerEvent {
+        PlayerEvent::SongInformationUpdate {
+            source: source(),
+            song: test_song(),
+        }
+    }
+
+    fn cover_art_of(message: &WebSocketMessage) -> Option<String> {
+        message.event_data.get("song")?
+            .get("cover_art_url")?
+            .as_str()
+            .map(ToOwned::to_owned)
+    }
+
+    #[test]
+    fn a_song_event_gains_the_prefix() {
+        let message = convert_to_websocket_message(&song_changed_event(), Some("/api/audiocontrol"));
+        assert_eq!(
+            cover_art_of(&message).as_deref(),
+            Some("/api/audiocontrol/library/mpd/image/album:7")
+        );
+    }
+
+    #[test]
+    fn a_song_event_without_a_prefix_is_unchanged() {
+        let message = convert_to_websocket_message(&song_changed_event(), None);
+        assert_eq!(
+            cover_art_of(&message).as_deref(),
+            Some("/api/library/mpd/image/album:7")
+        );
+    }
+
+    #[test]
+    fn a_song_information_update_gains_the_prefix_too() {
+        let message =
+            convert_to_websocket_message(&song_information_update_event(), Some("/api/audiocontrol"));
+        assert_eq!(
+            cover_art_of(&message).as_deref(),
+            Some("/api/audiocontrol/library/mpd/image/album:7")
+        );
+    }
+
+    #[test]
+    fn an_event_carrying_no_song_is_handled() {
+        let event = PlayerEvent::SongChanged { source: source(), song: None };
+        let message = convert_to_websocket_message(&event, Some("/api/audiocontrol"));
+        assert_eq!(message.event_data.get("song"), Some(&serde_json::Value::Null));
+    }
 }

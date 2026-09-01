@@ -176,6 +176,31 @@ struct ArtistCustomResponse {
     thumb_url: Vec<String>,
 }
 
+impl ArtistCustomResponse {
+    /// Build a list entry, rewriting its thumbnails for the client's prefix.
+    ///
+    /// The prefix is a required argument for the same reason it is on
+    /// `create_album_dto`: omitting it is silent, and only wrong for proxied
+    /// clients.
+    fn new(
+        name: String,
+        id: String,
+        is_multi: bool,
+        album_count: usize,
+        mut thumb_url: Vec<String>,
+        forwarded_prefix: Option<&str>,
+    ) -> Self {
+        crate::api::urlprefix::rewrite_thumb_urls(&mut thumb_url, forwarded_prefix);
+        Self {
+            name,
+            id,
+            is_multi,
+            album_count,
+            thumb_url,
+        }
+    }
+}
+
 /// Data Transfer Object for Album to include tracks_count without modifying Album struct
 #[derive(serde::Serialize)]
 struct AlbumDTO {
@@ -448,6 +473,7 @@ pub fn get_player_albums(
 pub fn get_player_artists(
     player_name: &str,
     if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<crate::api::validated::Validated<serde_json::Value>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
@@ -503,13 +529,14 @@ pub fn get_player_artists(
                         .unwrap_or_default();
 
                     // Create a struct with fields in the specific order
-                    let artist_data = ArtistCustomResponse {
-                        name: artist.name.clone(),
-                        id: artist.id.to_string(),
-                        is_multi: artist.is_multi,
+                    let artist_data = ArtistCustomResponse::new(
+                        artist.name.clone(),
+                        artist.id.to_string(),
+                        artist.is_multi,
                         album_count,
-                        thumb_url: thumb_urls,
-                    };
+                        thumb_urls,
+                        forwarded_prefix.0.as_deref(),
+                    );
 
                     // Convert to serde_json::Value to include in the response
                     if let Ok(json_value) = serde_json::to_value(artist_data) {
@@ -1087,10 +1114,11 @@ pub fn get_artist_by_name(
     player_name: &str,
     artist_name: &str,
     fuzzy: Option<bool>,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
     if !fuzzy.unwrap_or(false) {
-        return get_artist_internal(player_name, artist_name, controller, ArtistLookupType::ByName);
+        return get_artist_internal(player_name, artist_name, controller, ArtistLookupType::ByName, forwarded_prefix.0.as_deref());
     }
 
     // Flexible path
@@ -1107,6 +1135,11 @@ pub fn get_artist_by_name(
                     }
                     None => (None, None, None, None),
                 };
+                let artist = artist.map(|mut a| {
+                    crate::api::urlprefix::rewrite_artist_thumb_urls(&mut a, forwarded_prefix.0.as_deref());
+                    a
+                });
+
                 return Ok(Json(ArtistResponse {
                     player_name: player_name.to_string(),
                     artist,
@@ -1132,21 +1165,23 @@ pub fn get_artist_by_name(
 /// Get a specific artist by ID
 #[get("/library/<player_name>/artist/by-id/<artist_id>")]
 pub fn get_artist_by_id(
-    player_name: &str, 
+    player_name: &str,
     artist_id: &str,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
-    get_artist_internal(player_name, artist_id, controller, ArtistLookupType::ById)
+    get_artist_internal(player_name, artist_id, controller, ArtistLookupType::ById, forwarded_prefix.0.as_deref())
 }
 
 /// Get a specific artist by MusicBrainz ID (MBID)
 #[get("/library/<player_name>/artist/by-mbid/<mbid>")]
 pub fn get_artist_by_mbid(
-    player_name: &str, 
+    player_name: &str,
     mbid: &str,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
-    get_artist_internal(player_name, mbid, controller, ArtistLookupType::ByMbid)
+    get_artist_internal(player_name, mbid, controller, ArtistLookupType::ByMbid, forwarded_prefix.0.as_deref())
 }
 
 /// Enum representing the different ways to look up an artist
@@ -1163,7 +1198,8 @@ fn get_artist_internal(
     player_name: &str,
     identifier: &str,
     controller: &State<Arc<AudioController>>,
-    lookup_type: ArtistLookupType
+    lookup_type: ArtistLookupType,
+    forwarded_prefix: Option<&str>,
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
@@ -1208,6 +1244,11 @@ fn get_artist_internal(
                     }
                 };
                 
+                let artist = artist.map(|mut a| {
+                    crate::api::urlprefix::rewrite_artist_thumb_urls(&mut a, forwarded_prefix);
+                    a
+                });
+
                 return Ok(Json(ArtistResponse {
                     player_name: player_name.to_string(),
                     artist,
@@ -1732,5 +1773,54 @@ mod tests {
             dto.cover_art.as_deref(),
             Some("/api/audiocontrol/library/mpd/image/album:7")
         );
+    }
+
+    use crate::api::urlprefix::rewrite_artist_thumb_urls;
+    use crate::data::metadata::ArtistMeta;
+
+    fn artist_with_thumbs(thumbs: Vec<&str>) -> Artist {
+        let mut meta = ArtistMeta::new();
+        meta.thumb_url = thumbs.into_iter().map(ToOwned::to_owned).collect();
+        Artist {
+            id: Identifier::Numeric(3),
+            name: "Test Artist".to_string(),
+            is_multi: false,
+            metadata: Some(meta),
+        }
+    }
+
+    #[test]
+    fn an_artist_response_gains_the_prefix_on_internal_thumbs_only() {
+        let mut artist = artist_with_thumbs(vec![
+            "/api/coverart/artist/YWJj/image",
+            "https://example.com/artist.png",
+        ]);
+        rewrite_artist_thumb_urls(&mut artist, Some("/api/audiocontrol"));
+        let thumbs = &artist.metadata.as_ref().unwrap().thumb_url;
+        assert_eq!(thumbs[0], "/api/audiocontrol/coverart/artist/YWJj/image");
+        assert_eq!(thumbs[1], "https://example.com/artist.png");
+    }
+
+    #[test]
+    fn an_artist_response_without_a_prefix_is_unchanged() {
+        let mut artist = artist_with_thumbs(vec!["/api/coverart/artist/YWJj/image"]);
+        rewrite_artist_thumb_urls(&mut artist, None);
+        assert_eq!(
+            artist.metadata.as_ref().unwrap().thumb_url[0],
+            "/api/coverart/artist/YWJj/image"
+        );
+    }
+
+    #[test]
+    fn an_artist_list_entry_gains_the_prefix() {
+        let entry = ArtistCustomResponse::new(
+            "Test Artist".to_string(),
+            "3".to_string(),
+            false,
+            2,
+            vec!["/api/coverart/artist/YWJj/image".to_string()],
+            Some("/api/audiocontrol"),
+        );
+        assert_eq!(entry.thumb_url[0], "/api/audiocontrol/coverart/artist/YWJj/image");
     }
 }

@@ -18,6 +18,22 @@ use crate::data::song::Song;
 #[derive(Debug, Clone)]
 pub struct ForwardedPrefix(pub Option<String>);
 
+impl ForwardedPrefix {
+    /// The prefix as the rewriting functions want it.
+    ///
+    /// Handlers call this rather than reaching into the field, so the type's
+    /// shape can change without touching every call site.
+    pub fn as_deref(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+
+    /// The prefix as an owned value, for holding across a connection rather
+    /// than for the length of one request.
+    pub fn into_inner(self) -> Option<String> {
+        self.0
+    }
+}
+
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for ForwardedPrefix {
     type Error = ();
@@ -80,11 +96,28 @@ fn normalize_forwarded_prefix(prefix: Option<&str>) -> Option<String> {
         return None;
     }
 
-    if without_trailing.starts_with('/') {
-        Some(without_trailing.to_string())
+    let candidate = if without_trailing.starts_with('/') {
+        without_trailing.to_string()
     } else {
-        Some(format!("/{}", without_trailing))
+        format!("/{}", without_trailing)
+    };
+
+    // A value beginning with two slashes is protocol-relative: a browser
+    // reading "//example.com/library/mpd/image/album:7" fetches it from
+    // example.com, not from this device. A backslash in that position is
+    // treated the same way by several browsers, and a scheme has no business
+    // in a path prefix at all. Reached directly, this header is whatever the
+    // caller sent, so refuse the shape rather than emit paths built from it -
+    // returning None here means no rewriting happens and internal paths go
+    // out unchanged, which is the same safe behaviour as no header at all.
+    if candidate.starts_with("//")
+        || candidate.starts_with("/\\")
+        || candidate.contains("://")
+    {
+        return None;
     }
+
+    Some(candidate)
 }
 
 /// Rewrite every internal path a song carries.
@@ -220,6 +253,44 @@ mod tests {
     #[test]
     fn the_bare_api_root_becomes_the_bare_prefix() {
         assert_eq!(rewrite_api_relative_url("/api", PREFIX), "/api/audiocontrol");
+    }
+
+    #[test]
+    fn a_protocol_relative_prefix_is_refused() {
+        // "//evil.com/library/..." is not a path - a browser fetches it from
+        // evil.com. Refusing the prefix leaves the internal path alone, which
+        // is the same outcome as no header at all.
+        assert_eq!(
+            rewrite_api_relative_url("/api/library/mpd/image/album:7", Some("//evil.com")),
+            "/api/library/mpd/image/album:7"
+        );
+        // A trailing slash must not turn one leading slash into two either.
+        assert_eq!(
+            rewrite_api_relative_url("/api/x", Some("//evil.com/")),
+            "/api/x"
+        );
+    }
+
+    #[test]
+    fn a_backslash_prefix_is_refused() {
+        // Several browsers treat "/\" the way they treat "//".
+        assert_eq!(rewrite_api_relative_url("/api/x", Some("/\\evil.com")), "/api/x");
+    }
+
+    #[test]
+    fn a_prefix_carrying_a_scheme_is_refused() {
+        assert_eq!(rewrite_api_relative_url("/api/x", Some("http://evil.com")), "/api/x");
+        assert_eq!(rewrite_api_relative_url("/api/x", Some("/a://b")), "/api/x");
+    }
+
+    #[test]
+    fn a_refused_prefix_tags_the_version_like_no_prefix() {
+        // A refused prefix serves un-rewritten paths, so it must validate as
+        // the direct route does rather than as a route of its own.
+        assert_eq!(
+            prefixed_library_version(Some("a3f9c1d2-42".to_string()), Some("//evil.com")),
+            prefixed_library_version(Some("a3f9c1d2-42".to_string()), None)
+        );
     }
 
     #[test]

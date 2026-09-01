@@ -466,7 +466,7 @@ pub fn get_now_playing(
     // Get song data (should be cached data)
     let mut song = player.get_song();
     if let Some(song_ref) = song.as_mut() {
-        rewrite_song_urls(song_ref, forwarded_prefix.0.as_deref());
+        rewrite_song_urls(song_ref, forwarded_prefix.as_deref());
     }
     
     // Get remaining data

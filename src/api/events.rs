@@ -359,10 +359,19 @@ fn convert_to_websocket_message(
             })
         },
         PlayerEvent::SongChanged { source, song } => {
-            let song = song.clone().map(|mut song| {
-                crate::api::urlprefix::rewrite_song_urls(&mut song, forwarded_prefix);
+            // Only clone when there is something to rewrite. Without a prefix
+            // the song goes into the payload by reference, as it did before
+            // this rewriting existed - these events fire per connected client.
+            let rewritten;
+            let song = if forwarded_prefix.is_some() {
+                rewritten = song.clone().map(|mut song| {
+                    crate::api::urlprefix::rewrite_song_urls(&mut song, forwarded_prefix);
+                    song
+                });
+                &rewritten
+            } else {
                 song
-            });
+            };
             serde_json::json!({
                 "type": "song_changed",
                 "player_name": source.player_name(),
@@ -425,8 +434,16 @@ fn convert_to_websocket_message(
             })
         },
         PlayerEvent::SongInformationUpdate { source , song} => {
-            let mut song = song.clone();
-            crate::api::urlprefix::rewrite_song_urls(&mut song, forwarded_prefix);
+            // As above: no prefix, no clone.
+            let rewritten;
+            let song = if forwarded_prefix.is_some() {
+                let mut owned = song.clone();
+                crate::api::urlprefix::rewrite_song_urls(&mut owned, forwarded_prefix);
+                rewritten = owned;
+                &rewritten
+            } else {
+                song
+            };
             serde_json::json!({
                 "type": "song_information_update",
                 "player_name": source.player_name(),
@@ -519,7 +536,7 @@ pub fn event_messages(
     let manager = ws_manager.inner().clone();
     // Captured once, for the life of the connection: the upgrade request is
     // the only place the header is available.
-    let forwarded_prefix = forwarded_prefix.0;
+    let forwarded_prefix = forwarded_prefix.into_inner();
 
     // Create a WebSocket channel
     ws.channel(move |mut stream| {
@@ -656,7 +673,7 @@ pub fn player_event_messages(
     let player_filter = player_name.to_string();
     // Captured once, for the life of the connection: the upgrade request is
     // the only place the header is available.
-    let forwarded_prefix = forwarded_prefix.0;
+    let forwarded_prefix = forwarded_prefix.into_inner();
 
     // Create a WebSocket channel
     ws.channel(move |mut stream| {

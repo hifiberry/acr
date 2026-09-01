@@ -376,7 +376,7 @@ pub fn get_library_info(
                 // paths are now wrong for it.
                 let library_version = crate::api::urlprefix::prefixed_library_version(
                     library.library_version(),
-                    forwarded_prefix.0.as_deref(),
+                    forwarded_prefix.as_deref(),
                 );
 
                 // Get basic library info
@@ -470,7 +470,7 @@ pub fn get_player_albums(
                 // of them get a 304 for the other's body.
                 let version = crate::api::urlprefix::prefixed_library_version(
                     library.library_version(),
-                    forwarded_prefix.0.as_deref(),
+                    forwarded_prefix.as_deref(),
                 );
 
                 // Fast path: if the client's token already matches this
@@ -497,7 +497,7 @@ pub fn get_player_albums(
 
                 // Convert albums to DTOs without including tracks
                 let album_dtos = albums.into_iter()
-                    .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
+                    .map(|album| create_album_dto(album, false, forwarded_prefix.as_deref()))
                     .collect::<Vec<AlbumDTO>>();
 
                 let response = AlbumsDTOResponse {
@@ -558,7 +558,7 @@ pub fn get_player_artists(
                 // another on a different route.
                 let version = crate::api::urlprefix::prefixed_library_version(
                     library.library_version(),
-                    forwarded_prefix.0.as_deref(),
+                    forwarded_prefix.as_deref(),
                 );
 
                 // Fast path: if the client's token already matches this
@@ -604,7 +604,7 @@ pub fn get_player_artists(
                         artist.is_multi,
                         album_count,
                         thumb_urls,
-                        forwarded_prefix.0.as_deref(),
+                        forwarded_prefix.as_deref(),
                     );
 
                     // Convert to serde_json::Value to include in the response
@@ -672,7 +672,7 @@ pub fn get_album_by_id(
                 let album_option = library.get_album_by_id(&identifier);
                 
                 // Convert album to DTO with tracks included
-                let album_dto = album_option.map(|album| create_album_dto(album, true, forwarded_prefix.0.as_deref()));
+                let album_dto = album_option.map(|album| create_album_dto(album, true, forwarded_prefix.as_deref()));
                 
                 return Ok(Json(AlbumDTOResponse {
                     player_name: player_name.to_string(),
@@ -733,7 +733,7 @@ pub fn get_albums_by_artist(
                     Some(a) => {
                         let albums = library.get_albums_by_artist_id(&a.id);
                         let album_dtos: Vec<AlbumDTO> = albums.into_iter()
-                            .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
+                            .map(|album| create_album_dto(album, false, forwarded_prefix.as_deref()))
                             .collect();
                         Ok(Json(ArtistAlbumsDTOResponse {
                             player_name: player_name.to_string(),
@@ -802,7 +802,7 @@ pub fn get_albums_by_artist_id(
                 
                 // Convert albums to DTOs without including tracks
                 let album_dtos = albums.into_iter()
-                    .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
+                    .map(|album| create_album_dto(album, false, forwarded_prefix.as_deref()))
                     .collect::<Vec<AlbumDTO>>();
 
                 // Try to find the artist name for better response
@@ -907,7 +907,7 @@ pub fn get_albums_by_genre(
             if let Some(library) = ctrl.get_library() {
                 let albums = library.get_albums_by_genre(genre);
                 let album_dtos: Vec<AlbumDTO> = albums.into_iter()
-                    .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
+                    .map(|album| create_album_dto(album, false, forwarded_prefix.as_deref()))
                     .collect();
                 return Ok(Json(AlbumsDTOResponse {
                     player_name: player_name.to_string(),
@@ -969,7 +969,7 @@ pub fn get_albums_by_category(
             if let Some(library) = ctrl.get_library() {
                 let albums = library.get_albums_by_category(category);
                 let album_dtos: Vec<AlbumDTO> = albums.into_iter()
-                    .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
+                    .map(|album| create_album_dto(album, false, forwarded_prefix.as_deref()))
                     .collect();
                 return Ok(Json(AlbumsDTOResponse {
                     player_name: player_name.to_string(),
@@ -1096,7 +1096,7 @@ pub fn refresh_player_library(
                         // one from a different route must see them differ.
                         let library_version = crate::api::urlprefix::prefixed_library_version(
                             library.library_version(),
-                            forwarded_prefix.0.as_deref(),
+                            forwarded_prefix.as_deref(),
                         );
 
                         // Get updated library info
@@ -1197,7 +1197,7 @@ pub fn get_artist_by_name(
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
     if !fuzzy.unwrap_or(false) {
-        return get_artist_internal(player_name, artist_name, controller, ArtistLookupType::ByName, forwarded_prefix.0.as_deref());
+        return get_artist_internal(player_name, artist_name, controller, ArtistLookupType::ByName, forwarded_prefix.as_deref());
     }
 
     // Flexible path
@@ -1218,7 +1218,7 @@ pub fn get_artist_by_name(
                     ArtistResponse::new(
                         player_name.to_string(),
                         artist,
-                        forwarded_prefix.0.as_deref(),
+                        forwarded_prefix.as_deref(),
                     )
                     .with_match(mt, ms, mn, Some(artist_name.to_string())),
                 ));
@@ -1244,7 +1244,7 @@ pub fn get_artist_by_id(
     forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
-    get_artist_internal(player_name, artist_id, controller, ArtistLookupType::ById, forwarded_prefix.0.as_deref())
+    get_artist_internal(player_name, artist_id, controller, ArtistLookupType::ById, forwarded_prefix.as_deref())
 }
 
 /// Get a specific artist by MusicBrainz ID (MBID)
@@ -1255,7 +1255,7 @@ pub fn get_artist_by_mbid(
     forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistResponse>, Custom<String>> {
-    get_artist_internal(player_name, mbid, controller, ArtistLookupType::ByMbid, forwarded_prefix.0.as_deref())
+    get_artist_internal(player_name, mbid, controller, ArtistLookupType::ByMbid, forwarded_prefix.as_deref())
 }
 
 /// Enum representing the different ways to look up an artist

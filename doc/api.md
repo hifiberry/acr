@@ -149,7 +149,9 @@ responses — `/api/library/<player>/albums` and `/api/library/<player>/artists`
 carry `Vary: X-Forwarded-Prefix`, and their `ETag`s, along with the
 `library_version` those endpoints and `/api/library/<player>` report, vary with
 the prefix as well as with the library's contents. The remaining
-prefix-dependent responses (`now-playing`, `album/by-id`, `artist/by-id`,
+prefix-dependent responses (`now-playing`, `library/<player>` - whose
+`library_version` varies with the prefix even though it carries no image path -
+`album/by-id`, `artist/by-id`,
 `artist/by-name`, `artist/by-mbid`, `albums/by-artist`, `albums/by-artist-id`,
 `albums/by-genre`, `albums/by-category`) return a plain JSON body with neither
 header; a shared cache in front of

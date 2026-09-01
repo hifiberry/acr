@@ -102,6 +102,20 @@ fn normalize_forwarded_prefix(prefix: Option<&str>) -> Option<String> {
         format!("/{}", without_trailing)
     };
 
+    // A URL parser removes ASCII tab, CR and LF from its input before
+    // parsing, and `trim` only takes them off the ends. So "/\t/evil.com"
+    // survives to here, passes the protocol-relative check below, and reaches
+    // a browser as "//evil.com" - the very case that check exists to refuse.
+    // A query or fragment marker breaks the path a different way: everything
+    // after it stops being path, so a prefix of "/api/audiocontrol?x" would
+    // swallow the rest of every rewritten path into a query string.
+    if candidate
+        .chars()
+        .any(|c| c.is_ascii_control() || c == '?' || c == '#')
+    {
+        return None;
+    }
+
     // A value beginning with two slashes is protocol-relative: a browser
     // reading "//example.com/library/mpd/image/album:7" fetches it from
     // example.com, not from this device. A backslash in that position is
@@ -267,6 +281,31 @@ mod tests {
         // A trailing slash must not turn one leading slash into two either.
         assert_eq!(
             rewrite_api_relative_url("/api/x", Some("//evil.com/")),
+            "/api/x"
+        );
+    }
+
+    #[test]
+    fn a_prefix_smuggling_a_url_stripped_character_is_refused() {
+        // A browser removes ASCII tab, CR and LF before parsing, so
+        // "/<tab>/evil.com" would arrive as "//evil.com" - the
+        // protocol-relative case, smuggled past the check for it.
+        assert_eq!(rewrite_api_relative_url("/api/x", Some("/\t/evil.com")), "/api/x");
+        assert_eq!(rewrite_api_relative_url("/api/x", Some("/\r\n/evil.com")), "/api/x");
+        // The same trick against the backslash form.
+        assert_eq!(rewrite_api_relative_url("/api/x", Some("/\t\\evil.com")), "/api/x");
+    }
+
+    #[test]
+    fn a_prefix_carrying_a_query_or_fragment_is_refused() {
+        // Everything after ? or # stops being part of the path, so the rest
+        // of every rewritten path would be swallowed rather than fetched.
+        assert_eq!(
+            rewrite_api_relative_url("/api/x", Some("/api/audiocontrol?x")),
+            "/api/x"
+        );
+        assert_eq!(
+            rewrite_api_relative_url("/api/x", Some("/api/audiocontrol#x")),
             "/api/x"
         );
     }

@@ -50,8 +50,11 @@ pub struct LibraryVersion {
     ///
     /// Without it the counter resets to 0 on restart and climbs back through
     /// values it already issued, so a client could be told 304 for content that
-    /// changed. The nonce makes a restart invalidate every issued token exactly
-    /// once instead.
+    /// changed. This is a random half, defending across restarts, plus a
+    /// process-monotonic sequence appended below, defending within a process:
+    /// two independently constructed counters in one process cannot share a
+    /// nonce even in the (already astronomically unlikely) case that the
+    /// random halves collide.
     nonce: String,
     counter: Arc<AtomicU64>,
 }
@@ -62,10 +65,20 @@ impl Default for LibraryVersion {
     }
 }
 
+/// Process-wide sequence handed out to each `LibraryVersion::new()` call, so
+/// two counters constructed in the same process are guaranteed a distinct
+/// nonce regardless of what `rand::random` returns. This only has to make
+/// each call to `new()` observe a value no other call observes - it is not
+/// read or written anywhere near the request-serving hot path that the
+/// version counter itself is on - so ordering weaker than the counter's own
+/// `SeqCst` is fine here.
+static NONCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 impl LibraryVersion {
     pub fn new() -> Self {
+        let sequence = NONCE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         Self {
-            nonce: format!("{:08x}", rand::random::<u32>()),
+            nonce: format!("{:08x}-{:x}", rand::random::<u32>(), sequence),
             counter: Arc::new(AtomicU64::new(0)),
         }
     }

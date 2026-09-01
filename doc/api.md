@@ -150,8 +150,9 @@ carry `Vary: X-Forwarded-Prefix`, and their `ETag`s, along with the
 `library_version` those endpoints and `/api/library/<player>` report, vary with
 the prefix as well as with the library's contents. The remaining
 prefix-dependent responses (`now-playing`, `album/by-id`, `artist/by-id`,
-`artist/by-name`, `artist/by-mbid`, `albums/by-genre`, `albums/by-category`)
-return a plain JSON body with neither header; a shared cache in front of
+`artist/by-name`, `artist/by-mbid`, `albums/by-artist`, `albums/by-artist-id`,
+`albums/by-genre`, `albums/by-category`) return a plain JSON body with neither
+header; a shared cache in front of
 audiocontrol must not be keyed on URL alone for those.
 
 The forwarded prefix must not shadow an API route segment such as `library`,
@@ -1499,7 +1500,7 @@ Retrieves library information for a specific player.
     "artists_count": 50,
     "tracks_count": 1000,
     "supports_delete": false,
-    "library_version": "a3f9c1d2-42"
+    "library_version": "5e2b91c0-a3f9c1d2-42"
   }
   ```
 - **Error Response** (404 Not Found): Same structure as successful response but with `has_library: false`

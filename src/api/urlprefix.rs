@@ -46,7 +46,11 @@ pub fn rewrite_api_relative_url(url: &str, forwarded_prefix: Option<&str>) -> St
     // it answers 401 rather than failing visibly. Several fields now reach
     // this function that may already carry the prefix, so this is a live
     // case rather than a theoretical one.
-    if url == prefix || url.starts_with(&format!("{}/", prefix)) {
+    if url == prefix
+        || url
+            .strip_prefix(prefix.as_str())
+            .is_some_and(|rest| rest.starts_with('/'))
+    {
         return url.to_string();
     }
 

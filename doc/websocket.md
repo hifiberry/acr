@@ -149,6 +149,13 @@ updated. Every other field is optional, and an absent field means **unchanged** 
 does not mean "cleared". A client that overwrites its current song wholesale with
 this payload will blank out fields that were previously populated.
 
+`song.cover_art_url` and `song.metadata.lyrics_url` carry the externally
+visible prefix when the connection was upgraded through a proxy that reports
+`X-Forwarded-Prefix`. Before 0.15.0 these two fields carried the internal path
+on the WebSocket while the REST `now-playing` response carried the external
+one; a client that compensated for that difference by adding the prefix itself
+should check for it first, as the shipped clients already do.
+
 ### `position_changed`
 
 Sent periodically as playback position advances.

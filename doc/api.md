@@ -5,6 +5,7 @@ This document describes the REST API endpoints available in the Audio Control RE
 ## Table of Contents
 
 - [Base Information](#base-information)
+- [Image and Lyrics Paths](#image-and-lyrics-paths)
 - [Events](#events)
   - [Player Events](#player-events)
 - [Core API](#core-api)
@@ -114,6 +115,31 @@ This document describes the REST API endpoints available in the Audio Control RE
 > `auth_request`, so any endpoint below can return `401` with a
 > `WWW-Authenticate-Hint` header even though audiocontrol itself never produces
 > one.
+
+## Image and Lyrics Paths
+
+Paths in responses are ready to use as they are. A client joins them to the
+host it is talking to and fetches them unmodified — it must not add a prefix
+of its own.
+
+Where audiocontrol sits behind a reverse proxy that reports
+`X-Forwarded-Prefix`, every path in a response already carries that prefix.
+Reached directly, the same paths come back in their internal form, which is
+correct for that route. This holds for album `cover_art`, artist `thumb_url`,
+`song.cover_art_url` and `song.metadata.lyrics_url`, over REST and over the
+WebSocket alike.
+
+External URLs — artist images from last.fm or theaudiodb, for instance — are
+absolute and are never rewritten.
+
+Because a response body depends on that request header, list endpoints carry
+`Vary: X-Forwarded-Prefix`.
+
+The forwarded prefix must not shadow an API route segment such as `library`,
+`coverart` or `lyrics`. A path is recognized as already carrying the prefix by
+a plain string match, so a prefix of `/api/library`, say, would make every
+unrewritten path under `/api/library/...` look like one that had already been
+rewritten, and it would leave the daemon without the prefix it needed.
 
 ## Events
 

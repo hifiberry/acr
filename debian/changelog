@@ -1,3 +1,39 @@
+hifiberry-audiocontrol (0.14.0) trixie; urgency=medium
+
+  * api: the album and artist list endpoints answer conditional requests. A
+    client had no exact way to learn the library changed - the only signal was
+    the counts on /library/<player>, so any edit leaving totals unchanged was
+    invisible and cache invalidation could only be a heuristic. Against a real
+    library the album list is 2.9 MB raw and 799 KB gzipped, so a client opening
+    a library browser re-fetched all of it to learn nothing had changed. Both
+    endpoints now carry a weak ETag and answer a matching If-None-Match with a
+    bodyless 304. A request without If-None-Match returns exactly what it did
+    before, so existing clients are unaffected, and a backend that does not
+    track changes - LMS today - sends no validator rather than one it cannot
+    honour.
+  * library: a version counter that moves whenever the library's contents
+    change, not merely when it loads. The background updaters write genres and
+    artist metadata for up to an hour after a scan, so a version bumped only on
+    load would tell a client nothing had changed while the daemon replaced the
+    contents underneath it. The artist path bumps only on a real change,
+    compared field by field against what the collection already held, so a
+    sweep that finds nothing new does not invalidate every client's cache.
+  * library: the validator carries a per-instance nonce. A bare counter resets
+    to zero on restart and climbs back through values it already issued, so a
+    client revalidating while it sat at a previously issued number would be told
+    304 for content that had since changed - silently, and for as long as it
+    kept that cache. A restart now invalidates every issued token exactly once.
+  * api: the version is read before the list is built, not after. The sweep
+    mutates the collection and then bumps, on its own thread, so reading the
+    other way round could hand a client pre-update data carrying a post-update
+    token. Reading it first turns that race into one wasted refetch instead of a
+    stale library.
+  * api: GET /library/<player> reports the same token, so a client can poll one
+    small response rather than issuing a conditional request per list. It is
+    opaque - compare it for equality only.
+
+ -- HiFiBerry <support@hifiberry.com>  Tue, 01 Sep 2026 07:45:49 +0000
+
 hifiberry-audiocontrol (0.13.0) trixie; urgency=medium
 
   * images: the size ladder is configurable. It was a compile-time constant, so

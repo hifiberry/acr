@@ -15,9 +15,18 @@ pub fn weak_etag(kind: &str, token: &str) -> String {
 }
 
 /// Whether the client's `If-None-Match` names this validator.
+///
+/// A bare `*` (RFC 9110 §13.1.2) means "any current representation" - for a
+/// GET that always matches, since we only reach here once a validator for a
+/// current representation exists. Treat only an exact `*` token as the
+/// wildcard: a `*` embedded in a real tag, e.g. `W/"albums-*-1"`, is just
+/// that tag's content and must still be compared by equality.
 pub fn matches(if_none_match: Option<&str>, etag: &str) -> bool {
     match if_none_match {
-        Some(header) => header.split(',').any(|t| t.trim() == etag),
+        Some(header) => header.split(',').any(|t| {
+            let t = t.trim();
+            t == "*" || t == etag
+        }),
         None => false,
     }
 }
@@ -126,6 +135,22 @@ mod tests {
     #[test]
     fn a_list_of_tags_matches_on_any_member() {
         assert!(matches(Some("W/\"albums-a3f9c1d2-1\", W/\"albums-a3f9c1d2-42\""), "W/\"albums-a3f9c1d2-42\""));
+    }
+
+    #[test]
+    fn a_bare_wildcard_matches_any_validator() {
+        assert!(matches(Some("*"), "W/\"albums-a3f9c1d2-42\""));
+        // Whitespace around it must still count as the bare wildcard.
+        assert!(matches(Some(" * "), "W/\"albums-a3f9c1d2-42\""));
+    }
+
+    #[test]
+    fn a_wildcard_embedded_in_a_real_tag_is_not_the_wildcard() {
+        // "*" only means "any representation" as its own complete token -
+        // here it's just part of the tag's content, so it must compare
+        // literally like any other tag and not match a different etag.
+        assert!(!matches(Some("W/\"albums-*-1\""), "W/\"albums-a3f9c1d2-42\""));
+        assert!(matches(Some("W/\"albums-*-1\""), "W/\"albums-*-1\""));
     }
 
     #[test]

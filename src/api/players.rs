@@ -3,8 +3,6 @@ use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track, PlayerUpd
 use crate::players::PlayerController; // Fixed: Using the public re-export
 use rocket::serde::json::Json;
 use rocket::{get, post, State};
-use rocket::request::{FromRequest, Outcome};
-use rocket::Request;
 
 /// Pause all players with optional exclusion
 #[post("/players/pause-all?<except>")]
@@ -130,28 +128,7 @@ use rocket::response::status::Custom;
 use rocket::http::Status;
 use std::str::FromStr; // Add this line to import FromStr trait
 use log::debug;
-
-#[derive(Debug, Clone)]
-pub struct ForwardedPrefix(pub Option<String>);
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for ForwardedPrefix {
-    type Error = ();
-
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let prefix = request
-            .headers()
-            .get_one("X-Forwarded-Prefix")
-            .map(ToOwned::to_owned);
-        Outcome::Success(ForwardedPrefix(prefix))
-    }
-}
-
-fn rewrite_song_urls(song: &mut Song, forwarded_prefix: Option<&str>) {
-    if let Some(cover_art_url) = song.cover_art_url.as_mut() {
-        *cover_art_url = crate::api::rewrite_api_relative_url(cover_art_url, forwarded_prefix);
-    }
-}
+use crate::api::urlprefix::{rewrite_song_urls, ForwardedPrefix};
 
 /// Response struct for the current active player
 #[derive(serde::Serialize)]

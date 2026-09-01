@@ -1,0 +1,308 @@
+//! The externally visible API prefix, and rewriting internal paths into it.
+//!
+//! `acr` builds paths against its own mount point (`/api/...`). A reverse
+//! proxy may expose it somewhere else and say so in `X-Forwarded-Prefix`.
+//! Everything a client is expected to fetch unmodified passes through here on
+//! the way out.
+
+use rocket::request::{FromRequest, Outcome, Request};
+
+use crate::constants::API_PREFIX;
+use crate::data::artist::Artist;
+use crate::data::song::Song;
+
+/// The externally visible API base, as reported by a reverse proxy.
+///
+/// Absent when the client reached audiocontrol directly, in which case no
+/// rewriting happens and paths go out in their internal form.
+#[derive(Debug, Clone)]
+pub struct ForwardedPrefix(pub Option<String>);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for ForwardedPrefix {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let prefix = request
+            .headers()
+            .get_one("X-Forwarded-Prefix")
+            .map(ToOwned::to_owned);
+        Outcome::Success(ForwardedPrefix(prefix))
+    }
+}
+
+/// Rewrite an internal API-relative URL to the externally visible API base.
+///
+/// Returns the URL unchanged when there is no forwarded prefix, when the URL
+/// is not under the API prefix (an external provider URL, say), or when it
+/// already carries the prefix.
+pub fn rewrite_api_relative_url(url: &str, forwarded_prefix: Option<&str>) -> String {
+    let Some(prefix) = normalize_forwarded_prefix(forwarded_prefix) else {
+        return url.to_string();
+    };
+
+    // Already rewritten. Doing it twice yields
+    // /api/audiocontrol/audiocontrol/... - not a route the gateway knows, so
+    // it answers 401 rather than failing visibly. Several fields now reach
+    // this function that may already carry the prefix, so this is a live
+    // case rather than a theoretical one.
+    if url == prefix || url.starts_with(&format!("{}/", prefix)) {
+        return url.to_string();
+    }
+
+    if url == API_PREFIX {
+        return prefix;
+    }
+
+    // Only a whole path segment counts as being under the prefix: "/apifoo"
+    // is a different path, not "/api" plus "foo".
+    if let Some(suffix) = url.strip_prefix(API_PREFIX) {
+        if suffix.starts_with('/') {
+            return format!("{}{}", prefix, suffix);
+        }
+    }
+
+    url.to_string()
+}
+
+fn normalize_forwarded_prefix(prefix: Option<&str>) -> Option<String> {
+    let raw = prefix?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let without_trailing = raw.trim_end_matches('/');
+    if without_trailing.is_empty() {
+        return None;
+    }
+
+    if without_trailing.starts_with('/') {
+        Some(without_trailing.to_string())
+    } else {
+        Some(format!("/{}", without_trailing))
+    }
+}
+
+/// Rewrite every internal path a song carries.
+pub fn rewrite_song_urls(song: &mut Song, forwarded_prefix: Option<&str>) {
+    if let Some(cover_art_url) = song.cover_art_url.as_mut() {
+        *cover_art_url = rewrite_api_relative_url(cover_art_url, forwarded_prefix);
+    }
+
+    // `lyrics_url` lives in the free-form metadata map. Compute the new value
+    // first: holding the borrow from `get` across the `insert` does not
+    // compile.
+    let lyrics_url = match song.metadata.get("lyrics_url") {
+        Some(serde_json::Value::String(url)) => {
+            Some(rewrite_api_relative_url(url, forwarded_prefix))
+        }
+        _ => None,
+    };
+    if let Some(url) = lyrics_url {
+        song.metadata
+            .insert("lyrics_url".to_string(), serde_json::Value::String(url));
+    }
+}
+
+/// Rewrite the internal entries of a thumbnail list in place.
+///
+/// The list mixes internal paths with external provider URLs (last.fm,
+/// theaudiodb). Anything not under the API prefix comes back unchanged, so
+/// external entries need no special case here.
+pub fn rewrite_thumb_urls(thumb_urls: &mut [String], forwarded_prefix: Option<&str>) {
+    for url in thumb_urls.iter_mut() {
+        *url = rewrite_api_relative_url(url, forwarded_prefix);
+    }
+}
+
+/// Rewrite an artist's thumbnail URLs in place.
+pub fn rewrite_artist_thumb_urls(artist: &mut Artist, forwarded_prefix: Option<&str>) {
+    if let Some(meta) = artist.metadata.as_mut() {
+        rewrite_thumb_urls(&mut meta.thumb_url, forwarded_prefix);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::metadata::ArtistMeta;
+    use crate::data::Identifier;
+
+    const PREFIX: Option<&str> = Some("/api/audiocontrol");
+
+    #[test]
+    fn without_a_prefix_the_url_is_untouched() {
+        assert_eq!(
+            rewrite_api_relative_url("/api/library/mpd/image/album:7", None),
+            "/api/library/mpd/image/album:7"
+        );
+    }
+
+    #[test]
+    fn an_empty_prefix_counts_as_absent() {
+        assert_eq!(rewrite_api_relative_url("/api/x", Some("")), "/api/x");
+        assert_eq!(rewrite_api_relative_url("/api/x", Some("   ")), "/api/x");
+        assert_eq!(rewrite_api_relative_url("/api/x", Some("/")), "/api/x");
+    }
+
+    #[test]
+    fn an_internal_path_gains_the_prefix() {
+        assert_eq!(
+            rewrite_api_relative_url("/api/library/mpd/image/album:7", PREFIX),
+            "/api/audiocontrol/library/mpd/image/album:7"
+        );
+    }
+
+    #[test]
+    fn a_prefix_without_a_leading_slash_gets_one() {
+        assert_eq!(
+            rewrite_api_relative_url("/api/x", Some("api/audiocontrol")),
+            "/api/audiocontrol/x"
+        );
+    }
+
+    #[test]
+    fn a_trailing_slash_on_the_prefix_is_dropped() {
+        assert_eq!(
+            rewrite_api_relative_url("/api/x", Some("/api/audiocontrol/")),
+            "/api/audiocontrol/x"
+        );
+    }
+
+    #[test]
+    fn the_bare_api_root_becomes_the_bare_prefix() {
+        assert_eq!(rewrite_api_relative_url("/api", PREFIX), "/api/audiocontrol");
+    }
+
+    #[test]
+    fn an_external_url_is_untouched() {
+        let url = "https://lastfm.freetls.fastly.net/i/u/300x300/abc.png";
+        assert_eq!(rewrite_api_relative_url(url, PREFIX), url);
+    }
+
+    #[test]
+    fn a_path_outside_the_api_is_untouched() {
+        assert_eq!(rewrite_api_relative_url("/static/logo.png", PREFIX), "/static/logo.png");
+    }
+
+    #[test]
+    fn rewriting_is_idempotent() {
+        // Doing it twice must not yield /api/audiocontrol/audiocontrol/...,
+        // which the auth gateway answers 401 to.
+        let once = rewrite_api_relative_url("/api/library/mpd/image/album:7", PREFIX);
+        let twice = rewrite_api_relative_url(&once, PREFIX);
+        assert_eq!(once, twice);
+        assert_eq!(twice, "/api/audiocontrol/library/mpd/image/album:7");
+    }
+
+    #[test]
+    fn the_bare_prefix_is_left_alone() {
+        assert_eq!(rewrite_api_relative_url("/api/audiocontrol", PREFIX), "/api/audiocontrol");
+    }
+
+    #[test]
+    fn a_path_that_merely_starts_with_the_letters_api_is_untouched() {
+        // "/apifoo" is not "/api" + "foo"; only a whole segment counts.
+        assert_eq!(rewrite_api_relative_url("/apifoo", PREFIX), "/apifoo");
+    }
+
+    fn song_with(cover: Option<&str>, lyrics: Option<&str>) -> Song {
+        let mut song = Song::default();
+        song.cover_art_url = cover.map(ToOwned::to_owned);
+        if let Some(lyrics) = lyrics {
+            song.metadata.insert(
+                "lyrics_url".to_string(),
+                serde_json::Value::String(lyrics.to_string()),
+            );
+        }
+        song
+    }
+
+    #[test]
+    fn a_song_gets_both_of_its_paths_rewritten() {
+        let mut song = song_with(
+            Some("/api/library/mpd/image/album:7"),
+            Some("/api/lyrics/mpd/dHJhY2s"),
+        );
+        rewrite_song_urls(&mut song, PREFIX);
+        assert_eq!(
+            song.cover_art_url.as_deref(),
+            Some("/api/audiocontrol/library/mpd/image/album:7")
+        );
+        assert_eq!(
+            song.metadata.get("lyrics_url").and_then(|v| v.as_str()),
+            Some("/api/audiocontrol/lyrics/mpd/dHJhY2s")
+        );
+    }
+
+    #[test]
+    fn a_song_without_a_prefix_is_untouched() {
+        let mut song = song_with(
+            Some("/api/library/mpd/image/album:7"),
+            Some("/api/lyrics/mpd/dHJhY2s"),
+        );
+        rewrite_song_urls(&mut song, None);
+        assert_eq!(song.cover_art_url.as_deref(), Some("/api/library/mpd/image/album:7"));
+        assert_eq!(
+            song.metadata.get("lyrics_url").and_then(|v| v.as_str()),
+            Some("/api/lyrics/mpd/dHJhY2s")
+        );
+    }
+
+    #[test]
+    fn a_song_missing_those_fields_is_handled() {
+        let mut song = song_with(None, None);
+        rewrite_song_urls(&mut song, PREFIX);
+        assert!(song.cover_art_url.is_none());
+        assert!(!song.metadata.contains_key("lyrics_url"));
+    }
+
+    #[test]
+    fn a_non_string_lyrics_url_is_left_alone() {
+        let mut song = Song::default();
+        song.metadata
+            .insert("lyrics_url".to_string(), serde_json::Value::Bool(true));
+        rewrite_song_urls(&mut song, PREFIX);
+        assert_eq!(song.metadata.get("lyrics_url"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn a_thumb_list_rewrites_internal_entries_and_keeps_external_ones() {
+        let mut thumbs = vec![
+            "/api/coverart/artist/YWJj/image".to_string(),
+            "https://example.com/artist.png".to_string(),
+        ];
+        rewrite_thumb_urls(&mut thumbs, PREFIX);
+        assert_eq!(thumbs[0], "/api/audiocontrol/coverart/artist/YWJj/image");
+        assert_eq!(thumbs[1], "https://example.com/artist.png");
+    }
+
+    fn artist_with_thumbs(thumbs: Vec<String>) -> Artist {
+        let mut meta = ArtistMeta::new();
+        meta.thumb_url = thumbs;
+        Artist {
+            id: Identifier::Numeric(1),
+            name: "Test Artist".to_string(),
+            is_multi: false,
+            metadata: Some(meta),
+        }
+    }
+
+    #[test]
+    fn an_artists_thumbs_are_rewritten() {
+        let mut artist = artist_with_thumbs(vec!["/api/coverart/artist/YWJj/image".to_string()]);
+        rewrite_artist_thumb_urls(&mut artist, PREFIX);
+        assert_eq!(
+            artist.metadata.as_ref().unwrap().thumb_url[0],
+            "/api/audiocontrol/coverart/artist/YWJj/image"
+        );
+    }
+
+    #[test]
+    fn an_artist_without_metadata_is_handled() {
+        let mut artist = artist_with_thumbs(Vec::new());
+        artist.metadata = None;
+        rewrite_artist_thumb_urls(&mut artist, PREFIX);
+        assert!(artist.metadata.is_none());
+    }
+}

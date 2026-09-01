@@ -97,11 +97,16 @@ impl<'r, T: Serialize> Responder<'r, 'static> for Validated<T> {
                 if let Some(etag) = etag {
                     build.header(Header::new("ETag", etag));
                 }
+                // The body carries paths rewritten for this client's prefix,
+                // so a cache must not reuse it for a request that arrived
+                // with a different one.
+                build.header(Header::new("Vary", "X-Forwarded-Prefix"));
                 build.ok()
             }
             Validated::NotModified(etag) => Response::build()
                 .status(Status::NotModified)
                 .header(Header::new("ETag", etag))
+                .header(Header::new("Vary", "X-Forwarded-Prefix"))
                 .ok(),
         }
     }
@@ -229,5 +234,21 @@ mod tests {
         assert_eq!(response.status(), Status::NotModified);
         assert_eq!(response.headers().get_one("ETag"), Some("W/\"albums-a3f9c1d2-42\""));
         assert!(response.into_bytes().is_none(), "a 304 must not carry a body");
+    }
+
+    #[test]
+    fn a_body_response_varies_on_the_forwarded_prefix() {
+        let rocket = rocket::build().mount("/", rocket::routes![body_route]);
+        let client = Client::tracked(rocket).unwrap();
+        let response = client.get("/list").dispatch();
+        assert_eq!(response.headers().get_one("Vary"), Some("X-Forwarded-Prefix"));
+    }
+
+    #[test]
+    fn a_not_modified_response_varies_on_the_forwarded_prefix() {
+        let rocket = rocket::build().mount("/", rocket::routes![not_modified_route]);
+        let client = Client::tracked(rocket).unwrap();
+        let response = client.get("/nomod").dispatch();
+        assert_eq!(response.headers().get_one("Vary"), Some("X-Forwarded-Prefix"));
     }
 }

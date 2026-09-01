@@ -226,15 +226,28 @@ impl From<Album> for AlbumDTO {
     }
 }
 
-/// Creates an AlbumDTO from an Album with optional track inclusion
-fn create_album_dto(album: Album, include_tracks: bool) -> AlbumDTO {
+/// Creates an AlbumDTO from an Album with optional track inclusion.
+///
+/// `forwarded_prefix` is required rather than optional-by-omission: a handler
+/// that forgot it would emit paths a proxied client cannot fetch, and the
+/// failure is silent - the un-prefixed path falls through nginx to the SPA,
+/// which answers 200 with index.html.
+fn create_album_dto(
+    album: Album,
+    include_tracks: bool,
+    forwarded_prefix: Option<&str>,
+) -> AlbumDTO {
     let mut dto = AlbumDTO::from(album);
-    
+
     // If we don't want to include tracks, set to None
     if !include_tracks {
         dto.tracks = None;
     }
-    
+
+    dto.cover_art = dto
+        .cover_art
+        .map(|url| crate::api::urlprefix::rewrite_api_relative_url(&url, forwarded_prefix));
+
     dto
 }
 
@@ -351,6 +364,7 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
 pub fn get_player_albums(
     player_name: &str,
     if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<crate::api::validated::Validated<AlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
@@ -397,7 +411,7 @@ pub fn get_player_albums(
 
                 // Convert albums to DTOs without including tracks
                 let album_dtos = albums.into_iter()
-                    .map(|album| create_album_dto(album, false))
+                    .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
                     .collect::<Vec<AlbumDTO>>();
 
                 let response = AlbumsDTOResponse {
@@ -538,8 +552,9 @@ pub fn get_player_artists(
 /// This endpoint always includes track data for the album
 #[get("/library/<player_name>/album/by-id/<album_id>")]
 pub fn get_album_by_id(
-    player_name: &str, 
+    player_name: &str,
     album_id: &str,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<AlbumDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
@@ -561,7 +576,7 @@ pub fn get_album_by_id(
                 let album_option = library.get_album_by_id(&identifier);
                 
                 // Convert album to DTO with tracks included
-                let album_dto = album_option.map(|album| create_album_dto(album, true));
+                let album_dto = album_option.map(|album| create_album_dto(album, true, forwarded_prefix.0.as_deref()));
                 
                 return Ok(Json(AlbumDTOResponse {
                     player_name: player_name.to_string(),
@@ -595,6 +610,7 @@ pub fn get_albums_by_artist(
     player_name: &str,
     artist_name: &str,
     fuzzy: Option<bool>,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistAlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
@@ -621,7 +637,7 @@ pub fn get_albums_by_artist(
                     Some(a) => {
                         let albums = library.get_albums_by_artist_id(&a.id);
                         let album_dtos: Vec<AlbumDTO> = albums.into_iter()
-                            .map(|album| create_album_dto(album, false))
+                            .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
                             .collect();
                         Ok(Json(ArtistAlbumsDTOResponse {
                             player_name: player_name.to_string(),
@@ -660,8 +676,9 @@ pub fn get_albums_by_artist(
 /// This endpoint returns albums without track data but includes track count
 #[get("/library/<player_name>/albums/by-artist-id/<artist_id>")]
 pub fn get_albums_by_artist_id(
-    player_name: &str, 
+    player_name: &str,
     artist_id: &str,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<ArtistAlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
@@ -689,9 +706,9 @@ pub fn get_albums_by_artist_id(
                 
                 // Convert albums to DTOs without including tracks
                 let album_dtos = albums.into_iter()
-                    .map(|album| create_album_dto(album, false))
+                    .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
                     .collect::<Vec<AlbumDTO>>();
-                
+
                 // Try to find the artist name for better response
                 let artist_name = library.get_artists().into_iter()
                     .find(|artist| artist.id == crate::data::Identifier::Numeric(artist_id_parsed))
@@ -784,6 +801,7 @@ pub fn get_library_genres(
 pub fn get_albums_by_genre(
     player_name: &str,
     genre: &str,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<AlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
@@ -793,7 +811,7 @@ pub fn get_albums_by_genre(
             if let Some(library) = ctrl.get_library() {
                 let albums = library.get_albums_by_genre(genre);
                 let album_dtos: Vec<AlbumDTO> = albums.into_iter()
-                    .map(|album| create_album_dto(album, false))
+                    .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
                     .collect();
                 return Ok(Json(AlbumsDTOResponse {
                     player_name: player_name.to_string(),
@@ -845,6 +863,7 @@ pub fn get_library_categories(
 pub fn get_albums_by_category(
     player_name: &str,
     category: &str,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
 ) -> Result<Json<AlbumsDTOResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
@@ -854,7 +873,7 @@ pub fn get_albums_by_category(
             if let Some(library) = ctrl.get_library() {
                 let albums = library.get_albums_by_category(category);
                 let album_dtos: Vec<AlbumDTO> = albums.into_iter()
-                    .map(|album| create_album_dto(album, false))
+                    .map(|album| create_album_dto(album, false, forwarded_prefix.0.as_deref()))
                     .collect();
                 return Ok(Json(AlbumsDTOResponse {
                     player_name: player_name.to_string(),
@@ -1589,6 +1608,9 @@ pub fn delete_library_track(
 mod tests {
     use super::*;
     use serial_test::serial;
+    // `Album`, `Artist`, `Identifier` and `Arc` all arrive via `super::*`
+    // from the file's existing imports; only `Mutex` is new here.
+    use parking_lot::Mutex;
 
     #[test]
     fn absent_size_means_the_original() {
@@ -1654,5 +1676,61 @@ mod tests {
 
         let library = MPDLibrary::new();
         assert_eq!(resize_via_cache(&library, "album:not-a-number", 400), None);
+    }
+
+    fn album_with_cover(cover_art: Option<&str>) -> Album {
+        Album {
+            id: Identifier::Numeric(7),
+            name: "Test Album".to_string(),
+            artists: Arc::new(Mutex::new(vec!["Test Artist".to_string()])),
+            artists_flat: None,
+            release_date: None,
+            tracks: Arc::new(Mutex::new(Vec::new())),
+            cover_art: cover_art.map(ToOwned::to_owned),
+            uri: None,
+            genres: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_album_dto_gains_the_prefix_on_its_cover_art() {
+        let dto = create_album_dto(
+            album_with_cover(Some("/api/library/mpd/image/album:7")),
+            false,
+            Some("/api/audiocontrol"),
+        );
+        assert_eq!(
+            dto.cover_art.as_deref(),
+            Some("/api/audiocontrol/library/mpd/image/album:7")
+        );
+    }
+
+    #[test]
+    fn an_album_dto_without_a_prefix_is_unchanged() {
+        let dto = create_album_dto(
+            album_with_cover(Some("/api/library/mpd/image/album:7")),
+            false,
+            None,
+        );
+        assert_eq!(dto.cover_art.as_deref(), Some("/api/library/mpd/image/album:7"));
+    }
+
+    #[test]
+    fn an_album_without_cover_art_is_handled() {
+        let dto = create_album_dto(album_with_cover(None), false, Some("/api/audiocontrol"));
+        assert!(dto.cover_art.is_none());
+    }
+
+    #[test]
+    fn an_already_prefixed_cover_is_not_doubled() {
+        let dto = create_album_dto(
+            album_with_cover(Some("/api/audiocontrol/library/mpd/image/album:7")),
+            false,
+            Some("/api/audiocontrol"),
+        );
+        assert_eq!(
+            dto.cover_art.as_deref(),
+            Some("/api/audiocontrol/library/mpd/image/album:7")
+        );
     }
 }

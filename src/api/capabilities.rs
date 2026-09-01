@@ -32,7 +32,7 @@ pub fn current_capabilities() -> CapabilitiesResponse {
     CapabilitiesResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
         images: ImageCapabilities {
-            sizes: crate::helpers::imageresize::SIZE_LADDER.to_vec(),
+            sizes: crate::helpers::imageresize::sizes().to_vec(),
         },
     }
 }
@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn capabilities_advertise_the_size_ladder() {
         let body = serde_json::to_value(current_capabilities()).unwrap();
-        assert_eq!(body["images"]["sizes"], serde_json::json!([100, 200, 400, 800]));
+        assert_eq!(body["images"]["sizes"], serde_json::json!([100, 140, 200, 280, 400, 800]));
     }
 
     #[test]

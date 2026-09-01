@@ -1,8 +1,9 @@
 use std::io::Cursor;
+use std::sync::OnceLock;
 
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use log::debug;
+use log::{debug, warn};
 
 /// JPEG quality for generated variants. 82 is visually transparent for cover art
 /// at grid sizes while staying far below the original's byte count.
@@ -68,10 +69,11 @@ pub fn resize(data: &[u8], target_px: u32) -> Result<Resized, ResizeError> {
     }
 
     // CatmullRom, not Lanczos3: Lanczos3 is the most expensive filter the crate
-    // offers, and this runs on a Raspberry Pi. For a 400px thumbnail drawn in a
-    // 120pt grid cell the two are visually indistinguishable, while CatmullRom is
-    // several times faster — and the pre-warm job pays this cost once per album
-    // across a whole library, so the difference is measured in hours.
+    // offers, and this runs on a Raspberry Pi. For a thumbnail drawn in a grid
+    // cell at roughly its own size the two are visually indistinguishable, while
+    // CatmullRom is several times faster — and the pre-warm job pays this cost
+    // once per rung per album across a whole library, so the difference is
+    // measured in hours.
     let scaled = img.resize(target_px, target_px, FilterType::CatmullRom);
     let has_alpha = img.color().has_alpha();
     let mut buf = Cursor::new(Vec::new());
@@ -110,15 +112,171 @@ fn decode_within_limits(data: &[u8]) -> Result<image::DynamicImage, ResizeError>
     reader.decode().map_err(|e| ResizeError::Decode(e.to_string()))
 }
 
-/// The only sizes acr will ever generate.
+/// The ladder used when configuration does not specify one.
 ///
-/// A fixed ladder bounds the cache at four variants per image no matter what
+/// A fixed ladder bounds the cache at six variants per image no matter what
 /// clients ask for. Requested sizes snap up to the next rung.
-pub const SIZE_LADDER: [u32; 4] = [100, 200, 400, 800];
+///
+/// The rungs between 100 and 400 are spaced for grid cells at the display
+/// scales clients actually run at: a 100 pt cell is 100, 140, 200 or 280 px at
+/// 1x, 1.4x, 2x and 2.8x. Without them a 2x grid snapped all the way up to 400,
+/// which is four times the pixels it can show.
+pub const DEFAULT_SIZES: [u32; 6] = [100, 140, 200, 280, 400, 800];
 
-/// The rung an album grid uses: 120 pt at 3x. This is the size the pre-warm job
-/// generates.
-pub const GRID_SIZE: u32 = 400;
+/// The pre-warm rungs used when configuration does not specify them.
+///
+/// The larger rungs are left to be generated on demand — they are asked for one
+/// image at a time, when a single cover is opened, not a screenful at once.
+pub const DEFAULT_PREWARM_SIZES: [u32; 3] = [140, 200, 280];
+
+static SIZES: OnceLock<Vec<u32>> = OnceLock::new();
+static PREWARM: OnceLock<Vec<u32>> = OnceLock::new();
+
+/// The sizes this daemon offers, in ascending order.
+///
+/// Falls back to the built-in default when configuration was never applied, so
+/// the module answers correctly in tests and in any start-up path that has not
+/// reached `configure` yet.
+pub fn sizes() -> &'static [u32] {
+    SIZES.get().map(|v| v.as_slice()).unwrap_or(&DEFAULT_SIZES)
+}
+
+/// The sizes the pre-warm job generates. May legitimately be empty.
+pub fn prewarm_sizes() -> &'static [u32] {
+    PREWARM.get().map(|v| v.as_slice()).unwrap_or(&DEFAULT_PREWARM_SIZES)
+}
+
+/// Apply configuration. Call once, during start-up, before anything reads the
+/// accessors. A second call is ignored rather than panicking.
+pub fn configure(raw_sizes: Option<Vec<u32>>, raw_prewarm: Option<Vec<u32>>) {
+    let ladder = match raw_sizes {
+        Some(v) => sanitise_sizes(v),
+        None => DEFAULT_SIZES.to_vec(),
+    };
+    let prewarm = match raw_prewarm {
+        Some(v) => sanitise_prewarm(v, &ladder),
+        None => DEFAULT_PREWARM_SIZES
+            .iter()
+            .copied()
+            .filter(|s| ladder.contains(s))
+            .collect(),
+    };
+    let _ = SIZES.set(ladder);
+    let _ = PREWARM.set(prewarm);
+}
+
+/// Read a list of sizes out of a JSON config value, warning loudly about anything
+/// it must reject rather than dropping it silently.
+///
+/// `key` names the field being read (e.g. `"sizes"` or `"prewarm_sizes"`), used only
+/// to make the warnings actionable. `value` is the `services.images` section, or
+/// `None` when that section is absent from configuration altogether. When it is
+/// present but not a JSON object (e.g. `"images": "yes"`), that is warned about too
+/// rather than silently reading as "key absent".
+///
+/// Returns `None` when the key is absent, so "absent" (use the default) stays
+/// distinguishable from "present but every entry was rejected" (also use the
+/// default, but only after warning why). Returns `Some(vec)` — which may be empty —
+/// of the entries that survived; `sanitise_sizes` / `sanitise_prewarm` still do
+/// dedup, sort, ladder-membership and the empty-list decision on that result exactly
+/// as they did before this function existed.
+///
+/// A value outside `u32`'s range is rejected outright rather than cast: `as u32`
+/// wraps, so `4294967396` (2^32 + 100) would silently become `100` — a plausible,
+/// wrong rung with no sign anything went wrong.
+pub fn sizes_from_json(key: &str, value: Option<&serde_json::Value>) -> Option<Vec<u32>> {
+    let images = value?;
+    if !images.is_object() {
+        warn!(
+            "Ignoring 'images' configuration section: expected an object, got {}. Using the default.",
+            images
+        );
+        return None;
+    }
+    let field = match images.get(key) {
+        Some(f) => f,
+        None => return None,
+    };
+    let array = match field.as_array() {
+        Some(a) => a,
+        None => {
+            warn!(
+                "Ignoring configuration key '{}': expected an array, got {}. Using the default.",
+                key, field
+            );
+            return None;
+        }
+    };
+
+    let mut accepted = Vec::new();
+    for entry in array {
+        match entry.as_u64() {
+            Some(n) if n <= u32::MAX as u64 => accepted.push(n as u32),
+            Some(n) => warn!(
+                "Ignoring image size {} in configuration key '{}': larger than u32::MAX ({})",
+                n,
+                key,
+                u32::MAX
+            ),
+            None => warn!(
+                "Ignoring image size {} in configuration key '{}': not a non-negative integer",
+                entry, key
+            ),
+        }
+    }
+    Some(accepted)
+}
+
+/// Drop invalid and duplicate rungs, sort, and fall back if nothing survives.
+///
+/// Sorting is not cosmetic: `snap_to_rung` returns the first rung greater than
+/// or equal to the request and depends on ascending order.
+pub fn sanitise_sizes(raw: Vec<u32>) -> Vec<u32> {
+    let mut cleaned: Vec<u32> = Vec::new();
+    for size in raw {
+        if size == 0 {
+            warn!("Ignoring image size 0 in configuration: sizes must be positive");
+            continue;
+        }
+        if cleaned.contains(&size) {
+            warn!("Ignoring duplicate image size {} in configuration", size);
+            continue;
+        }
+        cleaned.push(size);
+    }
+    if cleaned.is_empty() {
+        warn!(
+            "No usable image sizes in configuration, using the default ladder {:?}",
+            DEFAULT_SIZES
+        );
+        return DEFAULT_SIZES.to_vec();
+    }
+    cleaned.sort_unstable();
+    cleaned
+}
+
+/// Keep only pre-warm rungs the ladder actually offers.
+///
+/// An empty result is legitimate — it means pre-warming is off — so this never
+/// falls back to the default.
+pub fn sanitise_prewarm(raw: Vec<u32>, ladder: &[u32]) -> Vec<u32> {
+    let mut cleaned: Vec<u32> = Vec::new();
+    for size in raw {
+        if !ladder.contains(&size) {
+            warn!(
+                "Ignoring pre-warm size {}: it is not in the configured ladder {:?}",
+                size, ladder
+            );
+            continue;
+        }
+        if cleaned.contains(&size) {
+            continue;
+        }
+        cleaned.push(size);
+    }
+    cleaned.sort_unstable();
+    cleaned
+}
 
 /// Separator between a base name and its variant size in a file name.
 const VARIANT_MARKER: char = '@';
@@ -128,7 +286,7 @@ const VARIANT_MARKER: char = '@';
 /// Returns `None` when the request is larger than the biggest rung, which the
 /// caller must treat as "serve the original untouched".
 pub fn snap_to_rung(requested: u32) -> Option<u32> {
-    SIZE_LADDER.iter().copied().find(|rung| *rung >= requested)
+    sizes().iter().copied().find(|rung| *rung >= requested)
 }
 
 /// Build the file stem for a variant: `("cover", 400)` becomes `"cover@400"`.
@@ -160,7 +318,7 @@ pub fn is_variant_file_name(file_name: &str) -> bool {
 /// A stable description of the ladder, stored beside the cache so a future change
 /// to the rungs can purge variants that no longer correspond to anything.
 pub fn ladder_fingerprint() -> String {
-    SIZE_LADDER
+    sizes()
         .iter()
         .map(|s| s.to_string())
         .collect::<Vec<_>>()
@@ -274,6 +432,13 @@ mod tests {
         assert_eq!(snap_to_rung(1), Some(100));
         assert_eq!(snap_to_rung(100), Some(100));
         assert_eq!(snap_to_rung(800), Some(800));
+        // The rungs added for fractional display scales: a request must land on
+        // the nearest one at or above it, not skip past to 400.
+        assert_eq!(snap_to_rung(101), Some(140));
+        assert_eq!(snap_to_rung(140), Some(140));
+        assert_eq!(snap_to_rung(200), Some(200));
+        assert_eq!(snap_to_rung(201), Some(280));
+        assert_eq!(snap_to_rung(280), Some(280));
     }
 
     #[test]
@@ -300,6 +465,123 @@ mod tests {
 
     #[test]
     fn fingerprint_describes_the_ladder() {
-        assert_eq!(ladder_fingerprint(), "100-200-400-800");
+        assert_eq!(ladder_fingerprint(), "100-140-200-280-400-800");
+    }
+
+    #[test]
+    fn sanitising_drops_zero_negative_and_duplicates_and_sorts() {
+        // u32 cannot be negative; zero is the representable invalid value.
+        assert_eq!(sanitise_sizes(vec![400, 100, 0, 200, 100]), vec![100, 200, 400]);
+    }
+
+    #[test]
+    fn an_entirely_invalid_ladder_falls_back_to_the_default() {
+        assert_eq!(sanitise_sizes(vec![0, 0]), DEFAULT_SIZES.to_vec());
+        assert_eq!(sanitise_sizes(Vec::new()), DEFAULT_SIZES.to_vec());
+    }
+
+    #[test]
+    fn prewarm_entries_outside_the_ladder_are_dropped() {
+        let ladder = vec![100, 200, 400];
+        assert_eq!(sanitise_prewarm(vec![200, 999, 100], &ladder), vec![100, 200]);
+    }
+
+    #[test]
+    fn an_empty_prewarm_list_is_honoured_not_defaulted() {
+        // This is how an operator turns pre-warming off. Replacing it with the
+        // default would silently override that choice.
+        let ladder = vec![100, 200, 400];
+        assert!(sanitise_prewarm(Vec::new(), &ladder).is_empty());
+    }
+
+    #[test]
+    fn without_configuration_the_accessors_return_the_defaults() {
+        // The module must answer correctly when config was never initialised,
+        // which is what keeps these unit tests meaningful without a fixture.
+        assert_eq!(sizes(), DEFAULT_SIZES);
+        assert_eq!(prewarm_sizes(), DEFAULT_PREWARM_SIZES);
+    }
+
+    #[test]
+    fn snapping_uses_the_active_ladder() {
+        // 140 is a rung in the default ladder; 120 must snap up to it.
+        assert_eq!(snap_to_rung(120), Some(140));
+        assert_eq!(snap_to_rung(801), None);
+    }
+
+    mod sizes_from_json_tests {
+        use super::*;
+        use serde_json::json;
+
+        #[test]
+        fn absent_images_section_is_none() {
+            assert_eq!(sizes_from_json("sizes", None), None);
+        }
+
+        #[test]
+        fn absent_key_is_none() {
+            let images = json!({ "other": 1 });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), None);
+        }
+
+        #[test]
+        fn negative_entries_are_rejected_not_dropped_silently() {
+            let images = json!({ "sizes": [100, -50, 400] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(vec![100, 400]));
+        }
+
+        #[test]
+        fn non_integer_entries_are_rejected() {
+            let images = json!({ "sizes": [100, 200.5] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(vec![100]));
+        }
+
+        #[test]
+        fn a_non_array_value_is_none_not_the_default_indistinguishably() {
+            // Distinguishable from "absent" only via the log line the caller cannot
+            // see in a unit test, but the point tested here is that it does not
+            // silently succeed with a bogus single-element interpretation either.
+            let images = json!({ "sizes": 400 });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), None);
+        }
+
+        #[test]
+        fn a_non_object_images_section_is_none() {
+            // "images": "yes" -- the section itself is malformed, not just the key.
+            // This must fall back to the default (via None) the same as an absent
+            // section, but it is asserted here that this path is reached without
+            // panicking; the accompanying warning is what makes it distinguishable
+            // from a genuinely absent section in the daemon's log.
+            let images = json!("yes");
+            assert_eq!(sizes_from_json("sizes", Some(&images)), None);
+        }
+
+        #[test]
+        fn an_out_of_range_value_is_rejected_rather_than_wrapped() {
+            // 2^32 + 100. `as u32` would wrap this to 100, a plausible wrong value.
+            // It must be rejected outright instead.
+            let images = json!({ "sizes": [4294967396_u64] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(Vec::new()));
+        }
+
+        #[test]
+        fn valid_entries_all_pass_through() {
+            let images = json!({ "sizes": [100, 200, 400] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(vec![100, 200, 400]));
+        }
+
+        #[test]
+        fn empty_array_is_some_empty_not_none() {
+            // Distinguishes "present but empty" from "absent" -- sanitise_sizes is
+            // the one that decides whether an empty list falls back to the default.
+            let images = json!({ "sizes": [] });
+            assert_eq!(sizes_from_json("sizes", Some(&images)), Some(Vec::new()));
+        }
+
+        #[test]
+        fn reads_the_prewarm_key_independently() {
+            let images = json!({ "sizes": [100], "prewarm_sizes": [100, -1] });
+            assert_eq!(sizes_from_json("prewarm_sizes", Some(&images)), Some(vec![100]));
+        }
     }
 }

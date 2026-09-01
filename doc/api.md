@@ -163,13 +163,16 @@ What this daemon supports, as opposed to which release it is.
 {
   "version": "0.9.3",
   "images": {
-    "sizes": [100, 200, 400, 800]
+    "sizes": [100, 140, 200, 280, 400, 800]
   }
 }
 ```
 
 `images.sizes` lists the sizes accepted by the `size` parameter on the image
-endpoints; requests are rounded up to the next listed size.
+endpoints; requests are rounded up to the next listed size. **The list is
+configured per installation** via `services.images.sizes` in
+`audiocontrol.json` and defaults to `[100, 140, 200, 280, 400, 800]` — so a
+client must read it rather than assuming a fixed ladder.
 
 **This is a daemon-level capability, not a per-player guarantee.** It says which
 sizes this release understands, not that every image can be served at them.
@@ -180,8 +183,8 @@ and GIF or BMP sources are served at full size. See
 [Get Image from Library](#get-image-from-library) for the full list; a request
 that cannot be resized still returns `200` with the original.
 
-**A release that answers this endpoint with 404 does not resize images.** That is
-a complete answer -- ask for originals rather than probing.
+**A release that answers this endpoint with 404 does not resize images.** That
+is a complete answer — ask for originals rather than probing.
 
 ### Get Input Status
 
@@ -1802,7 +1805,7 @@ Retrieves an image (such as album art) from a player's library.
 
 | Name | Type | Meaning |
 |---|---|---|
-| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. It takes effect for `album:` identifiers on players that keep cover art in acr's image cache; every other combination is accepted and validated but then ignored, and the response is the full-size original with no signal that resizing did not happen. |
+| `size` | integer | Longest edge in pixels. Rounded up to the next configured size. The defaults are 100, 140, 200, 280, 400, 800; consult `GET /capabilities` for the authoritative list on this installation. Omit it to get the original. It takes effect for `album:` identifiers on players that keep cover art in acr's image cache; every other combination is accepted and validated but then ignored, and the response is the full-size original with no signal that resizing did not happen. |
 
 **When `size` does nothing.** Resizing works from acr's own image cache, so it
 applies only where two things are both true:
@@ -2598,7 +2601,7 @@ Directly serves the cached artist image file if available. This endpoint returns
 
 | Name | Type | Meaning |
 |---|---|---|
-| `size` | integer | Longest edge in pixels. Rounded up to the next of 100, 200, 400, 800. Omit it to get the original. |
+| `size` | integer | Longest edge in pixels. Rounded up to the next configured size. The defaults are 100, 140, 200, 280, 400, 800; consult `GET /capabilities` for the authoritative list on this installation. Omit it to get the original. |
 
 A size larger than the top rung, or larger than the image itself, returns the
 original: acr never upscales. A size that is not a positive integer is a

@@ -1,6 +1,6 @@
 { "service":"audiocontrol", "match_prefix":"/api/audiocontrol", "default_tier":"risky", "rules":[
   { "tier":"ok","methods":["GET"],"paths":[
-    "/version","/player","/players","/now-playing","/player/*/queue","/player/*/meta",
+    "/version","/capabilities","/player","/players","/now-playing","/player/*/queue","/player/*/meta",
     "/player/*/meta/*","/library","/library/*","/library/*/*","/library/*/*/*","/library/*/*/*/*",
     "/coverart/*","/coverart/*/*","/coverart/*/*/*","/imagecache/*","/audiodb/*/*","/lyrics/*/*",
     "/volume/info","/volume/state","/favourites/is_favourite","/favourites/providers",

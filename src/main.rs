@@ -236,6 +236,19 @@ fn main() {
             default_path
         };
 
+    // Resolve the image size ladder before anything can read it.
+    {
+        let images = get_service_config(&controllers_config, "images");
+        let sizes = audiocontrol::helpers::imageresize::sizes_from_json("sizes", images);
+        let prewarm = audiocontrol::helpers::imageresize::sizes_from_json("prewarm_sizes", images);
+        audiocontrol::helpers::imageresize::configure(sizes, prewarm);
+        info!(
+            "Image sizes: {:?}, pre-warm sizes: {:?}",
+            audiocontrol::helpers::imageresize::sizes(),
+            audiocontrol::helpers::imageresize::prewarm_sizes()
+        );
+    }
+
     // Initialize the global image cache with the configured path from JSON
     initialize_image_cache(&image_cache_path);
 
@@ -425,6 +438,12 @@ fn main() {
             .and_then(|p| p.as_u64())
             .unwrap_or(1080)
     );
+
+    // Purge variants at retired ladder sizes on its own thread, off the startup
+    // path. This used to run inside ImageCache::initialize, before the server
+    // bound its port, and held the global cache lock for the whole walk - the
+    // daemon answered nothing for about a minute on the 0.12.0 upgrade.
+    audiocontrol::helpers::imagepurge::purge_retired_in_background();
 
     // Keep the main thread alive until Ctrl+C is received
     while running.load(Ordering::SeqCst) {

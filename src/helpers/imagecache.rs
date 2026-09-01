@@ -158,9 +158,6 @@ impl ImageCache {
         match result {
             Ok(_) => {
                 info!("Global image cache initialized with custom directory");
-                if let Err(e) = get_image_cache().purge_variants_if_ladder_changed() {
-                    warn!("Failed to check image variant ladder: {}", e);
-                }
                 Ok(())
             },
             Err(e) => {
@@ -195,6 +192,11 @@ impl ImageCache {
     /// Check if the cache is enabled
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Base directory this cache stores images under.
+    pub fn base_path(&self) -> &PathBuf {
+        &self.base_path
     }
 
     /// Load expiry metadata from disk
@@ -959,33 +961,60 @@ impl ImageCache {
         Ok(removed)
     }
 
-    /// Name of the file recording which ladder the stored variants belong to.
-    const LADDER_MARKER: &'static str = ".variant-ladder";
-
-    /// Drop every variant if the size ladder has changed since they were generated.
+    /// Delete only variants whose size the ladder no longer offers.
     ///
-    /// Variants are derived data, so throwing them away costs only the time to make
-    /// them again — cheaper than serving sizes the current release no longer offers.
-    pub fn purge_variants_if_ladder_changed(&self) -> Result<usize, String> {
+    /// The indiscriminate `purge_variants` throws away work that is still
+    /// useful: adding a rung retires nothing, yet it deleted every variant in
+    /// the cache. It is also what made a background purge unsafe, because it
+    /// could delete a thumbnail the pre-warm job had just generated. This
+    /// version cannot: it never touches a size that is still offered.
+    pub fn purge_retired_variants(&self, offered: &[u32]) -> Result<usize, String> {
         if !self.base_path.exists() {
             return Ok(0);
         }
 
-        let marker = self.base_path.join(Self::LADDER_MARKER);
-        let current = crate::helpers::imageresize::ladder_fingerprint();
-        let stored = fs::read_to_string(&marker).ok();
-
-        let removed = match stored.as_deref() {
-            Some(previous) if previous.trim() == current => 0,
-            Some(previous) => {
-                info!("Image size ladder changed from {} to {}, purging variants", previous.trim(), current);
-                self.purge_variants()?
+        fn walk(
+            dir: &Path,
+            base: &Path,
+            cache: &ImageCache,
+            offered: &[u32],
+            removed: &mut usize,
+        ) -> Result<(), String> {
+            for entry in read_dir(dir)
+                .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, base, cache, offered, removed)?;
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+                let Some(size) = crate::helpers::imageresize::variant_size_of(stem) else { continue };
+                if offered.contains(&size) {
+                    continue;
+                }
+                if let Err(e) = fs::remove_file(&path) {
+                    warn!("Failed to remove retired variant {}: {}", path.display(), e);
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(base)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !rel.is_empty() {
+                    let _ = cache.remove_image_metadata(&rel);
+                }
+                *removed += 1;
             }
-            None => 0,
-        };
+            Ok(())
+        }
 
-        if let Err(e) = fs::write(&marker, &current) {
-            warn!("Failed to record image size ladder: {}", e);
+        let mut removed = 0usize;
+        let base = self.base_path.clone();
+        walk(&base, &base, self, offered, &mut removed)?;
+        if removed > 0 {
+            info!("Purged {} variant(s) at retired sizes", removed);
         }
         Ok(removed)
     }
@@ -1813,7 +1842,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_ladder_change_purges_variants() {
+    fn a_superset_ladder_change_purges_nothing() {
         init_test_attribute_cache();
         let temp_dir = TempDir::new().unwrap();
         let cache = ImageCache::with_directory(temp_dir.path());
@@ -1822,19 +1851,33 @@ mod tests {
             .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
             .unwrap();
         cache.get_or_create_variant("albums/a/b/cover", 100).unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 400).unwrap();
 
-        // First run records the current ladder and purges nothing.
-        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 0);
+        // Every existing variant's size is still offered.
+        let removed = cache.purge_retired_variants(&[100, 140, 200, 280, 400, 800]).unwrap();
+        assert_eq!(removed, 0, "a superset change must delete nothing");
         assert!(temp_dir.path().join("albums/a/b/cover@100.jpg").exists());
+        assert!(temp_dir.path().join("albums/a/b/cover@400.jpg").exists());
+    }
 
-        // Simulate a release that changed the rungs.
-        std::fs::write(temp_dir.path().join(".variant-ladder"), "50-250").unwrap();
+    #[test]
+    #[serial]
+    fn only_retired_sizes_are_deleted() {
+        init_test_attribute_cache();
+        let temp_dir = TempDir::new().unwrap();
+        let cache = ImageCache::with_directory(temp_dir.path());
 
-        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 1);
-        assert!(!temp_dir.path().join("albums/a/b/cover@100.jpg").exists());
-        assert!(temp_dir.path().join("albums/a/b/cover.png").exists());
+        cache
+            .store_image_from_data("albums/a/b/cover", test_source_png(), "image/png".to_string())
+            .unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 100).unwrap();
+        cache.get_or_create_variant("albums/a/b/cover", 400).unwrap();
 
-        // Subsequent call with matching ladder purges nothing.
-        assert_eq!(cache.purge_variants_if_ladder_changed().unwrap(), 0);
+        // 400 has been retired; 100 is still offered.
+        let removed = cache.purge_retired_variants(&[100, 200]).unwrap();
+        assert_eq!(removed, 1);
+        assert!(temp_dir.path().join("albums/a/b/cover@100.jpg").exists(), "an offered size must survive");
+        assert!(!temp_dir.path().join("albums/a/b/cover@400.jpg").exists(), "a retired size must go");
+        assert!(temp_dir.path().join("albums/a/b/cover.png").exists(), "originals are never touched");
     }
 }

@@ -5,26 +5,6 @@ real library on the test device on 2026-08-31 (acr 0.9.x): **11,318 albums,
 1,904 artists, 181,312 tracks**. Full measurements in the iOS client's
 library-browsing design notes. Ordered by how much each saves a client.
 
-* **Serve resized images — `GET /library/<player>/image/<id>?size=<px>`.**
-  Cover art is full size only: mean **243 KB** at 1280×1280 (12 sampled, range
-  41–379 KB). Downsampling one to 360 px — the 3× size of a 120 pt grid cell —
-  takes it from 392 KB to **18.8 KB, 21× smaller**. Across 11,318 albums that
-  is a client caching ~213 MB of thumbnails instead of 2.8 GB of originals.
-
-  Every client pays this, not just the new one: `hbos-ui` renders the same
-  album grids from the same full-size images, with no `srcset` and no
-  client-side resizing. Doing it once here removes a thumbnail cache, an
-  off-main-thread decode path and a cache cap from every client that will
-  exist. Cost is real: nothing decodes images today (`helpers/imagecache`
-  stores bytes and metadata), so this needs a decoding dependency. The
-  variants belong in that cache, keyed by identifier plus size.
-
-* **Send cache validators on images.** They carry only `Content-Length` — no
-  `ETag`, no `Last-Modified`, no `Cache-Control`. Album art addressed by album
-  id never changes, so `Cache-Control: max-age=31536000, immutable` would let
-  `URLCache` and browsers hold it themselves. That is one header, and it
-  deletes a cache layer from every client — the best value per effort here.
-
 * **Expose a library version, and use it as an `ETag` on the list endpoints.**
   The only change signal today is the counts on `/library/<player>`, which miss
   any edit leaving totals unchanged, so client invalidation can only be a
@@ -32,8 +12,9 @@ library-browsing design notes. Ordered by how much each saves a client.
   `/albums` and `/artists`, revalidation would cost a 304 of a few hundred
   bytes rather than re-sending the list (799 KB gzipped for albums).
 
-  Worth building on the validator work above rather than beside it, so there is
-  one `NotModified` path rather than two.
+  The image endpoints already answer `If-None-Match` with a 304, so the
+  `NotModified` shape exists to copy rather than invent - see
+  `src/api/imageresponse.rs`.
 
 * **Emit image paths clients can use unmodified.** Library payloads give
   internal paths — an album has `"cover_art": "/api/library/mpd/image/…"`, an
@@ -46,6 +27,18 @@ library-browsing design notes. Ordered by how much each saves a client.
   The asymmetry is that `rewrite_api_relative_url` has exactly one caller, in
   `api/players.rs`, and only `song.cover_art_url` goes through it; no library
   endpoint takes the `ForwardedPrefix` guard.
+
+* **Make `?size=` work outside MPD album ids.** Resizing shipped in 0.11.0,
+  but it only applies to `album:` identifiers on a player that keeps cover art
+  in acr's image cache. MPD does; LMS fetches art over HTTP and never
+  populates it, so an LMS client is told `images.sizes` by `/capabilities` and
+  then silently gets full-size originals. `artist:` identifiers, bare track
+  URLs and URL-safe base64 identifiers miss it too, because the API layer
+  matches on the raw path segment while MPD decodes internally. Documented in
+  `doc/api.md` rather than hidden, but a client still cannot discover it per
+  player. Resizing in memory on a miss would close all four cases at once and
+  was rejected for now: an uncached decode costs 300-600 ms on a Pi, so the
+  fix needs a cache for those paths, not just a call.
 
 ### Not acr — nginx, in hifiberryos
 

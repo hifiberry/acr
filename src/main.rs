@@ -332,13 +332,17 @@ fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
-    // Set up Ctrl+C handler.
+    // Set up the SIGINT/SIGTERM handler.
     //
-    // This only covers the window before Rocket launches. Rocket installs its
-    // own SIGINT/SIGTERM handlers when the server starts, and a signal
-    // disposition is process-global, so the later registration replaces this
-    // one for the rest of the process's life. The API thread below is what
-    // clears `running` once Rocket is up.
+    // ctrlc only registers SIGTERM with its "termination" feature, which this
+    // crate now enables -- without it this handler covered SIGINT alone, and
+    // SIGTERM, the signal systemd actually sends, had no handler at all.
+    //
+    // It covers the window before Rocket launches, and the case where the
+    // webserver is disabled so Rocket never launches. Once Rocket does start it
+    // installs its own handlers for both signals, and a signal disposition is
+    // process-global, so the later registration replaces this one; from that
+    // point the API thread below is what clears `running`.
     if let Err(e) = ctrlc::set_handler(move || {
         info!("Received Ctrl+C, shutting down...");
         r.store(false, Ordering::SeqCst);
@@ -435,8 +439,28 @@ fn main() {
         });
 
         match outcome {
-            // Unchanged: a server that failed to come up leaves the rest of the
-            // daemon running, as it always has.
+            // Rocket reports a shutdown that overran its grace and mercy
+            // windows as an error, not as Ok: outstanding background I/O,
+            // which long-lived WebSocket connections routinely produce, is one
+            // of the causes, along with the server still executing afterwards.
+            // Rocket has stopped serving either way, so this is the same cue to
+            // exit as ShutDown.
+            //
+            // Treating it as a failure to start was the original bug wearing a
+            // different hat -- `running` stayed true, the loop below spun, and
+            // systemd killed the process, on exactly the paths a busy daemon is
+            // most likely to take. Rocket's own forced-shutdown backstop does
+            // not cover it either: that lives in rocket::async_main, which only
+            // #[rocket::main] and #[launch] go through, and this process
+            // launches on its own runtime.
+            Err(e) if matches!(e.kind(), rocket::error::ErrorKind::Shutdown(..)) => {
+                warn!("API server shutdown did not complete cleanly: {}", e);
+                api_running.store(false, Ordering::SeqCst);
+            }
+
+            // A server that never came up -- Bind, Config, Collisions,
+            // FailedFairings -- leaves the rest of the daemon running, as it
+            // always has.
             Err(e) => error!("API server error: {}", e),
 
             // Rocket owns SIGTERM and SIGINT from the moment it launches: its
@@ -454,8 +478,9 @@ fn main() {
             }
 
             // Nothing was started, so nothing has shut down. Rocket never
-            // replaced the ctrlc handler either, so that one is still live and
-            // remains the way this process stops.
+            // replaced the handler registered above either, so that one is
+            // still live -- for SIGTERM as well as SIGINT, given the
+            // "termination" feature -- and remains the way this process stops.
             Ok(ServerOutcome::Disabled) => {}
         }
     });

@@ -20,6 +20,18 @@ hifiberry-audiocontrol (0.15.1) trixie; urgency=medium
   * The startup log no longer claims "API server started on port 1080" from a
     thread that has not started anything. The webserver logs its own address
     when it binds one, which is the code that knows.
+  * A shutdown that overruns Rocket's grace and mercy windows also ends the
+    process. Rocket reports that case as an error rather than a success --
+    outstanding background I/O, which long-lived WebSocket connections
+    routinely produce, is one of its causes -- and treating it as a failure to
+    start left the daemon spinning until it was killed, which is the behaviour
+    the rest of this entry removes, on the shutdown paths a busy device is
+    most likely to take.
+  * SIGTERM is handled before the webserver starts, and when it is disabled
+    entirely. The ctrlc dependency only registers SIGTERM with its
+    "termination" feature, which was not enabled, so until Rocket launched and
+    installed handlers of its own there was nothing listening for the signal
+    systemd actually sends.
 
  -- HiFiBerry <support@hifiberry.com>  Tue, 01 Sep 2026 14:33:56 +0200
 

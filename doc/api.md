@@ -129,17 +129,37 @@ correct for that route. This holds for album `cover_art`, artist `thumb_url`,
 `song.cover_art_url` and `song.metadata.lyrics_url`, over REST and over the
 WebSocket alike.
 
+Before 0.15.0 only the `now-playing` response carried the external form; the
+album, artist and album-detail responses carried the internal path even behind
+a proxy. A client that compensated for that by prepending the prefix itself
+should check whether the path already carries it, as the shipped clients do.
+
 External URLs — artist images from last.fm or theaudiodb, for instance — are
 absolute and are never rewritten.
 
-Because a response body depends on that request header, list endpoints carry
-`Vary: X-Forwarded-Prefix`.
+A song pushed in through `POST /api/player/<name>/update` is stored with
+whatever `cover_art_url` the sender supplied, and is served back as it was
+stored. A sender that supplies an already-external path — one that carries the
+proxy's prefix — therefore produces a value that is wrong for a client reached
+directly, whatever the rewrite does on the way out. Senders should supply
+either an absolute URL or a path in audiocontrol's own internal form.
+
+Because their bodies depend on the request header, the two library list
+responses — `/api/library/<player>/albums` and `/api/library/<player>/artists` —
+carry `Vary: X-Forwarded-Prefix`, and their `ETag`s, along with the
+`library_version` those endpoints and `/api/library/<player>` report, vary with
+the prefix as well as with the library's contents. The remaining
+prefix-dependent responses (`now-playing`, `album/by-id`, `artist/by-id`,
+`artist/by-name`, `artist/by-mbid`, `albums/by-genre`, `albums/by-category`)
+return a plain JSON body with neither header; a shared cache in front of
+audiocontrol must not be keyed on URL alone for those.
 
 The forwarded prefix must not shadow an API route segment such as `library`,
 `coverart` or `lyrics`. A path is recognized as already carrying the prefix by
 a plain string match, so a prefix of `/api/library`, say, would make every
 unrewritten path under `/api/library/...` look like one that had already been
-rewritten, and it would leave the daemon without the prefix it needed.
+rewritten — and those paths would then go out without the prefix, leaving the
+client with a path it cannot fetch.
 
 ## Events
 

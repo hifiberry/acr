@@ -4,8 +4,6 @@ pub use crate::constants::API_PREFIX;
 // Export the url prefix module
 pub mod urlprefix;
 
-pub use urlprefix::{rewrite_api_relative_url, ForwardedPrefix};
-
 // Export the players module
 pub mod players;
 

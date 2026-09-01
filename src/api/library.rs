@@ -120,6 +120,52 @@ pub struct ArtistResponse {
     query: Option<String>,
 }
 
+impl ArtistResponse {
+    /// Build a single-artist response, rewriting the artist's image paths for
+    /// the client's prefix on the way in.
+    ///
+    /// The rewrite lives here rather than at each call site for the same
+    /// reason `create_album_dto` takes a prefix: a struct literal preceded by
+    /// a separate rewrite is forgettable, and forgetting it is silent - the
+    /// un-prefixed path falls through nginx to the SPA, which answers 200 with
+    /// index.html. Built this way, a further artist endpoint cannot compile
+    /// without supplying a prefix.
+    fn new(
+        player_name: String,
+        artist: Option<Artist>,
+        forwarded_prefix: Option<&str>,
+    ) -> Self {
+        let artist = artist.map(|mut a| {
+            crate::api::urlprefix::rewrite_artist_thumb_urls(&mut a, forwarded_prefix);
+            a
+        });
+
+        Self {
+            player_name,
+            artist,
+            match_type: None,
+            match_score: None,
+            matched_name: None,
+            query: None,
+        }
+    }
+
+    /// Attach the fuzzy-search fields to a response built by `new`.
+    fn with_match(
+        mut self,
+        match_type: Option<String>,
+        match_score: Option<f64>,
+        matched_name: Option<String>,
+        query: Option<String>,
+    ) -> Self {
+        self.match_type = match_type;
+        self.match_score = match_score;
+        self.matched_name = matched_name;
+        self.query = query;
+        self
+    }
+}
+
 /// Response structure for a single album (always includes tracks)
 #[derive(serde::Serialize)]
 pub struct AlbumResponse {
@@ -219,61 +265,55 @@ struct AlbumDTO {
     categories: Vec<String>,
 }
 
-impl From<Album> for AlbumDTO {
-    fn from(album: Album) -> Self {
-        // Get the tracks for counting and optional inclusion
-        let tracks_lock = album.tracks.lock();
-
-        let tracks_count = tracks_lock.len();
-        let tracks_clone = Some(tracks_lock.clone());
-
-        // Get artists
-        let artists = album.artists.lock().clone();
-
-        // Drop the lock before returning
-        drop(tracks_lock);
-
-        // Compute categories: only genres with explicit mappings configured
-        let categories = crate::helpers::genre_cleanup::map_to_categories_global(album.genres.clone());
-
-        AlbumDTO {
-            id: album.id.to_string(),
-            name: album.name,
-            artists,
-            release_date: album.release_date,
-            tracks_count,
-            tracks: tracks_clone,
-            cover_art: album.cover_art,
-            uri: album.uri,
-            genres: album.genres,
-            categories,
-        }
-    }
-}
-
 /// Creates an AlbumDTO from an Album with optional track inclusion.
 ///
 /// `forwarded_prefix` is required rather than optional-by-omission: a handler
 /// that forgot it would emit paths a proxied client cannot fetch, and the
 /// failure is silent - the un-prefixed path falls through nginx to the SPA,
 /// which answers 200 with index.html.
+///
+/// This is the only way to build an `AlbumDTO`. The conversion used to live in
+/// a `From<Album>` impl with the rewrite layered on top here, which left an
+/// un-rewritten DTO obtainable without a prefix in hand - exactly the mistake
+/// this signature exists to make impossible.
 fn create_album_dto(
     album: Album,
     include_tracks: bool,
     forwarded_prefix: Option<&str>,
 ) -> AlbumDTO {
-    let mut dto = AlbumDTO::from(album);
+    // Get the tracks for counting and optional inclusion
+    let tracks_lock = album.tracks.lock();
 
-    // If we don't want to include tracks, set to None
-    if !include_tracks {
-        dto.tracks = None;
+    let tracks_count = tracks_lock.len();
+    let tracks = if include_tracks {
+        Some(tracks_lock.clone())
+    } else {
+        None
+    };
+
+    // Get artists
+    let artists = album.artists.lock().clone();
+
+    // Drop the lock before returning
+    drop(tracks_lock);
+
+    // Compute categories: only genres with explicit mappings configured
+    let categories = crate::helpers::genre_cleanup::map_to_categories_global(album.genres.clone());
+
+    AlbumDTO {
+        id: album.id.to_string(),
+        name: album.name,
+        artists,
+        release_date: album.release_date,
+        tracks_count,
+        tracks,
+        cover_art: album
+            .cover_art
+            .map(|url| crate::api::urlprefix::rewrite_api_relative_url(&url, forwarded_prefix)),
+        uri: album.uri,
+        genres: album.genres,
+        categories,
     }
-
-    dto.cover_art = dto
-        .cover_art
-        .map(|url| crate::api::urlprefix::rewrite_api_relative_url(&url, forwarded_prefix));
-
-    dto
 }
 
 /// List all players with library information
@@ -310,7 +350,11 @@ pub fn list_libraries(controller: &State<Arc<AudioController>>) -> Json<LibraryL
 
 /// Get library information for a player
 #[get("/library/<player_name>")]
-pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioController>>) -> Result<Json<LibraryResponse>, Custom<Json<LibraryResponse>>> {
+pub fn get_library_info(
+    player_name: &str,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
+    controller: &State<Arc<AudioController>>,
+) -> Result<Json<LibraryResponse>, Custom<Json<LibraryResponse>>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -325,7 +369,15 @@ pub fn get_library_info(player_name: &str, controller: &State<Arc<AudioControlle
                 // but this is the endpoint a client is meant to poll instead
                 // of revalidating each list, which makes it the most likely
                 // place to grow one next - so keep the ordering right now.
-                let library_version = library.library_version();
+                //
+                // The token folds in the client's prefix, exactly as the list
+                // ETags do. If it did not, a client whose route changed would
+                // poll this, see no change, and never re-fetch lists whose
+                // paths are now wrong for it.
+                let library_version = crate::api::urlprefix::prefixed_library_version(
+                    library.library_version(),
+                    forwarded_prefix.0.as_deref(),
+                );
 
                 // Get basic library info
                 let is_loaded = library.is_loaded();
@@ -410,7 +462,16 @@ pub fn get_player_albums(
                 // the version first can only make the token stale relative
                 // to the data, which costs one extra revalidation - never a
                 // false hit.
-                let version = library.library_version();
+                //
+                // The client's prefix is part of the token: the paths in this
+                // body are built for it, so two clients on different routes
+                // hold different representations of this one URL, and a
+                // validator naming only the library's contents would let one
+                // of them get a 304 for the other's body.
+                let version = crate::api::urlprefix::prefixed_library_version(
+                    library.library_version(),
+                    forwarded_prefix.0.as_deref(),
+                );
 
                 // Fast path: if the client's token already matches this
                 // version, return the 304 right here, before touching any
@@ -490,7 +551,15 @@ pub fn get_player_artists(
                 // post-update token, which is a false 304 (a stale list that
                 // never revalidates until the next bump). Reading it first
                 // only risks the opposite - one wasted revalidation.
-                let version = library.library_version();
+                //
+                // The client's prefix is part of the token - see the same
+                // call in get_player_albums for why a validator built from
+                // library state alone would serve one client's body to
+                // another on a different route.
+                let version = crate::api::urlprefix::prefixed_library_version(
+                    library.library_version(),
+                    forwarded_prefix.0.as_deref(),
+                );
 
                 // Fast path: if the client's token already matches this
                 // version, return the 304 right here, before touching any
@@ -1004,7 +1073,11 @@ pub fn get_artists_by_genre(
 
 /// Refresh the library for a player
 #[get("/library/<player_name>/refresh")]
-pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioController>>) -> Result<Json<LibraryResponse>, Custom<String>> {
+pub fn refresh_player_library(
+    player_name: &str,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
+    controller: &State<Arc<AudioController>>,
+) -> Result<Json<LibraryResponse>, Custom<String>> {
     let controllers = controller.inner().list_controllers();
     
     // Find the controller with the matching name
@@ -1017,8 +1090,14 @@ pub fn refresh_player_library(player_name: &str, controller: &State<Arc<AudioCon
                 match library.refresh_library() {
                     Ok(_) => {
                         // Read the version before the data - see the comment
-                        // in get_player_albums for why the order matters.
-                        let library_version = library.library_version();
+                        // in get_player_albums for why the order matters. The
+                        // token folds in the client's prefix, as every other
+                        // emission of it does; a client comparing this against
+                        // one from a different route must see them differ.
+                        let library_version = crate::api::urlprefix::prefixed_library_version(
+                            library.library_version(),
+                            forwarded_prefix.0.as_deref(),
+                        );
 
                         // Get updated library info
                         let is_loaded = library.is_loaded();
@@ -1135,19 +1214,14 @@ pub fn get_artist_by_name(
                     }
                     None => (None, None, None, None),
                 };
-                let artist = artist.map(|mut a| {
-                    crate::api::urlprefix::rewrite_artist_thumb_urls(&mut a, forwarded_prefix.0.as_deref());
-                    a
-                });
-
-                return Ok(Json(ArtistResponse {
-                    player_name: player_name.to_string(),
-                    artist,
-                    match_type: mt,
-                    match_score: ms,
-                    matched_name: mn,
-                    query: Some(artist_name.to_string()),
-                }));
+                return Ok(Json(
+                    ArtistResponse::new(
+                        player_name.to_string(),
+                        artist,
+                        forwarded_prefix.0.as_deref(),
+                    )
+                    .with_match(mt, ms, mn, Some(artist_name.to_string())),
+                ));
             } else {
                 return Err(Custom(
                     Status::NotFound,
@@ -1244,19 +1318,11 @@ fn get_artist_internal(
                     }
                 };
                 
-                let artist = artist.map(|mut a| {
-                    crate::api::urlprefix::rewrite_artist_thumb_urls(&mut a, forwarded_prefix);
-                    a
-                });
-
-                return Ok(Json(ArtistResponse {
-                    player_name: player_name.to_string(),
+                return Ok(Json(ArtistResponse::new(
+                    player_name.to_string(),
                     artist,
-                    match_type: None,
-                    match_score: None,
-                    matched_name: None,
-                    query: None,
-                }));
+                    forwarded_prefix,
+                )));
             } else {
                 // Player exists but doesn't have a library
                 return Err(Custom(
@@ -1775,7 +1841,6 @@ mod tests {
         );
     }
 
-    use crate::api::urlprefix::rewrite_artist_thumb_urls;
     use crate::data::metadata::ArtistMeta;
 
     fn artist_with_thumbs(thumbs: Vec<&str>) -> Artist {
@@ -1790,28 +1855,6 @@ mod tests {
     }
 
     #[test]
-    fn an_artist_response_gains_the_prefix_on_internal_thumbs_only() {
-        let mut artist = artist_with_thumbs(vec![
-            "/api/coverart/artist/YWJj/image",
-            "https://example.com/artist.png",
-        ]);
-        rewrite_artist_thumb_urls(&mut artist, Some("/api/audiocontrol"));
-        let thumbs = &artist.metadata.as_ref().unwrap().thumb_url;
-        assert_eq!(thumbs[0], "/api/audiocontrol/coverart/artist/YWJj/image");
-        assert_eq!(thumbs[1], "https://example.com/artist.png");
-    }
-
-    #[test]
-    fn an_artist_response_without_a_prefix_is_unchanged() {
-        let mut artist = artist_with_thumbs(vec!["/api/coverart/artist/YWJj/image"]);
-        rewrite_artist_thumb_urls(&mut artist, None);
-        assert_eq!(
-            artist.metadata.as_ref().unwrap().thumb_url[0],
-            "/api/coverart/artist/YWJj/image"
-        );
-    }
-
-    #[test]
     fn an_artist_list_entry_gains_the_prefix() {
         let entry = ArtistCustomResponse::new(
             "Test Artist".to_string(),
@@ -1822,5 +1865,319 @@ mod tests {
             Some("/api/audiocontrol"),
         );
         assert_eq!(entry.thumb_url[0], "/api/audiocontrol/coverart/artist/YWJj/image");
+    }
+
+    // ---------------------------------------------------------------------
+    // Route-level tests.
+    //
+    // The unit tests above prove the builders rewrite what they are given.
+    // They say nothing about whether a handler passes the request's prefix to
+    // them at all, and a handler that dropped it would keep compiling and keep
+    // passing every one of them. These dispatch a real request through Rocket
+    // and read the prefix out of the JSON the client would actually receive.
+    // ---------------------------------------------------------------------
+
+    use crate::data::library::{LibraryError, LibraryInterface};
+    use crate::data::{LoopMode, PlaybackState, PlayerCapabilitySet, PlayerCommand, Song, Track};
+    use crate::players::PlayerController;
+    use rocket::http::Header;
+    use rocket::local::blocking::Client;
+
+    /// A library holding exactly one album and one artist, both with internal
+    /// image paths, and a fixed version token.
+    struct StubLibrary;
+
+    impl StubLibrary {
+        fn album() -> Album {
+            Album {
+                id: Identifier::Numeric(7),
+                name: "Stub Album".to_string(),
+                artists: Arc::new(Mutex::new(vec!["Stub Artist".to_string()])),
+                artists_flat: None,
+                release_date: None,
+                tracks: Arc::new(Mutex::new(Vec::new())),
+                cover_art: Some("/api/library/stub/image/album:7".to_string()),
+                uri: None,
+                genres: Vec::new(),
+            }
+        }
+
+        fn artist() -> Artist {
+            artist_with_thumbs(vec![
+                "/api/coverart/artist/YWJj/image",
+                "https://example.com/artist.png",
+            ])
+        }
+    }
+
+    impl LibraryInterface for StubLibrary {
+        fn new() -> Self {
+            StubLibrary
+        }
+        fn is_loaded(&self) -> bool {
+            true
+        }
+        fn refresh_library(&self) -> Result<(), LibraryError> {
+            Ok(())
+        }
+        fn get_albums(&self) -> Vec<Album> {
+            vec![Self::album()]
+        }
+        fn get_artists(&self) -> Vec<Artist> {
+            vec![Self::artist()]
+        }
+        fn get_album_by_artist_and_name(&self, _artist: &str, _album: &str) -> Option<Album> {
+            None
+        }
+        fn get_album_by_id(&self, _id: &Identifier) -> Option<Album> {
+            None
+        }
+        fn get_artist_by_name(&self, _name: &str) -> Option<Artist> {
+            Some(Self::artist())
+        }
+        fn get_albums_by_artist_id(&self, _artist_id: &Identifier) -> Vec<Album> {
+            vec![Self::album()]
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn get_image(&self, _identifier: String) -> Option<(Vec<u8>, String)> {
+            None
+        }
+        fn update_artist_metadata(&self) {}
+        fn library_version(&self) -> Option<String> {
+            Some("42".to_string())
+        }
+    }
+
+    /// The smallest player that owns a library, so the handlers' controller
+    /// lookup finds something to ask.
+    struct StubPlayer;
+
+    impl PlayerController for StubPlayer {
+        fn get_capabilities(&self) -> PlayerCapabilitySet {
+            PlayerCapabilitySet::empty()
+        }
+        fn get_song(&self) -> Option<Song> {
+            None
+        }
+        fn get_queue(&self) -> Vec<Track> {
+            Vec::new()
+        }
+        fn get_loop_mode(&self) -> LoopMode {
+            LoopMode::None
+        }
+        fn get_playback_state(&self) -> PlaybackState {
+            PlaybackState::Stopped
+        }
+        fn get_position(&self) -> Option<f64> {
+            None
+        }
+        fn get_shuffle(&self) -> bool {
+            false
+        }
+        fn get_player_name(&self) -> String {
+            "stub".to_string()
+        }
+        fn get_player_id(&self) -> String {
+            "stub".to_string()
+        }
+        fn get_last_seen(&self) -> Option<std::time::SystemTime> {
+            None
+        }
+        fn send_command(&self, _command: PlayerCommand) -> bool {
+            true
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn start(&self) -> bool {
+            true
+        }
+        fn stop(&self) -> bool {
+            true
+        }
+        fn get_library(&self) -> Option<Box<dyn LibraryInterface>> {
+            Some(Box::new(StubLibrary))
+        }
+    }
+
+    fn stub_client() -> Client {
+        let mut controller = AudioController::new();
+        controller.add_controller(Box::new(StubPlayer));
+
+        let rocket = rocket::build()
+            .manage(Arc::new(controller))
+            .mount(
+                "/api",
+                rocket::routes![
+                    get_library_info,
+                    get_player_albums,
+                    get_player_artists,
+                    get_artist_by_name,
+                ],
+            );
+        Client::tracked(rocket).unwrap()
+    }
+
+    /// GET `path`, optionally announcing a forwarded prefix, and parse the
+    /// JSON body.
+    fn get_json(path: &str, prefix: Option<&str>) -> serde_json::Value {
+        let client = stub_client();
+        let mut request = client.get(path.to_string());
+        if let Some(prefix) = prefix {
+            request = request.header(Header::new("X-Forwarded-Prefix", prefix.to_string()));
+        }
+        let response = request.dispatch();
+        assert_eq!(response.status(), Status::Ok, "unexpected status for {}", path);
+        serde_json::from_str(&response.into_string().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_albums_route_emits_the_forwarded_prefix() {
+        let body = get_json("/api/library/stub/albums", Some("/api/audiocontrol"));
+        assert_eq!(
+            body["albums"][0]["cover_art"],
+            "/api/audiocontrol/library/stub/image/album:7"
+        );
+    }
+
+    #[test]
+    fn the_albums_route_without_a_prefix_emits_the_internal_path() {
+        let body = get_json("/api/library/stub/albums", None);
+        assert_eq!(body["albums"][0]["cover_art"], "/api/library/stub/image/album:7");
+    }
+
+    #[test]
+    fn the_artists_route_emits_the_forwarded_prefix() {
+        let body = get_json("/api/library/stub/artists", Some("/api/audiocontrol"));
+        let thumbs = &body["artists"][0]["thumb_url"];
+        assert_eq!(thumbs[0], "/api/audiocontrol/coverart/artist/YWJj/image");
+        // An external provider URL is not the daemon's to rewrite.
+        assert_eq!(thumbs[1], "https://example.com/artist.png");
+    }
+
+    #[test]
+    fn the_artists_route_without_a_prefix_emits_the_internal_path() {
+        let body = get_json("/api/library/stub/artists", None);
+        assert_eq!(body["artists"][0]["thumb_url"][0], "/api/coverart/artist/YWJj/image");
+    }
+
+    #[test]
+    fn a_single_artist_route_emits_the_forwarded_prefix() {
+        let body = get_json(
+            "/api/library/stub/artist/by-name/Stub%20Artist",
+            Some("/api/audiocontrol"),
+        );
+        let thumbs = &body["artist"]["metadata"]["thumb_url"];
+        assert_eq!(thumbs[0], "/api/audiocontrol/coverart/artist/YWJj/image");
+        assert_eq!(thumbs[1], "https://example.com/artist.png");
+    }
+
+    #[test]
+    fn a_single_artist_route_without_a_prefix_emits_the_internal_path() {
+        let body = get_json("/api/library/stub/artist/by-name/Stub%20Artist", None);
+        assert_eq!(
+            body["artist"]["metadata"]["thumb_url"][0],
+            "/api/coverart/artist/YWJj/image"
+        );
+    }
+
+    // The validator has to name the prefix as well as the library's contents.
+    // Sharing one token between the two routes lets the origin answer 304 for
+    // a body the client does not hold - and every path in that body then
+    // resolves to the web interface's index.html rather than to an image.
+
+    fn etag(path: &str, prefix: Option<&str>) -> String {
+        let client = stub_client();
+        let mut request = client.get(path.to_string());
+        if let Some(prefix) = prefix {
+            request = request.header(Header::new("X-Forwarded-Prefix", prefix.to_string()));
+        }
+        let response = request.dispatch();
+        response
+            .headers()
+            .get_one("ETag")
+            .expect("a versioned library must emit an ETag")
+            .to_string()
+    }
+
+    #[test]
+    fn two_prefixes_do_not_share_one_validator() {
+        let direct = etag("/api/library/stub/albums", None);
+        let proxied = etag("/api/library/stub/albums", Some("/api/audiocontrol"));
+        assert_ne!(direct, proxied);
+        assert_ne!(
+            etag("/api/library/stub/artists", None),
+            etag("/api/library/stub/artists", Some("/api/audiocontrol"))
+        );
+    }
+
+    #[test]
+    fn one_prefix_gets_one_stable_validator() {
+        assert_eq!(
+            etag("/api/library/stub/albums", None),
+            etag("/api/library/stub/albums", None)
+        );
+        assert_eq!(
+            etag("/api/library/stub/albums", Some("/api/audiocontrol")),
+            etag("/api/library/stub/albums", Some("/api/audiocontrol"))
+        );
+    }
+
+    #[test]
+    fn a_validator_from_another_prefix_does_not_win_a_304() {
+        let direct = etag("/api/library/stub/albums", None);
+        let client = stub_client();
+        let response = client
+            .get("/api/library/stub/albums")
+            .header(Header::new("X-Forwarded-Prefix", "/api/audiocontrol"))
+            .header(Header::new("If-None-Match", direct))
+            .dispatch();
+        assert_eq!(
+            response.status(),
+            Status::Ok,
+            "a token from the direct route must not satisfy a proxied request"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&response.into_string().unwrap()).unwrap();
+        assert_eq!(
+            body["albums"][0]["cover_art"],
+            "/api/audiocontrol/library/stub/image/album:7"
+        );
+    }
+
+    #[test]
+    fn the_matching_validator_still_wins_a_304() {
+        // The prefix component must not defeat revalidation for a client that
+        // stayed on one route.
+        let proxied = etag("/api/library/stub/albums", Some("/api/audiocontrol"));
+        let client = stub_client();
+        let response = client
+            .get("/api/library/stub/albums")
+            .header(Header::new("X-Forwarded-Prefix", "/api/audiocontrol"))
+            .header(Header::new("If-None-Match", proxied))
+            .dispatch();
+        assert_eq!(response.status(), Status::NotModified);
+    }
+
+    #[test]
+    fn the_polled_library_version_tracks_the_same_prefix_as_the_etags() {
+        // doc/api.md tells clients to poll this instead of revalidating each
+        // list. If it omitted the prefix, a client whose route changed would
+        // poll, see no change, and never re-fetch.
+        let direct = get_json("/api/library/stub", None);
+        let proxied = get_json("/api/library/stub", Some("/api/audiocontrol"));
+        assert_ne!(direct["library_version"], proxied["library_version"]);
+
+        // And it must be the component the ETag carries, not some other one.
+        let tag = etag("/api/library/stub/albums", Some("/api/audiocontrol"));
+        let version = proxied["library_version"].as_str().unwrap();
+        assert!(
+            tag.contains(version),
+            "the ETag {} should be built from the polled token {}",
+            tag,
+            version
+        );
     }
 }

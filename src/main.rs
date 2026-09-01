@@ -484,15 +484,18 @@ fn main() {
 
             // A server that never came up -- Bind, Config, Collisions,
             // FailedFairings -- leaves the rest of the daemon running, as it
-            // always has.
+            // always has. start_rocket_server has already handed the signals
+            // back by this point, so the handler above is live again and the
+            // daemon can still be stopped.
             Err(e) => error!("API server error: {}", e),
 
-            // Rocket owns SIGTERM and SIGINT from the moment it launches: its
-            // handlers replace the ctrlc one registered above, so that closure
-            // never runs and never clears `running`. Without this store the
-            // main loop below spun forever after Rocket had shut down, and
-            // systemd SIGKILLed the process on every stop, restart and package
-            // upgrade -- so nothing ever got to flush its state.
+            // Rocket owns SIGTERM and SIGINT from the moment it launches, and
+            // the handler registered above stands down for as long as it does,
+            // so this is the only thing that clears `running` on an ordinary
+            // stop. Without it the main loop below spun forever after Rocket
+            // had shut down, and systemd SIGKILLed the process on every stop,
+            // restart and package upgrade -- so nothing ever got to flush its
+            // state.
             //
             // ShutDown is returned exactly when Rocket has finished its
             // graceful shutdown, which is the event main is waiting for.

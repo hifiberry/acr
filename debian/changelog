@@ -35,7 +35,15 @@ hifiberry-audiocontrol (0.15.1) trixie; urgency=medium
     signal-hook, which chains onto the earlier handler rather than replacing
     it, so both run on every signal and the earlier one would otherwise end the
     process during Rocket's grace period -- cutting in-flight requests and
-    WebSockets after 150ms instead of shutting down over five seconds.
+    WebSockets after 150ms instead of shutting down over five seconds. The
+    handover is symmetric: a launch that fails -- a port already held by a
+    previous instance is the ordinary way -- hands the signals straight back,
+    so a daemon whose API never came up can still be stopped.
+  * SIGHUP shuts the daemon down gracefully rather than being ignored. It is
+    one of the three signals the handler covers, so once the webserver is up
+    Rocket is told to watch it as well; otherwise it would reach a handler
+    that had stood down and no watcher, and a closed terminal would leave the
+    daemon running.
 
  -- HiFiBerry <support@hifiberry.com>  Tue, 01 Sep 2026 14:33:56 +0200
 

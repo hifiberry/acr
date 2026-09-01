@@ -79,9 +79,15 @@ pub async fn start_rocket_server(
     
     info!("Starting webserver on {}:{}", host, port);
     
+    // Rocket watches SIGTERM by default, plus SIGINT via shutdown.ctrlc.
+    // SIGHUP is added because the handler in main catches it too -- ctrlc's
+    // "termination" feature covers all three -- and without this it would be
+    // the one signal that reached a handler which had stood down and no
+    // watcher, leaving a closed terminal with a daemon still running.
     let config = Config::figment()
         .merge(("port", port))
-        .merge(("address", host));
+        .merge(("address", host))
+        .merge(("shutdown.signals", ["term", "hup"]));
     
     // Create WebSocket manager and start the background pruning task
     let ws_manager = Arc::new(WebSocketManager::new());
@@ -301,14 +307,25 @@ pub async fn start_rocket_server(
         }
     }
     
-    // From here Rocket owns SIGINT and SIGTERM. It registers through
+    // From here Rocket owns the shutdown signals. It registers through
     // signal-hook, which *chains* onto the handler set in main rather than
     // replacing it, so both run on every signal -- and the earlier one must
     // stop ending the process, or main returns during Rocket's grace period
     // and cuts the shutdown short.
+    //
+    // Given back on the way out, whichever way that is. launch() is where
+    // every startup failure surfaces -- ignite's FailedFairings and route
+    // Collisions, config extraction, and the bind itself -- and each returns
+    // with Rocket never having registered anything. Leaving the flag set there
+    // would have main's handler defer to a Rocket that is not running, so no
+    // signal would end the process and systemd would SIGKILL at the stop
+    // timeout. Clearing it on the success path costs nothing: Rocket has
+    // finished, and main is about to stop anyway.
     shutdown_owned_by_rocket.store(true, Ordering::SeqCst);
+    let launched = rocket_builder.launch().await;
+    shutdown_owned_by_rocket.store(false, Ordering::SeqCst);
 
-    let _rocket = rocket_builder.launch().await?;
+    let _rocket = launched?;
     
     Ok(ServerOutcome::ShutDown)
 }

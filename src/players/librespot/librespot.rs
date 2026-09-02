@@ -18,9 +18,6 @@ pub struct LibrespotPlayerController {
     /// Path to the librespot executable
     process_name: String,
     
-    /// Current song information
-    current_song: Arc<RwLock<Option<Song>>>,
-
     /// Current player state
     current_state: Arc<RwLock<PlayerState>>,
     
@@ -44,7 +41,6 @@ impl Clone for LibrespotPlayerController {
             // Share the BasePlayerController instance to maintain listener registrations
             base: self.base.clone(),
             process_name: self.process_name.clone(),
-            current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
             player_progress: Arc::clone(&self.player_progress),
@@ -92,7 +88,6 @@ impl LibrespotPlayerController {
         let player = Self {
             base,
             process_name: process_name.to_string(),
-            current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             player_progress: Arc::new(RwLock::new(PlayerProgress::new())),
@@ -154,9 +149,7 @@ impl PlayerController for LibrespotPlayerController {
     fn get_song(&self) -> Option<Song> {
         debug!("Getting current song from stored value");
         // Return a clone of the stored song with enhanced metadata if needed
-        let song_lock = self.current_song.read();
-        // Clone the song if it exists
-        if let Some(ref song) = *song_lock {
+        if let Some(song) = self.base.song() {
             log::debug!("Original song data: title={:?}, artist={:?}, album={:?}, duration={:?}, cover={:?}",
                 song.title, song.artist, song.album, song.duration, song.cover_art_url);
 
@@ -661,25 +654,14 @@ impl LibrespotPlayerController {
                     }
                     
                     // Update internal song
-                    {
-                        let mut current_song = self.current_song.write();
-                        let song_changed = match (&*current_song, &song) {
-                            (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
-                            (None, _) => true,
-                        };
+                    if self.base.set_song(Some(song.clone())) {
+                        log::info!("[API DEBUG] Song changed: {:?} - {:?}", song.artist, song.title);
 
-                        if song_changed {
-                            log::info!("[API DEBUG] Song changed: {:?} - {:?}", song.artist, song.title);
-                            *current_song = Some(song.clone());
-
-                            // Reset PlayerProgress position for new song
-                            {
-                                let progress = self.player_progress.write();
-                                progress.set_position(0.0);
-                                log::info!("[API DEBUG] PlayerProgress position reset to 0.0 for new song");
-                            }
-
-                            self.base.notify_song_changed(Some(&song));
+                        // Reset PlayerProgress position for new song
+                        {
+                            let progress = self.player_progress.write();
+                            progress.set_position(0.0);
+                            log::info!("[API DEBUG] PlayerProgress position reset to 0.0 for new song");
                         }
                     }
                     

@@ -1,3 +1,54 @@
+hifiberry-audiocontrol (0.16.1) trixie; urgency=medium
+
+  * A stop arriving in the first moments of startup is no longer ignored.
+    The flag telling the signal handler to stand aside for the webserver was
+    set immediately before launching it, but Rocket does not begin watching
+    for signals there: it first builds and checks its router, runs its ignite
+    fairings and sentinels, binds the port, and only then registers for
+    signals. Through all of that the handler deferred to a server that was not
+    listening, so the signal reached nothing and the daemon ran on until it
+    was killed at the stop timeout -- the behaviour 0.15.1 removed, narrowed
+    to a window rather than removed from it. A restart or package upgrade that
+    stops the daemon just after starting it is the ordinary way to hit it.
+  * The webserver is now prepared in two steps so the means to stop it exists
+    before anything can ask for it, leaving no window in which a signal has
+    nowhere to go. A startup that fails leaves nothing published, so a daemon
+    whose API never came up can still be stopped, as before.
+  * There is one signal handler in the process rather than two. The webserver's
+    own is switched off and the handler in the main thread owns SIGINT, SIGTERM
+    and SIGHUP throughout: while the server runs the signal is passed to it so
+    its grace and mercy periods are honoured, and otherwise the handler ends
+    the process itself. This replaces an arrangement that depended on the two
+    handlers chaining in a particular order and on each standing aside at the
+    right moment.
+  * A stop asked for while the webserver is still starting ends the daemon
+    rather than waiting for a shutdown that cannot arrive. The port is bound
+    late in startup, so a signal sent while an outgoing instance still holds
+    it is passed to a server that then fails to start, and nothing would have
+    reported a shutdown that never began.
+  * A stop asked for before the webserver starts stops it before it serves.
+    The signal handler is registered early, and configuration loading and
+    controller setup sit between that and the point where the main thread
+    begins waiting -- seconds on a Raspberry Pi. A signal arriving in that
+    stretch used to leave the main thread on its way out while the API thread
+    went on to bind the port and serve, so process exit tore down a running
+    webserver with no grace period and no shutdown fairings. The request is
+    now seen before the server is launched.
+  * The force-exit watchdog is armed by every shutdown signal. It previously
+    sat on only one of the two paths, so a shutdown that stalled while the
+    webserver owned the signals had no backstop at all. It now allows eight
+    seconds -- longer than the six a graceful stop can take, shorter than the
+    ten systemd allows before killing -- and the shutdown request is made
+    before the watchdog is armed, so a failure to arm it cannot stop the
+    daemon being asked to stop.
+  * The webserver's shutdown grace and mercy periods are pinned rather than
+    left to the defaults. They were readable from Rocket.toml in the working
+    directory and from the environment, and the watchdog above is sized
+    against them, so a longer grace set from outside would have had it force
+    an exit in the middle of a shutdown that was proceeding normally.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 02 Sep 2026 13:49:14 +0000
+
 hifiberry-audiocontrol (0.16.0) trixie; urgency=medium
 
   * Radio streams get the cover art of the track being played, not just the

@@ -15,6 +15,7 @@ use rocket::serde::json::Json;
 use rocket::config::Config;
 use rocket::fs::FileServer;
 use std::sync::Arc;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // Define the version response struct
@@ -29,6 +30,72 @@ fn get_version() -> Json<VersionResponse> {
     Json(VersionResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+/// The means to stop a running server: a closure that asks it to shut down.
+type StopAction = Arc<dyn Fn() + Send + Sync>;
+
+/// Where a running API server publishes the means to stop it gracefully.
+///
+/// The signal handler in main owns SIGINT, SIGTERM and SIGHUP for the whole
+/// life of the process; Rocket's own signal handling is switched off, so there
+/// is exactly one owner and no question of which handler runs. What a signal
+/// *means* depends on whether a server is running, and this is how the handler
+/// finds out: with a server running the signal is passed to it so its grace and
+/// mercy periods are honoured, and with none the handler ends the process
+/// itself.
+///
+/// The stored action is a closure rather than Rocket's own `Shutdown` so that
+/// the decision this type encodes can be tested without launching a server.
+#[derive(Clone, Default)]
+pub struct ShutdownHandle {
+    stop: Arc<Mutex<Option<StopAction>>>,
+    requested: Arc<AtomicBool>,
+}
+
+impl ShutdownHandle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Publish the means to stop the server that is now running.
+    pub fn publish(&self, stop: impl Fn() + Send + Sync + 'static) {
+        *self.stop.lock() = Some(Arc::new(stop));
+    }
+
+    /// Withdraw it once the server has stopped, or failed to start. A signal
+    /// arriving afterwards has to end the process itself, so leaving a stale
+    /// action published would make the daemon unstoppable.
+    pub fn withdraw(&self) {
+        *self.stop.lock() = None;
+    }
+
+    /// Whether a shutdown has been asked for at any point.
+    ///
+    /// A server that then fails to finish starting -- the port still held by
+    /// an outgoing instance is the ordinary way -- leaves nobody to report
+    /// that it has stopped, so the caller has to end the process on its
+    /// behalf rather than wait for a shutdown that cannot arrive.
+    pub fn stop_requested(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+
+    /// Ask a running server to shut down gracefully.
+    ///
+    /// Returns `false` when no server is running, in which case the caller is
+    /// responsible for ending the process.
+    pub fn request_stop(&self) -> bool {
+        self.requested.store(true, Ordering::SeqCst);
+
+        let stop = self.stop.lock().clone();
+        match stop {
+            Some(stop) => {
+                stop();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// What became of the API server.
@@ -51,9 +118,9 @@ pub enum ServerOutcome {
 pub async fn start_rocket_server(
     controller: Arc<AudioController>,
     config_json: &serde_json::Value,
-    // Set when Rocket is about to take over SIGINT and SIGTERM, so the
-    // handler registered before it knows to stop ending the process itself.
-    shutdown_owned_by_rocket: Arc<AtomicBool>,
+    // Where this server publishes the means to stop it, for the signal
+    // handler in main to use while it is running.
+    shutdown_handle: ShutdownHandle,
 ) -> Result<ServerOutcome, rocket::Error> {
     // Check if webserver is enabled (default to true if not specified)
     let webserver_enabled = get_service_config(config_json, "webserver")
@@ -79,15 +146,24 @@ pub async fn start_rocket_server(
     
     info!("Starting webserver on {}:{}", host, port);
     
-    // Rocket watches SIGTERM by default, plus SIGINT via shutdown.ctrlc.
-    // SIGHUP is added because the handler in main catches it too -- ctrlc's
-    // "termination" feature covers all three -- and without this it would be
-    // the one signal that reached a handler which had stood down and no
-    // watcher, leaving a closed terminal with a daemon still running.
+    // Rocket's own signal handling is switched off. The handler in main owns
+    // SIGINT, SIGTERM and SIGHUP for the whole life of the process and asks
+    // this server to stop through the handle published below, so there is one
+    // owner rather than two chained handlers whose order, survival and
+    // registration timing all have to be reasoned about.
     let config = Config::figment()
         .merge(("port", port))
         .merge(("address", host))
-        .merge(("shutdown.signals", ["term", "hup"]));
+        .merge(("shutdown.ctrlc", false))
+        .merge(("shutdown.signals", Vec::<String>::new()))
+        // Pinned, not left to the defaults. Config::figment() also reads
+        // Rocket.toml from the working directory and ROCKET_SHUTDOWN_GRACE /
+        // ROCKET_SHUTDOWN_MERCY from the environment, and the force-exit
+        // watchdog in main is sized against these two: a larger grace set
+        // from outside would have the watchdog fire in the middle of a
+        // shutdown that was proceeding normally.
+        .merge(("shutdown.grace", 2))
+        .merge(("shutdown.mercy", 3));
     
     // Create WebSocket manager and start the background pruning task
     let ws_manager = Arc::new(WebSocketManager::new());
@@ -307,25 +383,111 @@ pub async fn start_rocket_server(
         }
     }
     
-    // From here Rocket owns the shutdown signals. It registers through
-    // signal-hook, which *chains* onto the handler set in main rather than
-    // replacing it, so both run on every signal -- and the earlier one must
-    // stop ending the process, or main returns during Rocket's grace period
-    // and cuts the shutdown short.
+    // Ignite before launching, so the means to stop the server exists before
+    // anything can ask for it. Rocket creates the shutdown handle during
+    // ignite, and only begins watching for signals later still, inside
+    // http_server -- so a handle published before launch() would not exist
+    // yet, and a signal arriving while Rocket built its router or bound its
+    // port would reach a handler that had stood aside for a server not yet
+    // listening, and be lost. Igniting here leaves no such window: from the
+    // moment the handle exists it is published, and tripping it is remembered
+    // whether or not the server has started serving.
     //
-    // Given back on the way out, whichever way that is. launch() is where
-    // every startup failure surfaces -- ignite's FailedFairings and route
-    // Collisions, config extraction, and the bind itself -- and each returns
-    // with Rocket never having registered anything. Leaving the flag set there
-    // would have main's handler defer to a Rocket that is not running, so no
-    // signal would end the process and systemd would SIGKILL at the stop
-    // timeout. Clearing it on the success path costs nothing: Rocket has
-    // finished, and main is about to stop anyway.
-    shutdown_owned_by_rocket.store(true, Ordering::SeqCst);
-    let launched = rocket_builder.launch().await;
-    shutdown_owned_by_rocket.store(false, Ordering::SeqCst);
+    // Ignite is also where most startup failures surface -- FailedFairings,
+    // route Collisions, config extraction, sentinels -- and those return with
+    // nothing published, so the signals stay with main, as they must for a
+    // daemon whose API never came up to still be stoppable.
+    let ignited = rocket_builder.ignite().await?;
+
+    shutdown_handle.publish({
+        let shutdown = ignited.shutdown();
+        move || shutdown.clone().notify()
+    });
+
+    // A stop asked for before the server got this far is honoured now rather
+    // than after it has bound its port and started serving. The handler runs on
+    // ctrlc's own thread, concurrently with this one, and it is registered long
+    // before main reaches its wait loop -- config loading and controller setup
+    // sit in between, which on a Pi is seconds, not instructions. Without this,
+    // a signal arriving in that stretch would leave main on its way out while
+    // this thread went on to launch a fully serving webserver, which process
+    // exit would then tear down with no grace period and no shutdown fairings.
+    // Tripping the wire here means launch() returns through the ordinary path
+    // instead, and the outcome is reported as a clean shutdown.
+    if shutdown_handle.stop_requested() {
+        info!("A stop was asked for before the API server started; stopping it now");
+        ignited.shutdown().notify();
+    }
+
+    let launched = ignited.launch().await;
+
+    // Handed back however that turned out: the server is gone either way, and
+    // a signal from here on has to end the process itself.
+    shutdown_handle.withdraw();
 
     let _rocket = launched?;
-    
+
     Ok(ServerOutcome::ShutDown)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Before the server is up, and after it has gone, a signal has to end the
+    /// process itself -- there is nothing to hand it to.
+    #[test]
+    fn a_signal_with_no_server_running_is_not_absorbed() {
+        let handle = ShutdownHandle::new();
+
+        assert!(!handle.request_stop());
+    }
+
+    /// While a server is running the signal is passed to it rather than ending
+    /// the process, so its graceful shutdown is allowed to finish.
+    #[test]
+    fn a_signal_reaches_a_running_server() {
+        let handle = ShutdownHandle::new();
+        let stops = Arc::new(AtomicUsize::new(0));
+        let counter = stops.clone();
+        handle.publish(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(handle.request_stop());
+        assert_eq!(stops.load(Ordering::SeqCst), 1, "the server should be asked once");
+    }
+
+    /// A stop asked for while the server was still starting must not be
+    /// forgotten. Nothing will report that server as stopped -- it never
+    /// finished starting -- so the caller has to end the process itself, and
+    /// this is how it learns that it should.
+    #[test]
+    fn a_stop_asked_for_is_remembered() {
+        let handle = ShutdownHandle::new();
+        assert!(!handle.stop_requested(), "nothing has been asked for yet");
+
+        handle.request_stop();
+
+        assert!(handle.stop_requested());
+    }
+
+    /// A launch that failed, or a server that has finished, must hand the
+    /// signals back. Holding a stale action would leave the daemon with a
+    /// handler that defers to something no longer there -- unstoppable until
+    /// systemd's SIGKILL, which is the failure this whole path exists to avoid.
+    #[test]
+    fn a_server_that_has_stopped_no_longer_absorbs_signals() {
+        let handle = ShutdownHandle::new();
+        let stops = Arc::new(AtomicUsize::new(0));
+        let counter = stops.clone();
+        handle.publish(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        handle.withdraw();
+
+        assert!(!handle.request_stop());
+        assert_eq!(stops.load(Ordering::SeqCst), 0, "a withdrawn server must not be asked");
+    }
 }

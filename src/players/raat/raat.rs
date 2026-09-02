@@ -437,6 +437,10 @@ impl PlayerController for RAATPlayerController {
         self.base.song()
     }
 
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
+    }
+
     fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {
         self.stream_details.read().clone()
     }

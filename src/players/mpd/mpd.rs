@@ -1771,6 +1771,10 @@ impl PlayerController for MPDPlayerController {
         self.base.song().map(|song| self.enhance_song_with_cache(song))
     }
 
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
+    }
+
     fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {
         self.current_stream_details.lock().clone()
     }

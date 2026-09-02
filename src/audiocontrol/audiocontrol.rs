@@ -1,5 +1,5 @@
 use crate::players::PlayerController;
-use crate::data::{PlayerCommand, PlayerCapabilitySet, Song, LoopMode, PlaybackState, Track};
+use crate::data::{PlayerCommand, PlayerCapabilitySet, PlayerSource, Song, LoopMode, PlaybackState, Track};
 use crate::players::{create_player_from_json, PlayerCreationError};
 use crate::plugins::ActionPlugin;
 use serde_json::Value;
@@ -292,6 +292,20 @@ impl AudioController {
         None
     }
 
+    /// Hand information a lookup found to the player the song came from.
+    ///
+    /// Addressed by source rather than by a controller handle because that is
+    /// what an enrichment plugin already holds. Returns whether it was
+    /// applied; a player that has moved on, or gone, applies nothing.
+    pub fn apply_song_information(&self, source: &PlayerSource, partial: &Song) -> bool {
+        let Some(controller) = self.get_player_by_name(&source.player_name) else {
+            debug!("No player named {} to apply song information to", source.player_name);
+            return false;
+        };
+        let controller = controller.read();
+        controller.apply_song_information(partial)
+    }
+
     /// Set the active controller by index
     ///
     /// Returns true if the active controller was changed, false if the index was invalid.
@@ -542,11 +556,100 @@ impl AudioController {
 mod tests {
     use super::*;
     use serde_json::json;
+    use crate::players::BasePlayerController;
 
     #[test]
     fn test_from_json_without_players_key() {
         let config = json!({"services": {}});
         let controller = AudioController::from_json(&config).expect("must start with no players");
         assert_eq!(controller.list_controllers().len(), 0);
+    }
+
+    /// A minimal player controller for exercising routing, not player logic.
+    /// Song storage and `apply_song_information` are delegated to the base,
+    /// exactly like the seven real backends this stands in for.
+    struct StubPlayer {
+        base: BasePlayerController,
+    }
+
+    impl PlayerController for StubPlayer {
+        fn get_capabilities(&self) -> PlayerCapabilitySet {
+            self.base.get_capabilities()
+        }
+        fn get_song(&self) -> Option<Song> {
+            self.base.song()
+        }
+        fn get_queue(&self) -> Vec<Track> {
+            Vec::new()
+        }
+        fn get_loop_mode(&self) -> LoopMode {
+            LoopMode::None
+        }
+        fn get_playback_state(&self) -> PlaybackState {
+            PlaybackState::Stopped
+        }
+        fn get_position(&self) -> Option<f64> {
+            self.base.get_position()
+        }
+        fn get_shuffle(&self) -> bool {
+            false
+        }
+        fn get_player_name(&self) -> String {
+            self.base.get_player_name()
+        }
+        fn get_player_id(&self) -> String {
+            self.base.get_player_id()
+        }
+        fn get_last_seen(&self) -> Option<std::time::SystemTime> {
+            self.base.get_last_seen()
+        }
+        fn send_command(&self, _command: PlayerCommand) -> bool {
+            false
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn start(&self) -> bool {
+            true
+        }
+        fn stop(&self) -> bool {
+            true
+        }
+        fn apply_song_information(&self, partial: &Song) -> bool {
+            self.base.apply_song_information(partial)
+        }
+    }
+
+    fn song(title: &str, artist: &str) -> Song {
+        Song {
+            title: Some(title.to_string()),
+            artist: Some(artist.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn apply_song_information_routes_to_the_named_player() {
+        let mut controller = AudioController::new();
+        let stub = StubPlayer { base: BasePlayerController::with_player_info("stub", "stub:0") };
+        stub.base.set_song(Some(song("Battery", "Metallica")));
+        controller.add_controller(Box::new(stub));
+
+        let source = PlayerSource::new("stub".to_string(), "stub:0".to_string());
+        let partial = Song { title: Some("Battery".to_string()), liked: Some(true), ..Default::default() };
+
+        assert!(controller.apply_song_information(&source, &partial));
+        let updated = controller.get_player_by_name("stub").expect("stub player must exist");
+        let updated = updated.read();
+        assert_eq!(updated.get_song().and_then(|s| s.liked), Some(true));
+    }
+
+    #[test]
+    fn apply_song_information_returns_false_for_an_unknown_player() {
+        let controller = AudioController::new();
+        let source = PlayerSource::new("nonexistent".to_string(), "nonexistent:0".to_string());
+        let partial = song("Battery", "Metallica");
+
+        assert!(!controller.apply_song_information(&source, &partial));
     }
 }

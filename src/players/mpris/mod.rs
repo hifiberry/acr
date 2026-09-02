@@ -400,6 +400,10 @@ impl PlayerController for MprisPlayerController {
         self.update_state_from_mpris();
         self.base.song()
     }
+
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
+    }
     
     fn get_queue(&self) -> Vec<Track> {
         // MPRIS doesn't typically expose queue information

@@ -809,7 +809,11 @@ impl PlayerController for ShairportController {
     fn get_song(&self) -> Option<Song> {
         self.base.song()
     }
-    
+
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
+    }
+
     fn get_queue(&self) -> Vec<Track> {
         // ShairportSync doesn't provide queue information
         Vec::new()

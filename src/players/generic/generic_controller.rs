@@ -492,6 +492,10 @@ impl PlayerController for GenericPlayerController {
         self.base.song()
     }
 
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
+    }
+
     fn get_stream_details(&self) -> Option<StreamDetails> {
         self.current_stream_details.read().clone()
     }

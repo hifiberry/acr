@@ -220,6 +220,12 @@ pub trait PlayerController: Send + Sync {
     fn process_api_event(&self, _event_data: &serde_json::Value) -> bool {
         false
     }
+
+    /// Apply information a lookup found to this player's current song.
+    /// Backends that store their song in the base need no implementation.
+    fn apply_song_information(&self, _partial: &Song) -> bool {
+        false
+    }
 }
 
 /// Base implementation of PlayerController that handles state listener management

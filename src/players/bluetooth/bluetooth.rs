@@ -979,6 +979,10 @@ impl PlayerController for BluetoothPlayerController {
         self.base.song()
     }
 
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
+    }
+
     fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {
         let addr = self.device_address.read().clone()?;
         self.read_transport_stream_details(&addr)

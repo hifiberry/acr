@@ -202,7 +202,11 @@ impl PlayerController for LibrespotPlayerController {
             None
         }
     }
-    
+
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
+    }
+
     fn get_loop_mode(&self) -> LoopMode {
         debug!("Getting current loop mode");
         // Return the actual loop mode from the stored state

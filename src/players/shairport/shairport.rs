@@ -608,7 +608,11 @@ impl ShairportController {
                                         if let Some(song) = pending.take() {
                                             if song_has_significant_metadata(&song) {
                                                 debug!("Publishing complete song metadata: {}", song);
-                                                base.set_song(Some(song));
+                                                // AirPlay delivers metadata incrementally: a
+                                                // same-identity re-send carrying more fields
+                                                // (album, cover art) must still reach clients,
+                                                // which set_song's identity gating would drop.
+                                                base.replace_song(Some(song));
                                             }
                                         }
                                     }
@@ -955,6 +959,67 @@ mod tests {
             base.song().unwrap().cover_art_url,
             Some("https://example.com/cover.jpg".to_string()),
             "cover art must attach to an artist-less current song"
+        );
+    }
+
+    /// AirPlay delivers metadata incrementally: a track can be announced
+    /// with title/artist, then re-sent moments later with additional fields
+    /// (album, in this case) filled in. METADATA_END previously stored and
+    /// notified unconditionally; a same-identity re-send must still reach
+    /// get_song(), not be dropped by identity gating.
+    #[test]
+    fn metadata_end_same_identity_resend_still_updates_metadata() {
+        let base = BasePlayerController::with_player_info("shairport", "shairport:0");
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+        let current_state: Arc<Mutex<PlayerState>> = Arc::new(Mutex::new(PlayerState::default()));
+
+        let burst = |pending: &Arc<Mutex<Option<Song>>>, extra: Option<(&str, &str)>| {
+            ShairportController::process_message(
+                &ShairportMessage::Control("METADATA_START: 1".to_string()),
+                pending,
+                &current_state,
+                &base,
+            );
+            ShairportController::process_message(
+                &ShairportMessage::Control("TRACK: Battery".to_string()),
+                pending,
+                &current_state,
+                &base,
+            );
+            ShairportController::process_message(
+                &ShairportMessage::Control("ARTIST: Metallica".to_string()),
+                pending,
+                &current_state,
+                &base,
+            );
+            if let Some((key, value)) = extra {
+                ShairportController::process_message(
+                    &ShairportMessage::Control(format!("{}: {}", key, value)),
+                    pending,
+                    &current_state,
+                    &base,
+                );
+            }
+            ShairportController::process_message(
+                &ShairportMessage::Control("METADATA_END: 1".to_string()),
+                pending,
+                &current_state,
+                &base,
+            );
+        };
+
+        // First burst: title + artist only.
+        burst(&pending_song, None);
+        assert_eq!(base.song().unwrap().title, Some("Battery".to_string()));
+        assert_eq!(base.song().unwrap().album, None);
+
+        // Second burst, same track identity, but this time with ALBUM filled in.
+        burst(&pending_song, Some(("ALBUM", "Master of Puppets")));
+
+        assert_eq!(
+            base.song().unwrap().album,
+            Some("Master of Puppets".to_string()),
+            "a same-identity metadata re-send must still be stored, not dropped"
         );
     }
 }

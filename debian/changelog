@@ -17,9 +17,13 @@ hifiberry-audiocontrol (0.16.0) trixie; urgency=medium
     add_track API, which serves both the queueing of a radio station and the
     queueing of a single track with its own artwork, so the two are told apart
     by name: metadata naming something other than the track now playing -- a
-    station name against a song title -- describes the URL. Artwork a client
-    supplied for the track it queued is untouched, as is anything the player
-    itself provided. Whatever replaces a placeholder records its own
+    station name against a song title -- describes the URL. Names are compared
+    without case or surrounding space, and an artist-less "Artist - Title" that
+    was split earlier still counts as the same name. Where there is no name at
+    all the URL decides: a stream's artwork is the station's, anything else
+    belongs to the one track it was queued with. Artwork a client supplied for
+    the track it queued is untouched, as is anything the player itself
+    provided. Whatever replaces a placeholder records its own
     provenance, so a real cover is not taken for one by a later lookup.
     Clients that apply song_information_update as a partial update need no
     change; the event contract is in doc/websocket.md.
@@ -29,6 +33,19 @@ hifiberry-audiocontrol (0.16.0) trixie; urgency=medium
     unsigned and needs only an API key: the signed track.getInfo the scrobbler
     uses refuses without a linked account, which would have reproduced the gap
     it was added to close.
+  * Cover art for the song being played no longer needs a linked Last.fm
+    account either. The lookup that replaces a station logo used the signed
+    request, so on a device with only an API key the logo was marked as
+    replaceable and nothing ever replaced it. It now falls back to the unsigned
+    request, which answers with the album and its images but not with whether
+    the track is loved or how often it has been played -- fields that are
+    absent from an unsigned answer and are no longer read as "not loved" and
+    "never played".
+  * The image chosen from a Last.fm album is the largest slot it filled, on
+    both paths. Last.fm pads slots it has nothing for with an empty string, and
+    the path that replaces a station logo took the extralarge slot alone, so an
+    album whose extralarge slot was one of the empty ones left the station
+    showing its logo. Both paths now share one selection.
   * The documented example for /api/coverart/methods listed providers that have
     never existed and now shows what the endpoint returns.
   * The 0.15.1 notes explained their own SIGTERM fix wrongly and are corrected

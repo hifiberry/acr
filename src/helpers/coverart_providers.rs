@@ -218,7 +218,7 @@ const LASTFM_IMAGE_SIZES: [&str; 5] = ["mega", "extralarge", "large", "medium", 
 /// achieves nothing. Every URL returned here costs the grader a network round
 /// trip, taken while the cover art manager's lock is held, so only the largest
 /// slot is worth returning.
-fn album_image_urls(track_info: &LastfmTrackInfoDetails) -> Vec<String> {
+pub(crate) fn album_image_urls(track_info: &LastfmTrackInfoDetails) -> Vec<String> {
     let Some(album) = &track_info.album else {
         return Vec::new();
     };
@@ -491,10 +491,15 @@ mod tests {
     }
 
     /// A slot Last.fm labels in a way this code does not know still yields an
-    /// image rather than nothing.
+    /// image, and the fallback takes the last entry rather than the first --
+    /// Last.fm orders its slots smallest to largest, so the last is the
+    /// biggest. A single-entry fixture would pass either way and prove nothing.
     #[test]
-    fn an_unknown_size_label_still_yields_an_image() {
-        let info = track_info_with_images(&[("", "https://lastfm.example/i/u/cover.png")]);
+    fn an_unknown_size_label_yields_the_last_entry() {
+        let info = track_info_with_images(&[
+            ("", "https://lastfm.example/i/u/34s/cover.png"),
+            ("", "https://lastfm.example/i/u/cover.png"),
+        ]);
 
         assert_eq!(
             album_image_urls(&info),

@@ -78,18 +78,55 @@ fn cover_art_from_metadata(
 fn cover_art_is_placeholder(
     origin: UrlCoverArtOrigin,
     metadata: &HashMap<String, serde_json::Value>,
-    song_title: Option<&str>,
+    song: &Song,
 ) -> bool {
     if origin == UrlCoverArtOrigin::StationLogo {
         return true;
     }
 
-    match (
-        metadata.get("title").and_then(|value| value.as_str()),
-        song_title,
-    ) {
-        (Some(url_name), Some(playing)) => url_name != playing,
-        _ => false,
+    match metadata.get("title").and_then(|value| value.as_str()) {
+        // The URL carries a name. The artwork describes the track only if that
+        // name is the track's.
+        Some(url_name) => !names_match(url_name, song),
+        // No name to compare against. For a stream the artwork is the
+        // station's -- one URL, a different song every few minutes -- and
+        // nothing obliges whoever queued it to have supplied a name or to have
+        // used logo_url. For anything else it belongs to the one track it was
+        // queued with, and is left alone.
+        None => song
+            .stream_url
+            .as_deref()
+            .map(is_stream_uri)
+            .unwrap_or(false),
+    }
+}
+
+/// Whether a name from a URL's metadata names the track that is playing.
+///
+/// Compared without surrounding space and without regard to case, neither of
+/// which is a difference of identity. `convert_mpd_song` also splits an
+/// artist-less "Artist - Title" before this point, so the combined form counts
+/// as the same name: otherwise a client that queued its track under that form
+/// would see its own artwork marked replaceable over a difference this code
+/// had made itself.
+fn names_match(url_name: &str, song: &Song) -> bool {
+    let normalise = |value: &str| value.trim().to_lowercase();
+
+    let name = normalise(url_name);
+    let title = match song.title.as_deref() {
+        Some(title) => normalise(title),
+        None => return false,
+    };
+
+    if name == title {
+        return true;
+    }
+
+    match song.artist.as_deref().map(normalise) {
+        Some(artist) => {
+            name == format!("{} - {}", artist, title) || name == format!("{} - {}", title, artist)
+        }
+        None => false,
     }
 }
 
@@ -104,7 +141,7 @@ fn apply_station_logo(song: &mut Song) {
         return;
     };
 
-    let placeholder = cover_art_is_placeholder(origin, &song.metadata, song.title.as_deref());
+    let placeholder = cover_art_is_placeholder(origin, &song.metadata, song);
     debug!(
         "Using cover art from URL metadata: {} (placeholder: {})",
         url, placeholder
@@ -2561,8 +2598,110 @@ mod tests {
         );
     }
 
-    /// With no name in the metadata there is nothing to compare against, so the
-    /// image is left alone rather than guessed at.
+    /// A station queued with only a cover art URL and no name. The metadata
+    /// format has no enforced semantics -- doc/api.md calls the field names
+    /// suggestions -- so nothing obliges whoever queues a station to supply
+    /// either a name or logo_url. For a stream, cover art attached to the URL
+    /// describes the station whatever else is missing.
+    #[test]
+    fn an_unnamed_stations_image_is_still_a_placeholder() {
+        let mut song = Song {
+            title: Some("Listen To The News".to_string()),
+            stream_url: Some("https://bytefm.cast.addradio.de/bytefm/main/high/stream".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://www.byte.fm/favicon.png".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert_eq!(
+            song.metadata
+                .get(crate::data::song::COVER_ART_SOURCE)
+                .and_then(|v| v.as_str()),
+            Some(crate::data::song::COVER_ART_SOURCE_STATION_LOGO)
+        );
+    }
+
+    /// A file in the library is not a stream, so unnamed artwork attached to it
+    /// is the track's own and stays untouched.
+    #[test]
+    fn an_unnamed_library_track_is_not_a_placeholder() {
+        let mut song = Song {
+            title: Some("Yellow Submarine".to_string()),
+            stream_url: Some("music/The Beatles/Revolver/06 - Yellow Submarine.flac".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://example.com/revolver.jpg".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert!(!song
+            .metadata
+            .contains_key(crate::data::song::COVER_ART_SOURCE));
+    }
+
+    /// convert_mpd_song splits an artist-less "A - B" title before this runs, so
+    /// a client that queued its track under the combined name would otherwise
+    /// see its own artwork marked replaceable over a difference it did not make.
+    #[test]
+    fn a_split_title_still_matches_the_name_it_was_split_from() {
+        let mut song = Song {
+            title: Some("Listen To The News".to_string()),
+            artist: Some("Radical Friendship Theory".to_string()),
+            stream_url: Some("https://example.com/track.mp3".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://example.com/cover.jpg".to_string()),
+        );
+        song.metadata.insert(
+            "title".to_string(),
+            Value::String("Radical Friendship Theory - Listen To The News".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert!(
+            !song
+                .metadata
+                .contains_key(crate::data::song::COVER_ART_SOURCE),
+            "the combined name is the same track, not a different one"
+        );
+    }
+
+    /// Case and surrounding spaces are not a difference of identity.
+    #[test]
+    fn a_name_differing_only_in_case_or_spacing_matches() {
+        let mut song = Song {
+            title: Some("Yellow Submarine".to_string()),
+            stream_url: Some("https://example.com/track.mp3".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://example.com/cover.jpg".to_string()),
+        );
+        song.metadata.insert(
+            "title".to_string(),
+            Value::String("  yellow submarine ".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert!(!song
+            .metadata
+            .contains_key(crate::data::song::COVER_ART_SOURCE));
+    }
+
+    /// With no name in the metadata and nothing to say the URL is a stream,
+    /// the image belongs to the one track it was queued with.
     #[test]
     fn unnamed_url_metadata_is_not_a_placeholder() {
         let mut song = Song {

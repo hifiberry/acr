@@ -163,6 +163,11 @@ the station logo; one that applies partial updates as documented above needs no
 change. Artwork that arrives with the song is never marked, and is never
 replaced.
 
+An update can also arrive after the `song_changed` for the *next* song, since
+the lookup behind it is a network round trip and a radio track may be short.
+That is what `title` and `artist` are on the payload for: compare them against
+the song being shown and drop an update that no longer matches.
+
 The better image lives only in this event. `GET /api/now-playing` is built from
 the player's stored song, which the lookup does not write back into, so it keeps
 returning the station logo -- a client that reconnects and re-fetches

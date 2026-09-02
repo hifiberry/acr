@@ -733,6 +733,22 @@ impl BasePlayerController {
             // never replaced; only a placeholder is.
             if partial.cover_art_url.is_some() && current.cover_art_is_replaceable() {
                 current.cover_art_url = partial.cover_art_url.clone();
+
+                // Provenance is part of the write, not something a caller may
+                // forget. The URL replaced is usually a placeholder, and its
+                // COVER_ART_SOURCE marker is still on the song: left there it
+                // would say the real artwork is a station logo, keeping it
+                // replaceable by every later lookup and telling clients the
+                // good image is a stand-in. A partial that names its own
+                // source is honoured by the metadata merge below.
+                if !partial.metadata.contains_key(crate::data::song::COVER_ART_SOURCE) {
+                    current.metadata.insert(
+                        crate::data::song::COVER_ART_SOURCE.to_string(),
+                        serde_json::Value::String(
+                            crate::data::song::COVER_ART_SOURCE_ENRICHMENT.to_string(),
+                        ),
+                    );
+                }
             }
             if partial.liked.is_some() {
                 current.liked = partial.liked;
@@ -1038,7 +1054,9 @@ mod tests {
     /// machinery exists.
     #[test]
     fn a_placeholder_is_replaced() {
-        use crate::data::song::{COVER_ART_SOURCE, COVER_ART_SOURCE_STATION_LOGO};
+        use crate::data::song::{
+            COVER_ART_SOURCE, COVER_ART_SOURCE_ENRICHMENT, COVER_ART_SOURCE_STATION_LOGO,
+        };
 
         let base = base();
         let mut playing = song("Battery", "Metallica");
@@ -1056,9 +1074,29 @@ mod tests {
             ..Default::default()
         });
 
+        let stored = base.song().unwrap();
         assert_eq!(
-            base.song().unwrap().cover_art_url,
+            stored.cover_art_url,
             Some("https://example.com/lookup.jpg".to_string())
+        );
+
+        // Provenance travels with the URL. A partial that names no source
+        // must not leave the placeholder's marker behind: that would mark
+        // real artwork as a station logo, replaceable by the next lookup
+        // for ever, and tell every client the good image is a stand-in.
+        assert_ne!(
+            stored.metadata.get(COVER_ART_SOURCE).and_then(|v| v.as_str()),
+            Some(COVER_ART_SOURCE_STATION_LOGO),
+            "the replaced placeholder's marker must not survive onto the new artwork"
+        );
+        assert_eq!(
+            stored.metadata.get(COVER_ART_SOURCE).and_then(|v| v.as_str()),
+            Some(COVER_ART_SOURCE_ENRICHMENT),
+            "artwork that names no source is recorded as having come from enrichment"
+        );
+        assert!(
+            !stored.cover_art_is_replaceable(),
+            "the new artwork is not a placeholder, so nothing may overwrite it"
         );
     }
 

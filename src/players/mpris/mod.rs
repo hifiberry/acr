@@ -263,7 +263,11 @@ impl MprisPlayerController {
                    song.as_ref().and_then(|s| s.title.as_ref()),
                    song.as_ref().and_then(|s| s.artist.as_ref()),
                    song.as_ref().and_then(|s| s.album.as_ref()));
-            base.set_song(song);
+            // The old code wrote `*current_song = song` unconditionally here
+            // (a `song_changed` check only gated a debug log, never the
+            // store), so a same-identity metadata refresh must still reach
+            // clients rather than be dropped by set_song's identity gating.
+            base.replace_song(song);
         } else {
             debug!("No metadata available for {}", bus_name);
         }

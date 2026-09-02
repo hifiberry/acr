@@ -693,6 +693,12 @@ impl BasePlayerController {
     /// longer describes the song being played is dropped, because a lookup is
     /// a network round trip and a radio track can finish while it is in
     /// flight.
+    ///
+    /// "Applied" means the stored song actually changed. A partial the
+    /// override policy refuses, or one that only restates what the song
+    /// already says, changes nothing and is reported as such; no
+    /// `song_information_update` is published for it either, since there is
+    /// nothing for a client to re-read.
     pub fn apply_song_information(&self, partial: &Song) -> bool {
         let updated = {
             let mut state = self.player_state.write();
@@ -728,11 +734,21 @@ impl BasePlayerController {
                 return false;
             }
 
+            // Whether any of this actually moved the stored song. A partial
+            // the policy refuses, or one that only restates what the song
+            // already says, is not "applied": saying it was would be a lie to
+            // the caller, and publishing it would wake every client to re-read
+            // a song identical to the one they hold.
+            let mut changed = false;
+
             // The override policy, enforced here rather than in whichever
             // plugin happens to be calling. Artwork belonging to the song is
             // never replaced; only a placeholder is.
             if partial.cover_art_url.is_some() && current.cover_art_is_replaceable() {
-                current.cover_art_url = partial.cover_art_url.clone();
+                if current.cover_art_url != partial.cover_art_url {
+                    current.cover_art_url = partial.cover_art_url.clone();
+                    changed = true;
+                }
 
                 // Provenance is part of the write, not something a caller may
                 // forget. The URL replaced is usually a placeholder, and its
@@ -742,19 +758,36 @@ impl BasePlayerController {
                 // good image is a stand-in. A partial that names its own
                 // source is honoured by the metadata merge below.
                 if !partial.metadata.contains_key(crate::data::song::COVER_ART_SOURCE) {
-                    current.metadata.insert(
-                        crate::data::song::COVER_ART_SOURCE.to_string(),
-                        serde_json::Value::String(
-                            crate::data::song::COVER_ART_SOURCE_ENRICHMENT.to_string(),
-                        ),
+                    let provenance = serde_json::Value::String(
+                        crate::data::song::COVER_ART_SOURCE_ENRICHMENT.to_string(),
                     );
+                    if current.metadata.get(crate::data::song::COVER_ART_SOURCE)
+                        != Some(&provenance)
+                    {
+                        current
+                            .metadata
+                            .insert(crate::data::song::COVER_ART_SOURCE.to_string(), provenance);
+                        changed = true;
+                    }
                 }
             }
-            if partial.liked.is_some() {
+            if partial.liked.is_some() && current.liked != partial.liked {
                 current.liked = partial.liked;
+                changed = true;
             }
             for (key, value) in &partial.metadata {
-                current.metadata.insert(key.clone(), value.clone());
+                if current.metadata.get(key) != Some(value) {
+                    current.metadata.insert(key.clone(), value.clone());
+                    changed = true;
+                }
+            }
+
+            if !changed {
+                debug!(
+                    "Song information for {:?} changes nothing already stored; not publishing it",
+                    partial.title
+                );
+                return false;
             }
             current.clone()
         };
@@ -1098,6 +1131,66 @@ mod tests {
             !stored.cover_art_is_replaceable(),
             "the new artwork is not a placeholder, so nothing may overwrite it"
         );
+    }
+
+    /// The return value says whether the update was applied, so a partial
+    /// that changes nothing must report false -- and must not put a
+    /// `song_information_update` on the bus telling every client to re-read a
+    /// song that is exactly as they last saw it. Artwork the policy refuses
+    /// is the ordinary case: a lookup answers for a track whose own artwork
+    /// the player already supplied.
+    #[test]
+    fn a_partial_that_changes_nothing_is_not_reported_as_applied() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+
+        let bus = EventBus::instance();
+        let (id, receiver) = bus.subscribe(vec![EventSubscription::SongInformationUpdate]);
+
+        let player_id = "test:no-op-update";
+        let base = BasePlayerController::with_player_info("test", player_id);
+        let mut playing = song("Battery", "Metallica");
+        playing.cover_art_url = Some("https://example.com/players-own.jpg".to_string());
+        base.set_song(Some(playing));
+
+        let applied = base.apply_song_information(&Song {
+            title: Some("Battery".to_string()),
+            artist: Some("Metallica".to_string()),
+            cover_art_url: Some("https://example.com/lookup.jpg".to_string()),
+            ..Default::default()
+        });
+
+        let published = receiver
+            .try_iter()
+            .filter(|event| {
+                matches!(event, PlayerEvent::SongInformationUpdate { source, .. }
+                    if source.player_id() == player_id)
+            })
+            .count();
+        bus.unsubscribe(id);
+
+        assert!(!applied, "nothing was applied, so nothing was applied");
+        assert_eq!(
+            published, 0,
+            "an update that changed nothing must not be announced"
+        );
+    }
+
+    /// The same partial arriving twice -- a plugin retrying, two lookups
+    /// agreeing -- changes the song once. The second is a no-op.
+    #[test]
+    fn the_same_partial_applied_twice_reports_a_change_only_once() {
+        let base = base();
+        base.set_song(Some(song("Battery", "Metallica")));
+
+        let partial = Song {
+            title: Some("Battery".to_string()),
+            artist: Some("Metallica".to_string()),
+            cover_art_url: Some("https://example.com/lookup.jpg".to_string()),
+            ..Default::default()
+        };
+
+        assert!(base.apply_song_information(&partial));
+        assert!(!base.apply_song_information(&partial));
     }
 
     /// Count the `song_changed` events one player published, ignoring what

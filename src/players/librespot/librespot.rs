@@ -666,10 +666,28 @@ impl LibrespotPlayerController {
                     // delivers a track progressively, so one track routinely
                     // arrives as two events, the first without an artist --
                     // and reusing the identity return would rewind the track
-                    // to zero halfway through it. A track is the same track
-                    // as long as its title and its URI are.
+                    // to zero halfway through it.
+                    //
+                    // When both events carry a `uri` that settles it on its
+                    // own: a Spotify URI names the track exactly and never
+                    // flaps as the rest of the fields fill in. But `uri` is
+                    // optional on the payload and is itself one of the fields
+                    // that arrives late, so it cannot be compared when either
+                    // side lacks it -- absent-then-present would rewind the
+                    // track, and two consecutive tracks that share a title
+                    // would both look absent and never reset. Without a URI
+                    // on both sides there is nothing better than the whole of
+                    // the metadata, which is the rule this player used before
+                    // the identity refactor.
                     let same_track = self.base.song().is_some_and(|playing| {
-                        playing.title == song.title && playing.stream_url == song.stream_url
+                        match (&playing.stream_url, &song.stream_url) {
+                            (Some(playing_uri), Some(new_uri)) => playing_uri == new_uri,
+                            _ => {
+                                playing.title == song.title
+                                    && playing.artist == song.artist
+                                    && playing.album == song.album
+                            }
+                        }
                     });
 
                     // Update internal song. librespot is a discrete source:
@@ -942,6 +960,61 @@ mod tests {
             controller.player_progress.read().get_position(),
             42.0,
             "a second event for the track already playing must not rewind it"
+        );
+    }
+
+    /// `uri` is optional on the payload, and the premise of the fix above is
+    /// that fields fill in across events -- so a sender that omits it can put
+    /// two consecutive tracks with the same title on the wire. Comparing the
+    /// URI alone would call them the same track and start the second one at
+    /// the first one's position, with `PlayerProgress` still counting up.
+    #[test]
+    fn two_same_titled_tracks_without_a_uri_still_reset_the_position() {
+        let controller = controller();
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Intro", "artist": "Alpha" }
+        })));
+
+        controller.player_progress.write().set_position(42.0);
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Intro", "artist": "Beta" }
+        })));
+
+        assert_eq!(
+            controller.player_progress.read().get_position(),
+            0.0,
+            "a different track that happens to share a title must start from the beginning"
+        );
+    }
+
+    /// The mirror of the same gap: the URI itself is one of the fields that
+    /// fills in late. A track announced as `{title}` and re-sent as
+    /// `{title, uri}` is one track, and comparing the URI would rewind it in
+    /// the middle.
+    #[test]
+    fn a_late_uri_on_the_track_already_playing_does_not_rewind_it() {
+        let controller = controller();
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Battery" }
+        })));
+
+        controller.player_progress.write().set_position(42.0);
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Battery", "uri": "spotify:track:battery" }
+        })));
+
+        assert_eq!(
+            controller.player_progress.read().get_position(),
+            42.0,
+            "the URI arriving late must not rewind the track already playing"
         );
     }
 

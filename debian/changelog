@@ -62,7 +62,13 @@ hifiberry-audiocontrol (0.18.0) trixie; urgency=medium
     changed, and the artist became part of that identity in this release --
     but librespot announces a track first and fills in the artist moments
     later, so an ordinary track was rewound in the middle of playing. The
-    reset now follows the track, not its metadata.
+    reset now follows the track, not its metadata: when both the track playing
+    and the one announced carry a Spotify URI, that alone decides, because it
+    names the track exactly and does not change as the rest of the fields fill
+    in. The URI is optional and can itself arrive late, so where either side
+    lacks one the whole of the title, artist and album decides instead --
+    which keeps two consecutive same-titled tracks apart rather than running
+    the second one on from the first one's position.
   * AirPlay artwork is announced once rather than once per filesystem event.
     The cover art watcher sees a file created and then written, and each of
     those told every client to re-read a song whose artwork had not changed

@@ -753,7 +753,9 @@ impl BasePlayerController {
             // The override policy, enforced here rather than in whichever
             // plugin happens to be calling. Artwork belonging to the song is
             // never replaced; only a placeholder is.
-            if partial.cover_art_url.is_some() && current.cover_art_is_replaceable() {
+            let took_cover_art =
+                partial.cover_art_url.is_some() && current.cover_art_is_replaceable();
+            if took_cover_art {
                 if current.cover_art_url != partial.cover_art_url {
                     current.cover_art_url = partial.cover_art_url.clone();
                     changed = true;
@@ -785,6 +787,17 @@ impl BasePlayerController {
                 changed = true;
             }
             for (key, value) in &partial.metadata {
+                // Provenance travels with the URL in both directions. A
+                // partial whose artwork the policy refused above does not get
+                // to say where the artwork on the song came from: its own
+                // snapshot simply predates whatever the player attached. Left
+                // in, it would mislabel the player's artwork to every client,
+                // and a partial naming `station_logo` would mark artwork that
+                // belongs to the song as a placeholder -- replaceable by
+                // every lookup from then on.
+                if key == crate::data::song::COVER_ART_SOURCE && !took_cover_art {
+                    continue;
+                }
                 if current.metadata.get(key) != Some(value) {
                     current.metadata.insert(key.clone(), value.clone());
                     changed = true;
@@ -1139,6 +1152,95 @@ mod tests {
         assert!(
             !stored.cover_art_is_replaceable(),
             "the new artwork is not a placeholder, so nothing may overwrite it"
+        );
+    }
+
+    /// Provenance travels with the URL in *both* directions. If the override
+    /// policy refuses the partial's artwork, the partial's claim about where
+    /// that artwork came from is refused with it.
+    ///
+    /// The live case: Last.fm's snapshot of the song saw no artwork, so it
+    /// emits `cover_art_url` plus `cover_art_source=lastfm`; meanwhile
+    /// shairport's watcher has attached the player's own image through
+    /// `update_song`. The base refuses the URL -- and used to stamp `lastfm`
+    /// over shairport's image anyway, mislabelling provenance to every
+    /// client. Worse, any future partial naming `station_logo` would land on
+    /// artwork that belongs to the song and make it replaceable for ever.
+    #[test]
+    fn a_refused_url_does_not_stamp_its_provenance() {
+        use crate::data::song::{COVER_ART_SOURCE, COVER_ART_SOURCE_LASTFM};
+
+        let base = base();
+        let mut playing = song("Battery", "Metallica");
+        playing.cover_art_url = Some("/api/imagecache/shairportsync/abc.jpg".to_string());
+        base.set_song(Some(playing));
+
+        let mut partial = song("Battery", "Metallica");
+        partial.cover_art_url = Some("https://lastfm.example/1200x1200.png".to_string());
+        partial.metadata.insert(
+            COVER_ART_SOURCE.to_string(),
+            serde_json::Value::String(COVER_ART_SOURCE_LASTFM.to_string()),
+        );
+
+        let applied = base.apply_song_information(&partial);
+
+        let stored = base.song().unwrap();
+        assert!(
+            !applied,
+            "the URL was refused and its source came with it, so nothing was applied"
+        );
+        assert_eq!(
+            stored.cover_art_url,
+            Some("/api/imagecache/shairportsync/abc.jpg".to_string()),
+            "the player's own artwork must survive"
+        );
+        assert_eq!(
+            stored.metadata.get(COVER_ART_SOURCE),
+            None,
+            "a refused URL must not stamp its source over artwork it did not supply"
+        );
+        assert!(
+            !stored.cover_art_is_replaceable(),
+            "the player's own artwork stays unreplaceable"
+        );
+    }
+
+    /// The same rule the other way round: a partial the policy *accepts* is
+    /// still allowed to name its own source, and that name is what gets
+    /// recorded rather than the generic `enrichment` marker.
+    #[test]
+    fn an_accepted_url_still_records_the_source_the_partial_names() {
+        use crate::data::song::{
+            COVER_ART_SOURCE, COVER_ART_SOURCE_LASTFM, COVER_ART_SOURCE_STATION_LOGO,
+        };
+
+        let base = base();
+        let mut playing = song("Battery", "Metallica");
+        playing.cover_art_url = Some("https://station.example/logo.png".to_string());
+        playing.metadata.insert(
+            COVER_ART_SOURCE.to_string(),
+            serde_json::Value::String(COVER_ART_SOURCE_STATION_LOGO.to_string()),
+        );
+        base.set_song(Some(playing));
+
+        let mut partial = song("Battery", "Metallica");
+        partial.cover_art_url = Some("https://lastfm.example/1200x1200.png".to_string());
+        partial.metadata.insert(
+            COVER_ART_SOURCE.to_string(),
+            serde_json::Value::String(COVER_ART_SOURCE_LASTFM.to_string()),
+        );
+
+        assert!(base.apply_song_information(&partial));
+
+        let stored = base.song().unwrap();
+        assert_eq!(
+            stored.cover_art_url,
+            Some("https://lastfm.example/1200x1200.png".to_string())
+        );
+        assert_eq!(
+            stored.metadata.get(COVER_ART_SOURCE).and_then(|v| v.as_str()),
+            Some(COVER_ART_SOURCE_LASTFM),
+            "a partial that supplied the artwork names its own source"
         );
     }
 

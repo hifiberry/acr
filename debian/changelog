@@ -20,22 +20,24 @@ hifiberry-audiocontrol (0.18.0) trixie; urgency=medium
     This rule previously lived wherever a plugin happened to assign
     cover_art_url, so it applied only where that plugin remembered to check
     it. It now lives once, in the player itself, ahead of every write.
-  * What counts as a song change is now one rule for every backend: the title
-    or the stream URL differs from what is already playing. The generic
-    backend also compared the artist, and it is the one that resets the
-    playback position on a song change, so a same-titled track credited to a
-    different artist -- a cover, a collaboration relisted under a featured
-    artist -- read as a new song there and sent playback back to zero. It no
-    longer does.
+  * What counts as a song change is now one rule for every backend: the title,
+    the artist or the stream URL differs from what is already playing. Each
+    backend previously carried its own version -- some compared the artist,
+    some the album, some neither -- so what a client saw as a new track
+    depended on which player it was listening to. Only two backends ever set a
+    stream URL, so the artist has to be in the rule: without it a same-titled
+    track by a different artist would not register as a change on MPRIS,
+    Bluetooth, RAAT or Shairport, and the new track would be reported with the
+    previous one's artist, album and cover art for as long as it played.
   * A metadata-only refresh of the song already playing -- cover art arriving
     after the song itself is the ordinary case -- now reaches clients on every
-    backend that delivers songs by event rather than by polling: generic, RAAT
-    and Shairport. Several of those stored the refresh but the conversion on
-    the way out would have dropped it, and some never attempted to propagate
-    it at all. Backends that poll, such as MPRIS and Bluetooth, deliberately
-    do not announce a refresh: they rebuild the song from their source on
-    every read, so what looks like a refresh there is the same reading again,
-    and announcing it would put an event on the bus per poll.
+    backend that delivers songs by event rather than by polling: generic, RAAT,
+    Shairport and librespot. Several of those stored the refresh but the
+    conversion on the way out would have dropped it, and some never attempted
+    to propagate it at all. Backends that poll, such as MPRIS and Bluetooth,
+    deliberately do not announce a refresh: they rebuild the song from their
+    source on every read, so what looks like a refresh there is the same
+    reading again, and announcing it would put an event on the bus per poll.
   * Shairport announces a session restart. `SessionStart` cleared the current
     song without telling clients, unlike `SessionEnd`, which did; a client
     that had a track showing when a new AirPlay session began kept showing it

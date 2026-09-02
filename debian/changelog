@@ -1,3 +1,22 @@
+hifiberry-audiocontrol (0.17.0) trixie; urgency=medium
+
+  * TheAudioDB answers the Song cover art method, alongside Last.fm. The two
+    cover different ground -- for the radio track that prompted this work
+    TheAudioDB knows nothing and Last.fm has a 1200x1200 cover, while for a
+    well-known album track both answer -- and the cover art manager grades and
+    sorts whatever comes back, so having both is worth more than either.
+  * A track TheAudioDB has no picture of falls back to the cover of the album
+    its own answer names. It knows many more tracks than it holds pictures of:
+    of five well-known tracks sampled, three carried no track image, but all
+    five named their album. Without the fallback the provider would miss most
+    of what it actually knows. This is the album art for the song being played,
+    and the same thing the Last.fm song provider returns.
+  * Track lookups are cached both ways, as artist and album lookups already
+    were, so a track TheAudioDB does not know is asked about once rather than
+    on every play.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 02 Sep 2026 14:20:10 +0000
+
 hifiberry-audiocontrol (0.16.1) trixie; urgency=medium
 
   * A stop arriving in the first moments of startup is no longer ignored.

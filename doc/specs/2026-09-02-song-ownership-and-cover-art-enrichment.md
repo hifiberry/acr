@@ -85,13 +85,40 @@ this changes no payload. The base already serves `position` and `last_seen`
 from the same place, so the song follows an established pattern rather than
 introducing a second state container.
 
-The base gains three methods:
+The base gains four methods:
 
 | Method | Purpose |
 |---|---|
-| `set_song(Option<Song>)` | change-detect, store, `notify_song_changed` |
+| `set_song(Option<Song>) -> bool` | change-detect on identity, store and `notify_song_changed` only when it changed |
+| `replace_song(Option<Song>) -> bool` | store and `notify_song_changed` unconditionally; returns whether identity changed |
 | `apply_song_information(&Song) -> bool` | merge a partial update, store, emit `SongInformationUpdate` |
 | `get_song()` | becomes a default trait method reading from the base |
+
+`set_song` and `replace_song` differ only in whether a same-identity
+observation is stored and announced, and which one a backend wants is decided
+by how it learns about songs:
+
+- **Polling backends use `set_song`.** MPRIS, Bluetooth, MPD and librespot
+  re-read the whole song from their source on a timer or on every `get_song()`
+  and rebuild it from scratch, so a same-identity observation carries no new
+  information — it is the *same* reading again, minus whatever a lookup has
+  since merged in. Storing it would erase the enrichment this change exists to
+  deliver, and announcing it would put one `song_changed` per poll on the bus
+  for as long as the track plays. Identity gating is what makes a poll loop
+  free.
+- **Event-driven backends use `replace_song`.** The generic controller, RAAT
+  and shairport are told about a song by an event, and an event carrying a
+  metadata-only refresh of the song already playing — cover art arriving late
+  is the usual one — is real news that has to reach clients. Both the store
+  and the notification are therefore unconditional; the return value still
+  reports whether identity changed, which is what a caller gates a playback
+  position reset on.
+
+The distinction is not about what a backend's pre-refactor code happened to
+do. Several polling backends stored unconditionally before this change, which
+was harmless only because nothing could write into the stored song from
+outside; once enrichment can, an unconditional store in a polling path is a
+bug.
 
 Backends delete their `current_song` field, their `get_song`, and their copy of
 the change-detection block. The comparison rule becomes one rule with one test
@@ -108,8 +135,13 @@ the stored song has been updated, so REST and WebSocket cannot disagree.
 
 ### A partial update that no longer applies is dropped
 
-`apply_song_information` applies the update only when the partial's `title` and
-`artist` still match the stored song, and drops it otherwise.
+`apply_song_information` requires the partial to identify the song it is for
+and to agree with the song playing. It drops an update that carries neither a
+`title` nor an `artist`; of the two it does carry, every one present must match
+the stored song, and one it omits asserts nothing. Title alone is therefore
+enough — which matters for a source that never sends an artist at all, such as
+some AirPlay senders — but a title that disagrees, or an artist that disagrees,
+drops the update.
 
 A lookup is a network round trip, and on radio the track changes underneath it.
 Nothing checks this today, and 0.16.0 made it matter: before, a late answer
@@ -181,9 +213,19 @@ are duplicated across backends and untested.
   for `Song::cover_art_is_replaceable`, now exercised through
   `apply_song_information`.
 - **No lock held across the event-bus publish**, which `.codereview.toml`
-  calls out specifically. `mpd.rs` drops its lock before notifying today; the
-  shared implementation encodes that once so the other eight cannot get it
-  wrong.
+  calls out specifically, is covered by review rather than by a test: it is a
+  property of how the code is written — every writer releases the state lock
+  before it publishes — and there is no seam that would let a test observe a
+  lock being held during a publish without building one for the purpose.
+  `mpd.rs` dropped its lock before notifying already; the shared
+  implementation encodes that once so the other eight cannot get it wrong.
+- **Notification volume.** A repeated observation of the same song publishes
+  one `song_changed`, not one per observation, and a rebuilt observation of a
+  song that a lookup has enriched does not erase the enrichment. These two are
+  what a polling backend gets wrong when it reaches for `replace_song`, and
+  they are asserted at the base, where no D-Bus connection is needed: the test
+  subscribes to the event bus and counts the events its own player id
+  published.
 
 The conversion of each backend is checked by the existing suite plus a run on
 a real device, since most of these backends cannot be exercised without one.

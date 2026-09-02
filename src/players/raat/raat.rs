@@ -396,7 +396,10 @@ impl PlayerController for RAATPlayerController {
         
         match update {
             PlayerUpdate::SongChanged(new_song) => {
-                self.base.set_song(new_song);
+                // The old code stored and notified unconditionally here; a
+                // same-identity refresh (late cover art) must still reach
+                // clients, so this is replace_song's job, not set_song's.
+                self.base.replace_song(new_song);
             }
             PlayerUpdate::PositionChanged(new_position) => {
                 if let Some(pos) = new_position {
@@ -603,5 +606,47 @@ impl PlayerController for RAATPlayerController {
     fn get_queue(&self) -> Vec<Track> {
         debug!("RAATController: get_queue called - returning empty vector");
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn controller() -> RAATPlayerController {
+        RAATPlayerController::with_pipes_and_reopen_and_systemd(
+            "test-metadata-source",
+            "test-control-pipe",
+            false,
+            None,
+        )
+    }
+
+    fn song(title: &str, artist: &str) -> Song {
+        Song {
+            title: Some(title.to_string()),
+            artist: Some(artist.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// `PlayerUpdate::SongChanged` previously stored and notified
+    /// unconditionally; a same-identity refresh (late cover art) must still
+    /// reach `get_song()`, not be dropped by identity gating.
+    #[test]
+    fn song_changed_update_same_identity_refresh_still_updates_metadata() {
+        let controller = controller();
+
+        controller.receive_update(PlayerUpdate::SongChanged(Some(song("Battery", "Metallica"))));
+
+        let mut refreshed = song("Battery", "Metallica");
+        refreshed.cover_art_url = Some("https://example.com/cover.jpg".to_string());
+        controller.receive_update(PlayerUpdate::SongChanged(Some(refreshed)));
+
+        assert_eq!(
+            controller.get_song().unwrap().cover_art_url,
+            Some("https://example.com/cover.jpg".to_string()),
+            "a same-identity metadata refresh must still be stored, not dropped"
+        );
     }
 }

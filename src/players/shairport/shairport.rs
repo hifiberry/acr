@@ -520,8 +520,17 @@ impl ShairportController {
         // sender may revise its cover mid-track, so revisions are ordinary.
         // update_song also mutates under one write lock, restoring the
         // atomicity the read-then-write pair here had lost.
+        //
+        // The closure reports whether it changed anything, because the watcher
+        // fires on Create *and* Modify(Data) and the URL is the MD5 of the
+        // bytes: one artwork file arrives here several times with the same
+        // URL, and only the first of them is news.
         if base.update_song(|song| {
+            if song.cover_art_url.as_deref() == Some(artwork_url.as_str()) {
+                return false;
+            }
             song.cover_art_url = Some(artwork_url.clone());
+            true
         }) {
             return;
         }
@@ -972,6 +981,51 @@ mod tests {
             base.song().unwrap().cover_art_url,
             Some("https://example.com/cover.jpg".to_string()),
             "cover art must attach to an artist-less current song"
+        );
+    }
+
+    /// The cover art watcher fires on `Create` *and* on `Modify(Data)`, so a
+    /// single artwork file reaches `update_song_cover_art` several times with
+    /// the same URL -- the same URL again, because the URL is the MD5 of the
+    /// bytes. Attaching it a second time changes nothing, so it must not
+    /// publish a second `song_changed`: this is the same "don't publish when
+    /// nothing changed" rule the polling backends follow.
+    #[test]
+    fn re_attaching_the_same_artwork_publishes_no_second_event() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+        use crate::data::PlayerEvent;
+
+        let player_id = "shairport:duplicate-artwork";
+        let base = BasePlayerController::with_player_info("shairport", player_id);
+        base.set_song(Some(Song {
+            title: Some("Some AirPlay Track".to_string()),
+            ..Default::default()
+        }));
+
+        let bus = EventBus::instance();
+        let (subscription, receiver) = bus.subscribe(vec![EventSubscription::SongChanged]);
+
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+        let url = "/api/imagecache/shairportsync/deadbeef.jpg".to_string();
+
+        // Create, then Modify(Data) for the same file.
+        ShairportController::update_song_cover_art(url.clone(), &pending_song, &base);
+        ShairportController::update_song_cover_art(url.clone(), &pending_song, &base);
+        ShairportController::update_song_cover_art(url.clone(), &pending_song, &base);
+
+        let published = receiver
+            .try_iter()
+            .filter(|event| {
+                matches!(event, PlayerEvent::SongChanged { source, .. }
+                    if source.player_id() == player_id)
+            })
+            .count();
+        bus.unsubscribe(subscription);
+
+        assert_eq!(base.song().unwrap().cover_art_url, Some(url));
+        assert_eq!(
+            published, 1,
+            "one artwork file must publish one song_changed, not one per watcher event"
         );
     }
 

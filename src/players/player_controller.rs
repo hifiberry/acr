@@ -661,9 +661,28 @@ impl BasePlayerController {
     ///
     /// `f` is applied to the stored song under a single write lock, so there is
     /// no read-then-write window in which another writer could interleave; the
-    /// guard is dropped before listeners are notified. Returns whether there
-    /// was a song to update; with nothing playing, nothing happens and no event
-    /// is published.
+    /// guard is dropped before listeners are notified.
+    ///
+    /// `f` returns whether it actually changed the song. Listeners are notified
+    /// only when it did — the same rule everything else here follows, and it
+    /// matters because a source can revise the song with the value it already
+    /// holds: shairport's cover art watcher fires on `Create` *and* on
+    /// `Modify(Data)`, so one artwork file arrives several times over.
+    ///
+    /// The return value is a different question: whether there *was* a song to
+    /// update at all. With nothing playing, `f` is never called and the caller
+    /// is told so rather than a song being invented.
+    ///
+    /// # The closure must not call back into the base controller
+    ///
+    /// `f` runs while the player state write lock is held, and `parking_lot`'s
+    /// `RwLock` is **not** reentrant. A closure that calls [`Self::song`],
+    /// [`Self::set_song`], [`Self::replace_song`], [`Self::update_song`] or
+    /// [`Self::apply_song_information`] — directly or through a helper — will
+    /// deadlock the thread on itself, and the daemon has no recovery from that:
+    /// no poisoning, no timeout, no way back. Compute whatever the closure
+    /// needs *before* calling, and let it do nothing but assign to the fields
+    /// of the `&mut Song` it is given.
     ///
     /// This is deliberately not [`Self::apply_song_information`]. That method
     /// enforces the enrichment override policy, under which artwork supplied by
@@ -671,21 +690,25 @@ impl BasePlayerController {
     /// player revising its own artwork through it would always be refused. The
     /// policy is about outside answers; it has nothing to say about a player
     /// correcting itself.
-    pub fn update_song<F: FnOnce(&mut Song)>(&self, f: F) -> bool {
+    pub fn update_song<F: FnOnce(&mut Song) -> bool>(&self, f: F) -> bool {
         let updated = {
             let mut state = self.player_state.write();
             match state.song.as_mut() {
                 Some(song) => {
-                    f(song);
-                    Some(song.clone())
+                    let changed = f(song);
+                    Some((changed, song.clone()))
                 }
                 None => None,
             }
         };
 
         match updated {
-            Some(song) => {
-                self.notify_song_changed(Some(&song));
+            Some((changed, song)) => {
+                if changed {
+                    self.notify_song_changed(Some(&song));
+                } else {
+                    debug!("A player revised its song with what it already said; not publishing");
+                }
                 true
             }
             None => {
@@ -944,6 +967,7 @@ mod tests {
 
         assert!(base.update_song(|song| {
             song.cover_art_url = Some("https://example.com/second.jpg".to_string());
+            true
         }));
 
         assert_eq!(
@@ -961,6 +985,7 @@ mod tests {
 
         assert!(!base.update_song(|song| {
             song.cover_art_url = Some("https://example.com/cover.jpg".to_string());
+            true
         }));
         assert!(base.song().is_none());
     }

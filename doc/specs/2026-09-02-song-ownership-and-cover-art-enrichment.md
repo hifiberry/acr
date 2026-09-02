@@ -91,7 +91,7 @@ The base gains four methods:
 |---|---|
 | `set_song(Option<Song>) -> bool` | change-detect on identity, store and `notify_song_changed` only when it changed |
 | `replace_song(Option<Song>) -> bool` | store and `notify_song_changed` unconditionally; returns whether identity changed |
-| `update_song(impl FnOnce(&mut Song)) -> bool` | a player revising its *own* current song in place, under one write lock; returns whether there was a song |
+| `update_song(impl FnOnce(&mut Song) -> bool) -> bool` | a player revising its *own* current song in place, under one write lock; the closure reports whether it changed anything and only then are listeners notified, and the return value says whether there was a song at all. The closure runs under the write lock, which `parking_lot` does not make reentrant, so it must not call back into the base |
 | `apply_song_information(&Song) -> bool` | merge a partial update from an outside lookup, store, emit `SongInformationUpdate`; returns whether anything actually changed |
 
 Identity, for `set_song` and `replace_song` alike, is the title, the artist and

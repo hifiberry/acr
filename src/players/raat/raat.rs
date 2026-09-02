@@ -287,6 +287,17 @@ impl RAATPlayerController {
         // enrichment within one pipe interval and publish one song_changed
         // per line for the whole track. receive_update below is the discrete
         // counterpart and does use replace_song.
+        //
+        // One narrowing this brings, recorded because it is not obvious from
+        // here: before the refactor this player's own change detection
+        // compared the title, the artist *and the album*, whereas song
+        // identity is title, artist and stream_url -- and RAAT never sets a
+        // stream_url. So a line that changes only the album, mid-track and
+        // with the title and artist unchanged, is no longer stored. Roon
+        // sends a complete `now_playing` per line and a track does not change
+        // album while it plays, so this should be unreachable; if a real
+        // stream ever does it, the fix is update_song rather than a return to
+        // storing every line.
         self.base.set_song(Some(song));
 
         // Mark the player as alive since we got data

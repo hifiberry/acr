@@ -24,7 +24,6 @@ pub struct GenericPlayerController {
     player_name: String,
     
     /// Current internal state
-    current_song: Arc<RwLock<Option<Song>>>,
     current_state: Arc<RwLock<PlaybackState>>,
     current_loop_mode: Arc<RwLock<LoopMode>>,
     current_shuffle: Arc<RwLock<bool>>,
@@ -53,7 +52,6 @@ impl GenericPlayerController {
         let controller = Self {
             base,
             player_name: player_name.clone(),
-            current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlaybackState::Unknown)),
             current_loop_mode: Arc::new(RwLock::new(LoopMode::None)),
             current_shuffle: Arc::new(RwLock::new(false)),
@@ -271,34 +269,15 @@ impl GenericPlayerController {
             None
         };
         
-        // Update the state first, then release the lock before notifying
-        let song_for_notify = {
-            let mut current_song = self.current_song.write();
+        debug!("Generic player '{}' song changed", self.player_name);
 
-            // Identity comparison: a metadata-only refresh of the SAME song
-            // (e.g. cover art arriving late) must not reset playback position.
-            let song_changed = match (&*current_song, &song) {
-                (Some(old), Some(new)) => {
-                    old.title != new.title
-                        || old.artist != new.artist
-                        || old.stream_url != new.stream_url
-                }
-                (None, None) => false,
-                _ => true,
-            };
-
-            *current_song = song.clone();
-            debug!("Generic player '{}' song changed", self.player_name);
-
-            if song_changed {
-                self.progress.set_position(0.0);
-            }
-
-            song.clone()
-        }; // Lock is released here
-
-        // Notify the event bus about the song change after releasing the lock
-        self.base.notify_song_changed(song_for_notify.as_ref());
+        // replace_song always stores and always notifies -- a metadata-only
+        // refresh of the SAME song (e.g. cover art arriving late) still has
+        // to reach clients, it just must not reset playback position, which
+        // is what replace_song's return value gates here.
+        if self.base.replace_song(song) {
+            self.progress.set_position(0.0);
+        }
         true
     }
     
@@ -491,7 +470,6 @@ impl Clone for GenericPlayerController {
         Self {
             base: self.base.clone(),
             player_name: self.player_name.clone(),
-            current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             current_loop_mode: Arc::clone(&self.current_loop_mode),
             current_shuffle: Arc::clone(&self.current_shuffle),
@@ -511,8 +489,7 @@ impl PlayerController for GenericPlayerController {
     }
     
     fn get_song(&self) -> Option<Song> {
-        let song = self.current_song.read();
-        song.clone()
+        self.base.song()
     }
 
     fn get_stream_details(&self) -> Option<StreamDetails> {

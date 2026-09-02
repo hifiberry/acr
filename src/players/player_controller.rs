@@ -644,16 +644,26 @@ impl BasePlayerController {
                 return false;
             };
 
-            let (Some(partial_title), Some(partial_artist)) =
-                (partial.title.as_deref(), partial.artist.as_deref())
-            else {
+            if partial.title.is_none() && partial.artist.is_none() {
                 debug!("Song information carries no title or artist; dropping it");
                 return false;
-            };
+            }
 
-            if current.title.as_deref() != Some(partial_title)
-                || current.artist.as_deref() != Some(partial_artist)
-            {
+            // Every field the partial DOES carry must agree with the song
+            // playing; a field it omits is not asserted about. Requiring
+            // both would wrongly drop a legitimate update for a song that
+            // has no artist at all (e.g. an AirPlay source that never sends
+            // one) -- title alone is enough to identify it.
+            let title_matches = partial
+                .title
+                .as_deref()
+                .is_none_or(|t| current.title.as_deref() == Some(t));
+            let artist_matches = partial
+                .artist
+                .as_deref()
+                .is_none_or(|a| current.artist.as_deref() == Some(a));
+
+            if !title_matches || !artist_matches {
                 debug!(
                     "Song information for {:?} no longer applies to {:?}; dropping it",
                     partial.title, current.title
@@ -806,6 +816,55 @@ mod tests {
             cover_art_url: Some("https://example.com/cover.jpg".to_string()),
             ..Default::default()
         }));
+    }
+
+    /// A song with no artist (e.g. an AirPlay source that never sends an
+    /// ARTIST line) is a legitimate "now playing" state. A partial that
+    /// carries only a matching title -- artist absent, not mismatched --
+    /// must still be applied: the guard can only assert about fields it
+    /// actually carries.
+    #[test]
+    fn a_partial_matching_by_title_alone_is_applied_to_an_artistless_song() {
+        let base = base();
+        base.set_song(Some(Song {
+            title: Some("Some AirPlay Track".to_string()),
+            artist: None,
+            ..Default::default()
+        }));
+
+        let applied = base.apply_song_information(&Song {
+            title: Some("Some AirPlay Track".to_string()),
+            cover_art_url: Some("https://example.com/cover.jpg".to_string()),
+            ..Default::default()
+        });
+
+        assert!(applied);
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/cover.jpg".to_string())
+        );
+    }
+
+    /// The same title-only partial dropped when the title actually
+    /// disagrees with what is playing -- the guard still catches a stale
+    /// answer, it just no longer requires an artist to do so.
+    #[test]
+    fn a_partial_matching_by_title_alone_is_dropped_when_title_disagrees() {
+        let base = base();
+        base.set_song(Some(Song {
+            title: Some("Some AirPlay Track".to_string()),
+            artist: None,
+            ..Default::default()
+        }));
+
+        let applied = base.apply_song_information(&Song {
+            title: Some("A Different Track".to_string()),
+            cover_art_url: Some("https://example.com/wrong.jpg".to_string()),
+            ..Default::default()
+        });
+
+        assert!(!applied);
+        assert_eq!(base.song().unwrap().cover_art_url, None);
     }
 
     /// The override policy. Artwork belonging to the song is never replaced,

@@ -925,3 +925,36 @@ impl Default for ShairportController {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An AirPlay source that never sends an ARTIST metadata line is a
+    /// legitimate current song (song_has_significant_metadata accepts title,
+    /// artist or album alone). Cover art detected by the directory watcher
+    /// for such a song must still attach -- this is the regression the
+    /// apply_song_information guard fix (player_controller.rs) exists for.
+    #[test]
+    fn cover_art_attaches_to_a_currently_playing_song_with_no_artist() {
+        let base = BasePlayerController::with_player_info("shairport", "shairport:0");
+        base.set_song(Some(Song {
+            title: Some("Some AirPlay Track".to_string()),
+            artist: None,
+            ..Default::default()
+        }));
+
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+        ShairportController::update_song_cover_art(
+            "https://example.com/cover.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/cover.jpg".to_string()),
+            "cover art must attach to an artist-less current song"
+        );
+    }
+}

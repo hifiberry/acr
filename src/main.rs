@@ -332,51 +332,64 @@ fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
-    // Whether Rocket has taken over the shutdown signals. Set by
-    // start_rocket_server immediately before it launches.
-    let shutdown_owned_by_rocket = Arc::new(AtomicBool::new(false));
-    let owned_in_handler = shutdown_owned_by_rocket.clone();
+    // Where the API server publishes the means to stop it while it is running.
+    let shutdown_handle = server::ShutdownHandle::new();
+    let handle_in_signal = shutdown_handle.clone();
 
-    // Set up the SIGINT/SIGTERM handler.
+    // Set up the SIGINT/SIGTERM/SIGHUP handler.
     //
     // ctrlc only registers SIGTERM with its "termination" feature, which this
-    // crate now enables -- without it this handler covered SIGINT alone, and
+    // crate enables -- without it this handler covered SIGINT alone, and
     // SIGTERM, the signal systemd actually sends, had no handler at all.
     //
-    // It is the whole shutdown path before Rocket launches, and when the
-    // webserver is disabled so Rocket never launches at all.
-    //
-    // Once Rocket is up it is not. Rocket registers through signal-hook, which
-    // chains onto this handler rather than replacing it, so both still run on
-    // every signal -- and if this one went on clearing `running`, main would
-    // return within 100ms while Rocket was still inside its 2s grace period,
-    // cutting in-flight requests and WebSockets and skipping the shutdown
-    // fairings. Measured at 151ms before this guard existed. From that point
-    // the API thread below is what clears `running`, once Rocket says it has
-    // finished.
+    // This is the only signal handler in the process: Rocket's own is switched
+    // off in start_rocket_server. What a signal means depends on whether the
+    // API server is running. While it is, the signal is passed to it so its
+    // grace and mercy periods are honoured, and `running` is left alone -- the
+    // API thread below clears it once the server reports it has finished, so
+    // main cannot return part-way through a shutdown and cut in-flight
+    // requests and WebSockets. With no server running -- before it starts,
+    // after it stops, when a launch failed, or when the webserver is disabled
+    // entirely -- this handler ends the process itself.
     if let Err(e) = ctrlc::set_handler(move || {
-        if owned_in_handler.load(Ordering::SeqCst) {
-            info!("Shutdown signal received; Rocket is handling it");
-            return;
-        }
+        info!("Shutdown signal received");
 
-        info!("Shutdown signal received, shutting down...");
-        r.store(false, Ordering::SeqCst);
+        // Ask first, arm second. This handler is the only signal consumer in
+        // the process now that the webserver's own is switched off, and ctrlc
+        // stops running it if it ever panics -- leaving the daemon deaf to
+        // every later signal, with only SIGKILL left. So the request that
+        // actually stops the daemon happens before anything that could fail,
+        // and the watchdog is spawned in a way that reports failure instead of
+        // unwinding.
+        let asked_the_server = handle_in_signal.request_stop();
 
-        // Set up a force shutdown after a timeout
-        let force_shutdown_delay = Duration::from_secs(5); // 5 seconds timeout
-        let r_clone = r.clone(); // Clone the Arc for the new thread
-        let _force_shutdown_thread = thread::spawn(move || {
-            thread::sleep(force_shutdown_delay);
-            // If we're still running after the timeout, force exit
-            if !r_clone.load(Ordering::SeqCst) {
+        // The force-exit watchdog, armed whichever way the shutdown goes: one
+        // that overruns and one that never gets going both end here rather
+        // than at systemd's SIGKILL. Eight seconds sits above the six the
+        // webserver can take -- its grace and mercy, pinned at two and three,
+        // plus one -- and below the ten systemd allows.
+        let force_shutdown_delay = Duration::from_secs(8);
+        if let Err(e) = thread::Builder::new()
+            .name("force-shutdown".to_string())
+            .spawn(move || {
+                thread::sleep(force_shutdown_delay);
                 info!(
                     "Graceful shutdown timed out after {} seconds, forcing exit...",
                     force_shutdown_delay.as_secs()
                 );
                 std::process::exit(0);
-            }
-        });
+            })
+        {
+            warn!("Could not arm the force-shutdown watchdog: {}", e);
+        }
+
+        if asked_the_server {
+            info!("Asked the API server to shut down");
+            return;
+        }
+
+        info!("No API server running, shutting down directly");
+        r.store(false, Ordering::SeqCst);
     }) {
         eprintln!("Error: Failed to set Ctrl+C handler: {}", e);
         std::process::exit(1);
@@ -447,6 +460,7 @@ fn main() {
     // Start the API server using the global Tokio runtime
     let controllers_config_clone = controllers_config.clone();
     let api_running = running.clone();
+    let shutdown_handle_for_outcome = shutdown_handle.clone();
     let _api_thread = thread::spawn(move || {
         let outcome = get_tokio_runtime().block_on(async {
             // Get a reference to the singleton AudioController for the server
@@ -454,7 +468,7 @@ fn main() {
             server::start_rocket_server(
                 controller,
                 &controllers_config_clone,
-                shutdown_owned_by_rocket,
+                shutdown_handle,
             )
             .await
         });
@@ -487,15 +501,26 @@ fn main() {
             // always has. start_rocket_server has already handed the signals
             // back by this point, so the handler above is live again and the
             // daemon can still be stopped.
-            Err(e) => error!("API server error: {}", e),
+            //
+            // Unless a stop was already asked for. The port is bound inside
+            // launch(), after the handle is published, so a signal arriving
+            // while an outgoing instance still holds port 1080 is passed to a
+            // server that then fails to start -- and nothing would report a
+            // shutdown that never began. Ending the loop here makes that stop
+            // clean rather than leaving it to the watchdog.
+            Err(e) => {
+                error!("API server error: {}", e);
+                if shutdown_handle_for_outcome.stop_requested() {
+                    info!("A stop was asked for while the API server was starting");
+                    api_running.store(false, Ordering::SeqCst);
+                }
+            }
 
-            // Rocket owns SIGTERM and SIGINT from the moment it launches, and
-            // the handler registered above stands down for as long as it does,
-            // so this is the only thing that clears `running` on an ordinary
-            // stop. Without it the main loop below spun forever after Rocket
-            // had shut down, and systemd SIGKILLed the process on every stop,
-            // restart and package upgrade -- so nothing ever got to flush its
-            // state.
+            // The handler above passes a signal to the running server and
+            // leaves `running` alone, so this is the only thing that clears it
+            // on an ordinary stop. Without it the main loop below spun forever
+            // after the server had shut down, and systemd SIGKILLed the
+            // process on every stop, restart and package upgrade.
             //
             // ShutDown is returned exactly when Rocket has finished its
             // graceful shutdown, which is the event main is waiting for.
@@ -504,10 +529,11 @@ fn main() {
                 api_running.store(false, Ordering::SeqCst);
             }
 
-            // Nothing was started, so nothing has shut down. Rocket never
-            // replaced the handler registered above either, so that one is
-            // still live -- for SIGTERM as well as SIGINT, given the
-            // "termination" feature -- and remains the way this process stops.
+            // Nothing was started, so nothing has shut down and nothing was
+            // ever published for a signal to be passed to. The handler above
+            // ends the process itself -- for SIGTERM and SIGHUP as well as
+            // SIGINT, given the "termination" feature -- and remains the way
+            // this process stops.
             Ok(ServerOutcome::Disabled) => {}
         }
     });
@@ -518,8 +544,8 @@ fn main() {
     // daemon answered nothing for about a minute on the 0.12.0 upgrade.
     audiocontrol::helpers::imagepurge::purge_retired_in_background();
 
-    // Keep the main thread alive until the API server stops, or a signal
-    // arrives before Rocket has taken the handlers over.
+    // Keep the main thread alive until the API server stops, or until a
+    // signal arrives with no server running to pass it to.
     while running.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(100));
     }

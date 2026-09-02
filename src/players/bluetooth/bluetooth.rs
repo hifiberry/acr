@@ -22,9 +22,6 @@ pub struct BluetoothPlayerController {
     /// D-Bus connection (using Mutex instead of RwLock for thread safety)
     connection: Arc<Mutex<Option<Connection>>>,
     
-    /// Current song information
-    current_song: Arc<RwLock<Option<Song>>>,
-
     /// Current player state
     current_state: Arc<RwLock<PlayerState>>,
     
@@ -56,7 +53,6 @@ impl Clone for BluetoothPlayerController {
         BluetoothPlayerController {
             base: self.base.clone(),
             connection: Arc::clone(&self.connection),
-            current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             device_address: Arc::clone(&self.device_address),
             player_path: Arc::clone(&self.player_path),
@@ -137,7 +133,6 @@ impl BluetoothPlayerController {
         let controller = BluetoothPlayerController {
             base,
             connection: Arc::new(Mutex::new(None)),
-            current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             device_address: Arc::new(RwLock::new(device_address.clone())),
             player_path: Arc::new(RwLock::new(None)),
@@ -601,11 +596,8 @@ impl BluetoothPlayerController {
                     ..Default::default()
                 };
                 
-                {
-                    let mut guard = self.current_song.write();
-                    *guard = Some(song);
-                    debug!("Updated Bluetooth song information");
-                }
+                self.base.set_song(Some(song));
+                debug!("Updated Bluetooth song information");
             }
         }
     }
@@ -743,7 +735,6 @@ impl BluetoothPlayerController {
     fn poll_playback_state(
         proxy: &dbus::blocking::Proxy<&dbus::blocking::Connection>,
         current_state: &Arc<RwLock<PlayerState>>,
-        current_song: &Arc<RwLock<Option<Song>>>,
         base: &BasePlayerController,
     ) {
         if let Ok(status) = proxy.get::<String>("org.bluez.MediaPlayer1", "Status") {
@@ -768,9 +759,8 @@ impl BluetoothPlayerController {
                         debug!("Bluetooth player became active");
 
                         // Notify about current song when becoming active
-                        let song_guard = current_song.read();
-                        if let Some(ref song) = *song_guard {
-                            base.notify_song_changed(Some(song));
+                        if let Some(song) = base.song() {
+                            base.notify_song_changed(Some(&song));
                         }
                     }
                 }
@@ -784,7 +774,6 @@ impl BluetoothPlayerController {
     /// Poll and update track information
     fn poll_track_information(
         proxy: &dbus::blocking::Proxy<&dbus::blocking::Connection>,
-        current_song: &Arc<RwLock<Option<Song>>>,
         base: &BasePlayerController,
     ) {
         if let Ok(track_data) = proxy.get::<HashMap<String, dbus::arg::Variant<Box<dyn RefArg>>>>("org.bluez.MediaPlayer1", "Track") {
@@ -815,23 +804,12 @@ impl BluetoothPlayerController {
                 };
                 
                 // Update song if changed
-                {
-                    let mut song_guard = current_song.write();
-                    let song_changed = song_guard.as_ref().map(|s| {
-                        s.title != new_song.title ||
-                        s.artist != new_song.artist ||
-                        s.album != new_song.album
-                    }).unwrap_or(true);
+                if base.set_song(Some(new_song.clone())) {
+                    info!("Bluetooth track changed: {:?} - {:?} ({:?})",
+                           new_song.artist, new_song.title, new_song.album);
 
-                    if song_changed {
-                        info!("Bluetooth track changed: {:?} - {:?} ({:?})",
-                               new_song.artist, new_song.title, new_song.album);
-                        *song_guard = Some(new_song.clone());
-                        base.notify_song_changed(Some(&new_song));
-
-                        // Also mark as alive when song changes
-                        base.alive();
-                    }
+                    // Also mark as alive when song changes
+                    base.alive();
                 }
             }
         }
@@ -861,7 +839,6 @@ impl BluetoothPlayerController {
     fn run_polling_loop(
         player_path: Arc<RwLock<Option<String>>>,
         connection: Arc<Mutex<Option<Connection>>>,
-        current_song: Arc<RwLock<Option<Song>>>,
         current_state: Arc<RwLock<PlayerState>>,
         stop_flag: Arc<std::sync::atomic::AtomicBool>,
         base: BasePlayerController,
@@ -886,8 +863,8 @@ impl BluetoothPlayerController {
 
                     // Poll different aspects of the player state
                     debug!("Polling Bluetooth player state at {}", path_str);
-                    Self::poll_playback_state(&proxy, &current_state, &current_song, &base);
-                    Self::poll_track_information(&proxy, &current_song, &base);
+                    Self::poll_playback_state(&proxy, &current_state, &base);
+                    Self::poll_track_information(&proxy, &base);
                     Self::poll_position_information(&proxy, &current_state, &base);
                 }
             } else {
@@ -913,14 +890,13 @@ impl BluetoothPlayerController {
         
         let player_path = Arc::clone(&self.player_path);
         let connection = Arc::clone(&self.connection);
-        let current_song = Arc::clone(&self.current_song);
         let current_state = Arc::clone(&self.current_state);
         let stop_flag = Arc::clone(&self.stop_polling);
         let base = self.base.clone();
         let device_address = Arc::clone(&self.device_address);
-        
+
         let handle = thread::spawn(move || {
-            Self::run_polling_loop(player_path, connection, current_song, current_state, stop_flag, base, device_address);
+            Self::run_polling_loop(player_path, connection, current_state, stop_flag, base, device_address);
         });
         
         *self.poll_thread.write() = Some(handle);
@@ -996,7 +972,7 @@ impl PlayerController for BluetoothPlayerController {
         // Update song information from D-Bus before returning
         self.update_song_from_dbus();
 
-        self.current_song.read().clone()
+        self.base.song()
     }
 
     fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {

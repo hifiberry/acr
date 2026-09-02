@@ -1,7 +1,7 @@
 # One owner for the current song, and who may improve it
 
 **Date:** 2026-09-02
-**Status:** Proposed
+**Status:** Implemented
 **Affects:** `src/players/player_controller.rs`, seven player backends,
 `src/audiocontrol/`, the cover art provider framework, the WebSocket event
 contract, `/api/now-playing`

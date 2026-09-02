@@ -610,12 +610,12 @@ track, `song.metadata.cover_art_source` says so: a radio stream carries its
 station's logo under `"station_logo"`. The key is absent for artwork that
 belongs to the song, which is never replaced.
 
-This response is built from the player's own stored song. A lookup that finds
-the track's real artwork publishes it on the WebSocket as a
-`song_information_update` and does not write back into the player, so
-`/api/now-playing` goes on reporting the station logo for as long as the stream
-plays. A client that wants the better image has to follow the WebSocket; see
-[the event contract](websocket.md).
+This response is built from the player's own stored song, and a lookup that
+finds the track's real artwork writes it there: `cover_art_url` is updated
+shortly after the song change, and `song.metadata.cover_art_source` names
+whatever provider supplied it. A client that only polls `/api/now-playing`
+sees the same progression a WebSocket subscriber sees on
+`song_information_update`; see [the event contract](websocket.md).
 
 #### Example
 ```bash

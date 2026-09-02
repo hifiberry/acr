@@ -168,11 +168,12 @@ the lookup behind it is a network round trip and a radio track may be short.
 That is what `title` and `artist` are on the payload for: compare them against
 the song being shown and drop an update that no longer matches.
 
-The better image lives only in this event. `GET /api/now-playing` is built from
-the player's stored song, which the lookup does not write back into, so it keeps
-returning the station logo -- a client that reconnects and re-fetches
-now-playing will fall back to the logo until the next
-`song_information_update`.
+REST and the WebSocket now agree: the lookup behind this event writes the
+better image into the player's stored song, so `GET /api/now-playing` reports
+it too, and a client that reconnects and re-fetches now-playing gets the same
+artwork a WebSocket subscriber already has, not the station logo. A client
+that only polls will see `cover_art_url` change between two polls of the same
+song, once the lookup completes.
 
 `song.cover_art_url` and `song.metadata.lyrics_url` carry the externally
 visible prefix when the connection was upgraded through a proxy that reports

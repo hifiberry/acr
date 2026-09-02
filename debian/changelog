@@ -30,14 +30,43 @@ hifiberry-audiocontrol (0.18.0) trixie; urgency=medium
     Bluetooth, RAAT or Shairport, and the new track would be reported with the
     previous one's artist, album and cover art for as long as it played.
   * A metadata-only refresh of the song already playing -- cover art arriving
-    after the song itself is the ordinary case -- now reaches clients on every
-    backend that delivers songs by event rather than by polling: generic, RAAT,
-    Shairport and librespot. Several of those stored the refresh but the
-    conversion on the way out would have dropped it, and some never attempted
-    to propagate it at all. Backends that poll, such as MPRIS and Bluetooth,
-    deliberately do not announce a refresh: they rebuild the song from their
-    source on every read, so what looks like a refresh there is the same
-    reading again, and announcing it would put an event on the bus per poll.
+    after the song itself is the ordinary case -- now reaches clients from
+    every source that speaks only when something has changed: the generic
+    controller, Shairport, librespot, and RAAT's update channel. Several of
+    those stored the refresh but the conversion on the way out would have
+    dropped it, and some never attempted to propagate it at all. A source that
+    instead re-delivers the current state continuously -- MPRIS and Bluetooth
+    on a poll, RAAT's metadata pipe on every line it emits -- deliberately does
+    not announce a refresh: what looks like one there is the same reading
+    again, and announcing it would put an event on the bus per delivery for as
+    long as the track played. Whether the source is polled or calls back makes
+    no difference to this; whether it speaks only on a change does.
+  * Cover art found by a lookup survives on RAAT. Every line down the RAAT
+    metadata pipe carries the playback position and a full description of the
+    track, so lines arrive throughout a track whether or not anything changed
+    -- the player is declared gone after ten seconds without one. Storing each
+    line's track unconditionally erased artwork a lookup had found within a
+    pipe interval, and published a song change per line for the whole track.
+  * A cover art lookup that names its source no longer relabels artwork it did
+    not supply. `cover_art_source` was copied out of the lookup's answer even
+    when the answer's image had been refused for belonging to the song
+    already, which misreported to clients where the displayed artwork came
+    from. Provenance now travels with the image or not at all.
+  * `song.metadata.cover_art_source` gains the value `"enrichment"`, for
+    artwork a lookup supplied without naming itself. The full set of values a
+    client can meet is documented in the event contract, together with the
+    rule for reading one it does not recognise: `"station_logo"` is the only
+    placeholder, everything else is the track's own artwork.
+  * Spotify playback no longer jumps back to the start of the track when the
+    artist arrives late. The position was reset whenever the song's identity
+    changed, and the artist became part of that identity in this release --
+    but librespot announces a track first and fills in the artist moments
+    later, so an ordinary track was rewound in the middle of playing. The
+    reset now follows the track, not its metadata.
+  * AirPlay artwork is announced once rather than once per filesystem event.
+    The cover art watcher sees a file created and then written, and each of
+    those told every client to re-read a song whose artwork had not changed
+    between them.
   * Shairport announces a session restart. `SessionStart` cleared the current
     song without telling clients, unlike `SessionEnd`, which did; a client
     that had a track showing when a new AirPlay session began kept showing it

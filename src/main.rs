@@ -498,8 +498,8 @@ fn main() {
 
             // A server that never came up -- Bind, Config, Collisions,
             // FailedFairings -- leaves the rest of the daemon running, as it
-            // always has. start_rocket_server has already handed the signals
-            // back by this point, so the handler above is live again and the
+            // always has. The means to stop it has been withdrawn by this
+            // point, so the handler above ends the process itself and the
             // daemon can still be stopped.
             //
             // Unless a stop was already asked for. The port is bound inside

@@ -24,6 +24,12 @@ env_logger = "0.11.8"
 once_cell = "1.19"
 # "termination" is what registers SIGTERM and SIGHUP; without it this crate
 # only ever handles SIGINT, which is not how this daemon is stopped.
+# "termination" is load-bearing: it is what registers SIGTERM and SIGHUP as
+# well as SIGINT. The webserver's own signal handling is switched off (see
+# start_rocket_server), so this is the only thing that makes a systemctl stop
+# reach any of our code. Dropping the feature fails silently -- everything
+# still compiles, and the daemon dies instantly on SIGTERM with none of the
+# shutdown path running.
 ctrlc = { version = "3.4", features = ["termination"] }
 lazy_static = "1.4.0"
 delegate = "0.10.0"

@@ -404,6 +404,21 @@ pub async fn start_rocket_server(
         move || shutdown.clone().notify()
     });
 
+    // A stop asked for before the server got this far is honoured now rather
+    // than after it has bound its port and started serving. The handler runs on
+    // ctrlc's own thread, concurrently with this one, and it is registered long
+    // before main reaches its wait loop -- config loading and controller setup
+    // sit in between, which on a Pi is seconds, not instructions. Without this,
+    // a signal arriving in that stretch would leave main on its way out while
+    // this thread went on to launch a fully serving webserver, which process
+    // exit would then tear down with no grace period and no shutdown fairings.
+    // Tripping the wire here means launch() returns through the ordinary path
+    // instead, and the outcome is reported as a clean shutdown.
+    if shutdown_handle.stop_requested() {
+        info!("A stop was asked for before the API server started; stopping it now");
+        ignited.shutdown().notify();
+    }
+
     let launched = ignited.launch().await;
 
     // Handed back however that turned out: the server is gone either way, and

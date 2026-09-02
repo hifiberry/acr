@@ -26,6 +26,14 @@ hifiberry-audiocontrol (0.16.1) trixie; urgency=medium
     late in startup, so a signal sent while an outgoing instance still holds
     it is passed to a server that then fails to start, and nothing would have
     reported a shutdown that never began.
+  * A stop asked for before the webserver starts stops it before it serves.
+    The signal handler is registered early, and configuration loading and
+    controller setup sit between that and the point where the main thread
+    begins waiting -- seconds on a Raspberry Pi. A signal arriving in that
+    stretch used to leave the main thread on its way out while the API thread
+    went on to bind the port and serve, so process exit tore down a running
+    webserver with no grace period and no shutdown fairings. The request is
+    now seen before the server is launched.
   * The force-exit watchdog is armed by every shutdown signal. It previously
     sat on only one of the two paths, so a shutdown that stalled while the
     webserver owned the signals had no backstop at all. It now allows eight

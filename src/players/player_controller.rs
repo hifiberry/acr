@@ -647,6 +647,45 @@ impl BasePlayerController {
         changed
     }
 
+    /// Revise the song being played in place, for a player correcting or
+    /// completing its *own* data about it.
+    ///
+    /// `f` is applied to the stored song under a single write lock, so there is
+    /// no read-then-write window in which another writer could interleave; the
+    /// guard is dropped before listeners are notified. Returns whether there
+    /// was a song to update; with nothing playing, nothing happens and no event
+    /// is published.
+    ///
+    /// This is deliberately not [`Self::apply_song_information`]. That method
+    /// enforces the enrichment override policy, under which artwork supplied by
+    /// the player is precisely what an outside lookup may not replace — so a
+    /// player revising its own artwork through it would always be refused. The
+    /// policy is about outside answers; it has nothing to say about a player
+    /// correcting itself.
+    pub fn update_song<F: FnOnce(&mut Song)>(&self, f: F) -> bool {
+        let updated = {
+            let mut state = self.player_state.write();
+            match state.song.as_mut() {
+                Some(song) => {
+                    f(song);
+                    Some(song.clone())
+                }
+                None => None,
+            }
+        };
+
+        match updated {
+            Some(song) => {
+                self.notify_song_changed(Some(&song));
+                true
+            }
+            None => {
+                debug!("A player updated its song with nothing playing; nothing to update");
+                false
+            }
+        }
+    }
+
     /// Merge information a lookup found into the song being played.
     ///
     /// `partial` carries only what changed; an absent field means unchanged,
@@ -817,6 +856,42 @@ mod tests {
         );
 
         assert!(base.replace_song(Some(song("One", "Metallica"))));
+    }
+
+    /// A player revising its own current song is not enrichment, and must not
+    /// be routed through the enrichment override policy: by that policy the
+    /// player's own artwork is exactly what may never be replaced, so a
+    /// revision of it would always be dropped. update_song mutates the stored
+    /// song under a single write lock, so there is no read-then-write race
+    /// with whatever else is writing to the same song.
+    #[test]
+    fn a_player_updating_its_own_song_is_not_subject_to_the_override_policy() {
+        let base = base();
+        let mut playing = song("Battery", "Metallica");
+        playing.cover_art_url = Some("https://example.com/first.jpg".to_string());
+        base.set_song(Some(playing));
+
+        assert!(base.update_song(|song| {
+            song.cover_art_url = Some("https://example.com/second.jpg".to_string());
+        }));
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/second.jpg".to_string()),
+            "a player may revise the artwork it supplied itself"
+        );
+    }
+
+    /// With nothing playing there is nothing to update, and the caller is told
+    /// so rather than a song being invented.
+    #[test]
+    fn a_player_update_with_no_song_playing_reports_that_there_was_none() {
+        let base = base();
+
+        assert!(!base.update_song(|song| {
+            song.cover_art_url = Some("https://example.com/cover.jpg".to_string());
+        }));
+        assert!(base.song().is_none());
     }
 
     /// The stored song is what get_song answers with.

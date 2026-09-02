@@ -511,14 +511,18 @@ impl ShairportController {
         pending_song: &Arc<Mutex<Option<Song>>>,
         base: &BasePlayerController,
     ) {
-        // Update current song if it exists
-        if let Some(playing) = base.song() {
-            base.apply_song_information(&Song {
-                title: playing.title,
-                artist: playing.artist,
-                cover_art_url: Some(artwork_url.clone()),
-                ..Default::default()
-            });
+        // Update current song if it exists. This is the player's own artwork,
+        // not an enrichment lookup, so it goes through update_song rather than
+        // apply_song_information: the enrichment override policy exists to
+        // stop an outside lookup replacing artwork that belongs to the song,
+        // and would therefore refuse every revision shairport makes to its
+        // own. The watcher fires on Modify(Data) as well as Create, and a
+        // sender may revise its cover mid-track, so revisions are ordinary.
+        // update_song also mutates under one write lock, restoring the
+        // atomicity the read-then-write pair here had lost.
+        if base.update_song(|song| {
+            song.cover_art_url = Some(artwork_url.clone());
+        }) {
             return;
         }
 
@@ -1029,6 +1033,66 @@ mod tests {
             base.song().unwrap().album,
             Some("Master of Puppets".to_string()),
             "a same-identity metadata re-send must still be stored, not dropped"
+        );
+    }
+
+    /// The watcher fires on Create *and* on Modify(Data), and a sender may
+    /// revise its cover mid-track, so a second artwork file for the song
+    /// already playing is ordinary. It is the player's own data, not an
+    /// enrichment lookup, so the enrichment override policy -- which refuses
+    /// to replace artwork that belongs to the song -- must not stand in
+    /// its way.
+    #[test]
+    fn a_second_artwork_file_replaces_the_first_on_the_playing_song() {
+        let base = BasePlayerController::with_player_info("shairport", "shairport:2");
+        base.set_song(Some(Song {
+            title: Some("Some AirPlay Track".to_string()),
+            artist: Some("Some Artist".to_string()),
+            ..Default::default()
+        }));
+
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+        ShairportController::update_song_cover_art(
+            "https://example.com/first.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+        ShairportController::update_song_cover_art(
+            "https://example.com/second.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/second.jpg".to_string()),
+            "the artwork the watcher saw last is the artwork that is playing"
+        );
+    }
+
+    /// With no song playing and nothing pending, the watcher's artwork is
+    /// stored as a bare cover-art-only song; the next file the watcher sees
+    /// must then land on that song rather than being refused.
+    #[test]
+    fn a_later_artwork_file_replaces_an_earlier_one_when_no_song_is_playing() {
+        let base = BasePlayerController::with_player_info("shairport", "shairport:1");
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+
+        ShairportController::update_song_cover_art(
+            "https://example.com/first.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+        ShairportController::update_song_cover_art(
+            "https://example.com/second.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/second.jpg".to_string()),
+            "the artwork the watcher saw last is the artwork that is playing"
         );
     }
 }

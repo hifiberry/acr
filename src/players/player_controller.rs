@@ -775,14 +775,20 @@ impl BasePlayerController {
 
             // The override policy, enforced here rather than in whichever
             // plugin happens to be calling. Artwork belonging to the song is
-            // never replaced; only a placeholder is.
-            let took_cover_art =
-                partial.cover_art_url.is_some() && current.cover_art_is_replaceable();
+            // never replaced; only a placeholder is -- and only by a
+            // *different* image. Provenance describes a URL, so a partial
+            // that offers back the URL already stored has supplied no
+            // artwork and says nothing about where the artwork came from:
+            // stamping it would relabel an unchanged station logo as the
+            // track's own image and make it unreplaceable by every later
+            // lookup. A lookup answering with the URL the station itself
+            // published is the ordinary way that happens.
+            let took_cover_art = partial.cover_art_url.is_some()
+                && current.cover_art_url != partial.cover_art_url
+                && current.cover_art_is_replaceable();
             if took_cover_art {
-                if current.cover_art_url != partial.cover_art_url {
-                    current.cover_art_url = partial.cover_art_url.clone();
-                    changed = true;
-                }
+                current.cover_art_url = partial.cover_art_url.clone();
+                changed = true;
 
                 // Provenance is part of the write, not something a caller may
                 // forget. The URL replaced is usually a placeholder, and its
@@ -1267,6 +1273,59 @@ mod tests {
             Some(COVER_ART_SOURCE_LASTFM),
             "a partial that supplied the artwork names its own source"
         );
+    }
+
+    /// Provenance describes an image, so re-offering the image already in
+    /// place says nothing new about where it came from. A lookup that answers
+    /// with the same URL the station itself supplied -- byte for byte -- must
+    /// leave the `station_logo` marker alone: relabelling it `lastfm`, or
+    /// `enrichment` when the partial names nothing, would declare an
+    /// unchanged placeholder to be the track's own artwork and make it
+    /// permanently unreplaceable by any later lookup.
+    #[test]
+    fn re_offering_the_stored_url_does_not_relabel_it() {
+        use crate::data::song::{
+            COVER_ART_SOURCE, COVER_ART_SOURCE_LASTFM, COVER_ART_SOURCE_STATION_LOGO,
+        };
+
+        let logo = "https://station.example/logo.png".to_string();
+
+        for named_source in [None, Some(COVER_ART_SOURCE_LASTFM)] {
+            let base = base();
+            let mut playing = song("Battery", "Metallica");
+            playing.cover_art_url = Some(logo.clone());
+            playing.metadata.insert(
+                COVER_ART_SOURCE.to_string(),
+                serde_json::Value::String(COVER_ART_SOURCE_STATION_LOGO.to_string()),
+            );
+            base.set_song(Some(playing));
+
+            let mut partial = song("Battery", "Metallica");
+            partial.cover_art_url = Some(logo.clone());
+            if let Some(named) = named_source {
+                partial.metadata.insert(
+                    COVER_ART_SOURCE.to_string(),
+                    serde_json::Value::String(named.to_string()),
+                );
+            }
+
+            assert!(
+                !base.apply_song_information(&partial),
+                "a partial offering the artwork already in place changes nothing"
+            );
+
+            let stored = base.song().unwrap();
+            assert_eq!(stored.cover_art_url, Some(logo.clone()));
+            assert_eq!(
+                stored.metadata.get(COVER_ART_SOURCE).and_then(|v| v.as_str()),
+                Some(COVER_ART_SOURCE_STATION_LOGO),
+                "an unchanged placeholder stays a placeholder"
+            );
+            assert!(
+                stored.cover_art_is_replaceable(),
+                "and stays replaceable by a lookup that finds a better image"
+            );
+        }
     }
 
     /// The return value says whether the update was applied, so a partial

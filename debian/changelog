@@ -21,25 +21,33 @@ hifiberry-audiocontrol (0.18.0) trixie; urgency=medium
     cover_art_url, so it applied only where that plugin remembered to check
     it. It now lives once, in the player itself, ahead of every write.
   * What counts as a song change is now one rule for every backend: the title
-    or the stream URL differs from what is already playing. Some backends
-    also compared artist and album, so a same-titled track credited to a
+    or the stream URL differs from what is already playing. The generic
+    backend also compared the artist, and it is the one that resets the
+    playback position on a song change, so a same-titled track credited to a
     different artist -- a cover, a collaboration relisted under a featured
-    artist -- read as a new song there and reset the playback position. It no
+    artist -- read as a new song there and sent playback back to zero. It no
     longer does.
   * A metadata-only refresh of the song already playing -- cover art arriving
     after the song itself is the ordinary case -- now reaches clients on every
-    backend that delivers songs by event rather than by polling: generic,
-    RAAT, MPRIS, Bluetooth and Shairport. Several of those backends stored the
-    refresh but the conversion on the way out would have dropped it, and some
-    never attempted to propagate it at all.
+    backend that delivers songs by event rather than by polling: generic, RAAT
+    and Shairport. Several of those stored the refresh but the conversion on
+    the way out would have dropped it, and some never attempted to propagate
+    it at all. Backends that poll, such as MPRIS and Bluetooth, deliberately
+    do not announce a refresh: they rebuild the song from their source on
+    every read, so what looks like a refresh there is the same reading again,
+    and announcing it would put an event on the bus per poll.
   * Shairport announces a session restart. `SessionStart` cleared the current
     song without telling clients, unlike `SessionEnd`, which did; a client
     that had a track showing when a new AirPlay session began kept showing it
     until the next song arrived. Both events now notify.
-  * MPRIS and Bluetooth song changes now reach clients. Both backends write
-    their current song from inside `get_song()`, and neither emitted a change
-    event from there before -- MPRIS did not notify on a song change at all.
-    An event now fires whenever the song genuinely changes.
+  * MPRIS and Bluetooth song changes now reach clients. Both backends rebuild
+    their current song from D-Bus inside `get_song()` -- MPRIS also from a
+    poll thread -- and neither emitted a change event from there before; MPRIS
+    did not notify on a song change at all. An event now fires when the song
+    genuinely changes, and only then: a poll that re-reads the track already
+    playing stays silent and leaves the stored song alone, so cover art a
+    lookup has found is not overwritten a second later by the same reading
+    without it.
 
  -- HiFiBerry <support@hifiberry.com>  Wed, 02 Sep 2026 16:08:27 +0000
 

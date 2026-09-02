@@ -596,11 +596,13 @@ impl BluetoothPlayerController {
                     ..Default::default()
                 };
                 
-                // The old code wrote `*guard = Some(song)` unconditionally
-                // here, with no identity check at all; a same-identity
-                // metadata refresh must still reach clients rather than be
-                // dropped by set_song's identity gating.
-                self.base.replace_song(Some(song));
+                // This rebuilds the song from D-Bus properties on every call,
+                // and its only caller is get_song(). set_song stores and
+                // notifies only on an identity change; replace_song here would
+                // make the very read that is meant to return enriched cover
+                // art the call that erases it, and publish a song_changed on
+                // every /api/now-playing poll.
+                self.base.set_song(Some(song));
                 debug!("Updated Bluetooth song information");
             }
         }

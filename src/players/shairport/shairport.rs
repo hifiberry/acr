@@ -532,9 +532,14 @@ impl ShairportController {
             }
         }
 
-        // If no current or pending song, create a minimal song with just cover art
+        // If no current or pending song, create a minimal song with just cover
+        // art. Every such song has the same identity -- no title, no artist,
+        // no stream URL -- so identity gating is worthless here and would be a
+        // trap the moment the branch above stopped returning early. A file
+        // appearing in the watched directory is an event, not a poll, so the
+        // store and the notification are unconditional.
         let song = Song { cover_art_url: Some(artwork_url.clone()), ..Default::default() };
-        base.set_song(Some(song));
+        base.replace_song(Some(song));
     }
     
     /// Process a ShairportSync message and update state

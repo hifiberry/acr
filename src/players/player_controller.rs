@@ -253,6 +253,30 @@ impl Default for BasePlayerController {
     }
 }
 
+/// Whether `new` is a different song from `old` -- the one identity rule every
+/// backend is measured against, shared by [`BasePlayerController::set_song`]
+/// and [`BasePlayerController::replace_song`] so the two cannot drift apart.
+///
+/// Title, artist and stream URL. The artist has to be in it: only the generic
+/// controller and MPD ever assign a `stream_url`, so for MPRIS, Bluetooth,
+/// RAAT and Shairport the rest of the rule is the title alone, and two
+/// consecutive tracks sharing a title -- a cover, a live version, a
+/// collaboration relisted under a featured artist -- would read as one song.
+/// That is not merely a missed notification: `set_song` skips the store on an
+/// identity miss, so the second track would be reported with the first one's
+/// artist, album and artwork for as long as it played.
+fn song_identity_changed(old: Option<&Song>, new: Option<&Song>) -> bool {
+    match (old, new) {
+        (Some(old), Some(new)) => {
+            old.stream_url != new.stream_url
+                || old.title != new.title
+                || old.artist != new.artist
+        }
+        (None, None) => false,
+        _ => true,
+    }
+}
+
 impl BasePlayerController {
     /// Create a new BasePlayerController with no listeners
     pub fn new() -> Self {
@@ -585,13 +609,7 @@ impl BasePlayerController {
     pub fn set_song(&self, song: Option<Song>) -> bool {
         let changed = {
             let mut state = self.player_state.write();
-            let changed = match (&state.song, &song) {
-                (Some(old), Some(new)) => {
-                    old.stream_url != new.stream_url || old.title != new.title
-                }
-                (None, None) => false,
-                _ => true,
-            };
+            let changed = song_identity_changed(state.song.as_ref(), song.as_ref());
             if changed {
                 state.song = song.clone();
             }
@@ -620,13 +638,7 @@ impl BasePlayerController {
     pub fn replace_song(&self, song: Option<Song>) -> bool {
         let changed = {
             let mut state = self.player_state.write();
-            let changed = match (&state.song, &song) {
-                (Some(old), Some(new)) => {
-                    old.stream_url != new.stream_url || old.title != new.title
-                }
-                (None, None) => false,
-                _ => true,
-            };
+            let changed = song_identity_changed(state.song.as_ref(), song.as_ref());
             state.song = song.clone();
             changed
         };
@@ -731,6 +743,57 @@ mod tests {
         assert!(base.set_song(Some(song("One", "Metallica"))));
         assert!(base.set_song(None));
         assert!(!base.set_song(None));
+    }
+
+    /// Four backends -- MPRIS, Bluetooth, RAAT and Shairport -- never assign
+    /// `stream_url`, so if identity were title and stream URL alone it would
+    /// be title alone for them: two consecutive tracks sharing a title would
+    /// read as one song, and the second would be reported with the first's
+    /// artist, album and artwork for its whole duration, because set_song
+    /// skips the *store* on an identity miss, not merely the notification.
+    #[test]
+    fn a_same_titled_track_by_a_different_artist_is_a_new_song() {
+        let base = base();
+
+        let mut first = song("Hurt", "Nine Inch Nails");
+        first.album = Some("The Downward Spiral".to_string());
+        first.cover_art_url = Some("https://example.com/nin.jpg".to_string());
+        assert!(base.set_song(Some(first)));
+
+        let mut second = song("Hurt", "Johnny Cash");
+        second.album = Some("American IV".to_string());
+        second.cover_art_url = Some("https://example.com/cash.jpg".to_string());
+        assert!(
+            base.set_song(Some(second)),
+            "a same-titled track by a different artist is a different song"
+        );
+
+        let stored = base.song().expect("a song must be stored");
+        assert_eq!(stored.artist, Some("Johnny Cash".to_string()));
+        assert_eq!(
+            stored.album,
+            Some("American IV".to_string()),
+            "the new track's album must replace the previous one's, not be skipped"
+        );
+        assert_eq!(
+            stored.cover_art_url,
+            Some("https://example.com/cash.jpg".to_string()),
+            "the new track's artwork must replace the previous one's"
+        );
+    }
+
+    /// The same rule in replace_song, whose return value is what an
+    /// event-driven backend gates a playback position reset on: a different
+    /// artist under the same title is a new track and must start from zero.
+    #[test]
+    fn replace_song_reports_a_different_artist_under_one_title_as_a_change() {
+        let base = base();
+
+        assert!(base.replace_song(Some(song("Hurt", "Nine Inch Nails"))));
+        assert!(
+            base.replace_song(Some(song("Hurt", "Johnny Cash"))),
+            "a same-titled track by a different artist is an identity change"
+        );
     }
 
     /// Unlike set_song, replace_song stores a same-identity refresh (e.g. new

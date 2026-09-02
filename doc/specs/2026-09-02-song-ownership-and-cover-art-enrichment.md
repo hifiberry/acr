@@ -1,0 +1,211 @@
+# One owner for the current song, and who may improve it
+
+**Date:** 2026-09-02
+**Status:** Proposed
+**Affects:** `src/players/player_controller.rs`, seven player backends,
+`src/audiocontrol/`, the cover art provider framework, the WebSocket event
+contract, `/api/now-playing`
+
+## Problem
+
+Two facts about this daemon are true at once, and together they mean cover art
+enrichment cannot reach the clients that ask for it over REST.
+
+**Every backend owns its own current song.** Seven files declare a
+`current_song` field — `bluetooth.rs`, `generic_controller.rs`, `librespot.rs`,
+`mpd.rs`, `mpris/mod.rs`, `raat.rs` and `shairport.rs` — 92 references between
+them. There is no central store; `AudioController::get_song`
+delegates to whichever controller is active. The storage types disagree
+(`shairport` uses `Mutex`, `raat` and `librespot` use `RwLock`), and the
+change-detection block is copy-pasted, with small variations, five times:
+
+```
+src/players/generic/generic_controller.rs:280
+src/players/librespot/librespot.rs:666
+src/players/mpd/mpd.rs:1151
+src/players/mpris/mod.rs:274
+src/players/raat/raat.rs:209
+```
+
+None of those copies has a test.
+
+The LMS controller is the exception and stays one: it stores no song at all and
+answers `get_song()` by querying the server (`lmsaudio.rs:668`). It keeps its
+own implementation, which also means enrichment cannot reach an LMS song — a
+limitation this change does not remove.
+
+**Nothing can write into that song from outside.** The one piece of code that
+enriches a playing song — the Last.fm action plugin — merges into its own copy
+and publishes a `SongInformationUpdate` on the event bus. Only `api/events.rs`
+(WebSocket forwarding) and `event_logger` subscribe. The player's stored song
+never changes.
+
+So `GET /api/now-playing`, which reads `player.get_song()`
+(`src/api/players.rs:466`), reports the un-enriched song forever, while a
+WebSocket client sees the better one. A client that reconnects and re-fetches
+now-playing regresses to the worse image.
+
+### The cover art framework is not connected to any of this
+
+`CoverartProvider` and its manager exist only behind `/api/coverart/*`. The
+manager has exactly one caller outside those routes — `artist_store.rs:334`,
+for artist images. `get_song_coverart` is reached only from the route handler
+at `api/server.rs:144`.
+
+The result is that the subsystem which *has* providers cannot write, and the
+code that *does* write is the scrobbler, which is not a provider and calls
+Last.fm for its own reasons. Cover art lookup lives in the scrobbling plugin by
+accident of history, not by design.
+
+### Evidence
+
+From a device playing ByteFM through MPD on 2026-09-02, before the 0.16.0
+change:
+
+- MPD reported `Title: Radical Friendship Theory - Listen To The News`; acr
+  split it correctly.
+- `cover_art_url` was the station favicon, 96×96.
+- The daemon had already fetched the track's real cover art seconds earlier —
+  the Last.fm plugin logs `Attempting to get track info for 'Listen To The
+  News' by 'Radical Friendship Theory'` — and Last.fm holds a 1200×1200 cover
+  for that track. It was discarded.
+
+0.16.0 fixed the discarding. It did not fix the reach: the better image is
+published on the WebSocket and `/api/now-playing` still answers with the
+station logo, which `doc/api.md` and `doc/websocket.md` now say explicitly
+because it could not be made otherwise without the change described here.
+
+## What changes
+
+### The song moves into `BasePlayerController`
+
+`PlayerState`, which the base already owns, gains the current song. It is not
+serialized into any API response — the API builds its own `PlayerInfo` — so
+this changes no payload. The base already serves `position` and `last_seen`
+from the same place, so the song follows an established pattern rather than
+introducing a second state container.
+
+The base gains three methods:
+
+| Method | Purpose |
+|---|---|
+| `set_song(Option<Song>)` | change-detect, store, `notify_song_changed` |
+| `apply_song_information(&Song) -> bool` | merge a partial update, store, emit `SongInformationUpdate` |
+| `get_song()` | becomes a default trait method reading from the base |
+
+Backends delete their `current_song` field, their `get_song`, and their copy of
+the change-detection block. The comparison rule becomes one rule with one test
+rather than five variants with none.
+
+### Enrichment addresses a player by source
+
+`AudioController::apply_song_information(&PlayerSource, &Song)`.
+
+`PlayerSource` is the right address because the Last.fm plugin already holds one
+for the song it looked up. The plugin swaps its private `merge_song_updates` for
+this call and stops publishing the event itself; the base publishes it, after
+the stored song has been updated, so REST and WebSocket cannot disagree.
+
+### A partial update that no longer applies is dropped
+
+`apply_song_information` applies the update only when the partial's `title` and
+`artist` still match the stored song, and drops it otherwise.
+
+A lookup is a network round trip, and on radio the track changes underneath it.
+Nothing checks this today, and 0.16.0 made it matter: before, a late answer
+overwrote a field nobody was looking at; now it would overwrite a visible
+image with artwork for a track that has finished.
+
+This is the rule `doc/websocket.md` already asks clients to follow — the event
+carries `title` and `artist` "so a client can confirm the update still applies
+to the song it is showing". The server should not be exempt from its own
+contract.
+
+### Who may override cover art, stated rather than inherited
+
+Today a provider cannot override a song's cover art because it has no way to
+reach it. Once the write path exists, that accident stops protecting anything,
+and the policy has to be explicit.
+
+Cover art carries its provenance in `song.metadata.cover_art_source`
+(introduced in 0.16.0). The rule is unchanged in substance and becomes the
+whole of the policy:
+
+| Current cover art | `cover_art_source` | May a lookup replace it? |
+|---|---|---|
+| none | absent | yes |
+| a URL-level placeholder — a station logo | `station_logo` | yes |
+| supplied by the player or by a client through `add_track` | absent | **no** |
+| already resolved by a lookup | the provider's name | **no** |
+
+Artwork that belongs to the song is never replaced, whatever a provider might
+have to offer, and however much better it might be. A device shows what its
+player says is playing.
+
+The second row is the only reason this machinery exists. The fourth keeps a
+resolved cover from being re-resolved on every subsequent lookup.
+
+## Scope
+
+**In scope**
+
+- Song ownership moves to `BasePlayerController`; seven backends converted.
+- `apply_song_information` with the staleness guard, and the
+  `AudioController` entry point.
+- The Last.fm plugin writes through it instead of publishing directly.
+- `doc/websocket.md` and `doc/api.md` updated: `/api/now-playing` now reflects
+  an enrichment, which is a change clients can observe.
+
+**Out of scope**
+
+- Moving cover art lookup out of the scrobbling plugin into a dedicated
+  enrichment stage that consults the `CoverartProvider` manager. That is the
+  right end state and this change is what makes it a move rather than a
+  rewrite, but it is a separate step with its own risk.
+- Any change to which providers exist or what they return.
+- Lyrics, genres and playcount enrichment, which take the same path and should
+  follow once the path is proven with cover art.
+
+## Tests
+
+The point of the change is that these become testable at all. Today all of these
+are duplicated across backends and untested.
+
+- **Change detection.** Same song, changed title, changed stream URL,
+  `None` → `Some`, `Some` → `None`. One rule, one place.
+- **Partial merge.** A field absent from the update leaves the stored value
+  alone; a field present replaces it; metadata merges key by key.
+- **Staleness.** An update whose title and artist match is applied; one whose
+  title differs is dropped; one whose artist differs is dropped.
+- **Override policy.** The four rows of the table above, as they already are
+  for `Song::cover_art_is_replaceable`, now exercised through
+  `apply_song_information`.
+- **No lock held across the event-bus publish**, which `.codereview.toml`
+  calls out specifically. `mpd.rs` drops its lock before notifying today; the
+  shared implementation encodes that once so the other eight cannot get it
+  wrong.
+
+The conversion of each backend is checked by the existing suite plus a run on
+a real device, since most of these backends cannot be exercised without one.
+
+## Migration
+
+MPD first: it is the backend with tests, it is the default player on most
+installs, and it is the one that demonstrates the cover art case end to end.
+The remaining eight follow mechanically — delete a field, replace writes with
+`base.set_song(...)`, delete `get_song`.
+
+The risk is concentrated in the backends that cannot be unit tested. Converting
+them in one commit each keeps a bisect useful.
+
+## Consequences for clients
+
+`/api/now-playing` will begin to reflect an enrichment shortly after a song
+change, where today it never does. A client polling it will see
+`cover_art_url` change between two polls of the same song — which the
+WebSocket contract already describes for `song_information_update`, but which
+REST clients have never had to handle.
+
+This is the compatibility path: the field already changes on the WebSocket, the
+marker already says when an image is a placeholder, and a client that ignores
+both sees a better picture arrive slightly late rather than anything breaking.

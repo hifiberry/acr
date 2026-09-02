@@ -271,10 +271,11 @@ impl GenericPlayerController {
         
         debug!("Generic player '{}' song changed", self.player_name);
 
-        // Identity comparison happens in base.set_song, which also notifies
-        // listeners on change: a metadata-only refresh of the SAME song
-        // (e.g. cover art arriving late) must not reset playback position.
-        if self.base.set_song(song) {
+        // replace_song always stores and always notifies -- a metadata-only
+        // refresh of the SAME song (e.g. cover art arriving late) still has
+        // to reach clients, it just must not reset playback position, which
+        // is what replace_song's return value gates here.
+        if self.base.replace_song(song) {
             self.progress.set_position(0.0);
         }
         true

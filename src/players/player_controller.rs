@@ -598,6 +598,37 @@ impl BasePlayerController {
         changed
     }
 
+    /// Replace the song being played, whether or not it is the same song, and
+    /// notify listeners either way.
+    ///
+    /// This is for backends that learn about songs from events rather than by
+    /// polling. An event carrying a metadata-only refresh of the same song --
+    /// cover art arriving late is the usual one -- has to reach clients, so
+    /// both the store and the notification are unconditional. Returns whether
+    /// the song's identity changed, which is what a caller gates a position
+    /// reset on.
+    ///
+    /// [`Self::set_song`] is the polling counterpart: it stores only on an
+    /// identity change, because a poller re-reads the same song constantly and
+    /// an unconditional store there would discard whatever a lookup had added.
+    pub fn replace_song(&self, song: Option<Song>) -> bool {
+        let changed = {
+            let mut state = self.player_state.write();
+            let changed = match (&state.song, &song) {
+                (Some(old), Some(new)) => {
+                    old.stream_url != new.stream_url || old.title != new.title
+                }
+                (None, None) => false,
+                _ => true,
+            };
+            state.song = song.clone();
+            changed
+        };
+
+        self.notify_song_changed(song.as_ref());
+        changed
+    }
+
     /// Merge information a lookup found into the song being played.
     ///
     /// `partial` carries only what changed; an absent field means unchanged,
@@ -684,6 +715,29 @@ mod tests {
         assert!(base.set_song(Some(song("One", "Metallica"))));
         assert!(base.set_song(None));
         assert!(!base.set_song(None));
+    }
+
+    /// Unlike set_song, replace_song stores a same-identity refresh (e.g. new
+    /// cover art) rather than dropping it -- an event-driven backend must not
+    /// lose metadata that arrives after the song was first reported. It still
+    /// reports whether identity changed, so a caller can gate a position
+    /// reset on that.
+    #[test]
+    fn replace_song_stores_a_same_identity_refresh_but_reports_no_identity_change() {
+        let base = base();
+
+        assert!(base.replace_song(Some(song("Battery", "Metallica"))));
+
+        let mut refreshed = song("Battery", "Metallica");
+        refreshed.cover_art_url = Some("https://example.com/cover.jpg".to_string());
+        assert!(!base.replace_song(Some(refreshed)));
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/cover.jpg".to_string())
+        );
+
+        assert!(base.replace_song(Some(song("One", "Metallica"))));
     }
 
     /// The stored song is what get_song answers with.

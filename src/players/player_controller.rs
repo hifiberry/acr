@@ -923,4 +923,77 @@ mod tests {
             Some("https://example.com/lookup.jpg".to_string())
         );
     }
+
+    /// Count the `song_changed` events one player published, ignoring what
+    /// every other test in the process puts on the same bus. The event bus is
+    /// a process-wide singleton, so the player id is what separates one
+    /// test's traffic from another's.
+    fn song_changed_events_from(
+        receiver: &crossbeam::channel::Receiver<PlayerEvent>,
+        player_id: &str,
+    ) -> usize {
+        receiver
+            .try_iter()
+            .filter(|event| {
+                matches!(event, PlayerEvent::SongChanged { source, .. }
+                    if source.player_id() == player_id)
+            })
+            .count()
+    }
+
+    /// A poller re-reads the same song every interval, and each re-read must
+    /// cost nothing on the bus: one `song_changed` for the song, not one per
+    /// observation. This is the guard against the event storm a polling
+    /// backend causes by notifying unconditionally -- a subscriber that falls
+    /// behind loses genuine state and position events to the duplicates.
+    #[test]
+    fn a_repeated_observation_publishes_no_second_event() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+
+        let bus = EventBus::instance();
+        let (id, receiver) = bus.subscribe(vec![EventSubscription::SongChanged]);
+
+        let player_id = "test:repeat-observation";
+        let base = BasePlayerController::with_player_info("test", player_id);
+
+        base.set_song(Some(song("Battery", "Metallica")));
+        base.set_song(Some(song("Battery", "Metallica")));
+        base.set_song(Some(song("Battery", "Metallica")));
+
+        let published = song_changed_events_from(&receiver, player_id);
+        bus.unsubscribe(id);
+
+        assert_eq!(
+            published, 1,
+            "three observations of one song must publish one song_changed, not three"
+        );
+    }
+
+    /// The point of the whole arrangement: a lookup finds real artwork for a
+    /// radio track, and the next poll must not wipe it. A polling backend
+    /// rebuilds the song from its source every interval, so the observation it
+    /// hands over carries no cover art at all -- storing that blindly erases
+    /// the enrichment a second after it arrived.
+    #[test]
+    fn a_rebuilt_observation_does_not_erase_enrichment() {
+        let base = base();
+        base.set_song(Some(song("Listen To The News", "Radical Friendship Theory")));
+
+        assert!(base.apply_song_information(&Song {
+            title: Some("Listen To The News".to_string()),
+            artist: Some("Radical Friendship Theory".to_string()),
+            cover_art_url: Some("https://lastfm.example/1200x1200.png".to_string()),
+            ..Default::default()
+        }));
+
+        // What the next poll observes: the same song, rebuilt from the source,
+        // with no cover art because the source never had any.
+        base.set_song(Some(song("Listen To The News", "Radical Friendship Theory")));
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://lastfm.example/1200x1200.png".to_string()),
+            "a rebuilt observation of the same song must not erase enriched artwork"
+        );
+    }
 }

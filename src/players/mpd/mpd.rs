@@ -35,15 +35,90 @@ pub fn is_stream_uri(uri: &str) -> bool {
     uri.contains("://")
 }
 
-/// Pick the cover art URL a station provides through its cached URL metadata.
-/// Radio stations carry their logo in `coverart_url` (or `logo_url`), which is
-/// the only cover art available for a stream.
-fn cover_art_from_metadata(metadata: &HashMap<String, serde_json::Value>) -> Option<String> {
-    metadata.get("coverart_url")
-        .or_else(|| metadata.get("logo_url"))
-        .and_then(|value| value.as_str())
-        .filter(|url| !url.is_empty())
-        .map(|url| url.to_string())
+/// Where cover art offered by a URL's cached metadata came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UrlCoverArtOrigin {
+    /// `logo_url`: a station's logo, never artwork for a track.
+    StationLogo,
+    /// `coverart_url`: artwork for the URL. For a radio stream that is still
+    /// the station's; for a track a client queued it is the track's own.
+    CoverArt,
+}
+
+/// Pick the cover art a URL's cached metadata offers, and say where it came
+/// from. This is the only cover art available for a stream.
+fn cover_art_from_metadata(
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Option<(String, UrlCoverArtOrigin)> {
+    let from = |key: &str, origin: UrlCoverArtOrigin| {
+        metadata
+            .get(key)
+            .and_then(|value| value.as_str())
+            .filter(|url| !url.is_empty())
+            .map(|url| (url.to_string(), origin))
+    };
+
+    from("coverart_url", UrlCoverArtOrigin::CoverArt)
+        .or_else(|| from("logo_url", UrlCoverArtOrigin::StationLogo))
+}
+
+/// Whether cover art from a URL's cached metadata is only a placeholder for
+/// whatever is playing from that URL right now, rather than its artwork.
+///
+/// The cache holds metadata per URL, and a single writer fills it: the
+/// `add_track` API. A radio station is queued with its own name and logo and
+/// then plays a different song every few minutes, so its image describes the
+/// URL, not the track. A client that queues one track supplies artwork for
+/// that track, and it must not be thrown away.
+///
+/// The two are told apart by the name: metadata naming something other than
+/// the track now playing describes the URL. Metadata carrying no name at all
+/// is treated as the track's own, which is the safe answer -- it leaves the
+/// image alone.
+fn cover_art_is_placeholder(
+    origin: UrlCoverArtOrigin,
+    metadata: &HashMap<String, serde_json::Value>,
+    song_title: Option<&str>,
+) -> bool {
+    if origin == UrlCoverArtOrigin::StationLogo {
+        return true;
+    }
+
+    match (
+        metadata.get("title").and_then(|value| value.as_str()),
+        song_title,
+    ) {
+        (Some(url_name), Some(playing)) => url_name != playing,
+        _ => false,
+    }
+}
+
+/// A stream has no cover art in the library, so fall back to the station logo
+/// from the URL metadata. Without this the song would reach the clients with no
+/// usable cover art at all.
+fn apply_station_logo(song: &mut Song) {
+    if song.cover_art_url.is_some() {
+        return;
+    }
+    let Some((url, origin)) = cover_art_from_metadata(&song.metadata) else {
+        return;
+    };
+
+    let placeholder = cover_art_is_placeholder(origin, &song.metadata, song.title.as_deref());
+    debug!(
+        "Using cover art from URL metadata: {} (placeholder: {})",
+        url, placeholder
+    );
+    song.cover_art_url = Some(url);
+
+    if placeholder {
+        song.metadata.insert(
+            crate::data::song::COVER_ART_SOURCE.to_string(),
+            serde_json::Value::String(
+                crate::data::song::COVER_ART_SOURCE_STATION_LOGO.to_string(),
+            ),
+        );
+    }
 }
 
 /// Derive the loop mode that MPD's `repeat` and `single` flags represent.
@@ -1061,15 +1136,7 @@ impl MPDPlayerController {
             }
         }
 
-        // A stream has no cover art in the library, so fall back to the station
-        // logo from the URL metadata. Without this the song would reach the
-        // clients with no usable cover art at all.
-        if song.cover_art_url.is_none() {
-            if let Some(url) = cover_art_from_metadata(&song.metadata) {
-                debug!("Using station logo as cover art: {}", url);
-                song.cover_art_url = Some(url);
-            }
-        }
+        apply_station_logo(&mut song);
 
         song
     }
@@ -2381,7 +2448,7 @@ mod tests {
         );
 
         assert_eq!(
-            cover_art_from_metadata(&metadata),
+            cover_art_from_metadata(&metadata).map(|(url, _)| url),
             Some("https://www.byte.fm/favicon.png".to_string())
         );
     }
@@ -2396,7 +2463,7 @@ mod tests {
         );
 
         assert_eq!(
-            cover_art_from_metadata(&metadata),
+            cover_art_from_metadata(&metadata).map(|(url, _)| url),
             Some("https://example.com/logo.png".to_string())
         );
     }
@@ -2412,6 +2479,155 @@ mod tests {
 
         metadata.insert("coverart_url".to_string(), Value::Bool(true));
         assert_eq!(cover_art_from_metadata(&metadata), None, "non-string is not cover art");
+    }
+
+    /// A stream has no cover art in the library, so what the URL metadata
+    /// offers is applied. Whether that image is a placeholder is a separate
+    /// question, decided by the tests below.
+    #[test]
+    fn url_metadata_cover_art_is_applied_to_a_song_with_none() {
+        let mut song = Song::default();
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://www.byte.fm/favicon.png".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert_eq!(
+            song.cover_art_url,
+            Some("https://www.byte.fm/favicon.png".to_string())
+        );
+    }
+
+    /// A radio station is queued under its own name and then plays a different
+    /// song every few minutes, so its image describes the URL rather than what
+    /// is playing. This is the ByteFM case that started all this.
+    #[test]
+    fn a_stations_image_is_a_placeholder_for_the_song_playing() {
+        let mut song = Song {
+            title: Some("Listen To The News".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://www.byte.fm/favicon.png".to_string()),
+        );
+        song.metadata.insert(
+            "title".to_string(),
+            Value::String("ByteFM (192k)".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert_eq!(
+            song.metadata
+                .get(crate::data::song::COVER_ART_SOURCE)
+                .and_then(|v| v.as_str()),
+            Some(crate::data::song::COVER_ART_SOURCE_STATION_LOGO)
+        );
+    }
+
+    /// A client that queues one track through add_track supplies artwork for
+    /// that track. It reaches the same per-URL cache the station metadata uses,
+    /// and must not be marked replaceable -- doing so lets a lookup overwrite
+    /// the caller's own cover with some other pressing.
+    #[test]
+    fn artwork_a_client_supplied_for_a_track_is_not_a_placeholder() {
+        let mut song = Song {
+            title: Some("Yellow Submarine".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://example.com/yellow_submarine.jpg".to_string()),
+        );
+        song.metadata.insert(
+            "title".to_string(),
+            Value::String("Yellow Submarine".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert_eq!(
+            song.cover_art_url,
+            Some("https://example.com/yellow_submarine.jpg".to_string())
+        );
+        assert!(
+            !song
+                .metadata
+                .contains_key(crate::data::song::COVER_ART_SOURCE),
+            "a client's own artwork must not be marked replaceable"
+        );
+    }
+
+    /// With no name in the metadata there is nothing to compare against, so the
+    /// image is left alone rather than guessed at.
+    #[test]
+    fn unnamed_url_metadata_is_not_a_placeholder() {
+        let mut song = Song {
+            title: Some("Some Track".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://example.com/cover.jpg".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert!(!song
+            .metadata
+            .contains_key(crate::data::song::COVER_ART_SOURCE));
+    }
+
+    /// A logo is a logo whatever is playing, named or not.
+    #[test]
+    fn a_logo_url_is_always_a_placeholder() {
+        let mut song = Song {
+            title: Some("Some Track".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            "logo_url".to_string(),
+            Value::String("https://example.com/logo.png".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert_eq!(
+            song.metadata
+                .get(crate::data::song::COVER_ART_SOURCE)
+                .and_then(|v| v.as_str()),
+            Some(crate::data::song::COVER_ART_SOURCE_STATION_LOGO)
+        );
+    }
+
+    /// A song that already carries its own artwork keeps it, and must not be
+    /// marked replaceable — that artwork is the track's, not a placeholder.
+    #[test]
+    fn real_cover_art_is_not_marked_replaceable() {
+        let mut song = Song {
+            cover_art_url: Some("https://example.com/cover.jpg".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            "coverart_url".to_string(),
+            Value::String("https://www.byte.fm/favicon.png".to_string()),
+        );
+
+        apply_station_logo(&mut song);
+
+        assert_eq!(
+            song.cover_art_url,
+            Some("https://example.com/cover.jpg".to_string())
+        );
+        assert!(
+            !song
+                .metadata
+                .contains_key(crate::data::song::COVER_ART_SOURCE),
+            "real cover art must not be marked replaceable"
+        );
     }
 
     /// A cover art URL that is already set is never replaced by the station logo

@@ -149,6 +149,26 @@ updated. Every other field is optional, and an absent field means **unchanged** 
 does not mean "cleared". A client that overwrites its current song wholesale with
 this payload will blank out fields that were previously populated.
 
+From 0.16.0 `cover_art_url` for a radio stream can be superseded shortly after
+the `song_changed` that introduced it. A stream carries no artwork for the track
+itself, so the MPD backend fills the field with the station's logo straight away
+— a client always has something to show — and marks it by setting
+`song.metadata.cover_art_source` to `"station_logo"`. When a lookup then finds
+the track's real album art, a `song_information_update` carries the better image
+and resets `cover_art_source` to the provider that supplied it. Before 0.16.0 the
+logo was the final answer and no marker was sent.
+
+A client that treats the first `cover_art_url` it sees as final will keep showing
+the station logo; one that applies partial updates as documented above needs no
+change. Artwork that arrives with the song is never marked, and is never
+replaced.
+
+The better image lives only in this event. `GET /api/now-playing` is built from
+the player's stored song, which the lookup does not write back into, so it keeps
+returning the station logo -- a client that reconnects and re-fetches
+now-playing will fall back to the logo until the next
+`song_information_update`.
+
 `song.cover_art_url` and `song.metadata.lyrics_url` carry the externally
 visible prefix when the connection was upgraded through a proxy that reports
 `X-Forwarded-Prefix`. Before 0.15.0 these two fields carried the internal path

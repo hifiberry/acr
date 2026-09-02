@@ -596,7 +596,11 @@ impl BluetoothPlayerController {
                     ..Default::default()
                 };
                 
-                self.base.set_song(Some(song));
+                // The old code wrote `*guard = Some(song)` unconditionally
+                // here, with no identity check at all; a same-identity
+                // metadata refresh must still reach clients rather than be
+                // dropped by set_song's identity gating.
+                self.base.replace_song(Some(song));
                 debug!("Updated Bluetooth song information");
             }
         }

@@ -1,3 +1,67 @@
+hifiberry-audiocontrol (0.16.0) trixie; urgency=medium
+
+  * Radio streams get the cover art of the track being played, not just the
+    station's logo. A stream carries no artwork of its own, so the MPD backend
+    fills cover_art_url with the station logo; that logo then blocked every
+    better source. The Last.fm plugin fetches track info on each song change
+    and already pulled the album image out of it, but assigned it only when
+    cover_art_url was empty, which for a stream it never is. On a device
+    playing ByteFM, Last.fm returned a 1200x1200 cover for the track on air
+    while the daemon showed a 96x96 favicon. The better image is published on
+    the WebSocket as a song_information_update; /api/now-playing is built from
+    the player's stored song, which nothing writes back into, so it still
+    reports the station logo.
+  * Cover art that describes a URL rather than the track playing from it is
+    marked in song metadata as cover_art_source "station_logo", and only such
+    cover art may be replaced. The per-URL metadata cache is filled by the
+    add_track API, which serves both the queueing of a radio station and the
+    queueing of a single track with its own artwork, so the two are told apart
+    by name: metadata naming something other than the track now playing -- a
+    station name against a song title -- describes the URL. Names are compared
+    without case or surrounding space, and an artist-less "Artist - Title" that
+    was split earlier still counts as the same name. Where there is no name at
+    all the URL decides: a stream's artwork is the station's, anything else
+    belongs to the one track it was queued with. Artwork a client supplied for
+    the track it queued is untouched, as is anything the player itself
+    provided. Whatever replaces a placeholder records its own
+    provenance, so a real cover is not taken for one by a later lookup.
+    Clients that apply song_information_update as a partial update need no
+    change; the event contract is in doc/websocket.md.
+  * Last.fm answers the Song cover art method. Spotify was its only provider
+    and returns nothing until an account is linked, so /api/coverart/song gave
+    an empty result for every track on a device without Spotify. The lookup is
+    unsigned and needs only an API key: the signed track.getInfo the scrobbler
+    uses refuses without a linked account, which would have reproduced the gap
+    it was added to close.
+  * Cover art for the song being played no longer needs a linked Last.fm
+    account either. The lookup that replaces a station logo used the signed
+    request, so on a device with only an API key the logo was marked as
+    replaceable and nothing ever replaced it. It now falls back to the unsigned
+    request, which answers with the album and its images but not with whether
+    the track is loved or how often it has been played -- fields that are
+    absent from an unsigned answer and are no longer read as "not loved" and
+    "never played".
+  * The image chosen from a Last.fm album is the largest slot it filled, on
+    both paths. Last.fm pads slots it has nothing for with an empty string, and
+    the path that replaces a station logo took the extralarge slot alone, so an
+    album whose extralarge slot was one of the empty ones left the station
+    showing its logo. Both paths now share one selection.
+  * The documented example for /api/coverart/methods listed providers that have
+    never existed and now shows what the endpoint returns.
+  * The 0.15.1 notes explained their own SIGTERM fix wrongly and are corrected
+    here rather than rewritten. Their first entry said Rocket's signal handlers
+    replace the earlier ctrlc handler, so it never ran; a later entry in the
+    same release said, correctly, that Rocket registers through signal-hook,
+    which chains onto the earlier handler rather than replacing it. The second
+    account is the right one, and the reason SIGTERM went unhandled in 0.15.0
+    is the one it gives: the ctrlc dependency's "termination" feature was off,
+    so only SIGINT was watched. The same entry's "nothing in the process ever
+    got the chance to flush its state" also implied the fix restores flushing.
+    It does not: the process now exits cleanly instead of being killed, but no
+    player is stopped and no cache is written out on the way.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 02 Sep 2026 13:17:01 +0000
+
 hifiberry-audiocontrol (0.15.1) trixie; urgency=medium
 
   * audiocontrol exits when it is asked to stop. It never had: every stop,

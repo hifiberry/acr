@@ -605,6 +605,18 @@ Retrieves information about the currently playing track and player status.
   }
   ```
 
+Where `song.cover_art_url` is only a placeholder rather than artwork for the
+track, `song.metadata.cover_art_source` says so: a radio stream carries its
+station's logo under `"station_logo"`. The key is absent for artwork that
+belongs to the song, which is never replaced.
+
+This response is built from the player's own stored song. A lookup that finds
+the track's real artwork publishes it on the WebSocket as a
+`song_information_update` and does not write back into the player, so
+`/api/now-playing` goes on reporting the station logo for as long as the stream
+plays. A client that wants the better image has to follow the WebSocket; see
+[the event contract](websocket.md).
+
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/now-playing
@@ -2963,62 +2975,40 @@ Retrieves information about available cover art methods and the providers that s
       {
         "method": "Artist",
         "providers": [
-          {
-            "name": "local_files",
-            "display_name": "Local Files"
-          },
-          {
-            "name": "theaudiodb", 
-            "display_name": "TheAudioDB"
-          }
+          { "name": "spotify", "display_name": "Spotify" },
+          { "name": "lastfm", "display_name": "Last.fm" },
+          { "name": "theaudiodb", "display_name": "TheAudioDB" },
+          { "name": "fanarttv", "display_name": "FanArt.tv" }
         ]
       },
       {
-        "method": "Song", 
+        "method": "Song",
         "providers": [
-          {
-            "name": "local_files",
-            "display_name": "Local Files"
-          },
-          {
-            "name": "musicbrainz",
-            "display_name": "MusicBrainz"
-          }
+          { "name": "spotify", "display_name": "Spotify" },
+          { "name": "lastfm", "display_name": "Last.fm" }
         ]
       },
       {
         "method": "Album",
         "providers": [
-          {
-            "name": "local_files",
-            "display_name": "Local Files"
-          },
-          {
-            "name": "theaudiodb",
-            "display_name": "TheAudioDB"
-          },
-          {
-            "name": "musicbrainz",
-            "display_name": "MusicBrainz"
-          }
+          { "name": "spotify", "display_name": "Spotify" },
+          { "name": "theaudiodb", "display_name": "TheAudioDB" }
         ]
       },
       {
         "method": "Url",
-        "providers": [
-          {
-            "name": "url_resolver",
-            "display_name": "URL Resolver"
-          },
-          {
-            "name": "metadata_extractor",
-            "display_name": "Metadata Extractor"
-          }
-        ]
+        "providers": []
       }
     ]
   }
   ```
+
+Every provider is registered unconditionally, so this listing is the same on
+every device; only the results differ. Spotify answers nothing until an account
+has been linked, so before 0.16.0 the `Song` method returned an empty result for
+every track on a device without one. Last.fm covers it from 0.16.0 on, using the
+album art it reports for the track, and needs only an API key rather than a
+linked account.
 
 #### Example
 ```bash

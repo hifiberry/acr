@@ -715,6 +715,54 @@ impl LastfmClient {
         }
     }
 
+    /// Get a track's album information from Last.fm without a user session.
+    ///
+    /// [`Self::get_track_info`] signs its request and refuses without a linked
+    /// account, because the fields the scrobbler wants from it -- `userloved`,
+    /// `userplaycount` -- are user-specific. Cover art is not. `track.getInfo`
+    /// returns the album and its images for an API key alone, so a device that
+    /// has never linked an account can still resolve cover art for a track.
+    ///
+    /// # Arguments
+    /// * `artist` - The artist name.
+    /// * `title` - The track title.
+    ///
+    /// # Returns
+    /// Result containing `LastfmTrackInfoDetails` or an error. The
+    /// user-specific fields are absent and take their defaults.
+    pub fn get_track_album_info(
+        &self,
+        artist: &str,
+        title: &str,
+    ) -> Result<LastfmTrackInfoDetails, LastfmError> {
+        ratelimit::rate_limit("lastfm");
+
+        let params = vec![
+            ("method", "track.getInfo"),
+            ("artist", artist),
+            ("track", title),
+            ("autocorrect", "1"),
+            // api_key is added by make_api_request
+        ];
+
+        // No 'sk', so nothing to sign.
+        debug!("Requesting unsigned track.getInfo for '{}' by '{}'", title, artist);
+        let response_body = self.make_api_request(params.into_iter(), false)?;
+
+        match serde_json::from_str::<LastfmTrackInfoResponse>(&response_body) {
+            Ok(parsed_response) => Ok(parsed_response.track),
+            Err(e) => {
+                debug!(
+                    "Failed to parse unsigned track.getInfo response for artist '{}', title '{}'. Error: {}",
+                    artist, title, e
+                );
+                Err(LastfmError::ParsingError(format!(
+                    "Failed to parse track.getInfo response: {}", e
+                )))
+            }
+        }
+    }
+
     /// Get artist information from Last.fm
     /// 
     /// # Arguments

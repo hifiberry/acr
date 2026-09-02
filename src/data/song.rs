@@ -3,6 +3,19 @@ use std::collections::HashMap;
 use std::fmt; // Added for Display
 use serde::{Serialize, Deserialize};
 
+/// Metadata key recording where `cover_art_url` came from, when it came from a
+/// source a later lookup is allowed to replace. Absent means the cover art is
+/// the song's own artwork and must be left alone.
+pub const COVER_ART_SOURCE: &str = "cover_art_source";
+
+/// Value for [`COVER_ART_SOURCE`] marking cover art that is only the radio
+/// station's logo rather than artwork for the track being played.
+pub const COVER_ART_SOURCE_STATION_LOGO: &str = "station_logo";
+
+/// Value for [`COVER_ART_SOURCE`] marking cover art that Last.fm supplied for
+/// the track's album. It is the track's own artwork, so it is not replaceable.
+pub const COVER_ART_SOURCE_LASTFM: &str = "lastfm";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Song {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,6 +69,22 @@ pub struct Song {
 
 // The to_json method is now provided by the Serializable trait
 // which is automatically implemented for all types that implement Serialize
+
+impl Song {
+    /// Whether the cover art currently on this song may be replaced by a better
+    /// lookup. True when there is none, and when what is there is only a
+    /// placeholder such as a radio station's logo — see [`COVER_ART_SOURCE`].
+    /// Artwork belonging to the song itself is never replaceable.
+    pub fn cover_art_is_replaceable(&self) -> bool {
+        if self.cover_art_url.is_none() {
+            return true;
+        }
+        self.metadata
+            .get(COVER_ART_SOURCE)
+            .and_then(|value| value.as_str())
+            .is_some_and(|source| source == COVER_ART_SOURCE_STATION_LOGO)
+    }
+}
 
 impl PartialEq for Song {
     fn eq(&self, other: &Self) -> bool {

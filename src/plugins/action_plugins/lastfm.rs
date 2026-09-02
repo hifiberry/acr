@@ -125,7 +125,11 @@ fn lastfm_worker(
         let mut track_data = track_data_arc.lock();
 
         // Fetch track info if new song and not yet fetched
-        if !track_data.track_info_fetched && client.is_authenticated() {
+        // Not gated on a linked account. Cover art is not user-specific, and
+        // the signed lookup refuses without one -- which would have left the
+        // station logo marked as replaceable on those devices with nothing
+        // ever coming along to replace it.
+        if !track_data.track_info_fetched {
             // Separate the immutable borrow for player_source
             let player_source_clone = track_data.player_source.clone();
             let song_title_clone = track_data.song_details.as_ref().and_then(|sd| sd.title.clone());
@@ -134,12 +138,24 @@ fn lastfm_worker(
             if let (Some(title), Some(artist)) = (song_title_clone, song_artist_clone) {
                 if let Some(current_player_source) = player_source_clone {
                     info!("LastFMWorker: Attempting to get track info for '{}' by '{}'", title, artist);
-                    match client.get_track_info(&artist, &title) {
+
+                    // A signed lookup where there is an account to sign for,
+                    // which also answers whether the track is loved and how
+                    // often it has been played; an unsigned one otherwise,
+                    // which answers only with the album and its images.
+                    let (lookup, user_data) = if client.is_authenticated() {
+                        (client.get_track_info(&artist, &title), UserData::Present)
+                    } else {
+                        debug!("LastFMWorker: No linked account; looking up cover art unsigned");
+                        (client.get_track_album_info(&artist, &title), UserData::Absent)
+                    };
+
+                    match lookup {
                         Ok(track_info_details) => {
                             // Now, we need to re-access song_details mutably.
                             // It's important that the immutable borrows above are out of scope.
                             if let Some(original_song_details_ref) = &mut track_data.song_details {
-                                let updated_song_partial = calculate_updates(original_song_details_ref, &track_info_details);
+                                let updated_song_partial = calculate_updates(original_song_details_ref, &track_info_details, user_data);
                                 
                                 let event = PlayerEvent::SongInformationUpdate {
                                     source: current_player_source.clone(), // Use the cloned source
@@ -712,7 +728,22 @@ impl Clone for Lastfm {
 // Add the calculate_updates function definition here
 // It should be outside any impl blocks, typically as a free function in the module.
 
-fn calculate_updates(original_song: &Song, lastfm_data: &LastfmTrackInfoDetails) -> Song {
+/// Whether a Last.fm answer came from a signed request, and so carries the
+/// fields that need a linked account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserData {
+    /// A signed lookup: `userloved` and `userplaycount` mean what they say.
+    Present,
+    /// An unsigned lookup: those fields are absent and take their defaults,
+    /// which must not be read as "not loved" or "never played".
+    Absent,
+}
+
+fn calculate_updates(
+    original_song: &Song,
+    lastfm_data: &LastfmTrackInfoDetails,
+    user_data: UserData,
+) -> Song {
     let mut updated_song = Song {
         title: original_song.title.clone(),
         artist: original_song.artist.clone(),
@@ -720,37 +751,54 @@ fn calculate_updates(original_song: &Song, lastfm_data: &LastfmTrackInfoDetails)
     };
 
     // --- 1. Handle cover_art_url ---
-    let mut lastfm_provided_cover_art_url: Option<String> = None;
-    if let Some(album_info) = &lastfm_data.album {
-        if let Some(extralarge_image) = album_info.image.iter().find(|img| img.size == "extralarge") {
-            if !extralarge_image.url.is_empty() {
-                lastfm_provided_cover_art_url = Some(extralarge_image.url.clone());
-            }
-        }
-    }
+    // The same selection the cover art provider uses, rather than a second
+    // copy: Last.fm leaves size slots empty, and taking extralarge alone gave
+    // up on any album whose extralarge slot happened to be one of them.
+    let lastfm_provided_cover_art_url =
+        crate::helpers::coverart_providers::album_image_urls(lastfm_data)
+            .into_iter()
+            .next();
 
-    // Only update cover_art_url if the original song does not have one,
-    // and Last.fm provides one. This signifies a change from None to Some.
-    // If the original song already has a cover_art_url, updated_song.cover_art_url
-    // will remain None (from Song::default()), indicating no change for this field
-    // in the partial update event.
-    if original_song.cover_art_url.is_none() {
+    // Only update cover_art_url if the original song's is replaceable — it has
+    // none, or what it has is a placeholder such as a radio station's logo — and
+    // Last.fm provides one. Where the song carries its own artwork,
+    // updated_song.cover_art_url stays None (from Song::default()), indicating
+    // no change for this field in the partial update event.
+    if original_song.cover_art_is_replaceable() {
         if let Some(ref url) = lastfm_provided_cover_art_url {
             updated_song.cover_art_url = Some(url.clone());
+            // Record where the new image came from, so what replaced a
+            // placeholder is not itself mistaken for one later on.
+            updated_song.metadata.insert(
+                crate::data::song::COVER_ART_SOURCE.to_string(),
+                serde_json::Value::String(
+                    crate::data::song::COVER_ART_SOURCE_LASTFM.to_string(),
+                ),
+            );
             debug!("calculate_updates: cover_art_url updated to {}", url);
         }
     }
 
     // --- 2. Handle liked status ---
-    let lastfm_liked_value = Some(lastfm_data.userloved); // lastfm_data.userloved is bool
+    // Only from a signed answer. An unsigned one carries no userloved at all,
+    // and it deserialises to false in its absence, which would be reported as
+    // the track having been un-loved.
+    if user_data == UserData::Present {
+        let lastfm_liked_value = Some(lastfm_data.userloved);
 
-    // Check if the liked status from Last.fm is different from the original song's liked status.
-    if lastfm_liked_value != original_song.liked {
-        updated_song.liked = lastfm_liked_value;
-        debug!("calculate_updates: liked status updated to {:?}.", updated_song.liked);
+        // Check if the liked status from Last.fm is different from the original song's liked status.
+        if lastfm_liked_value != original_song.liked {
+            updated_song.liked = lastfm_liked_value;
+            debug!("calculate_updates: liked status updated to {:?}.", updated_song.liked);
+        }
     }
 
     // --- 3. Handle metadata: lastfm_playcount ---
+    // Also signed-only, for the same reason: absence is not a playcount of nil.
+    if user_data == UserData::Absent {
+        return updated_song;
+    }
+
     let mut lastfm_provided_playcount_json: Option<serde_json::Value> = None;
     if let Some(user_playcount_str) = &lastfm_data.user_playcount {
         if !user_playcount_str.is_empty() {
@@ -774,4 +822,242 @@ fn calculate_updates(original_song: &Song, lastfm_data: &LastfmTrackInfoDetails)
     }
     
     updated_song
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::song::{
+        COVER_ART_SOURCE, COVER_ART_SOURCE_LASTFM, COVER_ART_SOURCE_STATION_LOGO,
+    };
+
+    /// Track info carrying the given size slots, as Last.fm fills them.
+    fn track_info_with_images(images: &[(&str, &str)]) -> LastfmTrackInfoDetails {
+        let image: Vec<_> = images
+            .iter()
+            .map(|(size, url)| serde_json::json!({ "#text": url, "size": size }))
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "name": "Listen To The News",
+            "url": "https://www.last.fm/music/example",
+            "duration": "0",
+            "listeners": "1",
+            "playcount": "1",
+            "artist": {
+                "name": "Radical Friendship Theory",
+                "url": "https://www.last.fm/music/example"
+            },
+            "album": {
+                "artist": "Radical Friendship Theory",
+                "title": "Radical Friendship Theory",
+                "url": "https://www.last.fm/music/example/album",
+                "image": image
+            }
+        }))
+        .expect("track info fixture should deserialize")
+    }
+
+    /// Track info as Last.fm returns it for a track whose album it knows.
+    fn track_info_with_album_image(url: &str) -> LastfmTrackInfoDetails {
+        serde_json::from_value(serde_json::json!({
+            "name": "Listen To The News",
+            "url": "https://www.last.fm/music/example",
+            "duration": "0",
+            "listeners": "1",
+            "playcount": "1",
+            "artist": {
+                "name": "Radical Friendship Theory",
+                "url": "https://www.last.fm/music/example"
+            },
+            "album": {
+                "artist": "Radical Friendship Theory",
+                "title": "Radical Friendship Theory",
+                "url": "https://www.last.fm/music/example/album",
+                "image": [{ "#text": url, "size": "extralarge" }]
+            }
+        }))
+        .expect("track info fixture should deserialize")
+    }
+
+    /// A radio stream reaches the plugin carrying the station's logo as cover
+    /// art. The logo identifies the station, not what is playing, so the real
+    /// album art Last.fm knows about has to win.
+    #[test]
+    fn station_logo_is_replaced_by_lastfm_album_art() {
+        let mut song = Song {
+            cover_art_url: Some("https://www.byte.fm/favicon.png".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            COVER_ART_SOURCE.to_string(),
+            serde_json::Value::String(COVER_ART_SOURCE_STATION_LOGO.to_string()),
+        );
+        let info = track_info_with_album_image("https://lastfm.example/cover.png");
+
+        let update = calculate_updates(&song, &info, UserData::Present);
+
+        assert_eq!(
+            update.cover_art_url,
+            Some("https://lastfm.example/cover.png".to_string()),
+            "a station logo should give way to the track's own album art"
+        );
+    }
+
+    /// Replacing the logo has to record where the new image came from.
+    /// Otherwise the marker still says "station logo" while a real cover is in
+    /// place, and the next lookup would feel free to overwrite it.
+    #[test]
+    fn replacing_the_station_logo_records_the_new_source() {
+        let mut song = Song {
+            cover_art_url: Some("https://www.byte.fm/favicon.png".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            COVER_ART_SOURCE.to_string(),
+            serde_json::Value::String(COVER_ART_SOURCE_STATION_LOGO.to_string()),
+        );
+        let info = track_info_with_album_image("https://lastfm.example/cover.png");
+
+        let update = calculate_updates(&song, &info, UserData::Present);
+
+        assert_eq!(
+            update
+                .metadata
+                .get(COVER_ART_SOURCE)
+                .and_then(|value| value.as_str()),
+            Some(COVER_ART_SOURCE_LASTFM),
+            "the replacement should record its own provenance"
+        );
+    }
+
+    /// Once the real cover art has been merged in, the song must no longer look
+    /// replaceable — the placeholder is gone.
+    #[test]
+    fn replaced_cover_art_is_no_longer_replaceable() {
+        let mut song = Song {
+            cover_art_url: Some("https://www.byte.fm/favicon.png".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            COVER_ART_SOURCE.to_string(),
+            serde_json::Value::String(COVER_ART_SOURCE_STATION_LOGO.to_string()),
+        );
+        let info = track_info_with_album_image("https://lastfm.example/cover.png");
+
+        let update = calculate_updates(&song, &info, UserData::Present);
+        merge_song_updates(&mut song, &update);
+
+        assert!(
+            !song.cover_art_is_replaceable(),
+            "real cover art must not stay marked as a placeholder"
+        );
+    }
+
+    /// Last.fm pads slots it has nothing for with an empty string, so an album
+    /// whose extralarge slot is empty but which has a larger or smaller one
+    /// must still yield an image. Taking extralarge alone left the station
+    /// showing its logo for exactly those albums.
+    #[test]
+    fn cover_art_uses_the_largest_slot_rather_than_only_extralarge() {
+        let mut song = Song {
+            cover_art_url: Some("https://www.byte.fm/favicon.png".to_string()),
+            ..Default::default()
+        };
+        song.metadata.insert(
+            COVER_ART_SOURCE.to_string(),
+            serde_json::Value::String(COVER_ART_SOURCE_STATION_LOGO.to_string()),
+        );
+        let info = track_info_with_images(&[
+            ("large", "https://lastfm.example/i/u/174s/cover.png"),
+            ("extralarge", ""),
+            ("mega", "https://lastfm.example/i/u/cover.png"),
+        ]);
+
+        let update = calculate_updates(&song, &info, UserData::Present);
+
+        assert_eq!(
+            update.cover_art_url,
+            Some("https://lastfm.example/i/u/cover.png".to_string())
+        );
+    }
+
+    /// An unsigned lookup carries no user fields. `userloved` deserialises to
+    /// false in their absence, which must not be reported as the track having
+    /// been un-loved.
+    #[test]
+    fn an_unsigned_answer_does_not_report_a_liked_status() {
+        let song = Song {
+            liked: Some(true),
+            ..Default::default()
+        };
+        let info = track_info_with_album_image("https://lastfm.example/cover.png");
+
+        let update = calculate_updates(&song, &info, UserData::Absent);
+
+        assert_eq!(
+            update.liked, None,
+            "an unsigned answer says nothing about whether the track is loved"
+        );
+    }
+
+    /// The cover art is the whole point of the unsigned lookup, so it still
+    /// arrives.
+    #[test]
+    fn an_unsigned_answer_still_updates_cover_art() {
+        let song = Song::default();
+        let info = track_info_with_album_image("https://lastfm.example/cover.png");
+
+        let update = calculate_updates(&song, &info, UserData::Absent);
+
+        assert_eq!(
+            update.cover_art_url,
+            Some("https://lastfm.example/cover.png".to_string())
+        );
+    }
+
+    /// A signed answer still reports the loved status, as it always has.
+    #[test]
+    fn a_signed_answer_reports_the_liked_status() {
+        let song = Song {
+            liked: Some(true),
+            ..Default::default()
+        };
+        let info = track_info_with_album_image("https://lastfm.example/cover.png");
+
+        let update = calculate_updates(&song, &info, UserData::Present);
+
+        assert_eq!(update.liked, Some(false));
+    }
+
+    /// Artwork that belongs to the song itself is not a placeholder, so a
+    /// partial update must leave it alone.
+    #[test]
+    fn real_cover_art_survives_lastfm_update() {
+        let song = Song {
+            cover_art_url: Some("https://example.com/cover.jpg".to_string()),
+            ..Default::default()
+        };
+        let info = track_info_with_album_image("https://lastfm.example/cover.png");
+
+        let update = calculate_updates(&song, &info, UserData::Present);
+
+        assert_eq!(
+            update.cover_art_url, None,
+            "the song's own cover art must not be overwritten"
+        );
+    }
+
+    /// A song with no cover art at all is still filled in from Last.fm.
+    #[test]
+    fn missing_cover_art_is_filled_from_lastfm() {
+        let song = Song::default();
+        let info = track_info_with_album_image("https://lastfm.example/cover.png");
+
+        let update = calculate_updates(&song, &info, UserData::Present);
+
+        assert_eq!(
+            update.cover_art_url,
+            Some("https://lastfm.example/cover.png".to_string())
+        );
+    }
 }

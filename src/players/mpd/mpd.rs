@@ -1477,7 +1477,23 @@ impl MPDPlayerController {
             .find(|(tag, _)| tag == "Genre")
             .map(|(_, value)| value.clone());
         
-        // Handle title splitting for radio stations
+        // Handle title splitting for radio stations.
+        //
+        // Note this can flap the artist across two polls of one track. A
+        // stream's ICY title is a single "Artist - Title" string and the
+        // splitter learns per URL whether to split it, so the same track can
+        // be reported with an artist and then without one (or the other way
+        // round) while the splitter is still deciding, or if a station
+        // changes the shape of its ICY line mid-track. The artist is part of
+        // song identity, so each flap reads as a new song: one song_changed,
+        // and the enrichment merged into the stored song -- including any
+        // artwork a lookup found -- goes with it, so the station logo
+        // re-flashes until the next lookup completes.
+        //
+        // Left as is deliberately. It is self-healing and costs a lookup, not
+        // correctness; the alternative of keeping the artist out of identity
+        // silently misreports every same-titled track by a different artist
+        // on four backends, which is not self-healing at all.
         let (final_title, final_artist) = if mpd_song.artist.is_none() && mpd_song.title.is_some() {
             // No artist but has title - try to split it (common for web radio)
             let title_str = mpd_song.title.as_ref().unwrap();

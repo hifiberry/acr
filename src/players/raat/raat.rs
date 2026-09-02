@@ -271,10 +271,17 @@ impl RAATPlayerController {
             *details = Some(stream_details);
         }
         
-        // Store the song and notify listeners if it changed. This happens
-        // last, after state/capabilities/stream details are updated, so a
-        // listener reacting to song_changed sees a consistent player state.
-        self.base.set_song(Some(song));
+        // Store the song and notify listeners. This happens last, after
+        // state/capabilities/stream details are updated, so a listener
+        // reacting to song_changed sees a consistent player state.
+        //
+        // This is the metadata pipe reader's callback: RAAT pushes events, it
+        // is not polled, and it delivers a track progressively -- announced
+        // first, re-sent as the album and the artwork become known. A
+        // same-identity re-send therefore carries information the first did
+        // not, so it must be stored and announced, exactly as receive_update
+        // below does for PlayerUpdate::SongChanged.
+        self.base.replace_song(Some(song));
 
         // Mark the player as alive since we got data
         self.base.alive();
@@ -652,5 +659,39 @@ mod tests {
             Some("https://example.com/cover.jpg".to_string()),
             "a same-identity metadata refresh must still be stored, not dropped"
         );
+    }
+
+    /// The metadata pipe is an event source, not a poll. RAAT announces a
+    /// track and then re-sends it as more of it becomes known (album,
+    /// artwork), so a same-identity re-send carries new information -- the
+    /// same reason `receive_update` above uses replace_song.
+    #[test]
+    fn a_metadata_pipe_resend_of_the_same_track_still_updates_metadata() {
+        let controller = controller();
+
+        controller.update_metadata(
+            song("Battery", "Metallica"),
+            PlayerState::new(),
+            PlayerCapabilitySet::empty(),
+            StreamDetails::default(),
+        );
+
+        let mut refreshed = song("Battery", "Metallica");
+        refreshed.album = Some("Master of Puppets".to_string());
+        refreshed.cover_art_url = Some("https://example.com/cover.jpg".to_string());
+        controller.update_metadata(
+            refreshed,
+            PlayerState::new(),
+            PlayerCapabilitySet::empty(),
+            StreamDetails::default(),
+        );
+
+        let stored = controller.get_song().expect("a song must be stored");
+        assert_eq!(
+            stored.cover_art_url,
+            Some("https://example.com/cover.jpg".to_string()),
+            "a same-identity re-send down the metadata pipe must be stored"
+        );
+        assert_eq!(stored.album, Some("Master of Puppets".to_string()));
     }
 }

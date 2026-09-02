@@ -657,8 +657,15 @@ impl LibrespotPlayerController {
                         }
                     }
                     
-                    // Update internal song
-                    if self.base.set_song(Some(song.clone())) {
+                    // Update internal song. librespot pushes song_changed
+                    // events, it is not polled -- get_song() answers out of
+                    // the stored song rather than re-reading librespot -- and
+                    // it delivers a track progressively, re-sending it as the
+                    // album and the cover art become known. replace_song
+                    // stores and announces every event; its return value
+                    // still reports an identity change, which is what the
+                    // position reset below is gated on.
+                    if self.base.replace_song(Some(song.clone())) {
                         log::info!("[API DEBUG] Song changed: {:?} - {:?}", song.artist, song.title);
 
                         // Reset PlayerProgress position for new song
@@ -847,5 +854,47 @@ impl LibrespotPlayerController {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn controller() -> LibrespotPlayerController {
+        LibrespotPlayerController::with_full_config("librespot-test", None)
+    }
+
+    /// librespot pushes songs as API events and delivers them progressively:
+    /// a track is announced, then re-sent as the album and the cover art
+    /// become known. `get_song()` answers out of the stored song rather than
+    /// re-reading librespot, so a same-identity re-send that is dropped is
+    /// information lost for the rest of the track.
+    #[test]
+    fn a_same_identity_song_event_still_updates_metadata() {
+        let controller = controller();
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Battery", "artist": "Metallica" }
+        })));
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": {
+                "title": "Battery",
+                "artist": "Metallica",
+                "album": "Master of Puppets",
+                "cover_art_url": "https://example.com/cover.jpg"
+            }
+        })));
+
+        let stored = controller.get_song().expect("a song must be stored");
+        assert_eq!(
+            stored.cover_art_url,
+            Some("https://example.com/cover.jpg".to_string()),
+            "a same-identity refresh from an event must be stored, not dropped"
+        );
+        assert_eq!(stored.album, Some("Master of Puppets".to_string()));
     }
 }

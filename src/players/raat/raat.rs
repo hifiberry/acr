@@ -25,9 +25,6 @@ pub struct RAATPlayerController {
     /// Control pipe path/URL for sending commands
     control_pipe: String,
     
-    /// Current song information
-    current_song: Arc<RwLock<Option<Song>>>,
-
     /// Current player state
     current_state: Arc<RwLock<PlayerState>>,
     
@@ -49,7 +46,6 @@ impl Clone for RAATPlayerController {
             base: self.base.clone(),
             metadata_source: self.metadata_source.clone(),
             control_pipe: self.control_pipe.clone(),
-            current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
             last_update_time: Arc::clone(&self.last_update_time),
@@ -98,7 +94,6 @@ impl RAATPlayerController {
             base,
             metadata_source: metadata_source.to_string(),
             control_pipe: control_pipe.to_string(),
-            current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             last_update_time: Arc::new(RwLock::new(Instant::now())),
@@ -202,23 +197,6 @@ impl RAATPlayerController {
             *last_update = Instant::now();
         }
         
-        // Store the new song if different from current
-        let mut song_to_notify: Option<Song> = None;
-        {
-            let mut current_song = self.current_song.write();
-            let song_changed = match (&*current_song, &song) {
-                (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
-                (None, _) => true,
-            };
-            
-            if song_changed {
-                debug!("Updating current song from metadata");
-                // Replace the current song
-                *current_song = Some(song.clone());
-                song_to_notify = Some(song);
-            }
-        }
-        
         // Check if position has changed and notify if needed
         if let Some(position) = player_state.position {
             // Get the previously stored position
@@ -293,12 +271,11 @@ impl RAATPlayerController {
             *details = Some(stream_details);
         }
         
-        // Now notify listeners of song change if needed
-        // This needs to be done after updating state to avoid race conditions
-        if let Some(song) = song_to_notify {
-            self.base.notify_song_changed(Some(&song));
-        }
-        
+        // Store the song and notify listeners if it changed. This happens
+        // last, after state/capabilities/stream details are updated, so a
+        // listener reacting to song_changed sees a consistent player state.
+        self.base.set_song(Some(song));
+
         // Mark the player as alive since we got data
         self.base.alive();
     }
@@ -419,10 +396,7 @@ impl PlayerController for RAATPlayerController {
         
         match update {
             PlayerUpdate::SongChanged(new_song) => {
-                let mut current_song_locked = self.current_song.write();
-                *current_song_locked = new_song.clone();
-                drop(current_song_locked); // Release lock before notifying
-                self.base.notify_song_changed(new_song.as_ref());
+                self.base.set_song(new_song);
             }
             PlayerUpdate::PositionChanged(new_position) => {
                 if let Some(pos) = new_position {
@@ -457,9 +431,7 @@ impl PlayerController for RAATPlayerController {
     
     fn get_song(&self) -> Option<Song> {
         debug!("Getting current song from stored value");
-        // Return a clone of the stored song
-        let song = self.current_song.read();
-        song.clone()
+        self.base.song()
     }
 
     fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {

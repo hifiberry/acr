@@ -113,30 +113,55 @@ server). Only `apply_song_information` gained a default implementation,
 delegating to the base.
 
 `set_song` and `replace_song` differ only in whether a same-identity
-observation is stored and announced, and which one a backend wants is decided
-by how it learns about songs:
+observation is stored and announced. The question that decides which one a call
+site wants is **not** whether the backend polls or is called back. Transport
+says nothing: a callback on a pipe is not automatically an event, and a source
+that streams player state on a timer is a poller wearing a callback. The
+question is:
 
-- **Polling backends use `set_song`.** MPRIS, Bluetooth and MPD
-  re-read the whole song from their source on a timer or on every `get_song()`
-  and rebuild it from scratch, so a same-identity observation carries no new
-  information — it is the *same* reading again, minus whatever a lookup has
-  since merged in. Storing it would erase the enrichment this change exists to
-  deliver, and announcing it would put one `song_changed` per poll on the bus
-  for as long as the track plays. Identity gating is what makes a poll loop
-  free.
-- **Event-driven backends use `replace_song`.** The generic controller, RAAT,
-  shairport and librespot are told about a song by an event — librespot's
-  `get_song()` reads the stored song rather than re-reading librespot — and an event carrying a
-  metadata-only refresh of the song already playing — cover art arriving late
-  is the usual one — is real news that has to reach clients. Both the store
-  and the notification are therefore unconditional; the return value still
-  reports whether identity changed, which is what a caller gates a playback
-  position reset on.
+> Does this source speak **only when something changed**, or does it speak
+> **continuously regardless**?
 
-The distinction is not about what a backend's pre-refactor code happened to
-do. Several polling backends stored unconditionally before this change, which
-was harmless only because nothing could write into the stored song from
-outside; once enrichment can, an unconditional store in a polling path is a
+- **A continuous source uses `set_song`** — anything that re-delivers the
+  current state on a timer, on every `get_song()`, or on every line of a
+  stream, whether or not it changed. Each delivery is the *same* reading
+  again, minus whatever a lookup has since merged in. Storing it would erase
+  the enrichment this change exists to deliver, and announcing it would put
+  one `song_changed` per delivery on the bus for as long as the track plays.
+  Identity gating is what makes such a source free.
+- **A discrete source uses `replace_song`** — anything that speaks only when
+  something actually happened. A delivery is then always news, including a
+  metadata-only refresh of the song already playing (cover art arriving late
+  is the usual one), which has to reach clients. Both the store and the
+  notification are therefore unconditional; the return value still reports
+  whether identity changed, which is what a caller gates a playback position
+  reset on.
+
+Three tells distinguish them, and any one of them settles it: does the payload
+carry a **continuously moving field** such as a playback position; does the
+call site **throttle or de-duplicate** its own notifications; does a **watchdog
+declare the player dead** after a fixed silence, which only works if deliveries
+are expected continuously.
+
+RAAT is the worked example, because *both* kinds live in one file:
+
+- `update_metadata` is the metadata pipe reader's callback and it is
+  **continuous** — every line carries `seek` and a full `now_playing` object
+  that `parse_line` rebuilds an entire `Song` from, the position notification
+  is throttled to a 1 s delta because of that, and `start_timeout_monitor`
+  declares the player `Unknown` after ten seconds without a line. All three
+  tells fire. It uses `set_song`.
+- `receive_update` handling `PlayerUpdate::SongChanged` is **discrete** — it
+  is one update pushed in because the song changed, and nothing re-sends it on
+  a timer. It uses `replace_song`.
+
+Being a callback is what these two have in common, so it cannot be what tells
+them apart.
+
+The distinction is also not about what a backend's pre-refactor code happened
+to do. Several continuous backends stored unconditionally before this change,
+which was harmless only because nothing could write into the stored song from
+outside; once enrichment can, an unconditional store on a continuous path is a
 bug.
 
 Backends delete their `current_song` field and their copy of the
@@ -242,10 +267,11 @@ are duplicated across backends and untested.
 - **Notification volume.** A repeated observation of the same song publishes
   one `song_changed`, not one per observation, and a rebuilt observation of a
   song that a lookup has enriched does not erase the enrichment. These two are
-  what a polling backend gets wrong when it reaches for `replace_song`, and
+  what a continuous source gets wrong when it reaches for `replace_song`, and
   they are asserted at the base, where no D-Bus connection is needed: the test
   subscribes to the event bus and counts the events its own player id
-  published.
+  published. `raat.rs` asserts the same pair against `update_metadata`, the
+  one call site whose continuity is not obvious from its signature.
 
 The conversion of each backend is checked by the existing suite plus a run on
 a real device, since most of these backends cannot be exercised without one.

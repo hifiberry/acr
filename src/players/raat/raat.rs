@@ -275,13 +275,19 @@ impl RAATPlayerController {
         // state/capabilities/stream details are updated, so a listener
         // reacting to song_changed sees a consistent player state.
         //
-        // This is the metadata pipe reader's callback: RAAT pushes events, it
-        // is not polled, and it delivers a track progressively -- announced
-        // first, re-sent as the album and the artwork become known. A
-        // same-identity re-send therefore carries information the first did
-        // not, so it must be stored and announced, exactly as receive_update
-        // below does for PlayerUpdate::SongChanged.
-        self.base.replace_song(Some(song));
+        // set_song, not replace_song: being a callback does not make this a
+        // discrete event. Every line down the metadata pipe carries `seek`
+        // and a full `now_playing` object that parse_line rebuilds an entire
+        // Song from, the position notification above is throttled to a 1 s
+        // delta because of it, and start_timeout_monitor declares the player
+        // Unknown after ten seconds without a line -- so lines arrive
+        // continuously while a track plays, whether or not anything changed.
+        // That is a poll wearing a callback, and it gates on identity for the
+        // same reason every poll does: an unconditional store would erase
+        // enrichment within one pipe interval and publish one song_changed
+        // per line for the whole track. receive_update below is the discrete
+        // counterpart and does use replace_song.
+        self.base.set_song(Some(song));
 
         // Mark the player as alive since we got data
         self.base.alive();
@@ -403,9 +409,11 @@ impl PlayerController for RAATPlayerController {
         
         match update {
             PlayerUpdate::SongChanged(new_song) => {
-                // The old code stored and notified unconditionally here; a
-                // same-identity refresh (late cover art) must still reach
-                // clients, so this is replace_song's job, not set_song's.
+                // Discrete, unlike update_metadata above: this update is
+                // pushed in once because the song changed, and nothing
+                // re-sends it on a timer. A same-identity refresh (late cover
+                // art) is therefore real news and must still reach clients,
+                // so this is replace_song's job, not set_song's.
                 self.base.replace_song(new_song);
             }
             PlayerUpdate::PositionChanged(new_position) => {
@@ -661,37 +669,67 @@ mod tests {
         );
     }
 
-    /// The metadata pipe is an event source, not a poll. RAAT announces a
-    /// track and then re-sends it as more of it becomes known (album,
-    /// artwork), so a same-identity re-send carries new information -- the
-    /// same reason `receive_update` above uses replace_song.
+    /// The metadata pipe is a *continuous* source, not a discrete one: every
+    /// line carries `seek` and a full `now_playing`, and
+    /// `start_timeout_monitor` declares the player Unknown after ten seconds
+    /// without one, so lines arrive throughout a track whether or not
+    /// anything changed. That makes `update_metadata` a poll wearing a
+    /// callback, and it must gate on identity like every other poll: storing
+    /// each re-send would erase enrichment within one pipe interval, and
+    /// announcing it would put one `song_changed` per line on the bus for the
+    /// whole track.
     #[test]
-    fn a_metadata_pipe_resend_of_the_same_track_still_updates_metadata() {
+    fn a_metadata_pipe_resend_does_not_erase_enrichment_or_republish() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+        use crate::data::PlayerEvent;
+
         let controller = controller();
+        let player_id = "raat:pipe-resend";
+        controller.base.set_player_id(player_id);
 
-        controller.update_metadata(
-            song("Battery", "Metallica"),
-            PlayerState::new(),
-            PlayerCapabilitySet::empty(),
-            StreamDetails::default(),
-        );
+        let bus = EventBus::instance();
+        let (subscription, receiver) = bus.subscribe(vec![EventSubscription::SongChanged]);
 
-        let mut refreshed = song("Battery", "Metallica");
-        refreshed.album = Some("Master of Puppets".to_string());
-        refreshed.cover_art_url = Some("https://example.com/cover.jpg".to_string());
-        controller.update_metadata(
-            refreshed,
-            PlayerState::new(),
-            PlayerCapabilitySet::empty(),
-            StreamDetails::default(),
-        );
+        let pipe_line = || {
+            controller.update_metadata(
+                song("Listen To The News", "Radical Friendship Theory"),
+                PlayerState::new(),
+                PlayerCapabilitySet::empty(),
+                StreamDetails::default(),
+            );
+        };
 
-        let stored = controller.get_song().expect("a song must be stored");
+        pipe_line();
+
+        // A lookup finds the track's real artwork while it is still playing.
+        assert!(controller.base.apply_song_information(&Song {
+            title: Some("Listen To The News".to_string()),
+            artist: Some("Radical Friendship Theory".to_string()),
+            cover_art_url: Some("https://lastfm.example/1200x1200.png".to_string()),
+            ..Default::default()
+        }));
+
+        // The pipe keeps streaming the same track, as it does every interval.
+        pipe_line();
+        pipe_line();
+
+        let published = receiver
+            .try_iter()
+            .filter(|event| {
+                matches!(event, PlayerEvent::SongChanged { source, .. }
+                    if source.player_id() == player_id)
+            })
+            .count();
+        bus.unsubscribe(subscription);
+
         assert_eq!(
-            stored.cover_art_url,
-            Some("https://example.com/cover.jpg".to_string()),
-            "a same-identity re-send down the metadata pipe must be stored"
+            controller.get_song().unwrap().cover_art_url,
+            Some("https://lastfm.example/1200x1200.png".to_string()),
+            "a re-send of the track already playing must not erase enriched artwork"
         );
-        assert_eq!(stored.album, Some("Master of Puppets".to_string()));
+        assert_eq!(
+            published, 1,
+            "three pipe lines for one track must publish one song_changed, not three"
+        );
     }
 }

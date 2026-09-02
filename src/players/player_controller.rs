@@ -604,8 +604,15 @@ impl BasePlayerController {
     /// Record the song this player is now playing.
     ///
     /// Returns whether it differed from the last one, in which case listeners
-    /// have been notified. A polling backend calls this on every observation
-    /// and only a real change reaches the event bus.
+    /// have been notified.
+    ///
+    /// This is the call for a *continuous* source: one that re-delivers the
+    /// current state on a timer, on every `get_song()`, or on every line of a
+    /// stream, whether or not anything changed. Being called back does not
+    /// make a source discrete -- a pipe that streams player state on a timer
+    /// is a poller wearing a callback, and `raat`'s `update_metadata` is
+    /// exactly that. Only a real change reaches the event bus, and whatever a
+    /// lookup merged into the stored song survives every re-delivery.
     pub fn set_song(&self, song: Option<Song>) -> bool {
         let changed = {
             let mut state = self.player_state.write();
@@ -625,16 +632,18 @@ impl BasePlayerController {
     /// Replace the song being played, whether or not it is the same song, and
     /// notify listeners either way.
     ///
-    /// This is for backends that learn about songs from events rather than by
-    /// polling. An event carrying a metadata-only refresh of the same song --
-    /// cover art arriving late is the usual one -- has to reach clients, so
-    /// both the store and the notification are unconditional. Returns whether
-    /// the song's identity changed, which is what a caller gates a position
-    /// reset on.
+    /// This is the call for a *discrete* source: one that speaks only when
+    /// something actually happened. A delivery is then always news, including
+    /// a metadata-only refresh of the song already playing -- cover art
+    /// arriving late is the usual one -- which has to reach clients, so both
+    /// the store and the notification are unconditional. Returns whether the
+    /// song's identity changed, which is what a caller gates a position reset
+    /// on.
     ///
-    /// [`Self::set_song`] is the polling counterpart: it stores only on an
-    /// identity change, because a poller re-reads the same song constantly and
-    /// an unconditional store there would discard whatever a lookup had added.
+    /// [`Self::set_song`] is the continuous counterpart. The question is never
+    /// the transport but whether the source speaks only on a change or speaks
+    /// regardless: an unconditional store on a continuous path discards
+    /// whatever a lookup had added, once per delivery.
     pub fn replace_song(&self, song: Option<Song>) -> bool {
         let changed = {
             let mut state = self.player_state.write();

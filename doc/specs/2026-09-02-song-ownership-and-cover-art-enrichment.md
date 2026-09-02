@@ -91,14 +91,32 @@ The base gains four methods:
 |---|---|
 | `set_song(Option<Song>) -> bool` | change-detect on identity, store and `notify_song_changed` only when it changed |
 | `replace_song(Option<Song>) -> bool` | store and `notify_song_changed` unconditionally; returns whether identity changed |
-| `apply_song_information(&Song) -> bool` | merge a partial update, store, emit `SongInformationUpdate` |
-| `get_song()` | becomes a default trait method reading from the base |
+| `update_song(impl FnOnce(&mut Song)) -> bool` | a player revising its *own* current song in place, under one write lock; returns whether there was a song |
+| `apply_song_information(&Song) -> bool` | merge a partial update from an outside lookup, store, emit `SongInformationUpdate`; returns whether anything actually changed |
+
+Identity, for `set_song` and `replace_song` alike, is the title, the artist and
+the stream URL. The artist has to be in it: only the generic controller and MPD
+ever assign a stream URL, so without it the rule would be the title alone on
+MPRIS, Bluetooth, RAAT and Shairport, and two consecutive tracks sharing a
+title would read as one song.
+
+`update_song` and `apply_song_information` are not interchangeable.
+`apply_song_information` enforces the override policy below, which protects the
+player's own artwork from an outside lookup — so a player revising its own data
+through it would always be refused. `update_song` is the path for that, and it
+is what shairport uses to attach the artwork its cover art watcher finds.
+
+`get_song()` stays a required trait method: each backend still implements it,
+because several do more than read the stored song (librespot fills a missing
+duration out of metadata, MPD enhances the stored song, LMS queries the
+server). Only `apply_song_information` gained a default implementation,
+delegating to the base.
 
 `set_song` and `replace_song` differ only in whether a same-identity
 observation is stored and announced, and which one a backend wants is decided
 by how it learns about songs:
 
-- **Polling backends use `set_song`.** MPRIS, Bluetooth, MPD and librespot
+- **Polling backends use `set_song`.** MPRIS, Bluetooth and MPD
   re-read the whole song from their source on a timer or on every `get_song()`
   and rebuild it from scratch, so a same-identity observation carries no new
   information — it is the *same* reading again, minus whatever a lookup has
@@ -106,8 +124,9 @@ by how it learns about songs:
   deliver, and announcing it would put one `song_changed` per poll on the bus
   for as long as the track plays. Identity gating is what makes a poll loop
   free.
-- **Event-driven backends use `replace_song`.** The generic controller, RAAT
-  and shairport are told about a song by an event, and an event carrying a
+- **Event-driven backends use `replace_song`.** The generic controller, RAAT,
+  shairport and librespot are told about a song by an event — librespot's
+  `get_song()` reads the stored song rather than re-reading librespot — and an event carrying a
   metadata-only refresh of the song already playing — cover art arriving late
   is the usual one — is real news that has to reach clients. Both the store
   and the notification are therefore unconditional; the return value still
@@ -120,9 +139,10 @@ was harmless only because nothing could write into the stored song from
 outside; once enrichment can, an unconditional store in a polling path is a
 bug.
 
-Backends delete their `current_song` field, their `get_song`, and their copy of
-the change-detection block. The comparison rule becomes one rule with one test
-rather than five variants with none.
+Backends delete their `current_song` field and their copy of the
+change-detection block. The comparison rule becomes one rule with one test
+rather than five variants with none. `get_song` stays, because a backend's own
+one usually does more than return the stored song.
 
 ### Enrichment addresses a player by source
 
@@ -203,8 +223,8 @@ resolved cover from being re-resolved on every subsequent lookup.
 The point of the change is that these become testable at all. Today all of these
 are duplicated across backends and untested.
 
-- **Change detection.** Same song, changed title, changed stream URL,
-  `None` → `Some`, `Some` → `None`. One rule, one place.
+- **Change detection.** Same song, changed title, changed artist, changed
+  stream URL, `None` → `Some`, `Some` → `None`. One rule, one place.
 - **Partial merge.** A field absent from the update leaves the stored value
   alone; a field present replaces it; metadata merges key by key.
 - **Staleness.** An update whose title and artist match is applied; one whose
@@ -235,7 +255,8 @@ a real device, since most of these backends cannot be exercised without one.
 MPD first: it is the backend with tests, it is the default player on most
 installs, and it is the one that demonstrates the cover art case end to end.
 The remaining eight follow mechanically — delete a field, replace writes with
-`base.set_song(...)`, delete `get_song`.
+`base.set_song(...)` or `base.replace_song(...)`, and point `get_song` at the
+stored song.
 
 The risk is concentrated in the backends that cannot be unit tested. Converting
 them in one commit each keeps a bisect useful.

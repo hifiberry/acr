@@ -137,26 +137,65 @@ question is:
   whether identity changed, which is what a caller gates a playback position
   reset on.
 
-Three tells distinguish them, and any one of them settles it: does the payload
-carry a **continuously moving field** such as a playback position; does the
-call site **throttle or de-duplicate** its own notifications; does a **watchdog
-declare the player dead** after a fixed silence, which only works if deliveries
-are expected continuously.
+#### Deciding it, per call site
+
+Four steps, run in order at the call site in front of you. The first one that
+answers, answers; each asks for a fact about the code rather than an impression
+of the backend.
+
+**1. Who fetched the data?** Did *this* call site go and get it — a read, a
+poll, a rebuild on demand — or was it handed a payload by something that
+decided to speak? **Self-fetched is always continuous.** Nothing about a read
+is tied to a change: the read that happens to be the first one after a change
+is indistinguishable from the hundred identical ones that follow it, so storing
+each unconditionally means storing the same reading over and over. This is what
+settles MPD, whose `get_song` re-reads the server's status, and the D-Bus
+backends, which rebuild the song from properties they have just asked for. Only
+when the call site was *handed* something does the question stay open.
+
+**2. Does the delivery have a continuous shape?** Three tells, any one of which
+settles it: does the payload carry a **continuously moving field** such as a
+playback position; does the call site **throttle or de-duplicate** its own
+notifications; does a **watchdog declare the player dead** after a fixed
+silence, which only works if deliveries are expected continuously. Any of them
+means continuous.
+
+**3. Does the sender's contract say it speaks only on a change?** This is the
+one positive test for `replace_song`, and it wants evidence: an event or
+variant *named* for the change it reports, a channel documented as change-only,
+a sender with no timer behind it. RAAT's `PlayerUpdate::SongChanged`,
+librespot's `song_changed` API event and the events posted to the generic
+controller all qualify. "It arrives as a callback" does not — see the RAAT
+example below.
+
+**4. Nothing settled it — use `set_song`.** The two mistakes are not the same
+size, and the default belongs to the cheap one. A wrong `set_song` on a source
+that was really discrete loses a metadata refresh — late cover art, usually —
+until the next identity change; the song on display is still the right song,
+and the next real change repairs it. A wrong `replace_song` on a source that
+was really continuous erases every enrichment within one delivery interval and
+puts a `song_changed` on the bus per delivery for the whole track: the artwork
+a lookup found is gone, and every client is woken repeatedly for as long as the
+track plays. Take the recoverable mistake, and leave a comment saying the call
+site was undecided so the next reader knows the choice was a default rather
+than a finding.
 
 RAAT is the worked example, because *both* kinds live in one file:
 
-- `update_metadata` is the metadata pipe reader's callback and it is
-  **continuous** — every line carries `seek` and a full `now_playing` object
+- `update_metadata` is the metadata pipe reader's callback. Step 1 leaves it
+  open — the reader hands it a parsed payload. Step 2 settles it as
+  **continuous**: every line carries `seek` and a full `now_playing` object
   that `parse_line` rebuilds an entire `Song` from, the position notification
   is throttled to a 1 s delta because of that, and `start_timeout_monitor`
   declares the player `Unknown` after ten seconds without a line. All three
   tells fire. It uses `set_song`.
-- `receive_update` handling `PlayerUpdate::SongChanged` is **discrete** — it
-  is one update pushed in because the song changed, and nothing re-sends it on
-  a timer. It uses `replace_song`.
+- `receive_update` handling `PlayerUpdate::SongChanged` is also handed its
+  payload, and none of the three tells fire on it. Step 3 settles it as
+  **discrete**: the variant is named for the change it reports and nothing
+  re-sends it on a timer. It uses `replace_song`.
 
 Being a callback is what these two have in common, so it cannot be what tells
-them apart.
+them apart — which is why the procedure never asks.
 
 The distinction is also not about what a backend's pre-refactor code happened
 to do. Several continuous backends stored unconditionally before this change,

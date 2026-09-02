@@ -613,9 +613,12 @@ belongs to the song, which is never replaced.
 This response is built from the player's own stored song, and a lookup that
 finds the track's real artwork writes it there: `cover_art_url` is updated
 shortly after the song change, and `song.metadata.cover_art_source` names
-whatever provider supplied it. A client that only polls `/api/now-playing`
-sees the same progression a WebSocket subscriber sees on
-`song_information_update`; see [the event contract](websocket.md).
+whatever provider supplied it — `"lastfm"`, or `"enrichment"` for a lookup
+that named no source, which is new in 0.18.0. The full set of values, and the
+rule for reading one a client does not recognise, is in
+[the event contract](websocket.md#songmetadatacover_art_source). A client that
+only polls `/api/now-playing` sees the same progression a WebSocket subscriber
+sees on `song_information_update`.
 
 #### Example
 ```bash

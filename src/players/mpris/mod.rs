@@ -27,9 +27,6 @@ pub struct MprisPlayerController {
     /// Bus type (session or system)
     bus_type: BusType,
     
-    /// Current song information
-    current_song: Arc<RwLock<Option<Song>>>,
-
     /// Current player state
     current_state: Arc<RwLock<PlayerState>>,
     
@@ -54,7 +51,6 @@ impl Clone for MprisPlayerController {
             base: self.base.clone(),
             bus_name: self.bus_name.clone(),
             bus_type: self.bus_type.clone(),
-            current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
             poll_interval: self.poll_interval,
@@ -85,7 +81,6 @@ impl MprisPlayerController {
             base,
             bus_name: bus_name.to_string(),
             bus_type,
-            current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             poll_interval,
@@ -174,7 +169,6 @@ impl MprisPlayerController {
     fn update_state_from_mpris_static(
         bus_name: &str,
         bus_type: &BusType,
-        current_song: &Arc<RwLock<Option<Song>>>,
         current_state: &Arc<RwLock<PlayerState>>,
         base: &BasePlayerController,
     ) {
@@ -269,28 +263,7 @@ impl MprisPlayerController {
                    song.as_ref().and_then(|s| s.title.as_ref()),
                    song.as_ref().and_then(|s| s.artist.as_ref()),
                    song.as_ref().and_then(|s| s.album.as_ref()));
-            {
-                let mut current_song = current_song.write();
-                let song_changed = match (&*current_song, &song) {
-                    (Some(old), Some(new)) => old.title != new.title || old.artist != new.artist,
-                    (None, Some(_)) => true,
-                    (Some(_), None) => true,
-                    (None, None) => false,
-                };
-
-                if song_changed {
-                    debug!("MPRIS song changed for {}: {:?} -> {:?}",
-                           bus_name,
-                           current_song.as_ref().map(|s| format!("{} - {}",
-                               s.artist.as_deref().unwrap_or("Unknown Artist"),
-                               s.title.as_deref().unwrap_or("Unknown Title"))),
-                           song.as_ref().map(|s| format!("{} - {}",
-                               s.artist.as_deref().unwrap_or("Unknown Artist"),
-                               s.title.as_deref().unwrap_or("Unknown Title"))));
-                }
-
-                *current_song = song;
-            }
+            base.set_song(song);
         } else {
             debug!("No metadata available for {}", bus_name);
         }
@@ -305,7 +278,6 @@ impl MprisPlayerController {
         Self::update_state_from_mpris_static(
             &self.bus_name,
             &self.bus_type,
-            &self.current_song,
             &self.current_state,
             &self.base,
         );
@@ -325,7 +297,6 @@ impl MprisPlayerController {
         let bus_type = self.bus_type.clone();
         let poll_interval = self.poll_interval;
         let should_poll = Arc::clone(&self.should_poll);
-        let current_song = Arc::clone(&self.current_song);
         let current_state = Arc::clone(&self.current_state);
         let base = self.base.clone();
         
@@ -341,7 +312,6 @@ impl MprisPlayerController {
                     Self::update_state_from_mpris_static(
                         &bus_name,
                         &bus_type,
-                        &current_song,
                         &current_state,
                         &base,
                     );
@@ -424,8 +394,7 @@ impl PlayerController for MprisPlayerController {
     
     fn get_song(&self) -> Option<Song> {
         self.update_state_from_mpris();
-        let song = self.current_song.read();
-        song.clone()
+        self.base.song()
     }
     
     fn get_queue(&self) -> Vec<Track> {

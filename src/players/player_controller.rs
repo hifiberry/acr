@@ -565,4 +565,243 @@ impl BasePlayerController {
     pub fn get_position(&self) -> Option<f64> {
         self.player_state.read().position
     }
+
+    /// The song this player last reported.
+    pub fn song(&self) -> Option<Song> {
+        self.player_state.read().song.clone()
+    }
+
+    /// Record the song this player is now playing.
+    ///
+    /// Returns whether it differed from the last one, in which case listeners
+    /// have been notified. A polling backend calls this on every observation
+    /// and only a real change reaches the event bus.
+    pub fn set_song(&self, song: Option<Song>) -> bool {
+        let changed = {
+            let mut state = self.player_state.write();
+            let changed = match (&state.song, &song) {
+                (Some(old), Some(new)) => {
+                    old.stream_url != new.stream_url || old.title != new.title
+                }
+                (None, None) => false,
+                _ => true,
+            };
+            if changed {
+                state.song = song.clone();
+            }
+            changed
+        };
+
+        if changed {
+            self.notify_song_changed(song.as_ref());
+        }
+        changed
+    }
+
+    /// Merge information a lookup found into the song being played.
+    ///
+    /// `partial` carries only what changed; an absent field means unchanged,
+    /// never "cleared". Returns whether it was applied — an answer that no
+    /// longer describes the song being played is dropped, because a lookup is
+    /// a network round trip and a radio track can finish while it is in
+    /// flight.
+    pub fn apply_song_information(&self, partial: &Song) -> bool {
+        let updated = {
+            let mut state = self.player_state.write();
+            let Some(current) = state.song.as_mut() else {
+                debug!("Song information arrived with no song playing; dropping it");
+                return false;
+            };
+
+            let (Some(partial_title), Some(partial_artist)) =
+                (partial.title.as_deref(), partial.artist.as_deref())
+            else {
+                debug!("Song information carries no title or artist; dropping it");
+                return false;
+            };
+
+            if current.title.as_deref() != Some(partial_title)
+                || current.artist.as_deref() != Some(partial_artist)
+            {
+                debug!(
+                    "Song information for {:?} no longer applies to {:?}; dropping it",
+                    partial.title, current.title
+                );
+                return false;
+            }
+
+            // The override policy, enforced here rather than in whichever
+            // plugin happens to be calling. Artwork belonging to the song is
+            // never replaced; only a placeholder is.
+            if partial.cover_art_url.is_some() && current.cover_art_is_replaceable() {
+                current.cover_art_url = partial.cover_art_url.clone();
+            }
+            if partial.liked.is_some() {
+                current.liked = partial.liked;
+            }
+            for (key, value) in &partial.metadata {
+                current.metadata.insert(key.clone(), value.clone());
+            }
+            current.clone()
+        };
+
+        let source = PlayerSource::new(self.get_player_name(), self.get_player_id());
+        crate::audiocontrol::eventbus::EventBus::instance().publish(
+            PlayerEvent::SongInformationUpdate {
+                source,
+                song: updated,
+            },
+        );
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::Song;
+
+    fn base() -> BasePlayerController {
+        BasePlayerController::with_player_info("test", "test:0")
+    }
+
+    fn song(title: &str, artist: &str) -> Song {
+        Song {
+            title: Some(title.to_string()),
+            artist: Some(artist.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// A different song is a change; the same song twice is not, so a poll loop
+    /// that re-reads identical state does not spam the event bus.
+    #[test]
+    fn only_a_different_song_counts_as_a_change() {
+        let base = base();
+
+        assert!(base.set_song(Some(song("Battery", "Metallica"))));
+        assert!(!base.set_song(Some(song("Battery", "Metallica"))));
+        assert!(base.set_song(Some(song("One", "Metallica"))));
+        assert!(base.set_song(None));
+        assert!(!base.set_song(None));
+    }
+
+    /// The stored song is what get_song answers with.
+    #[test]
+    fn the_stored_song_is_readable() {
+        let base = base();
+        base.set_song(Some(song("Battery", "Metallica")));
+
+        assert_eq!(base.song().unwrap().title, Some("Battery".to_string()));
+    }
+
+    /// A partial update fills in only the fields it carries.
+    #[test]
+    fn a_partial_update_leaves_absent_fields_alone() {
+        let base = base();
+        base.set_song(Some(song("Battery", "Metallica")));
+
+        let applied = base.apply_song_information(&Song {
+            title: Some("Battery".to_string()),
+            artist: Some("Metallica".to_string()),
+            cover_art_url: Some("https://example.com/cover.jpg".to_string()),
+            ..Default::default()
+        });
+
+        assert!(applied);
+        let stored = base.song().unwrap();
+        assert_eq!(stored.cover_art_url, Some("https://example.com/cover.jpg".to_string()));
+        assert_eq!(stored.title, Some("Battery".to_string()));
+    }
+
+    /// A lookup is a network round trip and a radio track may be short, so an
+    /// answer can arrive after the song it was about has finished. Applying it
+    /// would put the previous track's artwork on the current one.
+    #[test]
+    fn an_update_for_a_song_that_has_finished_is_dropped() {
+        let base = base();
+        base.set_song(Some(song("Listen To The News", "Radical Friendship Theory")));
+
+        let applied = base.apply_song_information(&Song {
+            title: Some("Battery".to_string()),
+            artist: Some("Metallica".to_string()),
+            cover_art_url: Some("https://example.com/wrong.jpg".to_string()),
+            ..Default::default()
+        });
+
+        assert!(!applied);
+        assert_eq!(base.song().unwrap().cover_art_url, None);
+    }
+
+    /// An update that arrives with no song playing has nothing to apply to.
+    #[test]
+    fn an_update_with_no_song_playing_is_dropped() {
+        let base = base();
+
+        assert!(!base.apply_song_information(&song("Battery", "Metallica")));
+    }
+
+    /// A partial carrying neither title nor artist cannot be checked against
+    /// the song playing, so it cannot be trusted to still apply.
+    #[test]
+    fn an_unidentified_partial_is_dropped() {
+        let base = base();
+        base.set_song(Some(song("Battery", "Metallica")));
+
+        assert!(!base.apply_song_information(&Song {
+            cover_art_url: Some("https://example.com/cover.jpg".to_string()),
+            ..Default::default()
+        }));
+    }
+
+    /// The override policy. Artwork belonging to the song is never replaced,
+    /// however good the replacement might be.
+    #[test]
+    fn artwork_belonging_to_the_song_is_not_replaced() {
+        let base = base();
+        let mut playing = song("Battery", "Metallica");
+        playing.cover_art_url = Some("https://example.com/players-own.jpg".to_string());
+        base.set_song(Some(playing));
+
+        base.apply_song_information(&Song {
+            title: Some("Battery".to_string()),
+            artist: Some("Metallica".to_string()),
+            cover_art_url: Some("https://example.com/lookup.jpg".to_string()),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/players-own.jpg".to_string()),
+            "the song's own artwork must survive a lookup"
+        );
+    }
+
+    /// A placeholder is exactly what may be replaced -- the reason any of this
+    /// machinery exists.
+    #[test]
+    fn a_placeholder_is_replaced() {
+        use crate::data::song::{COVER_ART_SOURCE, COVER_ART_SOURCE_STATION_LOGO};
+
+        let base = base();
+        let mut playing = song("Battery", "Metallica");
+        playing.cover_art_url = Some("https://station.example/logo.png".to_string());
+        playing.metadata.insert(
+            COVER_ART_SOURCE.to_string(),
+            serde_json::Value::String(COVER_ART_SOURCE_STATION_LOGO.to_string()),
+        );
+        base.set_song(Some(playing));
+
+        base.apply_song_information(&Song {
+            title: Some("Battery".to_string()),
+            artist: Some("Metallica".to_string()),
+            cover_art_url: Some("https://example.com/lookup.jpg".to_string()),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/lookup.jpg".to_string())
+        );
+    }
 }

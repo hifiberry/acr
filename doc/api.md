@@ -2985,7 +2985,8 @@ Retrieves information about available cover art methods and the providers that s
         "method": "Song",
         "providers": [
           { "name": "spotify", "display_name": "Spotify" },
-          { "name": "lastfm", "display_name": "Last.fm" }
+          { "name": "lastfm", "display_name": "Last.fm" },
+          { "name": "theaudiodb", "display_name": "TheAudioDB" }
         ]
       },
       {
@@ -3008,7 +3009,8 @@ every device; only the results differ. Spotify answers nothing until an account
 has been linked, so before 0.16.0 the `Song` method returned an empty result for
 every track on a device without one. Last.fm covers it from 0.16.0 on, using the
 album art it reports for the track, and needs only an API key rather than a
-linked account.
+linked account. TheAudioDB joins it in 0.17.0, answering with the track's own
+picture where it has one and with its album's cover otherwise.
 
 #### Example
 ```bash

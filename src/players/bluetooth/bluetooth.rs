@@ -764,7 +764,20 @@ impl BluetoothPlayerController {
                     if new_state == PlaybackState::Playing && old_state != PlaybackState::Playing {
                         debug!("Bluetooth player became active");
 
-                        // Notify about current song when becoming active
+                        // Both of these run while `current_state` is still
+                        // held for writing: base.song() takes the base's
+                        // player_state lock, and notify_song_changed
+                        // publishes on the event bus. That shape predates the
+                        // move of the song into the base, but the inner lock
+                        // is now the one the Last.fm enrichment thread also
+                        // takes, so the ordering is worth naming: this is the
+                        // only place that takes current_state and then
+                        // player_state, and nothing anywhere takes them the
+                        // other way round -- enrichment reaches the song
+                        // through the base alone and never touches a
+                        // backend's own state. Keep it that way; a path that
+                        // took player_state first and then current_state
+                        // would close the cycle.
                         if let Some(song) = base.song() {
                             base.notify_song_changed(Some(&song));
                         }

@@ -77,6 +77,28 @@ pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// The id named by one of this daemon's own artist-image URLs.
+///
+/// The selection a client posts to `/artist/<b64>/update` is a URL, and a
+/// member of an artist's set is now one of the URLs it can post. Recognising
+/// our own address means recording a pointer instead of fetching ourselves
+/// over HTTP, and it is deliberately strict: the path must be exactly the
+/// serving route, and the artist in it must be the artist being updated, so a
+/// URL cannot select an image across artists. Anything with a scheme and host
+/// is somebody else's URL, however its path ends.
+pub fn local_image_id(url: &str, artist_name: &str) -> Option<String> {
+    let expected_prefix = format!(
+        "{}/coverart/artist/{}/image/",
+        crate::constants::API_PREFIX,
+        crate::helpers::url_encoding::encode_url_safe(artist_name)
+    );
+    let id = url.strip_prefix(&expected_prefix)?;
+    if id.is_empty() || id.contains('/') || id.contains('?') {
+        return None;
+    }
+    Some(id.to_string())
+}
+
 /// Configuration for the artist store
 #[derive(Debug, Clone)]
 pub struct ArtistStoreConfig {
@@ -291,11 +313,46 @@ impl ArtistStore {
         let Some(path) = self.artist_image_path(artist_name, id) else {
             return Err(format!("No image '{}' for artist '{}'", id, artist_name));
         };
+        if self.selected_image_id(artist_name).as_deref() == Some(id) {
+            crate::helpers::settingsdb::remove(&format!("artist.image.{}", artist_name)).ok();
+        }
         std::fs::remove_file(&path).map_err(|e| format!("Failed to remove {}: {}", path, e))?;
         crate::helpers::imageresize::remove_variants_of(&path);
         crate::helpers::image_meta::clear_image_cache(&path).ok();
         self.image_cache.remove(artist_name);
         Ok(())
+    }
+
+    /// Record which member of the set is chosen.
+    ///
+    /// The pointer lives where the WebUI already puts it — the settings key
+    /// `artist.image.{artist}` — so there is one record of "the chosen image"
+    /// rather than two that can disagree.
+    pub fn select_artist_image(&mut self, artist_name: &str, id: &str) -> Result<(), String> {
+        if self.artist_image_path(artist_name, id).is_none() {
+            return Err(format!("No image '{}' for artist '{}'", id, artist_name));
+        }
+        let url = format!(
+            "{}/coverart/artist/{}/image/{}",
+            crate::constants::API_PREFIX,
+            crate::helpers::url_encoding::encode_url_safe(artist_name),
+            id
+        );
+        crate::helpers::settingsdb::set_string(&format!("artist.image.{}", artist_name), &url)
+            .map_err(|e| format!("Failed to record the selection: {}", e))?;
+        self.image_cache.remove(artist_name);
+        Ok(())
+    }
+
+    /// Which member is selected, when the selection names one of ours.
+    ///
+    /// A selection holding a remote URL is not a member id: that image reaches
+    /// the set as `custom.jpg` once it is downloaded, and `custom` is what the
+    /// listing reports as selected.
+    pub fn selected_image_id(&self, artist_name: &str) -> Option<String> {
+        let stored = crate::helpers::settingsdb::get_string(&format!("artist.image.{}", artist_name)).ok()??;
+        let id = local_image_id(&stored, artist_name)?;
+        self.artist_image_path(artist_name, &id).map(|_| id)
     }
 
     /// Check if an artist image exists in cache
@@ -329,6 +386,15 @@ impl ArtistStore {
             } else {
                 // Remove stale cache entry
                 self.image_cache.remove(artist_name);
+            }
+        }
+
+        // A selected member wins the chain below: the whole point of choosing
+        // one is that it beats whatever precedence would otherwise apply.
+        if let Some(id) = self.selected_image_id(artist_name) {
+            if let Some(path) = self.artist_image_path(artist_name, &id) {
+                self.image_cache.insert(artist_name.to_string(), path.clone());
+                return ArtistImageResult::Found { cache_path: path };
             }
         }
 
@@ -947,6 +1013,27 @@ mod tests {
         });
     }
 
+    /// Repoint the process-wide settings database at a temporary directory, once.
+    ///
+    /// The selection lives in the same global settings database the daemon
+    /// uses for everything else, so a test that calls `select_artist_image`
+    /// must not write to the real device path either. `#[serial]` on every
+    /// caller keeps this from racing the settingsdb crate's own `#[serial]`
+    /// tests, which share the same global; distinct artist names per test
+    /// keep them from colliding with each other through the one database this
+    /// leaves in place for the rest of the run.
+    fn init_test_settings_db() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+
+        INIT.call_once(|| {
+            let temp_dir = TempDir::new().expect("settings db temp dir");
+            crate::helpers::settingsdb::SettingsDb::initialize_global(temp_dir.path())
+                .expect("settings db should initialize");
+            std::mem::forget(temp_dir);
+        });
+    }
+
     /// Create a test artist store with temporary directories
     fn create_test_store() -> (ArtistStore, TempDir, TempDir) {
         let cache_temp_dir = TempDir::new().expect("Failed to create temp cache dir");
@@ -1299,5 +1386,78 @@ mod tests {
         let dir = temp_user_dir();
         let mut store = store_in(&dir);
         assert!(store.delete_artist_image("Artist", "nope").is_err());
+    }
+
+    #[test]
+    fn a_local_image_url_names_its_id() {
+        let b64 = crate::helpers::url_encoding::encode_url_safe("The Beatles");
+        let url = format!("/api/coverart/artist/{}/image/custom", b64);
+        assert_eq!(local_image_id(&url, "The Beatles"), Some("custom".to_string()));
+    }
+
+    /// A URL for a different artist must not select an image for this one, and
+    /// a remote host that merely ends in the same path is not local at all.
+    #[test]
+    fn a_url_for_another_artist_or_host_is_not_local() {
+        let other = crate::helpers::url_encoding::encode_url_safe("Someone Else");
+        assert_eq!(local_image_id(&format!("/api/coverart/artist/{}/image/custom", other), "The Beatles"), None);
+
+        let b64 = crate::helpers::url_encoding::encode_url_safe("The Beatles");
+        assert_eq!(
+            local_image_id(&format!("https://evil.test/api/coverart/artist/{}/image/custom", b64), "The Beatles"),
+            None
+        );
+        assert_eq!(local_image_id("https://example.test/cover.jpg", "The Beatles"), None);
+    }
+
+    #[test]
+    #[serial]
+    fn a_selected_upload_wins_over_an_existing_custom_image() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let artist = "Selection Winner Artist";
+        write_file(&store.get_artist_user_image_path(artist, "custom"), &png_bytes(8, 8));
+        let id = store.store_uploaded_image(artist, &png_bytes(16, 16)).unwrap();
+
+        store.select_artist_image(artist, &id).expect("the upload is selectable");
+
+        let ArtistImageResult::Found { cache_path } = store.get_cached_image(artist) else {
+            panic!("an image should be found");
+        };
+        assert_eq!(Some(cache_path), store.artist_image_path(artist, &id));
+        assert_eq!(store.selected_image_id(artist).as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    #[serial]
+    fn deleting_the_selected_image_falls_back_to_the_chain() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let artist = "Selection Fallback Artist";
+        let custom = store.get_artist_user_image_path(artist, "custom");
+        write_file(&custom, &png_bytes(8, 8));
+        let id = store.store_uploaded_image(artist, &png_bytes(16, 16)).unwrap();
+        store.select_artist_image(artist, &id).unwrap();
+
+        store.delete_artist_image(artist, &id).unwrap();
+
+        assert_eq!(store.selected_image_id(artist), None);
+        let ArtistImageResult::Found { cache_path } = store.get_cached_image(artist) else {
+            panic!("the chain still finds the custom image");
+        };
+        assert_eq!(cache_path, custom);
+    }
+
+    #[test]
+    #[serial]
+    fn selecting_an_unknown_id_is_refused_and_changes_nothing() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let artist = "Selection Unknown Artist";
+        assert!(store.select_artist_image(artist, "nope").is_err());
+        assert_eq!(store.selected_image_id(artist), None);
     }
 }

@@ -223,8 +223,10 @@ pub trait CoverartProvider {
 
     /// Answer from this provider's own cache, without a network round trip.
     ///
-    /// `None` means "not cached"; `Some(vec![])` means "cached, and the
-    /// answer is that there is no artwork". Only slow providers need to
+    /// `None` means there is nothing to show: either nothing is cached, or
+    /// what is cached is an absence of artwork, an error, or a set of images
+    /// whose files have since gone. Callers do the same thing with all four,
+    /// so they are not distinguished here. Only slow providers need to
     /// implement this: it is what keeps their answers available on the fast
     /// path once they have been found.
     fn cached_coverart(&self, _query: &CoverartQuery) -> Option<Vec<String>> {

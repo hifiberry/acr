@@ -121,7 +121,10 @@
                     "trigger": "fallback",
                     "cache_ttl_days": 30,
                     "negative_cache_ttl_days": 7,
-                    "max_concurrent": 1
+                    "max_concurrent": 1,
+                    "_comment": "localize is for an endpoint whose images are on a private network, or need a credential the client does not hold: the daemon fetches them with the headers above and serves them itself at /api/imagecache/external/<name>/. Leave it false for a publicly reachable provider, whose URLs already work. An endpoint can also send an image inline as base64 in the images entry's data field, which is always stored locally whatever localize says. max_image_bytes bounds a single image, inline or fetched; an inline image is capped near 7.5 MiB by the JSON body limit however this is set.",
+                    "localize": false,
+                    "max_image_bytes": 4194304
                 }
             ]
         },

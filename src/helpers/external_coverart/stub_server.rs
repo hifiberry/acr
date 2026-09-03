@@ -16,6 +16,7 @@ pub struct StubServer {
     port: u16,
     last_request: Arc<Mutex<Option<String>>>,
     requests: Arc<Mutex<Vec<String>>>,
+    queue: Arc<Mutex<Vec<Canned>>>,
 }
 
 /// One canned answer: a status, a content type and a body.
@@ -36,10 +37,6 @@ impl Canned {
     }
 
     /// An answer that is not JSON -- image bytes, most of the time.
-    ///
-    /// Only the localisation wire tests need this, so it is dead code in a
-    /// build that does not compile them.
-    #[allow(dead_code)]
     pub fn bytes(status: u16, content_type: &str, body: Vec<u8>) -> Self {
         Self { status, content_type: content_type.to_string(), body }
     }
@@ -56,10 +53,6 @@ impl StubServer {
     /// queue is down to its last entry that entry is repeated, so a test only
     /// has to describe the answers it cares about -- and so `serving`, which
     /// is a queue of one, keeps answering every request.
-    ///
-    /// Only the localisation wire tests need this, so it is dead code in a
-    /// build that does not compile them.
-    #[allow(dead_code)]
     pub fn queued(responses: Vec<Canned>) -> Self {
         Self::start(Some(responses))
     }
@@ -79,6 +72,7 @@ impl StubServer {
         let all = requests.clone();
         let silent = responses.is_none();
         let queue = Arc::new(Mutex::new(responses.unwrap_or_default()));
+        let kept = queue.clone();
 
         thread::spawn(move || {
             for stream in listener.incoming() {
@@ -104,7 +98,7 @@ impl StubServer {
             }
         });
 
-        Self { port, last_request, requests }
+        Self { port, last_request, requests, queue: kept }
     }
 
     pub fn url(&self) -> String {
@@ -112,10 +106,6 @@ impl StubServer {
     }
 
     /// The base URL, for building a second path the same server answers.
-    ///
-    /// Only the localisation wire tests need this, so it is dead code in a
-    /// build that does not compile them.
-    #[allow(dead_code)]
     pub fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
@@ -125,11 +115,17 @@ impl StubServer {
         self.last_request.lock().clone()
     }
 
-    /// Every request received, in arrival order.
+    /// Replace the queued answers after construction.
     ///
-    /// Only the localisation wire tests need this, so it is dead code in a
-    /// build that does not compile them.
-    #[allow(dead_code)]
+    /// The one thing a constructor cannot do: an answer that has to name the
+    /// port this server is listening on can only be written once the server
+    /// exists. A test builds the server, reads `base_url`, then sets the
+    /// queue -- rather than needing two servers to describe one exchange.
+    pub fn set_queue(&self, responses: Vec<Canned>) {
+        *self.queue.lock() = responses;
+    }
+
+    /// Every request received, in arrival order.
     pub fn requests(&self) -> Vec<String> {
         self.requests.lock().clone()
     }

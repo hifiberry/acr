@@ -213,7 +213,28 @@ impl ExternalCoverartProvider {
 
         let key = cache_key(&self.endpoint.name, query);
 
+        // A cached `Found` can name a file that has since gone: the answer
+        // cache and the image cache expire independently. Pruning is matched
+        // on `Found` alone rather than applied to whatever came back, because
+        // `prune_missing` collapses "every image has gone" into `Error` too --
+        // and a genuinely cached `Error` must still short-circuit, which is
+        // the whole reason errors are cached at all.
         match attributecache::get::<Lookup>(&key) {
+            Ok(Some(Lookup::Found(urls))) => {
+                match localize::prune_missing(Lookup::Found(urls)) {
+                    Lookup::Found(surviving) => {
+                        debug!("External cover art '{}': cache hit for {}", self.endpoint.name, key);
+                        return Lookup::Found(surviving);
+                    }
+                    // Every cached image has gone from the image cache. Fall
+                    // through and look the track up again rather than serve
+                    // URLs that 404.
+                    _ => debug!(
+                        "External cover art '{}': cached images for {} have gone; looking up again",
+                        self.endpoint.name, key
+                    ),
+                }
+            }
             Ok(Some(cached)) => {
                 debug!("External cover art '{}': cache hit for {}", self.endpoint.name, key);
                 return cached;
@@ -248,7 +269,12 @@ impl ExternalCoverartProvider {
 
         let client = new_http_client(self.endpoint.timeout_seconds);
         let lookup = match client.get_json_with_headers(&url, &headers) {
-            Ok(body) => parse_response(&body).into_lookup(),
+            // Localised between parsing and caching, so the cached answer
+            // already holds the final URLs and no read path needs
+            // localisation logic of its own. `key` is the same value the
+            // cache read used, which is what makes a re-lookup of this track
+            // overwrite its own image file instead of accumulating a copy.
+            Ok(body) => localize::resolve(parse_response(&body), &self.endpoint, &key),
             Err(e) => {
                 warn!("External cover art '{}': lookup failed: {}", self.endpoint.name, e);
                 Lookup::Error
@@ -287,7 +313,16 @@ impl CoverartProvider for ExternalCoverartProvider {
     fn cached_coverart(&self, query: &CoverartQuery) -> Option<Vec<String>> {
         let key = cache_key(&self.endpoint.name, query);
         match attributecache::get::<Lookup>(&key) {
-            Ok(Some(cached)) => Some(cached.urls()),
+            // Pruned for the same reason as in `lookup_with`: a cached URL
+            // naming a file that has gone is worse than no answer, because
+            // this is the path the REST handlers answer from without ever
+            // making a request. A cached `NoArtwork` or `Error` reads back as
+            // `None` rather than `Some(vec![])`; both mean "nothing to show",
+            // and `fan_out` already collapses them with `unwrap_or_default`.
+            Ok(Some(cached)) => match localize::prune_missing(cached) {
+                Lookup::Found(urls) => Some(urls),
+                _ => None,
+            },
             Ok(None) => None,
             Err(e) => {
                 warn!("External cover art '{}': cache read failed: {}", self.endpoint.name, e);
@@ -485,8 +520,12 @@ mod tests {
         assert_ne!(cache_key("llm", &with_year), cache_key("llm", &without_year));
     }
 
-    /// A miss must be distinguishable from a cached "there is nothing":
-    /// `None` sends the caller to the network, `Some(vec![])` does not.
+    /// Nothing cached is nothing to show. Since localisation was wired in,
+    /// a cached `NoArtwork` or `Error` reads back as `None` too rather than
+    /// as `Some(vec![])`: both mean "nothing to show", the only consumer
+    /// (`fan_out`) collapses them with `unwrap_or_default` anyway, and
+    /// keeping them apart here would mean pruning a cached `Found` down to
+    /// nothing had to be reported as a third thing again.
     #[test]
     fn an_uncached_query_returns_none() {
         let provider = ExternalCoverartProvider::new(endpoint());
@@ -807,5 +846,165 @@ mod tests {
         // With the slot free, the same query now actually reaches the
         // network and is cached as a real answer.
         assert_eq!(provider.lookup_with(&query, LookupMode::Interactive), Lookup::NoArtwork);
+    }
+
+    // --- localisation, end to end over a real socket ------------------
+
+    /// End to end over a real socket: the endpoint answers with an inline
+    /// image, and what gets cached and returned is a URL this daemon serves.
+    #[test]
+    fn an_inline_image_is_served_from_the_image_cache() {
+        use base64::Engine as _;
+        let png = tiny_png();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        let server = StubServer::serving(
+            200,
+            &format!(r#"{{"images":[{{"data":"{}"}}]}}"#, encoded),
+        );
+        let provider = provider_for(&server, 5);
+
+        let lookup = provider.lookup_with(&stub_query(), LookupMode::Interactive);
+
+        let Lookup::Found(urls) = lookup else { panic!("an inline image is artwork") };
+        assert_eq!(urls.len(), 1);
+        assert!(
+            urls[0].starts_with("/api/imagecache/external/"),
+            "expected a locally served URL, got {}",
+            urls[0]
+        );
+
+        // And the bytes really are there to serve.
+        let path = urls[0]
+            .strip_prefix("/api/imagecache/")
+            .expect("a local URL");
+        assert!(crate::helpers::imagecache::image_exists(path));
+        let _ = crate::helpers::imagecache::delete_image(path);
+    }
+
+    /// The credential that authorised the lookup has to authorise the image
+    /// fetch. This is the whole reason the feature exists, so it is asserted
+    /// against the bytes on the wire rather than against a fake.
+    #[test]
+    fn a_localised_fetch_carries_the_endpoint_headers() {
+        // One server answers both requests, which is what lets the image URL
+        // name the port it is already listening on. That port is only known
+        // after construction, so the queue is set afterwards rather than
+        // describing one exchange with two servers.
+        let server = StubServer::queued(vec![stub_server::Canned::json(200, r#"{"images":[]}"#)]);
+        let image_url = format!("{}/image.png", server.base_url());
+        server.set_queue(vec![
+            stub_server::Canned::json(
+                200,
+                &format!(r#"{{"images":[{{"url":"{}"}}]}}"#, image_url),
+            ),
+            stub_server::Canned::bytes(200, "image/png", tiny_png()),
+        ]);
+
+        let mut endpoint = endpoint();
+        endpoint.url = server.url();
+        endpoint.localize = true;
+        endpoint.headers = std::collections::HashMap::from([(
+            "Authorization".to_string(),
+            "Bearer sekrit".to_string(),
+        )]);
+        endpoint.timeout_seconds = 5;
+        let provider = ExternalCoverartProvider::new(endpoint);
+
+        let lookup = provider.lookup_with(&stub_query(), LookupMode::Interactive);
+
+        // Both requests must have carried the credential.
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2, "a lookup and an image fetch; got {:?}", requests);
+        for request in &requests {
+            assert!(
+                request.contains("Authorization: Bearer sekrit"),
+                "every request must carry the credential; got: {}",
+                request
+            );
+        }
+
+        let Lookup::Found(urls) = lookup else { panic!("artwork, got {:?}", lookup) };
+        assert!(
+            urls[0].starts_with("/api/imagecache/external/"),
+            "expected a locally served URL, got {}",
+            urls[0]
+        );
+        if let Some(path) = urls[0].strip_prefix("/api/imagecache/") {
+            let _ = crate::helpers::imagecache::delete_image(path);
+        }
+    }
+
+    /// With localisation off, nothing changes: the endpoint's URL is what a
+    /// client gets, and no second request is made.
+    #[test]
+    fn a_url_answer_is_unchanged_when_localize_is_off() {
+        let server = StubServer::serving(200, r#"{"images":[{"url":"https://img.example/a.jpg"}]}"#);
+        let provider = provider_for(&server, 5);
+
+        assert_eq!(
+            provider.lookup_with(&stub_query(), LookupMode::Interactive),
+            Lookup::Found(vec!["https://img.example/a.jpg".to_string()])
+        );
+        assert_eq!(server.requests().len(), 1, "no image fetch should happen");
+    }
+
+    /// A cached local URL whose file has been removed must read back as a
+    /// miss rather than be served as a 404.
+    #[test]
+    fn a_cached_answer_whose_file_is_gone_is_not_returned() {
+        let query = CoverartQuery::Song {
+            title: unique_title(),
+            artist: "prune".to_string(),
+        };
+        let provider = ExternalCoverartProvider::new(endpoint());
+        let key = cache_key(&provider.endpoint().name, &query);
+
+        // A cached answer naming a file that was never stored.
+        attributecache::set(
+            &key,
+            &Lookup::Found(vec!["/api/imagecache/external/llm/missing.png".to_string()]),
+        )
+        .expect("the answer is cached");
+
+        assert_eq!(provider.cached_coverart(&query), None);
+    }
+
+    /// A cached `Error` must still short-circuit: not asking a broken
+    /// endpoint again for an hour is the entire reason errors are cached.
+    ///
+    /// `prune_missing` returns `Error` both for a genuinely cached error and
+    /// for a `Found` whose files have all gone, so a cache read that prunes
+    /// first and then looks for `Error` would re-ask a broken endpoint on
+    /// every song change. A server that would fail the test if contacted is
+    /// what proves it does not.
+    #[test]
+    fn a_cached_error_still_short_circuits() {
+        let server = StubServer::serving(200, r#"{"images":[{"url":"https://img.example/a.jpg"}]}"#);
+        let provider = provider_for(&server, 5);
+        let query = stub_query();
+        let key = cache_key(&provider.endpoint().name, &query);
+
+        attributecache::set(&key, &Lookup::Error).expect("the error is cached");
+
+        assert_eq!(
+            provider.lookup_with(&query, LookupMode::Interactive),
+            Lookup::Error
+        );
+        assert!(
+            server.requests().is_empty(),
+            "a cached error must not reach the network; got {:?}",
+            server.requests()
+        );
+    }
+
+    /// A 1x1 PNG, so a test needs no fixture file.
+    fn tiny_png() -> Vec<u8> {
+        vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ]
     }
 }

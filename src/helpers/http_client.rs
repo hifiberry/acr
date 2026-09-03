@@ -207,7 +207,24 @@ impl HttpClient for UreqHttpClient {
     ) -> Result<(Vec<u8>, String), HttpClientError> {
         debug!("GET binary request with headers to {}", url);
 
-        let mut request = ureq::get(url).timeout(self.timeout);
+        // A redirect must not carry the headers onward. ureq strips exactly
+        // `content-length`, `cookie` and `authorization` from a redirected
+        // request and forwards everything else, so a credential under any
+        // other name -- `X-Api-Key` and its relatives, which the external
+        // cover art `headers` map exists to carry -- would reach whatever host
+        // the redirect names. The caller decides which URL may see the
+        // headers, and it decides that before the call; following a redirect
+        // would let the answer move that goalpost afterwards.
+        //
+        // An unauthenticated fetch has nothing to leak, and an image host
+        // redirecting to a CDN is ordinary, so those still follow redirects.
+        let agent = if headers.is_empty() {
+            ureq::agent()
+        } else {
+            ureq::builder().redirects(0).build()
+        };
+
+        let mut request = agent.get(url).timeout(self.timeout);
         for &(name, value) in headers {
             request = request.set(name, value);
         }
@@ -219,6 +236,21 @@ impl HttpClient for UreqHttpClient {
                 return Err(HttpClientError::RequestError(e.to_string()));
             }
         };
+
+        // With redirects disabled ureq hands back the 3xx itself rather than
+        // an error, and its body is the redirect page, not an image. Refusing
+        // it here says why; storing it would fail later as "unrecognised
+        // format", which describes the symptom rather than the cause.
+        if (300..400).contains(&response.status()) {
+            debug!(
+                "Refusing to follow a redirect from {} on a request carrying headers",
+                url
+            );
+            return Err(HttpClientError::RequestError(format!(
+                "refusing to follow a redirect from {} on a request carrying headers",
+                url
+            )));
+        }
 
         let content_type = response
             .header("content-type")
@@ -486,6 +518,89 @@ mod tests {
         });
 
         (port, rx)
+    }
+
+    /// A local one-shot server that answers a 302 pointing somewhere else.
+    fn redirect_once(location: &str) -> (u16, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a free local port");
+        let port = listener.local_addr().expect("a bound address").port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let location = location.to_string();
+
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while stream.read_exact(&mut byte).is_ok() {
+                request.push(byte[0]);
+                if request.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&request).into_owned());
+
+            let head = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                location
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.flush();
+        });
+
+        (port, rx)
+    }
+
+    /// A credential must not follow a redirect to a host the answer chose.
+    ///
+    /// ureq carries the header list onto a redirect target with only
+    /// `content-length`, `cookie` and `authorization` removed, so a
+    /// credential under any other name — `X-Api-Key` and friends, which the
+    /// external cover art `headers` map explicitly allows — would be handed
+    /// to whatever host the redirect names. The caller decides which URL may
+    /// see the headers, and it decides that before the call; a redirect must
+    /// not be able to move that goalpost afterwards.
+    #[test]
+    fn a_credentialed_binary_get_does_not_follow_a_redirect() {
+        let (target_port, target_rx) = serve_once(200, "image/png", vec![9; 10]);
+        let (port, _rx) = redirect_once(&format!("http://127.0.0.1:{}/i.png", target_port));
+        let client = UreqHttpClient::new(5);
+
+        let result = client.get_binary_with_headers(
+            &format!("http://127.0.0.1:{}/i.png", port),
+            &[("X-Api-Key", "sekrit")],
+            1024,
+        );
+
+        let error = result.expect_err("a redirect on a credentialed fetch must not be followed");
+        assert!(
+            matches!(&error, HttpClientError::RequestError(message) if message.contains("redirect")),
+            "expected a refusal naming the redirect, got: {:?}",
+            error
+        );
+        assert!(
+            target_rx.recv_timeout(std::time::Duration::from_millis(500)).is_err(),
+            "the redirect target must never be contacted with credentials in hand"
+        );
+    }
+
+    /// An unauthenticated fetch carries nothing to leak, and naming a CDN that
+    /// redirects is a legitimate thing for an image host to do, so redirects
+    /// are still followed when there are no headers to protect.
+    #[test]
+    fn an_uncredentialed_binary_get_still_follows_a_redirect() {
+        let (target_port, _target_rx) = serve_once(200, "image/png", vec![9; 10]);
+        let (port, _rx) = redirect_once(&format!("http://127.0.0.1:{}/i.png", target_port));
+        let client = UreqHttpClient::new(5);
+
+        let (bytes, mime) = client
+            .get_binary_with_headers(&format!("http://127.0.0.1:{}/i.png", port), &[], 1024)
+            .expect("a redirect without credentials is followed");
+
+        assert_eq!(bytes, vec![9; 10]);
+        assert_eq!(mime, "image/png");
     }
 
     #[test]

@@ -182,6 +182,16 @@ is capped, and an image's type is read from its bytes rather than believed.
 Sending the configured token to whatever host an answer happened to name
 would hand the credential to anyone who could influence that response.
 
+For the same reason, **a fetch that carries the headers does not follow
+redirects**. The origin is checked once, before the request; a `302` would
+otherwise carry every header except `Authorization` on to a host of the
+answer's choosing, which is how a credential named `X-Api-Key` would escape a
+check that had already passed. An image URL answered with a redirect is
+reported as a failed fetch and that image is skipped. A cross-origin fetch
+carries no credentials and still follows redirects, so an endpoint may name a
+CDN that redirects; an endpoint serving its own images should answer with the
+address those images are actually at.
+
 A localised image is served at
 `/api/imagecache/external/<endpoint>/<hash>.<ext>`. Like every other internal
 URL the daemon hands out, it is rewritten for `X-Forwarded-Prefix`, both on

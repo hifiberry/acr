@@ -36,6 +36,13 @@ const MAX_CACHE_TTL_DAYS: u64 = 365 * 10;
 /// more than a handful of concurrent slow lookups against a single one.
 const MAX_MAX_CONCURRENT: u64 = 16;
 
+const DEFAULT_MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 64 MiB. Far past any real cover, and still a bound: `max_image_bytes`
+/// decides how much of a single response the daemon will hold in memory at
+/// once, so an unbounded value is an unbounded allocation.
+const MAX_MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// When an endpoint is worth asking.
 ///
 /// Only the background worker reads this. The REST endpoints ignore it and
@@ -67,6 +74,19 @@ pub struct EndpointConfig {
     pub cache_ttl_days: u64,
     pub negative_cache_ttl_days: u64,
     pub max_concurrent: usize,
+    /// Store this endpoint's `url` images locally and serve them from the
+    /// daemon, instead of handing the endpoint's URL to clients.
+    ///
+    /// Off by default: a publicly reachable provider's URLs already work,
+    /// and localising them would spend appliance disk to no end. Turn it on
+    /// for an endpoint on a private network, or one whose images need a
+    /// credential the client does not hold.
+    ///
+    /// This governs `url` images only. An inline image is always stored
+    /// locally, because bytes have no URL to pass through.
+    pub localize: bool,
+    /// The largest image this endpoint may deliver, inline or by URL.
+    pub max_image_bytes: u64,
 }
 
 fn parse_method(name: &str) -> Option<CoverartMethod> {
@@ -187,6 +207,25 @@ fn parse_endpoint(value: &serde_json::Value) -> Option<EndpointConfig> {
     );
     let max_concurrent =
         number("max_concurrent", DEFAULT_MAX_CONCURRENT as u64, MAX_MAX_CONCURRENT) as usize;
+    let max_image_bytes = number(
+        "max_image_bytes",
+        DEFAULT_MAX_IMAGE_BYTES,
+        MAX_MAX_IMAGE_BYTES,
+    );
+
+    let localize = match value.get("localize") {
+        None => false,
+        Some(raw) => match raw.as_bool() {
+            Some(v) => v,
+            None => {
+                warn!(
+                    "External cover art: endpoint '{}' has a non-boolean 'localize' ({}); leaving it off",
+                    name, raw
+                );
+                false
+            }
+        },
+    };
 
     Some(EndpointConfig {
         name,
@@ -199,6 +238,8 @@ fn parse_endpoint(value: &serde_json::Value) -> Option<EndpointConfig> {
         cache_ttl_days,
         negative_cache_ttl_days,
         max_concurrent,
+        localize,
+        max_image_bytes,
     })
 }
 
@@ -238,8 +279,8 @@ pub fn parse_endpoints(config: &serde_json::Value) -> Vec<EndpointConfig> {
             continue;
         }
         info!(
-            "External cover art endpoint '{}' configured for {:?}, timeout {}s, trigger {:?}",
-            endpoint.name, endpoint.methods, endpoint.timeout_seconds, endpoint.trigger
+            "External cover art endpoint '{}' configured for {:?}, timeout {}s, trigger {:?}, localize {}",
+            endpoint.name, endpoint.methods, endpoint.timeout_seconds, endpoint.trigger, endpoint.localize
         );
         endpoints.push(endpoint);
     }
@@ -462,5 +503,57 @@ mod tests {
 
         assert_eq!(endpoints.len(), 1);
         assert_eq!(endpoints[0].url, "https://tools.example.com/one");
+    }
+
+    /// Localising is opt-in. A public provider's URLs are already reachable,
+    /// and copying its images onto an appliance's disk to serve them again
+    /// would be a regression rather than a feature.
+    #[test]
+    fn localize_defaults_to_off() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart"
+        }])));
+
+        assert!(!endpoints[0].localize);
+        assert_eq!(endpoints[0].max_image_bytes, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn localize_and_max_image_bytes_are_read() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart",
+            "localize": true,
+            "max_image_bytes": 1024
+        }])));
+
+        assert!(endpoints[0].localize);
+        assert_eq!(endpoints[0].max_image_bytes, 1024);
+    }
+
+    #[test]
+    fn a_non_boolean_localize_warns_and_stays_off() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart",
+            "localize": "yes"
+        }])));
+
+        assert_eq!(endpoints.len(), 1, "a bad localize must not drop the endpoint");
+        assert!(!endpoints[0].localize);
+    }
+
+    /// The value decides how much a single response may hold in memory, so
+    /// it is clamped like every other numeric key rather than trusted.
+    #[test]
+    fn an_absurd_max_image_bytes_is_clamped() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart",
+            "max_image_bytes": u64::MAX
+        }])));
+
+        assert_eq!(endpoints[0].max_image_bytes, 64 * 1024 * 1024);
     }
 }

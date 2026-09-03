@@ -544,6 +544,24 @@ mod tests {
         assert!(!endpoints[0].localize);
     }
 
+    /// Zero falls back to the default rather than being honoured. A hard
+    /// zero would silently refuse every image for that endpoint, which looks
+    /// exactly like a broken service; and the localiser compares
+    /// `bytes.len() > max_image_bytes`, so a zero there would reject
+    /// everything. Pinned because later code relies on the cap never being
+    /// zero, not because the fallback is interesting in itself.
+    #[test]
+    fn a_max_image_bytes_of_zero_falls_back_to_the_default() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart",
+            "max_image_bytes": 0
+        }])));
+
+        assert_eq!(endpoints.len(), 1, "a zero cap must not drop the endpoint");
+        assert_eq!(endpoints[0].max_image_bytes, 8 * 1024 * 1024);
+    }
+
     /// The value decides how much a single response may hold in memory, so
     /// it is clamped like every other numeric key rather than trusted.
     #[test]

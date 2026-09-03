@@ -21,16 +21,6 @@ pub struct ImageMetadata {
     pub format: String,
 }
 
-/// Get image metadata (resolution and size) for a given URL
-/// 
-/// This function supports both local files and remote URLs.
-/// Results are cached using the attribute cache for performance.
-/// 
-/// # Arguments
-/// * `url` - URL or file path to the image
-/// 
-/// # Returns
-/// * `Result<ImageMetadata, String>` - Image metadata or error message
 /// The image cache path an internal cover art URL names, if it names one.
 ///
 /// These URLs are the daemon's own route (`/api/imagecache/<path>`), not
@@ -42,6 +32,18 @@ fn imagecache_relative_path(url: &str) -> Option<&str> {
     rest.strip_prefix("/imagecache/")
 }
 
+/// Get image metadata (resolution and size) for a given URL
+///
+/// This function supports remote URLs, local files, and the daemon's own
+/// `/api/imagecache/` route. Results are cached using the attribute cache
+/// for performance, keyed by the URL and with no expiry, so a URL whose
+/// content can change has to invalidate its entry -- see [`forget`].
+///
+/// # Arguments
+/// * `url` - URL or file path to the image
+///
+/// # Returns
+/// * `Result<ImageMetadata, String>` - Image metadata or error message
 pub fn image_size(url: &str) -> Result<ImageMetadata, String> {
     // Check cache first
     let cache_key = format!("{}{}", IMAGE_META_CACHE_PREFIX, url);
@@ -75,6 +77,25 @@ pub fn image_size(url: &str) -> Result<ImageMetadata, String> {
     }
     
     Ok(metadata)
+}
+
+/// Forget the cached metadata for one URL.
+///
+/// [`image_size`] caches by URL with no expiry, which is right for a URL
+/// whose content never changes -- the two other producers of
+/// `/api/imagecache/` URLs name their files after a hash of the bytes, so new
+/// content means a new URL. Localised external cover art deliberately does
+/// not: its path is derived from the query so that a re-lookup overwrites its
+/// own file instead of accumulating a copy per lookup. Without this, the
+/// dimensions measured the first time would be reported for every later
+/// image at that path, and the grader would rank the cover on a stale size
+/// for as long as the entry lived.
+pub(crate) fn forget(url: &str) {
+    let cache_key = format!("{}{}", IMAGE_META_CACHE_PREFIX, url);
+    match get_attribute_cache().remove(&cache_key) {
+        Ok(_) => debug!("Forgot cached image metadata for: {}", url),
+        Err(e) => warn!("Failed to forget image metadata for {}: {}", url, e),
+    }
 }
 
 /// Analyze a local image file
@@ -634,6 +655,61 @@ mod tests {
         let metadata = image_size(&url).expect("a cached image is measurable");
 
         assert_eq!((metadata.width, metadata.height), (1, 1));
+
+        let _ = std::fs::remove_file(&full);
+    }
+
+    /// A PNG of the given size, so a test can change an image's dimensions
+    /// without a fixture file.
+    fn png_of(width: u32, height: u32) -> Vec<u8> {
+        use std::io::Cursor;
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            width,
+            height,
+            image::Rgb([10, 20, 30]),
+        ));
+        let mut buf = Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png)
+            .expect("a PNG is encodable");
+        buf.into_inner()
+    }
+
+    /// Metadata is cached by URL with no expiry, which is only safe while a
+    /// URL's content cannot change. Localised external cover art reuses one
+    /// path per query so a re-lookup overwrites its own file, so it can and
+    /// does change -- and the grader would otherwise rank a replaced cover on
+    /// the size of whatever was measured first.
+    #[test]
+    fn forgetting_a_url_lets_changed_content_be_measured_again() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after the epoch")
+            .as_nanos();
+        let relative = format!("test_image_meta/forget-{}.png", unique);
+        let full = crate::helpers::imagecache::get_full_path(&relative);
+        std::fs::create_dir_all(full.parent().expect("a parent directory"))
+            .expect("the cache directory is creatable");
+        let url = format!("{}/imagecache/{}", crate::constants::API_PREFIX, relative);
+
+        std::fs::write(&full, png_of(8, 8)).expect("the first image is written");
+        assert_eq!(image_size(&url).expect("measurable").width, 8);
+
+        // Same URL, different content. The cached answer is stale now.
+        std::fs::write(&full, png_of(64, 64)).expect("the second image is written");
+        assert_eq!(
+            image_size(&url).expect("measurable").width,
+            8,
+            "this is the staleness `forget` exists to clear; if this ever \
+             reports 64, the metadata cache gained an expiry and \
+             `localize::store_locally` need not call `forget` any more"
+        );
+
+        forget(&url);
+        assert_eq!(
+            image_size(&url).expect("measurable").width,
+            64,
+            "after forgetting, the replaced image must be measured afresh"
+        );
 
         let _ = std::fs::remove_file(&full);
     }

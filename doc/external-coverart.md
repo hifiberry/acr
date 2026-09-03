@@ -186,8 +186,18 @@ the `Content-Type` from. The hash is of the query and the entry's position in
 the answer, not of the bytes, so a re-lookup of the same track overwrites its
 own files instead of accumulating a copy per lookup.
 
-The file is written with the endpoint's `cache_ttl_days`, so it does not
-outlive the cached answer that names it.
+The file is written with an expiry of the endpoint's `cache_ttl_days`, which
+is recorded against it — but nothing sweeps the image cache on a schedule
+today, so in practice a localised image stays until something deletes it. Plan
+for that when turning `localize` on: the cache grows by up to eight files per
+distinct lookup, not per lookup, because the path is derived from the query
+and a repeat overwrites. A library of a few thousand tracks is therefore
+bounded and modest; an endpoint answering `url` lookups for a long tail of
+internet radio metadata is not.
+
+Nothing depends on the expiry being enforced. A cached answer whose files have
+gone is treated as a miss and looked up again, so deleting the cache directory
+is safe at any time.
 
 ### Why `max_image_bytes` defaults to 4 MiB
 

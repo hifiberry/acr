@@ -35,9 +35,12 @@ hifiberry-audiocontrol (0.20.0) trixie; urgency=medium
     in place, so a client reading an entry while it was being refreshed saw a
     partial file. This affects every caller, not only cover art.
   * A locally served image is now measured for grading instead of being
-    treated as a filesystem path and failing to open. This had been silently
-    giving every image served from `/api/imagecache/` the worst possible
-    grade, which also affected Shairport cover art.
+    treated as a filesystem path and failing to open. An unmeasured image
+    scored as neutral rather than on its actual resolution, so every image
+    served from `/api/imagecache/` — Shairport cover art included — was
+    ranked without regard to its size. Note that measuring can move a score
+    either way: a large cover now scores above neutral, and a small
+    thumbnail below it, so which provider wins a given track may change.
 
  -- HiFiBerry <support@hifiberry.com>  Thu, 03 Sep 2026 16:28:36 +0000
 

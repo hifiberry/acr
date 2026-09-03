@@ -19,7 +19,7 @@ use log::{debug, warn};
 
 use crate::constants::API_PREFIX;
 use crate::helpers::http_client::new_http_client;
-use crate::helpers::image_meta::detect_image_dimensions;
+use crate::helpers::image_meta::{self, detect_image_dimensions};
 use crate::helpers::imagecache;
 
 use super::config::EndpointConfig;
@@ -41,10 +41,6 @@ pub struct RealImageSource;
 
 impl ImageSource for RealImageSource {
     fn fetch(&self, url: &str, headers: &[(&str, &str)], max_bytes: u64) -> Result<Vec<u8>, String> {
-        // A short timeout: the slow part of one of these lookups is the
-        // endpoint's own thinking, already paid for by the time we have a
-        // URL. Fetching the image it named should be quick, and this fetch
-        // is holding a concurrency slot while it runs.
         let client = new_http_client(IMAGE_FETCH_TIMEOUT_SECONDS);
         client
             .get_binary_with_headers(url, headers, max_bytes)
@@ -77,7 +73,17 @@ impl ImageSource for RealImageSource {
 }
 
 /// How long to wait for an image the endpoint has already named.
-const IMAGE_FETCH_TIMEOUT_SECONDS: u64 = 30;
+///
+/// Short, and deliberately not the endpoint's `timeout_seconds`: that budget
+/// is for the endpoint's own thinking, which is already paid for by the time
+/// there is a URL to fetch, and fetching an image from an address it just
+/// gave us should be quick.
+///
+/// It is per image and the fetches are serial, so a whole answer of dead URLs
+/// can hold the concurrency slot for this many seconds times
+/// `MAX_IMAGES_PER_ANSWER`. That product is what bounds the worst case, which
+/// is the other reason that bound is not generous.
+const IMAGE_FETCH_TIMEOUT_SECONDS: u64 = 10;
 
 /// The image cache directory localised images live under.
 const CACHE_DIR: &str = "external";
@@ -124,7 +130,17 @@ fn store_locally(
         return None;
     }
 
-    Some(format!("{}/imagecache/{}", API_PREFIX, path))
+    let url = format!("{}/imagecache/{}", API_PREFIX, path);
+
+    // The path is derived from the query, not from the bytes, so this URL is
+    // reused when the answer is looked up again with different artwork behind
+    // it. `image_size` caches by URL with no expiry, so without this the
+    // dimensions measured the first time would be graded for ever: a 200x200
+    // placeholder cached today would still score as 200x200 after the real
+    // 1400x1400 cover replaced it, and a worse provider would keep winning.
+    image_meta::forget(&url);
+
+    Some(url)
 }
 
 /// An endpoint name, reduced to something safe to use as one directory name.

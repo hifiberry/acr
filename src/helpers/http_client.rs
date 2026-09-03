@@ -537,7 +537,15 @@ mod tests {
         let result = client
             .get_binary_with_headers(&format!("http://127.0.0.1:{}/big.jpg", port), &[], 1000);
 
-        assert!(result.is_err(), "an oversized body must not be returned");
+        // Asserting only `is_err()` would also pass if the request had simply
+        // failed to connect, which would let the size check be deleted
+        // without this test noticing. Match the error class and the limit.
+        let error = result.expect_err("an oversized body must not be returned");
+        assert!(
+            matches!(&error, HttpClientError::ParseError(message) if message.contains("1000")),
+            "expected a refusal naming the byte limit, got: {:?}",
+            error
+        );
     }
 
     #[test]

@@ -357,6 +357,21 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
 
     debug!("Decoded artist name: {}", artist_name);
 
+    // One of our own image URLs selects that member instead of being fetched:
+    // the daemon does not make HTTP requests to itself, and the bytes are
+    // already where they need to be.
+    if let Some(id) = crate::helpers::artist_store::local_image_id(&request.url, &artist_name) {
+        let store = crate::helpers::artist_store::get_artist_store();
+        let mut store_lock = store.lock();
+        return match store_lock.select_artist_image(&artist_name, &id) {
+            Ok(()) => Json(UpdateImageResponse {
+                success: true,
+                message: format!("Selected image '{}' for artist '{}'", id, artist_name),
+            }),
+            Err(message) => Json(UpdateImageResponse { success: false, message }),
+        };
+    }
+
     // Store the custom URL in settings database
     let settings_key = format!("artist.image.{}", artist_name);
     debug!("Storing custom image URL in settings: key={}, url={}", settings_key, request.url);
@@ -1008,5 +1023,51 @@ mod tests {
         let response = upload_artist_image_for("!!!", &b64(&alpha_png(64, 64)));
         assert!(!response.success);
         assert!(response.message.contains("Empty"), "got: {}", response.message);
+    }
+
+    /// Call the update route directly, the way a request handler would, with
+    /// the artist name base64-url-encoded as the path segment expects.
+    fn update_artist_image_for(artist: &str, url: &str) -> UpdateImageResponse {
+        init_test_artist_store();
+        let b64_artist = crate::helpers::url_encoding::encode_url_safe(artist);
+        update_artist_image(b64_artist, Json(UpdateImageRequest { url: url.to_string() })).into_inner()
+    }
+
+    #[test]
+    #[serial]
+    fn updating_with_a_local_url_selects_that_member_without_downloading() {
+        let artist = "Select Test Artist";
+        let uploaded = upload_artist_image_for(artist, &b64(&alpha_png(400, 400))).id.unwrap();
+        let other = upload_artist_image_for(artist, &b64(&alpha_png(200, 200))).id.unwrap();
+        let url = format!(
+            "{}/coverart/artist/{}/image/{}",
+            crate::constants::API_PREFIX,
+            crate::helpers::url_encoding::encode_url_safe(artist),
+            uploaded
+        );
+
+        let response = update_artist_image_for(artist, &url);
+
+        assert!(response.success, "{}", response.message);
+        let store = crate::helpers::artist_store::get_artist_store();
+        let store_lock = store.lock();
+        assert_eq!(store_lock.selected_image_id(artist).as_deref(), Some(uploaded.as_str()));
+        assert!(store_lock.artist_image_path(artist, &other).is_some(), "the other member survives");
+    }
+
+    #[test]
+    #[serial]
+    fn updating_with_a_local_url_for_an_unknown_member_is_refused() {
+        let artist = "Select Test Artist Two";
+        let url = format!(
+            "{}/coverart/artist/{}/image/{}",
+            crate::constants::API_PREFIX,
+            crate::helpers::url_encoding::encode_url_safe(artist),
+            "f".repeat(32)
+        );
+
+        let response = update_artist_image_for(artist, &url);
+
+        assert!(!response.success, "an id that is not in the set cannot be selected");
     }
 }

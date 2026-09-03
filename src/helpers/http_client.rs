@@ -5,6 +5,10 @@ use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
+/// ureq's own default, restated so that disabling redirects for one case
+/// does not quietly change the limit for the other.
+const DEFAULT_REDIRECT_LIMIT: u32 = 5;
+
 /// Error types that can occur when interacting with HTTP clients
 #[derive(Debug, Error)]
 pub enum HttpClientError {
@@ -35,6 +39,10 @@ pub trait HttpClient: Send + Sync + std::fmt::Debug {
 
     /// Send a GET request with headers and return binary data with mimetype,
     /// refusing a body larger than `max_bytes`.
+    ///
+    /// When any header is supplied, redirects are **not** followed: a header
+    /// a caller attached for one host must not be re-sent to another that a
+    /// redirect chose. With no headers, redirects are followed normally.
     ///
     /// `get_binary` above takes no headers and reads with an unbounded
     /// `read_to_end`. Neither is acceptable for fetching an image named by a
@@ -207,7 +215,24 @@ impl HttpClient for UreqHttpClient {
     ) -> Result<(Vec<u8>, String), HttpClientError> {
         debug!("GET binary request with headers to {}", url);
 
-        let mut request = ureq::get(url).timeout(self.timeout);
+        // Caller-supplied headers do not survive a redirect, because they
+        // cannot be trusted to. ureq's default is to follow up to five, and
+        // it strips only `content-length`, `cookie` and `authorization` on
+        // the way -- every other name is re-sent to whatever host the
+        // redirect names. A caller that checked the destination before
+        // calling would have that check bypassed by a 302, and a credential
+        // in any header not literally called `Authorization` would go to a
+        // host it never approved. Following redirects is fine when there is
+        // nothing attached to leak.
+        //
+        // The redirect limit belongs to the agent rather than the request,
+        // so the agent is built per call.
+        let agent = ureq::AgentBuilder::new()
+            .redirects(if headers.is_empty() { DEFAULT_REDIRECT_LIMIT } else { 0 })
+            .build();
+
+        let mut request = agent.get(url).timeout(self.timeout);
+
         for &(name, value) in headers {
             request = request.set(name, value);
         }
@@ -529,6 +554,81 @@ mod tests {
     /// service that streams without end must not be able to make the daemon
     /// allocate without end. `read_to_end` on an unbounded body is exactly
     /// the shape this replaces.
+    /// Serve a 302 to `location`, and report whether anything ever arrived.
+    fn serve_redirect(location: &str) -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a free local port");
+        let port = listener.local_addr().expect("a bound address").port();
+        let location = location.to_string();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while stream.read_exact(&mut byte).is_ok() {
+                    request.push(byte[0]);
+                    if request.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let head = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    location
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        port
+    }
+
+    /// A caller that checked the destination before calling would have that
+    /// check bypassed by a redirect. ureq follows up to five by default and
+    /// strips only `authorization`, so a credential in any other header name
+    /// would be re-sent to whatever host the redirect chose.
+    #[test]
+    fn a_binary_get_with_headers_does_not_follow_a_redirect() {
+        let (target_port, target_rx) = serve_once(200, "image/png", vec![1, 2, 3]);
+        let redirect_port = serve_redirect(&format!("http://127.0.0.1:{}/img.png", target_port));
+        let client = UreqHttpClient::new(5);
+
+        let _ = client.get_binary_with_headers(
+            &format!("http://127.0.0.1:{}/start.png", redirect_port),
+            &[("X-Api-Key", "sekrit")],
+            1024,
+        );
+
+        assert!(
+            target_rx
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .is_err(),
+            "the redirect target must never be contacted while headers are attached"
+        );
+    }
+
+    /// With nothing attached there is nothing to leak, so redirects still
+    /// work normally.
+    #[test]
+    fn a_binary_get_without_headers_still_follows_a_redirect() {
+        let (target_port, _rx) = serve_once(200, "image/png", vec![1, 2, 3]);
+        let redirect_port = serve_redirect(&format!("http://127.0.0.1:{}/img.png", target_port));
+        let client = UreqHttpClient::new(5);
+
+        let (bytes, _) = client
+            .get_binary_with_headers(
+                &format!("http://127.0.0.1:{}/start.png", redirect_port),
+                &[],
+                1024,
+            )
+            .expect("a redirect is followed when no header is attached");
+
+        assert_eq!(bytes, vec![1, 2, 3]);
+    }
+
     #[test]
     fn a_binary_get_refuses_a_body_over_the_cap() {
         let (port, _rx) = serve_once(200, "image/jpeg", vec![0; 5000]);

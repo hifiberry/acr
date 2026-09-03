@@ -268,8 +268,8 @@ fn resolve_image(
     // credentials. If the configured URL cannot be parsed -- it is a template
     // and a placeholder could in principle sit in the authority -- nothing is
     // sent, which fails closed.
-    let same_origin = same_origin(&url, &endpoint.url);
-    let headers: Vec<(&str, &str)> = if same_origin {
+    let on_endpoint_origin = same_origin(&url, &endpoint.url);
+    let headers: Vec<(&str, &str)> = if on_endpoint_origin {
         endpoint
             .headers
             .iter()

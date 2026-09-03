@@ -36,7 +36,19 @@ const MAX_CACHE_TTL_DAYS: u64 = 365 * 10;
 /// more than a handful of concurrent slow lookups against a single one.
 const MAX_MAX_CONCURRENT: u64 = 16;
 
-const DEFAULT_MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// 4 MiB, which is comfortably larger than any real cover and comfortably
+/// smaller than the ceiling an inline image actually has.
+///
+/// An inline image arrives base64-encoded inside the JSON body, and that body
+/// is read with `ureq`'s `into_string()`, which refuses anything over 10 MiB.
+/// Base64 expands by 4/3, so an inline image cannot exceed about 7.5 MiB
+/// however this value is set -- and exceeding it fails the *whole lookup*,
+/// not just one image, which is then cached as an error and retried hourly.
+/// A default above that ceiling would have promised a size the daemon cannot
+/// accept. An operator who raises this is still bounded by the same ceiling
+/// for inline images; a fetched `url` image does not go through
+/// `into_string()` and can use the full configured value.
+const DEFAULT_MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// 64 MiB. Far past any real cover, and still a bound: `max_image_bytes`
 /// decides how much of a single response the daemon will hold in memory at
@@ -516,7 +528,7 @@ mod tests {
         }])));
 
         assert!(!endpoints[0].localize);
-        assert_eq!(endpoints[0].max_image_bytes, 8 * 1024 * 1024);
+        assert_eq!(endpoints[0].max_image_bytes, 4 * 1024 * 1024);
     }
 
     #[test]
@@ -559,7 +571,7 @@ mod tests {
         }])));
 
         assert_eq!(endpoints.len(), 1, "a zero cap must not drop the endpoint");
-        assert_eq!(endpoints[0].max_image_bytes, 8 * 1024 * 1024);
+        assert_eq!(endpoints[0].max_image_bytes, 4 * 1024 * 1024);
     }
 
     /// The value decides how much a single response may hold in memory, so

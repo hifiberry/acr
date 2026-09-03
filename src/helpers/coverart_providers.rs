@@ -393,7 +393,21 @@ pub fn register_all_providers() {
     info!("Registering FanArt.tv coverart provider: {} ({})", fanarttv_coverart.name(), fanarttv_coverart.display_name());
     info!("FanArt.tv coverart supported methods: {:?}", fanarttv_coverart.supported_methods());
     manager_lock.register_provider(fanarttv_coverart);
-    
+
+    // Register every configured external endpoint. These are slow by
+    // declaration, so the fan-out keeps them off the fast path; they are here
+    // so /api/coverart can serve their cached answers and honour
+    // ?include_slow=true.
+    for provider in crate::helpers::external_coverart::configured_providers() {
+        info!(
+            "Registering external coverart provider: {} ({}), methods {:?}",
+            provider.name(),
+            provider.display_name(),
+            provider.supported_methods()
+        );
+        manager_lock.register_provider(provider);
+    }
+
     info!("Final provider count: {}", manager_lock.provider_count());
     info!("Registered all cover art providers");
 }

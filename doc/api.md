@@ -2568,7 +2568,7 @@ echo -n "The Beatles" | base64 -w 0 | tr '+/' '-_' | tr -d '='
 # Result: VGhlIEJlYXRsZXM
 ```
 
-All four cover art lookup endpoints accept an optional `include_slow` query
+All five cover art lookup endpoints accept an optional `include_slow` query
 parameter:
 
 ```

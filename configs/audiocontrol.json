@@ -108,6 +108,23 @@
             "api_key": "",
             "rate_limit_ms": 500
         },
+        "external_coverart": {
+            "enable": false,
+            "providers": [
+                {
+                    "name": "example",
+                    "display_name": "Example Lookup",
+                    "url": "https://coverart.example.com/lookup?artist={artist}&title={title}",
+                    "methods": ["song"],
+                    "headers": {},
+                    "timeout_seconds": 45,
+                    "trigger": "fallback",
+                    "cache_ttl_days": 30,
+                    "negative_cache_ttl_days": 7,
+                    "max_concurrent": 1
+                }
+            ]
+        },
         "lastfm": {
             "enable": true,
             "api_key": "",

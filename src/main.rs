@@ -288,7 +288,10 @@ fn main() {
     
     // Initialize FanArt.tv with the configuration
     initialize_fanarttv(&controllers_config);
-    
+
+    // Initialize external cover art endpoints with the configuration
+    initialize_external_coverart(&controllers_config);
+
     // Initialize configurator with the configuration
     initialize_configurator(&controllers_config);
     
@@ -579,6 +582,12 @@ fn initialize_musicbrainz(config: &serde_json::Value) {
 fn initialize_theaudiodb(config: &serde_json::Value) {
     theaudiodb::initialize_from_config(config);
     info!("TheAudioDB initialized successfully");
+}
+
+// Helper function to initialize external cover art endpoints
+fn initialize_external_coverart(config: &serde_json::Value) {
+    audiocontrol::helpers::external_coverart::initialize_from_config(config);
+    info!("External cover art initialized successfully");
 }
 
 // Helper function to initialize FanArt.tv

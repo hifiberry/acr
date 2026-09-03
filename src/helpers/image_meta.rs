@@ -609,16 +609,34 @@ mod tests {
     /// was written.
     #[test]
     fn an_imagecache_url_is_measured_from_the_cache() {
-        let relative = format!("test_image_meta/{}.png", std::process::id());
-        crate::helpers::imagecache::store_image(&relative, &tiny_png())
-            .expect("the image is stored");
+        // The file is written straight to the path the cache would put it at,
+        // rather than through `store_image`. What is under test is resolving
+        // the URL to the right file and measuring it; `store_image`
+        // additionally records metadata in the process-wide attribute cache,
+        // and other tests in this binary leave that singleton pointing
+        // somewhere unwritable, which failed this test for a reason that had
+        // nothing to do with what it asserts.
+        //
+        // The name carries a timestamp because `std::process::id()` is the
+        // same for every test in a binary, and because a stale metadata entry
+        // for this URL would otherwise be answered from cache instead of
+        // measured.
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after the epoch")
+            .as_nanos();
+        let relative = format!("test_image_meta/{}.png", unique);
+        let full = crate::helpers::imagecache::get_full_path(&relative);
+        std::fs::create_dir_all(full.parent().expect("a parent directory"))
+            .expect("the cache directory is creatable");
+        std::fs::write(&full, tiny_png()).expect("the image file is written");
 
         let url = format!("{}/imagecache/{}", crate::constants::API_PREFIX, relative);
         let metadata = image_size(&url).expect("a cached image is measurable");
 
         assert_eq!((metadata.width, metadata.height), (1, 1));
 
-        let _ = crate::helpers::imagecache::delete_image(&relative);
+        let _ = std::fs::remove_file(&full);
     }
 
     #[test]

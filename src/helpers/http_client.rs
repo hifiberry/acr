@@ -1,6 +1,6 @@
 use std::time::Duration;
 use std::io::Read;
-use log::{debug, error};
+use log::{debug, error, warn};
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -244,6 +244,21 @@ impl HttpClient for UreqHttpClient {
                 return Err(HttpClientError::RequestError(e.to_string()));
             }
         };
+
+        // A 3xx arrives here as a normal response rather than an error,
+        // because the redirect limit above is zero. Nothing further logs it:
+        // the body will not sniff as an image, so the image is dropped, and
+        // the only other message is an aggregate warning that fires solely
+        // when every image in an answer failed. Since refusing the redirect
+        // is a deliberate break of a configuration that used to work, say so
+        // here, or an operator has nothing to grep for.
+        if !headers.is_empty() && (300..400).contains(&response.status()) {
+            warn!(
+                "GET {} answered {} but redirects are not followed while headers are attached, so the credential is not re-sent; the response will not be usable as an image",
+                url,
+                response.status()
+            );
+        }
 
         let content_type = response
             .header("content-type")

@@ -17,6 +17,25 @@ const DEFAULT_CACHE_TTL_DAYS: u64 = 30;
 const DEFAULT_NEGATIVE_CACHE_TTL_DAYS: u64 = 7;
 const DEFAULT_MAX_CONCURRENT: usize = 1;
 
+/// An hour. `timeout_seconds` flows into `Instant::now() + deadline` both
+/// here (`CoverartProvider::timeout`, used by `coverart::fan_out`) and inside
+/// `ureq`'s own timeout handling; `Instant + Duration` panics on overflow,
+/// and this crate's release profile builds with `panic = "abort"`, so an
+/// absurd operator value would take down the whole daemon rather than one
+/// lookup.
+const MAX_TIMEOUT_SECONDS: u64 = 3600;
+
+/// Ten years. `cache_ttl_days` and `negative_cache_ttl_days` flow into
+/// `ttl_seconds`'s `days * 86400`; overflow checks are off in the release
+/// profile, so an unbounded value wraps rather than panics, and the wrapped
+/// (possibly negative once cast) TTL can make `attributecache` treat an entry
+/// as already expired, silently disabling caching for that endpoint.
+const MAX_CACHE_TTL_DAYS: u64 = 365 * 10;
+
+/// However many endpoints exist, one appliance is not going to usefully run
+/// more than a handful of concurrent slow lookups against a single one.
+const MAX_MAX_CONCURRENT: u64 = 16;
+
 /// When an endpoint is worth asking.
 ///
 /// Note that on the now-playing path this controls cost, not outcome:
@@ -128,10 +147,22 @@ fn parse_endpoint(value: &serde_json::Value) -> Option<EndpointConfig> {
         }
     };
 
-    let number = |key: &str, default: u64| match value.get(key) {
+    // `max` clamps rather than rejects: an operator who wrote "86400" for
+    // `timeout_seconds` meaning a day almost certainly wants the longest
+    // sane wait, not silently the default, and clamping is what keeps the
+    // value from ever reaching the arithmetic downstream that can panic or
+    // wrap.
+    let number = |key: &str, default: u64, max: u64| match value.get(key) {
         None => default,
         Some(raw) => match raw.as_u64().filter(|v| *v > 0) {
-            Some(v) => v,
+            Some(v) if v <= max => v,
+            Some(v) => {
+                warn!(
+                    "External cover art: endpoint '{}' has '{}' of {} above the maximum {}; using {}",
+                    name, key, v, max, max
+                );
+                max
+            }
             None => {
                 warn!(
                     "External cover art: endpoint '{}' has an invalid '{}' ({}); using default {}",
@@ -144,11 +175,15 @@ fn parse_endpoint(value: &serde_json::Value) -> Option<EndpointConfig> {
 
     // Resolved before the struct literal below so `number`'s borrow of
     // `name` (for the warning) is finished before `name` is moved into it.
-    let timeout_seconds = number("timeout_seconds", DEFAULT_TIMEOUT_SECONDS);
-    let cache_ttl_days = number("cache_ttl_days", DEFAULT_CACHE_TTL_DAYS);
-    let negative_cache_ttl_days =
-        number("negative_cache_ttl_days", DEFAULT_NEGATIVE_CACHE_TTL_DAYS);
-    let max_concurrent = number("max_concurrent", DEFAULT_MAX_CONCURRENT as u64) as usize;
+    let timeout_seconds = number("timeout_seconds", DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);
+    let cache_ttl_days = number("cache_ttl_days", DEFAULT_CACHE_TTL_DAYS, MAX_CACHE_TTL_DAYS);
+    let negative_cache_ttl_days = number(
+        "negative_cache_ttl_days",
+        DEFAULT_NEGATIVE_CACHE_TTL_DAYS,
+        MAX_CACHE_TTL_DAYS,
+    );
+    let max_concurrent =
+        number("max_concurrent", DEFAULT_MAX_CONCURRENT as u64, MAX_MAX_CONCURRENT) as usize;
 
     Some(EndpointConfig {
         name,
@@ -330,6 +365,69 @@ mod tests {
 
         assert_eq!(endpoints.len(), 1);
         assert_eq!(endpoints[0].timeout_seconds, DEFAULT_TIMEOUT_SECONDS);
+    }
+
+    /// `timeout_seconds` flows into `Instant::now() + deadline`, which
+    /// panics on overflow, and the release profile builds with
+    /// `panic = "abort"` -- so an absurd value here must be clamped, not
+    /// merely accepted, or one bad config value aborts the whole daemon.
+    #[test]
+    fn an_absurd_timeout_is_clamped_to_the_maximum() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart",
+            "timeout_seconds": u64::MAX
+        }])));
+
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].timeout_seconds, MAX_TIMEOUT_SECONDS);
+    }
+
+    /// A timeout at or under the ceiling is left alone -- the clamp is a
+    /// ceiling, not a rewrite of every value.
+    #[test]
+    fn a_timeout_at_the_ceiling_is_not_clamped() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart",
+            "timeout_seconds": MAX_TIMEOUT_SECONDS
+        }])));
+
+        assert_eq!(endpoints[0].timeout_seconds, MAX_TIMEOUT_SECONDS);
+    }
+
+    /// `cache_ttl_days` and `negative_cache_ttl_days` flow into
+    /// `days * 86400` with overflow checks off in release, so an unbounded
+    /// value wraps rather than panics and can make a cache entry appear
+    /// already expired -- silently disabling caching. Both fields share the
+    /// same ceiling.
+    #[test]
+    fn absurd_cache_ttls_are_clamped_to_the_maximum() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart",
+            "cache_ttl_days": u64::MAX,
+            "negative_cache_ttl_days": u64::MAX
+        }])));
+
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].cache_ttl_days, MAX_CACHE_TTL_DAYS);
+        assert_eq!(endpoints[0].negative_cache_ttl_days, MAX_CACHE_TTL_DAYS);
+    }
+
+    /// `max_concurrent` sizes the endpoint's slot semaphore; an operator
+    /// typo here should not be able to hand out an unbounded number of
+    /// concurrent slow lookups against one endpoint.
+    #[test]
+    fn an_absurd_max_concurrent_is_clamped_to_the_maximum() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart",
+            "max_concurrent": u64::MAX
+        }])));
+
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].max_concurrent, MAX_MAX_CONCURRENT as usize);
     }
 
     #[test]

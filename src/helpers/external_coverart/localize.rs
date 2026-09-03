@@ -82,6 +82,13 @@ const IMAGE_FETCH_TIMEOUT_SECONDS: u64 = 30;
 /// The image cache directory localised images live under.
 const CACHE_DIR: &str = "external";
 
+/// How many images from one answer are worth considering.
+///
+/// A bound rather than a setting: no grader needs more than a handful of
+/// candidates, and the cost of the ones beyond that is paid in fetch time,
+/// disk, and a `stat` per entry on every cache read.
+const MAX_IMAGES_PER_ANSWER: usize = 8;
+
 /// Store the bytes and return the URL the daemon serves them at.
 ///
 /// The `Content-Type` a client gets is derived from the file extension by
@@ -245,11 +252,29 @@ pub fn resolve_with(
     cache_key: &str,
     source: &dyn ImageSource,
 ) -> Lookup {
-    let images = match parsed {
+    let mut images = match parsed {
         Parsed::Images(images) => images,
         Parsed::NoArtwork => return Lookup::NoArtwork,
         Parsed::Error => return Lookup::Error,
     };
+
+    // Passing URLs through cost nothing per entry, but localising does: each
+    // one can be a fetch of up to `max_image_bytes` holding a concurrency
+    // slot, a file written, and a URL that is `stat`ed on every later cache
+    // read. An endpoint answering with hundreds of entries -- by fault or by
+    // malice -- must not be able to turn one song change into hours of work
+    // and gigabytes of disk. The contract says images arrive in the order the
+    // service ranked them, so keeping the first few loses nothing real: the
+    // grader picks one of them anyway.
+    if images.len() > MAX_IMAGES_PER_ANSWER {
+        warn!(
+            "External cover art '{}': offered {} images; considering the first {}",
+            endpoint.name,
+            images.len(),
+            MAX_IMAGES_PER_ANSWER
+        );
+        images.truncate(MAX_IMAGES_PER_ANSWER);
+    }
 
     let offered = images.len();
     let urls: Vec<String> = images
@@ -789,6 +814,54 @@ mod tests {
         assert_eq!(stored.len(), 1);
         // Three separators would otherwise collapse into `external//<hash>`.
         assert!(stored[0].starts_with("external/___/"), "got {}", stored[0]);
+    }
+
+    /// Localising is per-image work -- a fetch, a file, and a `stat` on every
+    /// later cache read -- so an endpoint answering with hundreds of entries
+    /// must not turn one song change into hours of fetching.
+    #[test]
+    fn only_the_first_few_images_of_a_large_answer_are_localised() {
+        let source = FakeSource::default();
+        let images: Vec<ParsedImage> = (0..500)
+            .map(|_| ParsedImage { url: None, data: Some(base64_of(&tiny_png())) })
+            .collect();
+
+        let Lookup::Found(urls) = resolve_with(Parsed::Images(images), &endpoint(false), &key(), &source)
+        else {
+            panic!("artwork")
+        };
+
+        assert_eq!(urls.len(), 8);
+        assert_eq!(source.stored_paths().len(), 8, "no work beyond the bound");
+    }
+
+    /// The bound must not turn a large answer into a fetch storm either.
+    #[test]
+    fn a_large_answer_of_urls_is_not_fetched_beyond_the_bound() {
+        let source = FakeSource::returning(tiny_png());
+        let images: Vec<ParsedImage> = (0..500)
+            .map(|i| ParsedImage { url: Some(format!("https://img.example/{}.jpg", i)), data: None })
+            .collect();
+
+        resolve_with(Parsed::Images(images), &endpoint(true), &key(), &source);
+
+        assert_eq!(source.fetched.lock().len(), 8, "one fetch per considered image, no more");
+    }
+
+    /// An answer inside the bound is untouched by it.
+    #[test]
+    fn a_small_answer_keeps_every_image() {
+        let source = FakeSource::default();
+        let images: Vec<ParsedImage> = (0..3)
+            .map(|_| ParsedImage { url: None, data: Some(base64_of(&tiny_png())) })
+            .collect();
+
+        let Lookup::Found(urls) = resolve_with(Parsed::Images(images), &endpoint(false), &key(), &source)
+        else {
+            panic!("artwork")
+        };
+
+        assert_eq!(urls.len(), 3);
     }
 
     #[test]

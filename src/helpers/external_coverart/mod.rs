@@ -8,6 +8,7 @@
 //! a request path unless a caller opts in.
 
 pub mod config;
+pub mod localize;
 pub mod protocol;
 pub mod template;
 pub mod worker;

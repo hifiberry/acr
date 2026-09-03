@@ -156,14 +156,12 @@ fn lastfm_worker(
                             // It's important that the immutable borrows above are out of scope.
                             if let Some(original_song_details_ref) = &mut track_data.song_details {
                                 let updated_song_partial = calculate_updates(original_song_details_ref, &track_info_details, user_data);
-                                
-                                let event = PlayerEvent::SongInformationUpdate {
-                                    source: current_player_source.clone(), // Use the cloned source
-                                    song: updated_song_partial.clone()
-                                };
-                                debug!("LastFMWorker: Publishing SongInformationUpdate to event bus with partial data: {:?}", updated_song_partial);
-                                crate::audiocontrol::eventbus::EventBus::instance().publish(event);
 
+                                crate::audiocontrol::AudioController::instance()
+                                    .apply_song_information(
+                                        &current_player_source,
+                                        &updated_song_partial,
+                                    );
                                 merge_song_updates(original_song_details_ref, &updated_song_partial);
                                 debug!("LastFMWorker: Merged partial song info. New song_details: {:?}", track_data.song_details);
                             } else {

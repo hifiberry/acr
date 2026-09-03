@@ -610,12 +610,15 @@ track, `song.metadata.cover_art_source` says so: a radio stream carries its
 station's logo under `"station_logo"`. The key is absent for artwork that
 belongs to the song, which is never replaced.
 
-This response is built from the player's own stored song. A lookup that finds
-the track's real artwork publishes it on the WebSocket as a
-`song_information_update` and does not write back into the player, so
-`/api/now-playing` goes on reporting the station logo for as long as the stream
-plays. A client that wants the better image has to follow the WebSocket; see
-[the event contract](websocket.md).
+This response is built from the player's own stored song, and a lookup that
+finds the track's real artwork writes it there: `cover_art_url` is updated
+shortly after the song change, and `song.metadata.cover_art_source` names
+whatever provider supplied it — `"lastfm"`, or `"enrichment"` for a lookup
+that named no source, which is new in 0.18.0. The full set of values, and the
+rule for reading one a client does not recognise, is in
+[the event contract](websocket.md#songmetadatacover_art_source). A client that
+only polls `/api/now-playing` sees the same progression a WebSocket subscriber
+sees on `song_information_update`.
 
 #### Example
 ```bash
@@ -2985,7 +2988,8 @@ Retrieves information about available cover art methods and the providers that s
         "method": "Song",
         "providers": [
           { "name": "spotify", "display_name": "Spotify" },
-          { "name": "lastfm", "display_name": "Last.fm" }
+          { "name": "lastfm", "display_name": "Last.fm" },
+          { "name": "theaudiodb", "display_name": "TheAudioDB" }
         ]
       },
       {
@@ -3008,7 +3012,8 @@ every device; only the results differ. Spotify answers nothing until an account
 has been linked, so before 0.16.0 the `Song` method returned an empty result for
 every track on a device without one. Last.fm covers it from 0.16.0 on, using the
 album art it reports for the track, and needs only an API key rather than a
-linked account.
+linked account. TheAudioDB joins it in 0.17.0, answering with the track's own
+picture where it has one and with its album's cover otherwise.
 
 #### Example
 ```bash

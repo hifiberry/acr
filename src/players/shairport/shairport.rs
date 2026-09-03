@@ -37,9 +37,6 @@ pub struct ShairportController {
     /// Cover art directory to monitor for new images
     coverart_dir: String,
     
-    /// Current song information (temporary storage until METADATA_END)
-    current_song: Arc<Mutex<Option<Song>>>,
-    
     /// Temporary song being built from metadata
     pending_song: Arc<Mutex<Option<Song>>>,
     
@@ -63,7 +60,6 @@ impl Clone for ShairportController {
             port: self.port,
             systemd_unit: self.systemd_unit.clone(),
             coverart_dir: self.coverart_dir.clone(),
-            current_song: Arc::clone(&self.current_song),
             pending_song: Arc::clone(&self.pending_song),
             current_state: Arc::clone(&self.current_state),
             stop_listener: Arc::clone(&self.stop_listener),
@@ -101,7 +97,6 @@ impl ShairportController {
             port,
             systemd_unit,
             coverart_dir,
-            current_song: Arc::new(Mutex::new(None)),
             pending_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             stop_listener: Arc::new(AtomicBool::new(false)),
@@ -164,15 +159,14 @@ impl ShairportController {
         
         let port = self.port;
         let stop_flag = Arc::clone(&self.stop_listener);
-        let current_song = Arc::clone(&self.current_song);
         let pending_song = Arc::clone(&self.pending_song);
         let current_state = Arc::clone(&self.current_state);
         let base = self.base.clone();
-        
+
         debug!("Starting ShairportSync UDP listener on port {}", port);
-        
+
         let handle = thread::spawn(move || {
-            Self::listener_loop(port, stop_flag, current_song, pending_song, current_state, base);
+            Self::listener_loop(port, stop_flag, pending_song, current_state, base);
         });
         
         *self.listener_thread.lock() = Some(handle);
@@ -188,14 +182,13 @@ impl ShairportController {
         
         let coverart_dir = self.coverart_dir.clone();
         let stop_flag = Arc::clone(&self.stop_listener);
-        let current_song = Arc::clone(&self.current_song);
         let pending_song = Arc::clone(&self.pending_song);
         let base = self.base.clone();
-        
+
         debug!("Starting ShairportSync directory watcher for {}", coverart_dir);
-        
+
         let handle = thread::spawn(move || {
-            Self::watcher_loop(coverart_dir, stop_flag, current_song, pending_song, base);
+            Self::watcher_loop(coverart_dir, stop_flag, pending_song, base);
         });
         
         *self.watcher_thread.lock() = Some(handle);
@@ -250,7 +243,6 @@ impl ShairportController {
     fn listener_loop(
         port: u16,
         stop_flag: Arc<AtomicBool>,
-        current_song: Arc<Mutex<Option<Song>>>,
         pending_song: Arc<Mutex<Option<Song>>>,
         current_state: Arc<Mutex<PlayerState>>,
         base: BasePlayerController,
@@ -287,7 +279,7 @@ impl ShairportController {
                     let message = parse_shairport_message(&buffer[..bytes_received]);
                     
                     // Process the message
-                    Self::process_message(&message, &current_song, &pending_song, &current_state, &base);
+                    Self::process_message(&message, &pending_song, &current_state, &base);
                 }
                 Err(e) => {
                     match e.kind() {
@@ -311,7 +303,6 @@ impl ShairportController {
     fn watcher_loop(
         coverart_dir: String,
         stop_flag: Arc<AtomicBool>,
-        current_song: Arc<Mutex<Option<Song>>>,
         pending_song: Arc<Mutex<Option<Song>>>,
         base: BasePlayerController,
     ) {
@@ -350,16 +341,15 @@ impl ShairportController {
         debug!("Watching directory for cover art files: {}", coverart_dir);
         
         // Initial scan for existing cover art files
-        Self::scan_existing_coverart(&coverart_dir, &current_song, &pending_song, &base);
-        
+        Self::scan_existing_coverart(&coverart_dir, &pending_song, &base);
+
         while !stop_flag.load(Ordering::SeqCst) {
             match rx.recv_timeout(Duration::from_millis(1000)) {
                 Ok(event) => {
                     debug!("Received filesystem event in watcher loop");
                     Self::handle_filesystem_event(
-                        &event, 
-                        &current_song, 
-                        &pending_song, 
+                        &event,
+                        &pending_song,
                         &base
                     );
                 }
@@ -380,26 +370,25 @@ impl ShairportController {
     /// Handle filesystem events for cover art
     fn handle_filesystem_event(
         event: &Event,
-        current_song: &Arc<Mutex<Option<Song>>>,
         pending_song: &Arc<Mutex<Option<Song>>>,
         base: &BasePlayerController,
     ) {
         debug!("Filesystem event received: {:?}", event);
-        
+
         // Only process file creation and modification events
         match &event.kind {
             EventKind::Create(CreateKind::File) => {
                 debug!("File creation event detected");
                 for path in &event.paths {
                     debug!("Processing created file: {}", path.display());
-                    Self::process_new_coverart_file(path, current_song, pending_song, base);
+                    Self::process_new_coverart_file(path, pending_song, base);
                 }
             }
             EventKind::Modify(ModifyKind::Data(_)) => {
                 debug!("File modification event detected");
                 for path in &event.paths {
                     debug!("Processing modified file: {}", path.display());
-                    Self::process_new_coverart_file(path, current_song, pending_song, base);
+                    Self::process_new_coverart_file(path, pending_song, base);
                 }
             }
             _ => {
@@ -411,7 +400,6 @@ impl ShairportController {
     /// Process a new cover art file
     fn process_new_coverart_file(
         path: &Path,
-        current_song: &Arc<Mutex<Option<Song>>>,
         pending_song: &Arc<Mutex<Option<Song>>>,
         base: &BasePlayerController,
     ) {
@@ -447,7 +435,7 @@ impl ShairportController {
         // Process the new cover art file
         if let Some(artwork_url) = Self::process_cover_art_file(path) {
             debug!("Successfully processed cover art, updating song with URL: {}", artwork_url);
-            Self::update_song_cover_art(artwork_url, current_song, pending_song, base);
+            Self::update_song_cover_art(artwork_url, pending_song, base);
         } else {
             warn!("Failed to process cover art file: {}", path.display());
         }
@@ -520,20 +508,33 @@ impl ShairportController {
     /// Update song cover art and notify listeners
     fn update_song_cover_art(
         artwork_url: String,
-        current_song: &Arc<Mutex<Option<Song>>>,
         pending_song: &Arc<Mutex<Option<Song>>>,
         base: &BasePlayerController,
     ) {
-        // Update current song if it exists
-        {
-            let mut current = current_song.lock();
-            if let Some(ref mut song) = *current {
-                song.cover_art_url = Some(artwork_url.clone());
-                base.notify_song_changed(Some(song));
-                return;
+        // Update current song if it exists. This is the player's own artwork,
+        // not an enrichment lookup, so it goes through update_song rather than
+        // apply_song_information: the enrichment override policy exists to
+        // stop an outside lookup replacing artwork that belongs to the song,
+        // and would therefore refuse every revision shairport makes to its
+        // own. The watcher fires on Modify(Data) as well as Create, and a
+        // sender may revise its cover mid-track, so revisions are ordinary.
+        // update_song also mutates under one write lock, restoring the
+        // atomicity the read-then-write pair here had lost.
+        //
+        // The closure reports whether it changed anything, because the watcher
+        // fires on Create *and* Modify(Data) and the URL is the MD5 of the
+        // bytes: one artwork file arrives here several times with the same
+        // URL, and only the first of them is news.
+        if base.update_song(|song| {
+            if song.cover_art_url.as_deref() == Some(artwork_url.as_str()) {
+                return false;
             }
+            song.cover_art_url = Some(artwork_url.clone());
+            true
+        }) {
+            return;
         }
-        
+
         // Update pending song if it exists
         {
             let mut pending = pending_song.lock();
@@ -543,20 +544,20 @@ impl ShairportController {
                 return;
             }
         }
-        
-        // If no current or pending song, create a minimal song with just cover art
-        {
-            let mut current = current_song.lock();
-            let song = Song { cover_art_url: Some(artwork_url.clone()), ..Default::default() };
-            *current = Some(song.clone());
-            base.notify_song_changed(Some(&song));
-        }
+
+        // If no current or pending song, create a minimal song with just cover
+        // art. Every such song has the same identity -- no title, no artist,
+        // no stream URL -- so identity gating is worthless here and would be a
+        // trap the moment the branch above stopped returning early. A file
+        // appearing in the watched directory is an event, not a poll, so the
+        // store and the notification are unconditional.
+        let song = Song { cover_art_url: Some(artwork_url.clone()), ..Default::default() };
+        base.replace_song(Some(song));
     }
     
     /// Process a ShairportSync message and update state
     fn process_message(
         message: &ShairportMessage,
-        current_song: &Arc<Mutex<Option<Song>>>,
         pending_song: &Arc<Mutex<Option<Song>>>,
         current_state: &Arc<Mutex<PlayerState>>,
         base: &BasePlayerController,
@@ -587,9 +588,8 @@ impl ShairportController {
                         base.notify_state_changed(PlaybackState::Stopped);
                         
                         // Clear current song on session end
-                        *current_song.lock() = None;
+                        base.set_song(None);
                         *pending_song.lock() = None;
-                        base.notify_song_changed(None);
                     }
                     "AUDIO_BEGIN" | "PLAYBACK_BEGIN" => {
                         debug!("Processing {} command", action);
@@ -626,8 +626,11 @@ impl ShairportController {
                                         if let Some(song) = pending.take() {
                                             if song_has_significant_metadata(&song) {
                                                 debug!("Publishing complete song metadata: {}", song);
-                                                *current_song.lock() = Some(song.clone());
-                                                base.notify_song_changed(Some(&song));
+                                                // AirPlay delivers metadata incrementally: a
+                                                // same-identity re-send carrying more fields
+                                                // (album, cover art) must still reach clients,
+                                                // which set_song's identity gating would drop.
+                                                base.replace_song(Some(song));
                                             }
                                         }
                                     }
@@ -677,7 +680,7 @@ impl ShairportController {
             ShairportMessage::SessionStart(session_id) => {
                 debug!("Session started: {}", session_id);
                 // Clear previous song data on new session
-                *current_song.lock() = None;
+                base.set_song(None);
                 *pending_song.lock() = None;
             }
             ShairportMessage::SessionEnd(session_id) => {
@@ -685,10 +688,9 @@ impl ShairportController {
                 let mut state = current_state.lock();
                 state.state = PlaybackState::Stopped;
                 base.notify_state_changed(PlaybackState::Stopped);
-                
-                *current_song.lock() = None;
+
+                base.set_song(None);
                 *pending_song.lock() = None;
-                base.notify_song_changed(None);
             }
             ShairportMessage::Unknown(data) => {
                 trace!("Unknown message: {} bytes", data.len());
@@ -699,7 +701,6 @@ impl ShairportController {
     /// Scan the coverart directory for existing image files and set initial cover art
     fn scan_existing_coverart(
         coverart_dir: &str,
-        current_song: &Arc<Mutex<Option<Song>>>,
         pending_song: &Arc<Mutex<Option<Song>>>,
         base: &BasePlayerController,
     ) {
@@ -723,7 +724,7 @@ impl ShairportController {
                     debug!("scan_existing_coverart: Found existing image file: {}", file_path.display());
                     if let Some(artwork_url) = Self::process_cover_art_file(&file_path) {
                         debug!("scan_existing_coverart: Setting initial cover art: {}", artwork_url);
-                        Self::update_song_cover_art(artwork_url, current_song, pending_song, base);
+                        Self::update_song_cover_art(artwork_url, pending_song, base);
                         // Only set the first valid image found
                         break;
                     }
@@ -824,9 +825,13 @@ impl PlayerController for ShairportController {
     }
     
     fn get_song(&self) -> Option<Song> {
-        self.current_song.lock().clone()
+        self.base.song()
     }
-    
+
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
+    }
+
     fn get_queue(&self) -> Vec<Track> {
         // ShairportSync doesn't provide queue information
         Vec::new()
@@ -944,5 +949,204 @@ impl PlayerController for ShairportController {
 impl Default for ShairportController {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An AirPlay source that never sends an ARTIST metadata line is a
+    /// legitimate current song (song_has_significant_metadata accepts title,
+    /// artist or album alone). Cover art detected by the directory watcher
+    /// for such a song must still attach -- this is the regression the
+    /// apply_song_information guard fix (player_controller.rs) exists for.
+    #[test]
+    fn cover_art_attaches_to_a_currently_playing_song_with_no_artist() {
+        let base = BasePlayerController::with_player_info("shairport", "shairport:0");
+        base.set_song(Some(Song {
+            title: Some("Some AirPlay Track".to_string()),
+            artist: None,
+            ..Default::default()
+        }));
+
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+        ShairportController::update_song_cover_art(
+            "https://example.com/cover.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/cover.jpg".to_string()),
+            "cover art must attach to an artist-less current song"
+        );
+    }
+
+    /// The cover art watcher fires on `Create` *and* on `Modify(Data)`, so a
+    /// single artwork file reaches `update_song_cover_art` several times with
+    /// the same URL -- the same URL again, because the URL is the MD5 of the
+    /// bytes. Attaching it a second time changes nothing, so it must not
+    /// publish a second `song_changed`: this is the same "don't publish when
+    /// nothing changed" rule the polling backends follow.
+    #[test]
+    fn re_attaching_the_same_artwork_publishes_no_second_event() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+        use crate::data::PlayerEvent;
+
+        let player_id = "shairport:duplicate-artwork";
+        let base = BasePlayerController::with_player_info("shairport", player_id);
+        base.set_song(Some(Song {
+            title: Some("Some AirPlay Track".to_string()),
+            ..Default::default()
+        }));
+
+        let bus = EventBus::instance();
+        let (subscription, receiver) = bus.subscribe(vec![EventSubscription::SongChanged]);
+
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+        let url = "/api/imagecache/shairportsync/deadbeef.jpg".to_string();
+
+        // Create, then Modify(Data) for the same file.
+        ShairportController::update_song_cover_art(url.clone(), &pending_song, &base);
+        ShairportController::update_song_cover_art(url.clone(), &pending_song, &base);
+        ShairportController::update_song_cover_art(url.clone(), &pending_song, &base);
+
+        let published = receiver
+            .try_iter()
+            .filter(|event| {
+                matches!(event, PlayerEvent::SongChanged { source, .. }
+                    if source.player_id() == player_id)
+            })
+            .count();
+        bus.unsubscribe(subscription);
+
+        assert_eq!(base.song().unwrap().cover_art_url, Some(url));
+        assert_eq!(
+            published, 1,
+            "one artwork file must publish one song_changed, not one per watcher event"
+        );
+    }
+
+    /// AirPlay delivers metadata incrementally: a track can be announced
+    /// with title/artist, then re-sent moments later with additional fields
+    /// (album, in this case) filled in. METADATA_END previously stored and
+    /// notified unconditionally; a same-identity re-send must still reach
+    /// get_song(), not be dropped by identity gating.
+    #[test]
+    fn metadata_end_same_identity_resend_still_updates_metadata() {
+        let base = BasePlayerController::with_player_info("shairport", "shairport:0");
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+        let current_state: Arc<Mutex<PlayerState>> = Arc::new(Mutex::new(PlayerState::default()));
+
+        let burst = |pending: &Arc<Mutex<Option<Song>>>, extra: Option<(&str, &str)>| {
+            ShairportController::process_message(
+                &ShairportMessage::Control("METADATA_START: 1".to_string()),
+                pending,
+                &current_state,
+                &base,
+            );
+            ShairportController::process_message(
+                &ShairportMessage::Control("TRACK: Battery".to_string()),
+                pending,
+                &current_state,
+                &base,
+            );
+            ShairportController::process_message(
+                &ShairportMessage::Control("ARTIST: Metallica".to_string()),
+                pending,
+                &current_state,
+                &base,
+            );
+            if let Some((key, value)) = extra {
+                ShairportController::process_message(
+                    &ShairportMessage::Control(format!("{}: {}", key, value)),
+                    pending,
+                    &current_state,
+                    &base,
+                );
+            }
+            ShairportController::process_message(
+                &ShairportMessage::Control("METADATA_END: 1".to_string()),
+                pending,
+                &current_state,
+                &base,
+            );
+        };
+
+        // First burst: title + artist only.
+        burst(&pending_song, None);
+        assert_eq!(base.song().unwrap().title, Some("Battery".to_string()));
+        assert_eq!(base.song().unwrap().album, None);
+
+        // Second burst, same track identity, but this time with ALBUM filled in.
+        burst(&pending_song, Some(("ALBUM", "Master of Puppets")));
+
+        assert_eq!(
+            base.song().unwrap().album,
+            Some("Master of Puppets".to_string()),
+            "a same-identity metadata re-send must still be stored, not dropped"
+        );
+    }
+
+    /// The watcher fires on Create *and* on Modify(Data), and a sender may
+    /// revise its cover mid-track, so a second artwork file for the song
+    /// already playing is ordinary. It is the player's own data, not an
+    /// enrichment lookup, so the enrichment override policy -- which refuses
+    /// to replace artwork that belongs to the song -- must not stand in
+    /// its way.
+    #[test]
+    fn a_second_artwork_file_replaces_the_first_on_the_playing_song() {
+        let base = BasePlayerController::with_player_info("shairport", "shairport:2");
+        base.set_song(Some(Song {
+            title: Some("Some AirPlay Track".to_string()),
+            artist: Some("Some Artist".to_string()),
+            ..Default::default()
+        }));
+
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+        ShairportController::update_song_cover_art(
+            "https://example.com/first.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+        ShairportController::update_song_cover_art(
+            "https://example.com/second.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/second.jpg".to_string()),
+            "the artwork the watcher saw last is the artwork that is playing"
+        );
+    }
+
+    /// With no song playing and nothing pending, the watcher's artwork is
+    /// stored as a bare cover-art-only song; the next file the watcher sees
+    /// must then land on that song rather than being refused.
+    #[test]
+    fn a_later_artwork_file_replaces_an_earlier_one_when_no_song_is_playing() {
+        let base = BasePlayerController::with_player_info("shairport", "shairport:1");
+        let pending_song: Arc<Mutex<Option<Song>>> = Arc::new(Mutex::new(None));
+
+        ShairportController::update_song_cover_art(
+            "https://example.com/first.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+        ShairportController::update_song_cover_art(
+            "https://example.com/second.jpg".to_string(),
+            &pending_song,
+            &base,
+        );
+
+        assert_eq!(
+            base.song().unwrap().cover_art_url,
+            Some("https://example.com/second.jpg".to_string()),
+            "the artwork the watcher saw last is the artwork that is playing"
+        );
     }
 }

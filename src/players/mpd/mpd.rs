@@ -233,9 +233,6 @@ pub struct MPDPlayerController {
     /// MPD server port
     port: u16,
     
-    /// Current song information
-    current_song: Arc<Mutex<Option<Song>>>,
-
     // current player state
     current_state: Arc<Mutex<PlayerState>>,
 
@@ -294,7 +291,6 @@ impl Clone for MPDPlayerController {
             base: self.base.clone(),
             hostname: self.hostname.clone(),
             port: self.port,
-            current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             current_stream_details: Arc::clone(&self.current_stream_details),
             load_mpd_library: self.load_mpd_library,
@@ -335,7 +331,6 @@ impl MPDPlayerController {
             base,
             hostname: host.to_string(),
             port,
-            current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             current_stream_details: Arc::new(Mutex::new(None)),
             load_mpd_library: true,
@@ -371,7 +366,6 @@ impl MPDPlayerController {
             base,
             hostname: hostname.to_string(),
             port,
-            current_song: Arc::new(Mutex::new(None)),
             current_state: Arc::new(Mutex::new(PlayerState::new())),
             current_stream_details: Arc::new(Mutex::new(None)),
             load_mpd_library: true,
@@ -1180,27 +1174,8 @@ impl MPDPlayerController {
     
     /// Update the current song and notify listeners
     fn update_current_song(&self, song: Option<Song>) {
-        // Enhance the song with cached metadata if available
         let enhanced_song = song.map(|s| self.enhance_song_with_cache(s));
-        
-        // Store the new song
-        let mut current_song = self.current_song.lock();
-        let song_changed = match (&*current_song, &enhanced_song) {
-            (Some(old), Some(new)) => old.stream_url != new.stream_url || old.title != new.title,
-            (None, Some(_)) => true,
-            (Some(_), None) => true,
-            (None, None) => false,
-        };
-        
-        if song_changed {
-            debug!("Updating current song");
-            // Update the stored song
-            *current_song = enhanced_song.clone();
-            
-            // Notify listeners of the song change
-            drop(current_song); // Release the lock before notifying
-            self.base.notify_song_changed(enhanced_song.as_ref());
-        }
+        self.base.set_song(enhanced_song);
     }
 
     /// Create a fresh MPD client connection for sending commands
@@ -1502,7 +1477,23 @@ impl MPDPlayerController {
             .find(|(tag, _)| tag == "Genre")
             .map(|(_, value)| value.clone());
         
-        // Handle title splitting for radio stations
+        // Handle title splitting for radio stations.
+        //
+        // Note this can flap the artist across two polls of one track. A
+        // stream's ICY title is a single "Artist - Title" string and the
+        // splitter learns per URL whether to split it, so the same track can
+        // be reported with an artist and then without one (or the other way
+        // round) while the splitter is still deciding, or if a station
+        // changes the shape of its ICY line mid-track. The artist is part of
+        // song identity, so each flap reads as a new song: one song_changed,
+        // and the enrichment merged into the stored song -- including any
+        // artwork a lookup found -- goes with it, so the station logo
+        // re-flashes until the next lookup completes.
+        //
+        // Left as is deliberately. It is self-healing and costs a lookup, not
+        // correctness; the alternative of keeping the artist out of identity
+        // silently misreports every same-titled track by a different artist
+        // on four backends, which is not self-healing at all.
         let (final_title, final_artist) = if mpd_song.artist.is_none() && mpd_song.title.is_some() {
             // No artist but has title - try to split it (common for web radio)
             let title_str = mpd_song.title.as_ref().unwrap();
@@ -1791,20 +1782,13 @@ impl PlayerController for MPDPlayerController {
     }
     
     fn get_song(&self) -> Option<Song> {
-        debug!("Getting current song from stored value");
-        // Return a clone of the stored song with any fresh cache enhancements
-        let song_clone = self.current_song.lock().clone();
-        if let Some(song) = song_clone {
-            // Apply fresh cache enhancements in case cache was updated after the song was stored
-            let enhanced_song = self.enhance_song_with_cache(song);
-            debug!("Returning song with {} metadata entries: {:?}", 
-                   enhanced_song.metadata.len(), 
-                   enhanced_song.metadata.keys().collect::<Vec<_>>());
-            Some(enhanced_song)
-        } else {
-            debug!("No current song available");
-            None
-        }
+        // Re-run the cache enhancement in case the URL metadata was written
+        // after the song was stored.
+        self.base.song().map(|song| self.enhance_song_with_cache(song))
+    }
+
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
     }
 
     fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {

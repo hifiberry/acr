@@ -705,6 +705,135 @@ pub fn get_artist_coverart(artist_name: &str) -> Vec<String> {
     }
 }
 
+/// The cover art a track search offers for the track itself, if any.
+fn track_thumb_from_response(search_result: &Value) -> Option<String> {
+    first_track(search_result)
+        .and_then(|track| track.get("strTrackThumb"))
+        .and_then(|value| value.as_str())
+        .filter(|url| !url.is_empty())
+        .map(|url| url.to_string())
+}
+
+/// The first entry of a track search, if it found anything. TheAudioDB answers
+/// a track it does not know with a null array rather than an empty one.
+fn first_track(search_result: &Value) -> Option<&Value> {
+    search_result
+        .get("track")
+        .and_then(|tracks| tracks.as_array())
+        .and_then(|tracks| tracks.first())
+}
+
+/// The album a track search says the track belongs to.
+///
+/// TheAudioDB knows far more tracks than it holds pictures of, but it names the
+/// album for almost all of them, so a track with no image of its own can still
+/// be answered with its album's cover.
+fn album_name_from_track_response(search_result: &Value) -> Option<String> {
+    first_track(search_result)
+        .and_then(|track| track.get("strAlbum"))
+        .and_then(|value| value.as_str())
+        .filter(|album| !album.is_empty())
+        .map(|album| album.to_string())
+}
+
+/// Search TheAudioDB for one track by artist and title.
+///
+/// Results are cached both ways, as the album and artist lookups are: a hit
+/// under `theaudiodb::track::`, a miss under `theaudiodb::track_not_found::`,
+/// so a track TheAudioDB does not know is asked about once rather than on
+/// every play.
+pub fn lookup_theaudiodb_track(artist_name: &str, title: &str) -> Result<Value, String> {
+    if !is_enabled() {
+        return Err("TheAudioDB lookups are disabled".to_string());
+    }
+
+    let cache_key = format!("theaudiodb::track::{}::{}", artist_name, title);
+    let not_found_cache_key = format!("theaudiodb::track_not_found::{}::{}", artist_name, title);
+
+    if let Ok(Some(track_data)) = attributecache::get::<Value>(&cache_key) {
+        debug!("Found cached TheAudioDB data for track '{}' by '{}'", title, artist_name);
+        return Ok(track_data);
+    }
+
+    if let Ok(Some(true)) = attributecache::get::<bool>(&not_found_cache_key) {
+        debug!("Track '{}' by '{}' previously marked as not found in cache", title, artist_name);
+        return Err(format!("No track '{}' found for artist '{}' (from cache)", title, artist_name));
+    }
+
+    let api_key = match get_api_key() {
+        Some(key) => key,
+        None => return Err("No API key configured for TheAudioDB".to_string()),
+    };
+
+    ratelimit::rate_limit("theaudiodb");
+
+    let url = format!(
+        "https://www.theaudiodb.com/api/v1/json/{}/searchtrack.php?s={}&t={}",
+        api_key,
+        urlencoding::encode(artist_name),
+        urlencoding::encode(title)
+    );
+
+    let client = new_client();
+    let response_text = match client.get_text(&url) {
+        Ok(text) => text,
+        Err(e) => return Err(format!("Failed to send request to TheAudioDB: {}", e)),
+    };
+
+    let json_data: Value = match serde_json::from_str(&response_text) {
+        Ok(data) => data,
+        Err(e) => return Err(format!("Failed to parse TheAudioDB response: {}", e)),
+    };
+
+    if first_track(&json_data).is_none() {
+        debug!("No track data found for '{}' by '{}'", title, artist_name);
+        if let Err(e) = attributecache::set(&not_found_cache_key, &true) {
+            debug!("Failed to cache negative result for track '{}' by '{}': {}", title, artist_name, e);
+        }
+        return Err(format!("No track '{}' found for artist '{}'", title, artist_name));
+    }
+
+    if let Err(e) = attributecache::set(&cache_key, &json_data) {
+        debug!("Failed to cache track data for '{}' by '{}': {}", title, artist_name, e);
+    }
+
+    Ok(json_data)
+}
+
+/// Cover art for one song.
+///
+/// TheAudioDB knows many more tracks than it holds pictures of, so a track
+/// without one falls back to the cover of the album the same answer names --
+/// which is the album art for the song being played, and the same thing the
+/// Last.fm song provider returns.
+pub fn get_song_coverart(title: &str, artist: &str) -> Vec<String> {
+    debug!("TheAudioDB: Searching for song cover art: '{}' by '{}'", title, artist);
+
+    let search_result = match lookup_theaudiodb_track(artist, title) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!("TheAudioDB: No track data for '{}' by '{}': {}", title, artist, e);
+            return Vec::new();
+        }
+    };
+
+    if let Some(thumb) = track_thumb_from_response(&search_result) {
+        debug!("TheAudioDB: Found a track image for '{}' by '{}'", title, artist);
+        return vec![thumb];
+    }
+
+    match album_name_from_track_response(&search_result) {
+        Some(album) => {
+            debug!(
+                "TheAudioDB: No track image for '{}' by '{}'; falling back to album '{}'",
+                title, artist, album
+            );
+            get_album_coverart(&album, artist, None)
+        }
+        None => Vec::new(),
+    }
+}
+
 /// Get album cover art URLs from TheAudioDB
 /// 
 /// # Arguments
@@ -956,11 +1085,16 @@ impl crate::helpers::coverart::CoverartProvider for TheAudioDbCoverartProvider {
         let mut methods = std::collections::HashSet::new();
         methods.insert(CoverartMethod::Artist);
         methods.insert(CoverartMethod::Album);
+        methods.insert(CoverartMethod::Song);
         methods
     }
 
     fn get_artist_coverart_impl(&self, artist: &str) -> Vec<String> {
         get_artist_coverart(artist)
+    }
+
+    fn get_song_coverart_impl(&self, title: &str, artist: &str) -> Vec<String> {
+        get_song_coverart(title, artist)
     }
 
     fn get_album_coverart_impl(&self, album: &str, artist: &str, year: Option<i32>) -> Vec<String> {
@@ -1499,5 +1633,62 @@ mod tests {
         // With 100ms rate limit, 3 requests should take at least 200ms
         assert!(duration.as_millis() >= 200, "Rate limiting not working properly: took {:?}", duration);
         println!("Rate limiting test: 3 requests took {:?}", duration);
+    }
+
+    /// A track TheAudioDB has a picture of answers with it directly.
+    #[test]
+    fn a_track_with_its_own_image_uses_it() {
+        let response = serde_json::json!({
+            "track": [{
+                "strTrack": "Karma Police",
+                "strAlbum": "OK Computer",
+                "strTrackThumb": "https://r2.theaudiodb.com/images/media/track/thumb/abc.jpg"
+            }]
+        });
+
+        assert_eq!(
+            track_thumb_from_response(&response),
+            Some("https://r2.theaudiodb.com/images/media/track/thumb/abc.jpg".to_string())
+        );
+    }
+
+    /// Most tracks TheAudioDB knows have no picture of their own -- of five
+    /// well-known ones sampled, three carried no strTrackThumb -- but it names
+    /// the album for all of them, which is what the fallback needs.
+    #[test]
+    fn a_track_without_an_image_still_names_its_album() {
+        let response = serde_json::json!({
+            "track": [{
+                "strTrack": "Battery",
+                "strAlbum": "Master of Puppets",
+                "strTrackThumb": null
+            }]
+        });
+
+        assert_eq!(track_thumb_from_response(&response), None);
+        assert_eq!(
+            album_name_from_track_response(&response),
+            Some("Master of Puppets".to_string())
+        );
+    }
+
+    /// TheAudioDB writes an absent picture as an empty string as well as null.
+    #[test]
+    fn an_empty_track_image_counts_as_absent() {
+        let response = serde_json::json!({
+            "track": [{ "strTrack": "Time", "strAlbum": "", "strTrackThumb": "" }]
+        });
+
+        assert_eq!(track_thumb_from_response(&response), None);
+        assert_eq!(album_name_from_track_response(&response), None);
+    }
+
+    /// A track TheAudioDB does not know at all comes back as a null array.
+    #[test]
+    fn an_unknown_track_offers_nothing() {
+        let response = serde_json::json!({ "track": null });
+
+        assert_eq!(track_thumb_from_response(&response), None);
+        assert_eq!(album_name_from_track_response(&response), None);
     }
 }

@@ -25,9 +25,6 @@ pub struct RAATPlayerController {
     /// Control pipe path/URL for sending commands
     control_pipe: String,
     
-    /// Current song information
-    current_song: Arc<RwLock<Option<Song>>>,
-
     /// Current player state
     current_state: Arc<RwLock<PlayerState>>,
     
@@ -49,7 +46,6 @@ impl Clone for RAATPlayerController {
             base: self.base.clone(),
             metadata_source: self.metadata_source.clone(),
             control_pipe: self.control_pipe.clone(),
-            current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
             last_update_time: Arc::clone(&self.last_update_time),
@@ -98,7 +94,6 @@ impl RAATPlayerController {
             base,
             metadata_source: metadata_source.to_string(),
             control_pipe: control_pipe.to_string(),
-            current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             last_update_time: Arc::new(RwLock::new(Instant::now())),
@@ -202,23 +197,6 @@ impl RAATPlayerController {
             *last_update = Instant::now();
         }
         
-        // Store the new song if different from current
-        let mut song_to_notify: Option<Song> = None;
-        {
-            let mut current_song = self.current_song.write();
-            let song_changed = match (&*current_song, &song) {
-                (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
-                (None, _) => true,
-            };
-            
-            if song_changed {
-                debug!("Updating current song from metadata");
-                // Replace the current song
-                *current_song = Some(song.clone());
-                song_to_notify = Some(song);
-            }
-        }
-        
         // Check if position has changed and notify if needed
         if let Some(position) = player_state.position {
             // Get the previously stored position
@@ -293,12 +271,35 @@ impl RAATPlayerController {
             *details = Some(stream_details);
         }
         
-        // Now notify listeners of song change if needed
-        // This needs to be done after updating state to avoid race conditions
-        if let Some(song) = song_to_notify {
-            self.base.notify_song_changed(Some(&song));
-        }
-        
+        // Store the song and notify listeners. This happens last, after
+        // state/capabilities/stream details are updated, so a listener
+        // reacting to song_changed sees a consistent player state.
+        //
+        // set_song, not replace_song: being a callback does not make this a
+        // discrete event. Every line down the metadata pipe carries `seek`
+        // and a full `now_playing` object that parse_line rebuilds an entire
+        // Song from, the position notification above is throttled to a 1 s
+        // delta because of it, and start_timeout_monitor declares the player
+        // Unknown after ten seconds without a line -- so lines arrive
+        // continuously while a track plays, whether or not anything changed.
+        // That is a poll wearing a callback, and it gates on identity for the
+        // same reason every poll does: an unconditional store would erase
+        // enrichment within one pipe interval and publish one song_changed
+        // per line for the whole track. receive_update below is the discrete
+        // counterpart and does use replace_song.
+        //
+        // One narrowing this brings, recorded because it is not obvious from
+        // here: before the refactor this player's own change detection
+        // compared the title, the artist *and the album*, whereas song
+        // identity is title, artist and stream_url -- and RAAT never sets a
+        // stream_url. So a line that changes only the album, mid-track and
+        // with the title and artist unchanged, is no longer stored. Roon
+        // sends a complete `now_playing` per line and a track does not change
+        // album while it plays, so this should be unreachable; if a real
+        // stream ever does it, the fix is update_song rather than a return to
+        // storing every line.
+        self.base.set_song(Some(song));
+
         // Mark the player as alive since we got data
         self.base.alive();
     }
@@ -419,10 +420,12 @@ impl PlayerController for RAATPlayerController {
         
         match update {
             PlayerUpdate::SongChanged(new_song) => {
-                let mut current_song_locked = self.current_song.write();
-                *current_song_locked = new_song.clone();
-                drop(current_song_locked); // Release lock before notifying
-                self.base.notify_song_changed(new_song.as_ref());
+                // Discrete, unlike update_metadata above: this update is
+                // pushed in once because the song changed, and nothing
+                // re-sends it on a timer. A same-identity refresh (late cover
+                // art) is therefore real news and must still reach clients,
+                // so this is replace_song's job, not set_song's.
+                self.base.replace_song(new_song);
             }
             PlayerUpdate::PositionChanged(new_position) => {
                 if let Some(pos) = new_position {
@@ -457,9 +460,11 @@ impl PlayerController for RAATPlayerController {
     
     fn get_song(&self) -> Option<Song> {
         debug!("Getting current song from stored value");
-        // Return a clone of the stored song
-        let song = self.current_song.read();
-        song.clone()
+        self.base.song()
+    }
+
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
     }
 
     fn get_stream_details(&self) -> Option<crate::data::stream_details::StreamDetails> {
@@ -631,5 +636,111 @@ impl PlayerController for RAATPlayerController {
     fn get_queue(&self) -> Vec<Track> {
         debug!("RAATController: get_queue called - returning empty vector");
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn controller() -> RAATPlayerController {
+        RAATPlayerController::with_pipes_and_reopen_and_systemd(
+            "test-metadata-source",
+            "test-control-pipe",
+            false,
+            None,
+        )
+    }
+
+    fn song(title: &str, artist: &str) -> Song {
+        Song {
+            title: Some(title.to_string()),
+            artist: Some(artist.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// `PlayerUpdate::SongChanged` previously stored and notified
+    /// unconditionally; a same-identity refresh (late cover art) must still
+    /// reach `get_song()`, not be dropped by identity gating.
+    #[test]
+    fn song_changed_update_same_identity_refresh_still_updates_metadata() {
+        let controller = controller();
+
+        controller.receive_update(PlayerUpdate::SongChanged(Some(song("Battery", "Metallica"))));
+
+        let mut refreshed = song("Battery", "Metallica");
+        refreshed.cover_art_url = Some("https://example.com/cover.jpg".to_string());
+        controller.receive_update(PlayerUpdate::SongChanged(Some(refreshed)));
+
+        assert_eq!(
+            controller.get_song().unwrap().cover_art_url,
+            Some("https://example.com/cover.jpg".to_string()),
+            "a same-identity metadata refresh must still be stored, not dropped"
+        );
+    }
+
+    /// The metadata pipe is a *continuous* source, not a discrete one: every
+    /// line carries `seek` and a full `now_playing`, and
+    /// `start_timeout_monitor` declares the player Unknown after ten seconds
+    /// without one, so lines arrive throughout a track whether or not
+    /// anything changed. That makes `update_metadata` a poll wearing a
+    /// callback, and it must gate on identity like every other poll: storing
+    /// each re-send would erase enrichment within one pipe interval, and
+    /// announcing it would put one `song_changed` per line on the bus for the
+    /// whole track.
+    #[test]
+    fn a_metadata_pipe_resend_does_not_erase_enrichment_or_republish() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+        use crate::data::PlayerEvent;
+
+        let controller = controller();
+        let player_id = "raat:pipe-resend";
+        controller.base.set_player_id(player_id);
+
+        let bus = EventBus::instance();
+        let (subscription, receiver) = bus.subscribe(vec![EventSubscription::SongChanged]);
+
+        let pipe_line = || {
+            controller.update_metadata(
+                song("Listen To The News", "Radical Friendship Theory"),
+                PlayerState::new(),
+                PlayerCapabilitySet::empty(),
+                StreamDetails::default(),
+            );
+        };
+
+        pipe_line();
+
+        // A lookup finds the track's real artwork while it is still playing.
+        assert!(controller.base.apply_song_information(&Song {
+            title: Some("Listen To The News".to_string()),
+            artist: Some("Radical Friendship Theory".to_string()),
+            cover_art_url: Some("https://lastfm.example/1200x1200.png".to_string()),
+            ..Default::default()
+        }));
+
+        // The pipe keeps streaming the same track, as it does every interval.
+        pipe_line();
+        pipe_line();
+
+        let published = receiver
+            .try_iter()
+            .filter(|event| {
+                matches!(event, PlayerEvent::SongChanged { source, .. }
+                    if source.player_id() == player_id)
+            })
+            .count();
+        bus.unsubscribe(subscription);
+
+        assert_eq!(
+            controller.get_song().unwrap().cover_art_url,
+            Some("https://lastfm.example/1200x1200.png".to_string()),
+            "a re-send of the track already playing must not erase enriched artwork"
+        );
+        assert_eq!(
+            published, 1,
+            "three pipe lines for one track must publish one song_changed, not three"
+        );
     }
 }

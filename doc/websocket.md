@@ -163,16 +163,45 @@ the station logo; one that applies partial updates as documented above needs no
 change. Artwork that arrives with the song is never marked, and is never
 replaced.
 
+#### `song.metadata.cover_art_source`
+
+The field says where `cover_art_url` came from, and it appears on both
+`song_changed` and `song_information_update`. It is a plain string with a
+closed set of values today, but treat it as open: a client must not assume it
+knows every value it will meet, because the daemon ships separately from the
+WebUI and the set grows.
+
+| Value | Meaning |
+|---|---|
+| *absent* | The artwork arrived with the song, from the player itself. It is the track's own artwork and nothing will replace it. This is the case for local files, AirPlay senders and anything else that carries its own image. |
+| `"station_logo"` | The artwork is only the radio station's logo, not artwork for the track being played. It is a placeholder shown so the client has something immediately, and a later `song_information_update` may replace it. **From 0.16.0.** |
+| `"lastfm"` | Album art Last.fm supplied for the track. A real answer for the track, so nothing replaces it. **From 0.16.0.** |
+| `"enrichment"` | Artwork that reached the song through a lookup which did not name itself. Like `"lastfm"`, a real answer for the track and not a placeholder. **New in 0.18.0.** |
+
+The only distinction a client needs is placeholder versus real artwork, and
+the rule for that is: `"station_logo"` is a placeholder, **everything else —
+absent, `"enrichment"`, `"lastfm"`, or a value added after this was written —
+is the track's own artwork**. A client that instead enumerates the values it
+knows and treats an unrecognised one as a placeholder will re-flash artwork
+that was already correct as soon as a new value ships.
+
+`"enrichment"` in particular is what a pre-0.18.0 client meets first: it is the
+value written when a lookup replaces a station logo without naming its own
+source, where previously the logo's own `"station_logo"` marker was left
+standing over the new image. A client that read that marker literally kept
+showing the good artwork as a stand-in and let the next lookup overwrite it.
+
 An update can also arrive after the `song_changed` for the *next* song, since
 the lookup behind it is a network round trip and a radio track may be short.
 That is what `title` and `artist` are on the payload for: compare them against
 the song being shown and drop an update that no longer matches.
 
-The better image lives only in this event. `GET /api/now-playing` is built from
-the player's stored song, which the lookup does not write back into, so it keeps
-returning the station logo -- a client that reconnects and re-fetches
-now-playing will fall back to the logo until the next
-`song_information_update`.
+REST and the WebSocket now agree: the lookup behind this event writes the
+better image into the player's stored song, so `GET /api/now-playing` reports
+it too, and a client that reconnects and re-fetches now-playing gets the same
+artwork a WebSocket subscriber already has, not the station logo. A client
+that only polls will see `cover_art_url` change between two polls of the same
+song, once the lookup completes.
 
 `song.cover_art_url` and `song.metadata.lyrics_url` carry the externally
 visible prefix when the connection was upgraded through a proxy that reports

@@ -6,6 +6,7 @@ use strum_macros::EnumString;
 
 use super::capabilities::{PlayerCapability, PlayerCapabilitySet};
 use super::loop_mode::LoopMode;
+use crate::data::Song;
 
 /// Player state enumeration defining possible states a player can be in
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString)]
@@ -75,6 +76,10 @@ pub struct PlayerState {
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<SystemTime>, // Timestamp of the last time the player was seen
+
+    /// The song currently playing, as the controller last observed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub song: Option<Song>,
 }
 
 impl Default for PlayerState {
@@ -96,6 +101,7 @@ impl PlayerState {
             shuffle: false,
             metadata: HashMap::new(),
             last_seen: None,
+            song: None,
         }
     }
 

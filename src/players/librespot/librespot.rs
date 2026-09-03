@@ -18,9 +18,6 @@ pub struct LibrespotPlayerController {
     /// Path to the librespot executable
     process_name: String,
     
-    /// Current song information
-    current_song: Arc<RwLock<Option<Song>>>,
-
     /// Current player state
     current_state: Arc<RwLock<PlayerState>>,
     
@@ -44,7 +41,6 @@ impl Clone for LibrespotPlayerController {
             // Share the BasePlayerController instance to maintain listener registrations
             base: self.base.clone(),
             process_name: self.process_name.clone(),
-            current_song: Arc::clone(&self.current_song),
             current_state: Arc::clone(&self.current_state),
             stream_details: Arc::clone(&self.stream_details),
             player_progress: Arc::clone(&self.player_progress),
@@ -92,7 +88,6 @@ impl LibrespotPlayerController {
         let player = Self {
             base,
             process_name: process_name.to_string(),
-            current_song: Arc::new(RwLock::new(None)),
             current_state: Arc::new(RwLock::new(PlayerState::new())),
             stream_details: Arc::new(RwLock::new(None)),
             player_progress: Arc::new(RwLock::new(PlayerProgress::new())),
@@ -154,9 +149,7 @@ impl PlayerController for LibrespotPlayerController {
     fn get_song(&self) -> Option<Song> {
         debug!("Getting current song from stored value");
         // Return a clone of the stored song with enhanced metadata if needed
-        let song_lock = self.current_song.read();
-        // Clone the song if it exists
-        if let Some(ref song) = *song_lock {
+        if let Some(song) = self.base.song() {
             log::debug!("Original song data: title={:?}, artist={:?}, album={:?}, duration={:?}, cover={:?}",
                 song.title, song.artist, song.album, song.duration, song.cover_art_url);
 
@@ -209,7 +202,11 @@ impl PlayerController for LibrespotPlayerController {
             None
         }
     }
-    
+
+    fn apply_song_information(&self, partial: &Song) -> bool {
+        self.base.apply_song_information(partial)
+    }
+
     fn get_loop_mode(&self) -> LoopMode {
         debug!("Getting current loop mode");
         // Return the actual loop mode from the stored state
@@ -660,27 +657,54 @@ impl LibrespotPlayerController {
                         }
                     }
                     
-                    // Update internal song
-                    {
-                        let mut current_song = self.current_song.write();
-                        let song_changed = match (&*current_song, &song) {
-                            (Some(old), new) => old.title != new.title || old.artist != new.artist || old.album != new.album,
-                            (None, _) => true,
-                        };
-
-                        if song_changed {
-                            log::info!("[API DEBUG] Song changed: {:?} - {:?}", song.artist, song.title);
-                            *current_song = Some(song.clone());
-
-                            // Reset PlayerProgress position for new song
-                            {
-                                let progress = self.player_progress.write();
-                                progress.set_position(0.0);
-                                log::info!("[API DEBUG] PlayerProgress position reset to 0.0 for new song");
+                    // Whether this is a different *track* from the one
+                    // playing, which is the only thing that may rewind the
+                    // position. Deliberately not replace_song's return value:
+                    // that reports a change of song *identity*, which
+                    // includes the artist, and this handler is HTTP-reachable
+                    // with `artist` optional on the payload. librespot
+                    // delivers a track progressively, so one track routinely
+                    // arrives as two events, the first without an artist --
+                    // and reusing the identity return would rewind the track
+                    // to zero halfway through it.
+                    //
+                    // When both events carry a `uri` that settles it on its
+                    // own: a Spotify URI names the track exactly and never
+                    // flaps as the rest of the fields fill in. But `uri` is
+                    // optional on the payload and is itself one of the fields
+                    // that arrives late, so it cannot be compared when either
+                    // side lacks it -- absent-then-present would rewind the
+                    // track, and two consecutive tracks that share a title
+                    // would both look absent and never reset. Without a URI
+                    // on both sides there is nothing better than the whole of
+                    // the metadata, which is the rule this player used before
+                    // the identity refactor.
+                    let same_track = self.base.song().is_some_and(|playing| {
+                        match (&playing.stream_url, &song.stream_url) {
+                            (Some(playing_uri), Some(new_uri)) => playing_uri == new_uri,
+                            _ => {
+                                playing.title == song.title
+                                    && playing.artist == song.artist
+                                    && playing.album == song.album
                             }
-
-                            self.base.notify_song_changed(Some(&song));
                         }
+                    });
+
+                    // Update internal song. librespot is a discrete source:
+                    // it pushes song_changed events, nothing re-sends them on
+                    // a timer, and get_song() answers out of the stored song
+                    // rather than re-reading librespot. A same-identity
+                    // re-send carrying the album or the cover art is real
+                    // news, so replace_song stores and announces every event.
+                    if self.base.replace_song(Some(song.clone())) {
+                        log::info!("[API DEBUG] Song changed: {:?} - {:?}", song.artist, song.title);
+                    }
+
+                    if !same_track {
+                        // Reset PlayerProgress position for new song
+                        let progress = self.player_progress.write();
+                        progress.set_position(0.0);
+                        log::info!("[API DEBUG] PlayerProgress position reset to 0.0 for new song");
                     }
                     
                     self.base.alive();
@@ -861,5 +885,162 @@ impl LibrespotPlayerController {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn controller() -> LibrespotPlayerController {
+        LibrespotPlayerController::with_full_config("librespot-test", None)
+    }
+
+    /// librespot pushes songs as API events and delivers them progressively:
+    /// a track is announced, then re-sent as the album and the cover art
+    /// become known. `get_song()` answers out of the stored song rather than
+    /// re-reading librespot, so a same-identity re-send that is dropped is
+    /// information lost for the rest of the track.
+    #[test]
+    fn a_same_identity_song_event_still_updates_metadata() {
+        let controller = controller();
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Battery", "artist": "Metallica" }
+        })));
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": {
+                "title": "Battery",
+                "artist": "Metallica",
+                "album": "Master of Puppets",
+                "cover_art_url": "https://example.com/cover.jpg"
+            }
+        })));
+
+        let stored = controller.get_song().expect("a song must be stored");
+        assert_eq!(
+            stored.cover_art_url,
+            Some("https://example.com/cover.jpg".to_string()),
+            "a same-identity refresh from an event must be stored, not dropped"
+        );
+        assert_eq!(stored.album, Some("Master of Puppets".to_string()));
+    }
+
+    /// `process_api_event` is HTTP-reachable and `artist` on the
+    /// `song_changed` payload is optional, so one track routinely arrives as
+    /// two events, the first without an artist. The artist is part of song
+    /// identity, so gating the `PlayerProgress` reset on `replace_song`'s
+    /// return value rewound the track to zero in the middle of it. A track is
+    /// the same track as long as its title and its URI are.
+    #[test]
+    fn a_late_artist_on_the_track_already_playing_does_not_rewind_it() {
+        let controller = controller();
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Battery", "uri": "spotify:track:battery" }
+        })));
+
+        controller.player_progress.write().set_position(42.0);
+
+        // The same track again, this time with the artist filled in.
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": {
+                "title": "Battery",
+                "artist": "Metallica",
+                "uri": "spotify:track:battery"
+            }
+        })));
+
+        assert_eq!(
+            controller.player_progress.read().get_position(),
+            42.0,
+            "a second event for the track already playing must not rewind it"
+        );
+    }
+
+    /// `uri` is optional on the payload, and the premise of the fix above is
+    /// that fields fill in across events -- so a sender that omits it can put
+    /// two consecutive tracks with the same title on the wire. Comparing the
+    /// URI alone would call them the same track and start the second one at
+    /// the first one's position, with `PlayerProgress` still counting up.
+    #[test]
+    fn two_same_titled_tracks_without_a_uri_still_reset_the_position() {
+        let controller = controller();
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Intro", "artist": "Alpha" }
+        })));
+
+        controller.player_progress.write().set_position(42.0);
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Intro", "artist": "Beta" }
+        })));
+
+        assert_eq!(
+            controller.player_progress.read().get_position(),
+            0.0,
+            "a different track that happens to share a title must start from the beginning"
+        );
+    }
+
+    /// The mirror of the same gap: the URI itself is one of the fields that
+    /// fills in late. A track announced as `{title}` and re-sent as
+    /// `{title, uri}` is one track, and comparing the URI would rewind it in
+    /// the middle.
+    #[test]
+    fn a_late_uri_on_the_track_already_playing_does_not_rewind_it() {
+        let controller = controller();
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Battery" }
+        })));
+
+        controller.player_progress.write().set_position(42.0);
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Battery", "uri": "spotify:track:battery" }
+        })));
+
+        assert_eq!(
+            controller.player_progress.read().get_position(),
+            42.0,
+            "the URI arriving late must not rewind the track already playing"
+        );
+    }
+
+    /// The other half of the same rule: a genuinely different track must
+    /// still reset the position, or every track after the first would start
+    /// where the last one stopped.
+    #[test]
+    fn a_different_track_still_resets_the_position() {
+        let controller = controller();
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Battery", "uri": "spotify:track:battery" }
+        })));
+
+        controller.player_progress.write().set_position(42.0);
+
+        assert!(controller.process_api_event(&serde_json::json!({
+            "type": "song_changed",
+            "song": { "title": "Damage, Inc.", "uri": "spotify:track:damage-inc" }
+        })));
+
+        assert_eq!(
+            controller.player_progress.read().get_position(),
+            0.0,
+            "a new track must start from the beginning"
+        );
     }
 }

@@ -1,3 +1,112 @@
+hifiberry-audiocontrol (0.18.0) trixie; urgency=medium
+
+  * `/api/now-playing` reflects a cover art lookup instead of only the
+    WebSocket. The enrichment used to publish the better image as a
+    `song_information_update` event and stop there, so the REST response kept
+    reporting the station's logo for as long as the stream played, and a
+    client that reconnected and re-fetched now-playing regressed to the logo
+    even after a WebSocket subscriber had already moved on. The lookup now
+    writes into the player's stored song, which both surfaces are built from,
+    so a client that only polls sees the same progression a WebSocket
+    subscriber sees.
+  * A cover art lookup that finishes after its song has moved on is dropped
+    rather than applied. The lookup is a network round trip and a radio track
+    can end while it is in flight; nothing checked before, so a late answer
+    could put the previous track's artwork on the one now playing. The update
+    carries the title it was looked up for, and is discarded if that no
+    longer matches the song in place.
+  * Cover art belonging to a song is never overwritten by a later lookup;
+    only a placeholder is, identified by `song.metadata.cover_art_source`.
+    This rule previously lived wherever a plugin happened to assign
+    cover_art_url, so it applied only where that plugin remembered to check
+    it. It now lives once, in the player itself, ahead of every write.
+  * What counts as a song change is now one rule for every backend: the title,
+    the artist or the stream URL differs from what is already playing. Each
+    backend previously carried its own version -- some compared the artist,
+    some the album, some neither -- so what a client saw as a new track
+    depended on which player it was listening to. Only two backends ever set a
+    stream URL, so the artist has to be in the rule: without it a same-titled
+    track by a different artist would not register as a change on MPRIS,
+    Bluetooth, RAAT or Shairport, and the new track would be reported with the
+    previous one's artist, album and cover art for as long as it played.
+  * A metadata-only refresh of the song already playing -- cover art arriving
+    after the song itself is the ordinary case -- now reaches clients from
+    every source that speaks only when something has changed: the generic
+    controller, Shairport, librespot, and RAAT's update channel. Several of
+    those stored the refresh but the conversion on the way out would have
+    dropped it, and some never attempted to propagate it at all. A source that
+    instead re-delivers the current state continuously -- MPRIS and Bluetooth
+    on a poll, RAAT's metadata pipe on every line it emits -- deliberately does
+    not announce a refresh: what looks like one there is the same reading
+    again, and announcing it would put an event on the bus per delivery for as
+    long as the track played. Whether the source is polled or calls back makes
+    no difference to this; whether it speaks only on a change does.
+  * Cover art found by a lookup survives on RAAT. Every line down the RAAT
+    metadata pipe carries the playback position and a full description of the
+    track, so lines arrive throughout a track whether or not anything changed
+    -- the player is declared gone after ten seconds without one. Storing each
+    line's track unconditionally erased artwork a lookup had found within a
+    pipe interval, and published a song change per line for the whole track.
+  * A cover art lookup that names its source no longer relabels artwork it did
+    not supply. `cover_art_source` was copied out of the lookup's answer even
+    when the answer's image had been refused for belonging to the song
+    already, which misreported to clients where the displayed artwork came
+    from. Provenance now travels with the image or not at all.
+  * `song.metadata.cover_art_source` gains the value `"enrichment"`, for
+    artwork a lookup supplied without naming itself. The full set of values a
+    client can meet is documented in the event contract, together with the
+    rule for reading one it does not recognise: `"station_logo"` is the only
+    placeholder, everything else is the track's own artwork.
+  * Spotify playback no longer jumps back to the start of the track when the
+    artist arrives late. The position was reset whenever the song's identity
+    changed, and the artist became part of that identity in this release --
+    but librespot announces a track first and fills in the artist moments
+    later, so an ordinary track was rewound in the middle of playing. The
+    reset now follows the track, not its metadata: when both the track playing
+    and the one announced carry a Spotify URI, that alone decides, because it
+    names the track exactly and does not change as the rest of the fields fill
+    in. The URI is optional and can itself arrive late, so where either side
+    lacks one the whole of the title, artist and album decides instead --
+    which keeps two consecutive same-titled tracks apart rather than running
+    the second one on from the first one's position.
+  * AirPlay artwork is announced once rather than once per filesystem event.
+    The cover art watcher sees a file created and then written, and each of
+    those told every client to re-read a song whose artwork had not changed
+    between them.
+  * Shairport announces a session restart. `SessionStart` cleared the current
+    song without telling clients, unlike `SessionEnd`, which did; a client
+    that had a track showing when a new AirPlay session began kept showing it
+    until the next song arrived. Both events now notify.
+  * MPRIS and Bluetooth song changes now reach clients. Both backends rebuild
+    their current song from D-Bus inside `get_song()` -- MPRIS also from a
+    poll thread -- and neither emitted a change event from there before; MPRIS
+    did not notify on a song change at all. An event now fires when the song
+    genuinely changes, and only then: a poll that re-reads the track already
+    playing stays silent and leaves the stored song alone, so cover art a
+    lookup has found is not overwritten a second later by the same reading
+    without it.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 02 Sep 2026 16:08:27 +0000
+
+hifiberry-audiocontrol (0.17.0) trixie; urgency=medium
+
+  * TheAudioDB answers the Song cover art method, alongside Last.fm. The two
+    cover different ground -- for the radio track that prompted this work
+    TheAudioDB knows nothing and Last.fm has a 1200x1200 cover, while for a
+    well-known album track both answer -- and the cover art manager grades and
+    sorts whatever comes back, so having both is worth more than either.
+  * A track TheAudioDB has no picture of falls back to the cover of the album
+    its own answer names. It knows many more tracks than it holds pictures of:
+    of five well-known tracks sampled, three carried no track image, but all
+    five named their album. Without the fallback the provider would miss most
+    of what it actually knows. This is the album art for the song being played,
+    and the same thing the Last.fm song provider returns.
+  * Track lookups are cached both ways, as artist and album lookups already
+    were, so a track TheAudioDB does not know is asked about once rather than
+    on every play.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 02 Sep 2026 14:20:10 +0000
+
 hifiberry-audiocontrol (0.16.1) trixie; urgency=medium
 
   * A stop arriving in the first moments of startup is no longer ignored.

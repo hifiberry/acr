@@ -16,6 +16,13 @@ pub const COVER_ART_SOURCE_STATION_LOGO: &str = "station_logo";
 /// the track's album. It is the track's own artwork, so it is not replaceable.
 pub const COVER_ART_SOURCE_LASTFM: &str = "lastfm";
 
+/// Value for [`COVER_ART_SOURCE`] marking cover art that reached the song
+/// through an enrichment lookup which did not name its own source. It is a
+/// real answer for the track rather than a placeholder, so it is not
+/// replaceable; the point of recording it is that the marker of the
+/// placeholder it replaced must never be left standing over it.
+pub const COVER_ART_SOURCE_ENRICHMENT: &str = "enrichment";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Song {
     #[serde(skip_serializing_if = "Option::is_none")]

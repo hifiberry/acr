@@ -660,6 +660,47 @@ mod tests {
         );
     }
 
+    /// A same-song refresh must still reach get_song() with its new metadata
+    /// -- suppressing the position reset must not also suppress the store.
+    /// Late cover art is the case that matters: a client that never sees the
+    /// refreshed song never gets the artwork.
+    #[test]
+    fn test_song_change_same_song_refresh_still_updates_metadata() {
+        let controller = create_test_controller();
+
+        controller.process_api_event(&json!({
+            "type": "song_changed",
+            "song": { "title": "Same Song", "artist": "Artist A", "uri": "spotify:track:1" }
+        }));
+        controller.process_api_event(&json!({ "type": "state_changed", "state": "playing" }));
+        controller.process_api_event(&json!({ "type": "position_changed", "position": 42.0 }));
+
+        // Metadata-only refresh for the SAME song: late artwork arriving.
+        controller.process_api_event(&json!({
+            "type": "song_changed",
+            "song": {
+                "title": "Same Song",
+                "artist": "Artist A",
+                "uri": "spotify:track:1",
+                "cover_art_url": "http://example.com/late-art.jpg"
+            }
+        }));
+
+        let song = controller.get_song().expect("song should be set");
+        assert_eq!(
+            song.cover_art_url,
+            Some("http://example.com/late-art.jpg".to_string()),
+            "a metadata-only refresh must still be stored, not dropped"
+        );
+
+        let position = controller.get_position().expect("position should be known");
+        assert!(
+            position >= 42.0,
+            "and must still not reset position, got {}",
+            position
+        );
+    }
+
     #[test]
     fn test_queue_changed_event_skips_entries_without_title() {
         let controller = create_test_controller();

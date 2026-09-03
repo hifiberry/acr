@@ -1,3 +1,46 @@
+hifiberry-audiocontrol (0.20.0) trixie; urgency=medium
+
+  * An external cover art endpoint can now hand the daemon the image itself,
+    instead of a URL for the client to fetch. That was the gap that made the
+    previous release's endpoints unusable for anything on a private network:
+    the URL reached the phone or browser, which had no route to the host and
+    no credential for it. An endpoint may send the image base64-encoded in an
+    `images` entry's new `data` field, or set `localize` and let the daemon
+    fetch its URL — with the endpoint's configured headers, which the
+    metadata fetch never sent. Either way the bytes land in the image cache
+    and are served from `/api/imagecache/`, like the artist images already
+    were, and are rewritten for `X-Forwarded-Prefix` as an external URL never
+    could be.
+  * Pass-through remains the default. `localize` is off unless configured, so
+    a publicly reachable provider is untouched: copying its images onto an
+    appliance's disk to serve them again would cost storage for nothing.
+  * The daemon decides an image's type from its bytes rather than from
+    anything the endpoint claims, which doubles as a check that the bytes are
+    an image at all. A URL that answers with an HTML sign-in page or a JSON
+    error is a realistic failure, and storing that would serve a broken
+    picture from a URL the daemon vouches for.
+  * Failing to obtain artwork the endpoint reported is cached as an error for
+    an hour, not as an absence of artwork for a week. The endpoint said there
+    was a cover; not getting it is this daemon's problem and must not leave
+    the track blank until the negative cache expires. A cached answer whose
+    image files have since gone is treated as a miss and looked up again,
+    rather than served as a URL that 404s.
+  * `max_image_bytes` bounds a single image and at most eight images from one
+    answer are considered. Passing URLs through cost a metadata fetch each;
+    localising adds a download, a file and a check on every later read, so an
+    endpoint answering with hundreds of entries could otherwise turn one song
+    change into hours of work.
+  * Images stored in the cache are now written through a temporary file and
+    renamed. `store_image_with_expiry` created the destination and filled it
+    in place, so a client reading an entry while it was being refreshed saw a
+    partial file. This affects every caller, not only cover art.
+  * A locally served image is now measured for grading instead of being
+    treated as a filesystem path and failing to open. This had been silently
+    giving every image served from `/api/imagecache/` the worst possible
+    grade, which also affected Shairport cover art.
+
+ -- HiFiBerry <support@hifiberry.com>  Thu, 03 Sep 2026 16:28:36 +0000
+
 hifiberry-audiocontrol (0.19.0) trixie; urgency=medium
 
   * Cover art can now come from external HTTP endpoints configured at

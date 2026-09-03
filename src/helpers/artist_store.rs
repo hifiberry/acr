@@ -77,6 +77,21 @@ pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Whether a stored file's name claims one of the formats we serve.
+///
+/// The counterpart to [`image_extension`] for a file that is already on disk.
+/// The name is trustworthy because we wrote it: the extension came from
+/// sniffing the bytes at store time and never from anything a client said, so
+/// deciding membership of an artist's set from it costs a directory entry
+/// rather than a full read of every image.
+fn has_servable_extension(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(extension.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp")
+        })
+}
+
 /// The id named by one of this daemon's own artist-image URLs.
 ///
 /// The selection a client posts to `/artist/<b64>/update` is a URL, and a
@@ -217,9 +232,17 @@ impl ArtistStore {
     /// each upload.
     ///
     /// The filesystem is the source of truth, so a file put there by hand
-    /// shows up and a file deleted by hand disappears. A member that cannot be
-    /// read, or whose bytes are not an image, is logged and skipped: one bad
-    /// file must not cost the artist its whole listing.
+    /// shows up and a file deleted by hand disappears. Anything in `uploads/`
+    /// that is not a regular file with one of the extensions this daemon
+    /// serves is skipped, so a stray `.DS_Store` costs the artist nothing.
+    ///
+    /// Classification is by name, never by content: this walk runs on the
+    /// player-event path and on every listing, and an upload's extension was
+    /// already sniffed from its bytes when it was written. Reading each file
+    /// whole to re-derive that would cost tens of megabytes per listing for an
+    /// artist with a full set. A file whose bytes turn out not to be an image
+    /// after all is dropped by the listing route, which has to read the header
+    /// for the dimensions anyway.
     pub fn artist_images(&self, artist_name: &str) -> Vec<ArtistImage> {
         let mut images = Vec::new();
 
@@ -245,15 +268,18 @@ impl ArtistStore {
                 if crate::helpers::imageresize::variant_size_of(stem).is_some() {
                     continue;
                 }
-                match std::fs::read(&path) {
-                    Ok(bytes) if image_extension(&bytes).is_some() => found.push(ArtistImage {
-                        id: stem.to_string(),
-                        path: path.to_string_lossy().into_owned(),
-                        source: ArtistImageSource::Upload,
-                    }),
-                    Ok(_) => debug!("Skipping {} in {}: not a recognised image", path.display(), uploads),
-                    Err(e) => warn!("Skipping {}: {}", path.display(), e),
+                if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                    continue;
                 }
+                if !has_servable_extension(&path) {
+                    debug!("Skipping {} in {}: not a recognised image name", path.display(), uploads);
+                    continue;
+                }
+                found.push(ArtistImage {
+                    id: stem.to_string(),
+                    path: path.to_string_lossy().into_owned(),
+                    source: ArtistImageSource::Upload,
+                });
             }
             found.sort_by(|a, b| a.id.cmp(&b.id));
             images.extend(found);
@@ -309,14 +335,28 @@ impl ArtistStore {
     }
 
     /// Remove one member of the set, and the variants generated from it.
+    ///
+    /// Whether the member was selected is decided before the removal but acted
+    /// on after it: a `remove_file` that fails must leave the artist exactly as
+    /// it was, rather than reporting an error with the selection already gone.
+    /// The decision cannot simply be repeated afterwards either — once the file
+    /// is off disk the selection no longer resolves to any member, so it would
+    /// look as though nothing had been selected.
     pub fn delete_artist_image(&mut self, artist_name: &str, id: &str) -> Result<(), String> {
-        let Some(path) = self.artist_image_path(artist_name, id) else {
+        let images = self.artist_images(artist_name);
+        let Some(path) = images.iter().find(|image| image.id == id).map(|image| image.path.clone()) else {
             return Err(format!("No image '{}' for artist '{}'", id, artist_name));
         };
-        if self.selected_image_id(artist_name).as_deref() == Some(id) {
+        let was_selected = self
+            .stored_selection(artist_name)
+            .and_then(|stored| self.selection_member(artist_name, &stored, &images))
+            .is_some_and(|selected| selected.id == id);
+
+        std::fs::remove_file(&path).map_err(|e| format!("Failed to remove {}: {}", path, e))?;
+
+        if was_selected {
             crate::helpers::settingsdb::remove(&format!("artist.image.{}", artist_name)).ok();
         }
-        std::fs::remove_file(&path).map_err(|e| format!("Failed to remove {}: {}", path, e))?;
         crate::helpers::imageresize::remove_variants_of(&path);
         crate::helpers::image_meta::clear_image_cache(&path).ok();
         self.image_cache.remove(artist_name);
@@ -344,15 +384,64 @@ impl ArtistStore {
         Ok(())
     }
 
-    /// Which member is selected, when the selection names one of ours.
+    /// The URL recorded as this artist's selection, if there is a real one.
     ///
-    /// A selection holding a remote URL is not a member id: that image reaches
-    /// the set as `custom.jpg` once it is downloaded, and `custom` is what the
-    /// listing reports as selected.
-    pub fn selected_image_id(&self, artist_name: &str) -> Option<String> {
+    /// An empty value is how the API clears a selection, so it is the same
+    /// thing as no key at all.
+    fn stored_selection(&self, artist_name: &str) -> Option<String> {
         let stored = crate::helpers::settingsdb::get_string(&format!("artist.image.{}", artist_name)).ok()??;
-        let id = local_image_id(&stored, artist_name)?;
-        self.artist_image_path(artist_name, &id).map(|_| id)
+        if stored.is_empty() { None } else { Some(stored) }
+    }
+
+    /// Which member of `images` the stored selection `stored` resolves to.
+    ///
+    /// One of our own URLs names a member directly. Any other URL is a remote
+    /// image, and the only place a remote selection is ever put is
+    /// `custom.jpg` — so once it has been downloaded, `custom` is the member
+    /// that selection is serving. Reporting nothing selected there would
+    /// contradict the picture the artist is actually showing, which is the
+    /// ordinary outcome of the WebUI's provider-candidate flow.
+    ///
+    /// Takes the already-walked set so that a caller which needs both the set
+    /// and the selection pays for one walk of the directory, not two.
+    fn selection_member<'a>(
+        &self,
+        artist_name: &str,
+        stored: &str,
+        images: &'a [ArtistImage],
+    ) -> Option<&'a ArtistImage> {
+        let wanted = local_image_id(stored, artist_name).unwrap_or_else(|| "custom".to_string());
+        images.iter().find(|image| image.id == wanted)
+    }
+
+    /// Which member is selected, or `None` when nothing is.
+    pub fn selected_image_id(&self, artist_name: &str) -> Option<String> {
+        let stored = self.stored_selection(artist_name)?;
+        let images = self.artist_images(artist_name);
+        self.selection_member(artist_name, &stored, &images).map(|image| image.id.clone())
+    }
+
+    /// An artist's whole set together with the id of the selected member.
+    ///
+    /// The listing route needs both, and resolving them separately would walk
+    /// the artist's directory twice per request.
+    pub fn artist_images_with_selection(&self, artist_name: &str) -> (Vec<ArtistImage>, Option<String>) {
+        let images = self.artist_images(artist_name);
+        let selected = self
+            .stored_selection(artist_name)
+            .and_then(|stored| self.selection_member(artist_name, &stored, &images))
+            .map(|image| image.id.clone());
+        (images, selected)
+    }
+
+    /// Forget the path memoised for this artist.
+    ///
+    /// The memo is keyed by artist name and holds one resolved path, so it has
+    /// to be dropped by every caller that changes what the artist resolves to
+    /// — including the ones outside this module that write the selection key
+    /// themselves.
+    pub fn forget_memoised_path(&mut self, artist_name: &str) {
+        self.image_cache.remove(artist_name);
     }
 
     /// Check if an artist image exists in cache
@@ -391,8 +480,15 @@ impl ArtistStore {
 
         // A selected member wins the chain below: the whole point of choosing
         // one is that it beats whatever precedence would otherwise apply.
-        if let Some(id) = self.selected_image_id(artist_name) {
-            if let Some(path) = self.artist_image_path(artist_name, &id) {
+        // This runs on every player event that resolves an artist image, so it
+        // reads the selection first and walks the directory only when there is
+        // something to resolve, and walks it exactly once.
+        if let Some(stored) = self.stored_selection(artist_name) {
+            let images = self.artist_images(artist_name);
+            let selected = self
+                .selection_member(artist_name, &stored, &images)
+                .map(|image| image.path.clone());
+            if let Some(path) = selected {
                 self.image_cache.insert(artist_name.to_string(), path.clone());
                 return ArtistImageResult::Found { cache_path: path };
             }
@@ -542,39 +638,6 @@ impl ArtistStore {
         result
     }
 
-    /// Store raw image bytes directly to a user as a custom image.
-    ///
-    /// The binary counterpart to [`Self::download_and_store_user_image`]: the
-    /// caller already holds the bytes (for example, uploaded through the REST
-    /// API) and no URL download is needed. The bytes are written to the user
-    /// directory under `custom` so the image takes precedence over anything
-    /// the cover-art providers auto-downloaded.
-    ///
-    /// # Arguments
-    /// * `artist_name` - The name of the artist
-    /// * `image_data` - The raw encoded image bytes
-    ///
-    /// # Returns
-    /// ArtistImageResult with the stored path if successful
-    pub fn store_user_uploaded_image(&mut self, artist_name: &str, image_data: &[u8]) -> ArtistImageResult {
-        debug!("Storing uploaded image for artist {}", artist_name);
-
-        let user_path = self.get_artist_user_image_path(artist_name, "custom");
-
-        match self.store_image(&user_path, image_data) {
-            Ok(_) => {
-                info!("Stored uploaded image for artist {} in user directory", artist_name);
-                // Also cache the path for quick access
-                self.image_cache.insert(artist_name.to_string(), user_path.clone());
-                ArtistImageResult::Found { cache_path: user_path }
-            },
-            Err(e) => {
-                warn!("Failed to store uploaded image for artist {}: {}", artist_name, e);
-                ArtistImageResult::Error(format!("Failed to store image: {}", e))
-            }
-        }
-    }
-
     /// Get or download artist cover art
     /// 
     /// # Arguments
@@ -597,9 +660,18 @@ impl ArtistStore {
 
         // Check for custom image URL in settings first
         if self.config.enable_custom_images {
-            let custom_url_key = format!("artist.image.{}", artist_name);
-            if let Ok(Some(custom_url)) = crate::helpers::settingsdb::get_string(&custom_url_key) {
-                if !custom_url.is_empty() {
+            if let Some(custom_url) = self.stored_selection(artist_name) {
+                if local_image_id(&custom_url, artist_name).is_some() {
+                    // One of our own URLs is a pointer at a file, not something
+                    // to fetch. `get_cached_image` above has already failed to
+                    // resolve it, so the file is gone; handing `/api/...` to the
+                    // HTTP client would only turn a recoverable miss into an
+                    // error and leave the artist with no picture at all.
+                    debug!(
+                        "Selection for artist {} names a member that is gone ({}); falling back to the providers",
+                        artist_name, custom_url
+                    );
+                } else {
                     debug!("Found custom image URL for artist {}: {}", artist_name, custom_url);
                     return self.download_and_cache_image(artist_name, &custom_url, "custom");
                 }
@@ -992,27 +1064,6 @@ mod tests {
     use tempfile::TempDir;
     use serial_test::serial;
 
-    /// Repoint the process-wide attribute cache at a temporary directory, once.
-    ///
-    /// `store_image` records its metadata through that cache, and a test run
-    /// must not assume `/var/lib/audiocontrol` is creatable: the CI runner is
-    /// not root, where the default path stays unopenable and every store fails
-    /// after the bytes are already on disk. The imagecache tests apply the same
-    /// idiom; the directory is leaked so the singleton keeps a writable target
-    /// for the rest of the run.
-    fn init_test_attribute_cache() {
-        use crate::helpers::attributecache::AttributeCache;
-        use std::sync::Once;
-        static INIT: Once = Once::new();
-
-        INIT.call_once(|| {
-            let temp_dir = TempDir::new().expect("attribute cache temp dir");
-            let attr_cache_path = temp_dir.path().join("attributes");
-            let _ = AttributeCache::initialize_global(&attr_cache_path);
-            std::mem::forget(temp_dir);
-        });
-    }
-
     /// Repoint the process-wide settings database at a temporary directory, once.
     ///
     /// The selection lives in the same global settings database the daemon
@@ -1188,41 +1239,6 @@ mod tests {
         }
     }
 
-    /// An upload stores the raw bytes under the user custom path and is then
-    /// served from there, taking precedence over anything in the cache.
-    #[test]
-    #[serial]
-    fn test_stored_upload_is_served_from_the_user_dir() {
-        init_test_attribute_cache();
-
-        let (mut store, _cache_temp, _user_temp) = create_test_store();
-        let artist_name = "Upload Artist";
-        let bytes = b"uploaded image bytes";
-
-        match store.store_user_uploaded_image(artist_name, bytes) {
-            ArtistImageResult::Found { cache_path } => {
-                assert!(cache_path.contains(&store.config.user_dir),
-                    "the upload must live in the user dir, got: {}", cache_path);
-                assert!(cache_path.ends_with("custom.jpg"),
-                    "the upload must use the custom filename, got: {}", cache_path);
-                let on_disk = fs::read(&cache_path).expect("the uploaded bytes should exist on disk");
-                assert_eq!(on_disk, bytes, "the stored file must match the uploaded bytes");
-            },
-            _ => panic!("upload should report a found path"),
-        }
-
-        // The user-dir path is remembered, so a later lookup resolves there and
-        // serves the uploaded bytes rather than anything auto-downloaded.
-        match store.get_cached_image(artist_name) {
-            ArtistImageResult::Found { cache_path } => {
-                assert!(cache_path.contains(&store.config.user_dir));
-                let served = fs::read(&cache_path).expect("the served file should exist");
-                assert_eq!(served, bytes);
-            },
-            _ => panic!("the uploaded image should be cached immediately after upload"),
-        }
-    }
-
     fn png_bytes(w: u32, h: u32) -> Vec<u8> {
         use image::{DynamicImage, RgbaImage};
         let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(w, h, image::Rgba([10, 120, 200, 255])));
@@ -1286,14 +1302,31 @@ mod tests {
         assert_eq!(upload.source, ArtistImageSource::Upload);
     }
 
-    /// A file that is not an image (a stray .DS_Store, a truncated download) is
-    /// omitted rather than failing the listing for the whole artist.
+    /// A stray file that is not named like an image we serve is omitted rather
+    /// than failing the listing for the whole artist. Bytes are not consulted
+    /// here: the walk runs on the player-event path, and the extension of an
+    /// upload was sniffed from its bytes when it was written.
     #[test]
-    fn an_unreadable_member_is_omitted_rather_than_fatal() {
+    fn a_file_that_is_not_named_like_an_image_is_omitted() {
         let store = store_in(&temp_user_dir());
-        write_file(&format!("{}/uploads/{}.png", artist_dir(&store, "Artist"), "f".repeat(32)), b"not an image");
+        let uploads = format!("{}/uploads", artist_dir(&store, "Artist"));
+        write_file(&format!("{}/.DS_Store", uploads), b"not an image");
+        write_file(&format!("{}/notes.txt", uploads), b"not an image either");
 
         assert!(store.artist_images("Artist").is_empty());
+    }
+
+    /// The listing must not read every file whole just to classify it: an
+    /// artist with a full set of multi-megabyte uploads would otherwise cost
+    /// tens of megabytes of reads and allocation per request.
+    #[test]
+    fn classifying_the_set_does_not_read_the_files() {
+        let store = store_in(&temp_user_dir());
+        let uploads = format!("{}/uploads", artist_dir(&store, "Artist"));
+        // Bytes that no sniffer would accept, under a name we wrote ourselves.
+        write_file(&format!("{}/{}.png", uploads, "a".repeat(32)), b"header-only classification");
+
+        assert_eq!(store.artist_images("Artist").len(), 1);
     }
 
     #[test]
@@ -1459,5 +1492,96 @@ mod tests {
         let artist = "Selection Unknown Artist";
         assert!(store.select_artist_image(artist, "nope").is_err());
         assert_eq!(store.selected_image_id(artist), None);
+    }
+
+    /// The ordinary WebUI flow: a provider candidate is posted as a remote URL
+    /// and the daemon downloads it to `custom.jpg`. `custom` is what is being
+    /// served, so `custom` is what the listing must report as selected.
+    #[test]
+    #[serial]
+    fn a_remote_selection_reports_custom_as_the_selected_member() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let store = store_in(&dir);
+        let artist = "Remote Selection Artist";
+        write_file(&store.get_artist_user_image_path(artist, "custom"), &png_bytes(8, 8));
+        crate::helpers::settingsdb::set_string(
+            &format!("artist.image.{}", artist),
+            "https://provider.test/portrait.jpg",
+        )
+        .unwrap();
+
+        assert_eq!(store.selected_image_id(artist).as_deref(), Some("custom"));
+        let (images, selected) = store.artist_images_with_selection(artist);
+        assert_eq!(selected.as_deref(), Some("custom"));
+        assert_eq!(images.len(), 1);
+    }
+
+    /// Until the download lands there is no `custom.jpg`, and a remote
+    /// selection must not claim a member that does not exist.
+    #[test]
+    #[serial]
+    fn a_remote_selection_with_no_custom_file_selects_nothing() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let store = store_in(&dir);
+        let artist = "Remote Selection Pending Artist";
+        crate::helpers::settingsdb::set_string(
+            &format!("artist.image.{}", artist),
+            "https://provider.test/portrait.jpg",
+        )
+        .unwrap();
+
+        assert_eq!(store.selected_image_id(artist), None);
+    }
+
+    /// A selection of ours whose file has since gone is a stale pointer, not a
+    /// URL to fetch: handing `/api/coverart/...` to the HTTP client turns a
+    /// recoverable miss into an error and leaves the artist with no picture.
+    #[test]
+    #[serial]
+    fn a_local_selection_whose_file_is_gone_is_not_fetched_over_http() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        store.config.auto_download = true;
+        let artist = "Vanished Selection Artist";
+        let url = format!(
+            "{}/coverart/artist/{}/image/{}",
+            crate::constants::API_PREFIX,
+            crate::helpers::url_encoding::encode_url_safe(artist),
+            "a".repeat(32)
+        );
+        crate::helpers::settingsdb::set_string(&format!("artist.image.{}", artist), &url).unwrap();
+
+        let result = store.get_or_download_artist_image(artist);
+
+        assert!(
+            !matches!(result, ArtistImageResult::Error(_)),
+            "our own address must never reach the download path, got: {:?}",
+            result
+        );
+    }
+
+    /// A removal that fails must leave the artist exactly as it was. A
+    /// directory sitting where `custom.jpg` belongs lists as a member and
+    /// cannot be removed with `remove_file`, which is the failure to observe.
+    #[test]
+    #[serial]
+    fn a_failed_removal_leaves_the_selection_alone() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let artist = "Failed Delete Artist";
+        std::fs::create_dir_all(store.get_artist_user_image_path(artist, "custom")).unwrap();
+        store.select_artist_image(artist, "custom").expect("custom lists as a member");
+
+        assert!(store.delete_artist_image(artist, "custom").is_err(), "a directory cannot be removed");
+
+        assert_eq!(
+            store.selected_image_id(artist).as_deref(),
+            Some("custom"),
+            "the selection must survive a removal that did not happen"
+        );
     }
 }

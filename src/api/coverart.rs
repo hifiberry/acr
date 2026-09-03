@@ -380,7 +380,20 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
     match settingsdb::set_string(&settings_key, &request.url) {
         Ok(_) => {
             info!("Successfully stored custom image URL for artist '{}': {}", artist_name, request.url);
-            
+
+            // The recorded selection has just changed, so the store's
+            // resolved-path memo for this artist is now about the previous
+            // image. Dropped here rather than in the branches below, because
+            // every one of them leaves it wrong: an empty URL clears the
+            // selection outright, and a download that fails leaves the artist
+            // pointing at a URL whose bytes never arrived. A download that
+            // succeeds re-populates the memo itself.
+            {
+                let store = crate::helpers::artist_store::get_artist_store();
+                let mut store_lock = store.lock();
+                store_lock.forget_memoised_path(&artist_name);
+            }
+
             // Clear any cached image to force refresh
             let cache_path = format!("artists/{}/cover.jpg", crate::helpers::url_encoding::encode_url_safe(&artist_name));
             debug!("Attempting to clear cached image at: {}", cache_path);
@@ -555,15 +568,24 @@ pub fn get_artist_images(artist_b64: String) -> Result<Json<ArtistImagesResponse
     let artist_name = decode_url_safe(&artist_b64)
         .ok_or_else(|| Custom(Status::BadRequest, "Invalid artist name encoding".to_string()))?;
 
-    let store = crate::helpers::artist_store::get_artist_store();
-    let store_lock = store.lock();
-    let selected = store_lock.selected_image_id(&artist_name);
+    if crate::helpers::sanitize::filename_from_string(artist_name.trim()).is_empty() {
+        return Err(Custom(Status::BadRequest, "Empty artist name".to_string()));
+    }
+
+    // The guard covers resolving the set and the selection, and nothing else.
+    // It is one process-wide mutex: holding it across the per-member metadata
+    // reads and header sniffs below would put every concurrent image serve,
+    // upload, delete and player-event lookup behind this listing's file I/O.
+    let (members, selected) = {
+        let store = crate::helpers::artist_store::get_artist_store();
+        let store_lock = store.lock();
+        store_lock.artist_images_with_selection(&artist_name)
+    };
 
     // A member whose file cannot be read or measured is dropped rather than
     // failing the whole listing: one bad file must not cost the artist its
     // entire gallery.
-    let images = store_lock
-        .artist_images(&artist_name)
+    let images = members
         .into_iter()
         .filter_map(|image| {
             let metadata = std::fs::metadata(&image.path).ok()?;
@@ -751,6 +773,13 @@ pub fn delete_artist_image_route(artist_b64: String, id: String) -> Json<UpdateI
             message: "Invalid artist name encoding".to_string(),
         });
     };
+
+    if crate::helpers::sanitize::filename_from_string(artist_name.trim()).is_empty() {
+        return Json(UpdateImageResponse {
+            success: false,
+            message: "Empty artist name".to_string(),
+        });
+    }
 
     let store = crate::helpers::artist_store::get_artist_store();
     let mut store_lock = store.lock();
@@ -1139,5 +1168,146 @@ mod tests {
         let again = delete_artist_image_for(artist, &id);
 
         assert!(!again.success, "a delete of something that is gone is not a success");
+    }
+
+    /// The path a lookup resolves to for an artist is memoised in the store,
+    /// so clearing the selection has to drop that memo. Without it the daemon
+    /// keeps serving the de-selected image until a restart while the listing
+    /// reports nothing selected — the two disagreeing about the same artist.
+    #[test]
+    #[serial]
+    fn clearing_the_selection_stops_serving_the_de_selected_image() {
+        let artist = "Memo Clear Artist";
+        let id = upload_artist_image_for(artist, &b64(&alpha_png(400, 400))).id.unwrap();
+
+        // Warm the memo the way a served request does.
+        let store = crate::helpers::artist_store::get_artist_store();
+        {
+            let mut store_lock = store.lock();
+            let crate::helpers::artist_store::ArtistImageResult::Found { cache_path } =
+                store_lock.get_cached_image(artist)
+            else {
+                panic!("the uploaded image should resolve");
+            };
+            assert!(cache_path.contains(&id), "the upload is what is being served");
+        }
+
+        let response = update_artist_image_for(artist, "");
+        assert!(response.success, "{}", response.message);
+
+        let mut store_lock = store.lock();
+        if let crate::helpers::artist_store::ArtistImageResult::Found { cache_path } =
+            store_lock.get_cached_image(artist)
+        {
+            panic!("nothing should still resolve for this artist, got: {}", cache_path);
+        }
+    }
+
+    /// The same memo has to go when the download behind a new selection fails:
+    /// the artist is left pointing at a URL whose bytes never arrived, and the
+    /// previous image must not keep being served as though it were the choice.
+    #[test]
+    #[serial]
+    fn a_failed_download_does_not_leave_the_previous_image_memoised() {
+        let artist = "Memo Failed Download Artist";
+        let id = upload_artist_image_for(artist, &b64(&alpha_png(400, 400))).id.unwrap();
+
+        let store = crate::helpers::artist_store::get_artist_store();
+        {
+            let mut store_lock = store.lock();
+            let crate::helpers::artist_store::ArtistImageResult::Found { cache_path } =
+                store_lock.get_cached_image(artist)
+            else {
+                panic!("the uploaded image should resolve");
+            };
+            assert!(cache_path.contains(&id));
+        }
+
+        // Not a URL at all: the HTTP client rejects it without any network I/O,
+        // which is the download-failure branch this test is about.
+        update_artist_image_for(artist, "definitely-not-a-url");
+
+        let mut store_lock = store.lock();
+        if let crate::helpers::artist_store::ArtistImageResult::Found { cache_path } =
+            store_lock.get_cached_image(artist)
+        {
+            panic!("the previous image must not survive a failed download, got: {}", cache_path);
+        }
+    }
+
+    /// A remote selection is served from `custom.jpg`, so the listing must
+    /// report `custom` as the selected member rather than nothing at all —
+    /// which is the state the ordinary provider-candidate flow leaves behind.
+    #[test]
+    #[serial]
+    fn a_remote_selection_lists_custom_as_selected() {
+        init_test_artist_store();
+        let artist = "Remote Selection Listing Artist";
+
+        // Stand in for a completed download: the file the remote branch writes,
+        // plus the remote URL it records as the selection.
+        {
+            let store = crate::helpers::artist_store::get_artist_store();
+            let store_lock = store.lock();
+            let custom = store_lock.get_artist_user_image_path(artist, "custom");
+            let parent = std::path::Path::new(&custom).parent().unwrap().to_path_buf();
+            std::fs::create_dir_all(parent).unwrap();
+            std::fs::write(&custom, alpha_png(64, 64)).unwrap();
+        }
+        settingsdb::set_string(
+            &format!("artist.image.{}", artist),
+            "https://provider.test/portrait.jpg",
+        )
+        .unwrap();
+
+        let response = artist_images_response(artist);
+
+        let selected: Vec<&ArtistImageInfo> = response.images.iter().filter(|i| i.selected).collect();
+        assert_eq!(selected.len(), 1, "a downloaded remote selection is a selected member");
+        assert_eq!(selected[0].id, "custom");
+    }
+
+    /// The bytes are only sniffed once, in the listing, so a file that carries
+    /// an image name but is not an image has to be dropped here.
+    #[test]
+    #[serial]
+    fn a_member_whose_bytes_are_not_an_image_is_omitted_from_the_listing() {
+        init_test_artist_store();
+        let artist = "Corrupt Member Artist";
+        let good = upload_artist_image_for(artist, &b64(&alpha_png(64, 64))).id.unwrap();
+
+        {
+            let store = crate::helpers::artist_store::get_artist_store();
+            let store_lock = store.lock();
+            let uploads = store_lock.artist_uploads_dir_for_test(artist);
+            std::fs::write(format!("{}/{}.png", uploads, "c".repeat(32)), b"truncated download").unwrap();
+        }
+
+        let response = artist_images_response(artist);
+
+        assert_eq!(response.images.len(), 1, "the unreadable member is dropped, not fatal");
+        assert_eq!(response.images[0].id, good);
+    }
+
+    #[test]
+    #[serial]
+    fn listing_a_name_that_sanitises_to_nothing_is_refused() {
+        init_test_artist_store();
+        let b64_artist = crate::helpers::url_encoding::encode_url_safe("!!!");
+        match get_artist_images(b64_artist) {
+            Err(err) => {
+                assert_eq!(err.0, rocket::http::Status::BadRequest);
+                assert!(err.1.contains("Empty"), "got: {}", err.1);
+            }
+            Ok(_) => panic!("a name that sanitises to nothing must be refused"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn deleting_for_a_name_that_sanitises_to_nothing_is_refused() {
+        let response = delete_artist_image_for("!!!", "custom");
+        assert!(!response.success);
+        assert!(response.message.contains("Empty"), "got: {}", response.message);
     }
 }

@@ -99,6 +99,28 @@ fn run_lookup(provider: &Arc<ExternalCoverartProvider>, song: &Song, source: &Pl
     }
 }
 
+/// Releases an in-flight cache key when dropped.
+///
+/// The lookup thread runs detached, so a panic anywhere in `run_lookup` (or
+/// in a call it makes, now or after some future change) unwinds that thread
+/// without running any code placed after the call. A bare
+/// `in_flight.lock().remove(&key)` written after `run_lookup(..)` would then
+/// never execute, and the dedup check at the top of `start()` -- which skips
+/// a song already in the set -- would silently refuse to look that song up
+/// again through that provider for the rest of the process's life. Tying the
+/// removal to `Drop` makes it run on every path out of the closure, panic
+/// included.
+struct InFlightGuard {
+    in_flight: Arc<Mutex<HashSet<String>>>,
+    key: String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.in_flight.lock().remove(&self.key);
+    }
+}
+
 /// Start one listener thread. Does nothing when no endpoint is configured.
 pub fn start() {
     let providers = configured_providers();
@@ -147,8 +169,11 @@ pub fn start() {
                 let source = source.clone();
                 let in_flight = in_flight.clone();
                 thread::spawn(move || {
+                    // Constructed right after the successful `insert` above,
+                    // so its `Drop` covers the whole closure body, panic or
+                    // not.
+                    let _guard = InFlightGuard { in_flight, key };
                     run_lookup(&provider, &song, &source);
-                    in_flight.lock().remove(&key);
                 });
             }
         }
@@ -251,6 +276,37 @@ mod tests {
         assert_eq!(
             partial.metadata.get(COVER_ART_SOURCE),
             Some(&serde_json::Value::String("llm".to_string()))
+        );
+    }
+
+    /// If the lookup thread panics, unwinding must still release the
+    /// in-flight key -- otherwise the dedup check in `start()` would refuse
+    /// to look that song up again through that provider for the rest of the
+    /// process's life, silently. Panicking a real lookup would be a much
+    /// noisier way to prove the same thing, so this drives the guard
+    /// directly: insert a key, construct the guard, unwind through a scope
+    /// holding it, and check the set afterwards.
+    ///
+    /// The panic message this test triggers is printed by the test harness
+    /// even though the test passes -- that is `catch_unwind` reporting the
+    /// panic it caught, not a failure.
+    #[test]
+    fn the_in_flight_guard_releases_its_key_even_if_the_lookup_panics() {
+        let in_flight: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let key = "coverart::external::llm::song|test".to_string();
+        in_flight.lock().insert(key.clone());
+
+        let guarded = in_flight.clone();
+        let guarded_key = key.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = InFlightGuard { in_flight: guarded, key: guarded_key };
+            panic!("simulated panic inside the lookup thread");
+        }));
+
+        assert!(result.is_err(), "the closure was expected to unwind");
+        assert!(
+            !in_flight.lock().contains(&key),
+            "the key must be released even though the closure panicked"
         );
     }
 }

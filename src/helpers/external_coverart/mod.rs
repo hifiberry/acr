@@ -191,6 +191,25 @@ impl ExternalCoverartProvider {
     /// including a cached error: an endpoint that just failed is not asked
     /// again for an hour.
     pub fn lookup_with(&self, query: &CoverartQuery, mode: LookupMode) -> Lookup {
+        // Belt and braces: `fan_out` never selects a provider for a method it
+        // does not support, and the worker's own loop checks
+        // `supported_methods()` before calling `lookup()` for exactly this
+        // reason -- an earlier version of that check missing once let the
+        // worker charge an `["artist"]`-only endpoint for a full song
+        // lookup. This is the one point every caller of this inherent method
+        // passes through, so a future caller cannot reintroduce that bug by
+        // skipping whatever loop carries its own check. Checked before the
+        // cache read and before touching a slot: an unsupported query must
+        // cost nothing, not even a cache round trip.
+        if !self.methods.contains(&query.method()) {
+            debug!(
+                "External cover art '{}': does not support {:?} lookups; skipping",
+                self.endpoint.name,
+                query.method()
+            );
+            return Lookup::Error;
+        }
+
         let key = cache_key(&self.endpoint.name, query);
 
         match attributecache::get::<Lookup>(&key) {
@@ -473,6 +492,32 @@ mod tests {
             artist: "No Such Artist At All".to_string(),
         };
         assert_eq!(provider.cached_coverart(&query), None);
+    }
+
+    /// The inherent lookup path must gate on `supported_methods()` itself,
+    /// not rely on every caller to check first: an earlier bug was exactly
+    /// this trap firing once, when the worker called `lookup()` for a song
+    /// against an endpoint configured `methods: ["artist"]` before that
+    /// call site grew its own check. A server that would fail the test if
+    /// contacted proves the query never reaches the network.
+    #[test]
+    fn lookup_refuses_a_query_the_endpoint_is_not_configured_for() {
+        let server = StubServer::silent();
+        let mut config = endpoint();
+        config.methods = vec![CoverartMethod::Artist];
+        config.name = format!("gated-{}", unique_title());
+        config.url = format!("{}?artist={{artist}}&title={{title}}", server.url());
+        let provider = ExternalCoverartProvider::new(config);
+
+        assert_eq!(provider.lookup(&stub_query()), Lookup::Error);
+        assert_eq!(
+            provider.lookup_with(&stub_query(), LookupMode::Interactive),
+            Lookup::Error
+        );
+        assert!(
+            server.last_request().is_none(),
+            "an unsupported method must never reach the network"
+        );
     }
 
     use super::stub_server::StubServer;

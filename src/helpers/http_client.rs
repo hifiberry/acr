@@ -32,7 +32,23 @@ pub trait HttpClient: Send + Sync + std::fmt::Debug {
     
     /// Send a GET request and return binary data with mimetype
     fn get_binary(&self, url: &str) -> Result<(Vec<u8>, String), HttpClientError>;
-    
+
+    /// Send a GET request with headers and return binary data with mimetype,
+    /// refusing a body larger than `max_bytes`.
+    ///
+    /// `get_binary` above takes no headers and reads with an unbounded
+    /// `read_to_end`. Neither is acceptable for fetching an image named by a
+    /// configured external endpoint: the credential that authorised the
+    /// lookup has to authorise the image fetch too, and a service that
+    /// answers with an endless body must not be able to exhaust the daemon's
+    /// memory. The bound is applied to the read, not checked after it.
+    fn get_binary_with_headers(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        max_bytes: u64,
+    ) -> Result<(Vec<u8>, String), HttpClientError>;
+
     /// Send a GET request with headers and return JSON value
     fn get_json_with_headers(&self, url: &str, headers: &[(&str, &str)]) -> Result<Value, HttpClientError>;
     
@@ -183,10 +199,58 @@ impl HttpClient for UreqHttpClient {
         }
     }
     
+    fn get_binary_with_headers(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        max_bytes: u64,
+    ) -> Result<(Vec<u8>, String), HttpClientError> {
+        debug!("GET binary request with headers to {}", url);
+
+        let mut request = ureq::get(url).timeout(self.timeout);
+        for &(name, value) in headers {
+            request = request.set(name, value);
+        }
+
+        let response = match request.call() {
+            Ok(resp) => resp,
+            Err(e) => {
+                debug!("GET binary request with headers failed: {}", e);
+                return Err(HttpClientError::RequestError(e.to_string()));
+            }
+        };
+
+        let content_type = response
+            .header("content-type")
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        // Read one byte past the cap: if it arrives, the body is over the
+        // limit, and we know that without having buffered the rest of it.
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut reader = response.into_reader().take(max_bytes.saturating_add(1));
+        if let Err(e) = reader.read_to_end(&mut bytes) {
+            debug!("Failed to read binary response: {}", e);
+            return Err(HttpClientError::ParseError(format!(
+                "Failed to read binary response: {}",
+                e
+            )));
+        }
+
+        if bytes.len() as u64 > max_bytes {
+            return Err(HttpClientError::ParseError(format!(
+                "Response body exceeds the {} byte limit",
+                max_bytes
+            )));
+        }
+
+        Ok((bytes, content_type))
+    }
+
     fn clone_box(&self) -> Box<dyn HttpClient> {
         Box::new(self.clone())
     }
-    
+
     fn get_json_with_headers(&self, url: &str, headers: &[(&str, &str)]) -> Result<Value, HttpClientError> {
         debug!("GET JSON request with headers to {}", url);
         
@@ -383,4 +447,108 @@ impl HttpClient for UreqHttpClient {
 /// Create a new HTTP client using the default implementation
 pub fn new_http_client(timeout_secs: u64) -> Box<dyn HttpClient> {
     Box::new(UreqHttpClient::new(timeout_secs))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A local one-shot server, so the test exercises ureq rather than a mock.
+    fn serve_once(status: u16, content_type: &str, body: Vec<u8>) -> (u16, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a free local port");
+        let port = listener.local_addr().expect("a bound address").port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let content_type = content_type.to_string();
+
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while stream.read_exact(&mut byte).is_ok() {
+                request.push(byte[0]);
+                if request.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&request).into_owned());
+
+            let head = format!(
+                "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                status,
+                content_type,
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        });
+
+        (port, rx)
+    }
+
+    #[test]
+    fn a_binary_get_returns_the_body_and_its_content_type() {
+        let (port, _rx) = serve_once(200, "image/png", vec![1, 2, 3, 4]);
+        let client = UreqHttpClient::new(5);
+
+        let (bytes, mime) = client
+            .get_binary_with_headers(&format!("http://127.0.0.1:{}/i.png", port), &[], 1024)
+            .expect("the request succeeds");
+
+        assert_eq!(bytes, vec![1, 2, 3, 4]);
+        assert_eq!(mime, "image/png");
+    }
+
+    /// The whole reason this method exists alongside `get_binary`: the
+    /// endpoint's credential has to reach the image host too, or an
+    /// authenticated image URL is unfetchable.
+    #[test]
+    fn a_binary_get_sends_the_headers_it_was_given() {
+        let (port, rx) = serve_once(200, "image/jpeg", vec![7; 10]);
+        let client = UreqHttpClient::new(5);
+
+        client
+            .get_binary_with_headers(
+                &format!("http://127.0.0.1:{}/i.jpg", port),
+                &[("Authorization", "Bearer sekrit")],
+                1024,
+            )
+            .expect("the request succeeds");
+
+        let request = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("a request arrived");
+        assert!(
+            request.contains("Authorization: Bearer sekrit"),
+            "the credential was not on the wire; got: {}",
+            request
+        );
+    }
+
+    /// The cap has to bound the read itself, not merely reject afterwards: a
+    /// service that streams without end must not be able to make the daemon
+    /// allocate without end. `read_to_end` on an unbounded body is exactly
+    /// the shape this replaces.
+    #[test]
+    fn a_binary_get_refuses_a_body_over_the_cap() {
+        let (port, _rx) = serve_once(200, "image/jpeg", vec![0; 5000]);
+        let client = UreqHttpClient::new(5);
+
+        let result = client
+            .get_binary_with_headers(&format!("http://127.0.0.1:{}/big.jpg", port), &[], 1000);
+
+        assert!(result.is_err(), "an oversized body must not be returned");
+    }
+
+    #[test]
+    fn a_binary_get_accepts_a_body_exactly_at_the_cap() {
+        let (port, _rx) = serve_once(200, "image/jpeg", vec![0; 1000]);
+        let client = UreqHttpClient::new(5);
+
+        let (bytes, _) = client
+            .get_binary_with_headers(&format!("http://127.0.0.1:{}/exact.jpg", port), &[], 1000)
+            .expect("a body at the cap is allowed");
+
+        assert_eq!(bytes.len(), 1000);
+    }
 }

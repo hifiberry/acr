@@ -251,6 +251,7 @@ pub async fn start_rocket_server(
         coverart::get_album_coverart_with_year,
         coverart::get_url_coverart,
         coverart::get_coverart_methods,
+        coverart::upload_artists_images,
         coverart::update_artist_image,
         coverart::get_artist_image,
     ];

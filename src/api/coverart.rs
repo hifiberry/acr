@@ -9,6 +9,9 @@ use crate::helpers::coverart::{
 };
 use crate::helpers::url_encoding::decode_url_safe;
 use crate::helpers::settingsdb;
+use std::collections::HashMap;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use crate::helpers::artist_store::ArtistImageResult;
 
 #[derive(Serialize, Deserialize)]
 pub struct CoverartResponse {
@@ -35,6 +38,26 @@ pub struct UpdateImageRequest {
 pub struct UpdateImageResponse {
     success: bool,
     message: String,
+}
+
+/// One artist's image being uploaded in a batch request.
+#[derive(Deserialize)]
+pub struct UploadArtistsImagesRequest {
+    /// Map of artist name to base64-encoded image bytes.
+    images: HashMap<String, String>,
+}
+
+/// The outcome for a single artist within an upload batch.
+#[derive(Serialize)]
+pub struct UploadImageResultResponse {
+    success: bool,
+    message: String,
+}
+
+/// Per-artist outcomes from an upload batch.
+#[derive(Serialize)]
+pub struct UploadArtistsImagesResponse {
+    results: HashMap<String, UploadImageResultResponse>,
 }
 
 /// Options for a cover art request.
@@ -244,6 +267,85 @@ pub fn get_coverart_methods() -> Json<CoverartMethodsResponse> {
     .collect();
     
     Json(CoverartMethodsResponse { methods })
+}
+
+/// Upload custom artist images for one or more artists in a single request.
+///
+/// The request body maps each artist name to base64-encoded image bytes:
+///
+/// ```json
+/// { "images": { "Artist One": "<base64>", "Artist Two": "<base64>" } }
+/// ```
+///
+/// Each image is decoded, validated as a decodable image within this daemon's
+/// safe limits, and stored to the artist's user custom-image path, so it takes
+/// precedence over anything the cover-art providers auto-downloaded. The
+/// response reports per-artist outcomes so a partially-valid batch can still
+/// succeed where it can and explain what failed and why.
+///
+/// Unlike a value set through `POST /artist/<artist_b64>/update`, an uploaded
+/// image is stored directly and has no remote URL to re-download, so nothing
+/// is written to the settings database.
+#[post("/artists/upload", data = "<request>")]
+pub fn upload_artists_images(request: Json<UploadArtistsImagesRequest>) -> Json<UploadArtistsImagesResponse> {
+    debug!("Received artist image upload batch with {} artist(s)", request.images.len());
+
+    let mut results: HashMap<String, UploadImageResultResponse> = HashMap::new();
+
+    for (artist_name, b64data) in &request.images {
+        let name = artist_name.trim();
+        let outcome = if name.is_empty() {
+            UploadImageResultResponse {
+                success: false,
+                message: "Empty artist name".to_string(),
+            }
+        } else {
+            match decode_image(b64data) {
+                Err(message) => UploadImageResultResponse {
+                    success: false,
+                    message,
+                },
+                Ok(bytes) => {
+                    let store = crate::helpers::artist_store::get_artist_store();
+                    let mut store_lock = store.lock();
+                    match store_lock.store_user_uploaded_image(name, &bytes) {
+                        ArtistImageResult::Found { cache_path } => {
+                            remove_artist_image_variants(&cache_path);
+                            UploadImageResultResponse {
+                                success: true,
+                                message: format!("Stored image for '{}'", name),
+                            }
+                        }
+                        ArtistImageResult::Error(e) => UploadImageResultResponse {
+                            success: false,
+                            message: e,
+                        },
+                        ArtistImageResult::NotFound => UploadImageResultResponse {
+                            success: false,
+                            message: "Failed to store image".to_string(),
+                        },
+                    }
+                }
+            }
+        };
+        results.insert(artist_name.clone(), outcome);
+    }
+
+    Json(UploadArtistsImagesResponse { results })
+}
+
+/// Decode `b64` and confirm the bytes are an image this daemon can serve.
+///
+/// Splitting base64 decoding from the store keeps the pure decision —
+/// "is this a usable image" — testable without touching the artist store or
+/// the filesystem.
+fn decode_image(b64: &str) -> Result<Vec<u8>, String> {
+    let bytes = STANDARD
+        .decode(b64)
+        .map_err(|e| format!("Invalid base64 data: {}", e))?;
+    crate::helpers::imageresize::validate(&bytes)
+        .map_err(|e| format!("Invalid image data: {}", e))?;
+    Ok(bytes)
 }
 
 /// Update artist image with custom URL
@@ -617,5 +719,35 @@ mod tests {
     #[test]
     fn the_fast_deadline_is_unchanged_by_opting_in() {
         assert_eq!(query_options(Some(true)).fast_deadline, DEFAULT_FAST_DEADLINE);
+    }
+
+    fn b64(data: &[u8]) -> String {
+        use base64::Engine as _;
+        STANDARD.encode(data)
+    }
+
+    #[test]
+    fn decode_image_accepts_a_valid_image() {
+        let bytes = alpha_png(400, 400);
+        let decoded = decode_image(&b64(&bytes)).expect("a valid base64 image should decode");
+        assert_eq!(decoded, bytes);
+    }
+
+    #[test]
+    fn decode_image_rejects_non_base64() {
+        let err = decode_image("!!!not base64!!!").unwrap_err();
+        assert!(err.contains("base64"), "expected a base64 error, got: {}", err);
+    }
+
+    #[test]
+    fn decode_image_rejects_non_image_bytes() {
+        let err = decode_image(&b64(b"this is not an image")).unwrap_err();
+        assert!(err.contains("image"), "expected an image error, got: {}", err);
+    }
+
+    #[test]
+    fn decode_image_rejects_empty_bytes() {
+        let err = decode_image(&b64(b"")).unwrap_err();
+        assert!(err.contains("image"), "expected an image error, got: {}", err);
     }
 }

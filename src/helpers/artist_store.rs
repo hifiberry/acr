@@ -299,6 +299,39 @@ impl ArtistStore {
         result
     }
 
+    /// Store raw image bytes directly to a user as a custom image.
+    ///
+    /// The binary counterpart to [`Self::download_and_store_user_image`]: the
+    /// caller already holds the bytes (for example, uploaded through the REST
+    /// API) and no URL download is needed. The bytes are written to the user
+    /// directory under `custom` so the image takes precedence over anything
+    /// the cover-art providers auto-downloaded.
+    ///
+    /// # Arguments
+    /// * `artist_name` - The name of the artist
+    /// * `image_data` - The raw encoded image bytes
+    ///
+    /// # Returns
+    /// ArtistImageResult with the stored path if successful
+    pub fn store_user_uploaded_image(&mut self, artist_name: &str, image_data: &[u8]) -> ArtistImageResult {
+        debug!("Storing uploaded image for artist {}", artist_name);
+
+        let user_path = self.get_artist_user_image_path(artist_name, "custom");
+
+        match self.store_image(&user_path, image_data) {
+            Ok(_) => {
+                info!("Stored uploaded image for artist {} in user directory", artist_name);
+                // Also cache the path for quick access
+                self.image_cache.insert(artist_name.to_string(), user_path.clone());
+                ArtistImageResult::Found { cache_path: user_path }
+            },
+            Err(e) => {
+                warn!("Failed to store uploaded image for artist {}: {}", artist_name, e);
+                ArtistImageResult::Error(format!("Failed to store image: {}", e))
+            }
+        }
+    }
+
     /// Get or download artist cover art
     /// 
     /// # Arguments
@@ -866,6 +899,38 @@ mod tests {
                 // This is expected when auto-download is disabled
             },
             _ => panic!("Should return NotFound when auto-download is disabled"),
+        }
+    }
+
+    /// An upload stores the raw bytes under the user custom path and is then
+    /// served from there, taking precedence over anything in the cache.
+    #[test]
+    fn test_stored_upload_is_served_from_the_user_dir() {
+        let (mut store, _cache_temp, _user_temp) = create_test_store();
+        let artist_name = "Upload Artist";
+        let bytes = b"uploaded image bytes";
+
+        match store.store_user_uploaded_image(artist_name, bytes) {
+            ArtistImageResult::Found { cache_path } => {
+                assert!(cache_path.contains(&store.config.user_dir),
+                    "the upload must live in the user dir, got: {}", cache_path);
+                assert!(cache_path.ends_with("custom.jpg"),
+                    "the upload must use the custom filename, got: {}", cache_path);
+                let on_disk = fs::read(&cache_path).expect("the uploaded bytes should exist on disk");
+                assert_eq!(on_disk, bytes, "the stored file must match the uploaded bytes");
+            },
+            _ => panic!("upload should report a found path"),
+        }
+
+        // The user-dir path is remembered, so a later lookup resolves there and
+        // serves the uploaded bytes rather than anything auto-downloaded.
+        match store.get_cached_image(artist_name) {
+            ArtistImageResult::Found { cache_path } => {
+                assert!(cache_path.contains(&store.config.user_dir));
+                let served = fs::read(&cache_path).expect("the served file should exist");
+                assert_eq!(served, bytes);
+            },
+            _ => panic!("the uploaded image should be cached immediately after upload"),
         }
     }
 }

@@ -112,6 +112,15 @@ fn decode_within_limits(data: &[u8]) -> Result<image::DynamicImage, ResizeError>
     reader.decode().map_err(|e| ResizeError::Decode(e.to_string()))
 }
 
+/// Validate that `data` decodes as an image within this module's limits.
+///
+/// Used by the upload path to accept a user-supplied image only when it is
+/// something the daemon could actually serve. Returns `Ok` for anything the
+/// bounded decoder accepts, and a `ResizeError` otherwise.
+pub fn validate(data: &[u8]) -> Result<(), ResizeError> {
+    decode_within_limits(data).map(|_| ())
+}
+
 /// The ladder used when configuration does not specify one.
 ///
 /// A fixed ladder bounds the cache at six variants per image no matter what
@@ -383,6 +392,24 @@ mod tests {
     fn equal_to_target_is_left_alone() {
         let src = opaque_png(400, 400);
         assert!(matches!(resize(&src, 400).unwrap(), Resized::Original));
+    }
+
+    #[test]
+    fn validate_accepts_a_decodable_image() {
+        let src = opaque_png(400, 400);
+        assert!(validate(&src).is_ok());
+        let alpha = alpha_png(400, 400);
+        assert!(validate(&alpha).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_non_image_bytes() {
+        assert!(validate(b"this is definitely not an image").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_bytes() {
+        assert!(validate(b"").is_err());
     }
 
     #[test]

@@ -293,16 +293,36 @@ pub fn get_coverart_methods() -> Json<CoverartMethodsResponse> {
 /// rejected with a 413 before any entry is stored.
 ///
 /// Entries are keyed as given in the request map. Two names that sanitise to
-/// the same file (for example `The Beatles` and `the beatles!`) write the same
-/// image, and because the request is a map the entry that ends up stored is
-/// not deterministic.
+/// the same file (for example `The Beatles` and `the beatles!`) name the same
+/// stored image; one of them is stored and the other is reported as a failure
+/// naming the entry that won, rather than both being reported as stored when
+/// only one image exists.
 #[post("/artists/upload", data = "<request>")]
 pub fn upload_artists_images(request: Json<UploadArtistsImagesRequest>) -> Json<UploadArtistsImagesResponse> {
     debug!("Received artist image upload batch with {} artist(s)", request.images.len());
 
     let mut results: HashMap<String, UploadImageResultResponse> = HashMap::new();
+    let collisions = colliding_entries(request.images.keys());
 
     for (artist_name, b64data) in &request.images {
+        if let Some(winner) = collisions.get(artist_name) {
+            debug!(
+                "Artist '{}' names the same stored file as '{}'; not storing it",
+                artist_name, winner
+            );
+            results.insert(
+                artist_name.clone(),
+                UploadImageResultResponse {
+                    success: false,
+                    message: format!(
+                        "'{}' is stored under the same file name as '{}'; only '{}' was stored",
+                        artist_name, winner, winner
+                    ),
+                },
+            );
+            continue;
+        }
+
         let outcome = match validate_upload_entry(artist_name, b64data) {
             Err(message) => UploadImageResultResponse {
                 success: false,
@@ -364,6 +384,50 @@ fn validate_upload_entry(artist_name: &str, b64data: &str) -> Result<(String, Ve
     }
     let bytes = decode_image(b64data)?;
     Ok((name.to_string(), bytes))
+}
+
+/// The entries of a batch that lose a name collision, each mapped to the entry
+/// that won it.
+///
+/// Two request keys that sanitise to the same filename name the same stored
+/// file. Storing both leaves one image on disk and reports success for two,
+/// and which of them survives depends on the iteration order of the request
+/// map — so two identical requests could store different images. The batch is
+/// collapsed before anything is written instead, and the winner is picked by
+/// sorting the keys rather than by that order, which makes the outcome the
+/// same every time.
+///
+/// A name that sanitises to nothing is skipped rather than collided: those
+/// entries are refused by `validate_upload_entry` with a message about the
+/// name, which is more use to a client than a collision report.
+fn colliding_entries<'a, I>(names: I) -> HashMap<String, String>
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    use std::collections::hash_map::Entry;
+
+    let mut sorted: Vec<&String> = names.into_iter().collect();
+    sorted.sort();
+
+    let mut winner_by_file: HashMap<String, &String> = HashMap::new();
+    let mut losers: HashMap<String, String> = HashMap::new();
+
+    for name in sorted {
+        let file = crate::helpers::sanitize::filename_from_string(name.trim());
+        if file.is_empty() {
+            continue;
+        }
+        match winner_by_file.entry(file) {
+            Entry::Vacant(slot) => {
+                slot.insert(name);
+            }
+            Entry::Occupied(winner) => {
+                losers.insert(name.clone(), (*winner.get()).clone());
+            }
+        }
+    }
+
+    losers
 }
 
 /// Update artist image with custom URL
@@ -791,5 +855,55 @@ mod tests {
             .expect("a normal name with a valid image should be accepted");
         assert_eq!(name, "The Beatles");
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn names_that_share_a_file_leave_one_winner() {
+        let names: Vec<String> = ["The Beatles", "the beatles!", "  The   Beatles  "]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let losers = colliding_entries(names.iter());
+
+        assert_eq!(losers.len(), 2, "exactly one of the three should be stored: {:?}", losers);
+        let winner = "  The   Beatles  "; // first in sort order of the three
+        assert!(!losers.contains_key(winner), "the winner must not be reported as a loser");
+        for loser in ["The Beatles", "the beatles!"] {
+            assert_eq!(losers.get(loser).map(String::as_str), Some(winner));
+        }
+    }
+
+    /// The winner is chosen by sorting the keys, not by the order the request
+    /// map happens to iterate in, so the same batch always stores the same
+    /// image.
+    #[test]
+    fn the_winner_of_a_collision_does_not_depend_on_iteration_order() {
+        let forwards: Vec<String> = vec!["a beatles!".to_string(), "A Beatles".to_string()];
+        let backwards: Vec<String> = forwards.iter().rev().cloned().collect();
+
+        let losers = colliding_entries(forwards.iter());
+        assert_eq!(losers.get("a beatles!").map(String::as_str), Some("A Beatles"));
+        assert_eq!(losers, colliding_entries(backwards.iter()));
+    }
+
+    #[test]
+    fn names_that_do_not_share_a_file_are_left_alone() {
+        let names: Vec<String> = ["The Beatles", "The Rolling Stones", "Björk"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        assert!(colliding_entries(names.iter()).is_empty());
+    }
+
+    /// A name that sanitises to nothing is refused by `validate_upload_entry`
+    /// for being empty; grouping those together would replace that message
+    /// with a collision report and hide the real reason.
+    #[test]
+    fn names_that_sanitise_to_nothing_are_not_treated_as_a_collision() {
+        let names: Vec<String> = ["!!!", "???", "-"].iter().map(|s| s.to_string()).collect();
+
+        assert!(colliding_entries(names.iter()).is_empty());
     }
 }

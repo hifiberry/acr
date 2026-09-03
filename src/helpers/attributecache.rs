@@ -1063,6 +1063,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use serde::{Deserialize, Serialize};
+    use serial_test::serial;
 
     #[test]
     fn test_parse_size_string() {
@@ -1406,7 +1407,10 @@ mod tests {
     }
 
     // Test global functions
+    // Re-points the process-wide singleton, so it cannot run beside
+    // another test that uses it.
     #[test]
+    #[serial]
     fn test_global_functions() {
         // Initialize global cache with a temporary directory for testing
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
@@ -1570,7 +1574,10 @@ mod tests {
         // Test passes if we get here without deadlocks
     }
 
+    // Re-points the process-wide singleton, so it cannot run beside
+    // another test that uses it.
     #[test]
+    #[serial]
     fn test_concurrent_global_cache_access() {
         use std::thread;
         use std::sync::Arc;
@@ -2120,7 +2127,10 @@ mod tests {
         assert_eq!(cache.get::<String>(key).unwrap(), None);
     }
 
+    // Re-points the process-wide singleton, so it cannot run beside
+    // another test that uses it.
     #[test]
+    #[serial]
     fn test_global_expiry_functions() {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         let db_path = temp_dir.path().join("cache.db");

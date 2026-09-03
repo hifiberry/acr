@@ -67,11 +67,17 @@ title and is empty.
 `fallback` (the default) asks only when the song has no artwork or only a
 placeholder, such as a radio station's logo. `always` asks for every song.
 
+`trigger` governs only the background lookup the daemon makes on its own for
+the song currently playing. It has no effect on `GET /api/coverart/...`: a
+request made with `?include_slow=true` is an explicit instruction and is
+always honoured, regardless of `trigger`.
+
 **On the now-playing path, `trigger` controls cost, not outcome.** The daemon
 never replaces artwork that belongs to a song — only a placeholder is
 replaceable — so an answer for a song that already has real artwork is
-discarded whatever `trigger` says. `always` changes what is returned only for
-the REST endpoints and for artist images, where no such policy applies.
+discarded whatever `trigger` says. Setting `trigger: "fallback"` to limit
+spend on a paid endpoint reduces how often the background lookup runs; it
+does not restrict `?include_slow=true`, which asks unconditionally.
 
 ## The contract
 

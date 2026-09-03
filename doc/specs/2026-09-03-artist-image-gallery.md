@@ -101,7 +101,10 @@ back. Nothing decodes them.
 Dimensions come from the existing header sniffer in `image_meta`, which reads
 the first bytes of a file rather than decoding it, so listing an artist costs
 one `stat` and one short read per image. An unreadable or unrecognisable file
-is omitted from the listing and logged, rather than failing the request.
+is omitted from the listing rather than failing the request, in two places: a
+file whose name is not one an image is stored under is skipped and logged when
+the set is read, and one whose header will not parse is dropped when the
+listing measures it.
 
 The listing measures each file on every request, calling
 `image_meta::detect_image_dimensions` on an open reader rather than

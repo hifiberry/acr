@@ -247,7 +247,7 @@ impl ExternalCoverartProvider {
 
         let client = new_http_client(self.endpoint.timeout_seconds);
         let lookup = match client.get_json_with_headers(&url, &headers) {
-            Ok(body) => parse_response(&body),
+            Ok(body) => parse_response(&body).into_lookup(),
             Err(e) => {
                 warn!("External cover art '{}': lookup failed: {}", self.endpoint.name, e);
                 Lookup::Error

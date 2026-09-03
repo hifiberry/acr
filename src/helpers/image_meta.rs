@@ -38,9 +38,8 @@ pub struct ImageMetadata {
 /// itself -- and not a filesystem path either. Without this they fell
 /// through to `analyze_local_image` and failed to open every time.
 fn imagecache_relative_path(url: &str) -> Option<&str> {
-    let prefix = concat!("/imagecache/");
     let rest = url.strip_prefix(crate::constants::API_PREFIX)?;
-    rest.strip_prefix(prefix)
+    rest.strip_prefix("/imagecache/")
 }
 
 pub fn image_size(url: &str) -> Result<ImageMetadata, String> {

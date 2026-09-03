@@ -287,6 +287,20 @@ mod tests {
         );
     }
 
+    /// An answer made entirely of inline images has no URLs to pass
+    /// through, so pass-through yields nothing. That is correct here and
+    /// wrong once the localiser exists, which is the point of pinning it:
+    /// whoever wires localisation in should see this test change.
+    #[test]
+    fn into_lookup_yields_no_artwork_when_every_entry_is_inline() {
+        let parsed = Parsed::Images(vec![
+            ParsedImage { url: None, data: Some("aGVsbG8=".into()) },
+            ParsedImage { url: None, data: Some("d29ybGQ=".into()) },
+        ]);
+
+        assert_eq!(parsed.into_lookup(), Lookup::NoArtwork);
+    }
+
     #[test]
     fn into_lookup_carries_the_other_two_classes_unchanged() {
         assert_eq!(Parsed::NoArtwork.into_lookup(), Lookup::NoArtwork);

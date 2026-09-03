@@ -11,6 +11,8 @@ use crate::players::{player_event_update};
  
 use log::{info, warn};
 use rocket::{routes, get};
+use rocket::data::{Limits, ToByteUnit};
+use rocket::figment::Figment;
 use rocket::serde::json::Json;
 use rocket::config::Config;
 use rocket::fs::FileServer;
@@ -114,6 +116,35 @@ pub enum ServerOutcome {
     Disabled,
 }
 
+/// The Rocket configuration for the API server.
+///
+/// The JSON body limit is pinned above Rocket's 1 MiB default:
+/// `POST /coverart/artists/upload` takes a batch of base64-encoded images,
+/// and base64 adds a third on top, so the default rejects a batch of more
+/// than roughly 768 KB of image bytes with a 413 before the handler could
+/// report which entries failed. 10 MiB holds several artist JPEGs while
+/// bounding what one request may hold in memory on a 1 GB device; every other
+/// JSON endpoint takes bodies far below it, so raising the limit changes
+/// nothing for them. The other limits are carried over from the defaults
+/// unchanged: a merged `limits` value replaces the whole set, so starting from
+/// `Limits::default()` keeps form, file, string and friends at what they were.
+fn rocket_config(host: &str, port: u64) -> Figment {
+    Config::figment()
+        .merge(("port", port))
+        .merge(("address", host))
+        .merge(("shutdown.ctrlc", false))
+        .merge(("shutdown.signals", Vec::<String>::new()))
+        // Pinned, not left to the defaults. Config::figment() also reads
+        // Rocket.toml from the working directory and ROCKET_SHUTDOWN_GRACE /
+        // ROCKET_SHUTDOWN_MERCY from the environment, and the force-exit
+        // watchdog in main is sized against these two: a larger grace set
+        // from outside would have the watchdog fire in the middle of a
+        // shutdown that was proceeding normally.
+        .merge(("shutdown.grace", 2))
+        .merge(("shutdown.mercy", 3))
+        .merge(("limits", Limits::default().limit("json", 10.mebibytes())))
+}
+
 // Start the Rocket server
 pub async fn start_rocket_server(
     controller: Arc<AudioController>,
@@ -151,19 +182,7 @@ pub async fn start_rocket_server(
     // this server to stop through the handle published below, so there is one
     // owner rather than two chained handlers whose order, survival and
     // registration timing all have to be reasoned about.
-    let config = Config::figment()
-        .merge(("port", port))
-        .merge(("address", host))
-        .merge(("shutdown.ctrlc", false))
-        .merge(("shutdown.signals", Vec::<String>::new()))
-        // Pinned, not left to the defaults. Config::figment() also reads
-        // Rocket.toml from the working directory and ROCKET_SHUTDOWN_GRACE /
-        // ROCKET_SHUTDOWN_MERCY from the environment, and the force-exit
-        // watchdog in main is sized against these two: a larger grace set
-        // from outside would have the watchdog fire in the middle of a
-        // shutdown that was proceeding normally.
-        .merge(("shutdown.grace", 2))
-        .merge(("shutdown.mercy", 3));
+    let config = rocket_config(host, port);
     
     // Create WebSocket manager and start the background pruning task
     let ws_manager = Arc::new(WebSocketManager::new());
@@ -490,5 +509,32 @@ mod tests {
 
         assert!(!handle.request_stop());
         assert_eq!(stops.load(Ordering::SeqCst), 0, "a withdrawn server must not be asked");
+    }
+
+    /// The batch of base64-encoded artist images in
+    /// `POST /coverart/artists/upload` must fit in one request body, so the
+    /// JSON limit may not sit at Rocket's 1 MiB default (rough 768 KB of
+    /// image bytes once base64 is subtracted).
+    #[test]
+    fn the_json_body_limit_covers_an_image_upload_batch() {
+        let config = Config::try_from(rocket_config("127.0.0.1", 1080))
+            .expect("a valid configuration");
+        assert_eq!(
+            config.limits.get("json"),
+            Some(10.mebibytes()),
+            "the image-upload batch must fit in one request"
+        );
+    }
+
+    /// Raising the JSON limit must not disturb the other limits: a merged
+    /// `limits` value replaces the whole set, so the defaults have to be
+    /// carried over explicitly.
+    #[test]
+    fn the_other_body_limits_keep_their_defaults() {
+        let config = Config::try_from(rocket_config("127.0.0.1", 1080))
+            .expect("a valid configuration");
+        assert_eq!(config.limits.get("form"), Some(32.kibibytes()));
+        assert_eq!(config.limits.get("file"), Some(1.mebibytes()));
+        assert_eq!(config.limits.get("string"), Some(8.kibibytes()));
     }
 }

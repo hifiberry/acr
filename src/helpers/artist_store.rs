@@ -747,6 +747,28 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+    use serial_test::serial;
+
+    /// Repoint the process-wide attribute cache at a temporary directory, once.
+    ///
+    /// `store_image` records its metadata through that cache, and a test run
+    /// must not assume `/var/lib/audiocontrol` is creatable: the CI runner is
+    /// not root, where the default path stays unopenable and every store fails
+    /// after the bytes are already on disk. The imagecache tests apply the same
+    /// idiom; the directory is leaked so the singleton keeps a writable target
+    /// for the rest of the run.
+    fn init_test_attribute_cache() {
+        use crate::helpers::attributecache::AttributeCache;
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+
+        INIT.call_once(|| {
+            let temp_dir = TempDir::new().expect("attribute cache temp dir");
+            let attr_cache_path = temp_dir.path().join("attributes");
+            let _ = AttributeCache::initialize_global(&attr_cache_path);
+            std::mem::forget(temp_dir);
+        });
+    }
 
     /// Create a test artist store with temporary directories
     fn create_test_store() -> (ArtistStore, TempDir, TempDir) {
@@ -905,7 +927,10 @@ mod tests {
     /// An upload stores the raw bytes under the user custom path and is then
     /// served from there, taking precedence over anything in the cache.
     #[test]
+    #[serial]
     fn test_stored_upload_is_served_from_the_user_dir() {
+        init_test_attribute_cache();
+
         let (mut store, _cache_temp, _user_temp) = create_test_store();
         let artist_name = "Upload Artist";
         let bytes = b"uploaded image bytes";

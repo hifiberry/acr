@@ -286,6 +286,16 @@ pub fn get_coverart_methods() -> Json<CoverartMethodsResponse> {
 /// Unlike a value set through `POST /artist/<artist_b64>/update`, an uploaded
 /// image is stored directly and has no remote URL to re-download, so nothing
 /// is written to the settings database.
+///
+/// The whole batch must fit in one request body: Rocket's JSON limit is
+/// pinned to 10 MiB (see `rocket_config`), and base64 adds a third, so that
+/// is roughly 7.5 MiB of image bytes in total. A batch past the limit is
+/// rejected with a 413 before any entry is stored.
+///
+/// Entries are keyed as given in the request map. Two names that sanitise to
+/// the same file (for example `The Beatles` and `the beatles!`) write the same
+/// image, and because the request is a map the entry that ends up stored is
+/// not deterministic.
 #[post("/artists/upload", data = "<request>")]
 pub fn upload_artists_images(request: Json<UploadArtistsImagesRequest>) -> Json<UploadArtistsImagesResponse> {
     debug!("Received artist image upload batch with {} artist(s)", request.images.len());
@@ -293,38 +303,30 @@ pub fn upload_artists_images(request: Json<UploadArtistsImagesRequest>) -> Json<
     let mut results: HashMap<String, UploadImageResultResponse> = HashMap::new();
 
     for (artist_name, b64data) in &request.images {
-        let name = artist_name.trim();
-        let outcome = if name.is_empty() {
-            UploadImageResultResponse {
+        let outcome = match validate_upload_entry(artist_name, b64data) {
+            Err(message) => UploadImageResultResponse {
                 success: false,
-                message: "Empty artist name".to_string(),
-            }
-        } else {
-            match decode_image(b64data) {
-                Err(message) => UploadImageResultResponse {
-                    success: false,
-                    message,
-                },
-                Ok(bytes) => {
-                    let store = crate::helpers::artist_store::get_artist_store();
-                    let mut store_lock = store.lock();
-                    match store_lock.store_user_uploaded_image(name, &bytes) {
-                        ArtistImageResult::Found { cache_path } => {
-                            remove_artist_image_variants(&cache_path);
-                            UploadImageResultResponse {
-                                success: true,
-                                message: format!("Stored image for '{}'", name),
-                            }
+                message,
+            },
+            Ok((name, bytes)) => {
+                let store = crate::helpers::artist_store::get_artist_store();
+                let mut store_lock = store.lock();
+                match store_lock.store_user_uploaded_image(&name, &bytes) {
+                    ArtistImageResult::Found { cache_path } => {
+                        remove_artist_image_variants(&cache_path);
+                        UploadImageResultResponse {
+                            success: true,
+                            message: format!("Stored image for '{}'", name),
                         }
-                        ArtistImageResult::Error(e) => UploadImageResultResponse {
-                            success: false,
-                            message: e,
-                        },
-                        ArtistImageResult::NotFound => UploadImageResultResponse {
-                            success: false,
-                            message: "Failed to store image".to_string(),
-                        },
                     }
+                    ArtistImageResult::Error(e) => UploadImageResultResponse {
+                        success: false,
+                        message: e,
+                    },
+                    ArtistImageResult::NotFound => UploadImageResultResponse {
+                        success: false,
+                        message: "Failed to store image".to_string(),
+                    },
                 }
             }
         };
@@ -346,6 +348,22 @@ fn decode_image(b64: &str) -> Result<Vec<u8>, String> {
     crate::helpers::imageresize::validate(&bytes)
         .map_err(|e| format!("Invalid image data: {}", e))?;
     Ok(bytes)
+}
+
+/// Validate one entry of an upload batch before anything is written.
+///
+/// Returns the trimmed name and the decoded, validated image bytes. The
+/// emptiness check runs on the *sanitised* name, because that is the value
+/// that decides the storage path: a name like `!!!` is not empty, but it
+/// sanitises to nothing and would land on `{user_dir}/artists/custom.jpg`, a
+/// path shared by every such name.
+fn validate_upload_entry(artist_name: &str, b64data: &str) -> Result<(String, Vec<u8>), String> {
+    let name = artist_name.trim();
+    if crate::helpers::sanitize::filename_from_string(name).is_empty() {
+        return Err("Empty artist name".to_string());
+    }
+    let bytes = decode_image(b64data)?;
+    Ok((name.to_string(), bytes))
 }
 
 /// Update artist image with custom URL
@@ -749,5 +767,29 @@ mod tests {
     fn decode_image_rejects_empty_bytes() {
         let err = decode_image(&b64(b"")).unwrap_err();
         assert!(err.contains("image"), "expected an image error, got: {}", err);
+    }
+
+    #[test]
+    fn an_entry_whose_name_sanitises_to_empty_is_rejected() {
+        let payload = b64(&alpha_png(400, 400));
+        for name in ["!!!", "???", "-", "   "] {
+            let err = validate_upload_entry(name, &payload)
+                .expect_err("a name that sanitises to empty must be rejected");
+            assert!(
+                err.contains("Empty"),
+                "expected an empty-name error for {:?}, got: {}",
+                name,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn an_entry_with_a_usable_name_is_accepted() {
+        let payload = b64(&alpha_png(400, 400));
+        let (name, bytes) = validate_upload_entry("The Beatles", &payload)
+            .expect("a normal name with a valid image should be accepted");
+        assert_eq!(name, "The Beatles");
+        assert!(!bytes.is_empty());
     }
 }

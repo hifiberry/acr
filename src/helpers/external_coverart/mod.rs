@@ -35,11 +35,20 @@ static ENDPOINTS: Lazy<Mutex<Vec<Arc<ExternalCoverartProvider>>>> =
 ///
 /// Values are lower-cased and trimmed: the same track reaches the daemon with
 /// different casing and stray whitespace from different players, and paying
-/// 30 seconds twice for that would be the expensive kind of cache miss. The
-/// fields are separated by a marker no field can contain after trimming, so a
-/// title and an artist cannot collide by swapping places.
+/// 30 seconds twice for that would be the expensive kind of cache miss. Each
+/// value is then escaped -- `\` becomes `\\` and `|` becomes `\|`, in that
+/// order, so the escape character itself cannot be forged by input that
+/// already contains one -- before the fields are joined with `|`. Artist and
+/// title come from arbitrary player metadata and radio-stream text, not from
+/// anything an administrator controls, so a literal `|` in one field must not
+/// be able to make it read as the boundary between two different fields;
+/// without the escaping a crafted `artist: "a|b", title: "c"` and
+/// `artist: "a", title: "b|c"` would produce the same key.
 pub fn cache_key(endpoint_name: &str, query: &CoverartQuery) -> String {
-    let clean = |value: &str| value.trim().to_lowercase();
+    let clean = |value: &str| {
+        let value = value.trim().to_lowercase();
+        value.replace('\\', "\\\\").replace('|', "\\|")
+    };
     let body = match query {
         CoverartQuery::Artist(artist) => format!("artist|{}", clean(artist)),
         CoverartQuery::Song { title, artist } => {
@@ -344,6 +353,30 @@ mod tests {
             artist: "Uni Acronym".to_string(),
         };
         assert_ne!(cache_key("llm", &song()), cache_key("llm", &swapped));
+    }
+
+    /// Artist and title come from arbitrary player metadata and radio-stream
+    /// text, not from anything an administrator controls. A literal `|` in
+    /// one field must not be readable as the boundary between two different
+    /// fields: without escaping, `artist: "a|b", title: "c"` and
+    /// `artist: "a", title: "b|c"` would produce the identical key.
+    #[test]
+    fn cache_keys_escape_a_literal_separator_inside_a_field() {
+        let a = cache_key(
+            "llm",
+            &CoverartQuery::Song {
+                artist: "a|b".to_string(),
+                title: "c".to_string(),
+            },
+        );
+        let b = cache_key(
+            "llm",
+            &CoverartQuery::Song {
+                artist: "a".to_string(),
+                title: "b|c".to_string(),
+            },
+        );
+        assert_ne!(a, b);
     }
 
     /// An album's year is part of its identity for this lookup.

@@ -2,7 +2,8 @@
   { "tier":"ok","methods":["GET"],"paths":[
     "/version","/capabilities","/player","/players","/now-playing","/player/*/queue","/player/*/meta",
     "/player/*/meta/*","/library","/library/*","/library/*/*","/library/*/*/*","/library/*/*/*/*",
-    "/coverart/*","/coverart/*/*","/coverart/*/*/*","/imagecache/*","/audiodb/*/*","/lyrics/*/*",
+    "/coverart/*","/coverart/*/*","/coverart/*/*/*","/coverart/artist/*/images","/coverart/artist/*/image/*",
+    "/imagecache/*","/audiodb/*/*","/lyrics/*/*",
     "/volume/info","/volume/state","/favourites/is_favourite","/favourites/providers",
     "/inputs","/inputs/","/cache/stats","/background/jobs","/background/jobs/*",
     "/genres/config","/genres/user-config","/events","/events/*","/plugins/actions",

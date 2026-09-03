@@ -128,13 +128,27 @@ fn parse_endpoint(value: &serde_json::Value) -> Option<EndpointConfig> {
         }
     };
 
-    let number = |key: &str, default: u64| {
-        value
-            .get(key)
-            .and_then(|v| v.as_u64())
-            .filter(|v| *v > 0)
-            .unwrap_or(default)
+    let number = |key: &str, default: u64| match value.get(key) {
+        None => default,
+        Some(raw) => match raw.as_u64().filter(|v| *v > 0) {
+            Some(v) => v,
+            None => {
+                warn!(
+                    "External cover art: endpoint '{}' has an invalid '{}' ({}); using default {}",
+                    name, key, raw, default
+                );
+                default
+            }
+        },
     };
+
+    // Resolved before the struct literal below so `number`'s borrow of
+    // `name` (for the warning) is finished before `name` is moved into it.
+    let timeout_seconds = number("timeout_seconds", DEFAULT_TIMEOUT_SECONDS);
+    let cache_ttl_days = number("cache_ttl_days", DEFAULT_CACHE_TTL_DAYS);
+    let negative_cache_ttl_days =
+        number("negative_cache_ttl_days", DEFAULT_NEGATIVE_CACHE_TTL_DAYS);
+    let max_concurrent = number("max_concurrent", DEFAULT_MAX_CONCURRENT as u64) as usize;
 
     Some(EndpointConfig {
         name,
@@ -142,14 +156,11 @@ fn parse_endpoint(value: &serde_json::Value) -> Option<EndpointConfig> {
         url: url.to_string(),
         methods,
         headers,
-        timeout_seconds: number("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
+        timeout_seconds,
         trigger,
-        cache_ttl_days: number("cache_ttl_days", DEFAULT_CACHE_TTL_DAYS),
-        negative_cache_ttl_days: number(
-            "negative_cache_ttl_days",
-            DEFAULT_NEGATIVE_CACHE_TTL_DAYS,
-        ),
-        max_concurrent: number("max_concurrent", DEFAULT_MAX_CONCURRENT as u64) as usize,
+        cache_ttl_days,
+        negative_cache_ttl_days,
+        max_concurrent,
     })
 }
 
@@ -303,6 +314,22 @@ mod tests {
         }])));
 
         assert!(endpoints.is_empty());
+    }
+
+    /// A present-but-unusable numeric value (here, zero) must not panic or
+    /// propagate; it falls back to the same default an absent key would
+    /// give. This pins the fallback behaviour of the `number` closure while
+    /// it is being changed to also log the rejection.
+    #[test]
+    fn an_invalid_numeric_value_falls_back_to_the_default() {
+        let endpoints = parse_endpoints(&config_with(serde_json::json!([{
+            "name": "llm",
+            "url": "https://tools.example.com/coverart",
+            "timeout_seconds": 0
+        }])));
+
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].timeout_seconds, DEFAULT_TIMEOUT_SECONDS);
     }
 
     #[test]

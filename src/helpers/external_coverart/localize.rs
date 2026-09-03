@@ -52,7 +52,7 @@ impl ImageSource for RealImageSource {
             .map_err(|e| e.to_string())
     }
 
-    fn store(&self, path: &str, bytes: Vec<u8>, mime: &str, ttl_days: u64) -> Result<(), String> {
+    fn store(&self, path: &str, bytes: Vec<u8>, _mime: &str, ttl_days: u64) -> Result<(), String> {
         // `days * 86400` with overflow checks off in the release profile
         // would wrap on an absurd configured value; `saturating_mul` and
         // `checked_add` bound it instead, and a `None` expiry means "does not
@@ -60,15 +60,15 @@ impl ImageSource for RealImageSource {
         let expiry = std::time::SystemTime::now()
             .checked_add(std::time::Duration::from_secs(ttl_days.saturating_mul(24 * 3600)));
 
-        // `store_image_from_data_with_expiry` appends the extension it
-        // derives from the mime type to whatever path it is given, so it
-        // wants the stem. Handing it the full file name would write
-        // `<hash>.png.png` while the URL this module hands out says
-        // `<hash>.png`, and every localised image would 404. The extension
-        // `store_locally` chose and the one the mime type maps to are the
-        // same, so dropping it here is lossless.
-        let stem = path.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(path);
-        imagecache::store_image_from_data_with_expiry(stem, bytes, mime.to_string(), expiry)
+        // `store_image_with_expiry` writes the path verbatim. Its sibling
+        // `store_image_from_data_with_expiry` instead appends an extension it
+        // re-derives from the mime type, which would write `<hash>.png.png`
+        // under a URL saying `<hash>.png` -- every localised image a 404.
+        // Avoiding it also avoids relying on two extension tables in two
+        // modules agreeing: `sniff` is the only thing that decides the
+        // extension, and the extension is what `api::imagecache` serves the
+        // Content-Type from, so the mime type is already carried by the path.
+        imagecache::store_image_with_expiry(path, &bytes, expiry)
     }
 
     fn exists(&self, path: &str) -> bool {
@@ -101,7 +101,13 @@ fn store_locally(
     // lookup. The index is in the digest because one answer can carry several
     // images.
     let digest = md5::compute(format!("{}::{}", cache_key, index).as_bytes());
-    let path = format!("{}/{}/{:x}.{}", CACHE_DIR, endpoint.name, digest, extension);
+    let path = format!(
+        "{}/{}/{:x}.{}",
+        CACHE_DIR,
+        path_segment(&endpoint.name),
+        digest,
+        extension
+    );
 
     if let Err(e) = source.store(&path, bytes, mime, endpoint.cache_ttl_days) {
         warn!(
@@ -112,6 +118,28 @@ fn store_locally(
     }
 
     Some(format!("{}/imagecache/{}", API_PREFIX, path))
+}
+
+/// An endpoint name, reduced to something safe to use as one directory name.
+///
+/// The name comes from `audiocontrol.json`, so it is administrator-controlled
+/// rather than attacker-controlled -- but it lands in a path this module
+/// writes files to, and `..` or a `/` in it would put those files somewhere
+/// other than the image cache. A directory named after the endpoint is worth
+/// keeping for anyone inspecting the cache by hand, so the name is reduced
+/// rather than hashed.
+fn path_segment(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    // `.` and `..` are excluded by the mapping above, but an empty name would
+    // collapse the path by one level.
+    if cleaned.is_empty() {
+        "unnamed".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// The file extension and mime type for these bytes, if they are an image we
@@ -707,6 +735,60 @@ mod tests {
             prune_missing_with(lookup, &source),
             Lookup::Found(vec!["https://img.example/a.jpg".to_string()])
         );
+    }
+
+    /// The name is administrator-controlled, not attacker-controlled, but it
+    /// reaches a path this module writes to. A traversal in it would put
+    /// files outside the image cache entirely.
+    #[test]
+    fn an_endpoint_name_cannot_escape_the_cache_directory() {
+        let source = FakeSource::default();
+        let mut config = endpoint(false);
+        config.name = "../../etc/cron.d".to_string();
+        let parsed = Parsed::Images(vec![ParsedImage {
+            url: None,
+            data: Some(base64_of(&tiny_png())),
+        }]);
+
+        let Lookup::Found(urls) = resolve_with(parsed, &config, &key(), &source) else {
+            panic!("artwork")
+        };
+
+        let stored = source.stored_paths();
+        assert_eq!(stored.len(), 1);
+        assert!(
+            !stored[0].contains(".."),
+            "the stored path must not contain a traversal: {}",
+            stored[0]
+        );
+        assert!(
+            stored[0].starts_with("external/"),
+            "the stored path must stay under the cache directory: {}",
+            stored[0]
+        );
+        assert!(
+            !urls[0].contains(".."),
+            "the served URL must not contain a traversal: {}",
+            urls[0]
+        );
+    }
+
+    #[test]
+    fn an_endpoint_name_of_only_punctuation_still_yields_a_directory() {
+        let source = FakeSource::default();
+        let mut config = endpoint(false);
+        config.name = "///".to_string();
+        let parsed = Parsed::Images(vec![ParsedImage {
+            url: None,
+            data: Some(base64_of(&tiny_png())),
+        }]);
+
+        resolve_with(parsed, &config, &key(), &source);
+
+        let stored = source.stored_paths();
+        assert_eq!(stored.len(), 1);
+        // Three separators would otherwise collapse into `external//<hash>`.
+        assert!(stored[0].starts_with("external/___/"), "got {}", stored[0]);
     }
 
     #[test]

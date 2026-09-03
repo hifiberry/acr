@@ -19,6 +19,64 @@ pub enum ArtistImageResult {
     Error(String),
 }
 
+/// How many uploaded images one artist may keep.
+///
+/// A bound rather than a setting: the set exists to be picked from in a UI,
+/// and a list past ten is a scroll rather than a choice. An upload past the
+/// cap is refused and says so — evicting the oldest would silently discard a
+/// picture someone deliberately chose.
+pub const MAX_UPLOADS_PER_ARTIST: usize = 10;
+
+/// Where one member of an artist's image set came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtistImageSource {
+    /// `custom.jpg` or `cover.jpg`: fetched by the daemon from a URL.
+    Download,
+    /// A file the user uploaded, named by the hash of its own bytes.
+    Upload,
+}
+
+/// One member of an artist's image set.
+#[derive(Debug, Clone)]
+pub struct ArtistImage {
+    /// The file stem: `custom`, `cover`, or an upload's content hash.
+    pub id: String,
+    /// Absolute path on disk.
+    pub path: String,
+    pub source: ArtistImageSource,
+}
+
+/// The id of an uploaded image: the hash of the bytes themselves.
+///
+/// Content addressing makes a retried upload idempotent — the same bytes
+/// resolve to the same file rather than growing the set — and it means the
+/// bytes behind a name never change, so variants generated from them stay
+/// valid for as long as the file exists.
+pub fn upload_id(bytes: &[u8]) -> String {
+    format!("{:x}", md5::compute(bytes))
+}
+
+/// The file extension for these bytes, if they are an image we can serve.
+///
+/// Taken from the content, never from anything a client said: the serving
+/// route derives the `Content-Type` from the extension, so a `.jpg` holding a
+/// PNG would be served under the wrong type.
+///
+/// Limited to the formats the upload path can actually decode: the `image`
+/// crate backing `imageresize::validate` is built with only jpeg/png/webp
+/// support, so accepting a GIF or BMP extension here would store a file the
+/// daemon can never resize.
+pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
+    let mut cursor = std::io::Cursor::new(bytes);
+    let (_, _, format) = crate::helpers::image_meta::detect_image_dimensions(&mut cursor).ok()?;
+    match format.to_ascii_uppercase().as_str() {
+        "JPEG" => Some("jpg"),
+        "PNG" => Some("png"),
+        "WEBP" => Some("webp"),
+        _ => None,
+    }
+}
+
 /// Configuration for the artist store
 #[derive(Debug, Clone)]
 pub struct ArtistStoreConfig {
@@ -119,6 +177,69 @@ impl ArtistStore {
     pub fn get_artist_user_image_path(&self, artist_name: &str, image_type: &str) -> String {
         let sanitized_name = crate::helpers::sanitize::filename_from_string(artist_name);
         format!("{}/artists/{}/{}.jpg", self.config.user_dir, sanitized_name, image_type)
+    }
+
+    /// The directory an artist's uploaded images live in.
+    fn artist_uploads_dir(&self, artist_name: &str) -> String {
+        let sanitized = crate::helpers::sanitize::filename_from_string(artist_name);
+        format!("{}/artists/{}/uploads", self.config.user_dir, sanitized)
+    }
+
+    /// Every image stored for this artist: the two well-known downloads and
+    /// each upload.
+    ///
+    /// The filesystem is the source of truth, so a file put there by hand
+    /// shows up and a file deleted by hand disappears. A member that cannot be
+    /// read, or whose bytes are not an image, is logged and skipped: one bad
+    /// file must not cost the artist its whole listing.
+    pub fn artist_images(&self, artist_name: &str) -> Vec<ArtistImage> {
+        let mut images = Vec::new();
+
+        for id in ["custom", "cover"] {
+            let path = self.get_artist_user_image_path(artist_name, id);
+            if std::fs::metadata(&path).is_ok() {
+                images.push(ArtistImage {
+                    id: id.to_string(),
+                    path,
+                    source: ArtistImageSource::Download,
+                });
+            }
+        }
+
+        let uploads = self.artist_uploads_dir(artist_name);
+        if let Ok(entries) = std::fs::read_dir(&uploads) {
+            let mut found: Vec<ArtistImage> = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+                // Variants live beside their original as `<stem>@<size>`; they
+                // are derived files, not members of the set.
+                if crate::helpers::imageresize::variant_size_of(stem).is_some() {
+                    continue;
+                }
+                match std::fs::read(&path) {
+                    Ok(bytes) if image_extension(&bytes).is_some() => found.push(ArtistImage {
+                        id: stem.to_string(),
+                        path: path.to_string_lossy().into_owned(),
+                        source: ArtistImageSource::Upload,
+                    }),
+                    Ok(_) => debug!("Skipping {} in {}: not a recognised image", path.display(), uploads),
+                    Err(e) => warn!("Skipping {}: {}", path.display(), e),
+                }
+            }
+            found.sort_by(|a, b| a.id.cmp(&b.id));
+            images.extend(found);
+        }
+
+        images
+    }
+
+    /// The path of one member of the set, or `None` when the id is not in it.
+    pub fn artist_image_path(&self, artist_name: &str, id: &str) -> Option<String> {
+        self.artist_images(artist_name)
+            .into_iter()
+            .find(|image| image.id == id)
+            .map(|image| image.path)
     }
 
     /// Check if an artist image exists in cache
@@ -957,5 +1078,84 @@ mod tests {
             },
             _ => panic!("the uploaded image should be cached immediately after upload"),
         }
+    }
+
+    fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+        use image::{DynamicImage, RgbaImage};
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(w, h, image::Rgba([10, 120, 200, 255])));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        buf.into_inner()
+    }
+
+    fn temp_user_dir() -> tempfile::TempDir { tempfile::TempDir::new().unwrap() }
+
+    fn store_in(dir: &tempfile::TempDir) -> ArtistStore {
+        ArtistStore::with_config(ArtistStoreConfig {
+            cache_dir: dir.path().join("cache").to_string_lossy().into_owned(),
+            user_dir: dir.path().join("user").to_string_lossy().into_owned(),
+            enable_custom_images: true,
+            auto_download: false,
+        })
+    }
+
+    fn artist_dir(store: &ArtistStore, artist: &str) -> String {
+        let path = store.get_artist_user_image_path(artist, "custom");
+        std::path::Path::new(&path).parent().unwrap().to_string_lossy().into_owned()
+    }
+
+    fn write_file(path: &str, bytes: &[u8]) {
+        let p = std::path::Path::new(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+
+    #[test]
+    fn an_upload_id_is_the_content_hash_and_is_stable() {
+        let bytes = b"the same bytes";
+        assert_eq!(upload_id(bytes), upload_id(bytes));
+        assert_eq!(upload_id(bytes).len(), 32);
+        assert!(upload_id(bytes).chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(upload_id(bytes), upload_id(b"other bytes"));
+    }
+
+    /// The extension comes from the bytes, never from what a client called the
+    /// image: the serving route derives a content type from the file name.
+    #[test]
+    fn an_extension_is_sniffed_from_the_bytes() {
+        assert_eq!(image_extension(&png_bytes(8, 8)), Some("png"));
+        assert_eq!(image_extension(b"<html>not an image</html>"), None);
+    }
+
+    #[test]
+    fn the_set_lists_the_downloads_and_the_uploads() {
+        let store = store_in(&temp_user_dir());
+        write_file(&store.get_artist_user_image_path("Artist", "custom"), &png_bytes(8, 8));
+        let id = upload_id(&png_bytes(16, 16));
+        write_file(&format!("{}/uploads/{}.png", artist_dir(&store, "Artist"), id), &png_bytes(16, 16));
+
+        let images = store.artist_images("Artist");
+
+        assert_eq!(images.len(), 2);
+        let custom = images.iter().find(|i| i.id == "custom").expect("custom is a member");
+        assert_eq!(custom.source, ArtistImageSource::Download);
+        let upload = images.iter().find(|i| i.id == id).expect("the upload is a member");
+        assert_eq!(upload.source, ArtistImageSource::Upload);
+    }
+
+    /// A file that is not an image (a stray .DS_Store, a truncated download) is
+    /// omitted rather than failing the listing for the whole artist.
+    #[test]
+    fn an_unreadable_member_is_omitted_rather_than_fatal() {
+        let store = store_in(&temp_user_dir());
+        write_file(&format!("{}/uploads/{}.png", artist_dir(&store, "Artist"), "f".repeat(32)), b"not an image");
+
+        assert!(store.artist_images("Artist").is_empty());
+    }
+
+    #[test]
+    fn an_unknown_id_has_no_path() {
+        let store = store_in(&temp_user_dir());
+        assert_eq!(store.artist_image_path("Artist", "nope"), None);
     }
 }

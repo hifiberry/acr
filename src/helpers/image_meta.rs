@@ -112,7 +112,7 @@ fn analyze_remote_image(url: &str) -> Result<ImageMetadata, String> {
 /// 
 /// This function reads just enough data to determine the image format and dimensions
 /// without loading the entire image into memory.
-fn detect_image_dimensions<R: BufRead + Seek>(reader: &mut R) -> Result<(u32, u32, String), String> {
+pub(crate) fn detect_image_dimensions<R: BufRead + Seek>(reader: &mut R) -> Result<(u32, u32, String), String> {
     // Read the first few bytes to determine format
     let mut header = [0u8; 32];
     reader.read_exact(&mut header)

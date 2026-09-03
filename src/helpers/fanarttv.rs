@@ -445,19 +445,23 @@ mod tests {
     
     #[test]
     fn test_coverart_manager_integration() {
-        use crate::helpers::coverart::CoverartManager;
+        use crate::helpers::coverart::{fan_out, CoverartManager, CoverartQuery, QueryOptions};
         use std::sync::Arc;
-        
+
         let mut manager = CoverartManager::new();
-        
+
         // Register FanArt.tv coverart provider
         let fanarttv_coverart = Arc::new(FanarttvCoverartProvider::new());
-        
+
         manager.register_provider(fanarttv_coverart);
-        
+
         // Test artist coverart retrieval (should return empty since no MusicBrainz lookup)
-        let results = manager.get_artist_coverart("Test Artist");
-        
+        let results = fan_out(
+            manager.get_providers().clone(),
+            &CoverartQuery::Artist("Test Artist".to_string()),
+            &QueryOptions::default(),
+        );
+
         // Provider should be called but return no results
         assert_eq!(results.len(), 0);
     }

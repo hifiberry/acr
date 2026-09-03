@@ -2568,6 +2568,21 @@ echo -n "The Beatles" | base64 -w 0 | tr '+/' '-_' | tr -d '='
 # Result: VGhlIEJlYXRsZXM
 ```
 
+All four cover art lookup endpoints accept an optional `include_slow` query
+parameter:
+
+```
+GET /api/coverart/song/<title_b64>/<artist_b64>?include_slow=true
+```
+
+By default a lookup queries only providers that answer quickly, plus any
+answer a slow provider has already cached, and returns within about five
+seconds. `include_slow=true` also waits for providers configured under
+`services.external_coverart`, which may take tens of seconds — see
+[external cover art providers](external-coverart.md). Use it only where
+someone asked for the lookup and can be shown that it is running; it is not
+suitable for a page load.
+
 ### Get Cover Art for Artist
 
 Retrieves cover art URLs for a specific artist from all registered providers.

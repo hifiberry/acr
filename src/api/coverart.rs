@@ -3,7 +3,10 @@ use rocket::post;
 use rocket::serde::json::Json;
 use rocket::serde::{Deserialize, Serialize};
 use log::{debug, info, warn, error};
-use crate::helpers::coverart::{get_coverart_manager, CoverartMethod, CoverartResult, ProviderInfo};
+use crate::helpers::coverart::{
+    get_coverart_manager, query_coverart, CoverartMethod, CoverartQuery, CoverartResult,
+    ProviderInfo, QueryOptions,
+};
 use crate::helpers::url_encoding::decode_url_safe;
 use crate::helpers::settingsdb;
 
@@ -34,12 +37,24 @@ pub struct UpdateImageResponse {
     message: String,
 }
 
+/// Options for a cover art request.
+///
+/// `include_slow` is opt-in: providers that may take tens of seconds are off
+/// the default path, so an existing client's request is never made slower by
+/// a slow provider being configured on the device.
+fn query_options(include_slow: Option<bool>) -> QueryOptions {
+    QueryOptions {
+        include_slow: include_slow.unwrap_or(false),
+        ..QueryOptions::default()
+    }
+}
+
 /// Get cover art for an artist
-/// 
+///
 /// # Parameters
 /// * `artist_b64` - Base64 encoded artist name
-#[get("/artist/<artist_b64>")]
-pub fn get_artist_coverart(artist_b64: String) -> Json<CoverartResponse> {
+#[get("/artist/<artist_b64>?<include_slow>")]
+pub fn get_artist_coverart(artist_b64: String, include_slow: Option<bool>) -> Json<CoverartResponse> {
     let artist = match decode_url_safe(&artist_b64) {
         Some(decoded) => decoded,
         None => {
@@ -50,9 +65,10 @@ pub fn get_artist_coverart(artist_b64: String) -> Json<CoverartResponse> {
         }
     };
 
-    let manager = get_coverart_manager();
-    let manager_lock = manager.lock();
-    let results = manager_lock.get_artist_coverart(&artist);
+    let results = query_coverart(
+        &CoverartQuery::Artist(artist),
+        &query_options(include_slow),
+    );
 
     Json(CoverartResponse { results })
 }
@@ -62,8 +78,12 @@ pub fn get_artist_coverart(artist_b64: String) -> Json<CoverartResponse> {
 /// # Parameters
 /// * `title_b64` - Base64 encoded song title
 /// * `artist_b64` - Base64 encoded artist name
-#[get("/song/<title_b64>/<artist_b64>")]
-pub fn get_song_coverart(title_b64: String, artist_b64: String) -> Json<CoverartResponse> {
+#[get("/song/<title_b64>/<artist_b64>?<include_slow>")]
+pub fn get_song_coverart(
+    title_b64: String,
+    artist_b64: String,
+    include_slow: Option<bool>,
+) -> Json<CoverartResponse> {
     let title = match decode_url_safe(&title_b64) {
         Some(decoded) => decoded,
         None => {
@@ -84,9 +104,10 @@ pub fn get_song_coverart(title_b64: String, artist_b64: String) -> Json<Coverart
         }
     };
 
-    let manager = get_coverart_manager();
-    let manager_lock = manager.lock();
-    let results = manager_lock.get_song_coverart(&title, &artist);
+    let results = query_coverart(
+        &CoverartQuery::Song { title, artist },
+        &query_options(include_slow),
+    );
 
     Json(CoverartResponse { results })
 }
@@ -97,19 +118,28 @@ pub fn get_song_coverart(title_b64: String, artist_b64: String) -> Json<Coverart
 /// * `title_b64` - Base64 encoded album title
 /// * `artist_b64` - Base64 encoded artist name
 /// * `year` - Optional release year
-#[get("/album/<title_b64>/<artist_b64>")]
-pub fn get_album_coverart(title_b64: String, artist_b64: String) -> Json<CoverartResponse> {
-    get_album_coverart_with_year(title_b64, artist_b64, None)
+#[get("/album/<title_b64>/<artist_b64>?<include_slow>")]
+pub fn get_album_coverart(
+    title_b64: String,
+    artist_b64: String,
+    include_slow: Option<bool>,
+) -> Json<CoverartResponse> {
+    get_album_coverart_with_year(title_b64, artist_b64, None, include_slow)
 }
 
 /// Get cover art for an album with year
-/// 
+///
 /// # Parameters
 /// * `title_b64` - Base64 encoded album title
 /// * `artist_b64` - Base64 encoded artist name
 /// * `year` - Release year
-#[get("/album/<title_b64>/<artist_b64>/<year>")]
-pub fn get_album_coverart_with_year(title_b64: String, artist_b64: String, year: Option<i32>) -> Json<CoverartResponse> {
+#[get("/album/<title_b64>/<artist_b64>/<year>?<include_slow>")]
+pub fn get_album_coverart_with_year(
+    title_b64: String,
+    artist_b64: String,
+    year: Option<i32>,
+    include_slow: Option<bool>,
+) -> Json<CoverartResponse> {
     let title = match decode_url_safe(&title_b64) {
         Some(decoded) => decoded,
         None => {
@@ -130,9 +160,10 @@ pub fn get_album_coverart_with_year(title_b64: String, artist_b64: String, year:
         }
     };
 
-    let manager = get_coverart_manager();
-    let manager_lock = manager.lock();
-    let results = manager_lock.get_album_coverart(&title, &artist, year);
+    let results = query_coverart(
+        &CoverartQuery::Album { title, artist, year },
+        &query_options(include_slow),
+    );
 
     Json(CoverartResponse { results })
 }
@@ -141,8 +172,8 @@ pub fn get_album_coverart_with_year(title_b64: String, artist_b64: String, year:
 /// 
 /// # Parameters
 /// * `url_b64` - Base64 encoded URL
-#[get("/url/<url_b64>")]
-pub fn get_url_coverart(url_b64: String) -> Json<CoverartResponse> {
+#[get("/url/<url_b64>?<include_slow>")]
+pub fn get_url_coverart(url_b64: String, include_slow: Option<bool>) -> Json<CoverartResponse> {
     let url = match decode_url_safe(&url_b64) {
         Some(decoded) => decoded,
         None => {
@@ -153,9 +184,7 @@ pub fn get_url_coverart(url_b64: String) -> Json<CoverartResponse> {
         }
     };
 
-    let manager = get_coverart_manager();
-    let manager_lock = manager.lock();
-    let results = manager_lock.get_url_coverart(&url);
+    let results = query_coverart(&CoverartQuery::Url(url), &query_options(include_slow));
 
     Json(CoverartResponse { results })
 }
@@ -491,6 +520,7 @@ pub fn get_artist_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::coverart::DEFAULT_FAST_DEADLINE;
     use image::{DynamicImage, RgbaImage};
     use std::io::Cursor;
 
@@ -569,5 +599,23 @@ mod tests {
 
         // Sanity: the first call did produce real (non-sentinel) resized data.
         assert_ne!(first_data, b"SENTINEL");
+    }
+
+    /// The default is unchanged behaviour: fast providers only. A client that
+    /// has always called this endpoint must not start waiting 40 seconds
+    /// because a slow provider was configured on the device.
+    #[test]
+    fn slow_providers_are_excluded_unless_asked_for() {
+        assert!(!query_options(None).include_slow);
+        assert!(!query_options(Some(false)).include_slow);
+        assert!(query_options(Some(true)).include_slow);
+    }
+
+    /// The fast deadline is the same either way; opting in changes which
+    /// providers run, and the fan-out sizes the deadline from their own
+    /// timeouts.
+    #[test]
+    fn the_fast_deadline_is_unchanged_by_opting_in() {
+        assert_eq!(query_options(Some(true)).fast_deadline, DEFAULT_FAST_DEADLINE);
     }
 }

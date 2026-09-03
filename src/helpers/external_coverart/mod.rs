@@ -16,13 +16,12 @@ pub mod worker;
 mod stub_server;
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 
 use crate::helpers::attributecache;
 use crate::helpers::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
@@ -69,42 +68,64 @@ pub fn cache_key(endpoint_name: &str, query: &CoverartQuery) -> String {
     format!("coverart::external::{}::{}", endpoint_name, body)
 }
 
-/// A non-blocking counting semaphore.
+/// A counting semaphore with two ways to ask for a slot.
 ///
-/// A caller that cannot get a slot gives up rather than queueing. Queueing
-/// would be the wrong answer here: a request that waits behind two 40-second
-/// lookups has outlived whatever it was for, and letting threads accumulate
-/// against a stuck endpoint is exactly the failure this whole change exists
-/// to prevent.
+/// A background caller gives up rather than queueing: a speculative lookup
+/// that waits behind two 40-second lookups has outlived whatever it was for,
+/// and letting threads accumulate against a stuck endpoint is exactly the
+/// failure the non-blocking path exists to prevent. An interactive caller has
+/// a person waiting who already consented to the wait, so it queues briefly
+/// instead of returning nothing at the moment the feature is most active --
+/// see `acquire_blocking`.
+///
+/// The count lives behind the same `Mutex` the `Condvar` waits on, rather
+/// than as a bare atomic, so a release and a check-then-wait can never
+/// interleave in a way that loses a wakeup.
 struct Slots {
-    in_use: AtomicUsize,
+    in_use: Mutex<usize>,
+    condvar: Condvar,
     limit: usize,
 }
 
 impl Slots {
     fn new(limit: usize) -> Self {
         Self {
-            in_use: AtomicUsize::new(0),
+            in_use: Mutex::new(0),
+            condvar: Condvar::new(),
             limit: limit.max(1),
         }
     }
 
+    /// Take a slot if one is free; give up instantly otherwise.
     fn try_acquire(self: &Arc<Self>) -> Option<SlotGuard> {
-        let mut current = self.in_use.load(Ordering::SeqCst);
-        loop {
-            if current >= self.limit {
+        let mut in_use = self.in_use.lock();
+        if *in_use >= self.limit {
+            return None;
+        }
+        *in_use += 1;
+        Some(SlotGuard { slots: self.clone() })
+    }
+
+    /// Take a slot, waiting up to `timeout` for one to free up.
+    ///
+    /// Bounded by the caller's own deadline rather than waiting forever: a
+    /// person is waiting, but not indefinitely.
+    fn acquire_blocking(self: &Arc<Self>, timeout: Duration) -> Option<SlotGuard> {
+        let mut in_use = self.in_use.lock();
+        let deadline = Instant::now() + timeout;
+        while *in_use >= self.limit {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 return None;
             }
-            match self.in_use.compare_exchange(
-                current,
-                current + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return Some(SlotGuard { slots: self.clone() }),
-                Err(actual) => current = actual,
-            }
+            // `wait_for` re-checks the predicate itself on return, so a
+            // notification that arrives just as the timeout expires is not
+            // lost -- the loop condition above is what decides, not the
+            // timed-out flag.
+            self.condvar.wait_for(&mut in_use, remaining);
         }
+        *in_use += 1;
+        Some(SlotGuard { slots: self.clone() })
     }
 }
 
@@ -114,8 +135,27 @@ struct SlotGuard {
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        self.slots.in_use.fetch_sub(1, Ordering::SeqCst);
+        let mut in_use = self.slots.in_use.lock();
+        *in_use = in_use.saturating_sub(1);
+        drop(in_use);
+        // At most one waiter can make use of the freed slot; a released slot
+        // waking every waiter to have all but one immediately re-block would
+        // just be wasted work.
+        self.slots.condvar.notify_one();
     }
+}
+
+/// Who is asking for a lookup, because the two have different tolerance for
+/// waiting behind a busy endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookupMode {
+    /// The now-playing worker: speculative, so a busy endpoint is skipped
+    /// rather than queued behind.
+    Background,
+    /// A REST caller that set `?include_slow=true`: a person is waiting who
+    /// has already consented to the delay, so a brief queue is preferable to
+    /// silently returning nothing.
+    Interactive,
 }
 
 /// One configured endpoint, as a cover art provider.
@@ -138,10 +178,19 @@ impl ExternalCoverartProvider {
 
     /// Ask the endpoint, and cache whatever it says.
     ///
+    /// The background-worker wrapper around [`Self::lookup_with`]; every
+    /// other caller reaches this provider through the `CoverartProvider`
+    /// trait impls below, which pass [`LookupMode::Interactive`].
+    pub fn lookup(&self, query: &CoverartQuery) -> Lookup {
+        self.lookup_with(query, LookupMode::Background)
+    }
+
+    /// Ask the endpoint, and cache whatever it says.
+    ///
     /// Returns the cached answer without a network call when there is one,
     /// including a cached error: an endpoint that just failed is not asked
     /// again for an hour.
-    pub fn lookup(&self, query: &CoverartQuery) -> Lookup {
+    pub fn lookup_with(&self, query: &CoverartQuery, mode: LookupMode) -> Lookup {
         let key = cache_key(&self.endpoint.name, query);
 
         match attributecache::get::<Lookup>(&key) {
@@ -153,7 +202,14 @@ impl ExternalCoverartProvider {
             Err(e) => warn!("External cover art '{}': cache read failed: {}", self.endpoint.name, e),
         }
 
-        let Some(_slot) = self.slots.try_acquire() else {
+        let slot = match mode {
+            LookupMode::Background => self.slots.try_acquire(),
+            LookupMode::Interactive => self
+                .slots
+                .acquire_blocking(Duration::from_secs(self.endpoint.timeout_seconds)),
+        };
+
+        let Some(_slot) = slot else {
             // Not cached as anything: nothing was learned about the track.
             debug!(
                 "External cover art '{}': already at {} concurrent lookups; skipping",
@@ -221,28 +277,36 @@ impl CoverartProvider for ExternalCoverartProvider {
     }
 
     fn get_artist_coverart_impl(&self, artist: &str) -> Vec<String> {
-        self.lookup(&CoverartQuery::Artist(artist.to_string())).urls()
+        self.lookup_with(&CoverartQuery::Artist(artist.to_string()), LookupMode::Interactive)
+            .urls()
     }
 
     fn get_song_coverart_impl(&self, title: &str, artist: &str) -> Vec<String> {
-        self.lookup(&CoverartQuery::Song {
-            title: title.to_string(),
-            artist: artist.to_string(),
-        })
+        self.lookup_with(
+            &CoverartQuery::Song {
+                title: title.to_string(),
+                artist: artist.to_string(),
+            },
+            LookupMode::Interactive,
+        )
         .urls()
     }
 
     fn get_album_coverart_impl(&self, title: &str, artist: &str, year: Option<i32>) -> Vec<String> {
-        self.lookup(&CoverartQuery::Album {
-            title: title.to_string(),
-            artist: artist.to_string(),
-            year,
-        })
+        self.lookup_with(
+            &CoverartQuery::Album {
+                title: title.to_string(),
+                artist: artist.to_string(),
+                year,
+            },
+            LookupMode::Interactive,
+        )
         .urls()
     }
 
     fn get_url_coverart_impl(&self, url: &str) -> Vec<String> {
-        self.lookup(&CoverartQuery::Url(url.to_string())).urls()
+        self.lookup_with(&CoverartQuery::Url(url.to_string()), LookupMode::Interactive)
+            .urls()
     }
 }
 
@@ -556,5 +620,144 @@ mod tests {
         );
 
         let _ = holder.join();
+    }
+
+    // --- LookupMode: Background gives up, Interactive queues briefly ---
+    //
+    // These exercise the `Slots` primitive directly, with the test itself
+    // (or a channel handshake between threads) establishing "a slot is
+    // held" rather than a sleep guessing at timing.
+
+    /// `try_acquire` (what `Background` uses) never blocks, even though a
+    /// slot is provably held for the whole assertion.
+    #[test]
+    fn slots_try_acquire_does_not_wait_for_a_held_slot() {
+        let slots = Arc::new(Slots::new(1));
+        let held = slots.try_acquire().expect("the only slot");
+
+        let start = Instant::now();
+        assert!(slots.try_acquire().is_none(), "a held slot must not be handed out");
+        assert!(start.elapsed() < Duration::from_millis(50), "try_acquire must not block");
+
+        drop(held);
+    }
+
+    /// `acquire_blocking` (what `Interactive` uses) queues rather than
+    /// failing immediately, and succeeds once the slot is released.
+    ///
+    /// The proof that it actually waited -- rather than racing ahead before
+    /// the release -- is `acquired_rx.recv_timeout` returning nothing while
+    /// the slot is still held: a bounded, reactive wait, not a fixed sleep
+    /// standing in for "long enough".
+    #[test]
+    fn slots_acquire_blocking_waits_for_a_held_slot_then_succeeds() {
+        use std::sync::mpsc;
+
+        let slots = Arc::new(Slots::new(1));
+        let held = slots.try_acquire().expect("the only slot");
+
+        let (acquired_tx, acquired_rx) = mpsc::channel::<()>();
+        let waiter_slots = slots.clone();
+        let waiter = std::thread::spawn(move || {
+            let guard = waiter_slots.acquire_blocking(Duration::from_secs(5));
+            let _ = acquired_tx.send(());
+            guard
+        });
+
+        assert!(
+            acquired_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the waiter acquired a slot that was still held"
+        );
+
+        drop(held);
+
+        acquired_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the waiter acquired the slot after it was released");
+        let result = waiter.join().expect("waiter thread completed");
+        assert!(result.is_some(), "acquire_blocking must succeed once the slot frees up");
+    }
+
+    /// `acquire_blocking` gives up once its own deadline passes, rather than
+    /// waiting forever for a slot that never frees.
+    #[test]
+    fn slots_acquire_blocking_gives_up_after_its_timeout() {
+        let slots = Arc::new(Slots::new(1));
+        let held = slots.try_acquire().expect("the only slot");
+
+        let start = Instant::now();
+        assert!(slots.acquire_blocking(Duration::from_millis(100)).is_none());
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "acquire_blocking did not honour its own timeout"
+        );
+
+        drop(held);
+    }
+
+    /// Wiring: `lookup_with(.., Background)` still gives up immediately when
+    /// a slot is held, exactly like the pre-`LookupMode` `lookup()` did.
+    #[test]
+    fn background_mode_gives_up_immediately_when_a_slot_is_held() {
+        let server = StubServer::silent();
+        let provider = Arc::new(provider_for(&server, 5));
+        let held = provider.slots.try_acquire().expect("the only slot");
+
+        let start = Instant::now();
+        assert_eq!(
+            provider.lookup_with(&stub_query(), LookupMode::Background),
+            Lookup::Error
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "Background must not wait for a held slot"
+        );
+
+        drop(held);
+    }
+
+    /// Wiring: `lookup_with(.., Interactive)` queues behind a held slot and
+    /// then completes a real lookup once it frees up -- the fix for
+    /// `?include_slow=true` returning nothing while the worker holds the
+    /// endpoint's only slot.
+    #[test]
+    fn interactive_mode_waits_for_a_held_slot_and_then_completes_the_lookup() {
+        let server = StubServer::serving(
+            200,
+            r#"{"images":[{"url":"https://img.example/interactive.jpg"}]}"#,
+        );
+        let provider = Arc::new(provider_for(&server, 5));
+        let held = provider.slots.try_acquire().expect("the only slot");
+
+        let waiter = provider.clone();
+        let query = stub_query();
+        let waiter_query = query.clone();
+        let handle = std::thread::spawn(move || waiter.lookup_with(&waiter_query, LookupMode::Interactive));
+
+        drop(held);
+
+        let result = handle.join().expect("interactive lookup thread completed");
+        assert_eq!(
+            result,
+            Lookup::Found(vec!["https://img.example/interactive.jpg".to_string()])
+        );
+    }
+
+    /// A denied slot must never be cached as anything: the next request,
+    /// whichever mode it arrives in, must still be free to try the network.
+    #[test]
+    fn a_denied_slot_is_not_cached() {
+        let server = StubServer::serving(200, r#"{"images":[]}"#);
+        let provider = Arc::new(provider_for(&server, 5));
+        let query = stub_query();
+
+        let held = provider.slots.try_acquire().expect("the only slot");
+        assert_eq!(provider.lookup_with(&query, LookupMode::Background), Lookup::Error);
+        assert_eq!(provider.cached_coverart(&query), None, "a denied slot must not be cached");
+        drop(held);
+
+        // With the slot free, the same query now actually reaches the
+        // network and is cached as a real answer.
+        assert_eq!(provider.lookup_with(&query, LookupMode::Interactive), Lookup::NoArtwork);
     }
 }

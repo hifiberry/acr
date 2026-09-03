@@ -118,16 +118,18 @@ pub enum ServerOutcome {
 
 /// The Rocket configuration for the API server.
 ///
-/// The JSON body limit is pinned above Rocket's 1 MiB default:
-/// `POST /coverart/artists/upload` takes a batch of base64-encoded images,
-/// and base64 adds a third on top, so the default rejects a batch of more
-/// than roughly 768 KB of image bytes with a 413 before the handler could
-/// report which entries failed. 10 MiB holds several artist JPEGs while
-/// bounding what one request may hold in memory on a 1 GB device; every other
-/// JSON endpoint takes bodies far below it, so raising the limit changes
-/// nothing for them. The other limits are carried over from the defaults
-/// unchanged: a merged `limits` value replaces the whole set, so starting from
-/// `Limits::default()` keeps form, file, string and friends at what they were.
+/// The JSON body limit is pinned above Rocket's 1 MiB default, and shared by
+/// every JSON route in the daemon — Rocket has one `json` limit, not one per
+/// route. `POST /coverart/artist/<b64>/upload` takes one base64-encoded
+/// image, and base64 adds a third on top, so the default would reject an
+/// image of more than roughly 768 KB with a 413 before the handler ever saw
+/// it. 4 MiB covers a lossless PNG portrait with room to spare, while still
+/// bounding what a single request can make this daemon allocate on a 1 GB
+/// device; every other JSON endpoint takes bodies far below it, so raising
+/// the limit changes nothing for them. The other limits are carried over from
+/// the defaults unchanged: a merged `limits` value replaces the whole set, so
+/// starting from `Limits::default()` keeps form, file, string and friends at
+/// what they were.
 fn rocket_config(host: &str, port: u64) -> Figment {
     Config::figment()
         .merge(("port", port))
@@ -142,7 +144,7 @@ fn rocket_config(host: &str, port: u64) -> Figment {
         // shutdown that was proceeding normally.
         .merge(("shutdown.grace", 2))
         .merge(("shutdown.mercy", 3))
-        .merge(("limits", Limits::default().limit("json", 10.mebibytes())))
+        .merge(("limits", Limits::default().limit("json", 4.mebibytes())))
 }
 
 // Start the Rocket server
@@ -270,7 +272,7 @@ pub async fn start_rocket_server(
         coverart::get_album_coverart_with_year,
         coverart::get_url_coverart,
         coverart::get_coverart_methods,
-        coverart::upload_artists_images,
+        coverart::upload_artist_image,
         coverart::update_artist_image,
         coverart::get_artist_image,
         coverart::get_artist_images,
@@ -513,18 +515,17 @@ mod tests {
         assert_eq!(stops.load(Ordering::SeqCst), 0, "a withdrawn server must not be asked");
     }
 
-    /// The batch of base64-encoded artist images in
-    /// `POST /coverart/artists/upload` must fit in one request body, so the
-    /// JSON limit may not sit at Rocket's 1 MiB default (rough 768 KB of
-    /// image bytes once base64 is subtracted).
+    /// The base64-encoded image in `POST /coverart/artist/<b64>/upload` must
+    /// fit in one request body, so the JSON limit may not sit at Rocket's
+    /// 1 MiB default (rough 768 KB of image bytes once base64 is subtracted).
     #[test]
-    fn the_json_body_limit_covers_an_image_upload_batch() {
+    fn the_json_body_limit_covers_an_image_upload() {
         let config = Config::try_from(rocket_config("127.0.0.1", 1080))
             .expect("a valid configuration");
         assert_eq!(
             config.limits.get("json"),
-            Some(10.mebibytes()),
-            "the image-upload batch must fit in one request"
+            Some(4.mebibytes()),
+            "a single uploaded image must fit in one request"
         );
     }
 

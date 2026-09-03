@@ -14,6 +14,6 @@
     "/library/*/update",
     "/volume/set","/volume/increase","/volume/decrease","/volume/mute",
     "/favourites/add","/lyrics/*","/spotify/command/*","/spotify/search",
-    "/m3u/parse","/coverart/artist/*/update","/coverart/artists/upload"] },
+    "/m3u/parse","/coverart/artist/*/update","/coverart/artist/*/upload"] },
   { "tier":"ok","methods":["DELETE"],"paths":["/favourites/remove"] },
   { "tier":"risky","methods":["*"],"paths":["/**"] } ]}

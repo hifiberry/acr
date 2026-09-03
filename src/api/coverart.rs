@@ -9,9 +9,8 @@ use crate::helpers::coverart::{
 };
 use crate::helpers::url_encoding::decode_url_safe;
 use crate::helpers::settingsdb;
-use std::collections::HashMap;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use crate::helpers::artist_store::{ArtistImageResult, ArtistImageSource};
+use crate::helpers::artist_store::ArtistImageSource;
 use crate::constants::API_PREFIX;
 
 #[derive(Serialize, Deserialize)]
@@ -41,24 +40,20 @@ pub struct UpdateImageResponse {
     message: String,
 }
 
-/// One artist's image being uploaded in a batch request.
+/// Request body for uploading one image for one artist.
 #[derive(Deserialize)]
-pub struct UploadArtistsImagesRequest {
-    /// Map of artist name to base64-encoded image bytes.
-    images: HashMap<String, String>,
+pub struct UploadArtistImageRequest {
+    image_base64: String,
 }
 
-/// The outcome for a single artist within an upload batch.
+/// Outcome of uploading one image for one artist.
 #[derive(Serialize)]
-pub struct UploadImageResultResponse {
+pub struct UploadArtistImageResponse {
     success: bool,
+    /// The id of the stored image, so a client need not list the set again to
+    /// use what it just uploaded.
+    id: Option<String>,
     message: String,
-}
-
-/// Per-artist outcomes from an upload batch.
-#[derive(Serialize)]
-pub struct UploadArtistsImagesResponse {
-    results: HashMap<String, UploadImageResultResponse>,
 }
 
 /// Options for a cover art request.
@@ -270,93 +265,6 @@ pub fn get_coverart_methods() -> Json<CoverartMethodsResponse> {
     Json(CoverartMethodsResponse { methods })
 }
 
-/// Upload custom artist images for one or more artists in a single request.
-///
-/// The request body maps each artist name to base64-encoded image bytes:
-///
-/// ```json
-/// { "images": { "Artist One": "<base64>", "Artist Two": "<base64>" } }
-/// ```
-///
-/// Each image is decoded, validated as a decodable image within this daemon's
-/// safe limits, and stored to the artist's user custom-image path, so it takes
-/// precedence over anything the cover-art providers auto-downloaded. The
-/// response reports per-artist outcomes so a partially-valid batch can still
-/// succeed where it can and explain what failed and why.
-///
-/// Unlike a value set through `POST /artist/<artist_b64>/update`, an uploaded
-/// image is stored directly and has no remote URL to re-download, so nothing
-/// is written to the settings database.
-///
-/// The whole batch must fit in one request body: Rocket's JSON limit is
-/// pinned to 10 MiB (see `rocket_config`), and base64 adds a third, so that
-/// is roughly 7.5 MiB of image bytes in total. A batch past the limit is
-/// rejected with a 413 before any entry is stored.
-///
-/// Entries are keyed as given in the request map. Two names that sanitise to
-/// the same file (for example `The Beatles` and `the beatles!`) name the same
-/// stored image; one of them is stored and the other is reported as a failure
-/// naming the entry that won, rather than both being reported as stored when
-/// only one image exists.
-#[post("/artists/upload", data = "<request>")]
-pub fn upload_artists_images(request: Json<UploadArtistsImagesRequest>) -> Json<UploadArtistsImagesResponse> {
-    debug!("Received artist image upload batch with {} artist(s)", request.images.len());
-
-    let mut results: HashMap<String, UploadImageResultResponse> = HashMap::new();
-    let collisions = colliding_entries(request.images.keys());
-
-    for (artist_name, b64data) in &request.images {
-        if let Some(winner) = collisions.get(artist_name) {
-            debug!(
-                "Artist '{}' names the same stored file as '{}'; not storing it",
-                artist_name, winner
-            );
-            results.insert(
-                artist_name.clone(),
-                UploadImageResultResponse {
-                    success: false,
-                    message: format!(
-                        "'{}' is stored under the same file name as '{}'; only '{}' was stored",
-                        artist_name, winner, winner
-                    ),
-                },
-            );
-            continue;
-        }
-
-        let outcome = match validate_upload_entry(artist_name, b64data) {
-            Err(message) => UploadImageResultResponse {
-                success: false,
-                message,
-            },
-            Ok((name, bytes)) => {
-                let store = crate::helpers::artist_store::get_artist_store();
-                let mut store_lock = store.lock();
-                match store_lock.store_user_uploaded_image(&name, &bytes) {
-                    ArtistImageResult::Found { cache_path } => {
-                        crate::helpers::imageresize::remove_variants_of(&cache_path);
-                        UploadImageResultResponse {
-                            success: true,
-                            message: format!("Stored image for '{}'", name),
-                        }
-                    }
-                    ArtistImageResult::Error(e) => UploadImageResultResponse {
-                        success: false,
-                        message: e,
-                    },
-                    ArtistImageResult::NotFound => UploadImageResultResponse {
-                        success: false,
-                        message: "Failed to store image".to_string(),
-                    },
-                }
-            }
-        };
-        results.insert(artist_name.clone(), outcome);
-    }
-
-    Json(UploadArtistsImagesResponse { results })
-}
-
 /// Decode `b64` and confirm the bytes are an image this daemon can serve.
 ///
 /// Splitting base64 decoding from the store keeps the pure decision —
@@ -371,64 +279,60 @@ fn decode_image(b64: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Validate one entry of an upload batch before anything is written.
+/// Upload one image for one artist.
 ///
-/// Returns the trimmed name and the decoded, validated image bytes. The
-/// emptiness check runs on the *sanitised* name, because that is the value
-/// that decides the storage path: a name like `!!!` is not empty, but it
-/// sanitises to nothing and would land on `{user_dir}/artists/custom.jpg`, a
-/// path shared by every such name.
-fn validate_upload_entry(artist_name: &str, b64data: &str) -> Result<(String, Vec<u8>), String> {
+/// The bytes are decoded and validated before anything is written, stored as a
+/// member of the artist's set, and then selected — uploading a picture is a
+/// request to use it. The image that was selected before stays in the set, so
+/// the choice is reversible.
+///
+/// The artist is named in the path, like `/artist/<b64>/update`: a body keyed
+/// by artist name could not express two images for one artist, which is the
+/// point of the set.
+#[post("/artist/<artist_b64>/upload", data = "<request>")]
+pub fn upload_artist_image(
+    artist_b64: String,
+    request: Json<UploadArtistImageRequest>,
+) -> Json<UploadArtistImageResponse> {
+    let Some(artist_name) = decode_url_safe(&artist_b64) else {
+        return Json(UploadArtistImageResponse {
+            success: false,
+            id: None,
+            message: "Invalid artist name encoding".to_string(),
+        });
+    };
+
     let name = artist_name.trim();
     if crate::helpers::sanitize::filename_from_string(name).is_empty() {
-        return Err("Empty artist name".to_string());
-    }
-    let bytes = decode_image(b64data)?;
-    Ok((name.to_string(), bytes))
-}
-
-/// The entries of a batch that lose a name collision, each mapped to the entry
-/// that won it.
-///
-/// Two request keys that sanitise to the same filename name the same stored
-/// file. Storing both leaves one image on disk and reports success for two,
-/// and which of them survives depends on the iteration order of the request
-/// map — so two identical requests could store different images. The batch is
-/// collapsed before anything is written instead, and the winner is picked by
-/// sorting the keys rather than by that order, which makes the outcome the
-/// same every time.
-///
-/// A name that sanitises to nothing is skipped rather than collided: those
-/// entries are refused by `validate_upload_entry` with a message about the
-/// name, which is more use to a client than a collision report.
-fn colliding_entries<'a, I>(names: I) -> HashMap<String, String>
-where
-    I: IntoIterator<Item = &'a String>,
-{
-    use std::collections::hash_map::Entry;
-
-    let mut sorted: Vec<&String> = names.into_iter().collect();
-    sorted.sort();
-
-    let mut winner_by_file: HashMap<String, &String> = HashMap::new();
-    let mut losers: HashMap<String, String> = HashMap::new();
-
-    for name in sorted {
-        let file = crate::helpers::sanitize::filename_from_string(name.trim());
-        if file.is_empty() {
-            continue;
-        }
-        match winner_by_file.entry(file) {
-            Entry::Vacant(slot) => {
-                slot.insert(name);
-            }
-            Entry::Occupied(winner) => {
-                losers.insert(name.clone(), (*winner.get()).clone());
-            }
-        }
+        return Json(UploadArtistImageResponse {
+            success: false,
+            id: None,
+            message: "Empty artist name".to_string(),
+        });
     }
 
-    losers
+    let bytes = match decode_image(&request.image_base64) {
+        Ok(bytes) => bytes,
+        Err(message) => {
+            return Json(UploadArtistImageResponse { success: false, id: None, message })
+        }
+    };
+
+    let store = crate::helpers::artist_store::get_artist_store();
+    let mut store_lock = store.lock();
+    match store_lock.store_uploaded_image(name, &bytes) {
+        Ok(id) => {
+            if let Err(e) = store_lock.select_artist_image(name, &id) {
+                warn!("Stored image {} for artist {} but could not select it: {}", id, name, e);
+            }
+            Json(UploadArtistImageResponse {
+                success: true,
+                id: Some(id),
+                message: format!("Stored image for '{}'", name),
+            })
+        }
+        Err(message) => Json(UploadArtistImageResponse { success: false, id: None, message }),
+    }
 }
 
 /// Update artist image with custom URL
@@ -1058,77 +962,51 @@ mod tests {
         assert!(err.contains("image"), "expected an image error, got: {}", err);
     }
 
-    #[test]
-    fn an_entry_whose_name_sanitises_to_empty_is_rejected() {
-        let payload = b64(&alpha_png(400, 400));
-        for name in ["!!!", "???", "-", "   "] {
-            let err = validate_upload_entry(name, &payload)
-                .expect_err("a name that sanitises to empty must be rejected");
-            assert!(
-                err.contains("Empty"),
-                "expected an empty-name error for {:?}, got: {}",
-                name,
-                err
-            );
-        }
+    /// Call the upload route directly, the way a request handler would, with
+    /// the artist name base64-url-encoded as the path segment expects.
+    fn upload_artist_image_for(artist: &str, image_base64: &str) -> UploadArtistImageResponse {
+        init_test_artist_store();
+        let b64_artist = crate::helpers::url_encoding::encode_url_safe(artist);
+        upload_artist_image(
+            b64_artist,
+            Json(UploadArtistImageRequest { image_base64: image_base64.to_string() }),
+        )
+        .into_inner()
     }
 
     #[test]
-    fn an_entry_with_a_usable_name_is_accepted() {
-        let payload = b64(&alpha_png(400, 400));
-        let (name, bytes) = validate_upload_entry("The Beatles", &payload)
-            .expect("a normal name with a valid image should be accepted");
-        assert_eq!(name, "The Beatles");
-        assert!(!bytes.is_empty());
+    #[serial]
+    fn an_upload_is_stored_and_becomes_the_selected_image() {
+        let artist = "Upload Test Artist";
+        let bytes = alpha_png(400, 400);
+
+        let response = upload_artist_image_for(artist, &b64(&bytes));
+
+        assert!(response.success, "{}", response.message);
+        let id = response.id.expect("the response carries the id");
+        let store = crate::helpers::artist_store::get_artist_store();
+        let store_lock = store.lock();
+        assert_eq!(store_lock.selected_image_id(artist).as_deref(), Some(id.as_str()));
+        assert!(store_lock.artist_image_path(artist, &id).is_some());
     }
 
     #[test]
-    fn names_that_share_a_file_leave_one_winner() {
-        let names: Vec<String> = ["The Beatles", "the beatles!", "  The   Beatles  "]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+    #[serial]
+    fn an_upload_that_is_not_an_image_is_refused_without_storing_anything() {
+        let artist = "Bad Upload Artist";
+        let response = upload_artist_image_for(artist, &b64(b"<html>nope</html>"));
 
-        let losers = colliding_entries(names.iter());
-
-        assert_eq!(losers.len(), 2, "exactly one of the three should be stored: {:?}", losers);
-        let winner = "  The   Beatles  "; // first in sort order of the three
-        assert!(!losers.contains_key(winner), "the winner must not be reported as a loser");
-        for loser in ["The Beatles", "the beatles!"] {
-            assert_eq!(losers.get(loser).map(String::as_str), Some(winner));
-        }
-    }
-
-    /// The winner is chosen by sorting the keys, not by the order the request
-    /// map happens to iterate in, so the same batch always stores the same
-    /// image.
-    #[test]
-    fn the_winner_of_a_collision_does_not_depend_on_iteration_order() {
-        let forwards: Vec<String> = vec!["a beatles!".to_string(), "A Beatles".to_string()];
-        let backwards: Vec<String> = forwards.iter().rev().cloned().collect();
-
-        let losers = colliding_entries(forwards.iter());
-        assert_eq!(losers.get("a beatles!").map(String::as_str), Some("A Beatles"));
-        assert_eq!(losers, colliding_entries(backwards.iter()));
+        assert!(!response.success);
+        assert!(response.id.is_none());
+        let store = crate::helpers::artist_store::get_artist_store();
+        assert!(store.lock().artist_images(artist).is_empty());
     }
 
     #[test]
-    fn names_that_do_not_share_a_file_are_left_alone() {
-        let names: Vec<String> = ["The Beatles", "The Rolling Stones", "Björk"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        assert!(colliding_entries(names.iter()).is_empty());
-    }
-
-    /// A name that sanitises to nothing is refused by `validate_upload_entry`
-    /// for being empty; grouping those together would replace that message
-    /// with a collision report and hide the real reason.
-    #[test]
-    fn names_that_sanitise_to_nothing_are_not_treated_as_a_collision() {
-        let names: Vec<String> = ["!!!", "???", "-"].iter().map(|s| s.to_string()).collect();
-
-        assert!(colliding_entries(names.iter()).is_empty());
+    #[serial]
+    fn an_upload_for_a_name_that_sanitises_to_nothing_is_refused() {
+        let response = upload_artist_image_for("!!!", &b64(&alpha_png(64, 64)));
+        assert!(!response.success);
+        assert!(response.message.contains("Empty"), "got: {}", response.message);
     }
 }

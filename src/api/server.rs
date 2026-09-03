@@ -277,6 +277,7 @@ pub async fn start_rocket_server(
         coverart::get_artist_image,
         coverart::get_artist_images,
         coverart::get_artist_image_by_id,
+        coverart::delete_artist_image_route,
     ];
 
     // Define Last.fm specific routes

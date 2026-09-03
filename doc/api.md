@@ -3105,6 +3105,168 @@ curl -X POST http://<device-ip>:1080/api/coverart/artist/invalid_encoding!/updat
 # }
 ```
 
+### List Artist Images
+
+An artist holds a *set* of images — the downloaded `cover.jpg`/`custom.jpg` plus whatever has been uploaded — rather than a single picture. This lists every member of that set and marks which one is selected.
+
+- **Endpoint**: `/api/coverart/artist/<artist_b64>/images`
+- **Method**: GET
+- **Parameters**:
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+- **Response** (Success):
+  ```json
+  {
+    "images": [
+      {
+        "id": "3f2504e04f8964..." ,
+        "url": "/api/coverart/artist/VGhlIEJlYXRsZXM/image/3f2504e04f8964...",
+        "source": "upload",
+        "selected": true,
+        "width": 800,
+        "height": 800,
+        "size_bytes": 123456
+      }
+    ]
+  }
+  ```
+- **Response** (Error): `400` with a plain-text body, `Invalid artist name encoding`
+
+**Important Notes**:
+- An artist nobody has uploaded anything for, or whose name is unknown, returns `{"images": []}` with status 200, not a 404 — absence is an answer, not an error.
+- `source` is `"upload"` for a file the user uploaded, `"download"` for the daemon's own `cover.jpg`/`custom.jpg`.
+- `id` is the value the other three routes below take as `<id>`.
+- A member whose file cannot be read or measured is dropped from the listing rather than failing the whole request.
+
+#### Examples
+
+```bash
+# List every image stored for an artist
+curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/images
+```
+
+### Get Artist Image by ID
+
+Serve one specific member of an artist's image set, by the id reported by the listing above.
+
+- **Endpoint**: `/api/coverart/artist/<artist_b64>/image/<id>`
+- **Method**: GET
+- **Parameters**:
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+  - `id` (string, required): the member's id, as reported by `GET /artist/<artist_b64>/images`
+  - `size` (integer, optional): requested size in pixels on the longest edge; the image is resized and cached at that size
+- **Response** (Success): the image bytes, with a matching `Content-Type` and `ETag`/`If-None-Match` support
+- **Response** (Error): `404` when `id` is not a member of the set, `400` for an undecodable artist name or an invalid `size`
+
+**Important Notes**:
+- Unlike `GET /artist/<artist_b64>/image`, this never falls back to downloading anything: an unknown id is a 404, because the client asked for one specific picture, not "an" image.
+
+#### Examples
+
+```bash
+# Fetch one member of the set at its stored size
+curl http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image/3f2504e04f8964... -o image.jpg
+
+# Fetch it resized to 200px on the longest edge
+curl "http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image/3f2504e04f8964...?size=200" -o image.jpg
+```
+
+### Upload Artist Image
+
+Add one image to an artist's set, and select it.
+
+- **Endpoint**: `/api/coverart/artist/<artist_b64>/upload`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Parameters**:
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+- **Request Body**:
+  ```json
+  {
+    "image_base64": "string (required) - the image bytes, base64 encoded"
+  }
+  ```
+- **Response** (Success):
+  ```json
+  {
+    "success": true,
+    "id": "3f2504e04f8964...",
+    "message": "Stored image for 'The Beatles'"
+  }
+  ```
+- **Response** (Error):
+  ```json
+  {
+    "success": false,
+    "id": null,
+    "message": "Error description (e.g., 'Invalid base64 data: ...', 'Invalid image data: ...', 'This artist already has the maximum of 10 uploaded images; delete one first')"
+  }
+  ```
+
+**Important Notes**:
+- The bytes are decoded and validated as an image before anything is written; garbage is refused without touching the artist's set.
+- The upload is stored as a member of the set and then selected — uploading a picture is a request to use it. The image that was selected before stays in the set, so the choice is reversible.
+- An artist can hold at most 10 uploaded images at once; re-uploading bytes that are already stored is not a new member and does not count against the cap.
+- `id` is stable across uploads: uploading the same bytes twice returns the same id rather than storing a duplicate.
+
+#### Examples
+
+```bash
+# Upload and select a new image for an artist
+curl -X POST http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/upload \
+  -H "Content-Type: application/json" \
+  -d '{"image_base64": "iVBORw0KGgoAAAANSUhEUgAA..."}'
+
+# Response:
+# {
+#   "success": true,
+#   "id": "3f2504e04f8964...",
+#   "message": "Stored image for 'The Beatles'"
+# }
+```
+
+### Delete Artist Image
+
+Remove one member from an artist's set.
+
+- **Endpoint**: `/api/coverart/artist/<artist_b64>/image/<id>`
+- **Method**: DELETE
+- **Parameters**:
+  - `artist_b64` (string, required): URL-safe base64 encoded artist name
+  - `id` (string, required): the member's id, as reported by `GET /artist/<artist_b64>/images`
+- **Response** (Success):
+  ```json
+  {
+    "success": true,
+    "message": "Deleted image '3f2504e04f8964...' for artist 'The Beatles'"
+  }
+  ```
+- **Response** (Error):
+  ```json
+  {
+    "success": false,
+    "message": "Error description (e.g., 'No image \'...\' for artist \'...\'', 'Invalid artist name encoding')"
+  }
+  ```
+
+**Important Notes**:
+- An `id` that is not a member of the set is `success: false`, not `true` — deleting something already gone is not a success.
+- Deleting the currently selected member clears the selection, and the lookup falls back to the chain, so removing an upload reveals the downloaded image again rather than leaving the artist with nothing.
+
+#### Examples
+
+```bash
+# Remove one image from an artist's set
+curl -X DELETE http://<device-ip>:1080/api/coverart/artist/VGhlIEJlYXRsZXM/image/3f2504e04f8964...
+
+# Response:
+# {
+#   "success": true,
+#   "message": "Deleted image '3f2504e04f8964...' for artist 'The Beatles'"
+# }
+```
+
+**Selecting a listed image via Update Artist Image**: posting one of an artist's own image URLs — as reported by the `url` field in the listing above — to `POST /artist/<artist_b64>/update` selects that member instead of being treated as a remote URL to fetch; the daemon does not make HTTP requests to itself, and the bytes are already where they need to be. The response message names the id that was selected (`"Selected image '<id>' for artist '<name>'"`) rather than the generic "Artist image URL updated successfully" used for a genuine remote URL.
+
 ### Cover Art Response Format
 
 All cover art endpoints return results grouped by provider, with each provider containing:

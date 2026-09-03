@@ -1,3 +1,4 @@
+use rocket::delete;
 use rocket::get;
 use rocket::post;
 use rocket::serde::json::Json;
@@ -737,6 +738,31 @@ pub fn get_artist_image_by_id(
     }
 }
 
+/// Remove one image from an artist's set.
+///
+/// Deleting the selected member clears the selection, and the lookup falls
+/// back to the chain — so removing an upload reveals the downloaded image
+/// again rather than leaving the artist with nothing.
+#[delete("/artist/<artist_b64>/image/<id>")]
+pub fn delete_artist_image_route(artist_b64: String, id: String) -> Json<UpdateImageResponse> {
+    let Some(artist_name) = decode_url_safe(&artist_b64) else {
+        return Json(UpdateImageResponse {
+            success: false,
+            message: "Invalid artist name encoding".to_string(),
+        });
+    };
+
+    let store = crate::helpers::artist_store::get_artist_store();
+    let mut store_lock = store.lock();
+    match store_lock.delete_artist_image(&artist_name, &id) {
+        Ok(()) => Json(UpdateImageResponse {
+            success: true,
+            message: format!("Deleted image '{}' for artist '{}'", id, artist_name),
+        }),
+        Err(message) => Json(UpdateImageResponse { success: false, message }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1078,5 +1104,40 @@ mod tests {
         let response = update_artist_image_for(artist, &url);
 
         assert!(!response.success, "an id that is not in the set cannot be selected");
+    }
+
+    /// Call the delete route directly, the way a request handler would, with
+    /// the artist name base64-url-encoded as the path segment expects.
+    fn delete_artist_image_for(artist: &str, id: &str) -> UpdateImageResponse {
+        init_test_artist_store();
+        let b64_artist = crate::helpers::url_encoding::encode_url_safe(artist);
+        delete_artist_image_route(b64_artist, id.to_string()).into_inner()
+    }
+
+    #[test]
+    #[serial]
+    fn deleting_a_member_removes_it_and_clears_a_selection_on_it() {
+        let artist = "Delete Test Artist";
+        let id = upload_artist_image_for(artist, &b64(&alpha_png(400, 400))).id.unwrap();
+
+        let response = delete_artist_image_for(artist, &id);
+
+        assert!(response.success, "{}", response.message);
+        let store = crate::helpers::artist_store::get_artist_store();
+        let store_lock = store.lock();
+        assert!(store_lock.artist_image_path(artist, &id).is_none());
+        assert_eq!(store_lock.selected_image_id(artist), None);
+    }
+
+    #[test]
+    #[serial]
+    fn deleting_a_member_twice_reports_the_second_one_honestly() {
+        let artist = "Delete Twice Artist";
+        let id = upload_artist_image_for(artist, &b64(&alpha_png(400, 400))).id.unwrap();
+        delete_artist_image_for(artist, &id);
+
+        let again = delete_artist_image_for(artist, &id);
+
+        assert!(!again.success, "a delete of something that is gone is not a success");
     }
 }

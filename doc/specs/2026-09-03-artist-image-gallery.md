@@ -1,6 +1,6 @@
 # Several images per artist, and one of them chosen
 
-Status: Proposed
+Status: Implemented
 
 ## The problem
 

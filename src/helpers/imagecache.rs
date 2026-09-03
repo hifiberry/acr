@@ -416,8 +416,8 @@ impl ImageCache {
         // serve an image -- `image_exists` and `get_image_data` go straight
         // to the filesystem. Returning the failure would report an image the
         // daemon will happily serve from the next request onwards as not
-        // stored, and through `/coverart/artists/upload` that report reaches
-        // a user. The attribute cache being unavailable is a state a device
+        // stored, and through `POST /coverart/artist/<b64>/upload` that report
+        // reaches a user. The attribute cache being unavailable is a state a device
         // can genuinely be in (a full disk, a damaged attributes.db, a
         // directory that is not writable after an update), so this is logged
         // as the degraded success it is rather than propagated.
@@ -1401,7 +1401,7 @@ mod tests {
     /// A metadata failure after the bytes are written is a degraded success,
     /// not a failed store.
     ///
-    /// This is the shape that made `/coverart/artists/upload` answer
+    /// This is the shape that made `POST /coverart/artist/<b64>/upload` answer
     /// `success: false` for an image that was on disk and served from the next
     /// request onwards: the file write lands, and the metadata record — the
     /// last step of the store — fails because the attribute cache is not

@@ -12,6 +12,7 @@ pub mod artistsplitter;
 pub mod backgroundjobs;
 pub mod coverart;
 pub mod coverart_providers;
+pub mod external_coverart;
 pub mod local_coverart;
 pub mod fanarttv;
 pub mod memory_report;

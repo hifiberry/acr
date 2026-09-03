@@ -185,6 +185,12 @@ impl ArtistStore {
         format!("{}/artists/{}/uploads", self.config.user_dir, sanitized)
     }
 
+    /// Test-only window onto the private uploads directory.
+    #[cfg(test)]
+    pub fn artist_uploads_dir_for_test(&self, artist_name: &str) -> String {
+        self.artist_uploads_dir(artist_name)
+    }
+
     /// Every image stored for this artist: the two well-known downloads and
     /// each upload.
     ///
@@ -240,6 +246,56 @@ impl ArtistStore {
             .into_iter()
             .find(|image| image.id == id)
             .map(|image| image.path)
+    }
+
+    /// Store uploaded bytes as a member of the artist's set and return its id.
+    ///
+    /// The id is the hash of the bytes, so storing the same image twice is the
+    /// same member: a retry costs nothing and the cap is not consumed by it.
+    /// The type is sniffed from the bytes, which both validates them — an HTML
+    /// error page is not an image — and names the file.
+    pub fn store_uploaded_image(&mut self, artist_name: &str, bytes: &[u8]) -> Result<String, String> {
+        let Some(extension) = image_extension(bytes) else {
+            return Err("Not a recognised image format".to_string());
+        };
+        let id = upload_id(bytes);
+
+        let existing = self.artist_images(artist_name);
+        let already_stored = existing.iter().any(|image| image.id == id);
+        let uploads = existing
+            .iter()
+            .filter(|image| image.source == ArtistImageSource::Upload)
+            .count();
+        if !already_stored && uploads >= MAX_UPLOADS_PER_ARTIST {
+            return Err(format!(
+                "This artist already has the maximum of {} uploaded images; delete one first",
+                MAX_UPLOADS_PER_ARTIST
+            ));
+        }
+
+        let path = format!("{}/{}.{}", self.artist_uploads_dir(artist_name), id, extension);
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+        }
+        std::fs::write(&path, bytes).map_err(|e| format!("Failed to write {}: {}", path, e))?;
+
+        // The resolved-path memo is keyed by artist name and this changes what
+        // that artist resolves to.
+        self.image_cache.remove(artist_name);
+        info!("Stored uploaded image {} for artist {}", id, artist_name);
+        Ok(id)
+    }
+
+    /// Remove one member of the set, and the variants generated from it.
+    pub fn delete_artist_image(&mut self, artist_name: &str, id: &str) -> Result<(), String> {
+        let Some(path) = self.artist_image_path(artist_name, id) else {
+            return Err(format!("No image '{}' for artist '{}'", id, artist_name));
+        };
+        std::fs::remove_file(&path).map_err(|e| format!("Failed to remove {}: {}", path, e))?;
+        crate::helpers::imageresize::remove_variants_of(&path);
+        crate::helpers::image_meta::clear_image_cache(&path).ok();
+        self.image_cache.remove(artist_name);
+        Ok(())
     }
 
     /// Check if an artist image exists in cache
@@ -1157,5 +1213,91 @@ mod tests {
     fn an_unknown_id_has_no_path() {
         let store = store_in(&temp_user_dir());
         assert_eq!(store.artist_image_path("Artist", "nope"), None);
+    }
+
+    #[test]
+    fn an_upload_is_stored_under_its_own_hash() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let bytes = png_bytes(16, 16);
+
+        let id = store.store_uploaded_image("Artist", &bytes).expect("the upload is stored");
+
+        assert_eq!(id, upload_id(&bytes));
+        assert_eq!(store.artist_image_path("Artist", &id).map(|p| std::fs::read(p).unwrap()), Some(bytes));
+    }
+
+    /// A client that retries after a timeout must not end up with two copies.
+    #[test]
+    fn uploading_the_same_bytes_twice_yields_one_member() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let bytes = png_bytes(16, 16);
+
+        let first = store.store_uploaded_image("Artist", &bytes).unwrap();
+        let second = store.store_uploaded_image("Artist", &bytes).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(store.artist_images("Artist").len(), 1);
+    }
+
+    #[test]
+    fn an_upload_past_the_cap_is_refused_and_says_so() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        for i in 0..MAX_UPLOADS_PER_ARTIST {
+            store.store_uploaded_image("Artist", &png_bytes(16, 16 + i as u32)).unwrap();
+        }
+
+        let err = store
+            .store_uploaded_image("Artist", &png_bytes(64, 64))
+            .expect_err("the cap is enforced");
+
+        assert!(err.contains(&MAX_UPLOADS_PER_ARTIST.to_string()), "the refusal names the cap: {}", err);
+        assert_eq!(store.artist_images("Artist").len(), MAX_UPLOADS_PER_ARTIST);
+    }
+
+    /// Re-uploading bytes that are already stored is not a new member, so it
+    /// must not be refused when the set is full.
+    #[test]
+    fn a_re_upload_is_allowed_when_the_set_is_full() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let mut ids = Vec::new();
+        for i in 0..MAX_UPLOADS_PER_ARTIST {
+            ids.push(store.store_uploaded_image("Artist", &png_bytes(16, 16 + i as u32)).unwrap());
+        }
+
+        let again = store.store_uploaded_image("Artist", &png_bytes(16, 16)).expect("a re-upload is allowed");
+
+        assert_eq!(again, ids[0]);
+    }
+
+    #[test]
+    fn bytes_that_are_not_an_image_are_refused() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        assert!(store.store_uploaded_image("Artist", b"<html>").is_err());
+    }
+
+    #[test]
+    fn deleting_a_member_removes_it_and_its_variants() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let id = store.store_uploaded_image("Artist", &png_bytes(16, 16)).unwrap();
+        let variant = format!("{}/{}@200.png", store.artist_uploads_dir_for_test("Artist"), id);
+        write_file(&variant, &png_bytes(8, 8));
+
+        store.delete_artist_image("Artist", &id).expect("the member is deleted");
+
+        assert!(store.artist_image_path("Artist", &id).is_none());
+        assert!(!std::path::Path::new(&variant).exists(), "the variant went with it");
+    }
+
+    #[test]
+    fn deleting_an_unknown_member_is_an_error() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        assert!(store.delete_artist_image("Artist", "nope").is_err());
     }
 }

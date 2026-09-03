@@ -333,7 +333,7 @@ pub fn upload_artists_images(request: Json<UploadArtistsImagesRequest>) -> Json<
                 let mut store_lock = store.lock();
                 match store_lock.store_user_uploaded_image(&name, &bytes) {
                     ArtistImageResult::Found { cache_path } => {
-                        remove_artist_image_variants(&cache_path);
+                        crate::helpers::imageresize::remove_variants_of(&cache_path);
                         UploadImageResultResponse {
                             success: true,
                             message: format!("Stored image for '{}'", name),
@@ -489,7 +489,7 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
                         // A re-upload overwrites this same file but leaves any variants generated
                         // from the *previous* image beside it — drop those now so the grid does
                         // not keep showing the old face at thumbnail size.
-                        remove_artist_image_variants(&cache_path);
+                        crate::helpers::imageresize::remove_variants_of(&cache_path);
                     }
                     crate::helpers::artist_store::ArtistImageResult::NotFound => {
                         warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
@@ -591,29 +591,6 @@ fn artist_image_variant(cache_path: &str, original: &[u8], size: u32) -> Option<
         Err(e) => {
             log::debug!("Failed to resize artist image {}: {}", cache_path, e);
             None
-        }
-    }
-}
-
-/// Delete every variant beside an artist image. Called when the original is replaced.
-fn remove_artist_image_variants(cache_path: &str) {
-    let path = std::path::Path::new(cache_path);
-    let (Some(parent), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
-        return;
-    };
-    let Ok(entries) = std::fs::read_dir(parent) else { return };
-
-    for entry in entries.flatten() {
-        let candidate = entry.path();
-        let Some(candidate_stem) = candidate.file_stem().and_then(|s| s.to_str()) else { continue };
-        if crate::helpers::imageresize::variant_size_of(candidate_stem).is_none() {
-            continue;
-        }
-        if candidate_stem.rsplit_once('@').map(|(base, _)| base) != Some(stem) {
-            continue;
-        }
-        if let Err(e) = std::fs::remove_file(&candidate) {
-            log::warn!("Failed to remove artist image variant {}: {}", candidate.display(), e);
         }
     }
 }
@@ -729,24 +706,6 @@ mod tests {
     #[test]
     fn variant_paths_keep_the_extension_they_are_given() {
         assert_eq!(variant_path_for("/cache/artists/A/thumb.png", 100), "/cache/artists/A/thumb@100.png");
-    }
-
-    #[test]
-    fn removing_variants_deletes_only_the_matching_base() {
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let original = dir.path().join("custom.jpg");
-        let stale_variant = dir.path().join("custom@400.jpg");
-        let unrelated_variant = dir.path().join("cover@200.jpg");
-
-        std::fs::write(&original, b"original bytes").unwrap();
-        std::fs::write(&stale_variant, b"stale thumbnail").unwrap();
-        std::fs::write(&unrelated_variant, b"unrelated thumbnail").unwrap();
-
-        remove_artist_image_variants(original.to_str().unwrap());
-
-        assert!(original.exists(), "the original image must survive");
-        assert!(!stale_variant.exists(), "the stale variant must be removed");
-        assert!(unrelated_variant.exists(), "an unrelated base's variant must survive");
     }
 
     #[test]

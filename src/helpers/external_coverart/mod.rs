@@ -8,3 +8,4 @@
 //! never on a request path unless a caller opts in.
 
 pub mod config;
+pub mod template;

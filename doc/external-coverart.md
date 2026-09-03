@@ -42,7 +42,7 @@ Under `services` in `audiocontrol.json`:
 | `trigger` | `fallback` | See below. |
 | `cache_ttl_days` | 30 | How long an answer is kept. |
 | `negative_cache_ttl_days` | 7 | How long "there is no artwork" is kept. |
-| `max_concurrent` | 1 | Lookups in flight at once. A lookup that cannot get a slot is abandoned, not queued. |
+| `max_concurrent` | 1 | Lookups in flight at once. A background lookup that cannot get a slot is abandoned; an `include_slow` request waits for one, bounded by `timeout_seconds`. |
 
 A malformed entry is skipped with a warning; it does not stop the daemon or
 the other endpoints.

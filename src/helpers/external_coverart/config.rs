@@ -38,11 +38,14 @@ const MAX_MAX_CONCURRENT: u64 = 16;
 
 /// When an endpoint is worth asking.
 ///
-/// Note that on the now-playing path this controls cost, not outcome:
+/// Only the background worker reads this. The REST endpoints ignore it and
+/// ask whatever the request asks for, so it is not a way to hold a lookup
+/// back from a client.
+///
+/// Note that even on the now-playing path it controls cost, not outcome:
 /// `BasePlayerController::apply_song_information` refuses to replace artwork
 /// that belongs to a song, so an `Always` answer for a song that already has
-/// real artwork is dropped. `Always` changes the outcome only for the REST
-/// endpoints and for artist images, where no such policy applies.
+/// real artwork is dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
     /// Ask only when the song has no artwork, or only a placeholder.

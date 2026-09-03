@@ -258,14 +258,18 @@ pub fn resolve_with(
         Parsed::Error => return Lookup::Error,
     };
 
-    // Passing URLs through cost nothing per entry, but localising does: each
-    // one can be a fetch of up to `max_image_bytes` holding a concurrency
-    // slot, a file written, and a URL that is `stat`ed on every later cache
-    // read. An endpoint answering with hundreds of entries -- by fault or by
-    // malice -- must not be able to turn one song change into hours of work
-    // and gigabytes of disk. The contract says images arrive in the order the
-    // service ranked them, so keeping the first few loses nothing real: the
-    // grader picks one of them anyway.
+    // Every returned URL already costs a metadata fetch in
+    // `CoverartResult::new`, and localising adds to that: a fetch of up to
+    // `max_image_bytes` holding a concurrency slot, a file written, and a
+    // `stat` on every later cache read. An endpoint answering with hundreds
+    // of entries -- by fault or by malice -- must not be able to turn one
+    // song change into hours of work and gigabytes of disk. The contract says
+    // images arrive in the order the service ranked them, so keeping the
+    // first few loses nothing real: the grader picks one of them anyway.
+    // Counted before truncating, so the warning below reports what the
+    // endpoint actually offered rather than what was considered.
+    let offered = images.len();
+
     if images.len() > MAX_IMAGES_PER_ANSWER {
         warn!(
             "External cover art '{}': offered {} images; considering the first {}",
@@ -275,8 +279,6 @@ pub fn resolve_with(
         );
         images.truncate(MAX_IMAGES_PER_ANSWER);
     }
-
-    let offered = images.len();
     let urls: Vec<String> = images
         .into_iter()
         .enumerate()
@@ -365,6 +367,9 @@ mod tests {
             negative_cache_ttl_days: 7,
             max_concurrent: 1,
             localize,
+            // Deliberately not the 4 MiB default: the fetch-bound assertion
+            // below only proves the endpoint's configured value is honoured
+            // because this differs from what the parser would have supplied.
             max_image_bytes: 8 * 1024 * 1024,
         }
     }

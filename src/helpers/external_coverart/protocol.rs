@@ -84,29 +84,6 @@ pub enum Parsed {
     Error,
 }
 
-impl Parsed {
-    /// Treat every entry as a URL to pass straight through.
-    ///
-    /// This is the behaviour for an endpoint that has not asked for
-    /// localisation and delivers its images by URL. Inline bytes have no URL
-    /// to pass through, so they are dropped here; `localize::resolve` is what
-    /// gives them one.
-    pub fn into_lookup(self) -> Lookup {
-        match self {
-            Parsed::Images(images) => {
-                let urls: Vec<String> = images.into_iter().filter_map(|image| image.url).collect();
-                if urls.is_empty() {
-                    Lookup::NoArtwork
-                } else {
-                    Lookup::Found(urls)
-                }
-            }
-            Parsed::NoArtwork => Lookup::NoArtwork,
-            Parsed::Error => Lookup::Error,
-        }
-    }
-}
-
 /// Classify a 2xx response body.
 ///
 /// A body that does not parse is `Error`, not `NoArtwork`: a service that
@@ -183,10 +160,10 @@ mod tests {
             ]
         });
         assert_eq!(
-            parse_response(&body).into_lookup(),
-            Lookup::Found(vec![
-                "https://img.example/a.jpg".to_string(),
-                "https://img.example/b.jpg".to_string()
+            parse_response(&body),
+            Parsed::Images(vec![
+                ParsedImage { url: Some("https://img.example/a.jpg".into()), data: None },
+                ParsedImage { url: Some("https://img.example/b.jpg".into()), data: None },
             ])
         );
     }
@@ -217,8 +194,11 @@ mod tests {
             "images": [{ "width": 1000 }, { "url": "https://img.example/a.jpg" }]
         });
         assert_eq!(
-            parse_response(&body).into_lookup(),
-            Lookup::Found(vec!["https://img.example/a.jpg".to_string()])
+            parse_response(&body),
+            Parsed::Images(vec![ParsedImage {
+                url: Some("https://img.example/a.jpg".into()),
+                data: None
+            }])
         );
     }
 
@@ -269,42 +249,6 @@ mod tests {
     fn a_list_of_only_empty_entries_is_no_artwork() {
         let body = serde_json::json!({ "images": [{ "width": 1000 }, { "url": "", "data": "  " }] });
         assert_eq!(parse_response(&body), Parsed::NoArtwork);
-    }
-
-    /// Until the localiser exists, the pass-through conversion is the whole
-    /// behaviour: URLs go out as the endpoint gave them, and inline data has
-    /// nowhere to go yet.
-    #[test]
-    fn into_lookup_passes_urls_through_and_drops_inline_data() {
-        let parsed = Parsed::Images(vec![
-            ParsedImage { url: Some("https://img.example/a.jpg".into()), data: None },
-            ParsedImage { url: None, data: Some("aGVsbG8=".into()) },
-        ]);
-
-        assert_eq!(
-            parsed.into_lookup(),
-            Lookup::Found(vec!["https://img.example/a.jpg".to_string()])
-        );
-    }
-
-    /// An answer made entirely of inline images has no URLs to pass
-    /// through, so pass-through yields nothing. That is correct here and
-    /// wrong once the localiser exists, which is the point of pinning it:
-    /// whoever wires localisation in should see this test change.
-    #[test]
-    fn into_lookup_yields_no_artwork_when_every_entry_is_inline() {
-        let parsed = Parsed::Images(vec![
-            ParsedImage { url: None, data: Some("aGVsbG8=".into()) },
-            ParsedImage { url: None, data: Some("d29ybGQ=".into()) },
-        ]);
-
-        assert_eq!(parsed.into_lookup(), Lookup::NoArtwork);
-    }
-
-    #[test]
-    fn into_lookup_carries_the_other_two_classes_unchanged() {
-        assert_eq!(Parsed::NoArtwork.into_lookup(), Lookup::NoArtwork);
-        assert_eq!(Parsed::Error.into_lookup(), Lookup::Error);
     }
 
     /// The three classes are cached for very different lengths, which is the

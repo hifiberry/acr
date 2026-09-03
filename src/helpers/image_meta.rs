@@ -21,17 +21,6 @@ pub struct ImageMetadata {
     pub format: String,
 }
 
-/// The image cache path an internal cover art URL names, if it names one.
-///
-/// These URLs are the daemon's own route (`/api/imagecache/<path>`), not
-/// something to fetch over HTTP -- doing that would have the daemon call
-/// itself -- and not a filesystem path either. Without this they fell
-/// through to `analyze_local_image` and failed to open every time.
-fn imagecache_relative_path(url: &str) -> Option<&str> {
-    let rest = url.strip_prefix(crate::constants::API_PREFIX)?;
-    rest.strip_prefix("/imagecache/")
-}
-
 /// Get image metadata (resolution and size) for a given URL
 ///
 /// This function supports remote URLs, local files, and the daemon's own
@@ -59,7 +48,7 @@ pub fn image_size(url: &str) -> Result<ImageMetadata, String> {
     // Not in cache, analyze the image
     let metadata = if url.starts_with("http://") || url.starts_with("https://") {
         analyze_remote_image(url)?
-    } else if let Some(relative) = imagecache_relative_path(url) {
+    } else if let Some(relative) = crate::helpers::imagecache::relative_path_from_url(url) {
         let full = crate::helpers::imagecache::get_full_path(relative);
         analyze_local_image(&full.to_string_lossy())?
     } else {

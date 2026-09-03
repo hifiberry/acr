@@ -15,6 +15,7 @@
 use std::io::Cursor;
 
 use base64::Engine as _;
+use url::Url;
 use log::{debug, warn};
 
 use crate::constants::API_PREFIX;
@@ -143,6 +144,20 @@ fn store_locally(
     Some(url)
 }
 
+/// Whether two URLs share a scheme, host and port.
+///
+/// Returns `false` when either side cannot be parsed, so an unparseable
+/// endpoint template means credentials are withheld rather than sent
+/// somewhere unverified.
+fn same_origin(candidate: &str, configured: &str) -> bool {
+    let (Ok(candidate), Ok(configured)) = (Url::parse(candidate), Url::parse(configured)) else {
+        return false;
+    };
+    candidate.scheme() == configured.scheme()
+        && candidate.host_str() == configured.host_str()
+        && candidate.port_or_known_default() == configured.port_or_known_default()
+}
+
 /// An endpoint name, reduced to something safe to use as one directory name.
 ///
 /// The name comes from `audiocontrol.json`, so it is administrator-controlled
@@ -238,11 +253,37 @@ fn resolve_image(
         return Some(url);
     }
 
-    let headers: Vec<(&str, &str)> = endpoint
-        .headers
-        .iter()
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-        .collect();
+    // The endpoint's credential goes only to the endpoint's own origin.
+    //
+    // The URL being fetched here came out of the endpoint's *answer*, and
+    // everything else in this module treats that answer as untrusted: sizes
+    // are bounded, the count is capped, the type is sniffed rather than
+    // believed. Sending the configured headers to whatever host the answer
+    // happens to name would be the one place we did not -- an endpoint that
+    // is compromised, or merely buggy, could name a host of its choosing and
+    // have the daemon hand over the bearer token.
+    //
+    // A cross-origin image is still fetched, because naming a CDN is a
+    // legitimate thing for an endpoint to do; it is fetched without
+    // credentials. If the configured URL cannot be parsed -- it is a template
+    // and a placeholder could in principle sit in the authority -- nothing is
+    // sent, which fails closed.
+    let same_origin = same_origin(&url, &endpoint.url);
+    let headers: Vec<(&str, &str)> = if same_origin {
+        endpoint
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect()
+    } else {
+        if !endpoint.headers.is_empty() {
+            debug!(
+                "External cover art '{}': {} is not on the endpoint's own origin; fetching it without the configured headers",
+                endpoint.name, url
+            );
+        }
+        Vec::new()
+    };
 
     match source.fetch(&url, &headers, endpoint.max_image_bytes) {
         Ok(bytes) => store_locally(bytes, endpoint, cache_key, index, source),
@@ -316,11 +357,6 @@ pub fn resolve_with(
     }
 }
 
-/// The image cache path a locally served URL names, if it names one.
-fn local_path(url: &str) -> Option<&str> {
-    url.strip_prefix(API_PREFIX)?.strip_prefix("/imagecache/")
-}
-
 /// Drop cached URLs whose files have gone.
 ///
 /// The answer cache and the image cache expire independently in practice -- a
@@ -343,7 +379,7 @@ pub fn prune_missing_with(lookup: Lookup, source: &dyn ImageSource) -> Lookup {
 
     let surviving: Vec<String> = urls
         .into_iter()
-        .filter(|url| match local_path(url) {
+        .filter(|url| match imagecache::relative_path_from_url(url) {
             Some(path) => {
                 let present = source.exists(path);
                 if !present {
@@ -502,11 +538,16 @@ mod tests {
 
     /// The point of the whole increment: the credential that authorised the
     /// lookup has to authorise the image fetch too.
+    ///
+    /// The image is on the endpoint's own origin, which is the case this
+    /// feature exists for -- a service that generates or proxies covers and
+    /// serves them itself. A cross-origin image is a different case and is
+    /// fetched without the credential; see the tests below.
     #[test]
     fn a_url_image_is_fetched_with_the_endpoint_headers_when_localize_is_on() {
         let source = FakeSource::returning(tiny_png());
         let parsed = Parsed::Images(vec![ParsedImage {
-            url: Some("https://img.example/a.jpg".to_string()),
+            url: Some("https://x.example/img/a.jpg".to_string()),
             data: None,
         }]);
 
@@ -517,7 +558,7 @@ mod tests {
 
         let fetched = source.fetched.lock();
         assert_eq!(fetched.len(), 1);
-        assert_eq!(fetched[0].0, "https://img.example/a.jpg");
+        assert_eq!(fetched[0].0, "https://x.example/img/a.jpg");
         assert!(
             fetched[0].1.iter().any(|(n, v)| n == "Authorization" && v == "Bearer sekrit"),
             "the endpoint's credential must be on the image fetch"
@@ -781,6 +822,98 @@ mod tests {
             prune_missing_with(lookup, &source),
             Lookup::Found(vec!["https://img.example/a.jpg".to_string()])
         );
+    }
+
+    /// The URL being fetched came out of the endpoint's answer, which this
+    /// module treats as untrusted everywhere else. Sending the configured
+    /// bearer token to whatever host that answer names would hand the
+    /// credential to anyone who could influence the response.
+    #[test]
+    fn the_credential_is_not_sent_to_a_host_the_answer_chose() {
+        let source = FakeSource::returning(tiny_png());
+        let mut config = endpoint(true);
+        config.url = "https://tools.example.com/coverart".to_string();
+        let parsed = Parsed::Images(vec![ParsedImage {
+            url: Some("https://attacker.example/collect.jpg".to_string()),
+            data: None,
+        }]);
+
+        resolve_with(parsed, &config, &key(), &source);
+
+        let fetched = source.fetched.lock();
+        assert_eq!(fetched.len(), 1, "a cross-origin image is still fetched");
+        assert!(
+            fetched[0].1.is_empty(),
+            "no configured header may go to another origin, got {:?}",
+            fetched[0].1
+        );
+    }
+
+    #[test]
+    fn the_credential_is_sent_to_the_endpoints_own_origin() {
+        let source = FakeSource::returning(tiny_png());
+        let mut config = endpoint(true);
+        config.url = "https://tools.example.com/coverart?artist={artist}".to_string();
+        let parsed = Parsed::Images(vec![ParsedImage {
+            url: Some("https://tools.example.com/img/a.jpg".to_string()),
+            data: None,
+        }]);
+
+        resolve_with(parsed, &config, &key(), &source);
+
+        let fetched = source.fetched.lock();
+        assert!(
+            fetched[0].1.iter().any(|(n, v)| n == "Authorization" && v == "Bearer sekrit"),
+            "the endpoint's own origin must still get the credential"
+        );
+    }
+
+    /// A different port or scheme is a different origin, and is the shape a
+    /// redirect to a local service would take.
+    #[test]
+    fn a_different_port_or_scheme_is_a_different_origin() {
+        for image_url in [
+            "https://tools.example.com:8443/img/a.jpg",
+            "http://tools.example.com/img/a.jpg",
+            "https://tools.example.com.evil.test/img/a.jpg",
+        ] {
+            let source = FakeSource::returning(tiny_png());
+            let mut config = endpoint(true);
+            config.url = "https://tools.example.com/coverart".to_string();
+            let parsed = Parsed::Images(vec![ParsedImage {
+                url: Some(image_url.to_string()),
+                data: None,
+            }]);
+
+            resolve_with(parsed, &config, &key(), &source);
+
+            assert!(
+                source.fetched.lock()[0].1.is_empty(),
+                "{} must not receive the credential",
+                image_url
+            );
+        }
+    }
+
+    /// A cached URL that tries to walk out of the image cache must not be
+    /// treated as naming a file in it.
+    #[test]
+    fn a_traversing_cached_url_is_not_treated_as_a_cache_path() {
+        let source = FakeSource::default();
+        for url in [
+            "/api/imagecache/../../etc/passwd",
+            "/api/imagecache//etc/passwd",
+            "/api/imagecache/external/../../../etc/passwd",
+        ] {
+            // Not a cache path, so it is left alone rather than checked for
+            // existence -- and never resolved against the cache directory.
+            assert_eq!(
+                prune_missing_with(Lookup::Found(vec![url.to_string()]), &source),
+                Lookup::Found(vec![url.to_string()]),
+                "{} should not be read as a cache path",
+                url
+            );
+        }
     }
 
     /// The name is administrator-controlled, not attacker-controlled, but it

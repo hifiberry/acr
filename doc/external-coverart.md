@@ -160,7 +160,7 @@ through:
 | Entry | `localize: false` | `localize: true` |
 |---|---|---|
 | `data` only | Stored locally | Stored locally |
-| `url` only | Passed through unchanged | Fetched with the endpoint's configured `headers`, then stored locally |
+| `url` only | Passed through unchanged | Fetched, then stored locally |
 | both | `data` wins: stored locally, no fetch | `data` wins: stored locally, no fetch |
 
 Inline bytes are stored whatever `localize` says, because they have no URL to
@@ -168,8 +168,19 @@ pass through. `localize` is off by default because the opposite would be a
 regression for the common case: a publicly reachable provider's URLs already
 work, and copying its images onto an appliance's disk to serve them again
 spends disk to no end. Turn it on for an endpoint on a private network, or one
-whose images need a credential the client does not hold — the same credential
-that authorised the lookup is the one sent on the image fetch.
+whose images need a credential the client does not hold.
+
+The configured `headers` are sent on the image fetch **only when the image is
+on the endpoint's own origin** — the same scheme, host and port as `url`. An
+image elsewhere is still fetched, because naming a CDN is a reasonable thing
+for an endpoint to do, but it is fetched without credentials. If your images
+need the credential, serve them from the same origin as the endpoint.
+
+The reason is that the address being fetched came out of the endpoint's
+*answer*, and an answer is not trusted here: its sizes are bounded, its count
+is capped, and an image's type is read from its bytes rather than believed.
+Sending the configured token to whatever host an answer happened to name
+would hand the credential to anyone who could influence that response.
 
 A localised image is served at
 `/api/imagecache/external/<endpoint>/<hash>.<ext>`. Like every other internal

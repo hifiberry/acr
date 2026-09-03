@@ -1049,6 +1049,15 @@ mod tests {
         let response = update_artist_image_for(artist, &url);
 
         assert!(response.success, "{}", response.message);
+        // The two branches reach `success: true` by different routes — the
+        // remote branch always reports "updated successfully" even when its
+        // background download fails, so the message is what actually pins
+        // down that selection (not a download attempt) is what happened.
+        assert!(
+            response.message.contains(&format!("Selected image '{}'", uploaded)),
+            "expected a selection message, got: {}",
+            response.message
+        );
         let store = crate::helpers::artist_store::get_artist_store();
         let store_lock = store.lock();
         assert_eq!(store_lock.selected_image_id(artist).as_deref(), Some(uploaded.as_str()));

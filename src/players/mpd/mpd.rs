@@ -2394,6 +2394,12 @@ mod tests {
         
         // Initialize AttributeCache with the temporary directory
         attributecache::AttributeCache::initialize_global(temp_dir.path()).expect("Failed to configure cache");
+        // Leak the directory rather than let `temp_dir` delete it at the end of
+        // the test: `initialize_global` re-points the *process-wide* singleton
+        // at it for the rest of the test binary's run, and every later test
+        // that writes through the global would otherwise fail with "attempt to
+        // write a readonly database" against a directory that has gone.
+        std::mem::forget(temp_dir);
         
         let mut song = Song::default();
         song.stream_url = Some("http://example.com/not-cached.mp3".to_string());
@@ -2758,6 +2764,12 @@ mod tests {
     fn test_existing_cover_art_wins_over_station_logo() {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         attributecache::AttributeCache::initialize_global(temp_dir.path()).expect("Failed to configure cache");
+        // Leak the directory rather than let `temp_dir` delete it at the end of
+        // the test: `initialize_global` re-points the *process-wide* singleton
+        // at it for the rest of the test binary's run, and every later test
+        // that writes through the global would otherwise fail with "attempt to
+        // write a readonly database" against a directory that has gone.
+        std::mem::forget(temp_dir);
 
         let mut song = Song::default();
         song.stream_url = Some("http://example.com/uncached-stream".to_string());
@@ -2781,6 +2793,12 @@ mod tests {
     fn test_stream_metadata_logo_becomes_cover_art() {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         attributecache::AttributeCache::initialize_global(temp_dir.path()).expect("Failed to configure cache");
+        // Leak the directory rather than let `temp_dir` delete it at the end of
+        // the test: `initialize_global` re-points the *process-wide* singleton
+        // at it for the rest of the test binary's run, and every later test
+        // that writes through the global would otherwise fail with "attempt to
+        // write a readonly database" against a directory that has gone.
+        std::mem::forget(temp_dir);
 
         let mut song = Song::default();
         song.stream_url = Some("http://example.com/another-uncached-stream".to_string());

@@ -1138,6 +1138,13 @@ mod tests {
         
         let result = AttributeCache::initialize_from_config(&config);
         assert!(result.is_ok(), "Failed to initialize with preload_prefixes: {:?}", result);
+
+        // Leak the directory rather than let `temp_dir` delete it on drop:
+        // `initialize_global` re-points the *process-wide* singleton at it for
+        // the rest of the test binary's run, and every later test that writes
+        // through the global would otherwise fail with "attempt to write a
+        // readonly database" against a directory that no longer exists.
+        std::mem::forget(temp_dir);
     }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -1429,6 +1436,13 @@ mod tests {
         // Verify removal
         let retrieved_after: Option<String> = super::get(key).expect("Failed to get removed global value");
         assert_eq!(retrieved_after, None);
+
+        // Leak the directory rather than let `temp_dir` delete it on drop:
+        // `initialize_global` re-points the *process-wide* singleton at it for
+        // the rest of the test binary's run, and every later test that writes
+        // through the global would otherwise fail with "attempt to write a
+        // readonly database" against a directory that no longer exists.
+        std::mem::forget(temp_dir);
     }
 
     // Concurrent access tests
@@ -1638,6 +1652,13 @@ mod tests {
         assert!(total_successful >= expected_minimum, 
             "Expected at least {} successful operations, got {}", 
             expected_minimum, total_successful);
+
+        // Leak the directory rather than let `temp_dir` delete it on drop:
+        // `initialize_global` re-points the *process-wide* singleton at it for
+        // the rest of the test binary's run, and every later test that writes
+        // through the global would otherwise fail with "attempt to write a
+        // readonly database" against a directory that no longer exists.
+        std::mem::forget(temp_dir);
     }
 
     #[test]
@@ -2142,6 +2163,13 @@ mod tests {
 
         // Should be expired
         assert_eq!(get::<String>(key).unwrap(), None);
+
+        // Leak the directory rather than let `temp_dir` delete it on drop:
+        // `initialize_global` re-points the *process-wide* singleton at it for
+        // the rest of the test binary's run, and every later test that writes
+        // through the global would otherwise fail with "attempt to write a
+        // readonly database" against a directory that no longer exists.
+        std::mem::forget(temp_dir);
     }
 
     #[test]

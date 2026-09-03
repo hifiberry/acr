@@ -31,6 +31,18 @@ pub struct ImageMetadata {
 /// 
 /// # Returns
 /// * `Result<ImageMetadata, String>` - Image metadata or error message
+/// The image cache path an internal cover art URL names, if it names one.
+///
+/// These URLs are the daemon's own route (`/api/imagecache/<path>`), not
+/// something to fetch over HTTP -- doing that would have the daemon call
+/// itself -- and not a filesystem path either. Without this they fell
+/// through to `analyze_local_image` and failed to open every time.
+fn imagecache_relative_path(url: &str) -> Option<&str> {
+    let prefix = concat!("/imagecache/");
+    let rest = url.strip_prefix(crate::constants::API_PREFIX)?;
+    rest.strip_prefix(prefix)
+}
+
 pub fn image_size(url: &str) -> Result<ImageMetadata, String> {
     // Check cache first
     let cache_key = format!("{}{}", IMAGE_META_CACHE_PREFIX, url);
@@ -46,6 +58,9 @@ pub fn image_size(url: &str) -> Result<ImageMetadata, String> {
     // Not in cache, analyze the image
     let metadata = if url.starts_with("http://") || url.starts_with("https://") {
         analyze_remote_image(url)?
+    } else if let Some(relative) = imagecache_relative_path(url) {
+        let full = crate::helpers::imagecache::get_full_path(relative);
+        analyze_local_image(&full.to_string_lossy())?
     } else {
         analyze_local_image(url)?
     };
@@ -108,11 +123,14 @@ fn analyze_remote_image(url: &str) -> Result<ImageMetadata, String> {
     })
 }
 
-/// Detect image dimensions from a reader
-/// 
-/// This function reads just enough data to determine the image format and dimensions
-/// without loading the entire image into memory.
-fn detect_image_dimensions<R: BufRead + Seek>(reader: &mut R) -> Result<(u32, u32, String), String> {
+/// Detect an image's format and dimensions from its first bytes.
+///
+/// `pub(crate)` rather than private because localised external cover art
+/// sniffs the bytes it is about to store: the file extension it writes has to
+/// come from the image itself, not from a field the endpoint filled in, and
+/// bytes that are not a recognised image must be refused rather than served
+/// to clients as a broken picture.
+pub(crate) fn detect_image_dimensions<R: BufRead + Seek>(reader: &mut R) -> Result<(u32, u32, String), String> {
     // Read the first few bytes to determine format
     let mut header = [0u8; 32];
     reader.read_exact(&mut header)
@@ -569,7 +587,55 @@ mod tests {
         
         // Clean up
         std::fs::remove_dir_all(&temp_dir).ok();
-        
+
         println!("Temporary cache test completed successfully");
+    }
+
+    /// A 1x1 PNG, as bytes, so the test needs no fixture file.
+    fn tiny_png() -> Vec<u8> {
+        vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ]
+    }
+
+    /// `/api/imagecache/...` is neither an http URL nor a filesystem path.
+    /// It went to `analyze_local_image`, which tried to `File::open` it and
+    /// failed every time -- so a locally served image graded with no
+    /// dimensions at all. Shairport has been producing these URLs since it
+    /// was written.
+    #[test]
+    fn an_imagecache_url_is_measured_from_the_cache() {
+        let relative = format!("test_image_meta/{}.png", std::process::id());
+        crate::helpers::imagecache::store_image(&relative, &tiny_png())
+            .expect("the image is stored");
+
+        let url = format!("{}/imagecache/{}", crate::constants::API_PREFIX, relative);
+        let metadata = image_size(&url).expect("a cached image is measurable");
+
+        assert_eq!((metadata.width, metadata.height), (1, 1));
+
+        let _ = crate::helpers::imagecache::delete_image(&relative);
+    }
+
+    #[test]
+    fn a_plain_relative_path_is_still_treated_as_a_file() {
+        // Not under the imagecache route, so the old behaviour stands: this
+        // is a filesystem path, and a missing one is an error rather than a
+        // silent zero-sized answer.
+        assert!(image_size("definitely/not/a/real/file.png").is_err());
+    }
+
+    #[test]
+    fn the_sniffer_reads_dimensions_from_bytes_in_memory() {
+        let mut cursor = std::io::Cursor::new(tiny_png());
+        let (width, height, format) =
+            detect_image_dimensions(&mut cursor).expect("a PNG is recognised");
+
+        assert_eq!((width, height), (1, 1));
+        assert!(!format.is_empty());
     }
 }

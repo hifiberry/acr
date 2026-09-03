@@ -5,7 +5,7 @@ use std::io::Read;
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use crate::data::artist::Artist;
-use crate::helpers::coverart::get_coverart_manager;
+use crate::helpers::coverart::{query_coverart, CoverartQuery, QueryOptions};
 use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 
 /// Result of an artist image operation
@@ -330,11 +330,13 @@ impl ArtistStore {
             }
         }
 
-        // Use the cover art system to find images
-        let manager = get_coverart_manager();
-        let manager_guard = manager.lock();
-        let results = manager_guard.get_artist_coverart(artist_name);
-        drop(manager_guard);
+        // Fast providers only: this runs while a caller waits for an artist
+        // image, and a slow provider's answer reaches the cache by its own
+        // route.
+        let results = query_coverart(
+            &CoverartQuery::Artist(artist_name.to_string()),
+            &QueryOptions::default(),
+        );
 
         if results.is_empty() {
             debug!("No cover art found for artist {}", artist_name);

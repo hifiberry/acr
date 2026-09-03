@@ -1,3 +1,36 @@
+hifiberry-audiocontrol (0.19.0) trixie; urgency=medium
+
+  * Cover art can now come from external HTTP endpoints configured at
+    runtime, under `services.external_coverart`. Each endpoint is a URL
+    template with `{artist}`, `{album}`, `{title}`, `{year}` and `{url}`
+    placeholders, its own headers for credentials, and its own timeout and
+    cache lifetimes. The response contract is fixed — a JSON body with an
+    `images` array — so an endpoint that speaks something else needs an
+    adapter in front of it rather than a mapping in this config.
+  * An endpoint may declare itself slow, which is what makes a lookup taking
+    tens of seconds usable. A slow endpoint is never on the critical path of a
+    request: the REST cover art handlers answer it from cache only, and the
+    daemon runs the real lookup in the background when the song changes,
+    publishing the result as a `song_information_update` event once it
+    arrives. A client that wants to pay the wait can ask for it explicitly
+    with `?include_slow=true`, which is bounded by the endpoint's configured
+    timeout.
+  * Cover art providers are now queried in parallel and without holding the
+    provider registry lock. The previous fan-out held a global mutex across
+    every provider's network I/O, plus a metadata fetch per returned URL, so
+    one slow provider stalled every cover art request in the daemon,
+    including those for other songs.
+  * Answers are cached in three classes with separate lifetimes: an image
+    found, a confirmed absence of artwork, and a lookup error. An endpoint
+    outage therefore stops mattering within the hour instead of blanking a
+    track for the length of the negative cache.
+  * `doc/websocket.md` records the `cover_art_source` values a configured
+    endpoint produces. The set is open-ended by design; a client should keep
+    treating any source other than `station_logo` as real artwork rather
+    than matching a fixed list.
+
+ -- HiFiBerry <support@hifiberry.com>  Thu, 03 Sep 2026 13:37:10 +0000
+
 hifiberry-audiocontrol (0.18.0) trixie; urgency=medium
 
   * `/api/now-playing` reflects a cover art lookup instead of only the

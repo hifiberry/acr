@@ -288,7 +288,10 @@ fn main() {
     
     // Initialize FanArt.tv with the configuration
     initialize_fanarttv(&controllers_config);
-    
+
+    // Initialize external cover art endpoints with the configuration
+    initialize_external_coverart(&controllers_config);
+
     // Initialize configurator with the configuration
     initialize_configurator(&controllers_config);
     
@@ -417,6 +420,10 @@ fn main() {
 
     // Initialize cover art providers
     audiocontrol::helpers::coverart_providers::register_all_providers();
+
+    // The slow endpoints are never on a request path, so their answers reach
+    // clients through this worker and song_information_update.
+    audiocontrol::helpers::external_coverart::worker::start();
 
     // Get a reference to the AudioController singleton
     let controller = AudioController::instance();
@@ -579,6 +586,12 @@ fn initialize_musicbrainz(config: &serde_json::Value) {
 fn initialize_theaudiodb(config: &serde_json::Value) {
     theaudiodb::initialize_from_config(config);
     info!("TheAudioDB initialized successfully");
+}
+
+// Helper function to initialize external cover art endpoints
+fn initialize_external_coverart(config: &serde_json::Value) {
+    audiocontrol::helpers::external_coverart::initialize_from_config(config);
+    info!("External cover art initialized successfully");
 }
 
 // Helper function to initialize FanArt.tv

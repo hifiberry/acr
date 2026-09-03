@@ -213,6 +213,24 @@ pub trait CoverartProvider {
         DEFAULT_FAST_DEADLINE
     }
 
+    /// Whether a call to this provider may take long enough that it must not
+    /// sit on a request path. A slow provider is consulted for cached
+    /// answers only, unless the caller opts in through
+    /// [`QueryOptions::include_slow`].
+    fn is_slow(&self) -> bool {
+        false
+    }
+
+    /// Answer from this provider's own cache, without a network round trip.
+    ///
+    /// `None` means "not cached"; `Some(vec![])` means "cached, and the
+    /// answer is that there is no artwork". Only slow providers need to
+    /// implement this: it is what keeps their answers available on the fast
+    /// path once they have been found.
+    fn cached_coverart(&self, _query: &CoverartQuery) -> Option<Vec<String>> {
+        None
+    }
+
     /// Get cover art for an artist by name
     /// 
     /// # Arguments
@@ -479,8 +497,16 @@ pub(crate) fn fan_out(
     for (index, provider) in selected.into_iter().enumerate() {
         let tx = tx.clone();
         let query = query.clone();
+        let include_slow = opts.include_slow;
         std::thread::spawn(move || {
-            let urls = run_query(&provider, &query);
+            // A slow provider is not called on the fast path, but its cache
+            // is: a cache hit is not slow, so an answer it found earlier
+            // still reaches the caller.
+            let urls = if provider.is_slow() && !include_slow {
+                provider.cached_coverart(&query).unwrap_or_default()
+            } else {
+                run_query(&provider, &query)
+            };
 
             let message = if urls.is_empty() {
                 None
@@ -704,5 +730,103 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(400));
         assert!(done.load(Ordering::SeqCst), "the query finished");
+    }
+
+    /// A provider that is slow, answers only from its cache, and records
+    /// whether the network path was taken.
+    struct SlowCachingStub {
+        cached: Option<Vec<String>>,
+        network_called: Arc<AtomicBool>,
+    }
+
+    impl CoverartProvider for SlowCachingStub {
+        fn name(&self) -> &str { "slow-caching" }
+        fn display_name(&self) -> &str { "Slow Caching" }
+        fn supported_methods(&self) -> HashSet<CoverartMethod> {
+            let mut m = HashSet::new();
+            m.insert(CoverartMethod::Artist);
+            m
+        }
+        fn is_slow(&self) -> bool { true }
+        fn timeout(&self) -> Duration { Duration::from_secs(45) }
+        fn cached_coverart(&self, _query: &CoverartQuery) -> Option<Vec<String>> {
+            self.cached.clone()
+        }
+        fn get_artist_coverart_impl(&self, _artist: &str) -> Vec<String> {
+            self.network_called.store(true, Ordering::SeqCst);
+            vec!["https://coverart.invalid/from-network.jpg".to_string()]
+        }
+    }
+
+    fn slow_caching(cached: Option<Vec<String>>) -> (Arc<SlowCachingStub>, Arc<AtomicBool>) {
+        let network_called = Arc::new(AtomicBool::new(false));
+        let stub = Arc::new(SlowCachingStub {
+            cached,
+            network_called: network_called.clone(),
+        });
+        (stub, network_called)
+    }
+
+    /// The whole point of the latency class: a 20-40s provider is never on a
+    /// request path unless the caller asked for it.
+    #[test]
+    fn the_fast_path_does_not_call_a_slow_provider() {
+        let (stub, network_called) = slow_caching(None);
+
+        let results = fan_out(
+            vec![stub as Arc<dyn CoverartProvider + Send + Sync>],
+            &CoverartQuery::Artist("Alva Noto".to_string()),
+            &QueryOptions::default(),
+        );
+
+        assert!(results.is_empty());
+        assert!(!network_called.load(Ordering::SeqCst), "no network call was made");
+    }
+
+    /// A cache hit is not slow, so an answer the provider found earlier still
+    /// reaches the fast path. This is what lets the REST endpoint improve over
+    /// time without ever waiting.
+    #[test]
+    fn the_fast_path_still_serves_a_slow_providers_cached_answer() {
+        let cached = vec!["https://coverart.invalid/cached.jpg".to_string()];
+        let (stub, network_called) = slow_caching(Some(cached.clone()));
+
+        let results = fan_out(
+            vec![stub as Arc<dyn CoverartProvider + Send + Sync>],
+            &CoverartQuery::Artist("Alva Noto".to_string()),
+            &QueryOptions::default(),
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].images[0].url, cached[0]);
+        assert!(!network_called.load(Ordering::SeqCst), "served from cache, not the network");
+    }
+
+    /// Opting in reaches the network, and the deadline comes from the
+    /// provider's own timeout rather than the 5s fast deadline.
+    #[test]
+    fn opting_in_calls_a_slow_provider() {
+        let (stub, network_called) = slow_caching(None);
+
+        let results = fan_out(
+            vec![stub as Arc<dyn CoverartProvider + Send + Sync>],
+            &CoverartQuery::Artist("Alva Noto".to_string()),
+            &QueryOptions { include_slow: true, ..QueryOptions::default() },
+        );
+
+        assert_eq!(results.len(), 1);
+        assert!(network_called.load(Ordering::SeqCst));
+    }
+
+    /// Every provider shipped today is fast and answers only over the
+    /// network; the defaults must not change their behaviour.
+    #[test]
+    fn providers_are_fast_and_uncached_by_default() {
+        let (plain, _) = stub("plain", 0);
+        assert!(!plain.is_slow());
+        assert_eq!(
+            plain.cached_coverart(&CoverartQuery::Artist("Alva Noto".to_string())),
+            None
+        );
     }
 }

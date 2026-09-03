@@ -12,6 +12,9 @@ pub mod protocol;
 pub mod template;
 pub mod worker;
 
+#[cfg(test)]
+mod stub_server;
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -406,5 +409,152 @@ mod tests {
             artist: "No Such Artist At All".to_string(),
         };
         assert_eq!(provider.cached_coverart(&query), None);
+    }
+
+    use super::stub_server::StubServer;
+    use protocol::Lookup;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+    /// A title no earlier run can have cached.
+    ///
+    /// The attribute cache is a real SQLite file whose location depends on the
+    /// machine, and a cached answer would make the provider skip the HTTP call
+    /// these tests exist to observe. A unique title sidesteps that without the
+    /// tests having to reach into the cache.
+    fn unique_title() -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after the epoch")
+            .as_nanos();
+        format!(
+            "stub-{}-{}-{}",
+            std::process::id(),
+            nanos,
+            COUNTER.fetch_add(1, AtomicOrdering::SeqCst)
+        )
+    }
+
+    fn stub_query() -> CoverartQuery {
+        CoverartQuery::Song {
+            title: unique_title(),
+            artist: "Alva Noto".to_string(),
+        }
+    }
+
+    fn provider_for(server: &StubServer, timeout_seconds: u64) -> ExternalCoverartProvider {
+        let mut endpoint = endpoint();
+        endpoint.name = format!("stub-{}", unique_title());
+        endpoint.url = format!("{}?artist={{artist}}&title={{title}}", server.url());
+        endpoint.timeout_seconds = timeout_seconds;
+        endpoint.headers.insert(
+            "Authorization".to_string(),
+            "Bearer test-token".to_string(),
+        );
+        ExternalCoverartProvider::new(endpoint)
+    }
+
+    #[test]
+    fn a_populated_response_becomes_found() {
+        let server = StubServer::serving(
+            200,
+            r#"{"images":[{"url":"https://img.example/a.jpg"}]}"#,
+        );
+        let provider = provider_for(&server, 5);
+
+        assert_eq!(
+            provider.lookup(&stub_query()),
+            Lookup::Found(vec!["https://img.example/a.jpg".to_string()])
+        );
+    }
+
+    /// The template and the configured headers have to survive the trip to
+    /// the wire; this is the only test that sees what was actually sent.
+    #[test]
+    fn the_expanded_url_and_configured_headers_reach_the_server() {
+        let server = StubServer::serving(200, r#"{"images":[]}"#);
+        let provider = provider_for(&server, 5);
+
+        let query = CoverartQuery::Song {
+            title: "Uni Acronym".to_string(),
+            artist: "Alva Noto".to_string(),
+        };
+        provider.lookup(&query);
+
+        let request = server.last_request().expect("the server was called");
+        assert!(
+            request.contains("artist=Alva%20Noto&title=Uni%20Acronym"),
+            "request line did not carry the expanded template: {}",
+            request
+        );
+        assert!(
+            request.contains("Authorization: Bearer test-token"),
+            "configured headers were not sent: {}",
+            request
+        );
+    }
+
+    #[test]
+    fn an_empty_response_becomes_no_artwork() {
+        let server = StubServer::serving(200, r#"{"images":[]}"#);
+        let provider = provider_for(&server, 5);
+
+        assert_eq!(provider.lookup(&stub_query()), Lookup::NoArtwork);
+    }
+
+    /// A server error is a fault, not a statement that the track has no
+    /// artwork -- the distinction the TTLs rest on.
+    #[test]
+    fn a_server_error_becomes_error() {
+        let server = StubServer::serving(500, "upstream exploded");
+        let provider = provider_for(&server, 5);
+
+        assert_eq!(provider.lookup(&stub_query()), Lookup::Error);
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_becomes_error() {
+        let server = StubServer::serving(200, "<html>not json</html>");
+        let provider = provider_for(&server, 5);
+
+        assert_eq!(provider.lookup(&stub_query()), Lookup::Error);
+    }
+
+    /// The timeout is the promise that a wedged endpoint cannot hold a thread
+    /// open indefinitely.
+    #[test]
+    fn a_server_that_never_answers_times_out_as_error() {
+        let server = StubServer::silent();
+        let provider = provider_for(&server, 1);
+
+        let start = std::time::Instant::now();
+        assert_eq!(provider.lookup(&stub_query()), Lookup::Error);
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the configured 1s timeout was not honoured"
+        );
+    }
+
+    /// A second lookup while the first still holds the only slot is abandoned
+    /// rather than queued, so threads cannot pile up against a stuck endpoint.
+    #[test]
+    fn a_lookup_that_cannot_get_a_slot_gives_up() {
+        let server = StubServer::silent();
+        let provider = Arc::new(provider_for(&server, 5));
+
+        let busy = provider.clone();
+        let holder = std::thread::spawn(move || busy.lookup(&stub_query()));
+
+        // Let the first lookup take the slot and block on the silent server.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let start = std::time::Instant::now();
+        assert_eq!(provider.lookup(&stub_query()), Lookup::Error);
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "the second lookup waited instead of giving up"
+        );
+
+        let _ = holder.join();
     }
 }

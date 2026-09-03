@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use std::sync::mpsc;
 use parking_lot::Mutex;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -141,16 +143,75 @@ pub enum CoverartMethod {
     Url,
 }
 
+/// A cover art lookup, as one value.
+///
+/// The manager previously carried four near-identical query methods; making
+/// the query a value collapses them to one fan-out and gives the provider
+/// trait a single cache key to reason about.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CoverartQuery {
+    Artist(String),
+    Song { title: String, artist: String },
+    Album { title: String, artist: String, year: Option<i32> },
+    Url(String),
+}
+
+impl CoverartQuery {
+    /// The method a provider must support to answer this query.
+    pub fn method(&self) -> CoverartMethod {
+        match self {
+            CoverartQuery::Artist(_) => CoverartMethod::Artist,
+            CoverartQuery::Song { .. } => CoverartMethod::Song,
+            CoverartQuery::Album { .. } => CoverartMethod::Album,
+            CoverartQuery::Url(_) => CoverartMethod::Url,
+        }
+    }
+}
+
+/// How long the fast path waits for the whole fan-out. Providers that
+/// declare themselves slow are not on it; see `CoverartProvider::is_slow`.
+pub const DEFAULT_FAST_DEADLINE: Duration = Duration::from_secs(5);
+
+/// What a caller wants from a fan-out.
+#[derive(Debug, Clone)]
+pub struct QueryOptions {
+    /// Wait for providers that declare themselves slow. Off by default: a
+    /// slow provider may take tens of seconds, which no request path can sit
+    /// through.
+    pub include_slow: bool,
+
+    /// The deadline for the fast path. When `include_slow` is set, the
+    /// deadline instead comes from the slowest selected provider's own
+    /// `timeout()`, since waiting is the whole point of asking.
+    pub fast_deadline: Duration,
+}
+
+impl Default for QueryOptions {
+    fn default() -> Self {
+        Self {
+            include_slow: false,
+            fast_deadline: DEFAULT_FAST_DEADLINE,
+        }
+    }
+}
+
 /// Trait for cover art providers that can retrieve cover art from various sources
 pub trait CoverartProvider {
     /// Returns the internal name identifier for this provider
     fn name(&self) -> &str;
-    
+
     /// Returns the human-readable display name for this provider
     fn display_name(&self) -> &str;
-    
+
     /// Returns the set of methods this provider supports
     fn supported_methods(&self) -> HashSet<CoverartMethod>;
+
+    /// How long a call to this provider may take. Used to size the deadline
+    /// when a caller opts into slow providers; ignored on the fast path,
+    /// which has its own deadline.
+    fn timeout(&self) -> Duration {
+        DEFAULT_FAST_DEADLINE
+    }
 
     /// Get cover art for an artist by name
     /// 
@@ -364,6 +425,108 @@ impl Default for CoverartManager {
     }
 }
 
+/// Ask one provider the query it was selected for.
+fn run_query(
+    provider: &Arc<dyn CoverartProvider + Send + Sync>,
+    query: &CoverartQuery,
+) -> Vec<String> {
+    match query {
+        CoverartQuery::Artist(artist) => provider.get_artist_coverart(artist),
+        CoverartQuery::Song { title, artist } => provider.get_song_coverart(title, artist),
+        CoverartQuery::Album { title, artist, year } => {
+            provider.get_album_coverart(title, artist, *year)
+        }
+        CoverartQuery::Url(url) => provider.get_url_coverart(url),
+    }
+}
+
+/// Query a set of providers in parallel, under a deadline.
+///
+/// Each provider runs on its own thread, so the metadata fetch and grading
+/// that `CoverartResult::new` performs per URL are parallel too -- they used
+/// to be serial across every URL from every provider, and under the registry
+/// lock. A provider that misses the deadline is not waited for; its thread
+/// finishes and whatever caching it does is not wasted.
+pub(crate) fn fan_out(
+    providers: Vec<Arc<dyn CoverartProvider + Send + Sync>>,
+    query: &CoverartQuery,
+    opts: &QueryOptions,
+) -> Vec<CoverartResult> {
+    let method = query.method();
+    let selected: Vec<_> = providers
+        .into_iter()
+        .filter(|p| p.supported_methods().contains(&method))
+        .collect();
+
+    if selected.is_empty() {
+        return Vec::new();
+    }
+
+    let deadline = if opts.include_slow {
+        selected
+            .iter()
+            .map(|p| p.timeout())
+            .max()
+            .unwrap_or(opts.fast_deadline)
+            .max(opts.fast_deadline)
+    } else {
+        opts.fast_deadline
+    };
+
+    let (tx, rx) = mpsc::channel::<(usize, Option<CoverartResult>)>();
+    let expected = selected.len();
+
+    for (index, provider) in selected.into_iter().enumerate() {
+        let tx = tx.clone();
+        let query = query.clone();
+        std::thread::spawn(move || {
+            let urls = run_query(&provider, &query);
+
+            let message = if urls.is_empty() {
+                None
+            } else {
+                Some(CoverartResult::new(
+                    ProviderInfo {
+                        name: provider.name().to_string(),
+                        display_name: provider.display_name().to_string(),
+                    },
+                    urls,
+                ))
+            };
+            let _ = tx.send((index, message));
+        });
+    }
+    drop(tx);
+
+    let end = Instant::now() + deadline;
+    let mut collected: Vec<(usize, CoverartResult)> = Vec::new();
+    for _ in 0..expected {
+        let remaining = end.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok((index, Some(result))) => collected.push((index, result)),
+            Ok((_, None)) => {}
+            Err(_) => break,
+        }
+    }
+
+    // Registration order, whatever order the threads finished in.
+    collected.sort_by_key(|(index, _)| *index);
+    collected.into_iter().map(|(_, result)| result).collect()
+}
+
+/// Run a cover art query against every registered provider.
+///
+/// The registry lock is taken only to snapshot the providers, never across
+/// the network calls that follow.
+pub fn query_coverart(query: &CoverartQuery, opts: &QueryOptions) -> Vec<CoverartResult> {
+    let providers = {
+        let manager = get_coverart_manager();
+        let guard = manager.lock();
+        guard.get_providers().clone()
+    };
+    fan_out(providers, query, opts)
+}
+
 /// Global singleton instance of the coverart manager
 static COVERART_MANAGER: Lazy<Arc<Mutex<CoverartManager>>> = Lazy::new(|| {
     Arc::new(Mutex::new(CoverartManager::new()))
@@ -372,4 +535,174 @@ static COVERART_MANAGER: Lazy<Arc<Mutex<CoverartManager>>> = Lazy::new(|| {
 /// Get a reference to the global coverart manager
 pub fn get_coverart_manager() -> Arc<Mutex<CoverartManager>> {
     COVERART_MANAGER.clone()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A provider that blocks for `delay`, so a test can tell a sequential
+    /// fan-out from a parallel one and see whether a deadline is honoured.
+    struct SlowStub {
+        name: String,
+        delay: Duration,
+        url: String,
+        called: Arc<AtomicBool>,
+    }
+
+    impl CoverartProvider for SlowStub {
+        fn name(&self) -> &str { &self.name }
+        fn display_name(&self) -> &str { &self.name }
+        fn supported_methods(&self) -> HashSet<CoverartMethod> {
+            let mut m = HashSet::new();
+            m.insert(CoverartMethod::Artist);
+            m
+        }
+        fn get_artist_coverart_impl(&self, _artist: &str) -> Vec<String> {
+            self.called.store(true, Ordering::SeqCst);
+            std::thread::sleep(self.delay);
+            vec![self.url.clone()]
+        }
+    }
+
+    fn stub(name: &str, delay_ms: u64) -> (Arc<SlowStub>, Arc<AtomicBool>) {
+        let called = Arc::new(AtomicBool::new(false));
+        let stub = Arc::new(SlowStub {
+            name: name.to_string(),
+            delay: Duration::from_millis(delay_ms),
+            // A URL no metadata fetch can resolve: the point of these tests is
+            // the fan-out, and `CoverartResult::new` tolerates a failed fetch.
+            url: format!("https://coverart.invalid/{}.jpg", name),
+            called: called.clone(),
+        });
+        (stub, called)
+    }
+
+    fn providers(list: Vec<Arc<SlowStub>>) -> Vec<Arc<dyn CoverartProvider + Send + Sync>> {
+        list.into_iter()
+            .map(|p| p as Arc<dyn CoverartProvider + Send + Sync>)
+            .collect()
+    }
+
+    /// Three providers that each block for 300ms must finish together, not
+    /// one after another. Sequentially this is 900ms; the assertion leaves
+    /// generous room for a loaded CI machine while still failing a serial
+    /// implementation.
+    #[test]
+    fn providers_are_queried_in_parallel() {
+        let (a, _) = stub("a", 300);
+        let (b, _) = stub("b", 300);
+        let (c, _) = stub("c", 300);
+
+        let start = Instant::now();
+        let results = fan_out(
+            providers(vec![a, b, c]),
+            &CoverartQuery::Artist("Alva Noto".to_string()),
+            &QueryOptions::default(),
+        );
+        let elapsed = start.elapsed();
+
+        assert_eq!(results.len(), 3, "every provider answered");
+        assert!(
+            elapsed < Duration::from_millis(700),
+            "fan-out took {:?}; a sequential one would take ~900ms",
+            elapsed
+        );
+    }
+
+    /// Results keep registration order however the threads finish, because
+    /// the API is a list clients render in order.
+    #[test]
+    fn results_keep_registration_order() {
+        let (slow, _) = stub("slow", 200);
+        let (fast, _) = stub("fast", 0);
+
+        let results = fan_out(
+            providers(vec![slow, fast]),
+            &CoverartQuery::Artist("Alva Noto".to_string()),
+            &QueryOptions::default(),
+        );
+
+        let names: Vec<_> = results.iter().map(|r| r.provider.name.as_str()).collect();
+        assert_eq!(names, vec!["slow", "fast"]);
+    }
+
+    /// A provider that overruns the deadline does not hold up the ones that
+    /// answered. Its own thread runs on; the caller simply stops waiting.
+    #[test]
+    fn a_provider_past_the_deadline_is_not_waited_for() {
+        let (quick, _) = stub("quick", 0);
+        let (glacial, _) = stub("glacial", 5_000);
+
+        let opts = QueryOptions {
+            fast_deadline: Duration::from_millis(300),
+            ..QueryOptions::default()
+        };
+
+        let start = Instant::now();
+        let results = fan_out(
+            providers(vec![quick, glacial]),
+            &CoverartQuery::Artist("Alva Noto".to_string()),
+            &opts,
+        );
+        let elapsed = start.elapsed();
+
+        assert_eq!(results.len(), 1, "only the provider that answered in time");
+        assert_eq!(results[0].provider.name, "quick");
+        assert!(elapsed < Duration::from_secs(2), "returned at the deadline, not at 5s");
+    }
+
+    /// A provider that does not support the query's method is never called --
+    /// the old code asked every provider and relied on each to return empty.
+    #[test]
+    fn providers_that_do_not_support_the_method_are_not_called() {
+        let (artist_only, called) = stub("artist-only", 0);
+
+        let results = fan_out(
+            providers(vec![artist_only]),
+            &CoverartQuery::Song {
+                title: "Uni Acronym".to_string(),
+                artist: "Alva Noto".to_string(),
+            },
+            &QueryOptions::default(),
+        );
+
+        assert!(results.is_empty());
+        assert!(!called.load(Ordering::SeqCst), "the provider was not asked");
+    }
+
+    /// The global registry lock guards the registry, not the network. If the
+    /// fan-out still held it, this second lock attempt would deadlock.
+    #[test]
+    fn the_registry_lock_is_not_held_across_provider_calls() {
+        let (slow, _) = stub("holds-the-lock", 200);
+        {
+            let manager = get_coverart_manager();
+            manager.lock().register_provider(slow);
+        }
+
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = done.clone();
+        std::thread::spawn(move || {
+            query_coverart(
+                &CoverartQuery::Artist("Alva Noto".to_string()),
+                &QueryOptions::default(),
+            );
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        // Give the query time to reach the provider call, then prove the
+        // registry is still lockable while it is in flight.
+        std::thread::sleep(Duration::from_millis(50));
+        let manager = get_coverart_manager();
+        let guard = manager.try_lock();
+        assert!(
+            guard.is_some(),
+            "the registry lock is held across a provider call"
+        );
+        drop(guard);
+
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(done.load(Ordering::SeqCst), "the query finished");
+    }
 }

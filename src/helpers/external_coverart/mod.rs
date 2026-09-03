@@ -10,6 +10,7 @@
 pub mod config;
 pub mod protocol;
 pub mod template;
+pub mod worker;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};

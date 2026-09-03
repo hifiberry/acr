@@ -421,6 +421,10 @@ fn main() {
     // Initialize cover art providers
     audiocontrol::helpers::coverart_providers::register_all_providers();
 
+    // The slow endpoints are never on a request path, so their answers reach
+    // clients through this worker and song_information_update.
+    audiocontrol::helpers::external_coverart::worker::start();
+
     // Get a reference to the AudioController singleton
     let controller = AudioController::instance();
 

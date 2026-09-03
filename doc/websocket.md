@@ -177,6 +177,7 @@ WebUI and the set grows.
 | `"station_logo"` | The artwork is only the radio station's logo, not artwork for the track being played. It is a placeholder shown so the client has something immediately, and a later `song_information_update` may replace it. **From 0.16.0.** |
 | `"lastfm"` | Album art Last.fm supplied for the track. A real answer for the track, so nothing replaces it. **From 0.16.0.** |
 | `"enrichment"` | Artwork that reached the song through a lookup which did not name itself. Like `"lastfm"`, a real answer for the track and not a placeholder. **New in 0.18.0.** |
+| *a configured name* | Artwork from an endpoint configured under `services.external_coverart` — the value is that endpoint's `name`. A real answer for the track, so nothing replaces it. These lookups can take tens of seconds, so the update arrives well after `song_changed`. **New in 0.19.0.** |
 
 The only distinction a client needs is placeholder versus real artwork, and
 the rule for that is: `"station_logo"` is a placeholder, **everything else —
@@ -184,6 +185,11 @@ absent, `"enrichment"`, `"lastfm"`, or a value added after this was written —
 is the track's own artwork**. A client that instead enumerates the values it
 knows and treats an unrecognised one as a placeholder will re-flash artwork
 that was already correct as soon as a new value ships.
+
+From 0.19.0 an installation can configure its own cover art endpoints, whose
+names appear here verbatim — so the set of values genuinely is open-ended, not
+merely "open in principle". A client must not enumerate it. See
+[external cover art providers](external-coverart.md).
 
 `"enrichment"` in particular is what a pre-0.18.0 client meets first: it is the
 value written when a lookup replaces a station logo without naming its own

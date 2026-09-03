@@ -380,16 +380,16 @@ impl ImageCache {
             }
         }
         
-        // Write the image data to file
-        match File::create(&full_path) {
-            Ok(mut file) => {
-                if let Err(e) = file.write_all(data) {
-                    return Err(format!("Failed to write image data: {}", e));
-                }
-                debug!("Stored image at {}", full_path.display());
-            },
-            Err(e) => return Err(format!("Failed to create image file: {}", e)),
+        // Write through a temporary file and rename, rather than truncating
+        // the destination and filling it in place. Some callers store at a
+        // path derived from the request rather than from the bytes, so the
+        // same path is rewritten when the entry is refreshed -- and a client
+        // reading it during a `File::create` + `write_all` would get a
+        // truncated image from a URL this daemon vouches for.
+        if let Err(e) = write_file_atomically(&full_path, data) {
+            return Err(format!("Failed to write image data: {}", e));
         }
+        debug!("Stored image at {}", full_path.display());
 
         // Create and store metadata
         let path_str = path_ref.to_string_lossy().to_string();

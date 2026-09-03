@@ -22,7 +22,7 @@ use super::config::Trigger;
 use super::{cache_key, configured_providers, ExternalCoverartProvider};
 // `provider.name()` is a CoverartProvider method, so the trait must be in
 // scope even though nothing here names it directly.
-use crate::helpers::coverart::{CoverartProvider, CoverartQuery};
+use crate::helpers::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
 
 /// Whether this song is worth spending a slow lookup on.
 ///
@@ -60,6 +60,19 @@ pub fn partial_for(song: &Song, provider_name: &str, url: &str) -> Song {
         serde_json::Value::String(provider_name.to_string()),
     );
     partial
+}
+
+/// Whether a provider's configured `methods` answer song lookups at all.
+///
+/// The worker only ever performs song lookups -- that is deliberate, it
+/// serves the now-playing path -- so a provider configured for e.g.
+/// `["artist"]` or `["album"]` must never be charged for one. `run_lookup`
+/// calls the inherent `ExternalCoverartProvider::lookup`, not the
+/// `CoverartProvider::get_song_coverart` trait method that
+/// `supported_methods()` gates on the REST path, so nothing upstream of this
+/// check enforces the configuration here.
+fn answers_song_lookups(provider: &ExternalCoverartProvider) -> bool {
+    provider.supported_methods().contains(&CoverartMethod::Song)
 }
 
 /// Look one song up against one endpoint and report what comes back.
@@ -147,6 +160,14 @@ pub fn start() {
             };
 
             for provider in &providers {
+                if !answers_song_lookups(provider) {
+                    debug!(
+                        "External cover art '{}': configured methods do not include song lookups; skipping",
+                        provider.name()
+                    );
+                    continue;
+                }
+
                 if !should_look_up(&song, provider.endpoint().trigger) {
                     continue;
                 }
@@ -188,6 +209,23 @@ mod tests {
     use crate::data::song::{
         COVER_ART_SOURCE, COVER_ART_SOURCE_LASTFM, COVER_ART_SOURCE_STATION_LOGO,
     };
+    use crate::helpers::external_coverart::config::EndpointConfig;
+    use std::collections::HashMap;
+
+    fn endpoint_with_methods(methods: Vec<CoverartMethod>) -> EndpointConfig {
+        EndpointConfig {
+            name: "llm".to_string(),
+            display_name: "llm".to_string(),
+            url: "https://tools.example.com/coverart".to_string(),
+            methods,
+            headers: HashMap::new(),
+            timeout_seconds: 45,
+            trigger: Trigger::Fallback,
+            cache_ttl_days: 30,
+            negative_cache_ttl_days: 7,
+            max_concurrent: 1,
+        }
+    }
 
     fn song_with(cover: Option<&str>, source: Option<&str>) -> Song {
         let mut song = Song {
@@ -277,6 +315,29 @@ mod tests {
             partial.metadata.get(COVER_ART_SOURCE),
             Some(&serde_json::Value::String("llm".to_string()))
         );
+    }
+
+    /// A provider configured with `["song"]` (or left to the default) is
+    /// exactly what the worker exists to serve.
+    #[test]
+    fn a_provider_configured_for_song_lookups_answers_them() {
+        let provider = ExternalCoverartProvider::new(endpoint_with_methods(vec![CoverartMethod::Song]));
+        assert!(answers_song_lookups(&provider));
+    }
+
+    /// The bug this guards against: `run_lookup` calls the inherent
+    /// `lookup()`, which -- unlike the gated `CoverartProvider` trait
+    /// methods the REST path uses -- never consults `supported_methods()`.
+    /// Without this check, an endpoint configured with `["artist"]` or
+    /// `["album"]` would still be charged for a full song lookup on every
+    /// song change, silently ignoring its own configuration.
+    #[test]
+    fn a_provider_not_configured_for_song_lookups_is_skipped() {
+        let provider = ExternalCoverartProvider::new(endpoint_with_methods(vec![CoverartMethod::Artist]));
+        assert!(!answers_song_lookups(&provider));
+
+        let provider = ExternalCoverartProvider::new(endpoint_with_methods(vec![CoverartMethod::Album]));
+        assert!(!answers_song_lookups(&provider));
     }
 
     /// If the lookup thread panics, unwinding must still release the

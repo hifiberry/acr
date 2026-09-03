@@ -103,12 +103,28 @@ the first bytes of a file rather than decoding it, so listing an artist costs
 one `stat` and one short read per image. An unreadable or unrecognisable file
 is omitted from the listing and logged, rather than failing the request.
 
-`image_meta::image_size` caches its answer keyed by the path, with no expiry.
-That is safe for an upload, whose name is its content hash and whose bytes
-therefore never change, but not for `custom.jpg` and `cover.jpg`, which keep
-their names when a new download replaces them: those measurements must be
-dropped with `image_meta::clear_image_cache` wherever those two files are
-written, or the listing will report the previous image's dimensions for ever.
+The listing measures each file on every request, calling
+`image_meta::detect_image_dimensions` on an open reader rather than
+`image_meta::image_size`. That is deliberate: `image_size` memoises its answer
+against the path with no expiry, which would report the previous picture's
+dimensions for ever once a new download replaced `custom.jpg` or `cover.jpg`
+under the same name. Sidestepping the memo costs one header read and keeps
+`clear_image_cache` out of the write paths, where a forgotten call would be a
+silent staleness bug. The memo has one caller, `ImageInfo::fetch_metadata`,
+which is keyed by provider URLs and never sees these files.
+
+Membership of the set is decided from the file name, not from the bytes: an
+upload's extension was sniffed from its own bytes when it was written, so the
+name can be trusted, and reading every file whole to re-derive it would cost
+tens of megabytes per listing for an artist with a full set — on a path the
+player-event lookup shares. The bytes are still consulted once, by the
+measurement above, which is what drops a file named like an image that is not
+one.
+
+The store's mutex is process-wide and covers resolving the set and the
+selection only. It is released before any of the per-member file I/O, so a
+listing does not put concurrent serves, uploads, deletes and player-event
+lookups behind its own reads.
 
 An artist with no images answers `{"images": []}` with 200. Absence of images
 is not an error, and a client asking "what is there" gets an answer.
@@ -177,11 +193,18 @@ What changes is that the daemon recognises its own URLs. A URL of the form
 `{API_PREFIX}/coverart/artist/<b64>/image/<id>` naming the same artist is
 resolved to that member and recorded as the selection; nothing is downloaded
 and no bytes are copied. Any other URL keeps today's behaviour: download to
-`custom.jpg`, which is itself a member of the set.
+`custom.jpg`, which is itself a member of the set — and once it has landed,
+`custom` is the member the listing reports as selected, because `custom` is
+what is being served. Reporting nothing selected there would contradict the
+picture the artist is showing, and that is the outcome of the ordinary WebUI
+flow: pick a provider candidate, post its remote URL.
 
 A URL that looks local but names a different artist, or an id that is not in
 that artist's set, is refused with a message saying so. The daemon never
-fetches its own address over HTTP to satisfy this.
+fetches its own address over HTTP to satisfy this — including when the
+selection is one of ours whose file has since been removed by hand, where the
+pointer is ignored and the lookup falls through to the providers rather than
+handing `/api/...` to the HTTP client.
 
 Two consequences for the lookup:
 

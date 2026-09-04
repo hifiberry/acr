@@ -10,7 +10,7 @@ The rate limiting system is centralized and service-agnostic, allowing each serv
 
 ### Core Components
 
-1. **Rate Limiter Module** (`src/helpers/ratelimit.rs`)
+1. **Rate Limiter Module** (`crates/acr-http/src/ratelimit.rs`)
    - Central rate limiting implementation
    - Per-service rate limit registration and enforcement
    - Thread-safe implementation using mutexes

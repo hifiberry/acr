@@ -60,7 +60,7 @@ headers:
 
 ```sh
 apt-get install libasound2-dev libdbus-1-dev pkg-config
-cargo test
+cargo test --workspace
 ```
 
 **This does not build on macOS.** `alsa-sys` fails at the `pkg-config --libs
@@ -76,7 +76,7 @@ docker run --rm \
   rust:1.86-bookworm \
   sh -c 'apt-get update -qq \
       && apt-get install -y -qq libasound2-dev libdbus-1-dev pkg-config \
-      && cargo test'
+      && cargo test --workspace'
 ```
 
 The named volume keeps the crates.io registry between runs and
@@ -86,6 +86,34 @@ the first run pays the full compile. `rust:1.86-bookworm` matches the
 
 Tests live in inline `#[cfg(test)] mod tests` blocks next to the code they
 cover. Run one module with `cargo test --lib players::mpd::mpd::tests`.
+
+### The workspace
+
+The repository is a Cargo workspace, not a single package. The root
+`Cargo.toml` is both the workspace manifest and the `audiocontrol` package
+(the player daemon, `src/`); `crates/audiocontrol-metadata` is the metadata
+code; the five `crates/acr-*` crates (`acr-types`, `acr-http`, `acr-images`,
+`acr-store`, `acr-web`) are shared by both.
+
+**`cargo build` and `cargo test` on their own operate on the root package
+only.** The workspace declares no `default-members`, so without `--workspace`
+a plain build produces the `audiocontrol` binary and the ten tools that are
+still `[[bin]]` targets of the root package — not the four that moved to
+`crates/audiocontrol-metadata/src/bin/`, and not the shared crates' own test
+suites. Always pass `--workspace` for a build or test run that is meant to
+cover everything:
+
+```sh
+cargo build --release --workspace   # all fifteen audiocontrol* binaries
+cargo test --workspace              # every crate's tests, not just the root package's
+```
+
+`cargo test -p acr-store` runs one crate on its own. The player library must
+not depend on the metadata crate: `scripts/check-crate-deps.sh` fails the
+build if it does, and CI runs it on every push. `src/main.rs` is the one file
+that links both, behind the default `metadata` feature — `cargo build
+--no-default-features --bin audiocontrol` builds the player daemon alone,
+which is what that script also checks.
 
 ## Writing testable code
 

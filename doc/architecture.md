@@ -106,10 +106,28 @@ Full request/response shapes for both directions are in
 | `audiocontrol/` | The engine: `AudioController` (player registry + active selection) and `EventBus` (pub/sub). `now_playing_bridge.rs` is the whole of what the player side knows about metadata enrichment: it forwards song and state changes into a channel and applies what comes back through `apply_song_information`. | `audiocontrol.rs`, `eventbus.rs`, `now_playing_bridge.rs` |
 | `players/` | `PlayerController` trait, shared `BaseController`, the eight backend implementations, a JSON-driven factory, and the generic push endpoint. | `player_controller.rs`, `player_factory.rs`, `event_api.rs`, `mpd/`, `librespot/`, `raat/`, `lms/`, `bluetooth/`, `mpris/`, `shairport/`, `generic/` |
 | `data/` | Shared domain types passed between every layer: `Song`, `Track`, `PlayerCommand`, `PlayerEvent`, `PlaybackState`, capability sets. | `song.rs`, `player_command.rs`, `player_event.rs`, `capabilities.rs` |
-| `helpers/` | Cross-cutting services: SQLite attribute cache and settings DB, image cache, MusicBrainz/TheAudioDB/FanartTV/Last.fm/Spotify clients, AES-GCM secret storage, genre cleanup, lyrics, rate limiting. | `attributecache.rs`, `settingsdb.rs`, `musicbrainz.rs`, `security_store.rs`, `genre_cleanup.rs` |
+| `helpers/` | Cross-cutting services that stay with the player daemon: volume control and its configurator client, lyrics, m3u parsing, the stream-title splitter, local cover art and image prewarm, and the systemd/MPRIS/Bluez/mac-address process helpers. The SQLite caches, the provider clients and the secret store moved out to the shared crates and `audiocontrol-metadata` — see the module map below. | `volume.rs`, `global_volume.rs`, `configurator.rs`, `lyrics.rs`, `songtitlesplitter.rs`, `local_coverart.rs`, `imageprewarm.rs` |
 | `plugins/` | `ActionPlugin` trait plus the built-ins that react to bus events: active-player switching and structured event logging. Last.fm scrobbling is no longer one of them — the `lastfm` entry configures a worker in `audiocontrol-metadata`, and `worker_descriptor.rs` is what keeps that entry in `/api/plugins/actions`. | `action_plugin.rs`, `action_plugins/active_monitor.rs`, `event_logger.rs`, `worker_descriptor.rs` |
 | `inputs/` | Hardware input, deliberately separate from streaming players: USB HID remotes turn into `Action`s and reach the controller through an `ActionSink`, so a new rotary or IR source needs no new dispatch code. | `mod.rs`, `keyboard/evdev_source.rs`, `dispatch.rs` |
-| `tools/` | 13 standalone `acr_*` binaries — integration hooks, CLI clients, and diagnostics. See [CLI Tools](cli_tools.md). | `src/tools/*.rs` |
+| `tools/` | 10 standalone `acr_*` binaries — integration hooks, CLI clients, and diagnostics. Four more (`audiocontrol_dump_cache`, `audiocontrol_dump_store`, `audiocontrol_favourites`, `audiocontrol_musicbrainz_client`) build from `crates/audiocontrol-metadata/src/bin/` instead, since they use only metadata-crate code. See [CLI Tools](cli_tools.md). | `src/tools/*.rs` |
+
+## Module map (`crates/`)
+
+Shared code and the metadata daemon's library live in a Cargo workspace next to
+`src/`. Five crates are owned by neither daemon; a sixth, `audiocontrol-metadata`,
+is the metadata code the `audiocontrol` binary links behind its default `metadata`
+feature. `scripts/check-crate-deps.sh` enforces that the `audiocontrol` *library*
+never depends on `audiocontrol-metadata` — `src/main.rs` is the one file that
+links both.
+
+| Crate | Responsibility | Key files |
+|---|---|---|
+| `acr-types` | Plain domain types and pure functions shared by both daemons: `Song`, `Artist`, `Album`, `Track`, `Identifier`, the enrichment payload types, the interface traits (`LibraryEnricher`, `Resolver`, `SongInformationSink`, `PlaybackStateSource`), and string/URL helpers. No Rocket, no I/O. | `song.rs`, `artist.rs`, `enrichment.rs`, `resolver.rs`, `now_playing.rs`, `urlprefix.rs` |
+| `acr-http` | The outbound HTTP plumbing both daemons use: the retrying client, the per-service rate limiter. | `http_client.rs`, `retry.rs`, `ratelimit.rs` |
+| `acr-images` | Image resizing and format handling shared by every cache that serves `?size=` variants: rung snapping, `@<size>` naming, format sniffing, grading. | `imageresize.rs`, `sniff.rs`, `image_grader.rs` |
+| `acr-store` | The persistent stores each daemon initialises over its own directory: the SQLite attribute cache and settings DB, the image cache and its retired-rung purge, background jobs, genre cleanup. | `attributecache.rs`, `settingsdb.rs`, `imagecache.rs`, `imagepurge.rs`, `backgroundjobs.rs` |
+| `acr-web` | The Rocket pieces both APIs share: the `ForwardedPrefix` guard, image responses with ETag/304, path validation, and the `/imagecache/<path..>` route factory each daemon mounts over its own cache. | `imageresponse.rs`, `validated.rs`, `imagecache.rs`, `urlprefix.rs` |
+| `audiocontrol-metadata` | The metadata code: MusicBrainz/TheAudioDB/fanart.tv/Last.fm/Spotify clients, cover-art providers, the artist store, the library enricher and resolver the player daemon injects at startup, the security store, and the four CLI tools that only need this crate's code. | `musicbrainz.rs`, `lastfm.rs`, `spotify.rs`, `library_enricher.rs`, `security_store.rs`, `src/bin/*.rs` |
 
 ## The acr-webmcp bridge
 

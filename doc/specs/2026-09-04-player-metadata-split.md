@@ -186,6 +186,24 @@ This route is public on port 1080 like `/update`. It gives a third party the
 same standing the metadata daemon has, which is the same standing the generic
 backend gives any player.
 
+**Reconciliation is a second, opposite call this interface needs, not an
+optional extra.** The subscription above is a push: the metadata daemon learns
+of a change when the event bus tells it. That is not enough for the Last.fm
+worker, which has always reconciled its idea of playback state against the
+player periodically — a scrobble is timed from how long a track has actually
+played, and a single missed `StateChanged` (a dropped connection during the
+reconnect backoff, a state change that raced the WebSocket handshake) would
+otherwise leave the worker's timer running against a track that is actually
+paused, for as long as the track lasts. Phase 0 gives this its own seam,
+`PlaybackStateSource`, asked rather than awaited, alongside the
+`SongInformationSink` the push side already used. In one process this is a
+direct call into `AudioController::get_playback_state`; the interface is not
+one-directional, and Phase 1 has to give this side an HTTP form as well —
+`GET http://127.0.0.1:1080/api/player/<name>/playback-state` or equivalent,
+polled on the same period the worker already reconciles on, with the same
+tolerance for a stale or missing answer that the push side has for `applied:
+false`.
+
 ### 2. Library enrichment: both directions
 
 The player daemon stops writing provider data into its `Artist` and `Album`
@@ -193,11 +211,24 @@ objects. It keeps the fields (`Artist.metadata`, `Artist.is_multi`,
 `Album.genres`) because clients read them, and fills them from what the
 metadata daemon sends.
 
-**Thumbnails need no call.** The player daemon already builds
-`thumb_url` as `/api/coverart/artist/<url-safe base64 name>/image` on every
-request without consulting the store. That stays. The metadata daemon serves
-the path; a 404 means "no image", which both clients treat as an image-load
-failure today.
+**Thumbnails go through the store, not a rebuilt URL.** The artist list route
+reads `thumb_url` from `Artist.metadata` as stored; it does not reconstruct
+it. The metadata side writes a thumbnail URL there only when a lookup found
+an image — `/api/coverart/artist/<url-safe base64 name>/image` for one it
+serves itself, or a provider's own URL passed through unchanged — so an empty
+list is the answer "there is none", and the field's presence is the "an image
+exists" signal a client acts on. `ArtistSummary` therefore carries `thumb_url`
+alongside the other enrichment fields, and it merges into the stored metadata
+the same way they do: written as given, empty included.
+
+Reconstructing the path instead of storing it was the first design and was
+rejected. The attribute cache can still hold an external provider's URL
+written by an older release for an artist whose entry predates this scheme;
+a route that rebuilt `/api/coverart/artist/.../image` from the artist's name
+alone would silently turn such an entry into a daemon URL for an image the
+store may not actually hold, trading a working external link for a 404. The
+metadata daemon serves whatever path it wrote; a 404 from it means "no
+image", which both clients treat as an image-load failure today.
 
 **Discovery: the metadata daemon pulls.** It polls
 `GET http://127.0.0.1:1080/api/library` every 30 s and, for each player with
@@ -545,7 +576,10 @@ code. New tests, by interface:
 1. `song-information` route: 200/applied, 200/not applied on a stale title,
    400 on an empty partial, 404 on an unknown player. The subscriber in the
    metadata daemon is tested against a fake WebSocket server for reconnect
-   and for seeding from `now-playing`.
+   and for seeding from `now-playing`. The playback-state read the Last.fm
+   worker's periodic reconciliation depends on gets its own coverage: a
+   discrepancy between the worker's own idea of the state and what the read
+   returns, and the read timing out or the player being unreachable.
 2. `enrichment` route: merge semantics (empty genres never clear, version
    bumps once per batch, 409 on a stale version), and the puller in the
    metadata daemon against a fake player daemon for the "seen version" rule.

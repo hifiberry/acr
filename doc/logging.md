@@ -79,27 +79,27 @@ Available log levels in order of verbosity:
 
 #### `players`
 - **Description**: Audio player controllers (MPD, RAAT, Librespot, LMS)
-- **Modules**: `audiocontrol::players`
+- **Modules**: `audiocontrol::players`, `audiocontrol::players::mpd::libraryloader`, `audiocontrol::players::lms::libraryloader`
 - **Typical Messages**: Player state changes, command execution, connection status
 
 #### `cache`
 - **Description**: Caching system for metadata and images
-- **Modules**: `audiocontrol::helpers::attributecache`, `audiocontrol::helpers::imagecache`
+- **Modules**: `acr_store::attributecache`, `acr_store::imagecache`
 - **Typical Messages**: Cache hits/misses, cache operations, cleanup
 
 #### `metadata`
 - **Description**: Music metadata services integration
-- **Modules**: `audiocontrol::helpers::musicbrainz`, `audiocontrol::helpers::theaudiodb`, `audiocontrol::helpers::lastfm`
-- **Typical Messages**: API requests to metadata services, data parsing
+- **Modules**: `audiocontrol_metadata::musicbrainz`, `audiocontrol_metadata::theaudiodb`, `audiocontrol_metadata::lastfm`, `audiocontrol_metadata::library_enricher`
+- **Typical Messages**: API requests to metadata services, data parsing, artist-image lookups
 
 #### `spotify`
 - **Description**: Spotify integration and authentication
-- **Modules**: `audiocontrol::helpers::spotify`
+- **Modules**: `audiocontrol_metadata::spotify`
 - **Typical Messages**: OAuth flow, API requests, token management
 
 #### `websocket`
 - **Description**: WebSocket connections and real-time updates
-- **Modules**: `audiocontrol::api::websocket`, `rocket_ws`
+- **Modules**: `audiocontrol::api::events`, `rocket_ws`
 - **Typical Messages**: WebSocket connections, message broadcasting
 
 #### `library`
@@ -109,14 +109,14 @@ Available log levels in order of verbosity:
 
 #### `security`
 - **Description**: Security store and sensitive data handling
-- **Modules**: `audiocontrol::helpers::security_store`
+- **Modules**: `audiocontrol_metadata::security_store`
 - **Typical Messages**: Encryption operations, key management
 
 ### Infrastructure Subsystems
 
 #### `http`
 - **Description**: HTTP client operations and network requests
-- **Modules**: `audiocontrol::helpers::http_client`, `reqwest`, `hyper`
+- **Modules**: `acr_http::http_client`, `reqwest`, `hyper`
 - **Typical Messages**: HTTP requests, response parsing, connection errors
 
 #### `network`
@@ -125,9 +125,12 @@ Available log levels in order of verbosity:
 - **Typical Messages**: Socket operations, async I/O, connection management
 
 #### `database`
-- **Description**: Database operations (SQLite)
-- **Modules**: `rusqlite`
+- **Description**: The generic settings database (SQLite)
+- **Modules**: `acr_store::settingsdb`
 - **Typical Messages**: Database transactions, SQL operations, file I/O
+
+  `rusqlite` itself has no `log` integration and cannot be selected directly;
+  this subsystem names the module that logs around it.
 
 #### `io`
 - **Description**: File and stream I/O operations
@@ -141,7 +144,7 @@ Available log levels in order of verbosity:
 
 #### `config`
 - **Description**: Configuration loading and parsing
-- **Modules**: `audiocontrol::config`
+- **Modules**: `audiocontrol::config`, `acr_types::config`
 - **Typical Messages**: Config file parsing, validation errors
 
 #### `plugins`

@@ -344,6 +344,17 @@ impl CoverartManager {
         debug!("Total registered providers: {}", self.providers.len());
     }
 
+    /// Drop every registered provider whose `name()` matches.
+    ///
+    /// There is no production counterpart: providers are wired up once at
+    /// startup and live for the process. This exists only so a test that
+    /// registers a stub into the process-wide registry has a way to take it
+    /// back out again, instead of leaking it into every test that runs after.
+    #[cfg(test)]
+    pub fn remove_provider(&mut self, name: &str) {
+        self.providers.retain(|p| p.name() != name);
+    }
+
     /// Get all registered providers (for debugging/inspection)
     pub fn get_providers(&self) -> &Vec<Arc<dyn CoverartProvider + Send + Sync>> {
         &self.providers
@@ -484,6 +495,7 @@ pub fn get_coverart_manager() -> Arc<Mutex<CoverartManager>> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use serial_test::serial;
 
     /// A provider that blocks for `delay`, so a test can tell a sequential
     /// fan-out from a parallel one and see whether a deadline is honoured.
@@ -615,15 +627,32 @@ mod tests {
         assert!(!called.load(Ordering::SeqCst), "the provider was not asked");
     }
 
+    /// Takes a named provider back out of the process-wide registry when
+    /// dropped, so a stub registered for one test cannot leak into every
+    /// test that runs after it -- including on a panicking assertion, since
+    /// `Drop` still runs while unwinding.
+    struct ProviderGuard(String);
+
+    impl Drop for ProviderGuard {
+        fn drop(&mut self) {
+            get_coverart_manager().lock().remove_provider(&self.0);
+        }
+    }
+
     /// The global registry lock guards the registry, not the network. If the
     /// fan-out still held it, this second lock attempt would deadlock.
     #[test]
+    #[serial]
     fn the_registry_lock_is_not_held_across_provider_calls() {
         let (slow, _) = stub("holds-the-lock", 200);
         {
             let manager = get_coverart_manager();
             manager.lock().register_provider(slow);
         }
+        // Dropped at the end of this function (including on a panicking
+        // assertion below), which is after the in-flight query below has
+        // finished -- so the stub never outlives this test.
+        let _guard = ProviderGuard("holds-the-lock".to_string());
 
         let done = Arc::new(AtomicBool::new(false));
         let flag = done.clone();

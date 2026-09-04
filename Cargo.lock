@@ -298,6 +298,7 @@ name = "audiocontrol"
 version = "0.20.0"
 dependencies = [
  "acr-http",
+ "acr-images",
  "acr-types",
  "aes-gcm",
  "alsa",

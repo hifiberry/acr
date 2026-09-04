@@ -71,26 +71,7 @@ pub fn upload_id(bytes: &[u8]) -> String {
     format!("{:x}", md5::compute(bytes))
 }
 
-/// The file extension for these bytes, if they are an image we can serve.
-///
-/// Taken from the content, never from anything a client said: the serving
-/// route derives the `Content-Type` from the extension, so a `.jpg` holding a
-/// PNG would be served under the wrong type.
-///
-/// Limited to the formats the upload path can actually decode: the `image`
-/// crate backing `imageresize::validate` is built with only jpeg/png/webp
-/// support, so accepting a GIF or BMP extension here would store a file the
-/// daemon can never resize.
-pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
-    let mut cursor = std::io::Cursor::new(bytes);
-    let (_, _, format) = crate::helpers::image_meta::detect_image_dimensions(&mut cursor).ok()?;
-    match format.to_ascii_uppercase().as_str() {
-        "JPEG" => Some("jpg"),
-        "PNG" => Some("png"),
-        "WEBP" => Some("webp"),
-        _ => None,
-    }
-}
+pub use acr_images::sniff::image_extension;
 
 /// Whether a stored file's name claims one of the formats we serve.
 ///
@@ -1334,14 +1315,6 @@ mod tests {
         assert_eq!(upload_id(bytes).len(), 32);
         assert!(upload_id(bytes).chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(upload_id(bytes), upload_id(b"other bytes"));
-    }
-
-    /// The extension comes from the bytes, never from what a client called the
-    /// image: the serving route derives a content type from the file name.
-    #[test]
-    fn an_extension_is_sniffed_from_the_bytes() {
-        assert_eq!(image_extension(&png_bytes(8, 8)), Some("png"));
-        assert_eq!(image_extension(b"<html>not an image</html>"), None);
     }
 
     #[test]

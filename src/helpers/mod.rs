@@ -1,10 +1,8 @@
 pub mod attributecache;
 pub mod imagecache;
-pub mod imageresize;
 pub mod imageprewarm;
 pub mod imagepurge;
 pub mod image_meta;
-pub mod image_grader;
 pub mod artistupdater;
 pub mod albumupdater;
 pub mod artist_store;
@@ -45,6 +43,7 @@ pub mod shairportsync_messages;
 use crate::data::artist::Artist;
 
 pub use acr_http::{http_client, ratelimit, retry};
+pub use acr_images::{image_grader, imageresize};
 pub use acr_types::{sanitize, url_encoding};
 pub use playback_progress::PlayerProgress;
 

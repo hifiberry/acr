@@ -438,25 +438,53 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
             // If URL is not empty, try to trigger immediate download to user directory
             if !request.url.is_empty() {
                 debug!("Attempting to trigger immediate download of custom image to user directory for artist: {}", artist_name);
-                
-                // Use the global artist store to download the image to user directory
-                let artist_store = crate::helpers::artist_store::get_artist_store();
-                let mut store_lock = artist_store.lock();
-                
-                match store_lock.download_and_store_user_image(&artist_name, &request.url, "custom") {
-                    crate::helpers::artist_store::ArtistImageResult::Found { cache_path } => {
-                        info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
-                        // `cache_path` here is the real path the new image was just written to
-                        // (unlike the bogus one computed above for the dead `remove_file` call).
-                        // A re-upload overwrites this same file but leaves any variants generated
-                        // from the *previous* image beside it — drop those now so the grid does
-                        // not keep showing the old face at thumbnail size.
-                        crate::helpers::imageresize::remove_variants_of(&cache_path);
+
+                // No claim here, deliberately: `begin_download` exists to
+                // stop the background lookup path from duplicating a
+                // provider-driven fetch, not to serialise this route. This is
+                // a user's explicit action, it writes under its own name in
+                // the user directory, and that write is atomic -- so two of
+                // these racing is safe, and the one that lands last is the
+                // one the user gets, which is what asking twice should mean.
+                // Fetch with no lock held: the URL is client-supplied, and
+                // one naming this daemon itself would otherwise need the
+                // same lock its own inbound request is waiting on.
+                let fetch_result = crate::helpers::artist_store::fetch_image(&request.url);
+
+                match fetch_result {
+                    Ok(image_data) => {
+                        let artist_store = crate::helpers::artist_store::get_artist_store();
+                        let mut store_lock = artist_store.lock();
+                        match store_lock.commit_downloaded_image(
+                            &artist_name,
+                            &image_data,
+                            "custom",
+                            crate::helpers::artist_store::ImageDestination::UserDirectory,
+                        ) {
+                            crate::helpers::artist_store::ArtistImageResult::Found { cache_path } => {
+                                info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
+                                // `cache_path` is what the artist resolves to now -- ordinarily the
+                                // file just written, but a selection made while the fetch was in
+                                // flight can win instead (unlike the bogus path computed above for
+                                // the dead `remove_file` call, this one is always real). Either way,
+                                // a re-upload can leave variants generated from the *previous* image
+                                // beside it -- drop those now so the grid does not keep showing the
+                                // old face at thumbnail size.
+                                crate::helpers::imageresize::remove_variants_of(&cache_path);
+                            }
+                            crate::helpers::artist_store::ArtistImageResult::NotFound => {
+                                // commit_downloaded_image never actually returns this -- it either
+                                // resolves to some path or reports an Error -- but the match has to
+                                // stay exhaustive against a three-variant enum shared with callers
+                                // that do use this variant.
+                                warn!("Unexpected: committing custom image for artist '{}' resolved to no image at all", artist_name);
+                            }
+                            crate::helpers::artist_store::ArtistImageResult::Error(error) => {
+                                warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);
+                            }
+                        }
                     }
-                    crate::helpers::artist_store::ArtistImageResult::NotFound => {
-                        warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
-                    }
-                    crate::helpers::artist_store::ArtistImageResult::Error(error) => {
+                    Err(error) => {
                         warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);
                     }
                 }

@@ -19,12 +19,52 @@ pub enum ArtistImageResult {
     Error(String),
 }
 
+/// Where a downloaded image is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageDestination {
+    /// The provider cache, `{cache_dir}/{artist}/{type}.jpg`.
+    Cache,
+    /// The user directory, which wins the lookup.
+    UserDirectory,
+}
+
+/// What an artist image lookup needs next.
+///
+/// Decided under the store's lock and carried out without it, so that no
+/// network call is ever made while the mutex is held.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ImageStep {
+    /// Already on disk at this path.
+    Ready(String),
+    /// Fetch this URL and commit it.
+    Fetch { url: String, image_type: String, destination: ImageDestination },
+    /// Nothing recorded for this artist; ask the providers.
+    AskProviders,
+    /// Nothing to do.
+    NotFound,
+}
+
 /// How long a single artist image download may take, in total.
 ///
-/// Bounded rather than generous: `download_and_store_user_image` runs with the
-/// artist store's mutex held, so this deadline is also how long one client's
-/// URL can keep every other artist image lookup waiting.
+/// Bounded rather than generous: the URL comes from a client through
+/// `/coverart/artist/<b64>/update`, and a URL naming the daemon itself is
+/// treated as remote and fetched rather than refused, so an unbounded wait
+/// here is one client's way to hang a fetch forever.
 const IMAGE_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long a caller waits for someone else's in-flight download of the same
+/// artist before giving up.
+///
+/// Deliberately shorter than `IMAGE_DOWNLOAD_TIMEOUT`: this caller is not
+/// doing the fetch, it is waiting on one, and that fetch is itself allowed to
+/// run for the full download timeout before failing. Waiting that long too
+/// would mean waiting out the winner's own deadline and then still finding
+/// nothing -- so this caller gives up first and reports no image, rather than
+/// holding a second request open for the whole of the first one's deadline.
+const IMAGE_DOWNLOAD_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long to sleep between polls while waiting on someone else's download.
+const IMAGE_DOWNLOAD_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The largest artist image the daemon will take from a URL.
 ///
@@ -180,8 +220,12 @@ pub struct ArtistStore {
     config: ArtistStoreConfig,
     /// Cache of artist image paths
     image_cache: HashMap<String, String>,
-    /// Currently downloading artists to prevent duplicate downloads
-    downloading: HashMap<String, Arc<std::sync::atomic::AtomicBool>>,
+    /// Artists with a download claimed right now, to prevent duplicate downloads.
+    ///
+    /// A plain set, not a flag per artist: `begin_download`/`finish_download`
+    /// only ever run with `&mut self`, so nothing needs to observe or clone a
+    /// flag independently of the lock that already serialises every access.
+    downloading: std::collections::HashSet<String>,
 }
 
 impl Default for ArtistStore {
@@ -201,7 +245,7 @@ impl ArtistStore {
         Self {
             config,
             image_cache: HashMap::new(),
-            downloading: HashMap::new(),
+            downloading: std::collections::HashSet::new(),
         }
     }
 
@@ -565,131 +609,21 @@ impl ArtistStore {
         ArtistImageResult::NotFound
     }
 
-    /// Download and cache an artist image from a URL
-    /// 
-    /// # Arguments
-    /// * `artist_name` - The name of the artist
-    /// * `url` - The URL to download the image from
-    /// * `image_type` - Type of image ("custom", "cover", etc.)
-    /// 
-    /// # Returns
-    /// ArtistImageResult with the cache path if successful
-    pub fn download_and_cache_image(&mut self, artist_name: &str, url: &str, image_type: &str) -> ArtistImageResult {
-        debug!("Downloading image for artist {} from URL: {}", artist_name, url);
-
-        // Check if already downloading
-        if let Some(downloading_flag) = self.downloading.get(artist_name) {
-            if downloading_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                debug!("Image already being downloaded for artist: {}", artist_name);
-                return ArtistImageResult::Error("Download already in progress".to_string());
-            }
-        }
-
-        // Mark as downloading
-        let downloading_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        self.downloading.insert(artist_name.to_string(), downloading_flag.clone());
-
-        let result = match self.download_image(url) {
-            Ok(image_data) => {
-                let cache_path = self.get_artist_image_path(artist_name, image_type);
-                
-                match self.store_image(&cache_path, &image_data) {
-                    Ok(_) => {
-                        info!("Downloaded and cached {} image for artist {}", image_type, artist_name);
-                        self.image_cache.insert(artist_name.to_string(), cache_path.clone());
-                        ArtistImageResult::Found { cache_path }
-                    },
-                    Err(e) => {
-                        warn!("Failed to store {} image for artist {}: {}", image_type, artist_name, e);
-                        ArtistImageResult::Error(format!("Failed to store image: {}", e))
-                    }
-                }
-            },
-            Err(e) => {
-                warn!("Failed to download image for artist {} from URL {}: {}", artist_name, url, e);
-                ArtistImageResult::Error(format!("Failed to download image: {}", e))
-            }
-        };
-
-        // Clear downloading flag
-        downloading_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-        self.downloading.remove(artist_name);
-
-        result
-    }
-
-    /// Download and store image directly to the user directory
-    /// 
-    /// # Arguments
-    /// * `artist_name` - The name of the artist
-    /// * `url` - URL of the image to download
-    /// * `image_type` - Type of image ("custom", "cover", etc.)
-    /// 
-    /// # Returns
-    /// ArtistImageResult with the user path if successfully downloaded and stored
-    pub fn download_and_store_user_image(&mut self, artist_name: &str, url: &str, image_type: &str) -> ArtistImageResult {
-        debug!("Downloading image for artist {} from URL to user directory: {}", artist_name, url);
-
-        // Check if already downloading
-        if let Some(downloading_flag) = self.downloading.get(artist_name) {
-            if downloading_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                debug!("Image already being downloaded for artist: {}", artist_name);
-                return ArtistImageResult::Error("Download already in progress".to_string());
-            }
-        }
-
-        // Mark as downloading
-        let downloading_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        self.downloading.insert(artist_name.to_string(), downloading_flag.clone());
-
-        let result = match self.download_image(url) {
-            Ok(image_data) => {
-                let user_path = self.get_artist_user_image_path(artist_name, image_type);
-                
-                match self.store_image(&user_path, &image_data) {
-                    Ok(_) => {
-                        info!("Downloaded and stored {} image for artist {} in user directory", image_type, artist_name);
-                        // Also cache the path for quick access
-                        self.image_cache.insert(artist_name.to_string(), user_path.clone());
-                        ArtistImageResult::Found { cache_path: user_path }
-                    },
-                    Err(e) => {
-                        warn!("Failed to store {} image for artist {} in user directory: {}", image_type, artist_name, e);
-                        ArtistImageResult::Error(format!("Failed to store image: {}", e))
-                    }
-                }
-            },
-            Err(e) => {
-                warn!("Failed to download image for artist {} from URL {}: {}", artist_name, url, e);
-                ArtistImageResult::Error(format!("Failed to download image: {}", e))
-            }
-        };
-
-        // Clear downloading flag
-        downloading_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-        self.downloading.remove(artist_name);
-
-        result
-    }
-
-    /// Get or download artist cover art
-    /// 
-    /// # Arguments
-    /// * `artist_name` - The name of the artist
-    /// 
-    /// # Returns
-    /// ArtistImageResult with the cache path if found or downloaded
-    pub fn get_or_download_artist_image(&mut self, artist_name: &str) -> ArtistImageResult {
-        debug!("Getting or downloading image for artist: {}", artist_name);
-
+    /// What an artist image lookup needs next.
+    ///
+    /// Exactly the decision logic that used to sit at the top of
+    /// `get_or_download_artist_image`, and nothing else: this makes the
+    /// decision under the store's lock, and the caller carries out whatever
+    /// it says -- a fetch or a provider query -- once the lock is released.
+    pub fn next_image_step(&mut self, artist_name: &str) -> ImageStep {
         // First check if we already have a cached image
         if let ArtistImageResult::Found { cache_path } = self.get_cached_image(artist_name) {
-            return ArtistImageResult::Found { cache_path };
+            return ImageStep::Ready(cache_path);
         }
 
         // If auto-download is disabled, return not found
         if !self.config.auto_download {
-            return ArtistImageResult::NotFound;
+            return ImageStep::NotFound;
         }
 
         // Check for custom image URL in settings first
@@ -707,82 +641,113 @@ impl ArtistStore {
                     );
                 } else {
                     debug!("Found custom image URL for artist {}: {}", artist_name, custom_url);
-                    return self.download_and_cache_image(artist_name, &custom_url, "custom");
+                    return ImageStep::Fetch {
+                        url: custom_url,
+                        image_type: "custom".to_string(),
+                        destination: ImageDestination::Cache,
+                    };
                 }
             }
         }
 
-        // Fast providers only: this runs while a caller waits for an artist
-        // image, and a slow provider's answer reaches the cache by its own
-        // route.
-        let results = query_coverart(
-            &CoverartQuery::Artist(artist_name.to_string()),
-            &QueryOptions::default(),
-        );
+        ImageStep::AskProviders
+    }
 
-        if results.is_empty() {
-            debug!("No cover art found for artist {}", artist_name);
-            return ArtistImageResult::NotFound;
-        }
+    /// Store bytes fetched for an artist and update the store's records.
+    ///
+    /// The storing half of what `download_and_cache_image` and
+    /// `download_and_store_user_image` used to do in one lock-held call: by
+    /// the time this runs the bytes are already in hand, so this never blocks
+    /// on the network.
+    pub fn commit_downloaded_image(
+        &mut self,
+        artist_name: &str,
+        bytes: &[u8],
+        image_type: &str,
+        destination: ImageDestination,
+    ) -> ArtistImageResult {
+        let path = match destination {
+            ImageDestination::Cache => self.get_artist_image_path(artist_name, image_type),
+            ImageDestination::UserDirectory => self.get_artist_user_image_path(artist_name, image_type),
+        };
 
-        // Find the highest-rated image across all providers
-        let mut best_image: Option<&crate::helpers::coverart::ImageInfo> = None;
-        let mut best_grade = -10; // Start lower to allow grade -1 images
-
-        for result in &results {
-            for image in &result.images {
-                let grade = image.grade.unwrap_or(0);
-                if grade > best_grade {
-                    best_grade = grade;
-                    best_image = Some(image);
+        match self.store_image(&path, bytes) {
+            Ok(_) => {
+                match destination {
+                    ImageDestination::Cache => {
+                        info!("Downloaded and cached {} image for artist {}", image_type, artist_name);
+                    }
+                    ImageDestination::UserDirectory => {
+                        info!("Downloaded and stored {} image for artist {} in user directory", image_type, artist_name);
+                    }
+                }
+                // Do not simply point the memo at what was just written: a
+                // selection can be made while this fetch is in flight (an
+                // upload picked in the WebUI, or a fresh `/update` call), and
+                // that selection has to win over whichever download happens
+                // to land last. `get_cached_image` re-derives what the
+                // artist resolves to right now -- the selection first, then
+                // the precedence chain -- and populates the memo itself, so
+                // this only falls back to the path just written when nothing
+                // else resolves at all. The memo has to be forgotten first:
+                // `get_cached_image` checks it before the selection, so
+                // leaving in place whatever it held from before this fetch
+                // started -- possibly stale by now -- would make it win
+                // instead of deferring to anything.
+                self.image_cache.remove(artist_name);
+                match self.get_cached_image(artist_name) {
+                    ArtistImageResult::Found { cache_path } => ArtistImageResult::Found { cache_path },
+                    _ => {
+                        self.image_cache.insert(artist_name.to_string(), path.clone());
+                        ArtistImageResult::Found { cache_path: path }
+                    }
                 }
             }
-        }
-
-        if let Some(best_image) = best_image {
-            debug!("Found best image for artist {} with grade {}: {}", artist_name, best_grade, best_image.url);
-            self.download_and_cache_image(artist_name, &best_image.url, "cover")
-        } else {
-            debug!("No images with valid grades found for artist {}", artist_name);
-            ArtistImageResult::NotFound
+            Err(e) => {
+                match destination {
+                    ImageDestination::Cache => {
+                        warn!("Failed to store {} image for artist {}: {}", image_type, artist_name, e);
+                    }
+                    ImageDestination::UserDirectory => {
+                        warn!("Failed to store {} image for artist {} in user directory: {}", image_type, artist_name, e);
+                    }
+                }
+                ArtistImageResult::Error(format!("Failed to store image: {}", e))
+            }
         }
     }
 
-    /// Update an artist with cover art information
-    /// 
-    /// # Arguments
-    /// * `artist` - The artist to update
-    /// 
-    /// # Returns
-    /// The updated artist with image URLs in metadata
-    pub fn update_artist_with_coverart(&mut self, mut artist: Artist) -> Artist {
-        debug!("Updating artist {} with cover art", artist.name);
-
-        match self.get_or_download_artist_image(&artist.name) {
-            ArtistImageResult::Found { cache_path: _ } => {
-                // Initialize metadata if needed
-                if artist.metadata.is_none() {
-                    artist.metadata = Some(crate::data::ArtistMeta::new());
-                }
-
-                // Add the cached image to the artist metadata
-                if let Some(ref mut metadata) = artist.metadata {
-                    // Generate proper API URL for artist image
-                    let encoded_name = crate::helpers::url_encoding::encode_url_safe(&artist.name);
-                    let api_url = format!("{}/coverart/artist/{}/image", crate::constants::API_PREFIX, encoded_name);
-                    metadata.thumb_url = vec![api_url];
-                    debug!("Updated artist {} with coverart API image URL: /api/coverart/artist/{}/image", artist.name, encoded_name);
-                }
-            },
-            ArtistImageResult::NotFound => {
-                debug!("No image available for artist {}", artist.name);
-            },
-            ArtistImageResult::Error(e) => {
-                warn!("Error getting image for artist {}: {}", artist.name, e);
-            }
+    /// Claim the right to download this artist's image.
+    ///
+    /// `false` when another caller is already downloading for this artist --
+    /// the caller must not fetch a second time. This is the flag that used to
+    /// be read and written under the same lock that serialised the whole
+    /// download, so a second caller could never observe it set; now that the
+    /// fetch itself happens with the lock released, two callers really can
+    /// race here, and this is what keeps them from duplicating the work.
+    pub fn begin_download(&mut self, artist_name: &str) -> bool {
+        if self.downloading.contains(artist_name) {
+            debug!("Image already being downloaded for artist: {}", artist_name);
+            return false;
         }
 
-        artist
+        self.downloading.insert(artist_name.to_string());
+        true
+    }
+
+    /// Release the claim taken by [`Self::begin_download`].
+    pub fn finish_download(&mut self, artist_name: &str) {
+        self.downloading.remove(artist_name);
+    }
+
+    /// Whether a download is claimed for this artist right now.
+    ///
+    /// Lets a waiter tell "the winner is still working" from "the winner is
+    /// done, one way or another" without waiting out its own timeout to find
+    /// out: once this is `false` and `next_image_step` still isn't `Ready`,
+    /// there is nothing left to wait for.
+    pub fn is_downloading(&self, artist_name: &str) -> bool {
+        self.downloading.contains(artist_name)
     }
 
     /// Looks up MusicBrainz IDs for an artist and returns them if found
@@ -826,31 +791,35 @@ impl ArtistStore {
     }
 
     /// Updates artist data by fetching additional information like MusicBrainz IDs
-    /// 
+    ///
     /// This function takes an artist and attempts to retrieve and set any missing data
     /// such as MusicBrainz IDs.
-    /// 
+    ///
+    /// This is the MusicBrainz and metadata half of what the module-level
+    /// `update_data_for_artist` does; cover art resolution happens there,
+    /// outside this store's lock, and this method never touches it.
+    ///
     /// # Arguments
     /// * `artist` - The artist to update
-    /// 
+    ///
     /// # Returns
     /// The updated artist
     pub fn update_data_for_artist(&mut self, mut artist: Artist) -> Artist {
         debug!("Updating data for artist: {}", artist.name);
-        
+
         // Check if the artist already has MusicBrainz IDs set
         let has_mbid = match &artist.metadata {
             Some(meta) => !meta.mbid.is_empty(),
             None => false,
         };
-        
+
         if !has_mbid {
             debug!("No MusicBrainz ID set for artist {}, attempting to retrieve it", artist.name);
-            
+
             // Use the synchronous function to look up MusicBrainz IDs directly
             let (mbids, partial_match) = self.lookup_artist_mbids(&artist.name);
             let mbid_count = mbids.len();
-            
+
             // Add each MusicBrainz ID to the artist if any were found
             for mbid in mbids {
                 artist.add_mbid(mbid);
@@ -865,7 +834,7 @@ impl ArtistStore {
                 info!("Updated artist '{}' with MusicBrainz data: {} ID(s)", artist.name, mbid_count);
                 debug!("Added MusicBrainz ID(s) to artist {}", artist.name);
             }
-            
+
             // Record if this is a partial match in the artist metadata
             if partial_match {
                 debug!("Partial match found for multi-artist name: {}", artist.name);
@@ -876,54 +845,7 @@ impl ArtistStore {
         } else {
             debug!("Artist {} already has MusicBrainz ID(s)", artist.name);
         }
-        
-        // If the artist has MusicBrainz IDs, update from the coverart system
-        if artist.metadata.as_ref().is_some_and(|meta| !meta.mbid.is_empty()) {
-            debug!("Artist {} has MusicBrainz ID(s), updating with cover art system", artist.name);
-            artist = self.update_artist_with_coverart(artist);
-        } else {
-            // For artists without MusicBrainz IDs, still try coverart system with artist name only
-            debug!("Artist {} has no MusicBrainz ID, trying cover art by name only", artist.name);
-            artist = self.update_artist_with_coverart(artist);
-        }
-        
-        // Note: LastFM metadata is now handled by the unified coverart system
-        // No need for separate LastFM calls as the coverart system includes LastFM provider
-        
-        // Handle artists without MusicBrainz IDs but with existing thumbnails
-        if artist.metadata.as_ref().is_some_and(|meta| meta.mbid.is_empty()) {
-            // Check if the artist has thumbnail images
-            let has_thumbnails = match &artist.metadata {
-                Some(meta) => !meta.thumb_url.is_empty(),
-                None => false,
-            };
-            
-            if has_thumbnails {
-                debug!("Artist {} has thumbnail image(s) but no MusicBrainz ID, skipping updates", artist.name);
-            }
-        }
 
-        // Store the updated metadata in cache
-        if let Some(metadata) = &artist.metadata {
-            // Create a cache key using the artist's name
-            let cache_key = format!("artist::metadata::{}", artist.name);
-            
-            // Store the metadata in the attribute cache
-            match crate::helpers::attributecache::set(&cache_key, metadata) {
-                Ok(_) => debug!("Stored metadata for artist {} in attribute cache", artist.name),
-                Err(e) => warn!("Failed to store metadata for artist {} in attribute cache: {}", artist.name, e),
-            }
-            
-            // If the artist has MusicBrainz IDs, store them separately for faster lookup
-            if !metadata.mbid.is_empty() {
-                let mbid_key = format!("artist::mbid::{}", artist.name);
-                if let Err(e) = crate::helpers::attributecache::set(&mbid_key, &metadata.mbid) {
-                    warn!("Failed to store MusicBrainz IDs for artist {} in attribute cache: {}", artist.name, e);
-                }
-            }
-        }
-        
-        // Return the potentially updated artist
         artist
     }
 
@@ -951,61 +873,6 @@ impl ArtistStore {
         debug!("Cleared cached images for artist: {}", artist_name);
     }
 
-    /// Download an image from a URL
-    /// 
-    /// # Arguments
-    /// * `url` - The URL to download the image from
-    /// 
-    /// # Returns
-    /// Result with the image data or an error message
-    fn download_image(&self, url: &str) -> Result<Vec<u8>, String> {
-        debug!("Downloading image from URL: {}", url);
-
-        // Bounded, because this call is made with the artist store's mutex
-        // held and an unbounded one can therefore stop the daemon rather than
-        // just this download. The URL comes from a client through
-        // /coverart/artist/<b64>/update, and a URL naming the device itself is
-        // treated as remote and fetched -- but the request it makes cannot be
-        // served while this thread holds the mutex, so with no deadline the
-        // two wait on each other for ever. ureq's `timeout` is a deadline for
-        // the socket phases -- connect, write, and the body read -- not just
-        // the connect. It does not cover name resolution, which ureq performs
-        // before the deadline applies, so a hostname whose resolver is
-        // blackholed can still block here for as long as the resolver takes.
-        match ureq::get(url).timeout(IMAGE_DOWNLOAD_TIMEOUT).call() {
-            Ok(response) => {
-                // Read one byte past the cap: if it arrives, the body is over
-                // the limit and we know that without having buffered the rest.
-                // The deadline alone bounds nothing useful here -- fifteen
-                // seconds of LAN throughput is hundreds of megabytes into a
-                // Vec on a device with a gigabyte of RAM, and the allocation
-                // failure that follows takes the whole daemon with it.
-                let mut bytes = Vec::new();
-                let mut reader = response.into_reader().take(MAX_IMAGE_DOWNLOAD_BYTES.saturating_add(1));
-                if let Err(e) = reader.read_to_end(&mut bytes) {
-                    return Err(format!("Failed to read image data: {}", e));
-                }
-
-                if bytes.len() as u64 > MAX_IMAGE_DOWNLOAD_BYTES {
-                    return Err(format!(
-                        "Downloaded image exceeds the {} byte limit",
-                        MAX_IMAGE_DOWNLOAD_BYTES
-                    ));
-                }
-
-                if bytes.is_empty() {
-                    return Err("Downloaded image is empty".to_string());
-                }
-                
-                debug!("Successfully downloaded image: {} bytes", bytes.len());
-                Ok(bytes)
-            },
-            Err(e) => {
-                Err(format!("HTTP request failed: {}", e))
-            }
-        }
-    }
-
     /// Store image data to a file
     /// 
     /// # Arguments
@@ -1018,6 +885,106 @@ impl ArtistStore {
         // Use the existing image cache functionality
         crate::helpers::imagecache::store_image(cache_path, image_data)
             .map_err(|e| e.to_string())
+    }
+}
+
+/// Download an image from a URL.
+///
+/// Takes no store state and holds no lock -- this is the network call that
+/// used to run with the artist store's mutex held.
+///
+/// # Arguments
+/// * `url` - The URL to download the image from
+///
+/// # Returns
+/// Result with the image data or an error message
+pub(crate) fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
+    debug!("Downloading image from URL: {}", url);
+
+    // Bounded even though the lock is no longer held across it. The URL
+    // comes from a client through /coverart/artist/<b64>/update, and a URL
+    // naming the device itself is treated as remote and fetched, so the
+    // daemon can still be asked to call itself -- that now costs a worker
+    // and a socket rather than the whole store, but a request with no
+    // deadline is still a request nothing ends. ureq's `timeout` is a
+    // deadline for the socket phases -- connect, write, and the body read
+    // -- not just the connect. It does not cover name resolution, which
+    // ureq performs before the deadline applies, so a hostname whose
+    // resolver is blackholed can still block here for as long as the
+    // resolver takes.
+    match ureq::get(url).timeout(IMAGE_DOWNLOAD_TIMEOUT).call() {
+        Ok(response) => {
+            // Read one byte past the cap: if it arrives, the body is over
+            // the limit and we know that without having buffered the rest.
+            // The deadline alone bounds nothing useful here -- fifteen
+            // seconds of LAN throughput is hundreds of megabytes into a
+            // Vec on a device with a gigabyte of RAM, and the allocation
+            // failure that follows takes the whole daemon with it.
+            let mut bytes = Vec::new();
+            let mut reader = response.into_reader().take(MAX_IMAGE_DOWNLOAD_BYTES.saturating_add(1));
+            if let Err(e) = reader.read_to_end(&mut bytes) {
+                return Err(format!("Failed to read image data: {}", e));
+            }
+
+            if bytes.len() as u64 > MAX_IMAGE_DOWNLOAD_BYTES {
+                return Err(format!(
+                    "Downloaded image exceeds the {} byte limit",
+                    MAX_IMAGE_DOWNLOAD_BYTES
+                ));
+            }
+
+            if bytes.is_empty() {
+                return Err("Downloaded image is empty".to_string());
+            }
+
+            debug!("Successfully downloaded image: {} bytes", bytes.len());
+            Ok(bytes)
+        },
+        Err(e) => {
+            Err(format!("HTTP request failed: {}", e))
+        }
+    }
+}
+
+/// The highest-graded image the coverart providers have for this artist.
+///
+/// Fast providers only: this runs while a caller waits for an artist image,
+/// and a slow provider's answer reaches the cache by its own route. Holds no
+/// lock -- `query_coverart` is a network call.
+fn best_provider_image(artist_name: &str) -> Option<String> {
+    let results = query_coverart(
+        &CoverartQuery::Artist(artist_name.to_string()),
+        &QueryOptions::default(),
+    );
+
+    if results.is_empty() {
+        debug!("No cover art found for artist {}", artist_name);
+        return None;
+    }
+
+    // Find the highest-rated image across all providers
+    let mut best_image: Option<&crate::helpers::coverart::ImageInfo> = None;
+    let mut best_grade = -10; // Start lower to allow grade -1 images
+
+    for result in &results {
+        for image in &result.images {
+            let grade = image.grade.unwrap_or(0);
+            if grade > best_grade {
+                best_grade = grade;
+                best_image = Some(image);
+            }
+        }
+    }
+
+    match best_image {
+        Some(best_image) => {
+            debug!("Found best image for artist {} with grade {}: {}", artist_name, best_grade, best_image.url);
+            Some(best_image.url.clone())
+        }
+        None => {
+            debug!("No images with valid grades found for artist {}", artist_name);
+            None
+        }
     }
 }
 
@@ -1047,33 +1014,191 @@ pub fn get_artist_cached_image(artist_name: &str) -> Option<String> {
     }
 }
 
-/// Convenience function to get or download artist image
-/// 
+/// Releases a download claim when dropped, even if the code between the
+/// claim and its ordinary release point unwinds.
+///
+/// `begin_download`/`finish_download` are plain store methods, not RAII on
+/// their own, so a panic between the two would otherwise strand the claim --
+/// and that is realistic here: `best_provider_image` fans out to third-party
+/// providers, and `fetch_image` reads a client-supplied URL. `parking_lot`
+/// mutexes do not poison, so a stranded claim would not clear itself; every
+/// later lookup for that artist would lose the race to `begin_download`,
+/// wait out `IMAGE_DOWNLOAD_WAIT_TIMEOUT`, and return `None`, for the rest of
+/// the process's life.
+///
+/// Only ever constructed after `begin_download` has actually succeeded, and
+/// held until after any commit for this claim has completed: local
+/// variables drop in reverse declaration order, so as long as a guard is
+/// declared *before* this one, that guard's `Drop` -- releasing the store
+/// lock used for the commit -- runs first, and this one's `Drop` -- which
+/// re-locks the store to call `finish_download` -- runs after. A waiter must
+/// never be able to observe the claim gone while the result it was waiting
+/// for is still uncommitted, and this ordering is what guarantees that.
+struct DownloadClaim {
+    store: Arc<Mutex<ArtistStore>>,
+    artist_name: String,
+}
+
+impl DownloadClaim {
+    fn new(store: Arc<Mutex<ArtistStore>>, artist_name: String) -> Self {
+        Self { store, artist_name }
+    }
+}
+
+impl Drop for DownloadClaim {
+    fn drop(&mut self) {
+        self.store.lock().finish_download(&self.artist_name);
+    }
+}
+
+/// Wait for another caller's in-flight download of this artist to land.
+///
+/// Polls with no lock held between checks: each iteration takes the lock
+/// only long enough to ask `next_image_step` and `is_downloading`, and drops
+/// it again before sleeping, so a slow winner never has to contend with this
+/// thread for the store -- only its own fetch has to finish. Gives up as
+/// soon as the winner's claim is gone and the artist still isn't `Ready` --
+/// its fetch failed or found nothing, so there is nothing left to wait for
+/// -- rather than always paying the full `IMAGE_DOWNLOAD_WAIT_TIMEOUT`.
+fn wait_for_in_flight_download(artist_name: &str) -> Option<String> {
+    let deadline = std::time::Instant::now() + IMAGE_DOWNLOAD_WAIT_TIMEOUT;
+    loop {
+        let (step, still_downloading) = {
+            let store_arc = get_artist_store();
+            let mut store = store_arc.lock();
+            (store.next_image_step(artist_name), store.is_downloading(artist_name))
+        };
+        if let ImageStep::Ready(path) = step {
+            return Some(path);
+        }
+        if !still_downloading {
+            return None;
+        }
+
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(IMAGE_DOWNLOAD_WAIT_POLL_INTERVAL);
+    }
+}
+
+/// Get or download artist cover art.
+///
+/// The only place this sequences a lookup: decide under the store's lock,
+/// release it, do whatever network work the decision calls for, then
+/// re-acquire the lock only to commit. No guard is ever held across
+/// `best_provider_image` or `fetch_image`.
+///
+/// The claim taken by `begin_download` covers the provider query as well as
+/// the fetch -- querying providers is the more expensive half on a
+/// constrained device, so N concurrent callers for the same artist must not
+/// each pay for it before N-1 are turned away. A caller that is turned away
+/// waits for the winner instead of giving up outright, since a lookup this
+/// function used to serve by finding the winner's result already in the
+/// cache once the shared lock let it through.
+///
 /// # Arguments
 /// * `artist_name` - The name of the artist
-/// 
+///
 /// # Returns
 /// Option with the cache path if found or downloaded
 pub fn get_or_download_artist_image(artist_name: &str) -> Option<String> {
     let store_arc = get_artist_store();
+
+    let step = {
+        let mut store = store_arc.lock();
+        store.next_image_step(artist_name)
+    };
+
+    match step {
+        ImageStep::Ready(path) => return Some(path),
+        ImageStep::NotFound => return None,
+        ImageStep::Fetch { .. } | ImageStep::AskProviders => {}
+    }
+
+    let claimed = {
+        let mut store = store_arc.lock();
+        store.begin_download(artist_name)
+    };
+    if !claimed {
+        return wait_for_in_flight_download(artist_name);
+    }
+    // Declared before the commit's lock guard further down, so that guard's
+    // Drop always runs first: see the type's own doc comment for why that
+    // order is load-bearing, not incidental.
+    let _claim = DownloadClaim::new(store_arc.clone(), artist_name.to_string());
+
+    let resolved = match step {
+        ImageStep::Fetch { url, image_type, destination } => Some((url, image_type, destination)),
+        ImageStep::AskProviders => {
+            best_provider_image(artist_name).map(|url| (url, "cover".to_string(), ImageDestination::Cache))
+        }
+        ImageStep::Ready(_) | ImageStep::NotFound => None, // handled above; kept exhaustive rather than panicking
+    };
+
+    // No provider had anything for this artist: nothing to fetch or commit.
+    // `_claim` releases the download claim when it drops on the way out.
+    let Some((url, image_type, destination)) = resolved else {
+        return None;
+    };
+
+    let fetch_result = fetch_image(&url);
+
     let mut store = store_arc.lock();
-    match store.get_or_download_artist_image(artist_name) {
-        ArtistImageResult::Found { cache_path } => Some(cache_path),
-        _ => None,
+    match fetch_result {
+        Ok(bytes) => match store.commit_downloaded_image(artist_name, &bytes, &image_type, destination) {
+            ArtistImageResult::Found { cache_path } => Some(cache_path),
+            _ => None,
+        },
+        Err(e) => {
+            warn!("Failed to download image for artist {} from URL {}: {}", artist_name, url, e);
+            None
+        }
     }
 }
 
-/// Convenience function to update an artist with cover art
-/// 
+/// Attach the coverart API URL to an artist's metadata when an image was found.
+///
+/// Free of store state, so the orchestrator above can call this after its
+/// lock is already released.
+fn apply_coverart_metadata(mut artist: Artist, found: bool) -> Artist {
+    if !found {
+        debug!("No image available for artist {}", artist.name);
+        return artist;
+    }
+
+    // Initialize metadata if needed
+    if artist.metadata.is_none() {
+        artist.metadata = Some(crate::data::ArtistMeta::new());
+    }
+
+    // Add the cached image to the artist metadata
+    if let Some(ref mut metadata) = artist.metadata {
+        // Generate proper API URL for artist image
+        let encoded_name = crate::helpers::url_encoding::encode_url_safe(&artist.name);
+        let api_url = format!("{}/coverart/artist/{}/image", crate::constants::API_PREFIX, encoded_name);
+        metadata.thumb_url = vec![api_url];
+        debug!("Updated artist {} with coverart API image URL: /api/coverart/artist/{}/image", artist.name, encoded_name);
+    }
+
+    artist
+}
+
+/// Update an artist with cover art information.
+///
+/// Resolves the image through the unlocked orchestrator above before the
+/// store is touched at all, so this never holds the store's lock across the
+/// network calls that resolution can make.
+///
 /// # Arguments
 /// * `artist` - The artist to update
-/// 
+///
 /// # Returns
-/// The updated artist with cover art information
+/// The updated artist with image URLs in metadata
 pub fn update_artist_with_coverart(artist: Artist) -> Artist {
-    let store_arc = get_artist_store();
-    let mut store = store_arc.lock();
-    store.update_artist_with_coverart(artist)
+    debug!("Updating artist {} with cover art", artist.name);
+    let found = get_or_download_artist_image(&artist.name).is_some();
+    apply_coverart_metadata(artist, found)
 }
 
 /// Convenience function to lookup MusicBrainz IDs for an artist
@@ -1091,17 +1216,72 @@ pub fn lookup_artist_mbids(artist_name: &str) -> (Vec<String>, bool) {
     store.lookup_artist_mbids(artist_name)
 }
 
-/// Convenience function to update artist data including metadata and cover art
-/// 
+/// Update artist data, including metadata and cover art.
+///
+/// The MusicBrainz lookup runs under the store's lock, exactly as it always
+/// has; cover art resolution runs afterwards, through the unlocked
+/// orchestrator, so the lock is never held across it.
+///
 /// # Arguments
 /// * `artist` - The artist to update
-/// 
+///
 /// # Returns
 /// The updated artist with metadata and cover art information
 pub fn update_data_for_artist(artist: Artist) -> Artist {
-    let store_arc = get_artist_store();
-    let mut store = store_arc.lock();
-    store.update_data_for_artist(artist)
+    let mut artist = {
+        let store_arc = get_artist_store();
+        let mut store = store_arc.lock();
+        store.update_data_for_artist(artist)
+    };
+
+    // If the artist has MusicBrainz IDs, update from the coverart system
+    if artist.metadata.as_ref().is_some_and(|meta| !meta.mbid.is_empty()) {
+        debug!("Artist {} has MusicBrainz ID(s), updating with cover art system", artist.name);
+        artist = update_artist_with_coverart(artist);
+    } else {
+        // For artists without MusicBrainz IDs, still try coverart system with artist name only
+        debug!("Artist {} has no MusicBrainz ID, trying cover art by name only", artist.name);
+        artist = update_artist_with_coverart(artist);
+    }
+
+    // Note: LastFM metadata is now handled by the unified coverart system
+    // No need for separate LastFM calls as the coverart system includes LastFM provider
+
+    // Handle artists without MusicBrainz IDs but with existing thumbnails
+    if artist.metadata.as_ref().is_some_and(|meta| meta.mbid.is_empty()) {
+        // Check if the artist has thumbnail images
+        let has_thumbnails = match &artist.metadata {
+            Some(meta) => !meta.thumb_url.is_empty(),
+            None => false,
+        };
+
+        if has_thumbnails {
+            debug!("Artist {} has thumbnail image(s) but no MusicBrainz ID, skipping updates", artist.name);
+        }
+    }
+
+    // Store the updated metadata in cache
+    if let Some(metadata) = &artist.metadata {
+        // Create a cache key using the artist's name
+        let cache_key = format!("artist::metadata::{}", artist.name);
+
+        // Store the metadata in the attribute cache
+        match crate::helpers::attributecache::set(&cache_key, metadata) {
+            Ok(_) => debug!("Stored metadata for artist {} in attribute cache", artist.name),
+            Err(e) => warn!("Failed to store metadata for artist {} in attribute cache: {}", artist.name, e),
+        }
+
+        // If the artist has MusicBrainz IDs, store them separately for faster lookup
+        if !metadata.mbid.is_empty() {
+            let mbid_key = format!("artist::mbid::{}", artist.name);
+            if let Err(e) = crate::helpers::attributecache::set(&mbid_key, &metadata.mbid) {
+                warn!("Failed to store MusicBrainz IDs for artist {} in attribute cache: {}", artist.name, e);
+            }
+        }
+    }
+
+    // Return the potentially updated artist
+    artist
 }
 
 /// Convenience function to clear cached image for an artist
@@ -1212,34 +1392,57 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_metallica_cover_download() {
+        init_test_settings_db();
         let (mut store, _cache_temp, _user_temp) = create_test_store();
         let artist_name = "Metallica";
-        
-        // This test will attempt to download a real Metallica cover
+
+        // This test drives the same phases the unlocked orchestrator does --
+        // decide, fetch, commit -- by hand, since the store no longer owns a
+        // method that does all three under one lock. `next_image_step` reads
+        // the shared settings database, so this needs `#[serial]` and its own
+        // init like every other test that touches it -- a stray
+        // `artist.image.Metallica` key left by an unrelated test, or a race
+        // on first initialization, must not turn a network-optional test
+        // into a hard failure.
         // Note: This requires internet connectivity and working cover art providers
-        match store.get_or_download_artist_image(artist_name) {
-            ArtistImageResult::Found { cache_path } => {
-                // Verify the file exists
-                assert!(Path::new(&cache_path).exists(), "Downloaded image file should exist");
-                
-                // Verify the file is not empty
-                let metadata = fs::metadata(&cache_path).expect("Failed to get file metadata");
-                assert!(metadata.len() > 0, "Downloaded image should not be empty");
-                
-                // Verify it's a reasonable image size (at least 1KB, less than 10MB)
-                assert!(metadata.len() > 1024, "Image should be larger than 1KB");
-                assert!(metadata.len() < 10_000_000, "Image should be smaller than 10MB");
-                
-                println!("Successfully downloaded Metallica cover: {} bytes", metadata.len());
-            },
-            ArtistImageResult::NotFound => {
-                // This might happen if cover art providers are not available
-                println!("Warning: No cover art found for Metallica (this may be expected in test environment)");
-            },
-            ArtistImageResult::Error(e) => {
-                // This might happen if there's no internet connectivity
-                println!("Warning: Error downloading Metallica cover: {} (this may be expected in test environment)", e);
+        match store.next_image_step(artist_name) {
+            ImageStep::AskProviders => {
+                match best_provider_image(artist_name) {
+                    Some(url) => match fetch_image(&url) {
+                        Ok(bytes) => match store.commit_downloaded_image(artist_name, &bytes, "cover", ImageDestination::Cache) {
+                            ArtistImageResult::Found { cache_path } => {
+                                assert!(Path::new(&cache_path).exists(), "Downloaded image file should exist");
+
+                                let metadata = fs::metadata(&cache_path).expect("Failed to get file metadata");
+                                assert!(metadata.len() > 0, "Downloaded image should not be empty");
+                                assert!(metadata.len() > 1024, "Image should be larger than 1KB");
+                                assert!(metadata.len() < 10_000_000, "Image should be smaller than 10MB");
+
+                                println!("Successfully downloaded Metallica cover: {} bytes", metadata.len());
+                            }
+                            ArtistImageResult::Error(e) => {
+                                println!("Warning: Error storing Metallica cover: {} (this may be expected in test environment)", e);
+                            }
+                            ArtistImageResult::NotFound => panic!("commit_downloaded_image never returns NotFound"),
+                        },
+                        Err(e) => {
+                            println!("Warning: Error downloading Metallica cover: {} (this may be expected in test environment)", e);
+                        }
+                    },
+                    None => {
+                        println!("Warning: No cover art found for Metallica (this may be expected in test environment)");
+                    }
+                }
+            }
+            other => {
+                // A fresh artist with no selection should ask the providers,
+                // but this is a network-optional test: tolerate any other
+                // step rather than failing the build over test-environment
+                // noise (a leftover settings key, auto-download disabled by
+                // some other global default, and so on).
+                println!("Warning: expected to ask the providers for Metallica, got {:?} (this may be expected in test environment)", other);
             }
         }
     }
@@ -1284,13 +1487,13 @@ mod tests {
     #[test]
     fn test_download_prevention() {
         let (mut store, _cache_temp, _user_temp) = create_test_store();
-        
+
         // Disable auto-download
         store.config.auto_download = false;
-        
-        let result = store.get_or_download_artist_image("NonExistent Artist");
+
+        let result = store.next_image_step("NonExistent Artist");
         match result {
-            ArtistImageResult::NotFound => {
+            ImageStep::NotFound => {
                 // This is expected when auto-download is disabled
             },
             _ => panic!("Should return NotFound when auto-download is disabled"),
@@ -1646,6 +1849,7 @@ mod tests {
     /// A selection of ours whose file has since gone is a stale pointer, not a
     /// URL to fetch: handing `/api/coverart/...` to the HTTP client turns a
     /// recoverable miss into an error and leaves the artist with no picture.
+    /// `next_image_step` must send this case to the providers, never to `Fetch`.
     #[test]
     #[serial]
     fn a_local_selection_whose_file_is_gone_is_not_fetched_over_http() {
@@ -1662,12 +1866,12 @@ mod tests {
         );
         crate::helpers::settingsdb::set_string(&format!("artist.image.{}", artist), &url).unwrap();
 
-        let result = store.get_or_download_artist_image(artist);
+        let step = store.next_image_step(artist);
 
-        assert!(
-            !matches!(result, ArtistImageResult::Error(_)),
-            "our own address must never reach the download path, got: {:?}",
-            result
+        assert_eq!(
+            step,
+            ImageStep::AskProviders,
+            "our own address must never reach the download path"
         );
     }
 
@@ -1690,6 +1894,166 @@ mod tests {
             store.selected_image_id(artist).as_deref(),
             Some("custom"),
             "the selection must survive a removal that did not happen"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn next_image_step_is_ready_when_a_member_is_on_disk() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let artist = "On Disk Artist";
+        let path = store.get_artist_user_image_path(artist, "custom");
+        write_file(&path, &png_bytes(8, 8));
+
+        assert_eq!(store.next_image_step(artist), ImageStep::Ready(path));
+    }
+
+    #[test]
+    #[serial]
+    fn next_image_step_is_not_found_when_auto_download_is_off() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        store.config.auto_download = false;
+
+        assert_eq!(store.next_image_step("No Auto Download Artist"), ImageStep::NotFound);
+    }
+
+    /// A stored selection that is not one of our own URLs is a remote image to
+    /// fetch into the cache under `custom`, exactly as the WebUI's provider
+    /// candidate flow expects.
+    #[test]
+    #[serial]
+    fn next_image_step_is_fetch_for_a_remote_selection() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        store.config.auto_download = true;
+        let artist = "Remote Fetch Artist";
+        let url = "https://provider.test/portrait.jpg".to_string();
+        crate::helpers::settingsdb::set_string(&format!("artist.image.{}", artist), &url).unwrap();
+
+        assert_eq!(
+            store.next_image_step(artist),
+            ImageStep::Fetch { url, image_type: "custom".to_string(), destination: ImageDestination::Cache }
+        );
+    }
+
+    /// The earlier version of this test (and its user-directory sibling)
+    /// committed against an artist with no selection and no memo, so the
+    /// deferred-to answer coincidentally equalled the path just written --
+    /// it would have passed unchanged against a blind
+    /// `image_cache.insert(path)`, which is the bug the re-check in
+    /// `commit_downloaded_image` exists to prevent. This one seeds a
+    /// competing selection (a user `custom.jpg`, which precedence prefers
+    /// over anything in the cache directory) and a stale memo entry naming a
+    /// real, pre-existing cache file before committing a `Cache` download,
+    /// so it only passes when the commit truly defers to what the artist
+    /// resolves to now.
+    #[test]
+    #[serial]
+    fn commit_downloaded_image_defers_to_a_selection_made_before_it_lands() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let artist = "Selection Wins Over Commit Artist";
+
+        // The competing selection: user directory wins the precedence chain
+        // over anything in the cache, with no settings key required.
+        let selected_path = store.get_artist_user_image_path(artist, "custom");
+        write_file(&selected_path, &png_bytes(4, 4));
+
+        // A stale memo entry naming a real, pre-existing cache file --
+        // standing in for whatever a concurrent lookup resolved to before
+        // the selection above was in place. It has to exist on disk, or
+        // `get_cached_image`'s own staleness check would discard it before
+        // this test could tell the two code paths apart.
+        let stale_path = store.get_artist_image_path(artist, "cover");
+        write_file(&stale_path, b"old cover bytes");
+        store.image_cache.insert(artist.to_string(), stale_path.clone());
+
+        let bytes = png_bytes(8, 8);
+        let result = store.commit_downloaded_image(artist, &bytes, "cover", ImageDestination::Cache);
+
+        let ArtistImageResult::Found { cache_path } = result else { panic!("the write should succeed: {:?}", result) };
+        assert_eq!(cache_path, selected_path, "the selection must win over both the stale memo and the file just committed");
+        assert_eq!(
+            store.image_cache.get(artist),
+            Some(&selected_path),
+            "the memo must agree with the selection, not the stale entry or the new file"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn commit_downloaded_image_writes_to_the_user_directory_and_populates_the_memo() {
+        init_test_settings_db();
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let artist = "User Commit Artist";
+        let bytes = png_bytes(8, 8);
+
+        let result = store.commit_downloaded_image(artist, &bytes, "custom", ImageDestination::UserDirectory);
+
+        let ArtistImageResult::Found { cache_path } = result else { panic!("the write should succeed: {:?}", result) };
+        assert_eq!(cache_path, store.get_artist_user_image_path(artist, "custom"));
+        assert_eq!(std::fs::read(&cache_path).unwrap(), bytes);
+        assert_eq!(store.image_cache.get(artist), Some(&cache_path));
+    }
+
+    /// Pins the begin/finish mechanics in isolation: a claim refuses a second
+    /// claim while it stands, and releasing it lets a new one through. This
+    /// does not by itself prove the flag was ever dead -- a single-threaded
+    /// test like this one would have passed against the old, lock-held
+    /// `download_and_cache_image` too, since that method's check-then-insert
+    /// was the same shape. What made the flag dead was lock scope: it was
+    /// read and written under the same mutex that serialised the whole
+    /// download, so a second caller could never reach the check while it was
+    /// set. No unit test in this module observes that; it took two threads
+    /// actually racing under the real lock.
+    #[test]
+    fn begin_download_refuses_a_second_claim_until_finish_download_releases_it() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let artist = "In Flight Artist";
+
+        assert!(store.begin_download(artist), "the first claim succeeds");
+        assert!(!store.begin_download(artist), "a second claim must be refused while one is in flight");
+
+        store.finish_download(artist);
+
+        assert!(store.begin_download(artist), "finish_download must release the claim");
+    }
+
+    /// `begin_download`/`finish_download` are plain methods, not RAII on
+    /// their own, so nothing but `DownloadClaim` stops a panic between the
+    /// two from stranding the claim forever -- `parking_lot` mutexes do not
+    /// poison, so there is no other mechanism that would ever clear it.
+    /// `best_provider_image` and `fetch_image` both run in that window in
+    /// production, and both can realistically panic (a provider fanning out
+    /// to third parties, a client-supplied URL), so this has to hold even
+    /// when the code between the claim and its ordinary release point
+    /// unwinds.
+    #[test]
+    fn a_panic_between_claim_and_release_still_frees_the_claim() {
+        let dir = temp_user_dir();
+        let store = Arc::new(Mutex::new(store_in(&dir)));
+        let artist = "Panicking Download Artist";
+
+        assert!(store.lock().begin_download(artist), "the claim succeeds");
+
+        let guarded_store = store.clone();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _claim = DownloadClaim::new(guarded_store, artist.to_string());
+            panic!("simulated failure between the claim and its ordinary release");
+        }));
+
+        assert!(unwound.is_err(), "the panic must propagate, not be swallowed");
+        assert!(
+            store.lock().begin_download(artist),
+            "the claim must be released by unwinding through the guard, not left stranded"
         );
     }
 }

@@ -3,6 +3,79 @@
 version = 4
 
 [[package]]
+name = "acr-http"
+version = "0.20.0"
+dependencies = [
+ "log",
+ "once_cell",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
+]
+
+[[package]]
+name = "acr-images"
+version = "0.20.0"
+dependencies = [
+ "image",
+ "log",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "acr-store"
+version = "0.20.0"
+dependencies = [
+ "acr-images",
+ "acr-types",
+ "chrono",
+ "log",
+ "lru",
+ "once_cell",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "acr-types"
+version = "0.20.0"
+dependencies = [
+ "base64 0.21.7",
+ "chrono",
+ "crossbeam",
+ "deunicode",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
+name = "acr-web"
+version = "0.20.0"
+dependencies = [
+ "acr-images",
+ "acr-store",
+ "acr-types",
+ "log",
+ "md5",
+ "rocket",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -276,6 +349,41 @@ dependencies = [
  "url",
  "urlencoding",
  "walkdir",
+]
+
+[[package]]
+name = "audiocontrol-metadata"
+version = "0.20.0"
+dependencies = [
+ "acr-http",
+ "acr-images",
+ "acr-store",
+ "acr-types",
+ "acr-web",
+ "aes-gcm",
+ "base64 0.21.7",
+ "chrono",
+ "crossbeam",
+ "deunicode",
+ "hex",
+ "image",
+ "log",
+ "md5",
+ "moka",
+ "once_cell",
+ "parking_lot",
+ "rand",
+ "regex",
+ "rocket",
+ "serde",
+ "serde_json",
+ "strsim",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "ureq",
+ "url",
+ "urlencoding",
 ]
 
 [[package]]

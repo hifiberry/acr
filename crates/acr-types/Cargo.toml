@@ -1,0 +1,20 @@
+[package]
+name = "acr-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Data types and pure helpers shared by the AudioControl daemons"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+chrono.workspace = true
+base64.workspace = true
+deunicode.workspace = true
+strum.workspace = true
+strum_macros.workspace = true
+crossbeam.workspace = true
+parking_lot.workspace = true

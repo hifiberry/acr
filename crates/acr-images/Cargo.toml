@@ -1,0 +1,19 @@
+[package]
+name = "acr-images"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Image resizing, variant naming, format sniffing and grading"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+thiserror.workspace = true
+image.workspace = true
+once_cell.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

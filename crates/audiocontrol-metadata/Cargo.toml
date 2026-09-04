@@ -1,0 +1,45 @@
+[package]
+name = "audiocontrol-metadata"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "External metadata providers, cover art and accounts for AudioControl"
+
+[lib]
+name = "audiocontrol_metadata"
+path = "src/lib.rs"
+
+[dependencies]
+acr-types = { path = "../acr-types" }
+acr-http = { path = "../acr-http" }
+acr-images = { path = "../acr-images" }
+acr-store = { path = "../acr-store" }
+acr-web = { path = "../acr-web" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+rocket.workspace = true
+ureq.workspace = true
+image.workspace = true
+base64.workspace = true
+md5.workspace = true
+urlencoding.workspace = true
+deunicode.workspace = true
+strsim.workspace = true
+moka.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+crossbeam.workspace = true
+aes-gcm = "0.10.2"
+rand = "0.8.5"
+hex = "0.4.3"
+url = "2.4"
+tokio = { version = "1.45.0", features = ["full"] }
+
+[dev-dependencies]
+tempfile.workspace = true

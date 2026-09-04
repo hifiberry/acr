@@ -20,13 +20,10 @@ pub mod stream_helper;
 pub mod musicbrainz;
 pub mod theaudiodb;
 pub mod macaddress;
-pub mod http_client;
-pub mod ratelimit;
 pub mod lastfm;
 pub mod security_store;
 pub mod settingsdb;
 pub mod spotify;
-pub mod retry;
 pub mod systemd;
 pub mod playback_progress;
 pub mod process_helper;
@@ -47,6 +44,7 @@ pub mod shairportsync_messages;
 
 use crate::data::artist::Artist;
 
+pub use acr_http::{http_client, ratelimit, retry};
 pub use acr_types::{sanitize, url_encoding};
 pub use playback_progress::PlayerProgress;
 

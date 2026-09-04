@@ -63,6 +63,21 @@ pub fn split_album_artist(name: &str, separators: Option<&[String]>) -> Option<V
             .map(|s| s.to_string())
             .collect()
     });
+    // Deliberately checked before the resolver is asked, even though
+    // `split_artist_names_with_mbid_lookup` reads the `artist::split::<name>`
+    // attribute-cache entry first and only checks separators after: keeping
+    // the check here is what lets a future HTTP resolver skip a round trip
+    // for a name that is obviously a single artist. Two consequences follow:
+    //
+    // - `artist::split::<name>` is no longer written for names with no
+    //   separator. The answer is the same (`None`) either way, but the cache
+    //   stops growing a row per single-artist name, so `audiocontrol_dump_cache`
+    //   shows fewer of them than it did.
+    // - A cached `Some([...])` for a name that has no separator under the
+    //   *current* `artist_separators` is now ignored, where the old order
+    //   (cache read, then separator check) would have returned it. Reachable
+    //   only if `artist_separators` is narrowed between runs, or an older
+    //   release with a wider default list wrote the entry.
     if !seps.iter().any(|s| name.contains(s.as_str())) {
         return None;
     }

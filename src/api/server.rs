@@ -321,8 +321,12 @@ pub async fn start_rocket_server(
 
     // Route groups from outside this package: the metadata crate's cover art,
     // Last.fm, Spotify, TheAudioDB and favourites endpoints. Their mount
-    // points are disjoint from the ones above, so mounting them after changes
-    // no path and no resolution order within any group.
+    // points are not all disjoint from the ones above — TheAudioDB's group
+    // mounts at `""`, i.e. at API_PREFIX itself, the same base as
+    // `api_routes` — but no path collides today, so mounting them after
+    // changes no resolution order within any group. A future route added to
+    // either group would surface as a Rocket collision at ignite rather than
+    // as the declaration-order resolution this comment used to promise.
     for (mount, routes) in extra_routes {
         rocket_builder = rocket_builder.mount(format!("{}{}", API_PREFIX, mount), routes);
     }

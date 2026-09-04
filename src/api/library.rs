@@ -1340,6 +1340,18 @@ fn get_artist_internal(
                         if meta.banner_url.is_empty() {
                             meta.banner_url = detail.banner_url;
                         }
+                        // `is_partial_match` is deliberately not carried through
+                        // here. Nothing in this build ever writes it true: both
+                        // writers (the artist updater and the artist store) set
+                        // it inside `if let Some(meta) = &mut artist.metadata`
+                        // after `clear_metadata()` has already set that same
+                        // metadata to `None` on the same path, so it can only
+                        // ever be `false` or absent today. Only an
+                        // attribute-cache entry written by an older release
+                        // could carry `true`, and `#[serde(skip_serializing_if
+                        // = "Not::not")]` on the field means the only visible
+                        // effect either way is whether the key appears in the
+                        // payload at all.
                     }
                     artist
                 });

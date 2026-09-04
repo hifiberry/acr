@@ -2,27 +2,29 @@
 //!
 //! A lookup here may take tens of seconds, so it runs on its own thread and
 //! reports its answer the way every other late enrichment does: as a partial
-//! song through `AudioController::apply_song_information`, which merges it,
-//! stamps provenance, drops it if the song has moved on, and publishes
-//! `song_information_update`.
+//! song through a [`SongInformationSink`], which merges it, stamps provenance,
+//! drops it if the song has moved on, and publishes
+//! `song_information_update`. What implements that sink -- the player daemon's
+//! controller today, an HTTP call once the daemons are separate -- is none of
+//! this module's business, and neither is where the events come from.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 
+use crossbeam::channel::Receiver;
 use log::{debug, info, warn};
 use parking_lot::Mutex;
 
-use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
-use crate::audiocontrol::AudioController;
-use crate::data::song::COVER_ART_SOURCE;
-use crate::data::{PlayerEvent, PlayerSource, Song};
+use acr_types::now_playing::{NowPlayingEvent, SongInformationSink};
+use acr_types::song::COVER_ART_SOURCE;
+use acr_types::{PlayerSource, Song};
 
-use audiocontrol_metadata::external_coverart::config::Trigger;
-use audiocontrol_metadata::external_coverart::{cache_key, configured_providers, ExternalCoverartProvider};
+use crate::external_coverart::config::Trigger;
+use crate::external_coverart::{cache_key, configured_providers, ExternalCoverartProvider};
 // `provider.name()` is a CoverartProvider method, so the trait must be in
 // scope even though nothing here names it directly.
-use audiocontrol_metadata::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
+use crate::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
 
 /// Whether this song is worth spending a slow lookup on.
 ///
@@ -76,7 +78,12 @@ fn answers_song_lookups(provider: &ExternalCoverartProvider) -> bool {
 }
 
 /// Look one song up against one endpoint and report what comes back.
-fn run_lookup(provider: &Arc<ExternalCoverartProvider>, song: &Song, source: &PlayerSource) {
+fn run_lookup(
+    provider: &Arc<ExternalCoverartProvider>,
+    song: &Song,
+    source: &PlayerSource,
+    sink: &Arc<dyn SongInformationSink>,
+) {
     let (Some(title), Some(artist)) = (song.title.clone(), song.artist.clone()) else {
         return;
     };
@@ -94,7 +101,7 @@ fn run_lookup(provider: &Arc<ExternalCoverartProvider>, song: &Song, source: &Pl
     };
 
     let partial = partial_for(song, provider.name(), &url);
-    let applied = AudioController::instance().apply_song_information(source, &partial);
+    let applied = sink.apply(source, &partial);
     if applied {
         info!(
             "External cover art '{}': artwork applied for {:?}",
@@ -134,11 +141,15 @@ impl Drop for InFlightGuard {
     }
 }
 
-/// Start one listener thread. Does nothing when no endpoint is configured.
-pub fn start() {
+/// Start one listener thread reading `events`.
+///
+/// Returns whether it started: with no endpoint configured there is nothing to
+/// look anything up against, so the receiver is dropped and the caller can stop
+/// feeding a channel no one reads.
+pub fn start(events: Receiver<NowPlayingEvent>, sink: Arc<dyn SongInformationSink>) -> bool {
     let providers = configured_providers();
     if providers.is_empty() {
-        return;
+        return false;
     }
 
     // Cache keys currently being looked up. Two players showing the same
@@ -146,16 +157,14 @@ pub fn start() {
     // 40-second answer twice.
     let in_flight: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
-    let (_id, receiver) = EventBus::instance().subscribe(vec![EventSubscription::SongChanged]);
-
-    thread::spawn(move || {
+    let spawned = thread::Builder::new().name("external-coverart".into()).spawn(move || {
         info!(
             "External cover art worker started for {} endpoint(s)",
             providers.len()
         );
 
-        for event in receiver.iter() {
-            let PlayerEvent::SongChanged { song: Some(song), source, .. } = event else {
+        for event in events.iter() {
+            let NowPlayingEvent::SongChanged { song: Some(song), source } = event else {
                 continue;
             };
 
@@ -189,27 +198,36 @@ pub fn start() {
                 let song = song.clone();
                 let source = source.clone();
                 let in_flight = in_flight.clone();
+                let sink = sink.clone();
                 thread::spawn(move || {
                     // Constructed right after the successful `insert` above,
                     // so its `Drop` covers the whole closure body, panic or
                     // not.
                     let _guard = InFlightGuard { in_flight, key };
-                    run_lookup(&provider, &song, &source);
+                    run_lookup(&provider, &song, &source, &sink);
                 });
             }
         }
 
-        warn!("External cover art worker stopped: the event bus closed");
+        warn!("External cover art worker stopped: its event channel closed");
     });
+
+    match spawned {
+        Ok(_) => true,
+        Err(e) => {
+            warn!("External cover art worker could not be started: {}", e);
+            false
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::song::{
+    use acr_types::song::{
         COVER_ART_SOURCE, COVER_ART_SOURCE_LASTFM, COVER_ART_SOURCE_STATION_LOGO,
     };
-    use audiocontrol_metadata::external_coverart::config::EndpointConfig;
+    use crate::external_coverart::config::EndpointConfig;
     use std::collections::HashMap;
 
     fn endpoint_with_methods(methods: Vec<CoverartMethod>) -> EndpointConfig {

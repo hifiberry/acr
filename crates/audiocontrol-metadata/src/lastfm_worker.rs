@@ -1,26 +1,42 @@
-use std::any::Any;
-use std::sync::Weak;
+//! Last.fm scrobbling and track enrichment, as a worker on a channel.
+//!
+//! This was an `ActionPlugin` living inside the player daemon: it subscribed to
+//! the event bus itself and reached into `AudioController` to report what it
+//! found. It now reads [`NowPlayingEvent`] from a channel and answers through a
+//! [`SongInformationSink`], so nothing here needs a player in the same process.
+//! The `action_plugins` entry named `lastfm` still configures it, with the same
+//! keys and the same effects.
+//!
+//! Two things the channel cannot carry on its own. The scrobble timer needs the
+//! player's real state, which it asks for through [`PlaybackStateSource`]
+//! rather than trusting that no `StateChanged` was ever missed; and the
+//! daemon's action-plugin list still names this worker, which `plugin_factory`
+//! does from [`WORKER_NAME`].
+
 use std::thread;
 use std::time::Duration;
 use std::sync::Arc;
 use parking_lot::Mutex;
 use std::time::SystemTime;
-use std::sync::atomic::{AtomicBool, Ordering}; // Added
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::audiocontrol::AudioController;
-use crate::data::PlayerEvent;
-use crate::data::Song; // Added import for Song struct
-use crate::helpers::lastfm::{LastfmClient, LastfmTrackInfoDetails}; // Added LastfmTrackInfoDetails
-use crate::plugins::action_plugin::{ActionPlugin, BaseActionPlugin};
-use crate::plugins::plugin::Plugin;
-use log::{debug, error, info, warn, trace};
+use crate::lastfm::{LastfmClient, LastfmTrackInfoDetails};
+use acr_types::now_playing::{NowPlayingEvent, PlaybackStateSource, SongInformationSink};
+use acr_types::{PlaybackState, PlayerSource, Song};
+use crossbeam::channel::Receiver;
+use log::{debug, error, info, warn};
 use serde::Deserialize;
-use crate::data::PlaybackState;
-use crate::players::PlayerController; // Added for get_playback_state
-use crate::data::PlayerSource; // Added PlayerSource
 
+/// The name this worker logs under, and the name the daemon's action-plugin
+/// list reports for the `action_plugins` entry that configures it. That list is
+/// a shipped API, so the name is fixed even though nothing here is a plugin any
+/// more.
+pub const WORKER_NAME: &str = "Lastfm";
+
+/// The `action_plugins` entry named `lastfm`, unchanged: same keys, same
+/// default, so an existing configuration keeps working.
 #[derive(Debug, Deserialize, Clone)]
-pub struct LastfmConfig {
+pub struct LastfmWorkerConfig {
     pub enabled: bool,
     pub api_key: String,
     pub api_secret: String,
@@ -33,12 +49,18 @@ fn default_scrobble_config() -> bool {
 }
 
 pub struct Lastfm {
-    base: BaseActionPlugin,
-    config: LastfmConfig,
+    config: LastfmWorkerConfig,
     worker_thread: Option<thread::JoinHandle<()>>,
     current_track_data: Arc<Mutex<CurrentScrobbleTrack>>,
     lastfm_client: Option<LastfmClient>,
     worker_running: Arc<AtomicBool>, // Added for graceful shutdown
+    /// Where an enrichment result goes. How a partial is merged, and whether it
+    /// still describes the song being played, belongs entirely to whatever
+    /// implements this.
+    sink: Arc<dyn SongInformationSink>,
+    /// What the player is actually doing, for the periodic reconciliation
+    /// below.
+    state: Arc<dyn PlaybackStateSource>,
 }
 
 #[derive(Clone, Debug)]
@@ -108,7 +130,8 @@ fn lastfm_worker(
     client: LastfmClient,
     worker_running: Arc<AtomicBool>, // Added
     scrobble_enabled: bool, // Added
-    // TODO: Consider passing audiocontrol_tx here if needed for sending events
+    sink: Arc<dyn SongInformationSink>,
+    state: Arc<dyn PlaybackStateSource>,
 ) {
     info!(
         "Lastfm background worker started for plugin: {}. Client available: {}. Scrobbling enabled: {}",
@@ -157,11 +180,7 @@ fn lastfm_worker(
                             if let Some(original_song_details_ref) = &mut track_data.song_details {
                                 let updated_song_partial = calculate_updates(original_song_details_ref, &track_info_details, user_data);
 
-                                crate::audiocontrol::AudioController::instance()
-                                    .apply_song_information(
-                                        &current_player_source,
-                                        &updated_song_partial,
-                                    );
+                                sink.apply(&current_player_source, &updated_song_partial);
                                 merge_song_updates(original_song_details_ref, &updated_song_partial);
                                 debug!("LastFMWorker: Merged partial song info. New song_details: {:?}", track_data.song_details);
                             } else {
@@ -187,8 +206,9 @@ fn lastfm_worker(
         // Periodic state check (e.g., every 30 seconds)
         if loop_count % 30 == 0 {
             debug!("LastFMWorker: Performing periodic state check.");
-            let audio_controller = AudioController::instance(); // Get global instance
-            let actual_player_state = audio_controller.get_playback_state(); // Get state of active player
+            // Asked rather than awaited: a StateChanged that never arrived
+            // would otherwise leave the timer measuring a paused player.
+            let actual_player_state = state.playback_state();
 
             if actual_player_state != track_data.current_playback_state {
                 info!(
@@ -323,70 +343,119 @@ fn lastfm_worker(
 }
 
 impl Lastfm {
-    pub fn new(config: LastfmConfig) -> Self {
+    pub fn new(
+        config: LastfmWorkerConfig,
+        sink: Arc<dyn SongInformationSink>,
+        state: Arc<dyn PlaybackStateSource>,
+    ) -> Self {
         Self {
-            base: BaseActionPlugin::new("Lastfm"),
             config,
             worker_thread: None,
             current_track_data: Arc::new(Mutex::new(CurrentScrobbleTrack::default())),
             lastfm_client: None,
             worker_running: Arc::new(AtomicBool::new(true)), // Initialize worker_running
+            sink,
+            state,
         }
     }
-    
-    /// Start the worker thread for Last.fm scrobbling
-    fn start_worker_thread(&mut self) {
-        if self.lastfm_client.is_none() {
-            if let Ok(client_instance) = LastfmClient::get_instance() {
-                self.lastfm_client = Some(client_instance.clone());
-                
-                // Set up the worker thread
-                let track_data_for_thread = Arc::clone(&self.current_track_data);
-                let plugin_name_for_thread = self.name().to_string();
-                let client_for_thread = client_instance; 
-                let worker_running_for_thread = Arc::clone(&self.worker_running);
-                let scrobble_config_for_thread = self.config.scrobble;
 
-                let handle = thread::spawn(move || {
-                    lastfm_worker(
-                        track_data_for_thread,
-                        plugin_name_for_thread,
-                        client_for_thread,
-                        worker_running_for_thread,
-                        scrobble_config_for_thread
-                    );
-                });
-                
+    /// Get the Last.fm client ready and start the scrobble timer thread.
+    ///
+    /// Returns whether the worker can run at all: with no usable client there is
+    /// nothing to scrobble to and nothing to look a track up against.
+    fn init(&mut self) -> bool {
+        info!("Initializing Lastfm... Scrobbling enabled: {}", self.config.scrobble);
+
+        let init_result = if self.config.api_key.is_empty() || self.config.api_secret.is_empty() {
+            info!("Lastfm: API key or secret is empty in plugin configuration. Attempting to use default credentials.");
+            LastfmClient::initialize_with_defaults()
+        } else {
+            LastfmClient::initialize(
+                self.config.api_key.clone(),
+                self.config.api_secret.clone(),
+            )
+        };
+
+        if let Err(e) = init_result {
+            error!("Lastfm: Failed to initialize Last.fm client: {}", e);
+            return false;
+        }
+        info!("Lastfm: Last.fm client connection initialized/verified successfully.");
+
+        let client_instance = match LastfmClient::get_instance() {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Lastfm: Failed to get Last.fm client instance: {}", e);
+                return false;
+            }
+        };
+        self.lastfm_client = Some(client_instance.clone());
+
+        let track_data_for_thread = Arc::clone(&self.current_track_data);
+        let worker_running_for_thread = Arc::clone(&self.worker_running);
+        let scrobble_config_for_thread = self.config.scrobble;
+        let sink_for_thread = Arc::clone(&self.sink);
+        let state_for_thread = Arc::clone(&self.state);
+
+        match thread::Builder::new()
+            .name("lastfm-scrobbler".into())
+            .spawn(move || {
+                lastfm_worker(
+                    track_data_for_thread,
+                    WORKER_NAME.to_string(),
+                    client_instance,
+                    worker_running_for_thread,
+                    scrobble_config_for_thread,
+                    sink_for_thread,
+                    state_for_thread,
+                );
+            })
+        {
+            Ok(handle) => {
                 self.worker_thread = Some(handle);
-                log::info!("Lastfm: Worker thread started");
-            } else {
-                log::error!("Lastfm: Failed to get Last.fm client instance, cannot start worker thread");
+                true
+            }
+            Err(e) => {
+                error!("Lastfm: Failed to start the scrobble timer thread: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Read now-playing events until the channel closes, then stop the timer.
+    fn run(mut self, events: Receiver<NowPlayingEvent>) {
+        for event in events {
+            match event {
+                NowPlayingEvent::SongChanged { source, song } => {
+                    self.handle_song_changed(&song, &source);
+                }
+                NowPlayingEvent::StateChanged { source, state } => {
+                    self.handle_state_changed(&state, &source);
+                }
+            }
+        }
+
+        self.shutdown();
+    }
+
+    /// Stop the timer thread and wait for it, so a scrobble already in flight is
+    /// not cut off half way.
+    fn shutdown(&mut self) {
+        info!("Lastfm shutdown initiated.");
+
+        self.worker_running.store(false, Ordering::SeqCst);
+
+        if let Some(handle) = self.worker_thread.take() {
+            info!("Lastfm: Waiting for worker thread to join...");
+            match handle.join() {
+                Ok(_) => info!("Lastfm: Worker thread joined successfully."),
+                Err(e) => error!("Lastfm: Failed to join worker thread: {:?}", e),
             }
         } else {
-            // We already have a client, but need to start the worker
-            if let Some(client_instance) = &self.lastfm_client {
-                let track_data_for_thread = Arc::clone(&self.current_track_data);
-                let plugin_name_for_thread = self.name().to_string();
-                let client_for_thread = client_instance.clone();
-                let worker_running_for_thread = Arc::clone(&self.worker_running);
-                let scrobble_config_for_thread = self.config.scrobble;
-
-                let handle = thread::spawn(move || {
-                    lastfm_worker(
-                        track_data_for_thread,
-                        plugin_name_for_thread,
-                        client_for_thread,
-                        worker_running_for_thread,
-                        scrobble_config_for_thread
-                    );
-                });
-                
-                self.worker_thread = Some(handle);
-                log::info!("Lastfm: Worker thread started");
-            }
+            info!("Lastfm: No worker thread to join.");
         }
     }
-    
+
     /// Handle a song changed event
     fn handle_song_changed(&mut self, song_event_opt: &Option<Song>, source: &PlayerSource) {
         let mut track_data = self.current_track_data.lock();
@@ -535,196 +604,44 @@ impl Lastfm {
         
         track_data.current_playback_state = *new_player_state;
     }
+}
 
-    /// Create a handler for events coming from the event bus
-    fn handle_event_bus_events(&self, event: PlayerEvent) {
-        trace!("Received event from event bus");
-        
-        // First determine if this is from the active player
-        let _is_active_player = if let Some(controller) = self.base.get_controller() {
-            // Get player ID from the event
-            let event_player_id = match event.source() {
-                Some(source) => source.player_id(),
-                None => "system",
-            };
-            
-            // Get ID of the active player from AudioController
-            let active_player_id = controller.get_player_id();
-            
-            // Event is from active player if IDs match
-            event_player_id == active_player_id
-        } else {
+/// Start the Last.fm worker on `events`.
+///
+/// Returns whether it is running and wants those events, so a caller with
+/// nothing to feed can stop feeding it. A disabled entry starts nothing, which
+/// is what `enabled: false` has always meant.
+pub fn start(
+    config: LastfmWorkerConfig,
+    events: Receiver<NowPlayingEvent>,
+    sink: Arc<dyn SongInformationSink>,
+    state: Arc<dyn PlaybackStateSource>,
+) -> bool {
+    if !config.enabled {
+        info!("Lastfm is disabled by configuration. Skipping initialization.");
+        return false;
+    }
+
+    let mut worker = Lastfm::new(config, sink, state);
+    if !worker.init() {
+        return false;
+    }
+
+    match thread::Builder::new()
+        .name("lastfm-worker".into())
+        .spawn(move || worker.run(events))
+    {
+        Ok(_) => true,
+        Err(e) => {
+            error!("Lastfm: Failed to start the worker thread: {}", e);
             false
-        };
-        
-        // Now handle the event the same way we would in on_event
-        // We use a clone here since our method takes &self rather than &mut self
-        // and we need to update internal state
-        if !self.config.enabled {
-            return;
-        }
-        
-        match &event {
-            PlayerEvent::SongChanged { song: song_event_opt, source, .. } => {
-                let lastfm_arc = Arc::new(Mutex::new(self.clone()));
-                let mut lastfm = lastfm_arc.lock();
-                lastfm.handle_song_changed(song_event_opt, source);
-            }
-            PlayerEvent::StateChanged { state: new_player_state, source: event_source, .. } => {
-                let lastfm_arc = Arc::new(Mutex::new(self.clone()));
-                let mut lastfm = lastfm_arc.lock();
-                lastfm.handle_state_changed(new_player_state, event_source);
-            }
-            _ => {
-                // Other events are ignored for now
-            }
         }
     }
 }
 
-impl Plugin for Lastfm {
-    fn name(&self) -> &str {
-        self.base.name()
-    }
-
-    fn version(&self) -> &str {
-        self.base.version()
-    }    fn init(&mut self) -> bool {
-        if !self.config.enabled {
-            info!("Lastfm is disabled by configuration. Skipping initialization.");
-            return true;
-        }
-
-        info!("Initializing Lastfm... Scrobbling enabled: {}", self.config.scrobble);
-
-        let init_result = if self.config.api_key.is_empty() || self.config.api_secret.is_empty() {
-            info!("Lastfm: API key or secret is empty in plugin configuration. Attempting to use default credentials.");
-            LastfmClient::initialize_with_defaults()
-        } else {
-            LastfmClient::initialize(
-                self.config.api_key.clone(),
-                self.config.api_secret.clone(),
-            )
-        };
-
-        match init_result {
-            Ok(_) => {
-                info!("Lastfm: Last.fm client connection initialized/verified successfully.");
-                
-                match LastfmClient::get_instance() {
-                    Ok(client_instance) => {
-                        self.lastfm_client = Some(client_instance.clone()); 
-
-                        let track_data_for_thread = Arc::clone(&self.current_track_data);
-                        let plugin_name_for_thread = self.name().to_string();
-                        let client_for_thread = client_instance; 
-                        let worker_running_for_thread = Arc::clone(&self.worker_running); // Clone for thread
-                        let scrobble_config_for_thread = self.config.scrobble; // Added
-
-                        let handle = thread::spawn(move || {
-                            lastfm_worker(track_data_for_thread, plugin_name_for_thread, client_for_thread, worker_running_for_thread, scrobble_config_for_thread);
-                        });
-                        self.worker_thread = Some(handle);
-                        
-                        self.base.init()
-                    }
-                    Err(e) => {
-                        error!("Lastfm: Failed to get Last.fm client instance: {}", e);
-                        false
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Lastfm: Failed to initialize Last.fm client: {}", e); // Updated log
-                false
-            }
-        }
-    }    fn shutdown(&mut self) -> bool {
-        info!("Lastfm shutdown initiated."); // Updated log
-        
-        // Signal the worker thread to stop
-        self.worker_running.store(false, Ordering::SeqCst);
-
-        // Wait for the worker thread to finish
-        if let Some(handle) = self.worker_thread.take() {
-            info!("Lastfm: Waiting for worker thread to join...");
-            match handle.join() {
-                Ok(_) => info!("Lastfm: Worker thread joined successfully."),
-                Err(e) => error!("Lastfm: Failed to join worker thread: {:?}", e),
-            }
-        } else {
-            info!("Lastfm: No worker thread to join.");
-        }
-        
-        // Unsubscribe from event bus
-        self.base.unsubscribe_from_event_bus();
-        log::debug!("Lastfm: Unsubscribed from event bus");
-        
-        // Perform shutdown tasks from BaseActionPlugin
-        self.base.shutdown()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-impl ActionPlugin for Lastfm {
-    fn initialize(&mut self, controller: Weak<AudioController>) {
-        self.base.set_controller(controller);
-        
-        // Only subscribe if enabled
-        if !self.config.enabled {
-            log::info!("Lastfm plugin is disabled, not subscribing to events");
-            return;
-        }
-        
-        // Subscribe to event bus in the initialize method
-        log::debug!("Lastfm initializing and subscribing to event bus");
-        let self_clone = self.clone();
-        self.base.subscribe_to_event_bus(move |event| {
-            self_clone.handle_event(event);
-        });
-        
-        // Initialize worker thread
-        if self.config.enabled && self.worker_thread.is_none() {
-            // Start the worker thread
-            log::debug!("Starting lastfm worker thread");
-            self.start_worker_thread();
-        }
-    }
-    
-    fn handle_event(&self, event: PlayerEvent) {
-        // Handle events using the existing method
-        self.handle_event_bus_events(event);
-    }
-}
-
-// Clone implementation for Lastfm to allow for passing to thread
-impl Clone for Lastfm {
-    fn clone(&self) -> Self {
-        let mut new_base = BaseActionPlugin::new(self.base.name());
-        
-        // Get the controller reference from the original object
-        if let Some(controller) = self.base.get_controller() {
-            // The controller is already an Arc, we need to downgrade it to a Weak
-            let controller_weak = Arc::downgrade(&controller);
-            new_base.set_controller(controller_weak);
-        }
-        
-        Self {
-            base: new_base,
-            config: self.config.clone(),
-            worker_thread: None,
-            current_track_data: Arc::clone(&self.current_track_data),
-            lastfm_client: self.lastfm_client.clone(),
-            worker_running: Arc::clone(&self.worker_running),
-        }
-    }
-}
-
-// Add the calculate_updates function definition here
-// It should be outside any impl blocks, typically as a free function in the module.
+// calculate_updates is a free function rather than a method: it is a pure
+// mapping from a song and a Last.fm answer to the partial that describes what
+// changed, which is what makes it testable without a client.
 
 /// Whether a Last.fm answer came from a signed request, and so carries the
 /// fields that need a linked account.
@@ -753,7 +670,7 @@ fn calculate_updates(
     // copy: Last.fm leaves size slots empty, and taking extralarge alone gave
     // up on any album whose extralarge slot happened to be one of them.
     let lastfm_provided_cover_art_url =
-        crate::helpers::coverart_providers::album_image_urls(lastfm_data)
+        crate::coverart_providers::album_image_urls(lastfm_data)
             .into_iter()
             .next();
 
@@ -768,9 +685,9 @@ fn calculate_updates(
             // Record where the new image came from, so what replaced a
             // placeholder is not itself mistaken for one later on.
             updated_song.metadata.insert(
-                crate::data::song::COVER_ART_SOURCE.to_string(),
+                acr_types::song::COVER_ART_SOURCE.to_string(),
                 serde_json::Value::String(
-                    crate::data::song::COVER_ART_SOURCE_LASTFM.to_string(),
+                    acr_types::song::COVER_ART_SOURCE_LASTFM.to_string(),
                 ),
             );
             debug!("calculate_updates: cover_art_url updated to {}", url);
@@ -825,7 +742,7 @@ fn calculate_updates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::song::{
+    use acr_types::song::{
         COVER_ART_SOURCE, COVER_ART_SOURCE_LASTFM, COVER_ART_SOURCE_STATION_LOGO,
     };
 

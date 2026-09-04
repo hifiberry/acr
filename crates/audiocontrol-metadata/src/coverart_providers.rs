@@ -218,9 +218,7 @@ const LASTFM_IMAGE_SIZES: [&str; 5] = ["mega", "extralarge", "large", "medium", 
 /// achieves nothing. Every URL returned here costs the grader a network round
 /// trip, taken while the cover art manager's lock is held, so only the largest
 /// slot is worth returning.
-// `pub` rather than `pub(crate)`: the Last.fm action plugin calls this and
-// stayed in the player daemon, which is now a different crate.
-pub fn album_image_urls(track_info: &LastfmTrackInfoDetails) -> Vec<String> {
+pub(crate) fn album_image_urls(track_info: &LastfmTrackInfoDetails) -> Vec<String> {
     let Some(album) = &track_info.album else {
         return Vec::new();
     };

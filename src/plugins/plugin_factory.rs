@@ -7,7 +7,8 @@ use crate::plugins::plugin::Plugin;
 use crate::plugins::action_plugin::ActionPlugin;
 use crate::plugins::action_plugins::ActiveMonitor;
 use crate::plugins::action_plugins::event_logger::{EventLogger, LogLevel};
-use crate::plugins::action_plugins::lastfm::{Lastfm, LastfmConfig};
+use crate::plugins::action_plugins::worker_descriptor::WorkerDescriptor;
+use audiocontrol_metadata::lastfm_worker::{LastfmWorkerConfig, WORKER_NAME as LASTFM_WORKER_NAME};
 
 /// Factory for creating and registering plugins
 pub struct PluginFactory {
@@ -78,10 +79,17 @@ impl PluginFactory {
             Some(Box::new(ActiveMonitor::new()) as Box<dyn Plugin>)
         });
 
+        // Last.fm is no longer a plugin: the same `action_plugins` entry now
+        // configures a worker in the metadata crate, which `main` starts. The
+        // entry is still registered, as a descriptor, because
+        // `GET /api/plugins/actions` reports the registered plugins and the
+        // clients reading it ship separately from the daemon. The configuration
+        // is still parsed here, so an entry that would not have produced a
+        // plugin before does not produce a descriptor now either.
         self.register("lastfm", |config_value| {
             if let Some(value) = config_value {
-                match serde_json::from_value::<LastfmConfig>(value.clone()) {
-                    Ok(config) => Some(Box::new(Lastfm::new(config)) as Box<dyn Plugin>),
+                match serde_json::from_value::<LastfmWorkerConfig>(value.clone()) {
+                    Ok(_) => Some(Box::new(WorkerDescriptor::new(LASTFM_WORKER_NAME)) as Box<dyn Plugin>),
                     Err(e) => {
                         error!("Failed to parse LastfmConfig for \'lastfm\' plugin: {}. Plugin will not be loaded.", e);
                         None
@@ -234,22 +242,11 @@ impl PluginFactory {
                 // Use default values
                 Some(Box::new(EventLogger::new(false)) as Box<dyn ActionPlugin + Send + Sync>)
             }
-        } else if plugin.as_any().downcast_ref::<Lastfm>().is_some() {
-            // For Lastfm, create a new instance with its configuration
-            if let Some(config_val) = config {
-                match serde_json::from_value::<LastfmConfig>(config_val.clone()) {
-                    Ok(lastfm_config) => {
-                        Some(Box::new(Lastfm::new(lastfm_config)) as Box<dyn ActionPlugin + Send + Sync>)
-                    }
-                    Err(e) => {
-                        error!("Failed to parse LastfmConfig for \'{}\' in create_action_plugin_with_config: {}. Plugin will not be loaded.", name, e);
-                        None
-                    }
-                }
-            } else {
-                error!("\'{}\' plugin (Lastfm) requires configuration, but none was provided to create_action_plugin_with_config. This indicates an issue.", name);
-                None
-            }
+        } else if let Some(descriptor) = plugin.as_any().downcast_ref::<WorkerDescriptor>() {
+            // An entry whose work runs outside the daemon. The constructor above
+            // has already validated its configuration; all that is needed here
+            // is the same descriptor again.
+            Some(Box::new(descriptor.clone()) as Box<dyn ActionPlugin + Send + Sync>)
         } else {
             error!("Plugin \'{}\' is not a compatible ActionPlugin or is not specifically handled in create_action_plugin_with_config.", name);
             None

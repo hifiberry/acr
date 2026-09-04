@@ -1,4 +1,6 @@
 use audiocontrol::api::server::{self, ServerOutcome};
+use audiocontrol::audiocontrol::eventbus::EventBus;
+use audiocontrol::audiocontrol::now_playing_bridge;
 use audiocontrol::config::{get_service_config, merge_player_includes};
 use audiocontrol::helpers::imagecache::ImageCache;
 use audiocontrol::helpers::lastfm;
@@ -11,6 +13,7 @@ use audiocontrol::helpers::fanarttv;
 use audiocontrol::logging;
 use audiocontrol::players::PlayerController;
 use audiocontrol::AudioController;
+use audiocontrol_metadata::lastfm_worker::LastfmWorkerConfig;
 use audiocontrol_metadata::secrets;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
@@ -421,9 +424,18 @@ fn main() {
     // Initialize cover art providers
     audiocontrol::helpers::coverart_providers::register_all_providers();
 
-    // The slow endpoints are never on a request path, so their answers reach
-    // clients through this worker and song_information_update.
-    audiocontrol::helpers::external_coverart_worker::start();
+    // Metadata enrichment -- slow cover art endpoints, Last.fm -- runs on
+    // workers that know nothing about players. This is the whole of the seam:
+    // the bridge forwards song and state changes into a channel, and the same
+    // object answers with what was found, through apply_song_information. When
+    // nothing is configured to read them, the bridge unsubscribes itself rather
+    // than filling a channel no one reads.
+    let now_playing = now_playing_bridge::start(&EventBus::instance());
+    let sink = Arc::new(now_playing_bridge::ControllerSink(controller.clone()));
+    let lastfm = lastfm_worker_config(&controllers_config);
+    if !audiocontrol_metadata::now_playing::start(now_playing, sink.clone(), sink, lastfm) {
+        info!("No now-playing enrichment is configured");
+    }
 
     // Get a reference to the AudioController singleton
     let controller = AudioController::instance();
@@ -614,6 +626,36 @@ fn initialize_fanarttv(config: &serde_json::Value) {
 fn initialize_configurator(config: &serde_json::Value) {
     audiocontrol::helpers::configurator::initialize_from_config(config);
     info!("Configurator initialized successfully");
+}
+
+/// The `action_plugins` entry named `lastfm`, if the configuration has one.
+///
+/// That entry used to configure an action plugin; it now configures the Last.fm
+/// worker in the metadata crate. Same array, same key, same fields, so an
+/// existing configuration file needs no change -- and the entry is still
+/// reported by `GET /api/plugins/actions`, which its own registration in
+/// `plugin_factory` takes care of.
+fn lastfm_worker_config(config: &serde_json::Value) -> Option<LastfmWorkerConfig> {
+    let entries = config.get("action_plugins")?.as_array()?;
+
+    for entry in entries {
+        let Some(value) = entry.get("lastfm") else {
+            continue;
+        };
+
+        match serde_json::from_value::<LastfmWorkerConfig>(value.clone()) {
+            Ok(config) => return Some(config),
+            Err(e) => {
+                error!(
+                    "Failed to parse the 'lastfm' action_plugins entry: {}. Last.fm will not run.",
+                    e
+                );
+                return None;
+            }
+        }
+    }
+
+    None
 }
 
 // Helper function to initialize Last.fm
@@ -939,4 +981,85 @@ fn print_help() {
     println!("        Start with debug logging enabled");
     println!();
     println!("For more information, see the documentation in the doc/ directory.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The entry that used to configure the action plugin now configures the
+    /// worker, read from the same array under the same key. An existing
+    /// configuration file has to keep working untouched, scrobbling included.
+    #[test]
+    fn the_lastfm_action_plugins_entry_configures_the_worker() {
+        let config = serde_json::json!({
+            "action_plugins": [
+                { "active-monitor": { "enabled": true } },
+                {
+                    "lastfm": {
+                        "enabled": true,
+                        "api_key": "key",
+                        "api_secret": "secret",
+                        "scrobble": false
+                    }
+                }
+            ]
+        });
+
+        let lastfm = lastfm_worker_config(&config).expect("the entry should be found");
+        assert!(lastfm.enabled);
+        assert_eq!(lastfm.api_key, "key");
+        assert_eq!(lastfm.api_secret, "secret");
+        assert!(!lastfm.scrobble);
+    }
+
+    /// `scrobble` has always defaulted to true when the key is absent, and the
+    /// worker reads the same field, so the default has to survive the move.
+    #[test]
+    fn scrobble_still_defaults_to_true() {
+        let config = serde_json::json!({
+            "action_plugins": [
+                { "lastfm": { "enabled": true, "api_key": "", "api_secret": "" } }
+            ]
+        });
+
+        let lastfm = lastfm_worker_config(&config).expect("the entry should be found");
+        assert!(lastfm.scrobble);
+    }
+
+    /// A disabled entry is still an entry: it is read, and the worker declines
+    /// to start on it, which is what the plugin used to do with it.
+    #[test]
+    fn a_disabled_entry_is_read_rather_than_ignored() {
+        let config = serde_json::json!({
+            "action_plugins": [
+                { "lastfm": { "enabled": false, "api_key": "", "api_secret": "" } }
+            ]
+        });
+
+        let lastfm = lastfm_worker_config(&config).expect("the entry should be found");
+        assert!(!lastfm.enabled);
+    }
+
+    #[test]
+    fn no_action_plugins_and_no_lastfm_entry_both_mean_no_worker() {
+        assert!(lastfm_worker_config(&serde_json::json!({})).is_none());
+        assert!(lastfm_worker_config(&serde_json::json!({ "action_plugins": [] })).is_none());
+        assert!(lastfm_worker_config(&serde_json::json!({
+            "action_plugins": [{ "active-monitor": { "enabled": true } }]
+        }))
+        .is_none());
+    }
+
+    /// An entry missing the credentials the worker needs is a configuration
+    /// error, and starting a worker on a guess would be worse than not starting
+    /// one.
+    #[test]
+    fn an_unusable_entry_starts_no_worker() {
+        let config = serde_json::json!({
+            "action_plugins": [{ "lastfm": { "enabled": true } }]
+        });
+
+        assert!(lastfm_worker_config(&config).is_none());
+    }
 }

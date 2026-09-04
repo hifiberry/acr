@@ -1,5 +1,4 @@
 pub mod imageprewarm;
-pub mod external_coverart_worker;
 pub mod local_coverart;
 pub mod memory_report;
 pub mod stream_helper;

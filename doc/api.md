@@ -1437,6 +1437,11 @@ Retrieves a list of all active action plugins.
   }
   ```
 
+Every entry in the configuration's `action_plugins` array that loads is listed
+here, in configuration order. `Lastfm` is listed for the `lastfm` entry as it
+always has been, although the scrobbling that entry configures now runs as a
+worker rather than as an action plugin.
+
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/plugins/actions

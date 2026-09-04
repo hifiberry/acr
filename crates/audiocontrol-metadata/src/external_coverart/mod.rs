@@ -11,6 +11,7 @@ pub mod config;
 pub mod localize;
 pub mod protocol;
 pub mod template;
+pub mod worker;
 
 #[cfg(test)]
 mod stub_server;

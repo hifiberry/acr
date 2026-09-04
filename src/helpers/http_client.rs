@@ -349,7 +349,7 @@ impl HttpClient for UreqHttpClient {
     fn get_json_with_headers(&self, url: &str, headers: &[(&str, &str)]) -> Result<Value, HttpClientError> {
         debug!("GET JSON request with headers to {}", url);
 
-        // The same rule as the image fetch below it: this is the call that
+        // The same rule as the image fetch above it: this is the call that
         // carries an external cover art endpoint's configured headers, the
         // proxy secret and client credentials on the OAuth calls, and the
         // Spotify bearer token, so a redirect must not be able to forward any
@@ -609,9 +609,10 @@ mod tests {
     /// must protect them the same way.
     ///
     /// `get_binary_with_headers` stopped following redirects while headers are
-    /// attached; this is the sibling that external cover art's lookup, Spotify
-    /// and Last.fm all use, and it carried every header except `Authorization`
-    /// to whatever host a 302 named.
+    /// attached; this is the sibling that external cover art's lookup and the
+    /// Spotify calls use, and it carried every header except `Authorization`
+    /// to whatever host a 302 named. (Last.fm is not one of them: it keeps its
+    /// own agent in `helpers/lastfm.rs`.)
     #[test]
     fn a_credentialed_json_get_does_not_follow_a_redirect() {
         let (target_port, target_rx) = serve_once(200, "application/json", b"{\"ok\":true}".to_vec());

@@ -16,9 +16,11 @@ pub mod lastfm_worker;
 pub mod library_enricher;
 pub mod musicbrainz;
 pub mod now_playing;
+pub mod resolver;
 pub mod security_store;
 pub mod spotify;
 pub mod theaudiodb;
+pub mod title_order;
 pub mod api;
 pub mod secrets;
 

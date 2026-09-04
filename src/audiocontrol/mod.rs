@@ -6,6 +6,8 @@ pub mod eventbus;
 pub mod now_playing_bridge;
 // Where the player side finds the library enricher, if one was injected
 pub mod enrichment;
+// Where the player side finds the resolver, if one was injected
+pub mod resolver;
 
 // Re-export the AudioController
 pub use audiocontrol::AudioController;

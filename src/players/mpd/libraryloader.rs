@@ -141,8 +141,7 @@ impl MPDLibraryLoader {
         use std::sync::Arc;
         use parking_lot::Mutex;
         use crate::data::{Album, Track, Identifier};
-        use crate::helpers::musicbrainz;
-        
+
         // Extract album name (default to "Unknown Album" if not present)
         let album_name = song.tags.iter()
             .find(|(tag, _)| tag == "Album")
@@ -177,8 +176,8 @@ impl MPDLibraryLoader {
         // Create an empty track list - typically you'd populate this later
         let tracks = Arc::new(Mutex::new(Vec::<Track>::new()));
         
-        // Create artists list by splitting the album artist string using musicbrainz helper with custom separators
-        let artists = match musicbrainz::split_artist_names(&album_artist, false, custom_separators) {
+        // Create artists list by splitting the album artist string through the resolver, with custom separators
+        let artists = match crate::audiocontrol::resolver::split_album_artist(&album_artist, custom_separators) {
             Some(split_artists) => Arc::new(Mutex::new(split_artists)),
             None => Arc::new(Mutex::new(vec![album_artist]))
         };

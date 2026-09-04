@@ -433,6 +433,14 @@ fn main() {
         audiocontrol_metadata::library_enricher::InProcessEnricher,
     ));
 
+    // Resolver -- which half of a split title is the artist, and whether an
+    // album-artist string names one artist or several. Same lifetime rule as
+    // the enricher: installed before any player starts, so no library or
+    // title splitter finds it missing.
+    audiocontrol::audiocontrol::resolver::set_resolver(Arc::new(
+        audiocontrol_metadata::resolver::InProcessResolver,
+    ));
+
     // Metadata enrichment -- slow cover art endpoints, Last.fm -- runs on
     // workers that know nothing about players. This is the whole of the seam:
     // the bridge forwards song and state changes into a channel, and the same

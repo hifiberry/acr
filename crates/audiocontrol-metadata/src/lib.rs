@@ -13,6 +13,7 @@ pub mod favourites;
 pub mod image_meta;
 pub mod lastfm;
 pub mod lastfm_worker;
+pub mod library_enricher;
 pub mod musicbrainz;
 pub mod now_playing;
 pub mod security_store;

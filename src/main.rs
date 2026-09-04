@@ -424,6 +424,15 @@ fn main() {
     // Initialize cover art providers
     audiocontrol::helpers::coverart_providers::register_all_providers();
 
+    // Library enrichment -- MusicBrainz ids, artist genres, album genres. Each
+    // library asks for it as it finishes loading and receives the answers in
+    // batches. Installing the enricher has to happen before any player starts:
+    // a library that loaded first would find no enricher and stay as loaded
+    // until its next reload.
+    audiocontrol::audiocontrol::enrichment::set_enricher(Arc::new(
+        audiocontrol_metadata::library_enricher::InProcessEnricher,
+    ));
+
     // Metadata enrichment -- slow cover art endpoints, Last.fm -- runs on
     // workers that know nothing about players. This is the whole of the seam:
     // the bridge forwards song and state changes into a channel, and the same

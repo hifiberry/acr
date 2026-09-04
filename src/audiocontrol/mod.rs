@@ -4,6 +4,8 @@ pub mod audiocontrol;
 pub mod eventbus;
 // The one seam between the player side and metadata enrichment
 pub mod now_playing_bridge;
+// Where the player side finds the library enricher, if one was injected
+pub mod enrichment;
 
 // Re-export the AudioController
 pub use audiocontrol::AudioController;

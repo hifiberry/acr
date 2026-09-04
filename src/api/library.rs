@@ -1318,6 +1318,32 @@ fn get_artist_internal(
                     }
                 };
                 
+                // The library keeps only what its lists are built from. The
+                // rest of what is known about an artist — the biography and
+                // the images — belongs to the metadata side, and is merged in
+                // here, on the one route that serves it.
+                let artist = artist.map(|mut artist| {
+                    if let Some(detail) = crate::audiocontrol::enrichment::enricher()
+                        .and_then(|e| e.artist_detail(&artist.name))
+                    {
+                        let meta = artist
+                            .metadata
+                            .get_or_insert_with(crate::data::ArtistMeta::new);
+                        meta.biography = detail.biography;
+                        meta.biography_source = detail.biography_source;
+                        // What the library already carries wins: an enricher
+                        // that knows no images must not blank the ones a
+                        // backend supplied itself.
+                        if meta.thumb_url.is_empty() {
+                            meta.thumb_url = detail.thumb_url;
+                        }
+                        if meta.banner_url.is_empty() {
+                            meta.banner_url = detail.banner_url;
+                        }
+                    }
+                    artist
+                });
+
                 return Ok(Json(ArtistResponse::new(
                     player_name.to_string(),
                     artist,
@@ -1887,7 +1913,6 @@ mod tests {
         fn get_image(&self, _identifier: String) -> Option<(Vec<u8>, String)> {
             None
         }
-        fn update_artist_metadata(&self) {}
         fn library_version(&self) -> Option<String> {
             Some("42".to_string())
         }

@@ -1,10 +1,11 @@
 use log::{debug, info, warn};
 use acr_types::artist::Artist;
+use acr_types::enrichment::{ArtistRef, ArtistSummary, EnrichmentSink};
+use acr_types::Identifier;
+use crate::library_enricher::{cached_artist_metadata, BatchSender, BATCH_SIZE};
 use crate::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 use crate::ArtistUpdater;
 use std::sync::Arc;
-use parking_lot::RwLock;
-use std::collections::HashMap;
 
 /// Looks up MusicBrainz IDs for an artist and returns them if found
 /// 
@@ -228,76 +229,82 @@ pub fn update_data_for_artist(mut artist: Artist) -> Artist {
     artist
 }
 
-/// Store an updated artist and record a real change.
+/// Build the artist to look up from what the library named it, seeded with
+/// whatever is already cached about it.
 ///
-/// `Artist`'s own `PartialEq` (see `src/data/artist.rs`) is hand-written to
-/// compare only `id` — that's for identity (dedup and lookup), not content,
-/// so it can't be reused here. So the change check compares `ArtistMeta`,
-/// which derives `PartialEq` cleanly, plus the `is_multi` flag: both are
-/// part of what a client observes (`Artist`'s `Serialize` impl includes both), and
-/// `is_multi` can flip independently of metadata content (e.g. clearing an
-/// already-empty `metadata` when a name turns out to be multi-artist).
-///
-/// Comparing against the collection's current entry — not the snapshot
-/// taken at the start of the sweep — is what actually tells us whether this
-/// write changes what a client can observe. The write and the bump live in
-/// one function so the two cannot drift apart, matching `set_genres` on the
-/// album path.
-fn store_artist(
-    map: &mut HashMap<String, Artist>,
-    name: String,
-    artist: Artist,
-    version: Option<&acr_types::library_version::LibraryVersion>,
-) {
-    let changed = match map.get(&name) {
-        Some(existing) => existing.metadata != artist.metadata || existing.is_multi != artist.is_multi,
-        None => true,
-    };
-    map.insert(name, artist);
-    if changed {
-        if let Some(version) = version {
-            version.bump();
-        }
+/// The seed matters: `update_data_for_artist` skips the MusicBrainz search for
+/// an artist that already has an MBID, and the cover art system reuses images
+/// it already has. Starting from an empty `Artist` would make every sweep
+/// research and re-download every artist in the library. Before the enrichment
+/// seam this metadata arrived inside the `Artist` the library handed over --
+/// which the library had itself read from this same cache.
+fn artist_to_update(reference: &ArtistRef) -> Artist {
+    let metadata = cached_artist_metadata(&reference.name);
+    let is_multi = metadata
+        .as_ref()
+        .is_some_and(|m| m.mbid.len() > 1 || m.is_partial_match);
+
+    Artist {
+        id: Identifier::String(reference.id.clone()),
+        name: reference.name.clone(),
+        is_multi,
+        metadata,
     }
 }
 
-/// Start a background thread to update metadata for all artists in the library sequentially
+/// What a library keeps from an updated artist.
 ///
-/// This function updates artist metadata using the update_data_for_artist method in a background process.
-/// It takes an Arc to the artists collection for direct updating and reading.
+/// Everything else an update found -- biography, images, the source they came
+/// from -- stays on this side and is served from here, so the summary is
+/// exactly the fields a library's own lists are built from.
+fn summarise(artist: &Artist) -> ArtistSummary {
+    let (mbid, genres) = artist
+        .metadata
+        .as_ref()
+        .map(|m| (m.mbid.clone(), m.genres.clone()))
+        .unwrap_or_default();
+
+    ArtistSummary {
+        name: artist.name.clone(),
+        // `update_data_for_artist` sets this flag, and clears the metadata it
+        // was derived from when it does, so it is read from the artist rather
+        // than recomputed from what is left.
+        is_multi: artist.is_multi,
+        mbid,
+        genres,
+    }
+}
+
+/// Look up metadata for a library's artists in the background, sending what is
+/// found back in batches.
 ///
-/// # Arguments
-/// * `artists_collection` - Arc to the artists collection for updating
-pub fn update_library_artists_metadata_in_background(
-    artists_collection: Arc<RwLock<HashMap<String, Artist>>>,
-    version: Option<acr_types::library_version::LibraryVersion>,
+/// Returns at once. The sweep is sequential and paced: the services behind
+/// `update_data_for_artist` are rate limited, and a library being enriched is
+/// a library already serving requests.
+pub fn enrich_artists_in_background(
+    player: String,
+    version: Option<String>,
+    artists: Vec<ArtistRef>,
+    sink: Arc<dyn EnrichmentSink>,
 ) {
-    debug!("Starting background thread to update artist metadata");
-    
-    // Spawn a new thread to handle the metadata updates
+    debug!("Starting background thread to update artist metadata for {}", player);
+
     use std::thread;
     thread::spawn(move || {
         let job_id = "artist_metadata_update".to_string();
         let job_name = "Artist Metadata Update".to_string();
-        
+
         // Register the background job
         if let Err(e) = acr_store::backgroundjobs::register_job(job_id.clone(), job_name) {
             warn!("Failed to register background job: {}", e);
             return;
         }
-        
-        info!("Artist metadata update thread started");
 
-        // Get all artists from the collection
-        let artists = {
-            let artists_map = artists_collection.read();
-            // Clone all artists for processing
-            artists_map.values().cloned().collect::<Vec<_>>()
-        };
+        info!("Artist metadata update thread started");
 
         let total = artists.len();
         info!("Processing metadata for {} artists", total);
-        
+
         // Update the job with total count
         if let Err(e) = acr_store::backgroundjobs::update_job(
             &job_id,
@@ -308,10 +315,13 @@ pub fn update_library_artists_metadata_in_background(
             warn!("Failed to update background job: {}", e);
         }
 
-        for (index, artist) in artists.into_iter().enumerate() {
-            let artist_name = artist.name.clone();
+        let mut sender = BatchSender::new(sink, version);
+        let mut batch: Vec<ArtistSummary> = Vec::with_capacity(BATCH_SIZE);
+
+        for (index, reference) in artists.into_iter().enumerate() {
+            let artist_name = reference.name.clone();
             debug!("Updating metadata for artist: {}", artist_name);
-            
+
             // Update progress in background job
             let completed = index;
             let progress_message = format!("Processing artist: {}", artist_name);
@@ -324,48 +334,31 @@ pub fn update_library_artists_metadata_in_background(
                 warn!("Failed to update background job progress: {}", e);
             }
 
+            let had_mbid = cached_artist_metadata(&artist_name)
+                .is_some_and(|m| !m.mbid.is_empty());
+
             // Use the synchronous version of update_data_for_artist
-            let updated_artist = update_data_for_artist(artist);
+            let updated_artist = update_data_for_artist(artist_to_update(&reference));
 
-            // Check if we found new metadata to log appropriately
-            let has_new_metadata = {
-                let original_metadata = {
-                    let artists_map = artists_collection.read();
-                    artists_map.get(&artist_name).and_then(|a| a.metadata.clone())
-                };
+            let has_mbid_now = updated_artist
+                .metadata
+                .as_ref()
+                .is_some_and(|m| !m.mbid.is_empty());
+            if has_mbid_now && !had_mbid {
+                info!("Adding MusicBrainz ID(s) to artist {}", artist_name);
+            }
 
-                if let Some(new_metadata) = &updated_artist.metadata {
-                    if !new_metadata.mbid.is_empty() {
-                        match original_metadata {
-                            Some(old_meta) if !old_meta.mbid.is_empty() => false,
-                            _ => {
-                                info!("Adding MusicBrainz ID(s) to artist {}", artist_name);
-                                true
-                            }
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            };
-
-            // Update the artist in the collection
-            {
-                let mut artists_map = artists_collection.write();
-                store_artist(&mut artists_map, artist_name.clone(), updated_artist, version.as_ref());
-
-                if has_new_metadata {
-                    debug!("Successfully updated artist {} in library collection", artist_name);
-                }
+            batch.push(summarise(&updated_artist));
+            if batch.len() >= BATCH_SIZE && !sender.send(std::mem::take(&mut batch), Vec::new()) {
+                let _ = acr_store::backgroundjobs::complete_job(&job_id);
+                return;
             }
 
             // Log progress periodically
             let count = index + 1;
             if count % 10 == 0 || count == total {
                 info!("Processed {}/{} artists for metadata", count, total);
-                
+
                 // Update background job with milestone progress
                 if let Err(e) = acr_store::backgroundjobs::update_job(
                     &job_id,
@@ -376,13 +369,15 @@ pub fn update_library_artists_metadata_in_background(
                     warn!("Failed to update background job milestone: {}", e);
                 }
             }
-            
+
             // Sleep between updates to avoid overwhelming external services
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
+        sender.send(batch, Vec::new());
+
         info!("Artist metadata update process completed");
-        
+
         // Complete and remove the background job
         if let Err(e) = acr_store::backgroundjobs::complete_job(&job_id) {
             warn!("Failed to complete background job: {}", e);
@@ -395,9 +390,7 @@ pub fn update_library_artists_metadata_in_background(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acr_types::library_version::LibraryVersion;
     use acr_types::metadata::ArtistMeta;
-    use acr_types::Identifier;
 
     fn artist(name: &str, metadata: Option<ArtistMeta>, is_multi: bool) -> Artist {
         Artist {
@@ -408,54 +401,34 @@ mod tests {
         }
     }
 
+    /// A summary carries exactly what a library shows in its lists. Biography
+    /// and images are found by the same sweep but stay on this side, served
+    /// from the detail route.
     #[test]
-    fn storing_a_changed_artist_stores_it_and_bumps_the_version() {
-        let version = LibraryVersion::new();
-        let mut map = HashMap::new();
-        map.insert("Radiohead".to_string(), artist("Radiohead", None, false));
-
+    fn a_summary_carries_the_mbids_and_genres_and_nothing_else() {
         let mut meta = ArtistMeta::new();
+        meta.add_mbid("mbid-1".to_string());
         meta.add_genre("rock".to_string());
-        let updated = artist("Radiohead", Some(meta.clone()), false);
+        meta.biography = Some("A long story".to_string());
+        meta.add_thumb_url("thumb.jpg".to_string());
 
-        store_artist(&mut map, "Radiohead".to_string(), updated, Some(&version));
+        let summary = summarise(&artist("Radiohead", Some(meta), false));
 
-        assert_eq!(map.get("Radiohead").unwrap().metadata, Some(meta));
-        assert_eq!(version.get(), 1, "a real change must move the version");
+        assert_eq!(summary.name, "Radiohead");
+        assert_eq!(summary.mbid, vec!["mbid-1"]);
+        assert_eq!(summary.genres, vec!["rock"]);
+        assert!(!summary.is_multi);
     }
 
+    /// A name that turns out to cover several artists has its metadata cleared
+    /// by `update_data_for_artist`, so the flag is the only thing left saying
+    /// so. Recomputing it from the metadata that is gone would lose it.
     #[test]
-    fn storing_an_unchanged_artist_still_stores_it_but_does_not_bump() {
-        // Storing unconditionally (rather than skipping) keeps the map's contents
-        // exactly what was just computed even if a comparison bug ever treats two
-        // genuinely-equal values as equal for the wrong reason; only the *version*
-        // bump is conditional on there being a real change.
-        let version = LibraryVersion::new();
-        let mut meta = ArtistMeta::new();
-        meta.add_genre("rock".to_string());
+    fn a_multi_artist_stays_multi_even_with_its_metadata_cleared() {
+        let summary = summarise(&artist("Simon & Garfunkel", None, true));
 
-        let mut map = HashMap::new();
-        map.insert("Radiohead".to_string(), artist("Radiohead", Some(meta.clone()), false));
-
-        let unchanged = artist("Radiohead", Some(meta.clone()), false);
-        store_artist(&mut map, "Radiohead".to_string(), unchanged, Some(&version));
-
-        assert_eq!(map.get("Radiohead").unwrap().metadata, Some(meta));
-        assert_eq!(version.get(), 0, "no content changed, so the version must not move");
-    }
-
-    #[test]
-    fn storing_with_no_version_stores_and_never_bumps() {
-        // The LMS path: no LibraryVersion is tracked, so `version` is `None`.
-        let mut map = HashMap::new();
-        map.insert("Radiohead".to_string(), artist("Radiohead", None, false));
-
-        let mut meta = ArtistMeta::new();
-        meta.add_genre("rock".to_string());
-        let updated = artist("Radiohead", Some(meta.clone()), false);
-
-        store_artist(&mut map, "Radiohead".to_string(), updated, None);
-
-        assert_eq!(map.get("Radiohead").unwrap().metadata, Some(meta));
+        assert!(summary.is_multi);
+        assert!(summary.mbid.is_empty());
+        assert!(summary.genres.is_empty());
     }
 }

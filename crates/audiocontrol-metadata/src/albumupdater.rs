@@ -1,8 +1,7 @@
 use log::{debug, info, warn};
 use std::sync::Arc;
-use parking_lot::RwLock;
-use std::collections::HashMap;
-use acr_types::album::Album;
+use acr_types::enrichment::{AlbumGenres, AlbumRef, EnrichmentSink};
+use crate::library_enricher::{BatchSender, BATCH_SIZE};
 
 const CACHE_KEY_PREFIX: &str = "album::genres::";
 
@@ -59,40 +58,47 @@ pub fn fetch_album_genres(album_id: &str, artist: &str, album_name: &str) -> Vec
     genres
 }
 
-/// Write genres and record that the library changed.
-///
-/// The write and the bump live together deliberately: a mutation that does not
-/// move the version serves stale lists to every client holding a cached copy,
-/// and no test can catch that. Keeping them in one function is the only thing
-/// that makes forgetting hard.
-///
-/// `version` is `None` for backends that do not track a library version at all
-/// (currently LMS): there is nothing to bump, and no client is ever handed a
-/// validator for those lists, so silently doing nothing is correct rather than
-/// a gap.
-fn set_genres(
-    target: &mut Vec<String>,
-    genres: Vec<String>,
-    version: Option<&acr_types::library_version::LibraryVersion>,
-) {
-    if genres.is_empty() {
-        return;
-    }
-    *target = genres;
-    if let Some(version) = version {
-        version.bump();
+/// What to do about one album before any network request is made.
+#[derive(Debug, PartialEq, Eq)]
+enum Plan {
+    /// Send these genres; they are already known.
+    Send(Vec<String>),
+    /// Look them up.
+    Fetch,
+    /// Nothing to look up with. Record that so the next sweep does not get
+    /// this far again.
+    RecordEmpty,
+    /// A lookup already found nothing for this album. Repeating it would be a
+    /// MusicBrainz request per album per library load for an answer that is
+    /// known to be empty.
+    Skip,
+}
+
+/// Decide what one album needs, from what is cached about it and what there is
+/// to search with. Separated from the sweep because it is the whole of the
+/// policy that keeps the sweep off the network.
+fn plan(cached: Option<Vec<String>>, artist: &str, album_name: &str) -> Plan {
+    match cached {
+        Some(genres) if genres.is_empty() => Plan::Skip,
+        Some(genres) => Plan::Send(genres),
+        None if artist.is_empty() || album_name.is_empty() => Plan::RecordEmpty,
+        None => Plan::Fetch,
     }
 }
 
-/// Start a background thread to update genre tags for all albums in the library.
+/// Look up genres for a library's albums in the background, sending what is
+/// found back in batches.
 ///
-/// For each album that has no genres, fetches genres from MusicBrainz and stores
-/// them in the album struct and in the attribute cache.
-pub fn update_library_albums_genres_in_background(
-    albums_collection: Arc<RwLock<HashMap<String, Album>>>,
-    version: Option<acr_types::library_version::LibraryVersion>,
+/// Returns at once. The caller decides which albums are worth asking about;
+/// this sweep asks about every one it is given, in order, paced for the
+/// service behind `fetch_album_genres`.
+pub fn enrich_albums_in_background(
+    player: String,
+    version: Option<String>,
+    albums: Vec<AlbumRef>,
+    sink: Arc<dyn EnrichmentSink>,
 ) {
-    debug!("Starting background thread to update album genres");
+    debug!("Starting background thread to update album genres for {}", player);
 
     std::thread::spawn(move || {
         let job_id = "album_genre_update".to_string();
@@ -105,21 +111,7 @@ pub fn update_library_albums_genres_in_background(
 
         info!("Album genre update thread started");
 
-        // Collect albums that need genre lookup
-        let albums_snapshot: Vec<(String, String, Vec<String>)> = {
-            let map = albums_collection.read();
-            map.values()
-                .filter(|a| a.genres.is_empty())
-                .map(|a| {
-                    let id = a.id.to_string();
-                    let name = a.name.clone();
-                    let artists = a.artists.lock().clone();
-                    (id, name, artists)
-                })
-                .collect()
-        };
-
-        let total = albums_snapshot.len();
+        let total = albums.len();
         info!("Updating genres for {} albums without genre tags", total);
 
         let _ = acr_store::backgroundjobs::update_job(
@@ -129,10 +121,12 @@ pub fn update_library_albums_genres_in_background(
             Some(total),
         );
 
+        let mut sender = BatchSender::new(sink, version);
+        let mut batch: Vec<AlbumGenres> = Vec::with_capacity(BATCH_SIZE);
         let mut updated = 0usize;
 
-        for (index, (album_id, album_name, artists)) in albums_snapshot.into_iter().enumerate() {
-            let artist = artists.first().cloned().unwrap_or_default();
+        for (index, album) in albums.into_iter().enumerate() {
+            let AlbumRef { id: album_id, name: album_name, artist } = album;
 
             let _ = acr_store::backgroundjobs::update_job(
                 &job_id,
@@ -141,45 +135,38 @@ pub fn update_library_albums_genres_in_background(
                 Some(total),
             );
 
-            // Skip if already cached with empty result (avoid repeated API calls)
-            if let Some(cached) = load_cached_genres(&album_id) {
-                if cached.is_empty() {
-                    debug!("Skipping album '{}' — cached empty result", album_name);
-                    continue;
+            // What to send for this album, if anything. `None` means the album
+            // is not mentioned in a batch at all, which is not the same as
+            // sending an empty list: an empty list never overwrites anything,
+            // so an entry carrying one is work for the library and no change.
+            let found = match plan(load_cached_genres(&album_id), &artist, &album_name) {
+                Plan::Send(genres) => Some(genres),
+                Plan::Skip => {
+                    debug!("Skipping album '{}' — nothing to look up", album_name);
+                    None
                 }
-                // Has cached genres — apply them to the album
-                let mut map = albums_collection.write();
-                if let Some(album) = map.get_mut(&album_name) {
-                    if album.genres.is_empty() {
-                        set_genres(&mut album.genres, cached, version.as_ref());
-                        updated += 1;
+                Plan::RecordEmpty => {
+                    // Record that this album cannot be looked up, so the next
+                    // load reaches Plan::Skip instead of getting here again.
+                    store_cached_genres(&album_id, &[]);
+                    None
+                }
+                Plan::Fetch => {
+                    let genres = fetch_album_genres(&album_id, &artist, &album_name);
+                    if genres.is_empty() {
+                        None
+                    } else {
+                        Some(genres)
                     }
                 }
-                continue;
-            }
+            };
 
-            if artist.is_empty() || album_name.is_empty() {
-                store_cached_genres(&album_id, &[]);
-                continue;
-            }
-
-            let genres = fetch_album_genres(&album_id, &artist, &album_name);
-
-            if !genres.is_empty() {
-                let mut map = albums_collection.write();
-                if let Some(album) = map.get_mut(&album_name) {
-                    // Mirror the cached-genres branch's guard above: the
-                    // snapshot this loop iterates was taken before this
-                    // fetch started, so another sweep may have already
-                    // populated this album's genres while the MusicBrainz
-                    // lookup was in flight. Without the guard this would
-                    // overwrite genres that are already set - and, now that
-                    // writes bump the library version, invalidate every
-                    // client's cache for a write that changed nothing.
-                    if album.genres.is_empty() {
-                        set_genres(&mut album.genres, genres, version.as_ref());
-                        updated += 1;
-                    }
+            if let Some(genres) = found {
+                batch.push(AlbumGenres { id: album_id, genres });
+                updated += 1;
+                if batch.len() >= BATCH_SIZE && !sender.send(Vec::new(), std::mem::take(&mut batch)) {
+                    let _ = acr_store::backgroundjobs::complete_job(&job_id);
+                    return;
                 }
             }
 
@@ -199,6 +186,8 @@ pub fn update_library_albums_genres_in_background(
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
+        sender.send(Vec::new(), batch);
+
         info!("Album genre update complete: {}/{} albums updated", updated, total);
         let _ = acr_store::backgroundjobs::complete_job(&job_id);
     });
@@ -207,32 +196,37 @@ pub fn update_library_albums_genres_in_background(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acr_types::library_version::LibraryVersion;
 
     #[test]
-    fn writing_genres_stores_them_and_bumps_the_version() {
-        let version = LibraryVersion::new();
-        let mut target: Vec<String> = Vec::new();
-        set_genres(&mut target, vec!["rock".to_string()], Some(&version));
-        assert_eq!(target, vec!["rock".to_string()]);
-        assert_eq!(version.get(), 1, "a genre write must move the version");
+    fn a_cached_answer_is_sent_without_a_lookup() {
+        assert_eq!(
+            plan(Some(vec!["rock".to_string()]), "The Beatles", "Abbey Road"),
+            Plan::Send(vec!["rock".to_string()])
+        );
+    }
+
+    /// The cache records lookups that found nothing, and that record is the
+    /// only thing stopping every library load from repeating them.
+    #[test]
+    fn a_cached_empty_answer_is_not_looked_up_again() {
+        assert_eq!(plan(Some(vec![]), "The Beatles", "Abbey Road"), Plan::Skip);
     }
 
     #[test]
-    fn writing_nothing_leaves_both_alone() {
-        let version = LibraryVersion::new();
-        let mut target = vec!["existing".to_string()];
-        set_genres(&mut target, Vec::new(), Some(&version));
-        assert_eq!(target, vec!["existing".to_string()], "an empty write must not clear");
-        assert_eq!(version.get(), 0, "an empty write is not a change");
+    fn an_album_nothing_is_known_about_is_looked_up() {
+        assert_eq!(plan(None, "The Beatles", "Abbey Road"), Plan::Fetch);
+    }
+
+    /// A search needs both halves. Without them the album is recorded as
+    /// unanswerable rather than searched for with a blank.
+    #[test]
+    fn an_album_with_no_artist_or_no_name_is_recorded_as_empty() {
+        assert_eq!(plan(None, "", "Abbey Road"), Plan::RecordEmpty);
+        assert_eq!(plan(None, "The Beatles", ""), Plan::RecordEmpty);
     }
 
     #[test]
-    fn writing_genres_with_no_version_still_stores_them() {
-        // The LMS path: no LibraryVersion is tracked, so `version` is `None`.
-        // The write must still happen; there is simply nothing to bump.
-        let mut target: Vec<String> = Vec::new();
-        set_genres(&mut target, vec!["rock".to_string()], None);
-        assert_eq!(target, vec!["rock".to_string()]);
+    fn the_cache_key_names_the_album_id() {
+        assert_eq!(cache_key("42"), "album::genres::42");
     }
 }

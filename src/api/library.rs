@@ -1340,36 +1340,11 @@ fn get_artist_internal(
      ))
 }
 
-/// Interpret the `size` query parameter.
-///
-/// `Ok(None)` means "serve the original": either no size was asked for, or the
-/// request is larger than the top rung and acr does not upscale. `Err` is a client
-/// mistake and must become a 400 — a client sending nonsense should find out rather
-/// than silently receive a 243 KB original.
-pub fn parse_size(raw: Option<&str>) -> Result<Option<u32>, String> {
-    let Some(raw) = raw else { return Ok(None) };
-
-    let requested: u32 = raw
-        .parse()
-        .map_err(|_| format!("Invalid size '{}': expected a positive integer", raw))?;
-    if requested == 0 {
-        return Err(format!("Invalid size '{}': expected a positive integer", raw));
-    }
-
-    Ok(crate::helpers::imageresize::snap_to_rung(requested))
-}
-
-/// Build the body of a 400 for a bad `size`, including the sizes that would work.
-///
-/// Being told only that a value was wrong leaves a client guessing; the list costs
-/// a few bytes on a path that is already an error.
-pub fn size_error_body(message: &str) -> String {
-    serde_json::json!({
-        "error": message,
-        "image_sizes": crate::helpers::imageresize::sizes(),
-    })
-    .to_string()
-}
+/// Interpreting the `size` query parameter, and the 400 body that names the
+/// sizes that would have worked, live with the resize ladder they wrap: both
+/// daemons serve resized images, and the cover art routes moved out of this
+/// package.
+pub use acr_images::imageresize::{parse_size, size_error_body};
 
 /// Produce a downscaled version of a library image through the image cache.
 ///
@@ -1718,38 +1693,6 @@ mod tests {
     // `Album`, `Artist`, `Identifier` and `Arc` all arrive via `super::*`
     // from the file's existing imports; only `Mutex` is new here.
     use parking_lot::Mutex;
-
-    #[test]
-    fn absent_size_means_the_original() {
-        assert_eq!(parse_size(None).unwrap(), None);
-    }
-
-    #[test]
-    fn a_valid_size_snaps_up_to_a_rung() {
-        assert_eq!(parse_size(Some("360")).unwrap(), Some(400));
-        assert_eq!(parse_size(Some("100")).unwrap(), Some(100));
-    }
-
-    #[test]
-    fn a_size_above_the_ladder_means_the_original() {
-        assert_eq!(parse_size(Some("2000")).unwrap(), None);
-    }
-
-    #[test]
-    fn nonsense_sizes_are_rejected_rather_than_ignored() {
-        assert!(parse_size(Some("wide")).is_err());
-        assert!(parse_size(Some("0")).is_err());
-        assert!(parse_size(Some("-40")).is_err());
-        assert!(parse_size(Some("")).is_err());
-    }
-
-    #[test]
-    fn size_errors_carry_the_valid_sizes() {
-        let body: serde_json::Value =
-            serde_json::from_str(&size_error_body("Invalid size 'wide'")).unwrap();
-        assert_eq!(body["error"], "Invalid size 'wide'");
-        assert_eq!(body["image_sizes"], serde_json::json!([100, 140, 200, 280, 400, 800]));
-    }
 
     // Both `resize_via_cache` tests below only need to reach the identifier
     // and album-id parsing at the top of the function, so they never actually

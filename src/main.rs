@@ -423,7 +423,7 @@ fn main() {
 
     // The slow endpoints are never on a request path, so their answers reach
     // clients through this worker and song_information_update.
-    audiocontrol::helpers::external_coverart::worker::start();
+    audiocontrol::helpers::external_coverart_worker::start();
 
     // Get a reference to the AudioController singleton
     let controller = AudioController::instance();
@@ -464,6 +464,15 @@ fn main() {
         debug!("No song currently playing");
     }
 
+    // Read spotify.api_enabled config (default: false)
+    //
+    // Read here rather than in the server: the routes it selects between now
+    // come from the metadata crate, which the server does not name.
+    let spotify_api_enabled = get_service_config(&controllers_config, "spotify")
+        .and_then(|s| s.get("api_enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     // Start the API server using the global Tokio runtime
     let controllers_config_clone = controllers_config.clone();
     let api_running = running.clone();
@@ -476,6 +485,7 @@ fn main() {
                 controller,
                 &controllers_config_clone,
                 shutdown_handle,
+                audiocontrol_metadata::api::routes(spotify_api_enabled),
             )
             .await
         });

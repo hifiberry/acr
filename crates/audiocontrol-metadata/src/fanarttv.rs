@@ -1,15 +1,15 @@
 use serde_json::Value;
 use log::{debug, warn, info};
-use crate::helpers::http_client;
-use crate::helpers::coverart::{CoverartProvider, CoverartMethod};
+use acr_http::http_client;
+use crate::coverart::{CoverartProvider, CoverartMethod};
 use moka::sync::Cache;
 use std::time::Duration;
 use std::collections::HashSet;
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
-use crate::config::get_service_config;
-use crate::helpers::ratelimit;
+use acr_types::config::get_service_config;
+use acr_http::ratelimit;
 
 /// Global flag to indicate if FanArt.tv lookups are enabled
 static FANARTTV_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -323,8 +323,8 @@ impl FanarttvCoverartProvider {
         debug!("FanArt.tv: Looking up MusicBrainz ID for artist '{}'", artist_name);
         
         // Use the MusicBrainz integration to find the MBID
-        match crate::helpers::musicbrainz::search_mbids_for_artist(artist_name, false, false, true) {
-            crate::helpers::musicbrainz::MusicBrainzSearchResult::Found(mbids, cached) => {
+        match crate::musicbrainz::search_mbids_for_artist(artist_name, false, false, true) {
+            crate::musicbrainz::MusicBrainzSearchResult::Found(mbids, cached) => {
                 if let Some(mbid) = mbids.first() {
                     debug!("FanArt.tv: Found MusicBrainz ID '{}' for artist '{}' (cached: {})", 
                            mbid, artist_name, cached);
@@ -334,7 +334,7 @@ impl FanarttvCoverartProvider {
                     None
                 }
             },
-            crate::helpers::musicbrainz::MusicBrainzSearchResult::FoundPartial(mbids, cached) => {
+            crate::musicbrainz::MusicBrainzSearchResult::FoundPartial(mbids, cached) => {
                 if let Some(mbid) = mbids.first() {
                     debug!("FanArt.tv: Found partial MusicBrainz ID '{}' for artist '{}' (cached: {})", 
                            mbid, artist_name, cached);
@@ -344,11 +344,11 @@ impl FanarttvCoverartProvider {
                     None
                 }
             },
-            crate::helpers::musicbrainz::MusicBrainzSearchResult::NotFound => {
+            crate::musicbrainz::MusicBrainzSearchResult::NotFound => {
                 debug!("FanArt.tv: No MusicBrainz ID found for artist '{}'", artist_name);
                 None
             },
-            crate::helpers::musicbrainz::MusicBrainzSearchResult::Error(err) => {
+            crate::musicbrainz::MusicBrainzSearchResult::Error(err) => {
                 warn!("FanArt.tv: Error looking up MusicBrainz ID for artist '{}': {}", artist_name, err);
                 None
             }
@@ -402,7 +402,7 @@ impl CoverartProvider for FanarttvCoverartProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::coverart::CoverartProvider;
+    use crate::coverart::CoverartProvider;
     
     #[test]
     fn test_fanarttv_coverart_provider_name() {
@@ -445,7 +445,7 @@ mod tests {
     
     #[test]
     fn test_coverart_manager_integration() {
-        use crate::helpers::coverart::{fan_out, CoverartManager, CoverartQuery, QueryOptions};
+        use crate::coverart::{fan_out, CoverartManager, CoverartQuery, QueryOptions};
         use std::sync::Arc;
 
         let mut manager = CoverartManager::new();

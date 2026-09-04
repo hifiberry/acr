@@ -6,8 +6,8 @@ use parking_lot::Mutex;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use log::debug;
-use crate::helpers::image_meta::{image_size, ImageMetadata};
-use crate::helpers::image_grader::{ImageGrader, ImageInfo as GraderImageInfo};
+use crate::image_meta::{image_size, ImageMetadata};
+use acr_images::image_grader::{ImageGrader, ImageInfo as GraderImageInfo};
 
 /// Provider information structure
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,12 +4,12 @@ use log::{info, debug, warn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde_json::{Value};
-use crate::config::get_service_config;
-use crate::helpers::http_client;
-use crate::helpers::attributecache;
-use crate::helpers::ratelimit;
-use crate::data::artist::Artist;
-use crate::helpers::ArtistUpdater;
+use acr_types::config::get_service_config;
+use acr_http::http_client;
+use acr_store::attributecache;
+use acr_http::ratelimit;
+use acr_types::artist::Artist;
+use crate::ArtistUpdater;
 
 /// Global flag to indicate if TheAudioDB lookups are enabled
 static THEAUDIODB_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -1024,7 +1024,7 @@ impl ArtistUpdater for TheAudioDbUpdater {
                         if !genre.is_empty() {
                             if let Some(meta) = &mut artist.metadata {
                                 // Apply genre cleanup
-                                let genres_to_add = crate::helpers::genre_cleanup::clean_genres_global(vec![genre.to_string()]);
+                                let genres_to_add = acr_store::genre_cleanup::clean_genres_global(vec![genre.to_string()]);
                                 for cleaned_genre in genres_to_add {
                                     if !meta.genres.contains(&cleaned_genre) {
                                         meta.genres.push(cleaned_genre.clone());
@@ -1071,7 +1071,7 @@ impl TheAudioDbCoverartProvider {
     }
 }
 
-impl crate::helpers::coverart::CoverartProvider for TheAudioDbCoverartProvider {
+impl crate::coverart::CoverartProvider for TheAudioDbCoverartProvider {
     fn name(&self) -> &str {
         "theaudiodb"
     }
@@ -1080,8 +1080,8 @@ impl crate::helpers::coverart::CoverartProvider for TheAudioDbCoverartProvider {
         "TheAudioDB"
     }
 
-    fn supported_methods(&self) -> std::collections::HashSet<crate::helpers::coverart::CoverartMethod> {
-        use crate::helpers::coverart::CoverartMethod;
+    fn supported_methods(&self) -> std::collections::HashSet<crate::coverart::CoverartMethod> {
+        use crate::coverart::CoverartMethod;
         let mut methods = std::collections::HashSet::new();
         methods.insert(CoverartMethod::Artist);
         methods.insert(CoverartMethod::Album);
@@ -1525,7 +1525,7 @@ mod tests {
         
         let updater = TheAudioDbUpdater::new();
         let mut artist = Artist {
-            id: crate::data::Identifier::String("test_artist".to_string()),
+            id: acr_types::Identifier::String("test_artist".to_string()),
             name: "Test Artist".to_string(),
             is_multi: false,
             metadata: None,
@@ -1555,7 +1555,7 @@ mod tests {
         
         let updater = TheAudioDbUpdater::new();
         let artist = Artist {
-            id: crate::data::Identifier::String("test_artist".to_string()),
+            id: acr_types::Identifier::String("test_artist".to_string()),
             name: "Test Artist".to_string(),
             is_multi: false,
             metadata: None,

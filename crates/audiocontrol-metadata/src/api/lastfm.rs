@@ -1,4 +1,4 @@
-use crate::helpers::lastfm::{LASTFM_CLIENT, LastfmError, LovedTrack}; // Added LovedTrack
+use crate::lastfm::{LASTFM_CLIENT, LastfmError, LovedTrack}; // Added LovedTrack
 use log::{debug, error, info}; // Removed warn
 use rocket::serde::json::Json;
 use rocket::{get, post};

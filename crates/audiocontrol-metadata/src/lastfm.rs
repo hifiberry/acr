@@ -1,4 +1,4 @@
-use crate::helpers::ratelimit;
+use acr_http::ratelimit;
 use log::{debug, info, error};
 use md5;
 use once_cell::sync::Lazy;
@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use ureq;
 use parking_lot::Mutex;
 // Import SecurityStore and its error type
-use crate::helpers::security_store::{SecurityStore, SecurityStoreError};
+use crate::security_store::{SecurityStore, SecurityStoreError};
 
 const LASTFM_API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 const LASTFM_AUTH_URL: &str = "http://www.last.fm/api/auth/";
@@ -1065,7 +1065,7 @@ impl LastfmUpdater {
     }
 }
 
-impl crate::helpers::ArtistUpdater for LastfmUpdater {
+impl crate::ArtistUpdater for LastfmUpdater {
     /// Updates artist information using Last.fm service
     /// 
     /// This function fetches artist bio, tags, and images from Last.fm and adds them to the artist metadata.
@@ -1076,7 +1076,7 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
     /// 
     /// # Returns
     /// The updated artist with Last.fm data
-    fn update_artist(&self, mut artist: crate::data::artist::Artist) -> crate::data::artist::Artist {
+    fn update_artist(&self, mut artist: acr_types::artist::Artist) -> acr_types::artist::Artist {
         debug!("Updating artist {} with Last.fm data", artist.name);
         
         // Get the Last.fm client instance
@@ -1100,7 +1100,7 @@ impl crate::helpers::ArtistUpdater for LastfmUpdater {
                 
                 // Ensure we have metadata
                 if artist.metadata.is_none() {
-                    artist.metadata = Some(crate::data::metadata::ArtistMeta::new());
+                    artist.metadata = Some(acr_types::metadata::ArtistMeta::new());
                 }
                 
                 if let Some(meta) = &mut artist.metadata {
@@ -1234,49 +1234,49 @@ impl LastfmFavouriteProvider {
     }
 }
 
-impl crate::helpers::favourites::FavouriteProvider for LastfmFavouriteProvider {
-    fn is_favourite(&self, song: &crate::data::song::Song) -> Result<bool, crate::helpers::favourites::FavouriteError> {
+impl crate::favourites::FavouriteProvider for LastfmFavouriteProvider {
+    fn is_favourite(&self, song: &acr_types::song::Song) -> Result<bool, crate::favourites::FavouriteError> {
         let artist = song.artist.as_ref()
-            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+            .ok_or_else(|| crate::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
         let title = song.title.as_ref()
-            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+            .ok_or_else(|| crate::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
 
         match is_track_loved(artist, title) {
             Ok(loved) => Ok(loved),
-            Err(LastfmError::AuthError(msg)) => Err(crate::helpers::favourites::FavouriteError::AuthError(msg)),
-            Err(LastfmError::NetworkError(msg)) => Err(crate::helpers::favourites::FavouriteError::NetworkError(msg)),
-            Err(LastfmError::ConfigError(msg)) => Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg)),
-            Err(e) => Err(crate::helpers::favourites::FavouriteError::Other(e.to_string())),
+            Err(LastfmError::AuthError(msg)) => Err(crate::favourites::FavouriteError::AuthError(msg)),
+            Err(LastfmError::NetworkError(msg)) => Err(crate::favourites::FavouriteError::NetworkError(msg)),
+            Err(LastfmError::ConfigError(msg)) => Err(crate::favourites::FavouriteError::NotConfigured(msg)),
+            Err(e) => Err(crate::favourites::FavouriteError::Other(e.to_string())),
         }
     }
 
-    fn add_favourite(&self, song: &crate::data::song::Song) -> Result<(), crate::helpers::favourites::FavouriteError> {
+    fn add_favourite(&self, song: &acr_types::song::Song) -> Result<(), crate::favourites::FavouriteError> {
         let artist = song.artist.as_ref()
-            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+            .ok_or_else(|| crate::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
         let title = song.title.as_ref()
-            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+            .ok_or_else(|| crate::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
 
         match love_track(artist, title) {
             Ok(()) => Ok(()),
-            Err(LastfmError::AuthError(msg)) => Err(crate::helpers::favourites::FavouriteError::AuthError(msg)),
-            Err(LastfmError::NetworkError(msg)) => Err(crate::helpers::favourites::FavouriteError::NetworkError(msg)),
-            Err(LastfmError::ConfigError(msg)) => Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg)),
-            Err(e) => Err(crate::helpers::favourites::FavouriteError::Other(e.to_string())),
+            Err(LastfmError::AuthError(msg)) => Err(crate::favourites::FavouriteError::AuthError(msg)),
+            Err(LastfmError::NetworkError(msg)) => Err(crate::favourites::FavouriteError::NetworkError(msg)),
+            Err(LastfmError::ConfigError(msg)) => Err(crate::favourites::FavouriteError::NotConfigured(msg)),
+            Err(e) => Err(crate::favourites::FavouriteError::Other(e.to_string())),
         }
     }
 
-    fn remove_favourite(&self, song: &crate::data::song::Song) -> Result<(), crate::helpers::favourites::FavouriteError> {
+    fn remove_favourite(&self, song: &acr_types::song::Song) -> Result<(), crate::favourites::FavouriteError> {
         let artist = song.artist.as_ref()
-            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+            .ok_or_else(|| crate::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
         let title = song.title.as_ref()
-            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+            .ok_or_else(|| crate::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
 
         match unlove_track(artist, title) {
             Ok(()) => Ok(()),
-            Err(LastfmError::AuthError(msg)) => Err(crate::helpers::favourites::FavouriteError::AuthError(msg)),
-            Err(LastfmError::NetworkError(msg)) => Err(crate::helpers::favourites::FavouriteError::NetworkError(msg)),
-            Err(LastfmError::ConfigError(msg)) => Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg)),
-            Err(e) => Err(crate::helpers::favourites::FavouriteError::Other(e.to_string())),
+            Err(LastfmError::AuthError(msg)) => Err(crate::favourites::FavouriteError::AuthError(msg)),
+            Err(LastfmError::NetworkError(msg)) => Err(crate::favourites::FavouriteError::NetworkError(msg)),
+            Err(LastfmError::ConfigError(msg)) => Err(crate::favourites::FavouriteError::NotConfigured(msg)),
+            Err(e) => Err(crate::favourites::FavouriteError::Other(e.to_string())),
         }
     }
 

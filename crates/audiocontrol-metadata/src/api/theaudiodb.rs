@@ -3,7 +3,7 @@ use rocket::{get};
 use rocket::response::status::Custom;
 use rocket::http::Status;
 use serde::Serialize;
-use crate::helpers::theaudiodb;
+use crate::theaudiodb;
 
 /// Response structure for TheAudioDB lookup
 #[derive(Serialize)]

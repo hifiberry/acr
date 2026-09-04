@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use log::{info, warn};
 
-use crate::config::get_service_config;
-use crate::helpers::coverart::CoverartMethod;
+use acr_types::config::get_service_config;
+use crate::coverart::CoverartMethod;
 
 /// How long an error is cached. Short, because an error is a statement about
 /// the service rather than about the artwork: a 502 or a timeout must not

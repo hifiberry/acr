@@ -35,11 +35,13 @@ regex.workspace = true
 once_cell.workspace = true
 parking_lot.workspace = true
 crossbeam.workspace = true
-aes-gcm = "0.10.2"
-rand = "0.8.5"
-hex = "0.4.3"
-url = "2.4"
-tokio = { version = "1.45.0", features = ["full"] }
+aes-gcm.workspace = true
+rand.workspace = true
+hex.workspace = true
+url.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+serial_test.workspace = true
+env_logger.workspace = true

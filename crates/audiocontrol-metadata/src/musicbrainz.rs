@@ -1,8 +1,8 @@
-use crate::helpers::attributecache;
-use crate::helpers::ratelimit;
-use crate::helpers::sanitize;
-use crate::helpers::artistsplitter;
-use crate::config::get_service_config;
+use acr_store::attributecache;
+use acr_http::ratelimit;
+use acr_types::sanitize;
+use crate::artistsplitter;
+use acr_types::config::get_service_config;
 use log::{info, error, debug, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use deunicode::deunicode;
@@ -241,7 +241,7 @@ fn sanitize_artist_name_for_search(artist_name: &str) -> String {
 /// Split an artist name that might contain multiple artists
 ///
 /// This function has been moved to artistsplitter module for better organization.
-/// Use `crate::helpers::artistsplitter::split_artist` instead.
+/// Use `crate::artistsplitter::split_artist` instead.
 ///
 /// # Arguments
 /// * `artist_name` - The artist name to split
@@ -703,7 +703,7 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
 /// and splitting the name if multiple MBIDs are found
 ///
 /// This function has been moved to artistsplitter module for better organization.
-/// Use `crate::helpers::artistsplitter::split_artist_names_with_mbid_lookup` instead.
+/// Use `crate::artistsplitter::split_artist_names_with_mbid_lookup` instead.
 ///
 /// # Arguments
 /// * `artist_name` - The name of the artist to check

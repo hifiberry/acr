@@ -1,8 +1,7 @@
 use crate::AudioController;
 use crate::api::{
-    players, plugins, library, imagecache, coverart, events, lastfm, spotify,
-    theaudiodb, favourites, volume, lyrics, m3u, settings, cache, backgroundjobs, genres,
-    inputs, splitters, capabilities
+    players, plugins, library, imagecache, events, volume, lyrics, m3u, settings, cache,
+    backgroundjobs, genres, inputs, splitters, capabilities
 };
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
@@ -154,6 +153,10 @@ pub async fn start_rocket_server(
     // Where this server publishes the means to stop it, for the signal
     // handler in main to use while it is running.
     shutdown_handle: ShutdownHandle,
+    // Route groups this crate does not own, each with the mount point it goes
+    // under relative to `API_PREFIX`. The metadata crate supplies its own; the
+    // daemon does not name them, so this package need not depend on it.
+    extra_routes: Vec<(String, Vec<rocket::Route>)>,
 ) -> Result<ServerOutcome, rocket::Error> {
     // Check if webserver is enabled (default to true if not specified)
     let webserver_enabled = get_service_config(config_json, "webserver")
@@ -238,9 +241,6 @@ pub async fn start_rocket_server(
         library::delete_library_album,
         library::delete_library_track,
 
-        // TheAudioDB routes
-        theaudiodb::lookup_artist_by_mbid,
-        
         // WebSocket routes
         events::event_messages,
         events::player_event_messages,
@@ -264,71 +264,8 @@ pub async fn start_rocket_server(
         inputs::get_inputs_status,
     ];
 
-    // Define coverart routes
-    let coverart_routes = routes![
-        coverart::get_artist_coverart,
-        coverart::get_song_coverart,
-        coverart::get_album_coverart,
-        coverart::get_album_coverart_with_year,
-        coverart::get_url_coverart,
-        coverart::get_coverart_methods,
-        coverart::upload_artist_image,
-        coverart::update_artist_image,
-        coverart::get_artist_image,
-        coverart::get_artist_images,
-        coverart::get_artist_image_by_id,
-        coverart::delete_artist_image_route,
-    ];
-
-    // Define Last.fm specific routes
-    let lastfm_routes = routes![
-        lastfm::get_status,
-        lastfm::get_auth_url_handler,
-        lastfm::prepare_complete_auth,
-        lastfm::complete_auth,
-        lastfm::disconnect_handler,
-    ];
-
-    // Read spotify.api_enabled config (default: false)
-    let spotify_api_enabled = get_service_config(config_json, "spotify")
-        .and_then(|s| s.get("api_enabled"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    // Define Spotify authentication-only routes
-    let spotify_auth_routes = routes![
-        spotify::store_tokens,
-        spotify::token_status,
-        spotify::logout,
-        spotify::get_oauth_config,
-        spotify::create_session,
-        spotify::login,
-        spotify::poll_session,
-        spotify::check_server,
-        spotify::get_access_token
-    ];
-    // Define full Spotify API routes
-    let spotify_full_routes = routes![
-        spotify::store_tokens,
-        spotify::token_status,
-        spotify::logout,
-        spotify::get_oauth_config,
-        spotify::create_session,
-        spotify::login,
-        spotify::poll_session,
-        spotify::check_server,
-        spotify::spotify_command,
-        spotify::get_playback,
-        spotify::spotify_currently_playing,
-        spotify::spotify_search,
-        spotify::get_access_token
-    ];
-    
     // ImageCache routes
     let imagecache_routes = imagecache::routes();
-    
-    // Favourites routes
-    let favourites_routes = favourites::routes();
     
     // Lyrics routes
     let lyrics_routes = routes![
@@ -370,13 +307,7 @@ pub async fn start_rocket_server(
     ];
       let mut rocket_builder = rocket::custom(config)
         .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting general api routes
-        .mount(format!("{}/lastfm", API_PREFIX), lastfm_routes) // Mount Last.fm routes under /api/lastfm (or similar)
-        .mount(
-            format!("{}/spotify", API_PREFIX),
-            if spotify_api_enabled { spotify_full_routes } else { spotify_auth_routes }
-        )
         .mount(format!("{}/imagecache", API_PREFIX), imagecache_routes) // Mount imagecache routes
-        .mount(format!("{}/favourites", API_PREFIX), favourites_routes) // Mount favourites routes
         .mount(format!("{}/lyrics", API_PREFIX), lyrics_routes) // Mount lyrics routes
         .mount(format!("{}/m3u", API_PREFIX), m3u_routes) // Mount M3U routes
         .mount(format!("{}/settings", API_PREFIX), settings_routes) // Mount settings routes
@@ -385,9 +316,16 @@ pub async fn start_rocket_server(
         .mount(format!("{}/genres", API_PREFIX), genres_routes) // Mount genre config routes
         .mount(format!("{}/volume", API_PREFIX), volume_routes) // Mount volume routes
         .mount(format!("{}/inputs", API_PREFIX), inputs_routes) // Mount inputs status routes
-        .mount(format!("{}/coverart", API_PREFIX), coverart_routes) // Mount coverart routes
         .manage(controller)
         .manage(ws_manager); // Add WebSocket manager as managed state
+
+    // Route groups from outside this package: the metadata crate's cover art,
+    // Last.fm, Spotify, TheAudioDB and favourites endpoints. Their mount
+    // points are disjoint from the ones above, so mounting them after changes
+    // no path and no resolution order within any group.
+    for (mount, routes) in extra_routes {
+        rocket_builder = rocket_builder.mount(format!("{}{}", API_PREFIX, mount), routes);
+    }
       // Check for static file routes in the configuration
     if let Some(static_routes) = get_service_config(config_json, "webserver")
         .and_then(|ws| ws.get("static_routes"))

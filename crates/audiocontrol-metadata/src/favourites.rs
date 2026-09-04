@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fmt;
-use crate::data::song::Song;
+use acr_types::song::Song;
 use parking_lot::Mutex;
 use once_cell::sync::Lazy;
 
@@ -298,13 +298,13 @@ pub fn initialize_favourite_providers() {
     manager.providers.clear();
     
     // Add Last.fm provider
-    manager.add_provider(Box::new(crate::helpers::lastfm::LastfmFavouriteProvider::new()));
+    manager.add_provider(Box::new(crate::lastfm::LastfmFavouriteProvider::new()));
     
     // Add SettingsDB provider
-    manager.add_provider(Box::new(crate::helpers::settingsdb::SettingsDbFavouriteProvider::new()));
+    manager.add_provider(Box::new(acr_store::settingsdb::SettingsDbFavouriteProvider::new()));
     
     // Add Spotify provider
-    manager.add_provider(Box::new(crate::helpers::spotify::SpotifyFavouriteProvider::new()));
+    manager.add_provider(Box::new(crate::spotify::SpotifyFavouriteProvider::new()));
     
     log::info!("Initialized favourite providers: {} total, {} enabled", 
                manager.provider_count(), 
@@ -354,19 +354,19 @@ pub fn get_provider_details() -> Vec<serde_json::Value> {
 
 /// `FavouriteProvider` for the settings DB, backed by acr-store.
 ///
-/// This impl lives here rather than beside [`crate::helpers::settingsdb::SettingsDbFavouriteProvider`]
+/// This impl lives here rather than beside [`acr_store::settingsdb::SettingsDbFavouriteProvider`]
 /// itself: `settingsdb` moved into the `acr-store` crate, which cannot depend
 /// back on this crate for the `FavouriteProvider` trait. Implementing a local
 /// trait for a foreign type is exactly what Rust's orphan rule allows, so the
 /// impl stays here instead.
-impl FavouriteProvider for crate::helpers::settingsdb::SettingsDbFavouriteProvider {
+impl FavouriteProvider for acr_store::settingsdb::SettingsDbFavouriteProvider {
     fn is_favourite(&self, song: &Song) -> Result<bool, FavouriteError> {
         let artist = song.artist.as_ref()
             .ok_or_else(|| FavouriteError::InvalidSong("Artist is required".to_string()))?;
         let title = song.title.as_ref()
             .ok_or_else(|| FavouriteError::InvalidSong("Title is required".to_string()))?;
 
-        match crate::helpers::settingsdb::is_favourite_song(artist, title) {
+        match acr_store::settingsdb::is_favourite_song(artist, title) {
             Ok(is_fav) => Ok(is_fav),
             Err(e) => Err(FavouriteError::StorageError(e)),
         }
@@ -378,7 +378,7 @@ impl FavouriteProvider for crate::helpers::settingsdb::SettingsDbFavouriteProvid
         let title = song.title.as_ref()
             .ok_or_else(|| FavouriteError::InvalidSong("Title is required".to_string()))?;
 
-        match crate::helpers::settingsdb::add_favourite_song(artist, title) {
+        match acr_store::settingsdb::add_favourite_song(artist, title) {
             Ok(()) => Ok(()),
             Err(e) => Err(FavouriteError::StorageError(e)),
         }
@@ -390,7 +390,7 @@ impl FavouriteProvider for crate::helpers::settingsdb::SettingsDbFavouriteProvid
         let title = song.title.as_ref()
             .ok_or_else(|| FavouriteError::InvalidSong("Title is required".to_string()))?;
 
-        match crate::helpers::settingsdb::remove_favourite_song(artist, title) {
+        match acr_store::settingsdb::remove_favourite_song(artist, title) {
             Ok(()) => Ok(()),
             Err(e) => Err(FavouriteError::StorageError(e)),
         }
@@ -398,7 +398,7 @@ impl FavouriteProvider for crate::helpers::settingsdb::SettingsDbFavouriteProvid
 
     fn get_favourite_count(&self) -> Option<usize> {
         // Use the existing get_all_favourite_songs function to count favorites
-        match crate::helpers::settingsdb::get_all_favourite_songs() {
+        match acr_store::settingsdb::get_all_favourite_songs() {
             Ok(songs) => Some(songs.len()),
             Err(_) => None, // Return None if we can't access the database
         }
@@ -414,20 +414,20 @@ impl FavouriteProvider for crate::helpers::settingsdb::SettingsDbFavouriteProvid
 
     fn is_enabled(&self) -> bool {
         // Settings DB is always enabled if the database is accessible
-        crate::helpers::settingsdb::settings_db_enabled()
+        acr_store::settingsdb::settings_db_enabled()
     }
 
     fn is_active(&self) -> bool {
         // Settings DB is always active when enabled since it's a local database
         // No authentication or external connectivity required
-        self.is_enabled() && crate::helpers::settingsdb::settings_db_has_connection()
+        self.is_enabled() && acr_store::settingsdb::settings_db_has_connection()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::settingsdb::{clear, SettingsDb, SettingsDbFavouriteProvider};
+    use acr_store::settingsdb::{clear, SettingsDb, SettingsDbFavouriteProvider};
     use tempfile::TempDir;
     use serial_test::serial;
 

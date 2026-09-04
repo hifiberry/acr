@@ -18,11 +18,11 @@ use crate::audiocontrol::AudioController;
 use crate::data::song::COVER_ART_SOURCE;
 use crate::data::{PlayerEvent, PlayerSource, Song};
 
-use super::config::Trigger;
-use super::{cache_key, configured_providers, ExternalCoverartProvider};
+use audiocontrol_metadata::external_coverart::config::Trigger;
+use audiocontrol_metadata::external_coverart::{cache_key, configured_providers, ExternalCoverartProvider};
 // `provider.name()` is a CoverartProvider method, so the trait must be in
 // scope even though nothing here names it directly.
-use crate::helpers::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
+use audiocontrol_metadata::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
 
 /// Whether this song is worth spending a slow lookup on.
 ///
@@ -209,7 +209,7 @@ mod tests {
     use crate::data::song::{
         COVER_ART_SOURCE, COVER_ART_SOURCE_LASTFM, COVER_ART_SOURCE_STATION_LOGO,
     };
-    use crate::helpers::external_coverart::config::EndpointConfig;
+    use audiocontrol_metadata::external_coverart::config::EndpointConfig;
     use std::collections::HashMap;
 
     fn endpoint_with_methods(methods: Vec<CoverartMethod>) -> EndpointConfig {

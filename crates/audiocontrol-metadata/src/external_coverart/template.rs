@@ -1,6 +1,6 @@
 //! Substitution of query values into a configured URL template.
 
-use crate::helpers::coverart::CoverartQuery;
+use crate::coverart::CoverartQuery;
 
 /// Expand `{artist}`, `{album}`, `{title}`, `{year}` and `{url}` in a
 /// configured template.
@@ -44,7 +44,7 @@ pub fn expand(template: &str, query: &CoverartQuery) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::coverart::CoverartQuery;
+    use crate::coverart::CoverartQuery;
 
     fn song() -> CoverartQuery {
         CoverartQuery::Song {

@@ -219,7 +219,7 @@ pub fn initialize_genre_cleanup_with_config(config: Option<&serde_json::Value>) 
 
     // Try configured path first
     if let Some(config_value) = config {
-        if let Some(genre_config) = crate::config::get_service_config(config_value, "genre_cleanup") {
+        if let Some(genre_config) = acr_types::config::get_service_config(config_value, "genre_cleanup") {
             if let Some(path_str) = genre_config.get("config_path").and_then(|p| p.as_str()) {
                 let path = Path::new(path_str);
                 if path.exists() {

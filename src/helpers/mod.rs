@@ -1,27 +1,12 @@
 pub mod imageprewarm;
-pub mod image_meta;
-pub mod artistupdater;
-pub mod albumupdater;
-pub mod artist_store;
-pub mod artistsplitter;
-pub mod coverart;
-pub mod coverart_providers;
-pub mod external_coverart;
+pub mod external_coverart_worker;
 pub mod local_coverart;
-pub mod fanarttv;
 pub mod memory_report;
 pub mod stream_helper;
-pub mod musicbrainz;
-pub mod theaudiodb;
 pub mod macaddress;
-pub mod lastfm;
-pub mod security_store;
-pub mod spotify;
 pub mod systemd;
 pub mod playback_progress;
 pub mod process_helper;
-pub mod favourites;
-pub mod genre_cleanup;
 pub mod volume;
 pub mod global_volume;
 pub mod configurator;
@@ -35,22 +20,18 @@ pub mod mpris;
 #[cfg(unix)]
 pub mod shairportsync_messages;
 
-use crate::data::artist::Artist;
-
 pub use acr_http::{http_client, ratelimit, retry};
 pub use acr_images::{image_grader, imageresize};
-pub use acr_store::{attributecache, backgroundjobs, imagecache, imagepurge, settingsdb};
+pub use acr_store::{attributecache, backgroundjobs, genre_cleanup, imagecache, imagepurge, settingsdb};
 pub use acr_types::{sanitize, url_encoding};
 pub use playback_progress::PlayerProgress;
 
-/// Trait for services that can update artist metadata
-pub trait ArtistUpdater {
-    /// Update an artist with additional metadata from a service
-    /// 
-    /// # Arguments
-    /// * `artist` - The artist to update
-    /// 
-    /// # Returns
-    /// The updated artist with additional metadata
-    fn update_artist(&self, artist: Artist) -> Artist;
-}
+// The external providers, cover art, accounts and their caches now live in
+// `audiocontrol-metadata`. These re-exports keep every existing
+// `crate::helpers::…` path compiling while the call sites are moved over one
+// interface at a time; the last of them, and this block, go in a later commit.
+pub use audiocontrol_metadata::{
+    albumupdater, artist_store, artistsplitter, artistupdater, coverart, coverart_providers,
+    external_coverart, fanarttv, favourites, image_meta, lastfm, musicbrainz, security_store,
+    spotify, theaudiodb, ArtistUpdater,
+};

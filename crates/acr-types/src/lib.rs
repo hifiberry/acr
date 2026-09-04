@@ -9,6 +9,7 @@ pub mod artist_split;
 pub mod config;
 pub mod enrichment;
 pub mod identifier;
+pub mod library_version;
 pub mod metadata;
 pub mod now_playing;
 pub mod order_result;
@@ -22,6 +23,13 @@ pub mod token;
 pub mod track;
 pub mod url_encoding;
 pub mod urlprefix;
+
+/// The internal mount point every API route is served under.
+///
+/// One definition for the whole workspace: the root package re-exports it as
+/// `crate::constants::API_PREFIX`, and `urlprefix` and `acr_store::imagecache`
+/// use it directly rather than keeping copies that could drift.
+pub const API_PREFIX: &str = "/api";
 
 pub use album::Album;
 pub use album_artists::AlbumArtists;

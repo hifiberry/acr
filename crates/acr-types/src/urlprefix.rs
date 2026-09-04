@@ -6,6 +6,7 @@
 //! the way out.
 
 use crate::artist::Artist;
+use crate::API_PREFIX;
 use crate::song::Song;
 
 /// Rewrite an internal API-relative URL to the externally visible API base.
@@ -45,13 +46,6 @@ pub fn rewrite_api_relative_url(url: &str, forwarded_prefix: Option<&str>) -> St
 
     url.to_string()
 }
-
-/// The internal mount point every API route is served under.
-///
-/// Kept here rather than imported from the root package so this crate has no
-/// dependency on it; the root package's `crate::constants::API_PREFIX` must
-/// stay equal to this value.
-const API_PREFIX: &str = "/api";
 
 /// Normalize a forwarded prefix header value into a safe path prefix.
 ///

@@ -18,10 +18,10 @@ use base64::Engine as _;
 use url::Url;
 use log::{debug, warn};
 
-use crate::constants::API_PREFIX;
-use crate::helpers::http_client::new_http_client;
-use crate::helpers::image_meta::{self, detect_image_dimensions};
-use crate::helpers::imagecache;
+use acr_types::API_PREFIX;
+use acr_http::http_client::new_http_client;
+use crate::image_meta::{self, detect_image_dimensions};
+use acr_store::imagecache;
 
 use super::config::EndpointConfig;
 use super::protocol::{Lookup, Parsed, ParsedImage};
@@ -401,8 +401,8 @@ pub fn prune_missing_with(lookup: Lookup, source: &dyn ImageSource) -> Lookup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::coverart::CoverartMethod;
-    use crate::helpers::external_coverart::config::Trigger;
+    use crate::coverart::CoverartMethod;
+    use crate::external_coverart::config::Trigger;
     use parking_lot::Mutex;
     use std::collections::HashMap;
 

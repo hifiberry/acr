@@ -2,11 +2,11 @@
 /// This module contains implementations of various cover art providers
 use std::collections::HashSet;
 use log::{debug, info, warn};
-use crate::helpers::coverart::{CoverartProvider, CoverartMethod};
-use crate::helpers::fanarttv::FanarttvCoverartProvider;
-use crate::helpers::spotify::{Spotify, SpotifyError};
-use crate::helpers::theaudiodb::TheAudioDbCoverartProvider;
-use crate::helpers::lastfm::{LastfmClient, LastfmError, LastfmTrackInfoDetails};
+use crate::coverart::{CoverartProvider, CoverartMethod};
+use crate::fanarttv::FanarttvCoverartProvider;
+use crate::spotify::{Spotify, SpotifyError};
+use crate::theaudiodb::TheAudioDbCoverartProvider;
+use crate::lastfm::{LastfmClient, LastfmError, LastfmTrackInfoDetails};
 use std::sync::Arc;
 
 /// Spotify Cover Art Provider
@@ -218,7 +218,9 @@ const LASTFM_IMAGE_SIZES: [&str; 5] = ["mega", "extralarge", "large", "medium", 
 /// achieves nothing. Every URL returned here costs the grader a network round
 /// trip, taken while the cover art manager's lock is held, so only the largest
 /// slot is worth returning.
-pub(crate) fn album_image_urls(track_info: &LastfmTrackInfoDetails) -> Vec<String> {
+// `pub` rather than `pub(crate)`: the Last.fm action plugin calls this and
+// stayed in the player daemon, which is now a different crate.
+pub fn album_image_urls(track_info: &LastfmTrackInfoDetails) -> Vec<String> {
     let Some(album) = &track_info.album else {
         return Vec::new();
     };
@@ -357,7 +359,7 @@ impl CoverartProvider for LastfmCoverartProvider {
 
 /// Initialize and register all cover art providers
 pub fn register_all_providers() {
-    use crate::helpers::coverart::get_coverart_manager;
+    use crate::coverart::get_coverart_manager;
     
     info!("Starting provider registration...");
     
@@ -398,7 +400,7 @@ pub fn register_all_providers() {
     // declaration, so the fan-out keeps them off the fast path; they are here
     // so /api/coverart can serve their cached answers and honour
     // ?include_slow=true.
-    for provider in crate::helpers::external_coverart::configured_providers() {
+    for provider in crate::external_coverart::configured_providers() {
         info!(
             "Registering external coverart provider: {} ({}), methods {:?}",
             provider.name(),

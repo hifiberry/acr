@@ -11,7 +11,6 @@ pub mod config;
 pub mod localize;
 pub mod protocol;
 pub mod template;
-pub mod worker;
 
 #[cfg(test)]
 mod stub_server;
@@ -24,9 +23,9 @@ use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use parking_lot::{Condvar, Mutex};
 
-use crate::helpers::attributecache;
-use crate::helpers::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
-use crate::helpers::http_client::new_http_client;
+use acr_store::attributecache;
+use crate::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
+use acr_http::http_client::new_http_client;
 
 use config::EndpointConfig;
 use protocol::{parse_response, ttl_seconds, Lookup};
@@ -388,7 +387,7 @@ pub fn configured_providers() -> Vec<Arc<ExternalCoverartProvider>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
+    use crate::coverart::{CoverartMethod, CoverartProvider, CoverartQuery};
 
     fn endpoint() -> config::EndpointConfig {
         config::EndpointConfig {
@@ -877,8 +876,8 @@ mod tests {
         let path = urls[0]
             .strip_prefix("/api/imagecache/")
             .expect("a local URL");
-        assert!(crate::helpers::imagecache::image_exists(path));
-        let _ = crate::helpers::imagecache::delete_image(path);
+        assert!(acr_store::imagecache::image_exists(path));
+        let _ = acr_store::imagecache::delete_image(path);
     }
 
     /// The credential that authorised the lookup has to authorise the image
@@ -930,7 +929,7 @@ mod tests {
             urls[0]
         );
         if let Some(path) = urls[0].strip_prefix("/api/imagecache/") {
-            let _ = crate::helpers::imagecache::delete_image(path);
+            let _ = acr_store::imagecache::delete_image(path);
         }
     }
 

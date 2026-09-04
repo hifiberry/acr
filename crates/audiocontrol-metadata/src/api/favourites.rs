@@ -3,8 +3,8 @@ use rocket::serde::json::Json;
 use rocket::serde::{Serialize, Deserialize};
 use log::{info, error};
 
-use crate::data::song::Song;
-use crate::helpers::favourites;
+use acr_types::song::Song;
+use crate::favourites;
 
 /// Request payload for adding/removing favourites
 #[derive(Deserialize)]

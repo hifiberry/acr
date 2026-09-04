@@ -11,8 +11,8 @@ use thiserror::Error;
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
 
-use crate::helpers::security_store::SecurityStore;
-use crate::helpers::sanitize;
+use crate::security_store::SecurityStore;
+use acr_types::sanitize;
 
 // Constants for token storage
 const SPOTIFY_ACCESS_TOKEN_KEY: &str = "spotify_access_token";
@@ -62,7 +62,7 @@ pub enum SpotifyError {
     TokenNotFound,
     
     #[error("Security store error: {0}")]
-    SecurityStoreError(#[from] crate::helpers::security_store::SecurityStoreError),
+    SecurityStoreError(#[from] crate::security_store::SecurityStoreError),
     
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
@@ -192,8 +192,8 @@ impl Spotify {
     pub fn new() -> Self {
         Spotify {
             config: GLOBAL_SPOTIFY_CONFIG.get().cloned().unwrap_or_else(|| SpotifyConfig {
-                oauth_url: crate::helpers::spotify::default_spotify_oauth_url(),
-                proxy_secret: crate::helpers::spotify::default_spotify_proxy_secret(),
+                oauth_url: crate::spotify::default_spotify_oauth_url(),
+                proxy_secret: crate::spotify::default_spotify_proxy_secret(),
                 client_id: None,
                 client_secret: None,
             }),
@@ -382,7 +382,7 @@ impl Spotify {
     
     /// Check if the OAuth server is reachable and responding as expected
     pub fn check_oauth_server(&self) -> Result<bool> {
-        use crate::helpers::http_client::new_http_client;
+        use acr_http::http_client::new_http_client;
         
         info!("Checking connectivity to OAuth server: {}", self.config.oauth_url);
         
@@ -447,7 +447,7 @@ impl Spotify {
     }
     /// Refresh the access token using the refresh token via OAuth proxy (only method)
     pub fn refresh_token(&self) -> Result<SpotifyTokens> {
-        use crate::helpers::http_client::new_http_client;
+        use acr_http::http_client::new_http_client;
         let current_tokens = self.get_tokens()?;
         let http_client = new_http_client(10);
         let refresh_url = format!("{}refresh", self.config.oauth_url);
@@ -541,7 +541,7 @@ impl Spotify {
     /// 
     /// See: https://developer.spotify.com/documentation/web-api/reference/get-information-about-the-users-current-playback
     pub fn get_playback_state(&self) -> Result<Option<SpotifyPlaybackState>> {
-        use crate::helpers::http_client::{new_http_client, HttpClientError};
+        use acr_http::http_client::{new_http_client, HttpClientError};
         
         // Ensure we have a valid token
         let access_token = self.ensure_valid_token()?;
@@ -607,7 +607,7 @@ impl Spotify {
     }
     /// Send a command to the Spotify Web API (play, pause, next, previous, seek, repeat, shuffle)
     pub fn send_command(&self, command: &str, args: &serde_json::Value) -> Result<()> {
-        use crate::helpers::http_client::{new_http_client, HttpClientError};
+        use acr_http::http_client::{new_http_client, HttpClientError};
         let access_token = self.ensure_valid_token()?;
         let http_client = new_http_client(10);
         let api_url = match command {
@@ -658,7 +658,7 @@ impl Spotify {
     }
     /// Get the user's currently playing track from Spotify
     pub fn get_currently_playing(&self) -> Result<Option<serde_json::Value>> {
-        use crate::helpers::http_client::new_http_client;
+        use acr_http::http_client::new_http_client;
         let access_token = self.ensure_valid_token()?;
         let http_client = new_http_client(10);
         let url = "https://api.spotify.com/v1/me/player/currently-playing";
@@ -681,7 +681,7 @@ impl Spotify {
     /// Search Spotify for albums, artists, or tracks with optional filters
     /// See: https://developer.spotify.com/documentation/web-api/reference/search
     pub fn search(&self, query: &str, types: &[&str], filters: Option<&serde_json::Value>) -> Result<serde_json::Value> {
-        use crate::helpers::http_client::new_http_client;
+        use acr_http::http_client::new_http_client;
         let access_token = self.ensure_valid_token()?;
         let http_client = new_http_client(10);
         let mut q = query.to_string();
@@ -808,7 +808,7 @@ impl Spotify {
     /// * `Ok(Some(false))` - None of the track IDs are saved
     /// * `Err(...)` - API error occurred
     pub fn check_saved_tracks(&self, track_ids: &[String]) -> Result<Option<bool>> {
-        use crate::helpers::http_client::new_http_client;
+        use acr_http::http_client::new_http_client;
         
         if track_ids.is_empty() {
             return Ok(Some(false));
@@ -880,12 +880,12 @@ impl SpotifyFavouriteProvider {
     }
 }
 
-impl crate::helpers::favourites::FavouriteProvider for SpotifyFavouriteProvider {
-    fn is_favourite(&self, song: &crate::data::song::Song) -> std::result::Result<bool, crate::helpers::favourites::FavouriteError> {
+impl crate::favourites::FavouriteProvider for SpotifyFavouriteProvider {
+    fn is_favourite(&self, song: &acr_types::song::Song) -> std::result::Result<bool, crate::favourites::FavouriteError> {
         let artist = song.artist.as_ref()
-            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
+            .ok_or_else(|| crate::favourites::FavouriteError::InvalidSong("Artist is required".to_string()))?;
         let title = song.title.as_ref()
-            .ok_or_else(|| crate::helpers::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
+            .ok_or_else(|| crate::favourites::FavouriteError::InvalidSong("Title is required".to_string()))?;
 
         debug!("Checking if Spotify favourite: '{}' by '{}'", title, artist);
 
@@ -903,39 +903,39 @@ impl crate::helpers::favourites::FavouriteProvider for SpotifyFavouriteProvider 
                     },
                     Err(SpotifyError::AuthError(msg)) => {
                         debug!("Spotify authentication error: {}", msg);
-                        Err(crate::helpers::favourites::FavouriteError::AuthError(msg))
+                        Err(crate::favourites::FavouriteError::AuthError(msg))
                     },
                     Err(SpotifyError::ApiError(msg)) => {
                         debug!("Spotify API error: {}", msg);
-                        Err(crate::helpers::favourites::FavouriteError::NetworkError(msg))
+                        Err(crate::favourites::FavouriteError::NetworkError(msg))
                     },
                     Err(SpotifyError::ConfigError(msg)) => {
                         debug!("Spotify configuration error: {}", msg);
-                        Err(crate::helpers::favourites::FavouriteError::NotConfigured(msg))
+                        Err(crate::favourites::FavouriteError::NotConfigured(msg))
                     },
                     Err(e) => {
                         debug!("Other Spotify error: {}", e);
-                        Err(crate::helpers::favourites::FavouriteError::Other(e.to_string()))
+                        Err(crate::favourites::FavouriteError::Other(e.to_string()))
                     }
                 }
             },
             Err(e) => {
                 debug!("Failed to get Spotify instance: {}", e);
-                Err(crate::helpers::favourites::FavouriteError::NotConfigured("Spotify client not initialized".to_string()))
+                Err(crate::favourites::FavouriteError::NotConfigured("Spotify client not initialized".to_string()))
             }
         }
     }
 
-    fn add_favourite(&self, _song: &crate::data::song::Song) -> std::result::Result<(), crate::helpers::favourites::FavouriteError> {
+    fn add_favourite(&self, _song: &acr_types::song::Song) -> std::result::Result<(), crate::favourites::FavouriteError> {
         // Spotify Web API doesn't provide an endpoint to add songs to saved tracks programmatically
         // The user would need to do this manually through the Spotify app or web player
-        Err(crate::helpers::favourites::FavouriteError::Other("Adding songs to Spotify favourites is not supported via API - use Spotify app".to_string()))
+        Err(crate::favourites::FavouriteError::Other("Adding songs to Spotify favourites is not supported via API - use Spotify app".to_string()))
     }
 
-    fn remove_favourite(&self, _song: &crate::data::song::Song) -> std::result::Result<(), crate::helpers::favourites::FavouriteError> {
+    fn remove_favourite(&self, _song: &acr_types::song::Song) -> std::result::Result<(), crate::favourites::FavouriteError> {
         // Spotify Web API doesn't provide an endpoint to remove songs from saved tracks programmatically  
         // The user would need to do this manually through the Spotify app or web player
-        Err(crate::helpers::favourites::FavouriteError::Other("Removing songs from Spotify favourites is not supported via API - use Spotify app".to_string()))
+        Err(crate::favourites::FavouriteError::Other("Removing songs from Spotify favourites is not supported via API - use Spotify app".to_string()))
     }
 
     fn get_favourite_count(&self) -> Option<usize> {

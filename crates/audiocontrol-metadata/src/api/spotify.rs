@@ -7,8 +7,8 @@ use log::{error, info};
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
 
-use crate::helpers::spotify::{Spotify, SpotifyTokens};
-use crate::helpers::http_client::new_http_client;
+use crate::spotify::{Spotify, SpotifyTokens};
+use acr_http::http_client::new_http_client;
 use rocket::http::{Status};
 use rocket::response::content;
 use serde_json::Value;

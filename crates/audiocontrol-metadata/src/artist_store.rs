@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::io::Read;
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
-use crate::data::artist::Artist;
-use crate::helpers::coverart::{query_coverart, CoverartQuery, QueryOptions};
-use crate::helpers::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
+use acr_types::artist::Artist;
+use crate::coverart::{query_coverart, CoverartQuery, QueryOptions};
+use crate::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 
 /// Result of an artist image operation
 #[derive(Debug)]
@@ -100,8 +100,8 @@ fn has_servable_extension(path: &std::path::Path) -> bool {
 pub fn local_image_id(url: &str, artist_name: &str) -> Option<String> {
     let expected_prefix = format!(
         "{}/coverart/artist/{}/image/",
-        crate::constants::API_PREFIX,
-        crate::helpers::url_encoding::encode_url_safe(artist_name)
+        acr_types::API_PREFIX,
+        acr_types::url_encoding::encode_url_safe(artist_name)
     );
     let id = url.strip_prefix(&expected_prefix)?;
     if id.is_empty() || id.contains('/') || id.contains('?') {
@@ -126,22 +126,22 @@ pub struct ArtistStoreConfig {
 impl Default for ArtistStoreConfig {
     fn default() -> Self {
         // Read configuration from settings database with fallback defaults
-        let cache_dir = crate::helpers::settingsdb::get_string_with_default(
+        let cache_dir = acr_store::settingsdb::get_string_with_default(
             "datastore.artist_store.cache_dir", 
             "/var/lib/audiocontrol/cache/artists"
         ).unwrap_or_else(|_| "/var/lib/audiocontrol/cache/artists".to_string());
         
-        let user_dir = crate::helpers::settingsdb::get_string_with_default(
+        let user_dir = acr_store::settingsdb::get_string_with_default(
             "datastore.user_image_path", 
             "/var/lib/audiocontrol/user/images"
         ).unwrap_or_else(|_| "/var/lib/audiocontrol/user/images".to_string());
         
-        let enable_custom_images = crate::helpers::settingsdb::get_bool_with_default(
+        let enable_custom_images = acr_store::settingsdb::get_bool_with_default(
             "datastore.artist_store.enable_custom_images", 
             true
         ).unwrap_or(true);
         
-        let auto_download = crate::helpers::settingsdb::get_bool_with_default(
+        let auto_download = acr_store::settingsdb::get_bool_with_default(
             "datastore.artist_store.auto_download", 
             true
         ).unwrap_or(true);
@@ -195,7 +195,7 @@ impl ArtistStore {
     /// # Returns
     /// The local cache path for the artist's image
     pub fn get_artist_image_path(&self, artist_name: &str, image_type: &str) -> String {
-        let sanitized_name = crate::helpers::sanitize::filename_from_string(artist_name);
+        let sanitized_name = acr_types::sanitize::filename_from_string(artist_name);
         format!("{}/{}/{}.jpg", self.config.cache_dir, sanitized_name, image_type)
     }
 
@@ -208,13 +208,13 @@ impl ArtistStore {
     /// # Returns
     /// The user directory path for the artist's image
     pub fn get_artist_user_image_path(&self, artist_name: &str, image_type: &str) -> String {
-        let sanitized_name = crate::helpers::sanitize::filename_from_string(artist_name);
+        let sanitized_name = acr_types::sanitize::filename_from_string(artist_name);
         format!("{}/artists/{}/{}.jpg", self.config.user_dir, sanitized_name, image_type)
     }
 
     /// The directory an artist's uploaded images live in.
     fn artist_uploads_dir(&self, artist_name: &str) -> String {
-        let sanitized = crate::helpers::sanitize::filename_from_string(artist_name);
+        let sanitized = acr_types::sanitize::filename_from_string(artist_name);
         format!("{}/artists/{}/uploads", self.config.user_dir, sanitized)
     }
 
@@ -261,7 +261,7 @@ impl ArtistStore {
                 let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
                 // Variants live beside their original as `<stem>@<size>`; they
                 // are derived files, not members of the set.
-                if crate::helpers::imageresize::variant_size_of(stem).is_some() {
+                if acr_images::imageresize::variant_size_of(stem).is_some() {
                     continue;
                 }
                 if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
@@ -331,7 +331,7 @@ impl ArtistStore {
         // rename is atomic, so a reader sees either the previous complete file
         // or the new one, and a retry after a failure replaces whatever the
         // failure left behind.
-        crate::helpers::imagecache::write_file_atomically(std::path::Path::new(&path), bytes)
+        acr_store::imagecache::write_file_atomically(std::path::Path::new(&path), bytes)
             .map_err(|e| format!("Failed to write {}: {}", path, e))?;
 
         // Variants are generated from whatever was at this path before, and
@@ -340,7 +340,7 @@ impl ArtistStore {
         // keep serving the rung rendered from the damaged bytes, cached hard
         // by its ETag. The download path and the delete path already do this
         // for the same reason.
-        crate::helpers::imageresize::remove_variants_of(&path);
+        acr_images::imageresize::remove_variants_of(&path);
 
         // The resolved-path memo is keyed by artist name and this changes what
         // that artist resolves to.
@@ -370,10 +370,10 @@ impl ArtistStore {
         std::fs::remove_file(&path).map_err(|e| format!("Failed to remove {}: {}", path, e))?;
 
         if was_selected {
-            crate::helpers::settingsdb::remove(&format!("artist.image.{}", artist_name)).ok();
+            acr_store::settingsdb::remove(&format!("artist.image.{}", artist_name)).ok();
         }
-        crate::helpers::imageresize::remove_variants_of(&path);
-        crate::helpers::image_meta::clear_image_cache(&path).ok();
+        acr_images::imageresize::remove_variants_of(&path);
+        crate::image_meta::clear_image_cache(&path).ok();
         self.image_cache.remove(artist_name);
         Ok(())
     }
@@ -389,11 +389,11 @@ impl ArtistStore {
         }
         let url = format!(
             "{}/coverart/artist/{}/image/{}",
-            crate::constants::API_PREFIX,
-            crate::helpers::url_encoding::encode_url_safe(artist_name),
+            acr_types::API_PREFIX,
+            acr_types::url_encoding::encode_url_safe(artist_name),
             id
         );
-        crate::helpers::settingsdb::set_string(&format!("artist.image.{}", artist_name), &url)
+        acr_store::settingsdb::set_string(&format!("artist.image.{}", artist_name), &url)
             .map_err(|e| format!("Failed to record the selection: {}", e))?;
         self.image_cache.remove(artist_name);
         Ok(())
@@ -404,7 +404,7 @@ impl ArtistStore {
     /// An empty value is how the API clears a selection, so it is the same
     /// thing as no key at all.
     fn stored_selection(&self, artist_name: &str) -> Option<String> {
-        let stored = crate::helpers::settingsdb::get_string(&format!("artist.image.{}", artist_name)).ok()??;
+        let stored = acr_store::settingsdb::get_string(&format!("artist.image.{}", artist_name)).ok()??;
         if stored.is_empty() { None } else { Some(stored) }
     }
 
@@ -707,7 +707,7 @@ impl ArtistStore {
         }
 
         // Find the highest-rated image across all providers
-        let mut best_image: Option<&crate::helpers::coverart::ImageInfo> = None;
+        let mut best_image: Option<&crate::coverart::ImageInfo> = None;
         let mut best_grade = -10; // Start lower to allow grade -1 images
 
         for result in &results {
@@ -743,14 +743,14 @@ impl ArtistStore {
             ArtistImageResult::Found { cache_path: _ } => {
                 // Initialize metadata if needed
                 if artist.metadata.is_none() {
-                    artist.metadata = Some(crate::data::ArtistMeta::new());
+                    artist.metadata = Some(acr_types::ArtistMeta::new());
                 }
 
                 // Add the cached image to the artist metadata
                 if let Some(ref mut metadata) = artist.metadata {
                     // Generate proper API URL for artist image
-                    let encoded_name = crate::helpers::url_encoding::encode_url_safe(&artist.name);
-                    let api_url = format!("{}/coverart/artist/{}/image", crate::constants::API_PREFIX, encoded_name);
+                    let encoded_name = acr_types::url_encoding::encode_url_safe(&artist.name);
+                    let api_url = format!("{}/coverart/artist/{}/image", acr_types::API_PREFIX, encoded_name);
                     metadata.thumb_url = vec![api_url];
                     debug!("Updated artist {} with coverart API image URL: /api/coverart/artist/{}/image", artist.name, encoded_name);
                 }
@@ -890,7 +890,7 @@ impl ArtistStore {
             let cache_key = format!("artist::metadata::{}", artist.name);
             
             // Store the metadata in the attribute cache
-            match crate::helpers::attributecache::set(&cache_key, metadata) {
+            match acr_store::attributecache::set(&cache_key, metadata) {
                 Ok(_) => debug!("Stored metadata for artist {} in attribute cache", artist.name),
                 Err(e) => warn!("Failed to store metadata for artist {} in attribute cache: {}", artist.name, e),
             }
@@ -898,7 +898,7 @@ impl ArtistStore {
             // If the artist has MusicBrainz IDs, store them separately for faster lookup
             if !metadata.mbid.is_empty() {
                 let mbid_key = format!("artist::mbid::{}", artist.name);
-                if let Err(e) = crate::helpers::attributecache::set(&mbid_key, &metadata.mbid) {
+                if let Err(e) = acr_store::attributecache::set(&mbid_key, &metadata.mbid) {
                     warn!("Failed to store MusicBrainz IDs for artist {} in attribute cache: {}", artist.name, e);
                 }
             }
@@ -997,7 +997,7 @@ impl ArtistStore {
     /// Result indicating success or failure
     fn store_image(&self, cache_path: &str, image_data: &[u8]) -> Result<(), String> {
         // Use the existing image cache functionality
-        crate::helpers::imagecache::store_image(cache_path, image_data)
+        acr_store::imagecache::store_image(cache_path, image_data)
             .map_err(|e| e.to_string())
     }
 }
@@ -1118,7 +1118,7 @@ mod tests {
 
         INIT.call_once(|| {
             let temp_dir = TempDir::new().expect("settings db temp dir");
-            crate::helpers::settingsdb::SettingsDb::initialize_global(temp_dir.path())
+            acr_store::settingsdb::SettingsDb::initialize_global(temp_dir.path())
                 .expect("settings db should initialize");
             std::mem::forget(temp_dir);
         });
@@ -1146,7 +1146,7 @@ mod tests {
         let artist_name = "Test Artist";
         
         // Use the sanitized name format
-        let sanitized_name = crate::helpers::sanitize::filename_from_string(artist_name);
+        let sanitized_name = acr_types::sanitize::filename_from_string(artist_name);
         
         // Create user directory structure
         let user_artist_dir = Path::new(&store.config.user_dir).join("artists").join(&sanitized_name);
@@ -1231,7 +1231,7 @@ mod tests {
         let artist_name = "Cache Test Artist";
         
         // Use the sanitized name format
-        let sanitized_name = crate::helpers::sanitize::filename_from_string(artist_name);
+        let sanitized_name = acr_types::sanitize::filename_from_string(artist_name);
         
         // Create cache directory structure (cache_dir already includes 'artists')
         let cache_artist_dir = Path::new(&store.config.cache_dir).join(&sanitized_name);
@@ -1504,7 +1504,7 @@ mod tests {
 
     #[test]
     fn a_local_image_url_names_its_id() {
-        let b64 = crate::helpers::url_encoding::encode_url_safe("The Beatles");
+        let b64 = acr_types::url_encoding::encode_url_safe("The Beatles");
         let url = format!("/api/coverart/artist/{}/image/custom", b64);
         assert_eq!(local_image_id(&url, "The Beatles"), Some("custom".to_string()));
     }
@@ -1513,10 +1513,10 @@ mod tests {
     /// a remote host that merely ends in the same path is not local at all.
     #[test]
     fn a_url_for_another_artist_or_host_is_not_local() {
-        let other = crate::helpers::url_encoding::encode_url_safe("Someone Else");
+        let other = acr_types::url_encoding::encode_url_safe("Someone Else");
         assert_eq!(local_image_id(&format!("/api/coverart/artist/{}/image/custom", other), "The Beatles"), None);
 
-        let b64 = crate::helpers::url_encoding::encode_url_safe("The Beatles");
+        let b64 = acr_types::url_encoding::encode_url_safe("The Beatles");
         assert_eq!(
             local_image_id(&format!("https://evil.test/api/coverart/artist/{}/image/custom", b64), "The Beatles"),
             None
@@ -1586,7 +1586,7 @@ mod tests {
         let store = store_in(&dir);
         let artist = "Remote Selection Artist";
         write_file(&store.get_artist_user_image_path(artist, "custom"), &png_bytes(8, 8));
-        crate::helpers::settingsdb::set_string(
+        acr_store::settingsdb::set_string(
             &format!("artist.image.{}", artist),
             "https://provider.test/portrait.jpg",
         )
@@ -1607,7 +1607,7 @@ mod tests {
         let dir = temp_user_dir();
         let store = store_in(&dir);
         let artist = "Remote Selection Pending Artist";
-        crate::helpers::settingsdb::set_string(
+        acr_store::settingsdb::set_string(
             &format!("artist.image.{}", artist),
             "https://provider.test/portrait.jpg",
         )
@@ -1629,11 +1629,11 @@ mod tests {
         let artist = "Vanished Selection Artist";
         let url = format!(
             "{}/coverart/artist/{}/image/{}",
-            crate::constants::API_PREFIX,
-            crate::helpers::url_encoding::encode_url_safe(artist),
+            acr_types::API_PREFIX,
+            acr_types::url_encoding::encode_url_safe(artist),
             "a".repeat(32)
         );
-        crate::helpers::settingsdb::set_string(&format!("artist.image.{}", artist), &url).unwrap();
+        acr_store::settingsdb::set_string(&format!("artist.image.{}", artist), &url).unwrap();
 
         let result = store.get_or_download_artist_image(artist);
 

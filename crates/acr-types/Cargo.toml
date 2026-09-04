@@ -18,3 +18,4 @@ strum.workspace = true
 strum_macros.workspace = true
 crossbeam.workspace = true
 parking_lot.workspace = true
+rand.workspace = true

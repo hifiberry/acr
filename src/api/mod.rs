@@ -2,7 +2,9 @@
 pub use crate::constants::API_PREFIX;
 
 // The forwarded-prefix guard and the image/validation responders moved to
-// acr-web, shared with the future metadata daemon.
+// acr-web, shared with the future metadata daemon. The cover art, Last.fm,
+// Spotify, TheAudioDB and favourites routes moved to audiocontrol-metadata;
+// the daemon receives them through `start_rocket_server`'s `extra_routes`.
 pub use acr_web::{imagecache, imageresponse, urlprefix, validated};
 
 // Export the players module
@@ -14,23 +16,8 @@ pub mod plugins;
 // Export the library module
 pub mod library;
 
-// Export the coverart module
-pub mod coverart;
-
 // Export the event module
 pub mod events;
-
-// Export the lastfm module
-pub mod lastfm;
-
-// Export the spotify module
-pub mod spotify;
-
-// Export the theaudiodb module
-pub mod theaudiodb;
-
-// Export the favourites module
-pub mod favourites;
 
 // Export the volume module
 pub mod volume;

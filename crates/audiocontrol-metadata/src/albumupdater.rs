@@ -2,7 +2,7 @@ use log::{debug, info, warn};
 use std::sync::Arc;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use crate::data::album::Album;
+use acr_types::album::Album;
 
 const CACHE_KEY_PREFIX: &str = "album::genres::";
 
@@ -14,7 +14,7 @@ fn cache_key(album_id: &str) -> String {
 /// Load cached genres for an album from the attribute cache.
 /// Returns `Some(genres)` if a cached entry exists (even if empty), `None` if not found.
 pub fn load_cached_genres(album_id: &str) -> Option<Vec<String>> {
-    match crate::helpers::attributecache::get::<Vec<String>>(&cache_key(album_id)) {
+    match acr_store::attributecache::get::<Vec<String>>(&cache_key(album_id)) {
         Ok(Some(genres)) => Some(genres),
         Ok(None) => None,
         Err(e) => {
@@ -27,7 +27,7 @@ pub fn load_cached_genres(album_id: &str) -> Option<Vec<String>> {
 /// Persist genres for an album to the attribute cache.
 fn store_cached_genres(album_id: &str, genres: &[String]) {
     let genres_vec = genres.to_vec();
-    match crate::helpers::attributecache::set(&cache_key(album_id), &genres_vec) {
+    match acr_store::attributecache::set(&cache_key(album_id), &genres_vec) {
         Ok(_) => debug!("Stored genres for album {} in attribute cache", album_id),
         Err(e) => warn!("Failed to store genres for album {} in attribute cache: {}", album_id, e),
     }
@@ -44,7 +44,7 @@ pub fn fetch_album_genres(album_id: &str, artist: &str, album_name: &str) -> Vec
     }
 
     // Not cached — fetch from MusicBrainz
-    let genres = crate::helpers::musicbrainz::search_release_group_genres(artist, album_name);
+    let genres = crate::musicbrainz::search_release_group_genres(artist, album_name);
 
     info!(
         "Fetched {} genre(s) from MusicBrainz for album '{}' by '{}'",
@@ -73,7 +73,7 @@ pub fn fetch_album_genres(album_id: &str, artist: &str, album_name: &str) -> Vec
 fn set_genres(
     target: &mut Vec<String>,
     genres: Vec<String>,
-    version: Option<&crate::data::library::LibraryVersion>,
+    version: Option<&acr_types::library_version::LibraryVersion>,
 ) {
     if genres.is_empty() {
         return;
@@ -90,7 +90,7 @@ fn set_genres(
 /// them in the album struct and in the attribute cache.
 pub fn update_library_albums_genres_in_background(
     albums_collection: Arc<RwLock<HashMap<String, Album>>>,
-    version: Option<crate::data::library::LibraryVersion>,
+    version: Option<acr_types::library_version::LibraryVersion>,
 ) {
     debug!("Starting background thread to update album genres");
 
@@ -98,7 +98,7 @@ pub fn update_library_albums_genres_in_background(
         let job_id = "album_genre_update".to_string();
         let job_name = "Album Genre Update".to_string();
 
-        if let Err(e) = crate::helpers::backgroundjobs::register_job(job_id.clone(), job_name) {
+        if let Err(e) = acr_store::backgroundjobs::register_job(job_id.clone(), job_name) {
             warn!("Failed to register album genre background job: {}", e);
             return;
         }
@@ -122,7 +122,7 @@ pub fn update_library_albums_genres_in_background(
         let total = albums_snapshot.len();
         info!("Updating genres for {} albums without genre tags", total);
 
-        let _ = crate::helpers::backgroundjobs::update_job(
+        let _ = acr_store::backgroundjobs::update_job(
             &job_id,
             Some(format!("Starting genre update for {} albums", total)),
             Some(0),
@@ -134,7 +134,7 @@ pub fn update_library_albums_genres_in_background(
         for (index, (album_id, album_name, artists)) in albums_snapshot.into_iter().enumerate() {
             let artist = artists.first().cloned().unwrap_or_default();
 
-            let _ = crate::helpers::backgroundjobs::update_job(
+            let _ = acr_store::backgroundjobs::update_job(
                 &job_id,
                 Some(format!("Processing: {}", album_name)),
                 Some(index),
@@ -186,7 +186,7 @@ pub fn update_library_albums_genres_in_background(
             let count = index + 1;
             if count % 50 == 0 || count == total {
                 info!("Album genre update: {}/{} processed, {} updated", count, total, updated);
-                let _ = crate::helpers::backgroundjobs::update_job(
+                let _ = acr_store::backgroundjobs::update_job(
                     &job_id,
                     Some(format!("Processed {}/{} albums", count, total)),
                     Some(count),
@@ -200,14 +200,14 @@ pub fn update_library_albums_genres_in_background(
         }
 
         info!("Album genre update complete: {}/{} albums updated", updated, total);
-        let _ = crate::helpers::backgroundjobs::complete_job(&job_id);
+        let _ = acr_store::backgroundjobs::complete_job(&job_id);
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::library::LibraryVersion;
+    use acr_types::library_version::LibraryVersion;
 
     #[test]
     fn writing_genres_stores_them_and_bumps_the_version() {

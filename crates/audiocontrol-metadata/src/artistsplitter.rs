@@ -4,8 +4,8 @@
 /// separated by various delimiters like commas, "&", "feat.", etc. It includes both
 /// simple text-based splitting and intelligent splitting using MusicBrainz MBID lookups.
 use log::debug;
-use crate::helpers::musicbrainz::{self, MusicBrainzSearchResult};
-use crate::helpers::attributecache;
+use crate::musicbrainz::{self, MusicBrainzSearchResult};
+use acr_store::attributecache;
 
 pub use acr_types::artist_split::{split_artist_with_separators, DEFAULT_ARTIST_SEPARATORS};
 
@@ -25,7 +25,7 @@ pub static ARTIST_SIMPLE_SPLIT_CACHE_PREFIX: &str = "artist::simple_split::";
 /// 
 /// # Examples
 /// ```
-/// use audiocontrol::helpers::artistsplitter::split_artist;
+/// use audiocontrol_metadata::artistsplitter::split_artist;
 /// 
 /// let artists = split_artist("The Beatles feat. Tony Sheridan");
 /// assert_eq!(artists, vec!["The Beatles", "Tony Sheridan"]);
@@ -52,7 +52,7 @@ pub fn split_artist(artist_name: &str) -> Vec<String> {
 /// 
 /// # Examples
 /// ```
-/// use audiocontrol::helpers::artistsplitter::contains_multiple_artists;
+/// use audiocontrol_metadata::artistsplitter::contains_multiple_artists;
 /// 
 /// assert!(contains_multiple_artists("The Beatles feat. Tony Sheridan", None));
 /// assert!(contains_multiple_artists("Simon & Garfunkel", None));
@@ -83,7 +83,7 @@ pub fn contains_multiple_artists(artist_name: &str, custom_separators: Option<&[
 /// 
 /// # Examples
 /// ```
-/// use audiocontrol::helpers::artistsplitter::split_if_multiple;
+/// use audiocontrol_metadata::artistsplitter::split_if_multiple;
 /// 
 /// assert_eq!(split_if_multiple("The Beatles", None), None);
 /// assert_eq!(split_if_multiple("Simon & Garfunkel", None), Some(vec!["Simon".to_string(), "Garfunkel".to_string()]));

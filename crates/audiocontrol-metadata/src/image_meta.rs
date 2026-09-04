@@ -2,8 +2,8 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::fs::File;
 use log::{debug, warn};
 use serde::{Serialize, Deserialize};
-use crate::helpers::attributecache::get_attribute_cache;
-use crate::helpers::http_client::new_http_client;
+use acr_store::attributecache::get_attribute_cache;
+use acr_http::http_client::new_http_client;
 
 /// Cache key prefix for image metadata
 pub const IMAGE_META_CACHE_PREFIX: &str = "image_meta::";
@@ -48,8 +48,8 @@ pub fn image_size(url: &str) -> Result<ImageMetadata, String> {
     // Not in cache, analyze the image
     let metadata = if url.starts_with("http://") || url.starts_with("https://") {
         analyze_remote_image(url)?
-    } else if let Some(relative) = crate::helpers::imagecache::relative_path_from_url(url) {
-        let full = crate::helpers::imagecache::get_full_path(relative);
+    } else if let Some(relative) = acr_store::imagecache::relative_path_from_url(url) {
+        let full = acr_store::imagecache::get_full_path(relative);
         analyze_local_image(&full.to_string_lossy())?
     } else {
         analyze_local_image(url)?
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn test_google_logo_url_with_temp_cache() {
         // Create a test using a temporary directory for the cache
-        use crate::helpers::attributecache::AttributeCache;
+        use acr_store::attributecache::AttributeCache;
         
         let url = "https://www.google.com/images/branding/googlelogo/1x/googlelogo_color_272x92dp.png";
         
@@ -638,12 +638,12 @@ mod tests {
             .expect("a clock after the epoch")
             .as_nanos();
         let relative = format!("test_image_meta/{}.png", unique);
-        let full = crate::helpers::imagecache::get_full_path(&relative);
+        let full = acr_store::imagecache::get_full_path(&relative);
         std::fs::create_dir_all(full.parent().expect("a parent directory"))
             .expect("the cache directory is creatable");
         std::fs::write(&full, tiny_png()).expect("the image file is written");
 
-        let url = format!("{}/imagecache/{}", crate::constants::API_PREFIX, relative);
+        let url = format!("{}/imagecache/{}", acr_types::API_PREFIX, relative);
         let metadata = image_size(&url).expect("a cached image is measurable");
 
         assert_eq!((metadata.width, metadata.height), (1, 1));
@@ -678,10 +678,10 @@ mod tests {
             .expect("a clock after the epoch")
             .as_nanos();
         let relative = format!("test_image_meta/forget-{}.png", unique);
-        let full = crate::helpers::imagecache::get_full_path(&relative);
+        let full = acr_store::imagecache::get_full_path(&relative);
         std::fs::create_dir_all(full.parent().expect("a parent directory"))
             .expect("the cache directory is creatable");
-        let url = format!("{}/imagecache/{}", crate::constants::API_PREFIX, relative);
+        let url = format!("{}/imagecache/{}", acr_types::API_PREFIX, relative);
 
         std::fs::write(&full, png_of(8, 8)).expect("the first image is written");
         assert_eq!(image_size(&url).expect("measurable").width, 8);

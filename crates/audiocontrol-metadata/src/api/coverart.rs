@@ -4,15 +4,15 @@ use rocket::post;
 use rocket::serde::json::Json;
 use rocket::serde::{Deserialize, Serialize};
 use log::{debug, info, warn, error};
-use crate::helpers::coverart::{
+use crate::coverart::{
     get_coverart_manager, query_coverart, CoverartMethod, CoverartQuery, CoverartResult,
     ProviderInfo, QueryOptions,
 };
-use crate::helpers::url_encoding::decode_url_safe;
-use crate::helpers::settingsdb;
+use acr_types::url_encoding::decode_url_safe;
+use acr_store::settingsdb;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use crate::helpers::artist_store::ArtistImageSource;
-use crate::constants::API_PREFIX;
+use crate::artist_store::ArtistImageSource;
+use acr_types::API_PREFIX;
 
 #[derive(Serialize, Deserialize)]
 pub struct CoverartResponse {
@@ -275,7 +275,7 @@ fn decode_image(b64: &str) -> Result<Vec<u8>, String> {
     let bytes = STANDARD
         .decode(b64)
         .map_err(|e| format!("Invalid base64 data: {}", e))?;
-    crate::helpers::imageresize::validate(&bytes)
+    acr_images::imageresize::validate(&bytes)
         .map_err(|e| format!("Invalid image data: {}", e))?;
     Ok(bytes)
 }
@@ -304,7 +304,7 @@ pub fn upload_artist_image(
     };
 
     let name = artist_name.trim();
-    if crate::helpers::sanitize::filename_from_string(name).is_empty() {
+    if acr_types::sanitize::filename_from_string(name).is_empty() {
         return Json(UploadArtistImageResponse {
             success: false,
             id: None,
@@ -319,7 +319,7 @@ pub fn upload_artist_image(
         }
     };
 
-    let store = crate::helpers::artist_store::get_artist_store();
+    let store = crate::artist_store::get_artist_store();
     let mut store_lock = store.lock();
     match store_lock.store_uploaded_image(name, &bytes) {
         Ok(id) => {
@@ -366,8 +366,8 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
     // One of our own image URLs selects that member instead of being fetched:
     // the daemon does not make HTTP requests to itself, and the bytes are
     // already where they need to be.
-    if let Some(id) = crate::helpers::artist_store::local_image_id(&request.url, &artist_name) {
-        let store = crate::helpers::artist_store::get_artist_store();
+    if let Some(id) = crate::artist_store::local_image_id(&request.url, &artist_name) {
+        let store = crate::artist_store::get_artist_store();
         let mut store_lock = store.lock();
         return match store_lock.select_artist_image(&artist_name, &id) {
             Ok(()) => Json(UpdateImageResponse {
@@ -386,7 +386,7 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
     // ways to arrive here are a URL naming a different artist and one of our
     // own carrying a query or fragment, and neither is a remote address the
     // download path could do anything with.
-    let local_prefix = format!("{}/coverart/artist/", crate::constants::API_PREFIX);
+    let local_prefix = format!("{}/coverart/artist/", acr_types::API_PREFIX);
     if request.url.starts_with(&local_prefix) {
         warn!(
             "Refusing to record '{}' for artist '{}': it names this daemon but not an image of that artist",
@@ -417,13 +417,13 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
             // pointing at a URL whose bytes never arrived. A download that
             // succeeds re-populates the memo itself.
             {
-                let store = crate::helpers::artist_store::get_artist_store();
+                let store = crate::artist_store::get_artist_store();
                 let mut store_lock = store.lock();
                 store_lock.forget_memoised_path(&artist_name);
             }
 
             // Clear any cached image to force refresh
-            let cache_path = format!("artists/{}/cover.jpg", crate::helpers::url_encoding::encode_url_safe(&artist_name));
+            let cache_path = format!("artists/{}/cover.jpg", acr_types::url_encoding::encode_url_safe(&artist_name));
             debug!("Attempting to clear cached image at: {}", cache_path);
             
             match std::fs::remove_file(&cache_path) {
@@ -440,23 +440,23 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
                 debug!("Attempting to trigger immediate download of custom image to user directory for artist: {}", artist_name);
                 
                 // Use the global artist store to download the image to user directory
-                let artist_store = crate::helpers::artist_store::get_artist_store();
+                let artist_store = crate::artist_store::get_artist_store();
                 let mut store_lock = artist_store.lock();
                 
                 match store_lock.download_and_store_user_image(&artist_name, &request.url, "custom") {
-                    crate::helpers::artist_store::ArtistImageResult::Found { cache_path } => {
+                    crate::artist_store::ArtistImageResult::Found { cache_path } => {
                         info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
                         // `cache_path` here is the real path the new image was just written to
                         // (unlike the bogus one computed above for the dead `remove_file` call).
                         // A re-upload overwrites this same file but leaves any variants generated
                         // from the *previous* image beside it — drop those now so the grid does
                         // not keep showing the old face at thumbnail size.
-                        crate::helpers::imageresize::remove_variants_of(&cache_path);
+                        acr_images::imageresize::remove_variants_of(&cache_path);
                     }
-                    crate::helpers::artist_store::ArtistImageResult::NotFound => {
+                    crate::artist_store::ArtistImageResult::NotFound => {
                         warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
                     }
-                    crate::helpers::artist_store::ArtistImageResult::Error(error) => {
+                    crate::artist_store::ArtistImageResult::Error(error) => {
                         warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);
                     }
                 }
@@ -491,7 +491,7 @@ fn variant_path_for(cache_path: &str, size: u32) -> String {
     format!(
         "{}/{}.{}",
         parent,
-        crate::helpers::imageresize::variant_stem(stem, size),
+        acr_images::imageresize::variant_stem(stem, size),
         extension
     )
 }
@@ -533,16 +533,16 @@ fn artist_image_variant(cache_path: &str, original: &[u8], size: u32) -> Option<
         return Some((data, "image/jpeg".to_string()));
     }
 
-    match crate::helpers::imageresize::resize(original, size) {
-        Ok(crate::helpers::imageresize::Resized::Original) => None,
-        Ok(crate::helpers::imageresize::Resized::Image(data, mime)) => {
+    match acr_images::imageresize::resize(original, size) {
+        Ok(acr_images::imageresize::Resized::Original) => None,
+        Ok(acr_images::imageresize::Resized::Image(data, mime)) => {
             // The stored extension must match what was actually encoded, and must be
             // the same path the lookup above would find on a subsequent call.
             let stored_path = if mime == "image/png" { &png_path } else { &jpg_path };
             // Written atomically: two requests for the same artist at the same size
             // can arrive concurrently, and a torn variant served once would be frozen
             // into client caches by its strong ETag.
-            if let Err(e) = crate::helpers::imagecache::write_file_atomically(
+            if let Err(e) = acr_store::imagecache::write_file_atomically(
                 std::path::Path::new(stored_path),
                 &data,
             ) {
@@ -597,21 +597,21 @@ pub fn get_artist_images(artist_b64: String) -> Result<Json<ArtistImagesResponse
         .ok_or_else(|| Custom(Status::BadRequest, "Invalid artist name encoding".to_string()))?;
 
     let artist_name = artist_name.trim().to_string();
-    if crate::helpers::sanitize::filename_from_string(&artist_name).is_empty() {
+    if acr_types::sanitize::filename_from_string(&artist_name).is_empty() {
         return Err(Custom(Status::BadRequest, "Empty artist name".to_string()));
     }
 
     // Re-encoded from the trimmed name rather than echoing what arrived, so
     // the URL handed out is the one `local_image_id` will recognise when a
     // client posts it back to `/update` to select that member.
-    let artist_b64 = crate::helpers::url_encoding::encode_url_safe(&artist_name);
+    let artist_b64 = acr_types::url_encoding::encode_url_safe(&artist_name);
 
     // The guard covers resolving the set and the selection, and nothing else.
     // It is one process-wide mutex: holding it across the per-member metadata
     // reads and header sniffs below would put every concurrent image serve,
     // upload, delete and player-event lookup behind this listing's file I/O.
     let (members, selected) = {
-        let store = crate::helpers::artist_store::get_artist_store();
+        let store = crate::artist_store::get_artist_store();
         let store_lock = store.lock();
         store_lock.artist_images_with_selection(&artist_name)
     };
@@ -624,7 +624,7 @@ pub fn get_artist_images(artist_b64: String) -> Result<Json<ArtistImagesResponse
         .filter_map(|image| {
             let metadata = std::fs::metadata(&image.path).ok()?;
             let mut reader = std::io::BufReader::new(std::fs::File::open(&image.path).ok()?);
-            let (width, height, _) = crate::helpers::image_meta::detect_image_dimensions(&mut reader).ok()?;
+            let (width, height, _) = crate::image_meta::detect_image_dimensions(&mut reader).ok()?;
             Some(ArtistImageInfo {
                 url: format!("{}/coverart/artist/{}/image/{}", API_PREFIX, artist_b64, image.id),
                 selected: selected.as_deref() == Some(image.id.as_str()),
@@ -654,10 +654,10 @@ fn serve_artist_image_file(
     cache_path: &str,
     target: Option<u32>,
     if_none_match: Option<&str>,
-) -> Result<crate::api::imageresponse::ImageReply, rocket::response::status::Custom<String>> {
+) -> Result<acr_web::imageresponse::ImageReply, rocket::response::status::Custom<String>> {
     use rocket::http::Status;
     use rocket::response::status::Custom;
-    use crate::api::imageresponse::{reply, REVALIDATE_DAILY_CACHE};
+    use acr_web::imageresponse::{reply, REVALIDATE_DAILY_CACHE};
 
     match std::fs::read(cache_path) {
         Ok(image_data) => {
@@ -709,13 +709,13 @@ fn serve_artist_image_file(
 pub fn get_artist_image(
     artist_b64: String,
     size: Option<&str>,
-    if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
-) -> Result<crate::api::imageresponse::ImageReply, rocket::response::status::Custom<String>> {
+    if_none_match: acr_web::imageresponse::IfNoneMatch<'_>,
+) -> Result<acr_web::imageresponse::ImageReply, rocket::response::status::Custom<String>> {
     use rocket::http::Status;
     use rocket::response::status::Custom;
 
-    let target = crate::api::library::parse_size(size)
-        .map_err(|e| Custom(Status::BadRequest, crate::api::library::size_error_body(&e)))?;
+    let target = acr_images::imageresize::parse_size(size)
+        .map_err(|e| Custom(Status::BadRequest, acr_images::imageresize::size_error_body(&e)))?;
 
     let artist_name = match decode_url_safe(&artist_b64) {
         Some(decoded) => decoded,
@@ -730,7 +730,7 @@ pub fn get_artist_image(
 
     // Try to get the cached image from the artist store, downloading it first
     // if nothing is cached yet.
-    match crate::helpers::artist_store::get_or_download_artist_image(&artist_name) {
+    match crate::artist_store::get_or_download_artist_image(&artist_name) {
         Some(cache_path) => serve_artist_image_file(&artist_name, &cache_path, target, if_none_match.0),
         None => {
             debug!("No cached image found for artist: {}", artist_name);
@@ -757,13 +757,13 @@ pub fn get_artist_image_by_id(
     artist_b64: String,
     id: String,
     size: Option<&str>,
-    if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
-) -> Result<crate::api::imageresponse::ImageReply, rocket::response::status::Custom<String>> {
+    if_none_match: acr_web::imageresponse::IfNoneMatch<'_>,
+) -> Result<acr_web::imageresponse::ImageReply, rocket::response::status::Custom<String>> {
     use rocket::http::Status;
     use rocket::response::status::Custom;
 
-    let target = crate::api::library::parse_size(size)
-        .map_err(|e| Custom(Status::BadRequest, crate::api::library::size_error_body(&e)))?;
+    let target = acr_images::imageresize::parse_size(size)
+        .map_err(|e| Custom(Status::BadRequest, acr_images::imageresize::size_error_body(&e)))?;
 
     let artist_name = match decode_url_safe(&artist_b64) {
         Some(decoded) => decoded,
@@ -777,7 +777,7 @@ pub fn get_artist_image_by_id(
     };
 
     let cache_path = {
-        let store = crate::helpers::artist_store::get_artist_store();
+        let store = crate::artist_store::get_artist_store();
         let store_lock = store.lock();
         store_lock.artist_image_path(&artist_name, &id)
     };
@@ -809,14 +809,14 @@ pub fn delete_artist_image_route(artist_b64: String, id: String) -> Json<UpdateI
     };
 
     let artist_name = artist_name.trim().to_string();
-    if crate::helpers::sanitize::filename_from_string(&artist_name).is_empty() {
+    if acr_types::sanitize::filename_from_string(&artist_name).is_empty() {
         return Json(UpdateImageResponse {
             success: false,
             message: "Empty artist name".to_string(),
         });
     }
 
-    let store = crate::helpers::artist_store::get_artist_store();
+    let store = crate::artist_store::get_artist_store();
     let mut store_lock = store.lock();
     match store_lock.delete_artist_image(&artist_name, &id) {
         Ok(()) => Json(UpdateImageResponse {
@@ -830,7 +830,7 @@ pub fn delete_artist_image_route(artist_b64: String, id: String) -> Json<UpdateI
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::coverart::DEFAULT_FAST_DEADLINE;
+    use crate::coverart::DEFAULT_FAST_DEADLINE;
     use image::{DynamicImage, RgbaImage};
     use std::io::Cursor;
     use serial_test::serial;
@@ -862,7 +862,7 @@ mod tests {
 
         INIT.call_once(|| {
             let settings_dir = tempfile::TempDir::new().expect("settings db temp dir");
-            crate::helpers::settingsdb::SettingsDb::initialize_global(settings_dir.path())
+            acr_store::settingsdb::SettingsDb::initialize_global(settings_dir.path())
                 .expect("settings db should initialize");
 
             let store_dir = tempfile::TempDir::new().expect("artist store temp dir");
@@ -887,7 +887,7 @@ mod tests {
     /// Call the listing route directly, the way a request handler would.
     fn artist_images_response(artist: &str) -> ArtistImagesResponse {
         init_test_artist_store();
-        let b64 = crate::helpers::url_encoding::encode_url_safe(artist);
+        let b64 = acr_types::url_encoding::encode_url_safe(artist);
         get_artist_images(b64).expect("the route should not error").into_inner()
     }
 
@@ -898,7 +898,7 @@ mod tests {
         init_test_artist_store();
         let artist = "Gallery Test Artist";
 
-        let store = crate::helpers::artist_store::get_artist_store();
+        let store = crate::artist_store::get_artist_store();
         let mut store_lock = store.lock();
         store_lock
             .store_uploaded_image(artist, &alpha_png(8, 8))
@@ -943,9 +943,9 @@ mod tests {
     #[serial]
     fn by_id_serves_a_known_member() {
         let (artist, id) = artist_with_two_images();
-        let b64 = crate::helpers::url_encoding::encode_url_safe(&artist);
+        let b64 = acr_types::url_encoding::encode_url_safe(&artist);
 
-        let result = get_artist_image_by_id(b64, id, None, crate::api::imageresponse::IfNoneMatch(None));
+        let result = get_artist_image_by_id(b64, id, None, acr_web::imageresponse::IfNoneMatch(None));
         assert!(result.is_ok(), "a known member should be served");
     }
 
@@ -956,13 +956,13 @@ mod tests {
     #[serial]
     fn by_id_404s_for_an_unknown_member() {
         let (artist, _id) = artist_with_two_images();
-        let b64 = crate::helpers::url_encoding::encode_url_safe(&artist);
+        let b64 = acr_types::url_encoding::encode_url_safe(&artist);
 
         let result = get_artist_image_by_id(
             b64,
             "not-a-member".to_string(),
             None,
-            crate::api::imageresponse::IfNoneMatch(None),
+            acr_web::imageresponse::IfNoneMatch(None),
         );
         match result {
             Err(err) => assert_eq!(err.0, rocket::http::Status::NotFound),
@@ -1071,7 +1071,7 @@ mod tests {
     /// the artist name base64-url-encoded as the path segment expects.
     fn upload_artist_image_for(artist: &str, image_base64: &str) -> UploadArtistImageResponse {
         init_test_artist_store();
-        let b64_artist = crate::helpers::url_encoding::encode_url_safe(artist);
+        let b64_artist = acr_types::url_encoding::encode_url_safe(artist);
         upload_artist_image(
             b64_artist,
             Json(UploadArtistImageRequest { image_base64: image_base64.to_string() }),
@@ -1089,7 +1089,7 @@ mod tests {
 
         assert!(response.success, "{}", response.message);
         let id = response.id.expect("the response carries the id");
-        let store = crate::helpers::artist_store::get_artist_store();
+        let store = crate::artist_store::get_artist_store();
         let store_lock = store.lock();
         assert_eq!(store_lock.selected_image_id(artist).as_deref(), Some(id.as_str()));
         assert!(store_lock.artist_image_path(artist, &id).is_some());
@@ -1103,7 +1103,7 @@ mod tests {
 
         assert!(!response.success);
         assert!(response.id.is_none());
-        let store = crate::helpers::artist_store::get_artist_store();
+        let store = crate::artist_store::get_artist_store();
         assert!(store.lock().artist_images(artist).is_empty());
     }
 
@@ -1119,7 +1119,7 @@ mod tests {
     /// the artist name base64-url-encoded as the path segment expects.
     fn update_artist_image_for(artist: &str, url: &str) -> UpdateImageResponse {
         init_test_artist_store();
-        let b64_artist = crate::helpers::url_encoding::encode_url_safe(artist);
+        let b64_artist = acr_types::url_encoding::encode_url_safe(artist);
         update_artist_image(b64_artist, Json(UpdateImageRequest { url: url.to_string() })).into_inner()
     }
 
@@ -1131,8 +1131,8 @@ mod tests {
         let other = upload_artist_image_for(artist, &b64(&alpha_png(200, 200))).id.unwrap();
         let url = format!(
             "{}/coverart/artist/{}/image/{}",
-            crate::constants::API_PREFIX,
-            crate::helpers::url_encoding::encode_url_safe(artist),
+            acr_types::API_PREFIX,
+            acr_types::url_encoding::encode_url_safe(artist),
             uploaded
         );
 
@@ -1148,7 +1148,7 @@ mod tests {
             "expected a selection message, got: {}",
             response.message
         );
-        let store = crate::helpers::artist_store::get_artist_store();
+        let store = crate::artist_store::get_artist_store();
         let store_lock = store.lock();
         assert_eq!(store_lock.selected_image_id(artist).as_deref(), Some(uploaded.as_str()));
         assert!(store_lock.artist_image_path(artist, &other).is_some(), "the other member survives");
@@ -1160,8 +1160,8 @@ mod tests {
         let artist = "Select Test Artist Two";
         let url = format!(
             "{}/coverart/artist/{}/image/{}",
-            crate::constants::API_PREFIX,
-            crate::helpers::url_encoding::encode_url_safe(artist),
+            acr_types::API_PREFIX,
+            acr_types::url_encoding::encode_url_safe(artist),
             "f".repeat(32)
         );
 
@@ -1174,7 +1174,7 @@ mod tests {
     /// the artist name base64-url-encoded as the path segment expects.
     fn delete_artist_image_for(artist: &str, id: &str) -> UpdateImageResponse {
         init_test_artist_store();
-        let b64_artist = crate::helpers::url_encoding::encode_url_safe(artist);
+        let b64_artist = acr_types::url_encoding::encode_url_safe(artist);
         delete_artist_image_route(b64_artist, id.to_string()).into_inner()
     }
 
@@ -1187,7 +1187,7 @@ mod tests {
         let response = delete_artist_image_for(artist, &id);
 
         assert!(response.success, "{}", response.message);
-        let store = crate::helpers::artist_store::get_artist_store();
+        let store = crate::artist_store::get_artist_store();
         let store_lock = store.lock();
         assert!(store_lock.artist_image_path(artist, &id).is_none());
         assert_eq!(store_lock.selected_image_id(artist), None);
@@ -1216,10 +1216,10 @@ mod tests {
         let id = upload_artist_image_for(artist, &b64(&alpha_png(400, 400))).id.unwrap();
 
         // Warm the memo the way a served request does.
-        let store = crate::helpers::artist_store::get_artist_store();
+        let store = crate::artist_store::get_artist_store();
         {
             let mut store_lock = store.lock();
-            let crate::helpers::artist_store::ArtistImageResult::Found { cache_path } =
+            let crate::artist_store::ArtistImageResult::Found { cache_path } =
                 store_lock.get_cached_image(artist)
             else {
                 panic!("the uploaded image should resolve");
@@ -1231,7 +1231,7 @@ mod tests {
         assert!(response.success, "{}", response.message);
 
         let mut store_lock = store.lock();
-        if let crate::helpers::artist_store::ArtistImageResult::Found { cache_path } =
+        if let crate::artist_store::ArtistImageResult::Found { cache_path } =
             store_lock.get_cached_image(artist)
         {
             panic!("nothing should still resolve for this artist, got: {}", cache_path);
@@ -1247,10 +1247,10 @@ mod tests {
         let artist = "Memo Failed Download Artist";
         let id = upload_artist_image_for(artist, &b64(&alpha_png(400, 400))).id.unwrap();
 
-        let store = crate::helpers::artist_store::get_artist_store();
+        let store = crate::artist_store::get_artist_store();
         {
             let mut store_lock = store.lock();
-            let crate::helpers::artist_store::ArtistImageResult::Found { cache_path } =
+            let crate::artist_store::ArtistImageResult::Found { cache_path } =
                 store_lock.get_cached_image(artist)
             else {
                 panic!("the uploaded image should resolve");
@@ -1263,7 +1263,7 @@ mod tests {
         update_artist_image_for(artist, "definitely-not-a-url");
 
         let mut store_lock = store.lock();
-        if let crate::helpers::artist_store::ArtistImageResult::Found { cache_path } =
+        if let crate::artist_store::ArtistImageResult::Found { cache_path } =
             store_lock.get_cached_image(artist)
         {
             panic!("the previous image must not survive a failed download, got: {}", cache_path);
@@ -1282,7 +1282,7 @@ mod tests {
         // Stand in for a completed download: the file the remote branch writes,
         // plus the remote URL it records as the selection.
         {
-            let store = crate::helpers::artist_store::get_artist_store();
+            let store = crate::artist_store::get_artist_store();
             let store_lock = store.lock();
             let custom = store_lock.get_artist_user_image_path(artist, "custom");
             let parent = std::path::Path::new(&custom).parent().unwrap().to_path_buf();
@@ -1312,7 +1312,7 @@ mod tests {
         let good = upload_artist_image_for(artist, &b64(&alpha_png(64, 64))).id.unwrap();
 
         {
-            let store = crate::helpers::artist_store::get_artist_store();
+            let store = crate::artist_store::get_artist_store();
             let store_lock = store.lock();
             let uploads = store_lock.artist_uploads_dir_for_test(artist);
             std::fs::write(format!("{}/{}.png", uploads, "c".repeat(32)), b"truncated download").unwrap();
@@ -1328,7 +1328,7 @@ mod tests {
     #[serial]
     fn listing_a_name_that_sanitises_to_nothing_is_refused() {
         init_test_artist_store();
-        let b64_artist = crate::helpers::url_encoding::encode_url_safe("!!!");
+        let b64_artist = acr_types::url_encoding::encode_url_safe("!!!");
         match get_artist_images(b64_artist) {
             Err(err) => {
                 assert_eq!(err.0, rocket::http::Status::BadRequest);
@@ -1362,8 +1362,8 @@ mod tests {
             .expect("the owner's upload is stored");
         let url = format!(
             "{}/coverart/artist/{}/image/{}",
-            crate::constants::API_PREFIX,
-            crate::helpers::url_encoding::encode_url_safe(owner),
+            acr_types::API_PREFIX,
+            acr_types::url_encoding::encode_url_safe(owner),
             id
         );
 
@@ -1388,8 +1388,8 @@ mod tests {
             .expect("the upload is stored");
         let url = format!(
             "{}/coverart/artist/{}/image/{}?size=200",
-            crate::constants::API_PREFIX,
-            crate::helpers::url_encoding::encode_url_safe(artist),
+            acr_types::API_PREFIX,
+            acr_types::url_encoding::encode_url_safe(artist),
             id
         );
 
@@ -1409,7 +1409,7 @@ mod tests {
             .id
             .expect("the upload is stored");
 
-        let listing = get_artist_images(crate::helpers::url_encoding::encode_url_safe(padded))
+        let listing = get_artist_images(acr_types::url_encoding::encode_url_safe(padded))
             .expect("the listing succeeds")
             .into_inner();
 

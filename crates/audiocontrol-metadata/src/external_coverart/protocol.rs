@@ -132,7 +132,7 @@ pub fn ttl_seconds(lookup: &Lookup, endpoint: &EndpointConfig) -> u64 {
 mod tests {
     use super::*;
     use super::super::config::Trigger;
-    use crate::helpers::coverart::CoverartMethod;
+    use crate::coverart::CoverartMethod;
 
     fn endpoint() -> EndpointConfig {
         EndpointConfig {

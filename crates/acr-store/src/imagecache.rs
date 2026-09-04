@@ -8,17 +8,11 @@ use once_cell::sync::Lazy;
 use log::{info, error, debug, warn};
 use serde::{Serialize, Deserialize};
 use crate::attributecache;
+use acr_types::API_PREFIX;
 
 // Constants for cache keys
 const IMAGECACHE_METADATA_PREFIX: &str = "imagecache:metadata:";
 const IMAGECACHE_STATS_KEY: &str = "imagecache:stats";
-
-/// The internal mount point every API route is served under.
-///
-/// Duplicated from the root package's `crate::constants::API_PREFIX` rather
-/// than imported, matching `acr_types::urlprefix`'s own copy: this crate has
-/// no dependency on the root package, and the values must stay in sync.
-const API_PREFIX: &str = "/api";
 
 /// Metadata for a cached image
 #[derive(Serialize, Deserialize, Debug, Clone)]

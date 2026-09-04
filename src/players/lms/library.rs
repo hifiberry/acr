@@ -199,6 +199,7 @@ impl LMSLibrary {
                     let mut metadata = crate::data::ArtistMeta::new();
                     metadata.mbid = summary.mbid;
                     metadata.genres = summary.genres;
+                    metadata.thumb_url = summary.thumb_url;
                     artist_with_metadata.is_multi = summary.is_multi;
                     artist_with_metadata.metadata = Some(metadata);
                 },
@@ -713,6 +714,7 @@ mod tests {
                     mbid: vec!["a".into(), "b".into()],
                     is_multi: true,
                     genres: vec!["folk".into()],
+                    thumb_url: vec![],
                 }],
                 albums: vec![],
             })

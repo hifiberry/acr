@@ -39,6 +39,10 @@ impl LibraryEnricher for InProcessEnricher {
             is_multi: meta.mbid.len() > 1 || meta.is_partial_match,
             mbid: meta.mbid,
             genres: meta.genres,
+            // Carried as stored. The artist list route serves this field, and
+            // it holds a URL only for an artist an image was actually found
+            // for, so an empty list is meaningful rather than missing.
+            thumb_url: meta.thumb_url,
         })
     }
 
@@ -175,9 +179,7 @@ mod tests {
     fn summary(name: &str) -> ArtistSummary {
         ArtistSummary {
             name: name.to_string(),
-            mbid: vec![],
-            is_multi: false,
-            genres: vec![],
+            ..Default::default()
         }
     }
 

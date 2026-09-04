@@ -17,8 +17,8 @@ pub struct AlbumRef {
 }
 
 /// What a lookup learned about an artist, at the summary level the library
-/// lists carry. Biography and images stay with the metadata side.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// lists carry. The biography stays with the metadata side.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtistSummary {
     pub name: String,
     #[serde(default)]
@@ -27,6 +27,23 @@ pub struct ArtistSummary {
     pub is_multi: bool,
     #[serde(default)]
     pub genres: Vec<String>,
+    /// The artist's thumbnail URLs, exactly as the metadata side stored them.
+    ///
+    /// The artist *list* route serialises this field, and its presence is how
+    /// a client knows an image exists at all: the metadata side writes a URL
+    /// only when a lookup found one, so an artist without an image serves an
+    /// empty list. That makes it part of what a library's lists are built
+    /// from, and so part of the summary.
+    ///
+    /// It is carried rather than rebuilt from the artist's name because the
+    /// stored value is not always the daemon's own cover art URL — a
+    /// provider's own URLs reach the same field — and reconstructing it would
+    /// mean reproducing every writer of it.
+    ///
+    /// Absent on the wire means "nothing to say", not "no images": a peer that
+    /// predates the field must not be read as clearing what a library holds.
+    #[serde(default)]
+    pub thumb_url: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +135,24 @@ mod tests {
         let mut g = vec![];
         assert!(merge_genres(&mut g, &["jazz".to_string()]));
         assert_eq!(g, vec!["jazz"]);
+    }
+
+    /// The field is optional on the wire in both directions: a peer that does
+    /// not send it must not fail to parse, and one that does must be understood.
+    #[test]
+    fn an_artist_summary_thumbnail_is_optional_on_the_wire() {
+        let without: ArtistSummary = serde_json::from_str(r#"{"name":"Bowie"}"#).unwrap();
+        assert!(without.thumb_url.is_empty());
+
+        let with: ArtistSummary = serde_json::from_str(
+            r#"{"name":"Bowie","thumb_url":["/api/coverart/artist/YWJj/image"]}"#,
+        )
+        .unwrap();
+        assert_eq!(with.thumb_url, vec!["/api/coverart/artist/YWJj/image"]);
+
+        let round_tripped: ArtistSummary =
+            serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(round_tripped, with);
     }
 
     #[test]

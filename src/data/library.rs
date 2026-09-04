@@ -111,11 +111,22 @@ pub fn apply_batch(
             let meta = artist.metadata.get_or_insert_with(ArtistMeta::new);
             let mbid_changed = meta.mbid != incoming.mbid;
             let genres_changed = meta.genres != incoming.genres;
+            let thumbs_changed = meta.thumb_url != incoming.thumb_url;
             meta.mbid = incoming.mbid.clone();
             meta.genres = incoming.genres.clone();
+            // Stored as given, empty included: the metadata side writes a
+            // thumbnail URL only when a lookup found an image, so an empty
+            // list is the answer "there is none" and the artist list route
+            // serves it as such.
+            meta.thumb_url = incoming.thumb_url.clone();
             artist.is_multi = incoming.is_multi;
 
-            if !had_metadata || mbid_changed || genres_changed || was_multi != incoming.is_multi {
+            if !had_metadata
+                || mbid_changed
+                || genres_changed
+                || thumbs_changed
+                || was_multi != incoming.is_multi
+            {
                 applied.artists += 1;
                 changed = true;
             }
@@ -606,8 +617,7 @@ mod tests {
                 artists: vec![acr_types::enrichment::ArtistSummary {
                     name: "Someone Else".to_string(),
                     mbid: vec!["x".to_string()],
-                    is_multi: false,
-                    genres: vec![],
+                    ..Default::default()
                 }],
                 albums: vec![acr_types::enrichment::AlbumGenres {
                     id: "77".to_string(),
@@ -634,9 +644,7 @@ mod tests {
                 library_version: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
                     name: "Bowie".to_string(),
-                    mbid: vec![],
-                    is_multi: false,
-                    genres: vec![],
+                    ..Default::default()
                 }],
                 albums: vec![],
             },

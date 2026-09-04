@@ -254,14 +254,15 @@ fn artist_to_update(reference: &ArtistRef) -> Artist {
 
 /// What a library keeps from an updated artist.
 ///
-/// Everything else an update found -- biography, images, the source they came
-/// from -- stays on this side and is served from here, so the summary is
-/// exactly the fields a library's own lists are built from.
+/// The summary is exactly the fields a library's own lists are built from --
+/// the thumbnail URLs among them, because the artist list route serves them.
+/// The biography and the source it came from stay on this side, served from
+/// here by the artist detail route.
 fn summarise(artist: &Artist) -> ArtistSummary {
-    let (mbid, genres) = artist
+    let (mbid, genres, thumb_url) = artist
         .metadata
         .as_ref()
-        .map(|m| (m.mbid.clone(), m.genres.clone()))
+        .map(|m| (m.mbid.clone(), m.genres.clone(), m.thumb_url.clone()))
         .unwrap_or_default();
 
     ArtistSummary {
@@ -272,6 +273,7 @@ fn summarise(artist: &Artist) -> ArtistSummary {
         is_multi: artist.is_multi,
         mbid,
         genres,
+        thumb_url,
     }
 }
 

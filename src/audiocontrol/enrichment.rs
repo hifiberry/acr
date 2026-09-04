@@ -83,8 +83,7 @@ mod tests {
             Some(ArtistSummary {
                 name: name.to_string(),
                 mbid: vec![self.0.to_string()],
-                is_multi: false,
-                genres: vec![],
+                ..Default::default()
             })
         }
         fn artist_detail(&self, _name: &str) -> Option<acr_types::ArtistMeta> {

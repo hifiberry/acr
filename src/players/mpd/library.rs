@@ -574,6 +574,7 @@ impl MPDLibrary {
                     let mut metadata = crate::data::ArtistMeta::new();
                     metadata.mbid = summary.mbid;
                     metadata.genres = summary.genres;
+                    metadata.thumb_url = summary.thumb_url;
                     // The multi-artist rule (more than one MBID, or a partial
                     // match) is the enricher's to apply; this side stores what
                     // it is told.
@@ -1927,6 +1928,7 @@ mod tests {
                 mbid: vec!["a".into(), "b".into()],
                 is_multi: true,
                 genres: vec!["folk".into()],
+                thumb_url: vec!["/api/coverart/artist/YWJj/image".into()],
             }],
             albums: vec![],
         })
@@ -1937,6 +1939,11 @@ mod tests {
         assert!(a.is_multi);
         assert_eq!(a.metadata.as_ref().unwrap().mbid, vec!["a", "b"]);
         assert_eq!(a.metadata.as_ref().unwrap().genres, vec!["folk"]);
+        assert_eq!(
+            a.metadata.as_ref().unwrap().thumb_url,
+            vec!["/api/coverart/artist/YWJj/image"],
+            "the artist list route serves this field out of the map"
+        );
     }
 
     /// What an enricher is asked for, recorded rather than acted on.

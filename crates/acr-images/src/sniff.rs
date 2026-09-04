@@ -54,6 +54,14 @@ mod tests {
         buf.into_inner()
     }
 
+    fn webp_bytes(w: u32, h: u32) -> Vec<u8> {
+        use image::{DynamicImage, RgbaImage};
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(w, h, image::Rgba([10, 120, 200, 255])));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::WebP).unwrap();
+        buf.into_inner()
+    }
+
     #[test]
     fn an_extension_is_sniffed_from_the_bytes() {
         assert_eq!(image_extension(&png_bytes(8, 8)), Some("png"));
@@ -63,6 +71,11 @@ mod tests {
     #[test]
     fn a_real_jpeg_is_sniffed_too() {
         assert_eq!(image_extension(&jpeg_bytes(8, 8)), Some("jpg"));
+    }
+
+    #[test]
+    fn a_real_webp_is_sniffed_too() {
+        assert_eq!(image_extension(&webp_bytes(8, 8)), Some("webp"));
     }
 
     #[test]
@@ -76,6 +89,24 @@ mod tests {
     fn a_signature_followed_by_junk_is_rejected() {
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
         bytes.extend_from_slice(b"not a real png header at all");
+        assert_eq!(image_extension(&bytes), None);
+    }
+
+    #[test]
+    fn a_webp_signature_followed_by_junk_is_rejected() {
+        // "RIFF" + a bogus size, then "WEBP": enough to be guessed as WebP,
+        // not enough for the decoder to read a header out of.
+        let mut bytes = b"RIFF\x00\x00\x00\x00WEBP".to_vec();
+        bytes.extend_from_slice(b"not a real webp chunk at all");
+        assert_eq!(image_extension(&bytes), None);
+    }
+
+    #[test]
+    fn a_jpeg_signature_followed_by_junk_is_rejected() {
+        // The JPEG SOI marker plus an APP0 signature: enough for
+        // `guess_format`, not enough for the decoder to read a header out of.
+        let mut bytes = b"\xff\xd8\xff\xe0".to_vec();
+        bytes.extend_from_slice(b"not a real jpeg header at all");
         assert_eq!(image_extension(&bytes), None);
     }
 }

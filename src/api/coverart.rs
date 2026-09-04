@@ -438,27 +438,57 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
             // If URL is not empty, try to trigger immediate download to user directory
             if !request.url.is_empty() {
                 debug!("Attempting to trigger immediate download of custom image to user directory for artist: {}", artist_name);
-                
-                // Use the global artist store to download the image to user directory
+
+                // Claim the download before fetching, and fetch with no lock
+                // held: the URL is client-supplied, and one naming this
+                // daemon itself would otherwise need the same lock its own
+                // inbound request is waiting on.
                 let artist_store = crate::helpers::artist_store::get_artist_store();
-                let mut store_lock = artist_store.lock();
-                
-                match store_lock.download_and_store_user_image(&artist_name, &request.url, "custom") {
-                    crate::helpers::artist_store::ArtistImageResult::Found { cache_path } => {
-                        info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
-                        // `cache_path` here is the real path the new image was just written to
-                        // (unlike the bogus one computed above for the dead `remove_file` call).
-                        // A re-upload overwrites this same file but leaves any variants generated
-                        // from the *previous* image beside it — drop those now so the grid does
-                        // not keep showing the old face at thumbnail size.
-                        crate::helpers::imageresize::remove_variants_of(&cache_path);
+                let claimed = {
+                    let mut store_lock = artist_store.lock();
+                    store_lock.begin_download(&artist_name)
+                };
+
+                if claimed {
+                    let fetch_result = crate::helpers::artist_store::fetch_image(&request.url);
+
+                    let mut store_lock = artist_store.lock();
+                    store_lock.finish_download(&artist_name);
+
+                    match fetch_result {
+                        Ok(image_data) => {
+                            match store_lock.commit_downloaded_image(
+                                &artist_name,
+                                &image_data,
+                                "custom",
+                                crate::helpers::artist_store::ImageDestination::UserDirectory,
+                            ) {
+                                crate::helpers::artist_store::ArtistImageResult::Found { cache_path } => {
+                                    info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
+                                    // `cache_path` here is the real path the new image was just written to
+                                    // (unlike the bogus one computed above for the dead `remove_file` call).
+                                    // A re-upload overwrites this same file but leaves any variants generated
+                                    // from the *previous* image beside it — drop those now so the grid does
+                                    // not keep showing the old face at thumbnail size.
+                                    crate::helpers::imageresize::remove_variants_of(&cache_path);
+                                }
+                                crate::helpers::artist_store::ArtistImageResult::NotFound => {
+                                    warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
+                                }
+                                crate::helpers::artist_store::ArtistImageResult::Error(error) => {
+                                    warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);
+                        }
                     }
-                    crate::helpers::artist_store::ArtistImageResult::NotFound => {
-                        warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
-                    }
-                    crate::helpers::artist_store::ArtistImageResult::Error(error) => {
-                        warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);
-                    }
+                } else {
+                    warn!(
+                        "Error downloading custom image for artist '{}' from URL {}: {}",
+                        artist_name, request.url, "Download already in progress"
+                    );
                 }
             } else {
                 info!("Empty URL provided - custom image cleared for artist: {}", artist_name);

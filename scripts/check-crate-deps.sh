@@ -3,10 +3,16 @@
 #
 # src/main.rs is the only place both meet. Cargo has no per-binary
 # dependencies, so the metadata crate is an optional dependency behind the
-# `metadata` feature, which is in `default` and required by the `audiocontrol`
-# binary. That makes the honest question not "is it in the graph" -- with
-# default features it is, and it should be -- but "is it in the graph of the
-# library alone", which is what --no-default-features asks.
+# `metadata` feature, which is in `default`. That makes the honest question not
+# "is it in the graph" -- with default features it is, and it should be -- but
+# "is it in the graph of the library alone", which is what --no-default-features
+# asks.
+#
+# The feature is only meaningful if both configurations are built, so this also
+# builds the daemon with the feature off. That is the one thing that
+# type-checks the #[cfg(not(feature = "metadata"))] branches in main.rs: the
+# binary deliberately carries no `required-features`, because requiring the
+# feature would mean those branches are never compiled and cannot fail.
 #
 # `cargo tree -p audiocontrol --no-default-features -i audiocontrol-metadata`
 # is the direct way to ask by hand who pulls the edge in. This script uses the
@@ -42,4 +48,14 @@ for forbidden in dbus alsa evdev mpd lofty; do
     echo "audiocontrol-metadata links $forbidden, which belongs to the player daemon" >&2; fail=1
   fi
 done
+# The player-only daemon still builds. This is a compile, not a graph query, so
+# it is the slow half of the script -- and the only half that would catch a
+# metadata call added to main.rs outside a cfg, or an `else` branch that stopped
+# compiling. It rehearses the binary Phase 2 needs.
+if ! cargo build -p audiocontrol --no-default-features --bin audiocontrol >/dev/null 2>&1; then
+  echo "the audiocontrol binary does not build without the metadata feature; re-run" >&2
+  echo "  cargo build -p audiocontrol --no-default-features --bin audiocontrol" >&2
+  echo "to see why" >&2
+  fail=1
+fi
 exit $fail

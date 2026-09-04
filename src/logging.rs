@@ -64,23 +64,40 @@ pub enum LoggingSubsystem {
 
 impl LoggingSubsystem {
     /// Get the module prefix for this subsystem
+    ///
+    /// These are log *targets*, which `log` fills in from `module_path!()` at
+    /// the call site. So each one has to name the module the records actually
+    /// come from, crate name included, spelled the way Rust spells it -- with
+    /// underscores, not the hyphens the package names use. A prefix naming a
+    /// module that does not exist is not an error anywhere: it simply matches
+    /// nothing, and the subsystem silently stops working. `a_subsystem_prefix_
+    /// names_a_module_that_exists` below is what keeps that from happening
+    /// again -- most of this list was pointing at `audiocontrol::helpers::*`
+    /// modules that moved into the workspace crates.
     pub fn module_prefix(&self) -> &'static str {
         match self {
             LoggingSubsystem::Main => "audiocontrol",
             LoggingSubsystem::Api => "audiocontrol::api",
             LoggingSubsystem::Players => "audiocontrol::players,audiocontrol::players::mpd::libraryloader,audiocontrol::players::lms::libraryloader",
-            LoggingSubsystem::Cache => "audiocontrol::helpers::attributecache,audiocontrol::helpers::imagecache",
-            LoggingSubsystem::Metadata => "audiocontrol::helpers::musicbrainz,audiocontrol::helpers::theaudiodb,audiocontrol::helpers::lastfm",
-            LoggingSubsystem::Spotify => "audiocontrol::helpers::spotify",
-            LoggingSubsystem::WebSocket => "audiocontrol::api::websocket,rocket_ws",
+            LoggingSubsystem::Cache => "acr_store::attributecache,acr_store::imagecache",
+            LoggingSubsystem::Metadata => "audiocontrol_metadata::musicbrainz,audiocontrol_metadata::theaudiodb,audiocontrol_metadata::lastfm",
+            LoggingSubsystem::Spotify => "audiocontrol_metadata::spotify",
+            // The WebSocket endpoint is api::events. `api::websocket` has never
+            // existed in this repository -- unlike the rest of this list, that
+            // one was wrong before the crates moved.
+            LoggingSubsystem::WebSocket => "audiocontrol::api::events,rocket_ws",
             LoggingSubsystem::Library => "audiocontrol::data::library",
-            LoggingSubsystem::Security => "audiocontrol::helpers::security_store",
-            LoggingSubsystem::Http => "audiocontrol::helpers::http_client,reqwest,hyper",
+            LoggingSubsystem::Security => "audiocontrol_metadata::security_store",
+            LoggingSubsystem::Http => "acr_http::http_client,reqwest,hyper",
             LoggingSubsystem::Network => "tokio,mio",
-            LoggingSubsystem::Database => "sled",
+            // Was `sled`, which this workspace has never depended on. The
+            // database is SQLite through rusqlite.
+            LoggingSubsystem::Database => "rusqlite",
             LoggingSubsystem::Io => "audiocontrol::helpers::stream_helper",
             LoggingSubsystem::Events => "audiocontrol::audiocontrol::eventbus",
-            LoggingSubsystem::Config => "audiocontrol::config",
+            // Both: this crate's own config module logs, and the service
+            // lookup it re-exports logs from where it is defined.
+            LoggingSubsystem::Config => "audiocontrol::config,acr_types::config",
             LoggingSubsystem::Plugins => "audiocontrol::plugins",
             LoggingSubsystem::Dependencies => "rocket,serde",
         }
@@ -538,4 +555,121 @@ pub fn initialize_logging_with_args(args: &[String], config_file: Option<&Path>)
     }
     
     config.initialize_logger()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where each crate in this workspace keeps its sources, keyed by the crate
+    /// name as `module_path!()` spells it.
+    const WORKSPACE_CRATES: &[(&str, &str)] = &[
+        ("audiocontrol", "src"),
+        ("audiocontrol_metadata", "crates/audiocontrol-metadata/src"),
+        ("acr_types", "crates/acr-types/src"),
+        ("acr_http", "crates/acr-http/src"),
+        ("acr_images", "crates/acr-images/src"),
+        ("acr_store", "crates/acr-store/src"),
+        ("acr_web", "crates/acr-web/src"),
+    ];
+
+    /// Log targets that belong to crates we do not own, so nothing here can
+    /// check that the module exists. Listed explicitly rather than skipped by
+    /// default, so adding an unverifiable target is a deliberate act and shows
+    /// up in a diff.
+    const FOREIGN_TARGETS: &[&str] = &[
+        "rocket", "rocket_ws", "serde", "reqwest", "hyper", "tokio", "mio", "rusqlite",
+    ];
+
+    /// Resolve `crate_name::a::b` to the file or directory that defines it.
+    fn module_source(prefix: &str) -> Option<std::path::PathBuf> {
+        let mut segments = prefix.split("::");
+        let krate = segments.next()?;
+        let root = WORKSPACE_CRATES
+            .iter()
+            .find(|(name, _)| *name == krate)
+            .map(|(_, dir)| std::path::PathBuf::from(dir))?;
+
+        let rest: Vec<&str> = segments.collect();
+        if rest.is_empty() {
+            // The crate root itself.
+            return Some(root.join("lib.rs"));
+        }
+        let stem = root.join(rest.join("/"));
+        for candidate in [
+            stem.with_extension("rs"),
+            stem.join("mod.rs"),
+            stem.clone(),
+        ] {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        Some(stem.with_extension("rs")) // reported as missing by the caller
+    }
+
+    /// Every prefix a subsystem filters on must name a module that exists.
+    ///
+    /// A `log` target comes from `module_path!()` at the call site, so a prefix
+    /// that names nothing does not fail, warn, or fall back -- the subsystem
+    /// just stops matching, and `--log-subsystem cache` quietly does nothing.
+    /// That is exactly what happened to six of these when the modules moved
+    /// into the workspace crates.
+    ///
+    /// What this does not cover: that the named module actually emits any
+    /// records, that a prefix is the *best* one for its subsystem, and
+    /// anything about the third-party targets in `FOREIGN_TARGETS`, whose
+    /// sources are not in this tree. It reads the tree, so it is meaningful
+    /// only when run from a checkout; run elsewhere it passes vacuously.
+    #[test]
+    fn a_subsystem_prefix_names_a_module_that_exists() {
+        if !std::path::Path::new("crates/acr-types/src/lib.rs").exists() {
+            // Not running from the workspace root; nothing to read.
+            return;
+        }
+
+        let mut broken = Vec::new();
+        for subsystem in LoggingSubsystem::all() {
+            for prefix in subsystem.module_prefix().split(',') {
+                let prefix = prefix.trim();
+                assert!(!prefix.is_empty(), "{:?} has an empty prefix", subsystem);
+                assert!(
+                    !prefix.contains('-'),
+                    "{:?} prefix {:?} uses a hyphen; module paths use underscores",
+                    subsystem,
+                    prefix
+                );
+
+                let krate = prefix.split("::").next().unwrap();
+                if FOREIGN_TARGETS.contains(&krate) {
+                    assert_eq!(
+                        prefix, krate,
+                        "{:?} names a module inside {}, which is not in this tree",
+                        subsystem, krate
+                    );
+                    continue;
+                }
+
+                match module_source(prefix) {
+                    Some(path) if path.exists() => {}
+                    Some(path) => broken.push(format!(
+                        "{:?}: {} -> no such module ({})",
+                        subsystem,
+                        prefix,
+                        path.display()
+                    )),
+                    None => broken.push(format!(
+                        "{:?}: {} -> unknown crate {}",
+                        subsystem, prefix, krate
+                    )),
+                }
+            }
+        }
+
+        assert!(
+            broken.is_empty(),
+            "logging subsystems name modules that do not exist:\n  {}",
+            broken.join("\n  ")
+        );
+    }
 }

@@ -129,10 +129,15 @@ tempfile = "3.12"
 tokio-test = "0.4"
 
 # Binary targets
+# Declared explicitly, and deliberately without `required-features`. The
+# `metadata` feature is meaningful only if the binary is built both ways:
+# requiring the feature would mean src/main.rs is never compiled with it off,
+# and the #[cfg(not(feature = "metadata"))] branches in it could never fail to
+# build. scripts/check-crate-deps.sh builds this target with
+# --no-default-features so those branches stay type-checked.
 [[bin]]
 name = "audiocontrol"
 path = "src/main.rs"
-required-features = ["metadata"]
 
 [[bin]]
 name = "audiocontrol_lms_client"

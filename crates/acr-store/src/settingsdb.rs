@@ -716,7 +716,10 @@ mod tests {
         
         // Initialize the global database
         SettingsDb::initialize(test_path).ok();
-        
+
+        // Leaked deliberately: see test_concurrent_global_access for why.
+        std::mem::forget(temp_dir);
+
         // Clear any existing data first
         clear().ok(); // Ignore errors if not initialized
         

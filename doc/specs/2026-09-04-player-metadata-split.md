@@ -211,24 +211,30 @@ objects. It keeps the fields (`Artist.metadata`, `Artist.is_multi`,
 `Album.genres`) because clients read them, and fills them from what the
 metadata daemon sends.
 
-**Thumbnails go through the store, not a rebuilt URL.** The artist list route
-reads `thumb_url` from `Artist.metadata` as stored; it does not reconstruct
-it. The metadata side writes a thumbnail URL there only when a lookup found
-an image — `/api/coverart/artist/<url-safe base64 name>/image` for one it
-serves itself, or a provider's own URL passed through unchanged — so an empty
-list is the answer "there is none", and the field's presence is the "an image
-exists" signal a client acts on. `ArtistSummary` therefore carries `thumb_url`
-alongside the other enrichment fields, and it merges into the stored metadata
-the same way they do: written as given, empty included.
+**Thumbnails: a stored value always wins, but not every backend fabricates
+one.** The player daemon builds `thumb_url` as
+`/api/coverart/artist/<url-safe base64 name>/image`. What differs is when. On
+the MPD backend, which is the primary one, this happens on every artist-list
+request: if the stored value is empty, `populate_calculated_artist_fields`
+fills it in regardless of whether an image actually exists, so an MPD client
+always sees a URL and a 404 from it means "no image" — exactly the
+"thumbnails need no call" behaviour this spec originally described, and
+still accurate there. The generic and LMS library paths do not do this: they
+serve `Artist.metadata.thumb_url` exactly as stored, so an artist no lookup
+has found an image for serves an empty list on those backends, and the
+field's presence there is the "an image exists" signal a client acts on.
 
-Reconstructing the path instead of storing it was the first design and was
-rejected. The attribute cache can still hold an external provider's URL
-written by an older release for an artist whose entry predates this scheme;
-a route that rebuilt `/api/coverart/artist/.../image` from the artist's name
-alone would silently turn such an entry into a daemon URL for an image the
-store may not actually hold, trading a working external link for a 404. The
-metadata daemon serves whatever path it wrote; a 404 from it means "no
-image", which both clients treat as an image-load failure today.
+In both cases a **stored** value takes precedence and passes through
+verbatim; nothing rewrites or discards it before serving. `ArtistSummary`
+therefore carries `thumb_url` through enrichment rather than leaving the
+player daemon to reconstruct it from the artist's name, because the attribute
+cache can still hold an external provider's URL written by an older release,
+and that URL must survive unchanged — it is deliberately never
+prefix-rewritten like a daemon-served path would be. A route that
+reconstructed `/api/coverart/artist/.../image` from the name alone, instead
+of reading what enrichment stored, would silently turn such an entry into a
+daemon URL for an image the store may not actually hold, trading a working
+external link for a 404.
 
 **Discovery: the metadata daemon pulls.** It polls
 `GET http://127.0.0.1:1080/api/library` every 30 s and, for each player with

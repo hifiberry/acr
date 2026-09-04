@@ -107,6 +107,65 @@ impl UreqHttpClient {
             timeout: Duration::from_secs(timeout_secs),
         }
     }
+
+    /// An agent that follows redirects only when the request carries nothing
+    /// worth protecting.
+    ///
+    /// Caller-supplied headers do not survive a redirect, because they cannot
+    /// be trusted to. ureq follows up to five by default and strips only
+    /// `content-length`, `cookie` and `authorization` on the way -- every
+    /// other name is re-sent to whatever host the redirect named. A caller
+    /// that checked the destination before calling would have that check
+    /// bypassed by a 302, and a credential in any header not literally called
+    /// `Authorization` would reach a host it never approved. With nothing
+    /// attached there is nothing to leak, so redirects are followed normally.
+    ///
+    /// The redirect limit belongs to the agent rather than the request, so the
+    /// agent is built per call.
+    fn agent_for(headers: &[(&str, &str)]) -> ureq::Agent {
+        ureq::AgentBuilder::new()
+            .redirects(if headers.is_empty() { DEFAULT_REDIRECT_LIMIT } else { 0 })
+            .build()
+    }
+
+    /// The error for a redirect that was deliberately not followed, if this
+    /// response is one.
+    ///
+    /// With the limit at zero a 3xx arrives as an ordinary response rather
+    /// than an error, and its body is a redirect page. For a request that
+    /// expects JSON that would surface as a parse failure, which describes the
+    /// symptom rather than the cause.
+    ///
+    /// The destination is named in both the log line and the error. Every URL
+    /// that reaches these methods with headers attached comes from
+    /// configuration -- an endpoint template, or the OAuth service address --
+    /// so the answer to one of them starting to redirect is a one-line config
+    /// change, and the reader needs to be told where it was being sent.
+    fn refused_redirect(
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        response: &ureq::Response,
+    ) -> Option<HttpClientError> {
+        if headers.is_empty() || !(300..400).contains(&response.status()) {
+            return None;
+        }
+
+        let location = response.header("location").unwrap_or("an unnamed destination");
+        warn!(
+            "{} {} answered {} pointing at {}; the redirect was not followed because headers are attached, so the credential was not re-sent",
+            method,
+            url,
+            response.status(),
+            location
+        );
+        Some(HttpClientError::RequestError(format!(
+            "{} answered {} pointing at {}; the redirect was not followed because headers are attached",
+            url,
+            response.status(),
+            location
+        )))
+    }
 }
 
 impl HttpClient for UreqHttpClient {
@@ -227,9 +286,7 @@ impl HttpClient for UreqHttpClient {
         //
         // The redirect limit belongs to the agent rather than the request,
         // so the agent is built per call.
-        let agent = ureq::AgentBuilder::new()
-            .redirects(if headers.is_empty() { DEFAULT_REDIRECT_LIMIT } else { 0 })
-            .build();
+        let agent = Self::agent_for(headers);
 
         let mut request = agent.get(url).timeout(self.timeout);
 
@@ -252,13 +309,11 @@ impl HttpClient for UreqHttpClient {
         // when every image in an answer failed. Since refusing the redirect
         // is a deliberate break of a configuration that used to work, say so
         // here, or an operator has nothing to grep for.
-        if !headers.is_empty() && (300..400).contains(&response.status()) {
-            warn!(
-                "GET {} answered {} but redirects are not followed while headers are attached, so the credential is not re-sent; the response will not be usable as an image",
-                url,
-                response.status()
-            );
-        }
+        // Logged rather than refused: the body of a redirect page cannot sniff
+        // as an image, so this image is dropped a few lines below either way,
+        // and the warning inside is what tells an operator why a configuration
+        // that used to work stopped.
+        let _ = Self::refused_redirect("GET", url, headers, &response);
 
         let content_type = response
             .header("content-type")
@@ -293,8 +348,16 @@ impl HttpClient for UreqHttpClient {
 
     fn get_json_with_headers(&self, url: &str, headers: &[(&str, &str)]) -> Result<Value, HttpClientError> {
         debug!("GET JSON request with headers to {}", url);
-        
-        let mut request = ureq::get(url).timeout(self.timeout);
+
+        // The same rule as the image fetch above it: this is the call that
+        // carries an external cover art endpoint's configured headers, the
+        // proxy secret and client credentials on the OAuth calls, and the
+        // Spotify bearer token, so a redirect must not be able to forward any
+        // of them elsewhere. (Last.fm is not among them -- `helpers/lastfm.rs`
+        // keeps its own agent and puts its key and signature in the form body,
+        // so it needs its own look rather than being covered here.)
+        let agent = Self::agent_for(headers);
+        let mut request = agent.get(url).timeout(self.timeout);
         
         // Add all headers to the request
         for &(name, value) in headers {
@@ -343,7 +406,11 @@ impl HttpClient for UreqHttpClient {
                 }
             }
         };
-        
+
+        if let Some(refusal) = Self::refused_redirect("GET", url, headers, &response) {
+            return Err(refusal);
+        }
+
         // Get the response as text
         let response_text = match response.into_string() {
             Ok(text) => text,
@@ -392,7 +459,8 @@ impl HttpClient for UreqHttpClient {
             }
         };
 
-        let mut request = ureq::post(url).timeout(self.timeout);
+        let agent = Self::agent_for(headers);
+        let mut request = agent.post(url).timeout(self.timeout);
         for &(name, value) in headers {
             debug!("Adding header '{}': '{}'", name, if name == "Authorization" {
                 if value.len() > 15 { format!("{}...", &value[0..15]) } else { "[hidden]".to_string() }
@@ -408,6 +476,10 @@ impl HttpClient for UreqHttpClient {
                 return Err(HttpClientError::RequestError(e.to_string()));
             }
         };
+
+        if let Some(refusal) = Self::refused_redirect("POST", url, headers, &response) {
+            return Err(refusal);
+        }
 
         let response_text = match response.into_string() {
             Ok(text) => text,
@@ -444,7 +516,8 @@ impl HttpClient for UreqHttpClient {
             }
         };
 
-        let mut request = ureq::put(url).timeout(self.timeout);
+        let agent = Self::agent_for(headers);
+        let mut request = agent.put(url).timeout(self.timeout);
         for &(name, value) in headers {
             debug!("Adding header '{}': '{}'", name, if name == "Authorization" {
                 if value.len() > 15 { format!("{}...", &value[0..15]) } else { "[hidden]".to_string() }
@@ -460,6 +533,10 @@ impl HttpClient for UreqHttpClient {
                 return Err(HttpClientError::RequestError(e.to_string()));
             }
         };
+
+        if let Some(refusal) = Self::refused_redirect("PUT", url, headers, &response) {
+            return Err(refusal);
+        }
 
         let response_text = match response.into_string() {
             Ok(text) => text,
@@ -526,6 +603,125 @@ mod tests {
         });
 
         (port, rx)
+    }
+
+    /// The lookup call carries the same credentials the image fetch does, and
+    /// must protect them the same way.
+    ///
+    /// `get_binary_with_headers` stopped following redirects while headers are
+    /// attached; this is the sibling that external cover art's lookup and the
+    /// Spotify calls use, and it carried every header except `Authorization`
+    /// to whatever host a 302 named. (Last.fm is not one of them: it keeps its
+    /// own agent in `helpers/lastfm.rs`.)
+    #[test]
+    fn a_credentialed_json_get_does_not_follow_a_redirect() {
+        let (target_port, target_rx) = serve_once(200, "application/json", b"{\"ok\":true}".to_vec());
+        let port = serve_redirect(&format!("http://127.0.0.1:{}/j", target_port));
+        let client = UreqHttpClient::new(5);
+
+        let result = client.get_json_with_headers(
+            &format!("http://127.0.0.1:{}/j", port),
+            &[("X-Api-Key", "sekrit")],
+        );
+
+        let error = result.expect_err("a redirect on a credentialed request must not be followed");
+        assert!(
+            matches!(&error, HttpClientError::RequestError(message) if message.contains("redirect")),
+            "expected a refusal naming the redirect, got: {:?}",
+            error
+        );
+        assert!(
+            target_rx.recv_timeout(std::time::Duration::from_millis(500)).is_err(),
+            "the redirect target must never be contacted with credentials in hand"
+        );
+    }
+
+    #[test]
+    fn an_uncredentialed_json_get_still_follows_a_redirect() {
+        let (target_port, _target_rx) = serve_once(200, "application/json", b"{\"ok\":true}".to_vec());
+        let port = serve_redirect(&format!("http://127.0.0.1:{}/j", target_port));
+        let client = UreqHttpClient::new(5);
+
+        let value = client
+            .get_json_with_headers(&format!("http://127.0.0.1:{}/j", port), &[])
+            .expect("a redirect without credentials is followed");
+
+        assert_eq!(value["ok"], serde_json::json!(true));
+    }
+
+    /// A 301/302/303 turns a POST into a GET and re-sends the headers, so the
+    /// write side needs the same rule as the read side.
+    #[test]
+    fn a_credentialed_json_post_does_not_follow_a_redirect() {
+        let (target_port, target_rx) = serve_once(200, "application/json", b"{\"ok\":true}".to_vec());
+        let port = serve_redirect(&format!("http://127.0.0.1:{}/j", target_port));
+        let client = UreqHttpClient::new(5);
+
+        let result = client.post_json_value_with_headers(
+            &format!("http://127.0.0.1:{}/j", port),
+            serde_json::json!({"q": 1}),
+            &[("X-Api-Key", "sekrit")],
+        );
+
+        let error = result.expect_err("a redirect on a credentialed POST must not be followed");
+        assert!(
+            matches!(&error, HttpClientError::RequestError(message) if message.contains("redirect")),
+            "expected a refusal naming the redirect, got: {:?}",
+            error
+        );
+        assert!(
+            target_rx.recv_timeout(std::time::Duration::from_millis(500)).is_err(),
+            "the redirect target must never be contacted with credentials in hand"
+        );
+    }
+
+    /// The three JSON methods carry the same branch, so the third gets its own
+    /// test rather than trusting that an edit will remember all of them.
+    #[test]
+    fn a_credentialed_json_put_does_not_follow_a_redirect() {
+        let (target_port, target_rx) = serve_once(200, "application/json", b"{\"ok\":true}".to_vec());
+        let port = serve_redirect(&format!("http://127.0.0.1:{}/j", target_port));
+        let client = UreqHttpClient::new(5);
+
+        let result = client.put_json_value_with_headers(
+            &format!("http://127.0.0.1:{}/j", port),
+            serde_json::json!({"q": 1}),
+            &[("X-Api-Key", "sekrit")],
+        );
+
+        let error = result.expect_err("a redirect on a credentialed PUT must not be followed");
+        assert!(
+            matches!(&error, HttpClientError::RequestError(message) if message.contains("redirect")),
+            "expected a refusal naming the redirect, got: {:?}",
+            error
+        );
+        assert!(
+            target_rx.recv_timeout(std::time::Duration::from_millis(500)).is_err(),
+            "the redirect target must never be contacted with credentials in hand"
+        );
+    }
+
+    /// The refusal has to say where the request was being sent: these URLs come
+    /// from configuration, so the destination is what tells an operator which
+    /// line to change.
+    #[test]
+    fn the_refusal_names_the_redirect_destination() {
+        let target = "http://elsewhere.test/j";
+        let port = serve_redirect(target);
+        let client = UreqHttpClient::new(5);
+
+        let error = client
+            .get_json_with_headers(
+                &format!("http://127.0.0.1:{}/j", port),
+                &[("X-Api-Key", "sekrit")],
+            )
+            .expect_err("the redirect is refused");
+
+        assert!(
+            matches!(&error, HttpClientError::RequestError(message) if message.contains(target)),
+            "expected the destination in the message, got: {:?}",
+            error
+        );
     }
 
     #[test]

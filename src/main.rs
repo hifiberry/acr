@@ -441,6 +441,14 @@ fn main() {
         audiocontrol_metadata::resolver::InProcessResolver,
     ));
 
+    // Spotify access tokens -- the librespot backend issues Spotify Web API
+    // commands itself but does not own the OAuth client that gets a token for
+    // them. Same lifetime rule as the enricher and the resolver: installed
+    // before any player starts, so librespot never finds it missing.
+    audiocontrol::audiocontrol::token::set_token_source(Arc::new(
+        audiocontrol_metadata::spotify::TokenSource,
+    ));
+
     // Metadata enrichment -- slow cover art endpoints, Last.fm -- runs on
     // workers that know nothing about players. This is the whole of the seam:
     // the bridge forwards song and state changes into a channel, and the same

@@ -978,3 +978,37 @@ impl Spotify {
         let _ = GLOBAL_SPOTIFY_CONFIG.set(config);
     }
 }
+
+/// The librespot player backend's `AccessTokenSource`. `main` installs this
+/// so that backend can ask for a token without owning an OAuth client itself.
+///
+/// Uses `Spotify::new()`, not `Spotify::get_instance()`: that is what the
+/// backend called directly before this seam existed, and the two are not
+/// interchangeable. `new()` reads whatever `GLOBAL_SPOTIFY_CONFIG` holds (set
+/// by `set_global_config` whenever a `[spotify]` config section exists,
+/// falling back to defaults otherwise) and never fails to construct.
+/// `get_instance()` instead requires `Spotify::initialize` to have run, which
+/// only happens when Spotify is also enabled in config -- swapping to it here
+/// would make this source report no token in a configuration where the
+/// backend used to find one.
+pub struct TokenSource;
+
+impl acr_types::token::AccessTokenSource for TokenSource {
+    fn access_token(&self) -> Option<String> {
+        Spotify::new().ensure_valid_token().ok()
+    }
+}
+
+#[cfg(test)]
+mod token_source_tests {
+    use super::*;
+    use acr_types::token::AccessTokenSource as _;
+
+    /// With no tokens stored, `ensure_valid_token` fails without making any
+    /// network call, so `access_token` reports `None` rather than panicking
+    /// or hanging on a real Spotify request.
+    #[test]
+    fn with_no_stored_tokens_there_is_no_access_token() {
+        assert_eq!(TokenSource.access_token(), None);
+    }
+}

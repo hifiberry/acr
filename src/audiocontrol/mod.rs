@@ -8,6 +8,8 @@ pub mod now_playing_bridge;
 pub mod enrichment;
 // Where the player side finds the resolver, if one was injected
 pub mod resolver;
+// Where the player side finds a Spotify access token source, if one was injected
+pub mod token;
 
 // Re-export the AudioController
 pub use audiocontrol::AudioController;

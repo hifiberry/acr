@@ -322,10 +322,16 @@ impl ArtistStore {
         }
 
         let path = format!("{}/{}.{}", self.artist_uploads_dir(artist_name), id, extension);
-        if let Some(parent) = std::path::Path::new(&path).parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+        // Bytes already stored are not written again. The name is their hash,
+        // so the file on disk is what this write would produce -- and the
+        // serving route reads it with the store lock released, so rewriting it
+        // could hand a concurrent request a half-written file for no gain.
+        if !already_stored {
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+            }
+            std::fs::write(&path, bytes).map_err(|e| format!("Failed to write {}: {}", path, e))?;
         }
-        std::fs::write(&path, bytes).map_err(|e| format!("Failed to write {}: {}", path, e))?;
 
         // The resolved-path memo is keyed by artist name and this changes what
         // that artist resolves to.
@@ -1391,6 +1397,33 @@ mod tests {
         let again = store.store_uploaded_image("Artist", &png_bytes(16, 16)).expect("a re-upload is allowed");
 
         assert_eq!(again, ids[0]);
+    }
+
+    /// A re-upload must not rewrite the file it resolves to.
+    ///
+    /// The name is the hash of the bytes, so a rewrite produces what is
+    /// already there — but the serving route reads these files with the store
+    /// lock released, so writing again could hand a concurrent request a
+    /// half-written image for nothing. The file is filled with different bytes
+    /// first, so a write that did happen would be visible.
+    #[test]
+    fn a_re_upload_does_not_rewrite_the_stored_file() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let bytes = png_bytes(16, 16);
+        let id = store.store_uploaded_image("Artist", &bytes).unwrap();
+        let path = store.artist_image_path("Artist", &id).expect("the member is stored");
+        let sentinel = png_bytes(32, 32);
+        write_file(&path, &sentinel);
+
+        let again = store.store_uploaded_image("Artist", &bytes).expect("a re-upload is allowed");
+
+        assert_eq!(again, id);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            sentinel,
+            "the stored file was rewritten"
+        );
     }
 
     #[test]

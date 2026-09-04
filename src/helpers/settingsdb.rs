@@ -1001,9 +1001,17 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         
-        // Initialize global database with a temp directory first
+        // Initialize global database with a temp directory first.
+        //
+        // Leaked rather than dropped: this re-points the process-wide
+        // singleton, and every later test that writes a setting keeps using
+        // whatever this leaves behind. Letting the directory be deleted at the
+        // end of this test would leave the global pointing at a path that is
+        // gone, and the next writer anywhere in the suite fails with
+        // "attempt to write a readonly database".
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         SettingsDb::initialize_global(temp_dir.path()).expect("Failed to initialize global database");
+        std::mem::forget(temp_dir);
         
         let num_threads = 8;
         let operations_per_thread = 25;
@@ -1264,9 +1272,17 @@ mod tests {
         use crate::data::song::Song;
         use crate::helpers::favourites::FavouriteProvider;
         
-        // Initialize global database with a temp directory first
+        // Initialize global database with a temp directory first.
+        //
+        // Leaked rather than dropped: this re-points the process-wide
+        // singleton, and every later test that writes a setting keeps using
+        // whatever this leaves behind. Letting the directory be deleted at the
+        // end of this test would leave the global pointing at a path that is
+        // gone, and the next writer anywhere in the suite fails with
+        // "attempt to write a readonly database".
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         SettingsDb::initialize_global(temp_dir.path()).expect("Failed to initialize global database");
+        std::mem::forget(temp_dir);
         
         // Clear any existing data first
         clear().ok();

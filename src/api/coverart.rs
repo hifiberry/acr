@@ -358,6 +358,11 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
 
     debug!("Decoded artist name: {}", artist_name);
 
+    // Trimmed here as it is on the other three routes: the settings key is
+    // built from this name verbatim, so a padded name recorded its selection
+    // under a key the listing and the delete route would never read back.
+    let artist_name = artist_name.trim().to_string();
+
     // One of our own image URLs selects that member instead of being fetched:
     // the daemon does not make HTTP requests to itself, and the bytes are
     // already where they need to be.
@@ -371,6 +376,29 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
             }),
             Err(message) => Json(UpdateImageResponse { success: false, message }),
         };
+    }
+
+    // A URL shaped like one of ours that did not resolve is refused rather
+    // than stored. Falling through would record it as this artist's custom
+    // image URL and report success, leaving the artist pointing at something
+    // no fetch can ever satisfy -- and, until the key is cleared, with no
+    // image at all where there was no `custom.jpg` to fall back to. The two
+    // ways to arrive here are a URL naming a different artist and one of our
+    // own carrying a query or fragment, and neither is a remote address the
+    // download path could do anything with.
+    let local_prefix = format!("{}/coverart/artist/", crate::constants::API_PREFIX);
+    if request.url.starts_with(&local_prefix) {
+        warn!(
+            "Refusing to record '{}' for artist '{}': it names this daemon but not an image of that artist",
+            request.url, artist_name
+        );
+        return Json(UpdateImageResponse {
+            success: false,
+            message: format!(
+                "'{}' is not an image of artist '{}'",
+                request.url, artist_name
+            ),
+        });
     }
 
     // Store the custom URL in settings database
@@ -568,9 +596,15 @@ pub fn get_artist_images(artist_b64: String) -> Result<Json<ArtistImagesResponse
     let artist_name = decode_url_safe(&artist_b64)
         .ok_or_else(|| Custom(Status::BadRequest, "Invalid artist name encoding".to_string()))?;
 
-    if crate::helpers::sanitize::filename_from_string(artist_name.trim()).is_empty() {
+    let artist_name = artist_name.trim().to_string();
+    if crate::helpers::sanitize::filename_from_string(&artist_name).is_empty() {
         return Err(Custom(Status::BadRequest, "Empty artist name".to_string()));
     }
+
+    // Re-encoded from the trimmed name rather than echoing what arrived, so
+    // the URL handed out is the one `local_image_id` will recognise when a
+    // client posts it back to `/update` to select that member.
+    let artist_b64 = crate::helpers::url_encoding::encode_url_safe(&artist_name);
 
     // The guard covers resolving the set and the selection, and nothing else.
     // It is one process-wide mutex: holding it across the per-member metadata
@@ -774,7 +808,8 @@ pub fn delete_artist_image_route(artist_b64: String, id: String) -> Json<UpdateI
         });
     };
 
-    if crate::helpers::sanitize::filename_from_string(artist_name.trim()).is_empty() {
+    let artist_name = artist_name.trim().to_string();
+    if crate::helpers::sanitize::filename_from_string(&artist_name).is_empty() {
         return Json(UpdateImageResponse {
             success: false,
             message: "Empty artist name".to_string(),
@@ -1309,5 +1344,77 @@ mod tests {
         let response = delete_artist_image_for("!!!", "custom");
         assert!(!response.success);
         assert!(response.message.contains("Empty"), "got: {}", response.message);
+    }
+
+    /// A URL that names this daemon but not an image of the artist being
+    /// updated must be refused, not recorded.
+    ///
+    /// Recording it replaces a working selection with a pointer nothing can
+    /// resolve, and reports success while doing it — and an artist with no
+    /// `custom.jpg` to fall back to is then left with no image at all.
+    #[test]
+    #[serial]
+    fn updating_with_a_local_url_for_another_artist_is_refused() {
+        let owner = "Local URL Owner";
+        let other = "Local URL Bystander";
+        let id = upload_artist_image_for(owner, &b64(&alpha_png(400, 400)))
+            .id
+            .expect("the owner's upload is stored");
+        let url = format!(
+            "{}/coverart/artist/{}/image/{}",
+            crate::constants::API_PREFIX,
+            crate::helpers::url_encoding::encode_url_safe(owner),
+            id
+        );
+
+        let response = update_artist_image_for(other, &url);
+
+        assert!(!response.success, "another artist's image URL must be refused: {}", response.message);
+        assert_eq!(
+            settingsdb::get_string(&format!("artist.image.{}", other)).ok().flatten(),
+            None,
+            "the refused URL must not have been recorded"
+        );
+    }
+
+    /// One of our own URLs carrying a query string does not parse as a member
+    /// id, and must be refused rather than stored as a remote address.
+    #[test]
+    #[serial]
+    fn updating_with_a_local_url_carrying_a_query_is_refused() {
+        let artist = "Local URL Query Artist";
+        let id = upload_artist_image_for(artist, &b64(&alpha_png(400, 400)))
+            .id
+            .expect("the upload is stored");
+        let url = format!(
+            "{}/coverart/artist/{}/image/{}?size=200",
+            crate::constants::API_PREFIX,
+            crate::helpers::url_encoding::encode_url_safe(artist),
+            id
+        );
+
+        let response = update_artist_image_for(artist, &url);
+
+        assert!(!response.success, "got: {}", response.message);
+    }
+
+    /// The four artist routes must agree on the name they act under: the
+    /// settings key is the untrimmed string, so an upload that trimmed while
+    /// the listing did not would record a selection nothing else reads back.
+    #[test]
+    #[serial]
+    fn a_padded_artist_name_selects_and_lists_as_the_same_artist() {
+        let padded = "  Padded Name Artist  ";
+        let id = upload_artist_image_for(padded, &b64(&alpha_png(400, 400)))
+            .id
+            .expect("the upload is stored");
+
+        let listing = get_artist_images(crate::helpers::url_encoding::encode_url_safe(padded))
+            .expect("the listing succeeds")
+            .into_inner();
+
+        let selected: Vec<&ArtistImageInfo> = listing.images.iter().filter(|i| i.selected).collect();
+        assert_eq!(selected.len(), 1, "the upload it just made is the selection: {:?}", listing.images.len());
+        assert_eq!(selected[0].id, id);
     }
 }

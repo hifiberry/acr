@@ -16,6 +16,4 @@ base64.workspace = true
 deunicode.workspace = true
 strum.workspace = true
 strum_macros.workspace = true
-crossbeam.workspace = true
 parking_lot.workspace = true
-rand.workspace = true

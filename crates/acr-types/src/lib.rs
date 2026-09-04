@@ -9,7 +9,6 @@ pub mod artist_split;
 pub mod config;
 pub mod enrichment;
 pub mod identifier;
-pub mod library_version;
 pub mod metadata;
 pub mod now_playing;
 pub mod order_result;

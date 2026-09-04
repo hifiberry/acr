@@ -19,10 +19,10 @@ pub mod mpris;
 #[cfg(unix)]
 pub mod shairportsync_messages;
 
-pub use acr_http::{http_client, ratelimit, retry};
-pub use acr_images::{image_grader, imageresize};
+pub use acr_http::{http_client, retry};
+pub use acr_images::imageresize;
 pub use acr_store::{attributecache, backgroundjobs, genre_cleanup, imagecache, imagepurge, settingsdb};
-pub use acr_types::{sanitize, url_encoding};
+pub use acr_types::url_encoding;
 pub use playback_progress::PlayerProgress;
 
 // The external providers, cover art, accounts and their caches live in

@@ -92,6 +92,22 @@ pub trait LibraryEnricher: Send + Sync {
     /// Everything known about an artist, for the detail routes.
     /// May take up to the caller's timeout; must not block longer.
     fn artist_detail(&self, name: &str) -> Option<crate::ArtistMeta>;
+    /// An artist's image and the MIME type it should be served as.
+    ///
+    /// This is what `/library/<p>/image/artist:<name>` answers with, and the
+    /// pair is served verbatim — the caller does not re-derive the type from
+    /// the bytes. Unlike [`Self::artist_summary`] this may reach the network:
+    /// the in-process implementation downloads an image the first time one is
+    /// asked for. It is therefore only called from a request, never while a
+    /// library loads.
+    fn artist_image(&self, name: &str) -> Option<(Vec<u8>, String)>;
+    /// Genres already known for an album, or `None` when nothing is stored.
+    ///
+    /// `Some(vec![])` is a real answer and not the same as `None`: it records
+    /// a lookup that ran and found no genres, which is what keeps the lookup
+    /// from being repeated. Called once per album while a library loads, so
+    /// like [`Self::artist_summary`] it must not do network I/O.
+    fn album_genres(&self, album_id: &str) -> Option<Vec<String>>;
     /// Start enriching a library. Returns at once; results arrive through the sink.
     fn enrich(
         &self,
@@ -116,6 +132,49 @@ pub fn merge_genres(target: &mut Vec<String>, incoming: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An enricher that knows nothing, present only so the trait is exercised
+    /// as a trait object.
+    struct Nothing;
+
+    impl LibraryEnricher for Nothing {
+        fn artist_summary(&self, _name: &str) -> Option<ArtistSummary> {
+            None
+        }
+        fn artist_detail(&self, _name: &str) -> Option<crate::ArtistMeta> {
+            None
+        }
+        fn artist_image(&self, _name: &str) -> Option<(Vec<u8>, String)> {
+            None
+        }
+        fn album_genres(&self, _album_id: &str) -> Option<Vec<String>> {
+            None
+        }
+        fn enrich(
+            &self,
+            _player: &str,
+            _version: Option<String>,
+            _artists: Vec<ArtistRef>,
+            _albums: Vec<AlbumRef>,
+            _sink: Arc<dyn EnrichmentSink>,
+        ) {
+        }
+    }
+
+    /// The enricher is only ever held as `Arc<dyn LibraryEnricher>`, so the
+    /// trait has to stay object-safe. A method that broke that — a generic
+    /// parameter, `self` by value, a return type mentioning `Self` — would
+    /// still compile here and fail at every injection site instead, with an
+    /// error naming the caller rather than the trait. This coercion puts the
+    /// failure next to the definition.
+    #[test]
+    fn the_trait_is_object_safe() {
+        let e: Arc<dyn LibraryEnricher> = Arc::new(Nothing);
+        assert!(e.artist_summary("x").is_none());
+        assert!(e.artist_detail("x").is_none());
+        assert!(e.artist_image("x").is_none());
+        assert!(e.album_genres("1").is_none());
+    }
 
     #[test]
     fn an_empty_incoming_list_never_clears() {

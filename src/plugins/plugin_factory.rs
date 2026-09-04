@@ -8,7 +8,7 @@ use crate::plugins::action_plugin::ActionPlugin;
 use crate::plugins::action_plugins::ActiveMonitor;
 use crate::plugins::action_plugins::event_logger::{EventLogger, LogLevel};
 use crate::plugins::action_plugins::worker_descriptor::WorkerDescriptor;
-use audiocontrol_metadata::lastfm_worker::{LastfmWorkerConfig, WORKER_NAME as LASTFM_WORKER_NAME};
+use acr_types::now_playing::{LastfmWorkerConfig, LASTFM_WORKER_NAME};
 
 /// Factory for creating and registering plugins
 pub struct PluginFactory {

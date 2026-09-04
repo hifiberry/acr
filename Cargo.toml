@@ -18,9 +18,13 @@ acr-http = { path = "crates/acr-http" }
 acr-images = { path = "crates/acr-images" }
 acr-store = { path = "crates/acr-store" }
 acr-web = { path = "crates/acr-web" }
-# Temporary: the root package still re-exports the metadata crate's modules so
-# every existing call site compiles. Removed once the last of them is gone.
-audiocontrol-metadata = { path = "crates/audiocontrol-metadata" }
+# Optional, and only ever reached from src/main.rs. Cargo has no per-binary
+# dependencies, so the honest way to let the composition root link the metadata
+# crate while this package's library does not is a feature: `metadata` is in
+# `default`, the `audiocontrol` binary requires it, and nothing under src/
+# outside main.rs names the crate. scripts/check-crate-deps.sh asserts the
+# library graph without the feature.
+audiocontrol-metadata = { path = "crates/audiocontrol-metadata", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 strum = "0.27.1"
@@ -60,8 +64,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # For transliterating non-ASCII characters to ASCII 
 deunicode = "1.4.1"
 strsim = "0.11.1"
-# For in-memory cache with expiry
-moka = { version = "0.12", features = ["sync"] }
 # LRU cache for fast access to frequently used data
 lru = "0.12"
 # For WebSocket support
@@ -74,8 +76,6 @@ thiserror = "1.0"
 mac_address = "1.1.8"
 get_if_addrs = "0.5.3"
 hex = "0.4.3"
-# For secure storage encryption
-aes-gcm = "0.10.2"
 rand = "0.8.5"
 # For filesystem notifications
 notify = "6.0"
@@ -88,8 +88,6 @@ async-trait = "0.1.77"
 ureq = "2.9"
 # For event bus messaging
 event-bus = "0.1.0" # Corrected version
-# For regular expressions
-regex = "1.10"
 # For concurrent data structures and channels
 crossbeam = "0.8.2"
 # Non-poisoning Mutex/RwLock replacements
@@ -99,9 +97,13 @@ lofty = "0.18.0"
 walkdir = "2.4.0"
 
 [features]
-default = ["alsa"]
+default = ["alsa", "metadata"]
 theaudiodb = []
 alsa = ["dep:alsa"]
+# Links the metadata crate into the `audiocontrol` binary. On by default, so an
+# ordinary build and the shipped package are unchanged; off, the library still
+# builds and the binary is not built at all (see its required-features).
+metadata = ["dep:audiocontrol-metadata"]
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
@@ -128,24 +130,17 @@ tokio-test = "0.4"
 
 # Binary targets
 [[bin]]
+name = "audiocontrol"
+path = "src/main.rs"
+required-features = ["metadata"]
+
+[[bin]]
 name = "audiocontrol_lms_client"
 path = "src/tools/acr_lms_client.rs"
 
 [[bin]]
-name = "audiocontrol_musicbrainz_client"
-path = "src/tools/acr_musicbrainz_client.rs"
-
-[[bin]]
 name = "audiocontrol_send_update"
 path = "src/tools/acr_send_update.rs"
-
-[[bin]]
-name = "audiocontrol_dump_store"
-path = "src/tools/acr_dump_store.rs"
-
-[[bin]]
-name = "audiocontrol_dump_cache"
-path = "src/tools/audiocontrol_dump_cache.rs"
 
 [[bin]]
 name = "audiocontrol_player_event_client"
@@ -171,10 +166,6 @@ path = "src/tools/acr_monitor_mpris_state.rs"
 [[bin]]
 name = "audiocontrol_listen_shairportsync"
 path = "src/tools/acr_listen_shairportsync.rs"
-
-[[bin]]
-name = "audiocontrol_favourites"
-path = "src/tools/acr_favourites.rs"
 
 [[bin]]
 name = "audiocontrol_input_devices"
@@ -234,3 +225,4 @@ rand = "0.8.5"
 hex = "0.4.3"
 url = "2.4"
 tokio = { version = "1.45.0", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }

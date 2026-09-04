@@ -2,8 +2,8 @@ use clap::{Arg, Command};
 use log::{error, info, warn};
 use std::fs;
 
-use audiocontrol::helpers::musicbrainz::{self, is_mbid};
-use audiocontrol::helpers::artistsplitter::DEFAULT_ARTIST_SEPARATORS;
+use audiocontrol_metadata::musicbrainz::{self, is_mbid};
+use audiocontrol_metadata::artistsplitter::DEFAULT_ARTIST_SEPARATORS;
 
 fn main() {
     // Initialize logging

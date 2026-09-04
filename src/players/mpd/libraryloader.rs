@@ -443,10 +443,15 @@ impl MPDLibraryLoader {
         // Move albums from HashMap to vector; load any cached genres while we have ownership
         let mut albums = Vec::with_capacity(albums_map.len());
         for (_, mut album) in albums_map.drain() {
-            // If the album has no genres from file tags, try the attribute cache
+            // If the album has no genres from file tags, ask the enricher what
+            // it already knows. The genre cache is the metadata side's, so the
+            // question goes through the seam rather than at its store; a build
+            // with no enricher installed simply loads no cached genres.
             if album.genres.is_empty() {
                 let album_id = album.id.to_string();
-                if let Some(cached) = crate::helpers::albumupdater::load_cached_genres(&album_id) {
+                if let Some(cached) = crate::audiocontrol::enrichment::enricher()
+                    .and_then(|e| e.album_genres(&album_id))
+                {
                     if !cached.is_empty() {
                         debug!("Loaded {} cached genre(s) for album '{}'", cached.len(), album.name);
                         album.genres = cached;

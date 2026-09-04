@@ -9,8 +9,26 @@
 
 use acr_types::enrichment::*;
 use acr_types::ArtistMeta;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::sync::Arc;
+
+/// What an artist image cached under `path` is served as.
+///
+/// Inferred from the extension, exactly as the MPD library did before this
+/// moved: an unrecognised extension is served as JPEG rather than refused,
+/// because the store only ever writes files it fetched as images and a client
+/// that got a 404 here would show a broken artist instead of a picture.
+fn mime_type_for(path: &str) -> String {
+    if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        "image/jpeg".to_string()
+    } else if path.ends_with(".png") {
+        "image/png".to_string()
+    } else if path.ends_with(".webp") {
+        "image/webp".to_string()
+    } else {
+        "image/jpeg".to_string() // Default to JPEG
+    }
+}
 
 /// The cache key an artist's metadata is stored under. One spelling, because a
 /// reader that disagrees with the writer silently finds nothing.
@@ -48,6 +66,59 @@ impl LibraryEnricher for InProcessEnricher {
 
     fn artist_detail(&self, name: &str) -> Option<ArtistMeta> {
         cached_artist_metadata(name)
+    }
+
+    /// Moved here verbatim from the MPD library's `get_artist_cover`: the same
+    /// two store calls in the same order, the same "download only if nothing
+    /// was cached", and the same MIME inference. A cached file that cannot be
+    /// read is still followed by the download attempt, as it was.
+    fn artist_image(&self, name: &str) -> Option<(Vec<u8>, String)> {
+        debug!("Getting artist cover for: {}", name);
+
+        // Use the artist store to get the cached image path
+        if let Some(cache_path) = crate::artist_store::get_artist_cached_image(name) {
+            debug!("Found cached artist image at: {}", cache_path);
+
+            // Read the image data from the cache file
+            if let Ok(image_data) = std::fs::read(&cache_path) {
+                let mime_type = mime_type_for(&cache_path);
+                debug!(
+                    "Successfully loaded artist image for {}: {} bytes, MIME: {}",
+                    name,
+                    image_data.len(),
+                    mime_type
+                );
+                return Some((image_data, mime_type));
+            } else {
+                warn!("Failed to read cached artist image from: {}", cache_path);
+            }
+        }
+
+        // If no cached image found, try to download one
+        if let Some(cache_path) = crate::artist_store::get_or_download_artist_image(name) {
+            debug!("Downloaded new artist image at: {}", cache_path);
+
+            // Read the newly downloaded image
+            if let Ok(image_data) = std::fs::read(&cache_path) {
+                let mime_type = mime_type_for(&cache_path);
+                debug!(
+                    "Successfully loaded downloaded artist image for {}: {} bytes, MIME: {}",
+                    name,
+                    image_data.len(),
+                    mime_type
+                );
+                return Some((image_data, mime_type));
+            } else {
+                warn!("Failed to read downloaded artist image from: {}", cache_path);
+            }
+        }
+
+        debug!("No artist cover found for: {}", name);
+        None
+    }
+
+    fn album_genres(&self, album_id: &str) -> Option<Vec<String>> {
+        crate::albumupdater::load_cached_genres(album_id)
     }
 
     fn enrich(
@@ -181,6 +252,19 @@ mod tests {
             name: name.to_string(),
             ..Default::default()
         }
+    }
+
+    /// The artist image route serves whatever this returns, so the mapping is
+    /// pinned: it is the one the MPD library did inline before `artist_image`
+    /// existed, extension by extension, including the JPEG it falls back to.
+    #[test]
+    fn the_artist_image_mime_type_comes_from_the_extension() {
+        assert_eq!(mime_type_for("/cache/a.jpg"), "image/jpeg");
+        assert_eq!(mime_type_for("/cache/a.jpeg"), "image/jpeg");
+        assert_eq!(mime_type_for("/cache/a.png"), "image/png");
+        assert_eq!(mime_type_for("/cache/a.webp"), "image/webp");
+        assert_eq!(mime_type_for("/cache/a.gif"), "image/jpeg");
+        assert_eq!(mime_type_for("/cache/no-extension"), "image/jpeg");
     }
 
     #[test]

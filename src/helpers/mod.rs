@@ -25,12 +25,8 @@ pub use acr_store::{attributecache, backgroundjobs, genre_cleanup, imagecache, i
 pub use acr_types::{sanitize, url_encoding};
 pub use playback_progress::PlayerProgress;
 
-// The external providers, cover art, accounts and their caches now live in
-// `audiocontrol-metadata`. These re-exports keep every existing
-// `crate::helpers::…` path compiling while the call sites are moved over one
-// interface at a time; the last of them, and this block, go in a later commit.
-pub use audiocontrol_metadata::{
-    albumupdater, artist_store, artistsplitter, artistupdater, coverart, coverart_providers,
-    external_coverart, fanarttv, favourites, image_meta, lastfm, musicbrainz, security_store,
-    spotify, theaudiodb, ArtistUpdater,
-};
+// The external providers, cover art, accounts and their caches live in
+// `audiocontrol-metadata`, which this package's library does not depend on.
+// Nothing is re-exported from it any more: what a library needs from that side
+// it asks for through the traits in `acr-types`, and `src/main.rs` is the one
+// file in the package that names both crates.

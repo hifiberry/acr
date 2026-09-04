@@ -25,28 +25,12 @@ use acr_types::now_playing::{NowPlayingEvent, PlaybackStateSource, SongInformati
 use acr_types::{PlaybackState, PlayerSource, Song};
 use crossbeam::channel::Receiver;
 use log::{debug, error, info, warn};
-use serde::Deserialize;
 
-/// The name this worker logs under, and the name the daemon's action-plugin
-/// list reports for the `action_plugins` entry that configures it. That list is
-/// a shipped API, so the name is fixed even though nothing here is a plugin any
-/// more.
-pub const WORKER_NAME: &str = "Lastfm";
-
-/// The `action_plugins` entry named `lastfm`, unchanged: same keys, same
-/// default, so an existing configuration keeps working.
-#[derive(Debug, Deserialize, Clone)]
-pub struct LastfmWorkerConfig {
-    pub enabled: bool,
-    pub api_key: String,
-    pub api_secret: String,
-    #[serde(default = "default_scrobble_config")]
-    pub scrobble: bool,
-}
-
-fn default_scrobble_config() -> bool {
-    true
-}
+/// The name this worker logs under and the entry that configures it. Both are
+/// defined in `acr-types` and re-exported here under the names this module has
+/// always used: the player daemon's action-plugin list needs the same two, and
+/// it no longer links this crate.
+pub use acr_types::now_playing::{LastfmWorkerConfig, LASTFM_WORKER_NAME as WORKER_NAME};
 
 pub struct Lastfm {
     config: LastfmWorkerConfig,

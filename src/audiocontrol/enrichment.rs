@@ -89,6 +89,12 @@ mod tests {
         fn artist_detail(&self, _name: &str) -> Option<acr_types::ArtistMeta> {
             None
         }
+        fn artist_image(&self, _name: &str) -> Option<(Vec<u8>, String)> {
+            None
+        }
+        fn album_genres(&self, _album_id: &str) -> Option<Vec<String>> {
+            None
+        }
         fn enrich(
             &self,
             player: &str,

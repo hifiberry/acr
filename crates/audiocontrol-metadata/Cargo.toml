@@ -41,6 +41,9 @@ rand.workspace = true
 hex.workspace = true
 url.workspace = true
 tokio.workspace = true
+# For the command line tools in src/bin/
+clap.workspace = true
+env_logger.workspace = true
 
 [build-dependencies]
 base64.workspace = true
@@ -49,4 +52,21 @@ md5.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 serial_test.workspace = true
-env_logger.workspace = true
+
+# The metadata command line tools. Named explicitly so the installed binaries
+# keep the names they had when these were targets of the root package.
+[[bin]]
+name = "audiocontrol_dump_cache"
+path = "src/bin/audiocontrol_dump_cache.rs"
+
+[[bin]]
+name = "audiocontrol_dump_store"
+path = "src/bin/audiocontrol_dump_store.rs"
+
+[[bin]]
+name = "audiocontrol_favourites"
+path = "src/bin/audiocontrol_favourites.rs"
+
+[[bin]]
+name = "audiocontrol_musicbrainz_client"
+path = "src/bin/audiocontrol_musicbrainz_client.rs"

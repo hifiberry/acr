@@ -1,4 +1,37 @@
 use crate::{PlaybackState, PlayerSource, Song};
+use serde::Deserialize;
+
+/// The name the Last.fm worker logs under, and the name the player daemon's
+/// action-plugin list reports for the `action_plugins` entry that configures
+/// it. That list is a shipped API, so the name is fixed even though nothing
+/// behind it is a plugin any more.
+///
+/// It is here rather than with the worker because both sides need it and only
+/// one of them may hold it: the worker names itself with it, and the player
+/// daemon reports it from `GET /api/plugins/actions` without linking the
+/// metadata crate.
+pub const LASTFM_WORKER_NAME: &str = "Lastfm";
+
+/// The `action_plugins` entry named `lastfm`: same keys, same default, so an
+/// existing configuration file keeps working.
+///
+/// Shared for the same reason as the name. The player daemon parses the entry
+/// to decide whether to report the worker at all — an entry that would not
+/// have produced a plugin does not produce a descriptor either — and the
+/// metadata worker parses it to configure itself. One definition, so the two
+/// cannot come to disagree about what a valid entry is.
+#[derive(Debug, Deserialize, Clone)]
+pub struct LastfmWorkerConfig {
+    pub enabled: bool,
+    pub api_key: String,
+    pub api_secret: String,
+    #[serde(default = "default_scrobble_config")]
+    pub scrobble: bool,
+}
+
+fn default_scrobble_config() -> bool {
+    true
+}
 
 /// What the metadata side learns about playback, in the order it happens.
 #[derive(Debug, Clone, PartialEq)]

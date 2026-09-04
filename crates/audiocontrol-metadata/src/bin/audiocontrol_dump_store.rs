@@ -1,4 +1,4 @@
-use audiocontrol::helpers::security_store::SecurityStore;
+use audiocontrol_metadata::security_store::SecurityStore;
 use clap::Parser;
 use log::{error, info};
 use serde_json::Value;
@@ -6,7 +6,16 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
+// The `about` is spelled out rather than taken from the package description:
+// bare `about` means CARGO_PKG_DESCRIPTION, so moving this file between
+// packages silently rewrote the tool's help text. The other three tools here
+// already name their own.
+#[clap(
+    author,
+    version,
+    about = "Dump the AudioControl security store",
+    long_about = None
+)]
 struct Args {
     /// Path to the security_store.json file
     #[clap(short, long, value_parser)]

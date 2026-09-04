@@ -864,69 +864,24 @@ impl MPDLibrary {
         }
     }
     
-    /// Get artist cover art using the artist store
-    /// 
+    /// Get artist cover art from whatever enrichment this build installed.
+    ///
+    /// Both halves of this -- looking in the artist store, and downloading an
+    /// image when nothing is cached -- are the metadata side's, so the whole
+    /// of it moved behind `LibraryEnricher::artist_image` and this asks. A
+    /// build with no enricher installed serves no artist image rather than
+    /// reaching for one itself.
+    ///
     /// # Arguments
     /// * `artist_name` - The name of the artist
-    /// 
+    ///
     /// # Returns
     /// Option containing (image data, mime type) if found
     pub fn get_artist_cover(&self, artist_name: &str) -> Option<(Vec<u8>, String)> {
-        debug!("Getting artist cover for: {}", artist_name);
-        
-        // Use the artist store to get the cached image path
-        if let Some(cache_path) = crate::helpers::artist_store::get_artist_cached_image(artist_name) {
-            debug!("Found cached artist image at: {}", cache_path);
-            
-            // Read the image data from the cache file
-            if let Ok(image_data) = std::fs::read(&cache_path) {
-                // Determine MIME type based on file extension
-                let mime_type = if cache_path.ends_with(".jpg") || cache_path.ends_with(".jpeg") {
-                    "image/jpeg".to_string()
-                } else if cache_path.ends_with(".png") {
-                    "image/png".to_string()
-                } else if cache_path.ends_with(".webp") {
-                    "image/webp".to_string()
-                } else {
-                    "image/jpeg".to_string() // Default to JPEG
-                };
-                
-                debug!("Successfully loaded artist image for {}: {} bytes, MIME: {}", 
-                       artist_name, image_data.len(), mime_type);
-                return Some((image_data, mime_type));
-            } else {
-                warn!("Failed to read cached artist image from: {}", cache_path);
-            }
-        }
-        
-        // If no cached image found, try to download one
-        if let Some(cache_path) = crate::helpers::artist_store::get_or_download_artist_image(artist_name) {
-            debug!("Downloaded new artist image at: {}", cache_path);
-            
-            // Read the newly downloaded image
-            if let Ok(image_data) = std::fs::read(&cache_path) {
-                let mime_type = if cache_path.ends_with(".jpg") || cache_path.ends_with(".jpeg") {
-                    "image/jpeg".to_string()
-                } else if cache_path.ends_with(".png") {
-                    "image/png".to_string()
-                } else if cache_path.ends_with(".webp") {
-                    "image/webp".to_string()
-                } else {
-                    "image/jpeg".to_string()
-                };
-                
-                debug!("Successfully loaded downloaded artist image for {}: {} bytes, MIME: {}", 
-                       artist_name, image_data.len(), mime_type);
-                return Some((image_data, mime_type));
-            } else {
-                warn!("Failed to read downloaded artist image from: {}", cache_path);
-            }
-        }
-        
-        debug!("No artist cover found for: {}", artist_name);
-        None
+        crate::audiocontrol::enrichment::enricher()
+            .and_then(|e| e.artist_image(artist_name))
     }
-    
+
     /// Extract the album directory from a track URI
     fn get_album_directory(&self, uri: &str) -> Option<String> {
         debug!("Extracting album directory from URI: {}", uri);
@@ -1954,6 +1909,12 @@ mod tests {
             None
         }
         fn artist_detail(&self, _name: &str) -> Option<crate::data::ArtistMeta> {
+            None
+        }
+        fn artist_image(&self, _name: &str) -> Option<(Vec<u8>, String)> {
+            None
+        }
+        fn album_genres(&self, _album_id: &str) -> Option<Vec<String>> {
             None
         }
         fn enrich(

@@ -463,15 +463,21 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
                         ) {
                             crate::helpers::artist_store::ArtistImageResult::Found { cache_path } => {
                                 info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
-                                // `cache_path` here is the real path the new image was just written to
-                                // (unlike the bogus one computed above for the dead `remove_file` call).
-                                // A re-upload overwrites this same file but leaves any variants generated
-                                // from the *previous* image beside it — drop those now so the grid does
-                                // not keep showing the old face at thumbnail size.
+                                // `cache_path` is what the artist resolves to now -- ordinarily the
+                                // file just written, but a selection made while the fetch was in
+                                // flight can win instead (unlike the bogus path computed above for
+                                // the dead `remove_file` call, this one is always real). Either way,
+                                // a re-upload can leave variants generated from the *previous* image
+                                // beside it -- drop those now so the grid does not keep showing the
+                                // old face at thumbnail size.
                                 crate::helpers::imageresize::remove_variants_of(&cache_path);
                             }
                             crate::helpers::artist_store::ArtistImageResult::NotFound => {
-                                warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
+                                // commit_downloaded_image never actually returns this -- it either
+                                // resolves to some path or reports an Error -- but the match has to
+                                // stay exhaustive against a three-variant enum shared with callers
+                                // that do use this variant.
+                                warn!("Unexpected: committing custom image for artist '{}' resolved to no image at all", artist_name);
                             }
                             crate::helpers::artist_store::ArtistImageResult::Error(error) => {
                                 warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);

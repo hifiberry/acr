@@ -220,8 +220,12 @@ pub struct ArtistStore {
     config: ArtistStoreConfig,
     /// Cache of artist image paths
     image_cache: HashMap<String, String>,
-    /// Currently downloading artists to prevent duplicate downloads
-    downloading: HashMap<String, Arc<std::sync::atomic::AtomicBool>>,
+    /// Artists with a download claimed right now, to prevent duplicate downloads.
+    ///
+    /// A plain set, not a flag per artist: `begin_download`/`finish_download`
+    /// only ever run with `&mut self`, so nothing needs to observe or clone a
+    /// flag independently of the lock that already serialises every access.
+    downloading: std::collections::HashSet<String>,
 }
 
 impl Default for ArtistStore {
@@ -241,7 +245,7 @@ impl ArtistStore {
         Self {
             config,
             image_cache: HashMap::new(),
-            downloading: HashMap::new(),
+            downloading: std::collections::HashSet::new(),
         }
     }
 
@@ -685,7 +689,12 @@ impl ArtistStore {
                 // artist resolves to right now -- the selection first, then
                 // the precedence chain -- and populates the memo itself, so
                 // this only falls back to the path just written when nothing
-                // else resolves at all.
+                // else resolves at all. The memo has to be forgotten first:
+                // `get_cached_image` checks it before the selection, so
+                // leaving in place whatever it held from before this fetch
+                // started -- possibly stale by now -- would make it win
+                // instead of deferring to anything.
+                self.image_cache.remove(artist_name);
                 match self.get_cached_image(artist_name) {
                     ArtistImageResult::Found { cache_path } => ArtistImageResult::Found { cache_path },
                     _ => {
@@ -717,23 +726,28 @@ impl ArtistStore {
     /// fetch itself happens with the lock released, two callers really can
     /// race here, and this is what keeps them from duplicating the work.
     pub fn begin_download(&mut self, artist_name: &str) -> bool {
-        if let Some(downloading_flag) = self.downloading.get(artist_name) {
-            if downloading_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                debug!("Image already being downloaded for artist: {}", artist_name);
-                return false;
-            }
+        if self.downloading.contains(artist_name) {
+            debug!("Image already being downloaded for artist: {}", artist_name);
+            return false;
         }
 
-        let downloading_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        self.downloading.insert(artist_name.to_string(), downloading_flag);
+        self.downloading.insert(artist_name.to_string());
         true
     }
 
     /// Release the claim taken by [`Self::begin_download`].
     pub fn finish_download(&mut self, artist_name: &str) {
-        if let Some(downloading_flag) = self.downloading.remove(artist_name) {
-            downloading_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
+        self.downloading.remove(artist_name);
+    }
+
+    /// Whether a download is claimed for this artist right now.
+    ///
+    /// Lets a waiter tell "the winner is still working" from "the winner is
+    /// done, one way or another" without waiting out its own timeout to find
+    /// out: once this is `false` and `next_image_step` still isn't `Ready`,
+    /// there is nothing left to wait for.
+    pub fn is_downloading(&self, artist_name: &str) -> bool {
+        self.downloading.contains(artist_name)
     }
 
     /// Looks up MusicBrainz IDs for an artist and returns them if found
@@ -1000,23 +1014,65 @@ pub fn get_artist_cached_image(artist_name: &str) -> Option<String> {
     }
 }
 
+/// Releases a download claim when dropped, even if the code between the
+/// claim and its ordinary release point unwinds.
+///
+/// `begin_download`/`finish_download` are plain store methods, not RAII on
+/// their own, so a panic between the two would otherwise strand the claim --
+/// and that is realistic here: `best_provider_image` fans out to third-party
+/// providers, and `fetch_image` reads a client-supplied URL. `parking_lot`
+/// mutexes do not poison, so a stranded claim would not clear itself; every
+/// later lookup for that artist would lose the race to `begin_download`,
+/// wait out `IMAGE_DOWNLOAD_WAIT_TIMEOUT`, and return `None`, for the rest of
+/// the process's life.
+///
+/// Only ever constructed after `begin_download` has actually succeeded, and
+/// held until after any commit for this claim has completed: local
+/// variables drop in reverse declaration order, so as long as a guard is
+/// declared *before* this one, that guard's `Drop` -- releasing the store
+/// lock used for the commit -- runs first, and this one's `Drop` -- which
+/// re-locks the store to call `finish_download` -- runs after. A waiter must
+/// never be able to observe the claim gone while the result it was waiting
+/// for is still uncommitted, and this ordering is what guarantees that.
+struct DownloadClaim {
+    store: Arc<Mutex<ArtistStore>>,
+    artist_name: String,
+}
+
+impl DownloadClaim {
+    fn new(store: Arc<Mutex<ArtistStore>>, artist_name: String) -> Self {
+        Self { store, artist_name }
+    }
+}
+
+impl Drop for DownloadClaim {
+    fn drop(&mut self) {
+        self.store.lock().finish_download(&self.artist_name);
+    }
+}
+
 /// Wait for another caller's in-flight download of this artist to land.
 ///
 /// Polls with no lock held between checks: each iteration takes the lock
-/// only long enough to ask `next_image_step`, and drops it again before
-/// sleeping, so a slow winner never has to contend with this thread for the
-/// store -- only its own fetch has to finish. Gives up after
-/// `IMAGE_DOWNLOAD_WAIT_TIMEOUT` regardless of what the winner is doing.
+/// only long enough to ask `next_image_step` and `is_downloading`, and drops
+/// it again before sleeping, so a slow winner never has to contend with this
+/// thread for the store -- only its own fetch has to finish. Gives up as
+/// soon as the winner's claim is gone and the artist still isn't `Ready` --
+/// its fetch failed or found nothing, so there is nothing left to wait for
+/// -- rather than always paying the full `IMAGE_DOWNLOAD_WAIT_TIMEOUT`.
 fn wait_for_in_flight_download(artist_name: &str) -> Option<String> {
     let deadline = std::time::Instant::now() + IMAGE_DOWNLOAD_WAIT_TIMEOUT;
     loop {
-        let step = {
+        let (step, still_downloading) = {
             let store_arc = get_artist_store();
             let mut store = store_arc.lock();
-            store.next_image_step(artist_name)
+            (store.next_image_step(artist_name), store.is_downloading(artist_name))
         };
         if let ImageStep::Ready(path) = step {
             return Some(path);
+        }
+        if !still_downloading {
+            return None;
         }
 
         if std::time::Instant::now() >= deadline {
@@ -1047,8 +1103,9 @@ fn wait_for_in_flight_download(artist_name: &str) -> Option<String> {
 /// # Returns
 /// Option with the cache path if found or downloaded
 pub fn get_or_download_artist_image(artist_name: &str) -> Option<String> {
+    let store_arc = get_artist_store();
+
     let step = {
-        let store_arc = get_artist_store();
         let mut store = store_arc.lock();
         store.next_image_step(artist_name)
     };
@@ -1060,13 +1117,16 @@ pub fn get_or_download_artist_image(artist_name: &str) -> Option<String> {
     }
 
     let claimed = {
-        let store_arc = get_artist_store();
         let mut store = store_arc.lock();
         store.begin_download(artist_name)
     };
     if !claimed {
         return wait_for_in_flight_download(artist_name);
     }
+    // Declared before the commit's lock guard further down, so that guard's
+    // Drop always runs first: see the type's own doc comment for why that
+    // order is load-bearing, not incidental.
+    let _claim = DownloadClaim::new(store_arc.clone(), artist_name.to_string());
 
     let resolved = match step {
         ImageStep::Fetch { url, image_type, destination } => Some((url, image_type, destination)),
@@ -1076,24 +1136,15 @@ pub fn get_or_download_artist_image(artist_name: &str) -> Option<String> {
         ImageStep::Ready(_) | ImageStep::NotFound => None, // handled above; kept exhaustive rather than panicking
     };
 
+    // No provider had anything for this artist: nothing to fetch or commit.
+    // `_claim` releases the download claim when it drops on the way out.
     let Some((url, image_type, destination)) = resolved else {
-        // No provider had anything for this artist. The claim still has to
-        // be released here, or every later caller for this artist would see
-        // `begin_download` refuse forever.
-        let store_arc = get_artist_store();
-        let mut store = store_arc.lock();
-        store.finish_download(artist_name);
         return None;
     };
 
     let fetch_result = fetch_image(&url);
 
-    let store_arc = get_artist_store();
     let mut store = store_arc.lock();
-    // A failed fetch still has to release the claim, or every later call for
-    // this artist would see `begin_download` refuse forever.
-    store.finish_download(artist_name);
-
     match fetch_result {
         Ok(bytes) => match store.commit_downloaded_image(artist_name, &bytes, &image_type, destination) {
             ArtistImageResult::Found { cache_path } => Some(cache_path),
@@ -1847,7 +1898,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn next_image_step_is_ready_when_a_member_is_on_disk() {
+        init_test_settings_db();
         let dir = temp_user_dir();
         let mut store = store_in(&dir);
         let artist = "On Disk Artist";
@@ -1888,23 +1941,55 @@ mod tests {
         );
     }
 
+    /// The earlier version of this test (and its user-directory sibling)
+    /// committed against an artist with no selection and no memo, so the
+    /// deferred-to answer coincidentally equalled the path just written --
+    /// it would have passed unchanged against a blind
+    /// `image_cache.insert(path)`, which is the bug the re-check in
+    /// `commit_downloaded_image` exists to prevent. This one seeds a
+    /// competing selection (a user `custom.jpg`, which precedence prefers
+    /// over anything in the cache directory) and a stale memo entry naming a
+    /// real, pre-existing cache file before committing a `Cache` download,
+    /// so it only passes when the commit truly defers to what the artist
+    /// resolves to now.
     #[test]
-    fn commit_downloaded_image_writes_to_the_cache_directory_and_populates_the_memo() {
+    #[serial]
+    fn commit_downloaded_image_defers_to_a_selection_made_before_it_lands() {
+        init_test_settings_db();
         let dir = temp_user_dir();
         let mut store = store_in(&dir);
-        let artist = "Cache Commit Artist";
-        let bytes = png_bytes(8, 8);
+        let artist = "Selection Wins Over Commit Artist";
 
+        // The competing selection: user directory wins the precedence chain
+        // over anything in the cache, with no settings key required.
+        let selected_path = store.get_artist_user_image_path(artist, "custom");
+        write_file(&selected_path, &png_bytes(4, 4));
+
+        // A stale memo entry naming a real, pre-existing cache file --
+        // standing in for whatever a concurrent lookup resolved to before
+        // the selection above was in place. It has to exist on disk, or
+        // `get_cached_image`'s own staleness check would discard it before
+        // this test could tell the two code paths apart.
+        let stale_path = store.get_artist_image_path(artist, "cover");
+        write_file(&stale_path, b"old cover bytes");
+        store.image_cache.insert(artist.to_string(), stale_path.clone());
+
+        let bytes = png_bytes(8, 8);
         let result = store.commit_downloaded_image(artist, &bytes, "cover", ImageDestination::Cache);
 
         let ArtistImageResult::Found { cache_path } = result else { panic!("the write should succeed: {:?}", result) };
-        assert_eq!(cache_path, store.get_artist_image_path(artist, "cover"));
-        assert_eq!(std::fs::read(&cache_path).unwrap(), bytes);
-        assert_eq!(store.image_cache.get(artist), Some(&cache_path));
+        assert_eq!(cache_path, selected_path, "the selection must win over both the stale memo and the file just committed");
+        assert_eq!(
+            store.image_cache.get(artist),
+            Some(&selected_path),
+            "the memo must agree with the selection, not the stale entry or the new file"
+        );
     }
 
     #[test]
+    #[serial]
     fn commit_downloaded_image_writes_to_the_user_directory_and_populates_the_memo() {
+        init_test_settings_db();
         let dir = temp_user_dir();
         let mut store = store_in(&dir);
         let artist = "User Commit Artist";
@@ -1940,5 +2025,35 @@ mod tests {
         store.finish_download(artist);
 
         assert!(store.begin_download(artist), "finish_download must release the claim");
+    }
+
+    /// `begin_download`/`finish_download` are plain methods, not RAII on
+    /// their own, so nothing but `DownloadClaim` stops a panic between the
+    /// two from stranding the claim forever -- `parking_lot` mutexes do not
+    /// poison, so there is no other mechanism that would ever clear it.
+    /// `best_provider_image` and `fetch_image` both run in that window in
+    /// production, and both can realistically panic (a provider fanning out
+    /// to third parties, a client-supplied URL), so this has to hold even
+    /// when the code between the claim and its ordinary release point
+    /// unwinds.
+    #[test]
+    fn a_panic_between_claim_and_release_still_frees_the_claim() {
+        let dir = temp_user_dir();
+        let store = Arc::new(Mutex::new(store_in(&dir)));
+        let artist = "Panicking Download Artist";
+
+        assert!(store.lock().begin_download(artist), "the claim succeeds");
+
+        let guarded_store = store.clone();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _claim = DownloadClaim::new(guarded_store, artist.to_string());
+            panic!("simulated failure between the claim and its ordinary release");
+        }));
+
+        assert!(unwound.is_err(), "the panic must propagate, not be swallowed");
+        assert!(
+            store.lock().begin_download(artist),
+            "the claim must be released by unwinding through the guard, not left stranded"
+        );
     }
 }

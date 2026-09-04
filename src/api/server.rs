@@ -325,10 +325,7 @@ pub async fn start_rocket_server(
     ];
     
     // ImageCache routes
-    let imagecache_routes = routes![
-        imagecache::get_image_from_cache,
-        imagecache::purge_variants
-    ];
+    let imagecache_routes = imagecache::routes();
     
     // Favourites routes
     let favourites_routes = favourites::routes();

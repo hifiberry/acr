@@ -1,1 +1,5 @@
-//! Rocket request guards and responders shared by the AudioControl daemons.
+//! Rocket pieces both AudioControl daemons share.
+pub mod imagecache;
+pub mod imageresponse;
+pub mod urlprefix;
+pub mod validated;

@@ -3,7 +3,7 @@ use rocket::http::ContentType;
 use rocket::response::status::Custom;
 use rocket::http::Status;
 use std::path::{Path, PathBuf};
-use crate::helpers::imagecache;
+use acr_store::imagecache;
 
 /// Retrieve an image from the image cache based on a filepath
 ///
@@ -61,6 +61,11 @@ pub fn purge_variants() -> Result<rocket::serde::json::Json<PurgeVariantsRespons
             format!("Failed to purge variants: {}", e),
         )),
     }
+}
+
+/// The routes both daemons mount over their own image cache.
+pub fn routes() -> Vec<rocket::Route> {
+    rocket::routes![get_image_from_cache, purge_variants]
 }
 
 /// Detect the content type based on the file extension

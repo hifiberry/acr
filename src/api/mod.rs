@@ -1,8 +1,9 @@
 // Import constants for use in API modules
 pub use crate::constants::API_PREFIX;
 
-// Export the url prefix module
-pub mod urlprefix;
+// The forwarded-prefix guard and the image/validation responders moved to
+// acr-web, shared with the future metadata daemon.
+pub use acr_web::{imagecache, imageresponse, urlprefix, validated};
 
 // Export the players module
 pub mod players;
@@ -12,9 +13,6 @@ pub mod plugins;
 
 // Export the library module
 pub mod library;
-
-// Export the imagecache module
-pub mod imagecache;
 
 // Export the coverart module
 pub mod coverart;
@@ -64,11 +62,5 @@ pub mod splitters;
 // Export the server module
 pub mod server;
 
-// Export the imageresponse module
-pub mod imageresponse;
-
 // Export the capabilities module
 pub mod capabilities;
-
-// Export the validated module
-pub mod validated;

@@ -303,6 +303,7 @@ dependencies = [
  "acr-images",
  "acr-store",
  "acr-types",
+ "acr-web",
  "aes-gcm",
  "alsa",
  "async-trait",

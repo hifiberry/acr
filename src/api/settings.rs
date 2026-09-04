@@ -135,31 +135,28 @@ mod tests {
     use tempfile::TempDir;
     use crate::helpers::settingsdb;
 
-    /// Setup a temporary directory for testing and initialize the database
-    /// Returns a temporary directory that will clean up when dropped
-    fn setup_test_env() -> TempDir {
-        use std::sync::{Once, Mutex};
-        static INIT: Once = Once::new();
+    /// Repoint the global settings database at a fresh, uniquely-numbered
+    /// subdirectory for this test.
+    fn setup_test_env() {
+        use std::sync::Mutex;
         static COUNTER: Mutex<u32> = Mutex::new(0);
-        
+
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        
-        // Initialize the global settings database with a unique subdirectory for this test
-        INIT.call_once(|| {
-            // First test gets to initialize
-        });
-        
+
         // Create a unique subdirectory for this test to avoid conflicts
         let mut counter = COUNTER.lock().unwrap();
         *counter += 1;
         let test_subdir = temp_dir.path().join(format!("test_{}", *counter));
         std::fs::create_dir_all(&test_subdir).expect("Failed to create test subdirectory");
-        
+
         // Initialize the global settings database with the test-specific directory
         settingsdb::SettingsDb::initialize_global(&test_subdir)
             .expect("Failed to initialize test database");
-            
-        temp_dir
+
+        // Leaked deliberately: the global settings db singleton this
+        // repoints outlives this test, so the directory it points at must
+        // too (see the fuller explanation in favourites.rs).
+        std::mem::forget(temp_dir);
     }
 
     // Serialization tests - these test the data structures without database or HTTP
@@ -258,7 +255,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_database_set_and_get_string_value() {
-        let _temp_dir = setup_test_env();
+        setup_test_env();
         
         let test_key = "test_string_key";
         let test_value = json!("Hello, World!");
@@ -278,7 +275,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_database_nonexistent_key() {
-        let _temp_dir = setup_test_env();
+        setup_test_env();
         
         let test_key = "nonexistent_key_12345";
         

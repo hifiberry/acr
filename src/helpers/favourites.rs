@@ -441,6 +441,12 @@ mod tests {
         // Initialize the global database
         SettingsDb::initialize(test_path).ok();
 
+        // Leaked deliberately, like test_concurrent_favourite_operations
+        // below: this repoints the process-wide settings singleton, and
+        // dropping the directory here would leave it pointing at nothing for
+        // whichever test runs next.
+        std::mem::forget(temp_dir);
+
         // Clear any existing data first
         clear().ok(); // Ignore errors if not initialized
 

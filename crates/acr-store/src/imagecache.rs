@@ -7,11 +7,18 @@ use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use log::{info, error, debug, warn};
 use serde::{Serialize, Deserialize};
-use crate::helpers::attributecache;
+use crate::attributecache;
 
 // Constants for cache keys
 const IMAGECACHE_METADATA_PREFIX: &str = "imagecache:metadata:";
 const IMAGECACHE_STATS_KEY: &str = "imagecache:stats";
+
+/// The internal mount point every API route is served under.
+///
+/// Duplicated from the root package's `crate::constants::API_PREFIX` rather
+/// than imported, matching `acr_types::urlprefix`'s own copy: this crate has
+/// no dependency on the root package, and the values must stay in sync.
+const API_PREFIX: &str = "/api";
 
 /// Metadata for a cached image
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -499,7 +506,7 @@ impl ImageCache {
         // and that stale thumbnail then survives forever. Doing it afterwards can only
         // fail the other way: if the write failed, the variants still match the
         // unchanged original, so leaving them is correct.
-        if crate::helpers::imageresize::variant_size_of(&path_str).is_none() {
+        if acr_images::imageresize::variant_size_of(&path_str).is_none() {
             if let Err(e) = self.remove_variants_for(&path_with_extension) {
                 warn!("Failed to invalidate variants of {}: {}", path_with_extension, e);
             }
@@ -623,7 +630,7 @@ impl ImageCache {
                     if let Ok(Some(metadata)) = attributecache::get::<ImageMetadata>(&key) {
                         stats.total_images += 1;
                         stats.total_size += metadata.size;
-                        if crate::helpers::imageresize::is_variant_file_name(&metadata.name) {
+                        if acr_images::imageresize::is_variant_file_name(&metadata.name) {
                             stats.variant_images += 1;
                             stats.variant_size += metadata.size;
                         }
@@ -664,7 +671,7 @@ impl ImageCache {
                                     if let Ok(metadata) = entry.metadata() {
                                         stats.total_images += 1;
                                         stats.total_size += metadata.len();
-                                        if crate::helpers::imageresize::is_variant_file_name(name) {
+                                        if acr_images::imageresize::is_variant_file_name(name) {
                                             stats.variant_images += 1;
                                             stats.variant_size += metadata.len();
                                         }
@@ -857,7 +864,7 @@ impl ImageCache {
 
         let base_path = base_path.as_ref();
         let base_str = base_path.to_string_lossy().to_string();
-        let variant_path = crate::helpers::imageresize::variant_stem(&base_str, size);
+        let variant_path = acr_images::imageresize::variant_stem(&base_str, size);
 
         // Already generated?
         if let Ok((data, mime)) = self.get_image_with_mime_type(&variant_path) {
@@ -867,12 +874,12 @@ impl ImageCache {
 
         let (original, original_mime) = self.get_image_with_mime_type(base_path)?;
 
-        match crate::helpers::imageresize::resize(&original, size) {
-            Ok(crate::helpers::imageresize::Resized::Original) => {
+        match acr_images::imageresize::resize(&original, size) {
+            Ok(acr_images::imageresize::Resized::Original) => {
                 debug!("Original {} is already at or below {}px", base_str, size);
                 Ok((original, original_mime))
             }
-            Ok(crate::helpers::imageresize::Resized::Image(data, mime)) => {
+            Ok(acr_images::imageresize::Resized::Image(data, mime)) => {
                 if let Err(e) = self.store_image_from_data(&variant_path, data.clone(), mime.clone()) {
                     // A variant that cannot be stored is still a valid response; the next
                     // request simply pays for it again.
@@ -911,7 +918,7 @@ impl ImageCache {
         {
             let path = entry.path();
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-            let Some(_) = crate::helpers::imageresize::variant_size_of(stem) else { continue };
+            let Some(_) = acr_images::imageresize::variant_size_of(stem) else { continue };
             // "cover@400" belongs to "cover"
             if stem.rsplit_once('@').map(|(base, _)| base) != Some(base_stem.as_str()) {
                 continue;
@@ -952,7 +959,7 @@ impl ImageCache {
                     continue;
                 }
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-                if !crate::helpers::imageresize::is_variant_file_name(name) {
+                if !acr_images::imageresize::is_variant_file_name(name) {
                     continue;
                 }
                 if let Err(e) = fs::remove_file(&path) {
@@ -1005,7 +1012,7 @@ impl ImageCache {
                     continue;
                 }
                 let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-                let Some(size) = crate::helpers::imageresize::variant_size_of(stem) else { continue };
+                let Some(size) = acr_images::imageresize::variant_size_of(stem) else { continue };
                 if offered.contains(&size) {
                     continue;
                 }
@@ -1136,7 +1143,7 @@ pub fn get_image_cache() -> parking_lot::MutexGuard<'static, ImageCache> {
 /// instead. The URLs come out of an external endpoint's answer, which is
 /// untrusted.
 pub fn relative_path_from_url(url: &str) -> Option<&str> {
-    let rest = url.strip_prefix(crate::constants::API_PREFIX)?;
+    let rest = url.strip_prefix(API_PREFIX)?;
     let relative = rest.strip_prefix("/imagecache/")?;
 
     if relative.is_empty() || relative.starts_with('/') || relative.starts_with('\\') {
@@ -1219,7 +1226,7 @@ pub fn get_image_with_mime_type<P: AsRef<Path>>(base_path: P) -> Result<(Vec<u8>
 pub fn get_or_create_variant<P: AsRef<Path>>(base_path: P, size: u32) -> Result<(Vec<u8>, String), String> {
     let base_path = base_path.as_ref();
     let base_str = base_path.to_string_lossy().to_string();
-    let variant_path = crate::helpers::imageresize::variant_stem(&base_str, size);
+    let variant_path = acr_images::imageresize::variant_stem(&base_str, size);
 
     // Lock held only for this lookup.
     if let Ok((data, mime)) = get_image_with_mime_type(&variant_path) {
@@ -1232,12 +1239,12 @@ pub fn get_or_create_variant<P: AsRef<Path>>(base_path: P, size: u32) -> Result<
     let (original, original_mime) = get_image_with_mime_type(base_path)?;
 
     // No lock is held across the decode, the scale or the encode below.
-    match crate::helpers::imageresize::resize(&original, size) {
-        Ok(crate::helpers::imageresize::Resized::Original) => {
+    match acr_images::imageresize::resize(&original, size) {
+        Ok(acr_images::imageresize::Resized::Original) => {
             debug!("Original {} is already at or below {}px", base_str, size);
             Ok((original, original_mime))
         }
-        Ok(crate::helpers::imageresize::Resized::Image(data, mime)) => {
+        Ok(acr_images::imageresize::Resized::Image(data, mime)) => {
             // Lock retaken only for the write.
             if let Err(e) = store_image_from_data(&variant_path, data.clone(), mime.clone()) {
                 // A variant that cannot be stored is still a valid response; the next
@@ -1265,7 +1272,7 @@ pub fn purge_variants() -> Result<usize, String> {
 /// # Returns
 /// * `Result<(Vec<u8>, String), String>` - Image data and MIME type, or error message
 pub fn get_album_cover(artist: &str, album_name: &str, year: Option<i32>) -> Result<(Vec<u8>, String), String> {
-    let cache_path = crate::helpers::local_coverart::album_cache_key(artist, album_name, year);
+    let cache_path = acr_types::album_key::album_cache_key(artist, album_name, year);
     get_image_cache().get_image_with_mime_type(format!("{}/cover", cache_path))
 }
 
@@ -1281,7 +1288,7 @@ pub fn get_album_cover(artist: &str, album_name: &str, year: Option<i32>) -> Res
 /// # Returns
 /// * `Result<(), String>` - Success or error message
 pub fn store_album_cover(artist: &str, album_name: &str, year: Option<i32>, data: Vec<u8>, mime_type: String) -> Result<(), String> {
-    let cache_path = crate::helpers::local_coverart::album_cache_key(artist, album_name, year);
+    let cache_path = acr_types::album_key::album_cache_key(artist, album_name, year);
     get_image_cache().store_image_from_data(format!("{}/cover", cache_path), data, mime_type)
 }
 
@@ -1399,7 +1406,7 @@ mod tests {
 
     // Helper function to initialize attribute cache for tests
     fn init_test_attribute_cache() {
-        use crate::helpers::attributecache::AttributeCache;
+        use crate::attributecache::AttributeCache;
         use std::sync::Once;
         static INIT: Once = Once::new();
         
@@ -1635,7 +1642,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_image_cache_statistics() {
-        use crate::helpers::attributecache::AttributeCache;
+        use crate::attributecache::AttributeCache;
 
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().to_str().unwrap();
@@ -1944,7 +1951,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_statistics_separate_variants_from_originals() {
-        use crate::helpers::attributecache::AttributeCache;
+        use crate::attributecache::AttributeCache;
 
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().to_str().unwrap();

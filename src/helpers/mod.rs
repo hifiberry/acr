@@ -1,13 +1,9 @@
-pub mod attributecache;
-pub mod imagecache;
 pub mod imageprewarm;
-pub mod imagepurge;
 pub mod image_meta;
 pub mod artistupdater;
 pub mod albumupdater;
 pub mod artist_store;
 pub mod artistsplitter;
-pub mod backgroundjobs;
 pub mod coverart;
 pub mod coverart_providers;
 pub mod external_coverart;
@@ -20,7 +16,6 @@ pub mod theaudiodb;
 pub mod macaddress;
 pub mod lastfm;
 pub mod security_store;
-pub mod settingsdb;
 pub mod spotify;
 pub mod systemd;
 pub mod playback_progress;
@@ -44,6 +39,7 @@ use crate::data::artist::Artist;
 
 pub use acr_http::{http_client, ratelimit, retry};
 pub use acr_images::{image_grader, imageresize};
+pub use acr_store::{attributecache, backgroundjobs, imagecache, imagepurge, settingsdb};
 pub use acr_types::{sanitize, url_encoding};
 pub use playback_progress::PlayerProgress;
 

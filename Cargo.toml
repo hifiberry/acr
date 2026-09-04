@@ -16,6 +16,7 @@ license = "MIT"
 acr-types = { path = "crates/acr-types" }
 acr-http = { path = "crates/acr-http" }
 acr-images = { path = "crates/acr-images" }
+acr-store = { path = "crates/acr-store" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 strum = "0.27.1"

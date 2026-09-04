@@ -351,3 +351,208 @@ pub fn get_provider_count() -> (usize, usize) {
 pub fn get_provider_details() -> Vec<serde_json::Value> {
     get_favourite_manager().get_provider_details()
 }
+
+/// `FavouriteProvider` for the settings DB, backed by acr-store.
+///
+/// This impl lives here rather than beside [`crate::helpers::settingsdb::SettingsDbFavouriteProvider`]
+/// itself: `settingsdb` moved into the `acr-store` crate, which cannot depend
+/// back on this crate for the `FavouriteProvider` trait. Implementing a local
+/// trait for a foreign type is exactly what Rust's orphan rule allows, so the
+/// impl stays here instead.
+impl FavouriteProvider for crate::helpers::settingsdb::SettingsDbFavouriteProvider {
+    fn is_favourite(&self, song: &Song) -> Result<bool, FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match crate::helpers::settingsdb::is_favourite_song(artist, title) {
+            Ok(is_fav) => Ok(is_fav),
+            Err(e) => Err(FavouriteError::StorageError(e)),
+        }
+    }
+
+    fn add_favourite(&self, song: &Song) -> Result<(), FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match crate::helpers::settingsdb::add_favourite_song(artist, title) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(FavouriteError::StorageError(e)),
+        }
+    }
+
+    fn remove_favourite(&self, song: &Song) -> Result<(), FavouriteError> {
+        let artist = song.artist.as_ref()
+            .ok_or_else(|| FavouriteError::InvalidSong("Artist is required".to_string()))?;
+        let title = song.title.as_ref()
+            .ok_or_else(|| FavouriteError::InvalidSong("Title is required".to_string()))?;
+
+        match crate::helpers::settingsdb::remove_favourite_song(artist, title) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(FavouriteError::StorageError(e)),
+        }
+    }
+
+    fn get_favourite_count(&self) -> Option<usize> {
+        // Use the existing get_all_favourite_songs function to count favorites
+        match crate::helpers::settingsdb::get_all_favourite_songs() {
+            Ok(songs) => Some(songs.len()),
+            Err(_) => None, // Return None if we can't access the database
+        }
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "settingsdb"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "User settings"
+    }
+
+    fn is_enabled(&self) -> bool {
+        // Settings DB is always enabled if the database is accessible
+        crate::helpers::settingsdb::settings_db_enabled()
+    }
+
+    fn is_active(&self) -> bool {
+        // Settings DB is always active when enabled since it's a local database
+        // No authentication or external connectivity required
+        self.is_enabled() && crate::helpers::settingsdb::settings_db_has_connection()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::settingsdb::{clear, SettingsDb, SettingsDbFavouriteProvider};
+    use tempfile::TempDir;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn test_favourite_provider_count() {
+        // Initialize the global settings database with a temporary path for testing
+        let temp_dir = TempDir::new().unwrap();
+        let test_path = temp_dir.path().to_str().unwrap();
+
+        // Initialize the global database
+        SettingsDb::initialize(test_path).ok();
+
+        // Clear any existing data first
+        clear().ok(); // Ignore errors if not initialized
+
+        let provider = SettingsDbFavouriteProvider::new();
+
+        // Initially should have 0 favorites
+        assert_eq!(provider.get_favourite_count(), Some(0));
+
+        // Create test songs
+        let mut song1 = Song::default();
+        song1.artist = Some("Test Artist 1".to_string());
+        song1.title = Some("Test Song 1".to_string());
+
+        let mut song2 = Song::default();
+        song2.artist = Some("Test Artist 2".to_string());
+        song2.title = Some("Test Song 2".to_string());
+
+        let mut song3 = Song::default();
+        song3.artist = Some("Test Artist 3".to_string());
+        song3.title = Some("Test Song 3".to_string());
+
+        // Add first favorite
+        assert!(provider.add_favourite(&song1).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(1));
+
+        // Add second favorite
+        assert!(provider.add_favourite(&song2).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(2));
+
+        // Add third favorite
+        assert!(provider.add_favourite(&song3).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(3));
+
+        // Remove one favorite
+        assert!(provider.remove_favourite(&song2).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(2));
+
+        // Remove another favorite
+        assert!(provider.remove_favourite(&song1).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(1));
+
+        // Remove last favorite
+        assert!(provider.remove_favourite(&song3).is_ok());
+        assert_eq!(provider.get_favourite_count(), Some(0));
+
+        // Clean up
+        clear().ok();
+    }
+
+    #[test]
+    #[serial]
+    fn test_concurrent_favourite_operations() {
+        use std::sync::Arc;
+        use std::thread;
+
+        // Initialize global database with a temp directory first.
+        //
+        // Leaked rather than dropped: this re-points the process-wide
+        // singleton, and every later test that writes a setting keeps using
+        // whatever this leaves behind. Letting the directory be deleted at the
+        // end of this test would leave the global pointing at a path that is
+        // gone, and the next writer anywhere in the suite fails with
+        // "attempt to write a readonly database".
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        SettingsDb::initialize_global(temp_dir.path()).expect("Failed to initialize global database");
+        std::mem::forget(temp_dir);
+
+        // Clear any existing data first
+        clear().ok();
+
+        let provider = Arc::new(SettingsDbFavouriteProvider::new());
+        let num_threads = 4;
+        let songs_per_thread = 10;
+        let mut handles = vec![];
+
+        // Spawn threads that add/remove favourites concurrently
+        for thread_id in 0..num_threads {
+            let provider_clone = Arc::clone(&provider);
+            let handle = thread::spawn(move || {
+                for i in 0..songs_per_thread {
+                    let mut song = Song::default();
+                    song.artist = Some(format!("Artist_{}", thread_id));
+                    song.title = Some(format!("Song_{}_{}", thread_id, i));
+
+                    // Add favourite
+                    provider_clone.add_favourite(&song).expect("Failed to add favourite");
+
+                    // Check if it's marked as favourite
+                    assert!(provider_clone.is_favourite(&song).expect("Failed to check favourite"));
+
+                    // Remove every other favourite to test removal
+                    if i % 2 == 0 {
+                        provider_clone.remove_favourite(&song).expect("Failed to remove favourite");
+                        assert!(!provider_clone.is_favourite(&song).expect("Failed to check favourite after removal"));
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+
+        // Check final favourite count
+        // Each thread adds songs_per_thread favourites but removes half of them
+        let expected_count = num_threads * (songs_per_thread / 2);
+        let actual_count = provider.get_favourite_count().unwrap_or(0);
+        assert_eq!(actual_count, expected_count);
+
+        // Clean up
+        clear().ok();
+    }
+}

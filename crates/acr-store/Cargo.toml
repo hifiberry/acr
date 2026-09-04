@@ -21,3 +21,5 @@ parking_lot.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+serial_test = "3.0"
+image.workspace = true

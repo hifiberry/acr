@@ -41,7 +41,7 @@ pub fn purge_retired_in_background() {
         // the same fault, merely moved off the startup path.
         // Take the guard only long enough to copy the path out of it.
         let (base_path, marker_path) = {
-            let cache = crate::helpers::imagecache::get_image_cache();
+            let cache = crate::imagecache::get_image_cache();
             let base = cache.base_path().clone();
             let marker = base.join(LADDER_MARKER);
             (base, marker)
@@ -51,13 +51,13 @@ pub fn purge_retired_in_background() {
             return;
         }
 
-        let current = crate::helpers::imageresize::ladder_fingerprint();
+        let current = acr_images::imageresize::ladder_fingerprint();
         let stored = std::fs::read_to_string(&marker_path).ok();
 
         match stored.as_deref().map(str::trim) {
             Some(previous) if previous == current => return,
             Some(previous) => {
-                let offered = crate::helpers::imageresize::sizes();
+                let offered = acr_images::imageresize::sizes();
                 let retired: Vec<u32> = previous
                     .split('-')
                     .filter_map(|s| s.parse::<u32>().ok())
@@ -75,7 +75,7 @@ pub fn purge_retired_in_background() {
                         previous, current, retired
                     );
                     let job_id = "imagecache_purge".to_string();
-                    let _ = crate::helpers::backgroundjobs::register_job(
+                    let _ = crate::backgroundjobs::register_job(
                         job_id.clone(),
                         "Image Variant Purge".to_string(),
                     );
@@ -85,17 +85,17 @@ pub fn purge_retired_in_background() {
                     // over the same directory owns no shared state - the metadata
                     // removal it performs goes to the attribute cache, which has
                     // its own lock and is taken per entry.
-                    let walker = crate::helpers::imagecache::ImageCache::with_directory(&base_path);
+                    let walker = crate::imagecache::ImageCache::with_directory(&base_path);
                     let removed = walker.purge_retired_variants(offered);
                     match removed {
                         Ok(n) => info!("Purged {} variant(s) at retired sizes", n),
                         Err(e) => {
                             warn!("Variant purge failed, leaving the marker for a retry: {}", e);
-                            let _ = crate::helpers::backgroundjobs::complete_job(&job_id);
+                            let _ = crate::backgroundjobs::complete_job(&job_id);
                             return;
                         }
                     }
-                    let _ = crate::helpers::backgroundjobs::complete_job(&job_id);
+                    let _ = crate::backgroundjobs::complete_job(&job_id);
                 }
             }
             None => {}

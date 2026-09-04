@@ -19,6 +19,21 @@ pub enum ArtistImageResult {
     Error(String),
 }
 
+/// How long a single artist image download may take, in total.
+///
+/// Bounded rather than generous: `download_and_store_user_image` runs with the
+/// artist store's mutex held, so this deadline is also how long one client's
+/// URL can keep every other artist image lookup waiting.
+const IMAGE_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The largest artist image the daemon will take from a URL.
+///
+/// Generous for cover art -- a provider's artist background is a couple of
+/// megabytes -- and small enough that the read cannot exhaust the memory of a
+/// 1 GB device. The URL is client-supplied, so the bound is applied to the
+/// read rather than checked after it.
+const MAX_IMAGE_DOWNLOAD_BYTES: u64 = 16 * 1024 * 1024;
+
 /// How many uploaded images one artist may keep.
 ///
 /// A bound rather than a setting: the set exists to be picked from in a UI,
@@ -322,16 +337,29 @@ impl ArtistStore {
         }
 
         let path = format!("{}/{}.{}", self.artist_uploads_dir(artist_name), id, extension);
-        // Bytes already stored are not written again. The name is their hash,
-        // so the file on disk is what this write would produce -- and the
-        // serving route reads it with the store lock released, so rewriting it
-        // could hand a concurrent request a half-written file for no gain.
-        if !already_stored {
-            if let Some(parent) = std::path::Path::new(&path).parent() {
-                std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
-            }
-            std::fs::write(&path, bytes).map_err(|e| format!("Failed to write {}: {}", path, e))?;
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
         }
+        // Written through a temporary name and renamed into place, which is
+        // what makes re-uploading the same bytes both safe and useful. The
+        // serving route reads these files with the store lock released, so a
+        // plain rewrite could hand a concurrent request a half-written
+        // image; and a plain write that failed part way -- a full disk is the
+        // realistic one -- would leave a truncated file that a retry could
+        // never repair, because the name matches and the bytes do not. A
+        // rename is atomic, so a reader sees either the previous complete file
+        // or the new one, and a retry after a failure replaces whatever the
+        // failure left behind.
+        crate::helpers::imagecache::write_file_atomically(std::path::Path::new(&path), bytes)
+            .map_err(|e| format!("Failed to write {}: {}", path, e))?;
+
+        // Variants are generated from whatever was at this path before, and
+        // this is now the one place where that can differ from what is here
+        // afterwards: a re-upload repairing a damaged member would otherwise
+        // keep serving the rung rendered from the damaged bytes, cached hard
+        // by its ETag. The download path and the delete path already do this
+        // for the same reason.
+        crate::helpers::imageresize::remove_variants_of(&path);
 
         // The resolved-path memo is keyed by artist name and this changes what
         // that artist resolves to.
@@ -932,15 +960,39 @@ impl ArtistStore {
     /// Result with the image data or an error message
     fn download_image(&self, url: &str) -> Result<Vec<u8>, String> {
         debug!("Downloading image from URL: {}", url);
-        
-        // Use ureq to download the image
-        match ureq::get(url).call() {
+
+        // Bounded, because this call is made with the artist store's mutex
+        // held and an unbounded one can therefore stop the daemon rather than
+        // just this download. The URL comes from a client through
+        // /coverart/artist/<b64>/update, and a URL naming the device itself is
+        // treated as remote and fetched -- but the request it makes cannot be
+        // served while this thread holds the mutex, so with no deadline the
+        // two wait on each other for ever. ureq's `timeout` is a deadline for
+        // the socket phases -- connect, write, and the body read -- not just
+        // the connect. It does not cover name resolution, which ureq performs
+        // before the deadline applies, so a hostname whose resolver is
+        // blackholed can still block here for as long as the resolver takes.
+        match ureq::get(url).timeout(IMAGE_DOWNLOAD_TIMEOUT).call() {
             Ok(response) => {
+                // Read one byte past the cap: if it arrives, the body is over
+                // the limit and we know that without having buffered the rest.
+                // The deadline alone bounds nothing useful here -- fifteen
+                // seconds of LAN throughput is hundreds of megabytes into a
+                // Vec on a device with a gigabyte of RAM, and the allocation
+                // failure that follows takes the whole daemon with it.
                 let mut bytes = Vec::new();
-                if let Err(e) = response.into_reader().read_to_end(&mut bytes) {
+                let mut reader = response.into_reader().take(MAX_IMAGE_DOWNLOAD_BYTES.saturating_add(1));
+                if let Err(e) = reader.read_to_end(&mut bytes) {
                     return Err(format!("Failed to read image data: {}", e));
                 }
-                
+
+                if bytes.len() as u64 > MAX_IMAGE_DOWNLOAD_BYTES {
+                    return Err(format!(
+                        "Downloaded image exceeds the {} byte limit",
+                        MAX_IMAGE_DOWNLOAD_BYTES
+                    ));
+                }
+
                 if bytes.is_empty() {
                     return Err("Downloaded image is empty".to_string());
                 }
@@ -1399,31 +1451,54 @@ mod tests {
         assert_eq!(again, ids[0]);
     }
 
-    /// A re-upload must not rewrite the file it resolves to.
+    /// A re-upload repairs a member whose bytes are not the ones its name
+    /// promises.
     ///
-    /// The name is the hash of the bytes, so a rewrite produces what is
-    /// already there — but the serving route reads these files with the store
-    /// lock released, so writing again could hand a concurrent request a
-    /// half-written image for nothing. The file is filled with different bytes
-    /// first, so a write that did happen would be visible.
+    /// The write can fail part way — a full disk is the realistic case — and
+    /// leave a truncated file behind. Since the name is the hash of the bytes,
+    /// nothing else will ever notice the mismatch, so re-uploading the same
+    /// image has to be the repair. Writing through a temporary name and
+    /// renaming is what makes that safe to do while a reader may be looking.
     #[test]
-    fn a_re_upload_does_not_rewrite_the_stored_file() {
+    fn a_re_upload_repairs_a_damaged_member() {
         let dir = temp_user_dir();
         let mut store = store_in(&dir);
         let bytes = png_bytes(16, 16);
         let id = store.store_uploaded_image("Artist", &bytes).unwrap();
         let path = store.artist_image_path("Artist", &id).expect("the member is stored");
-        let sentinel = png_bytes(32, 32);
-        write_file(&path, &sentinel);
+        write_file(&path, b"truncated");
 
         let again = store.store_uploaded_image("Artist", &bytes).expect("a re-upload is allowed");
 
         assert_eq!(again, id);
         assert_eq!(
             std::fs::read(&path).unwrap(),
-            sentinel,
-            "the stored file was rewritten"
+            bytes,
+            "the damaged member should hold the uploaded bytes again"
         );
+        assert_eq!(store.artist_images("Artist").len(), 1, "and still be one member");
+    }
+
+    /// A temporary file left behind by an interrupted atomic write must not
+    /// appear in the set.
+    ///
+    /// `write_file_atomically` creates its temporary beside the destination
+    /// and removes it on both failure paths, but a crash between create and
+    /// rename leaves one there, so the listing has to exclude it on its own
+    /// rather than by trusting the writer.
+    #[test]
+    fn a_leftover_temporary_file_is_not_a_member() {
+        let dir = temp_user_dir();
+        let mut store = store_in(&dir);
+        let bytes = png_bytes(16, 16);
+        let id = store.store_uploaded_image("Artist", &bytes).unwrap();
+        let uploads = store.artist_uploads_dir_for_test("Artist");
+        write_file(&format!("{}/.{}.png.1234.0.tmp", uploads, id), &bytes);
+
+        let members = store.artist_images("Artist");
+
+        assert_eq!(members.len(), 1, "only the renamed file is a member: {:?}", members);
+        assert_eq!(members[0].id, id);
     }
 
     #[test]

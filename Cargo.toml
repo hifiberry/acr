@@ -123,7 +123,7 @@ md5 = "0.7.0"
 
 # Development dependencies for testing
 [dev-dependencies]
-serial_test = "3.0"
+serial_test.workspace = true
 tempfile = "3.12"
 tokio-test = "0.4"
 
@@ -228,3 +228,4 @@ regex = "1.10"
 crossbeam = "0.8.2"
 strum = "0.27.1"
 strum_macros = "0.27.1"
+serial_test = "3.0"

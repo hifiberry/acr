@@ -148,14 +148,26 @@ pub fn apply_batch(
 
     if !batch.albums.is_empty() {
         let mut albums = albums.write();
+        // The map is keyed by album name, but a batch carries ids: a name is
+        // not unique across artists and the metadata side never sees the key.
+        // This is the lookup `albumupdater` did by id before the seam.
+        //
+        // Matching by id still has to happen without an O(n) scan per batch
+        // entry: on a 10 000-album library, `values_mut().find(...)` per
+        // incoming album turns a 50-entry batch into 500 000 allocating
+        // comparisons under this write lock, ~200 times over a full sweep.
+        // Building the id -> name index once per batch keeps the per-entry
+        // cost at a hash lookup.
+        let id_to_name: HashMap<String, String> = albums
+            .iter()
+            .map(|(name, album)| (album.id.to_string(), name.clone()))
+            .collect();
+
         for incoming in &batch.albums {
-            // The map is keyed by album name, but a batch carries ids: a name
-            // is not unique across artists and the metadata side never sees the
-            // key. This is the lookup `albumupdater` did by id before the seam.
-            if let Some(album) = albums
-                .values_mut()
-                .find(|a| a.id.to_string() == incoming.id)
-            {
+            let Some(name) = id_to_name.get(&incoming.id) else {
+                continue;
+            };
+            if let Some(album) = albums.get_mut(name) {
                 if merge_genres(&mut album.genres, &incoming.genres) {
                     applied.albums += 1;
                     changed = true;
@@ -894,6 +906,54 @@ mod tests {
         // The mock in this module does not override library_version.
         let lib = CountingLibrary::new();
         assert_eq!(lib.library_version(), None);
+    }
+
+    /// `apply_batch`'s album lookup must stay near-constant per entry: on a
+    /// realistically large library, a per-entry `values_mut().find(...)`
+    /// scan turns a handful of batch entries into hundreds of thousands of
+    /// allocating string comparisons under the write lock. This runs the
+    /// same shape a real sweep does (a large library, a batch that touches a
+    /// scattered handful of it, repeated many times) and bounds the total
+    /// time generously: an id-indexed lookup finishes this in well under a
+    /// second even in an unoptimised test build, while a reintroduced
+    /// per-entry scan does not.
+    #[test]
+    fn apply_batch_stays_fast_against_a_large_library() {
+        const ALBUM_COUNT: u64 = 20_000;
+        const BATCH_SIZE: u64 = 50;
+        const SWEEPS: u64 = 50;
+
+        let all_albums: Vec<Album> = (0..ALBUM_COUNT).map(album).collect();
+        let (albums, artists) = maps(all_albums, vec![]);
+
+        let start = std::time::Instant::now();
+        for sweep in 0..SWEEPS {
+            let batch = EnrichmentBatch {
+                library_version: None,
+                artists: vec![],
+                albums: (0..BATCH_SIZE)
+                    .map(|i| {
+                        // Spread the touched ids across the whole library
+                        // rather than clustering them, so an id-based index
+                        // is the only thing that can keep this fast.
+                        let id = (sweep * 977 + i * 4001) % ALBUM_COUNT;
+                        acr_types::enrichment::AlbumGenres {
+                            id: id.to_string(),
+                            genres: vec![format!("genre-{sweep}-{i}")],
+                        }
+                    })
+                    .collect(),
+            };
+            apply_batch(&albums, &artists, &batch);
+        }
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "apply_batch took {elapsed:?} for {SWEEPS} batches of {BATCH_SIZE} \
+             against a {ALBUM_COUNT}-album library; a per-entry linear scan \
+             is the likely cause if this regresses",
+        );
     }
 
     #[test]

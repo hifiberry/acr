@@ -10,8 +10,8 @@ use audiocontrol::helpers::theaudiodb;
 use audiocontrol::helpers::fanarttv;
 use audiocontrol::logging;
 use audiocontrol::players::PlayerController;
-use audiocontrol::secrets;
 use audiocontrol::AudioController;
+use audiocontrol_metadata::secrets;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
 use audiocontrol::players::lms::lmsaudio::LMSAudioController;

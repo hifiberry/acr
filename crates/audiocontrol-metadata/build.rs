@@ -9,6 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=secrets.txt");
     println!("cargo:rerun-if-changed=config/secrets.txt");
     println!("cargo:rerun-if-changed=../secrets.txt");
+    println!("cargo:rerun-if-changed=../../secrets.txt");
 
     // Log all secrets found during build
     println!("cargo:warning=SECRETS FOUND DURING BUILD:");
@@ -18,6 +19,9 @@ fn main() {
     check_secrets_file("secrets.txt", &mut secrets);
     check_secrets_file("config/secrets.txt", &mut secrets);
     check_secrets_file("../secrets.txt", &mut secrets);
+    // The HiFiBerry OS build copies $HOME/secrets.txt to the repository root,
+    // which from this crate (crates/audiocontrol-metadata) is two levels up.
+    check_secrets_file("../../secrets.txt", &mut secrets);
 
     // Look for environment variables with secret-like names
     check_environment_secrets(&mut secrets);

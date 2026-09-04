@@ -17,7 +17,7 @@ pub mod security_store;
 pub mod spotify;
 pub mod theaudiodb;
 pub mod api;
-mod secrets;
+pub mod secrets;
 
 use acr_types::Artist;
 

@@ -277,6 +277,104 @@ fn summarise(artist: &Artist) -> ArtistSummary {
     }
 }
 
+/// Everything the artist sweep reaches outside itself for.
+///
+/// Production supplies `LiveSweep`. A test supplies its own and can then see
+/// what the sweep cost and what it accumulated, neither of which is visible
+/// from outside a background thread that talks to the network.
+trait Sweep {
+    /// Look everything up for one artist and return what is now known.
+    fn update(&self, reference: &ArtistRef) -> Artist;
+    /// Announce the artist about to be looked up.
+    fn starting(&self, artist_name: &str, index: usize, total: usize);
+    /// A progress milestone.
+    fn milestone(&self, count: usize, total: usize);
+    /// Wait, out of politeness to the services just called. Every artist
+    /// reaches this: unlike the album sweep, every one of them costs a lookup.
+    fn pace(&self);
+}
+
+/// The sweep itself: look up, accumulate, flush.
+///
+/// Stops early, without a final flush, when the library refuses a batch as
+/// stale.
+fn sweep_artists(artists: Vec<ArtistRef>, io: &dyn Sweep, sender: &mut BatchSender) {
+    let total = artists.len();
+    let mut batch: Vec<ArtistSummary> = Vec::with_capacity(BATCH_SIZE);
+
+    for (index, reference) in artists.into_iter().enumerate() {
+        debug!("Updating metadata for artist: {}", reference.name);
+        io.starting(&reference.name, index, total);
+
+        batch.push(summarise(&io.update(&reference)));
+        if batch.len() >= BATCH_SIZE && !sender.send(std::mem::take(&mut batch), Vec::new()) {
+            return;
+        }
+
+        let count = index + 1;
+        if count % 10 == 0 || count == total {
+            io.milestone(count, total);
+        }
+
+        io.pace();
+    }
+
+    sender.send(batch, Vec::new());
+}
+
+/// The sweep's real world: the metadata providers, the background job and the
+/// clock.
+struct LiveSweep {
+    job_id: String,
+}
+
+impl Sweep for LiveSweep {
+    fn update(&self, reference: &ArtistRef) -> Artist {
+        let had_mbid =
+            cached_artist_metadata(&reference.name).is_some_and(|m| !m.mbid.is_empty());
+
+        let updated = update_data_for_artist(artist_to_update(reference));
+
+        let has_mbid_now = updated
+            .metadata
+            .as_ref()
+            .is_some_and(|m| !m.mbid.is_empty());
+        if has_mbid_now && !had_mbid {
+            info!("Adding MusicBrainz ID(s) to artist {}", reference.name);
+        }
+
+        updated
+    }
+
+    fn starting(&self, artist_name: &str, index: usize, total: usize) {
+        if let Err(e) = acr_store::backgroundjobs::update_job(
+            &self.job_id,
+            Some(format!("Processing artist: {}", artist_name)),
+            Some(index),
+            Some(total),
+        ) {
+            warn!("Failed to update background job progress: {}", e);
+        }
+    }
+
+    fn milestone(&self, count: usize, total: usize) {
+        info!("Processed {}/{} artists for metadata", count, total);
+        if let Err(e) = acr_store::backgroundjobs::update_job(
+            &self.job_id,
+            Some(format!("Processed {}/{} artists", count, total)),
+            Some(count),
+            Some(total),
+        ) {
+            warn!("Failed to update background job milestone: {}", e);
+        }
+    }
+
+    fn pace(&self) {
+        // Sleep between updates to avoid overwhelming external services
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Look up metadata for a library's artists in the background, sending what is
 /// found back in batches.
 ///
@@ -317,66 +415,9 @@ pub fn enrich_artists_in_background(
             warn!("Failed to update background job: {}", e);
         }
 
+        let io = LiveSweep { job_id: job_id.clone() };
         let mut sender = BatchSender::new(sink, version);
-        let mut batch: Vec<ArtistSummary> = Vec::with_capacity(BATCH_SIZE);
-
-        for (index, reference) in artists.into_iter().enumerate() {
-            let artist_name = reference.name.clone();
-            debug!("Updating metadata for artist: {}", artist_name);
-
-            // Update progress in background job
-            let completed = index;
-            let progress_message = format!("Processing artist: {}", artist_name);
-            if let Err(e) = acr_store::backgroundjobs::update_job(
-                &job_id,
-                Some(progress_message),
-                Some(completed),
-                Some(total)
-            ) {
-                warn!("Failed to update background job progress: {}", e);
-            }
-
-            let had_mbid = cached_artist_metadata(&artist_name)
-                .is_some_and(|m| !m.mbid.is_empty());
-
-            // Use the synchronous version of update_data_for_artist
-            let updated_artist = update_data_for_artist(artist_to_update(&reference));
-
-            let has_mbid_now = updated_artist
-                .metadata
-                .as_ref()
-                .is_some_and(|m| !m.mbid.is_empty());
-            if has_mbid_now && !had_mbid {
-                info!("Adding MusicBrainz ID(s) to artist {}", artist_name);
-            }
-
-            batch.push(summarise(&updated_artist));
-            if batch.len() >= BATCH_SIZE && !sender.send(std::mem::take(&mut batch), Vec::new()) {
-                let _ = acr_store::backgroundjobs::complete_job(&job_id);
-                return;
-            }
-
-            // Log progress periodically
-            let count = index + 1;
-            if count % 10 == 0 || count == total {
-                info!("Processed {}/{} artists for metadata", count, total);
-
-                // Update background job with milestone progress
-                if let Err(e) = acr_store::backgroundjobs::update_job(
-                    &job_id,
-                    Some(format!("Processed {}/{} artists", count, total)),
-                    Some(count),
-                    Some(total)
-                ) {
-                    warn!("Failed to update background job milestone: {}", e);
-                }
-            }
-
-            // Sleep between updates to avoid overwhelming external services
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-
-        sender.send(batch, Vec::new());
+        sweep_artists(artists, &io, &mut sender);
 
         info!("Artist metadata update process completed");
 
@@ -392,7 +433,9 @@ pub fn enrich_artists_in_background(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acr_types::enrichment::{Applied, EnrichmentBatch, EnrichmentError};
     use acr_types::metadata::ArtistMeta;
+    use parking_lot::Mutex;
 
     fn artist(name: &str, metadata: Option<ArtistMeta>, is_multi: bool) -> Artist {
         Artist {
@@ -403,23 +446,37 @@ mod tests {
         }
     }
 
-    /// A summary carries exactly what a library shows in its lists. Biography
-    /// and images are found by the same sweep but stay on this side, served
-    /// from the detail route.
+    /// A summary carries exactly the fields a library's lists are built from,
+    /// and this asserts the whole of it rather than the fields it remembers to
+    /// name: a field silently dropped here is a field silently missing from
+    /// every artist list, which is how the thumbnails were lost once already.
+    /// The biography is set on the fixture and has nowhere to go — the type
+    /// has no such field, which is the guarantee that it stays on this side.
     #[test]
-    fn a_summary_carries_the_mbids_and_genres_and_nothing_else() {
+    fn a_summary_carries_the_fields_the_library_lists_are_built_from() {
         let mut meta = ArtistMeta::new();
         meta.add_mbid("mbid-1".to_string());
         meta.add_genre("rock".to_string());
         meta.biography = Some("A long story".to_string());
-        meta.add_thumb_url("thumb.jpg".to_string());
+        meta.biography_source = Some("TheAudioDB".to_string());
+        // Both shapes this field takes: the daemon's own cover art URL, and a
+        // provider's, which is never rewritten and so must survive verbatim.
+        meta.add_thumb_url("/api/coverart/artist/YWJj/image".to_string());
+        meta.add_thumb_url("https://example.com/artist.png".to_string());
 
-        let summary = summarise(&artist("Radiohead", Some(meta), false));
-
-        assert_eq!(summary.name, "Radiohead");
-        assert_eq!(summary.mbid, vec!["mbid-1"]);
-        assert_eq!(summary.genres, vec!["rock"]);
-        assert!(!summary.is_multi);
+        assert_eq!(
+            summarise(&artist("Radiohead", Some(meta), false)),
+            ArtistSummary {
+                name: "Radiohead".to_string(),
+                mbid: vec!["mbid-1".to_string()],
+                is_multi: false,
+                genres: vec!["rock".to_string()],
+                thumb_url: vec![
+                    "/api/coverart/artist/YWJj/image".to_string(),
+                    "https://example.com/artist.png".to_string(),
+                ],
+            }
+        );
     }
 
     /// A name that turns out to cover several artists has its metadata cleared
@@ -432,5 +489,116 @@ mod tests {
         assert!(summary.is_multi);
         assert!(summary.mbid.is_empty());
         assert!(summary.genres.is_empty());
+        assert!(summary.thumb_url.is_empty());
+    }
+
+    /// A sweep world with no clock and no network.
+    struct FakeSweep {
+        seen: Mutex<Log>,
+    }
+
+    #[derive(Default)]
+    struct Log {
+        started: Vec<String>,
+        milestones: Vec<(usize, usize)>,
+        paced: usize,
+    }
+
+    impl FakeSweep {
+        fn new() -> Self {
+            FakeSweep { seen: Mutex::new(Log::default()) }
+        }
+    }
+
+    impl Sweep for FakeSweep {
+        fn update(&self, reference: &ArtistRef) -> Artist {
+            let mut meta = ArtistMeta::new();
+            meta.add_mbid(format!("mbid-{}", reference.id));
+            artist(&reference.name, Some(meta), false)
+        }
+        fn starting(&self, artist_name: &str, _index: usize, _total: usize) {
+            self.seen.lock().started.push(artist_name.to_string());
+        }
+        fn milestone(&self, count: usize, total: usize) {
+            self.seen.lock().milestones.push((count, total));
+        }
+        fn pace(&self) {
+            self.seen.lock().paced += 1;
+        }
+    }
+
+    #[derive(Default)]
+    struct Recording(Mutex<Vec<EnrichmentBatch>>);
+
+    impl EnrichmentSink for Recording {
+        fn apply(&self, batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
+            self.0.lock().push(batch);
+            Ok(Applied::default())
+        }
+    }
+
+    fn refs(count: usize) -> Vec<ArtistRef> {
+        (0..count)
+            .map(|i| ArtistRef { id: i.to_string(), name: format!("Artist {}", i) })
+            .collect()
+    }
+
+    /// Results accumulate and flush at the batch boundary, not one per artist:
+    /// a library bumps its version once per batch, so flushing per artist
+    /// would invalidate every client's cached list once per artist.
+    #[test]
+    fn results_accumulate_and_flush_at_the_batch_boundary() {
+        let io = FakeSweep::new();
+        let sink = Arc::new(Recording::default());
+        let mut sender = BatchSender::new(sink.clone(), None);
+
+        sweep_artists(refs(120), &io, &mut sender);
+
+        let batches = sink.0.lock();
+        let sizes: Vec<usize> = batches.iter().map(|b| b.artists.len()).collect();
+        assert_eq!(sizes, vec![BATCH_SIZE, BATCH_SIZE, 20], "two full batches, then the rest");
+        assert_eq!(batches[0].artists[0].name, "Artist 0", "and in the order they were swept");
+        assert_eq!(batches[0].artists[0].mbid, vec!["mbid-0"], "carrying what was found");
+        assert_eq!(batches[2].artists[19].name, "Artist 119");
+    }
+
+    /// Every artist costs a lookup, so every artist is paced — the asymmetry
+    /// with the album sweep, where a cached answer costs nothing, is
+    /// deliberate. Milestones stay on their every-tenth schedule.
+    #[test]
+    fn every_artist_is_paced_and_the_milestones_keep_their_schedule() {
+        let io = FakeSweep::new();
+        let sink = Arc::new(Recording::default());
+        let mut sender = BatchSender::new(sink, None);
+
+        sweep_artists(refs(25), &io, &mut sender);
+
+        let seen = io.seen.lock();
+        assert_eq!(seen.started.len(), 25);
+        assert_eq!(seen.paced, 25);
+        assert_eq!(seen.milestones, vec![(10, 25), (20, 25), (25, 25)]);
+    }
+
+    /// A refusal stops the sweep where it stands rather than looking up the
+    /// rest for a library that will not take the answers.
+    #[test]
+    fn a_refused_batch_stops_the_sweep() {
+        struct Refusing;
+        impl EnrichmentSink for Refusing {
+            fn apply(&self, _batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
+                Err(EnrichmentError::Stale { current: None })
+            }
+        }
+
+        let io = FakeSweep::new();
+        let mut sender = BatchSender::new(Arc::new(Refusing), Some("v1".to_string()));
+
+        sweep_artists(refs(120), &io, &mut sender);
+
+        assert_eq!(
+            io.seen.lock().started.len(),
+            BATCH_SIZE,
+            "the artists after the refusal were never looked up"
+        );
     }
 }

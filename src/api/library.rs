@@ -2094,7 +2094,13 @@ mod tests {
                     artists: vec![
                         ArtistSummary {
                             name: "Pictured".to_string(),
-                            thumb_url: vec!["/api/coverart/artist/YWJj/image".to_string()],
+                            // Both shapes the field takes: the daemon's own
+                            // cover art URL, and a provider's own, which is
+                            // not the daemon's to rewrite.
+                            thumb_url: vec![
+                                "/api/coverart/artist/YWJj/image".to_string(),
+                                "https://example.com/artist.png".to_string(),
+                            ],
                             ..Default::default()
                         },
                         ArtistSummary {
@@ -2225,6 +2231,11 @@ mod tests {
         assert_eq!(
             body["artists"][0]["thumb_url"][0],
             "/api/coverart/artist/YWJj/image"
+        );
+        assert_eq!(
+            body["artists"][0]["thumb_url"][1],
+            "https://example.com/artist.png",
+            "a provider's own URL reaches the client verbatim"
         );
     }
 

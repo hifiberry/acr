@@ -102,6 +102,26 @@ pub fn apply_batch(
             let Some(artist) = artists.get_mut(&incoming.name) else {
                 continue;
             };
+            // A summary that says several artists share this name and carries
+            // nothing else is one whose metadata the lookup cleared: nothing
+            // it found describes a single artist, so there is nothing to say
+            // about one. Such an entry keeps no metadata at all rather than an
+            // empty one, which is the `"metadata": null` the artist routes
+            // have always served for it.
+            if incoming.is_multi
+                && incoming.mbid.is_empty()
+                && incoming.genres.is_empty()
+                && incoming.thumb_url.is_empty()
+            {
+                if artist.metadata.is_some() || !artist.is_multi {
+                    applied.artists += 1;
+                    changed = true;
+                }
+                artist.metadata = None;
+                artist.is_multi = true;
+                continue;
+            }
+
             // `Artist`'s own `PartialEq` compares ids only — that is identity,
             // not content — so the change check names the fields a summary
             // carries. `metadata` appearing at all is one of them: a client
@@ -653,6 +673,127 @@ mod tests {
         assert_eq!(applied.artists, 1);
         assert!(changed);
         assert!(artists.read()["Bowie"].metadata.is_some());
+    }
+
+    /// A name that covers several artists keeps no metadata at all. The
+    /// lookup clears it — nothing it found describes a single artist — and the
+    /// artist routes serve that as `"metadata": null`, which is what a client
+    /// reads to tell "several artists" from "one artist, nothing known".
+    #[test]
+    fn a_cleared_multi_artist_keeps_no_metadata() {
+        let mut existing = artist("Simon & Garfunkel");
+        existing.metadata = Some(ArtistMeta::new());
+        let (albums, artists) = maps(vec![], vec![existing]);
+
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Simon & Garfunkel".to_string(),
+                    is_multi: true,
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        assert_eq!(applied.artists, 1);
+        assert!(changed);
+        let artists = artists.read();
+        assert!(artists["Simon & Garfunkel"].is_multi);
+        assert!(
+            artists["Simon & Garfunkel"].metadata.is_none(),
+            "a cleared multi-artist serves null, not an empty object"
+        );
+    }
+
+    /// Applying the same cleared multi-artist twice must not look like a
+    /// second change: on MPD that would bump the version and invalidate every
+    /// client's cached list for nothing.
+    #[test]
+    fn clearing_an_already_cleared_multi_artist_is_not_a_change() {
+        let mut existing = artist("Simon & Garfunkel");
+        existing.is_multi = true;
+        let (albums, artists) = maps(vec![], vec![existing]);
+
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Simon & Garfunkel".to_string(),
+                    is_multi: true,
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        assert_eq!(applied.artists, 0);
+        assert!(!changed);
+    }
+
+    /// A multi-artist a lookup did find something for keeps what it found:
+    /// only the empty case means "cleared".
+    #[test]
+    fn a_multi_artist_with_something_to_say_keeps_its_metadata() {
+        let (albums, artists) = maps(vec![], vec![artist("Simon & Garfunkel")]);
+
+        apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Simon & Garfunkel".to_string(),
+                    is_multi: true,
+                    genres: vec!["folk".to_string()],
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        let artists = artists.read();
+        let a = &artists["Simon & Garfunkel"];
+        assert!(a.is_multi);
+        assert_eq!(a.metadata.as_ref().unwrap().genres, vec!["folk"]);
+    }
+
+    /// A provider's own URL is stored exactly as it arrives: it is not the
+    /// daemon's to rewrite, and the artist list route serves it verbatim.
+    #[test]
+    fn an_external_thumbnail_url_is_carried_unchanged() {
+        let (albums, artists) = maps(vec![], vec![artist("Bowie")]);
+
+        apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Bowie".to_string(),
+                    thumb_url: vec![
+                        "/api/coverart/artist/YWJj/image".to_string(),
+                        "https://example.com/artist.png".to_string(),
+                    ],
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        let artists = artists.read();
+        assert_eq!(
+            artists["Bowie"].metadata.as_ref().unwrap().thumb_url,
+            vec![
+                "/api/coverart/artist/YWJj/image".to_string(),
+                "https://example.com/artist.png".to_string(),
+            ]
+        );
     }
 
     /// An empty genre list never clears what a library already read from tags:

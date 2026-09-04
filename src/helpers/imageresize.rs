@@ -112,6 +112,15 @@ fn decode_within_limits(data: &[u8]) -> Result<image::DynamicImage, ResizeError>
     reader.decode().map_err(|e| ResizeError::Decode(e.to_string()))
 }
 
+/// Validate that `data` decodes as an image within this module's limits.
+///
+/// Used by the upload path to accept a user-supplied image only when it is
+/// something the daemon could actually serve. Returns `Ok` for anything the
+/// bounded decoder accepts, and a `ResizeError` otherwise.
+pub fn validate(data: &[u8]) -> Result<(), ResizeError> {
+    decode_within_limits(data).map(|_| ())
+}
+
 /// The ladder used when configuration does not specify one.
 ///
 /// A fixed ladder bounds the cache at six variants per image no matter what
@@ -315,6 +324,29 @@ pub fn is_variant_file_name(file_name: &str) -> bool {
     variant_size_of(stem).is_some()
 }
 
+/// Delete every variant beside an artist image. Called when the original is replaced.
+pub fn remove_variants_of(cache_path: &str) {
+    let path = std::path::Path::new(cache_path);
+    let (Some(parent), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else { return };
+
+    for entry in entries.flatten() {
+        let candidate = entry.path();
+        let Some(candidate_stem) = candidate.file_stem().and_then(|s| s.to_str()) else { continue };
+        if variant_size_of(candidate_stem).is_none() {
+            continue;
+        }
+        if candidate_stem.rsplit_once('@').map(|(base, _)| base) != Some(stem) {
+            continue;
+        }
+        if let Err(e) = std::fs::remove_file(&candidate) {
+            warn!("Failed to remove artist image variant {}: {}", candidate.display(), e);
+        }
+    }
+}
+
 /// A stable description of the ladder, stored beside the cache so a future change
 /// to the rungs can purge variants that no longer correspond to anything.
 pub fn ladder_fingerprint() -> String {
@@ -383,6 +415,24 @@ mod tests {
     fn equal_to_target_is_left_alone() {
         let src = opaque_png(400, 400);
         assert!(matches!(resize(&src, 400).unwrap(), Resized::Original));
+    }
+
+    #[test]
+    fn validate_accepts_a_decodable_image() {
+        let src = opaque_png(400, 400);
+        assert!(validate(&src).is_ok());
+        let alpha = alpha_png(400, 400);
+        assert!(validate(&alpha).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_non_image_bytes() {
+        assert!(validate(b"this is definitely not an image").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_bytes() {
+        assert!(validate(b"").is_err());
     }
 
     #[test]
@@ -461,6 +511,24 @@ mod tests {
         // An '@' that is not followed only by digits is not a variant marker.
         assert!(!is_variant_file_name("live@wembley.jpg"));
         assert!(!is_variant_file_name("cover@.jpg"));
+    }
+
+    #[test]
+    fn removing_variants_deletes_only_the_matching_base() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let original = dir.path().join("custom.jpg");
+        let stale_variant = dir.path().join("custom@400.jpg");
+        let unrelated_variant = dir.path().join("cover@200.jpg");
+
+        std::fs::write(&original, b"original bytes").unwrap();
+        std::fs::write(&stale_variant, b"stale thumbnail").unwrap();
+        std::fs::write(&unrelated_variant, b"unrelated thumbnail").unwrap();
+
+        remove_variants_of(original.to_str().unwrap());
+
+        assert!(original.exists(), "the original image must survive");
+        assert!(!stale_variant.exists(), "the stale variant must be removed");
+        assert!(unrelated_variant.exists(), "an unrelated base's variant must survive");
     }
 
     #[test]

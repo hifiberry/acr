@@ -410,12 +410,27 @@ impl ImageCache {
             expires_at,
         };
 
-        // Store metadata in attribute cache
-        self.store_image_metadata(&path_str, &metadata)?;
+        // From here on the bytes are on disk, and everything that follows is
+        // bookkeeping: the metadata record and the expiry map are read by the
+        // statistics scan and by `get_image_metadata_info`, never to find or
+        // serve an image -- `image_exists` and `get_image_data` go straight
+        // to the filesystem. Returning the failure would report an image the
+        // daemon will happily serve from the next request onwards as not
+        // stored, and through the download `POST /coverart/artist/<b64>/update`
+        // performs that report
+        // reaches a user. The attribute cache being unavailable is a state a device
+        // can genuinely be in (a full disk, a damaged attributes.db, a
+        // directory that is not writable after an update), so this is logged
+        // as the degraded success it is rather than propagated.
+        if let Err(e) = self.store_image_metadata(&path_str, &metadata) {
+            warn!("Stored image {} but could not record its metadata: {}", path_str, e);
+        }
 
         // Set expiry if provided (for backward compatibility)
         if let Some(expiry) = expiry_time {
-            self.set_image_expiry(path_ref, expiry)?;
+            if let Err(e) = self.set_image_expiry(path_ref, expiry) {
+                warn!("Stored image {} but could not record its expiry: {}", path_str, e);
+            }
         }
 
         debug!("Stored image metadata for: {}", path_str);
@@ -1418,6 +1433,48 @@ mod tests {
         let retrieved = cache.get_image_data("test_image.jpg");
         assert!(retrieved.is_ok());
         assert_eq!(retrieved.unwrap(), test_data);
+    }
+
+    /// A metadata failure after the bytes are written is a degraded success,
+    /// not a failed store.
+    ///
+    /// This is the shape that made the artist image endpoints answer
+    /// `success: false` for an image that was on disk and served from the next
+    /// request onwards: the file write lands, and the metadata record — the
+    /// last step of the store — fails because the attribute cache is not
+    /// available.
+    ///
+    /// The cache is disabled rather than pointed at an unwritable path because
+    /// `reconfigure_with_directory` leaves the previous database in place when
+    /// it fails, so a bad path reproduces nothing. Disabling it is why this
+    /// test is `#[serial]` and why the three tests in `attributecache` that
+    /// use the same singleton are too.
+    #[test]
+    #[serial]
+    fn a_metadata_failure_does_not_undo_a_written_image() {
+        init_test_attribute_cache();
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().to_str().unwrap();
+        let expiry_path = temp_dir.path().join("expiry.json");
+        let cache = ImageCache::with_custom_expiry_path(cache_path, &expiry_path);
+
+        let test_data = b"test image data";
+        attributecache::get_attribute_cache().enable(false);
+        let result = cache.store_image("degraded.jpg", test_data);
+        // Restored before the assertions, so a failing assertion does not
+        // leave the singleton disabled for the rest of the suite.
+        attributecache::get_attribute_cache().enable(true);
+
+        assert!(
+            result.is_ok(),
+            "an image whose bytes are on disk must not be reported as not stored: {:?}",
+            result
+        );
+        assert_eq!(
+            cache.get_image_data("degraded.jpg").expect("the image is readable"),
+            test_data
+        );
     }
 
     #[test]

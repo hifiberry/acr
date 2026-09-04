@@ -134,11 +134,14 @@ fn analyze_remote_image(url: &str) -> Result<ImageMetadata, String> {
 
 /// Detect an image's format and dimensions from its first bytes.
 ///
-/// `pub(crate)` rather than private because localised external cover art
-/// sniffs the bytes it is about to store: the file extension it writes has to
-/// come from the image itself, not from a field the endpoint filled in, and
-/// bytes that are not a recognised image must be refused rather than served
-/// to clients as a broken picture.
+/// `pub(crate)` rather than private because two callers sniff bytes rather
+/// than trust a name. Localised external cover art sniffs what it is about to
+/// store: the extension it writes has to come from the image itself, not from
+/// a field the endpoint filled in, and bytes that are not a recognised image
+/// must be refused rather than served to clients as a broken picture. The
+/// artist image listing sniffs what it is about to report, so a file whose
+/// header will not parse is dropped from the set instead of being described
+/// with invented dimensions.
 pub(crate) fn detect_image_dimensions<R: BufRead + Seek>(reader: &mut R) -> Result<(u32, u32, String), String> {
     // Read the first few bytes to determine format
     let mut header = [0u8; 32];

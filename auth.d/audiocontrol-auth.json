@@ -2,7 +2,8 @@
   { "tier":"ok","methods":["GET"],"paths":[
     "/version","/capabilities","/player","/players","/now-playing","/player/*/queue","/player/*/meta",
     "/player/*/meta/*","/library","/library/*","/library/*/*","/library/*/*/*","/library/*/*/*/*",
-    "/coverart/*","/coverart/*/*","/coverart/*/*/*","/imagecache/*","/audiodb/*/*","/lyrics/*/*",
+    "/coverart/*","/coverart/*/*","/coverart/*/*/*","/coverart/artist/*/images","/coverart/artist/*/image/*",
+    "/imagecache/*","/audiodb/*/*","/lyrics/*/*",
     "/volume/info","/volume/state","/favourites/is_favourite","/favourites/providers",
     "/inputs","/inputs/","/cache/stats","/background/jobs","/background/jobs/*",
     "/genres/config","/genres/user-config","/events","/events/*","/plugins/actions",
@@ -13,6 +14,6 @@
     "/library/*/update",
     "/volume/set","/volume/increase","/volume/decrease","/volume/mute",
     "/favourites/add","/lyrics/*","/spotify/command/*","/spotify/search",
-    "/m3u/parse","/coverart/artist/*/update"] },
-  { "tier":"ok","methods":["DELETE"],"paths":["/favourites/remove"] },
+    "/m3u/parse","/coverart/artist/*/update","/coverart/artist/*/upload"] },
+  { "tier":"ok","methods":["DELETE"],"paths":["/favourites/remove","/coverart/artist/*/image/*"] },
   { "tier":"risky","methods":["*"],"paths":["/**"] } ]}

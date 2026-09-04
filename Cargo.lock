@@ -68,7 +68,6 @@ dependencies = [
 name = "acr-web"
 version = "0.20.0"
 dependencies = [
- "acr-images",
  "acr-store",
  "acr-types",
  "log",
@@ -373,7 +372,6 @@ dependencies = [
  "crossbeam",
  "deunicode",
  "env_logger",
- "hex",
  "image",
  "log",
  "md5",

@@ -38,9 +38,7 @@ parking_lot.workspace = true
 crossbeam.workspace = true
 aes-gcm.workspace = true
 rand.workspace = true
-hex.workspace = true
 url.workspace = true
-tokio.workspace = true
 # For the command line tools in src/bin/
 clap.workspace = true
 env_logger.workspace = true
@@ -52,6 +50,8 @@ md5.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 serial_test.workspace = true
+# Only #[tokio::test] uses this; nothing under src/ or src/bin/ is async.
+tokio.workspace = true
 
 # The metadata command line tools. Named explicitly so the installed binaries
 # keep the names they had when these were targets of the root package.

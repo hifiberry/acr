@@ -1,6 +1,6 @@
 use crate::data::{PlaybackState, Song, LoopMode, PlayerCapabilitySet};
 use serde::{Serialize, Deserialize};
-use std::fmt; // Added for Display
+use std::fmt;
 
 pub use acr_types::PlayerSource;
 

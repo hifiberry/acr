@@ -80,7 +80,7 @@ impl LoggingSubsystem {
             LoggingSubsystem::Api => "audiocontrol::api",
             LoggingSubsystem::Players => "audiocontrol::players,audiocontrol::players::mpd::libraryloader,audiocontrol::players::lms::libraryloader",
             LoggingSubsystem::Cache => "acr_store::attributecache,acr_store::imagecache",
-            LoggingSubsystem::Metadata => "audiocontrol_metadata::musicbrainz,audiocontrol_metadata::theaudiodb,audiocontrol_metadata::lastfm",
+            LoggingSubsystem::Metadata => "audiocontrol_metadata::musicbrainz,audiocontrol_metadata::theaudiodb,audiocontrol_metadata::lastfm,audiocontrol_metadata::library_enricher",
             LoggingSubsystem::Spotify => "audiocontrol_metadata::spotify",
             // The WebSocket endpoint is api::events. `api::websocket` has never
             // existed in this repository -- unlike the rest of this list, that
@@ -90,9 +90,12 @@ impl LoggingSubsystem {
             LoggingSubsystem::Security => "audiocontrol_metadata::security_store",
             LoggingSubsystem::Http => "acr_http::http_client,reqwest,hyper",
             LoggingSubsystem::Network => "tokio,mio",
-            // Was `sled`, which this workspace has never depended on. The
-            // database is SQLite through rusqlite.
-            LoggingSubsystem::Database => "rusqlite",
+            // Was `sled`, which this workspace has never depended on, and then
+            // briefly `rusqlite` -- but rusqlite has no `log` dependency and
+            // emits no records through this facade, so that prefix matched
+            // nothing either. The settings database is the thing this
+            // subsystem is for; it logs its own opens, reads and writes.
+            LoggingSubsystem::Database => "acr_store::settingsdb",
             LoggingSubsystem::Io => "audiocontrol::helpers::stream_helper",
             LoggingSubsystem::Events => "audiocontrol::audiocontrol::eventbus",
             // Both: this crate's own config module logs, and the service
@@ -578,7 +581,7 @@ mod tests {
     /// default, so adding an unverifiable target is a deliberate act and shows
     /// up in a diff.
     const FOREIGN_TARGETS: &[&str] = &[
-        "rocket", "rocket_ws", "serde", "reqwest", "hyper", "tokio", "mio", "rusqlite",
+        "rocket", "rocket_ws", "serde", "reqwest", "hyper", "tokio", "mio",
     ];
 
     /// Resolve `crate_name::a::b` to the file or directory that defines it.
@@ -623,10 +626,16 @@ mod tests {
     /// only when run from a checkout; run elsewhere it passes vacuously.
     #[test]
     fn a_subsystem_prefix_names_a_module_that_exists() {
-        if !std::path::Path::new("crates/acr-types/src/lib.rs").exists() {
-            // Not running from the workspace root; nothing to read.
-            return;
-        }
+        // `cargo test` always runs the root package with the working directory
+        // at the workspace root, so this path always exists in practice. A
+        // silent `return` here would make the test pass vacuously if that ever
+        // stopped being true (a packaging or vendoring arrangement that changed
+        // the CWD, say); panicking instead keeps that failure visible instead
+        // of looking like a clean pass.
+        assert!(
+            std::path::Path::new("crates/acr-types/src/lib.rs").exists(),
+            "not running from the workspace root; cannot check module prefixes"
+        );
 
         let mut broken = Vec::new();
         for subsystem in LoggingSubsystem::all() {

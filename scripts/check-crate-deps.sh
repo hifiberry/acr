@@ -27,25 +27,66 @@
 # evidence of nothing.
 set -eu
 fail=0
-if cargo tree -p audiocontrol --no-default-features --edges normal --prefix none 2>/dev/null | grep -q '^audiocontrol-metadata '; then
-  echo "the audiocontrol library depends on audiocontrol-metadata" >&2; fail=1
+
+# Runs `cargo tree` with the given arguments and prints its stdout on success.
+# A bare `cargo tree ... 2>/dev/null | grep -q` cannot tell "no such edge" from
+# "cargo tree itself failed" -- a manifest error, a lock mismatch or a
+# registry problem all produce empty output piped into a grep that then
+# reports the graph clean. This captures the command's own exit status so a
+# failure here fails the script instead of passing every assertion vacuously.
+tree_output=""
+run_tree() {
+  if ! tree_output=$(cargo tree "$@" --prefix none 2>&1); then
+    echo "cargo tree $* failed:" >&2
+    echo "$tree_output" >&2
+    return 1
+  fi
+}
+
+if run_tree -p audiocontrol --no-default-features --edges normal; then
+  if echo "$tree_output" | grep -q '^audiocontrol-metadata '; then
+    echo "the audiocontrol library depends on audiocontrol-metadata" >&2; fail=1
+  fi
+else
+  fail=1
 fi
-if cargo tree -p audiocontrol-metadata --edges normal --prefix none 2>/dev/null | grep -q '^audiocontrol '; then
-  echo "audiocontrol-metadata depends on audiocontrol" >&2; fail=1
+if run_tree -p audiocontrol-metadata --edges normal; then
+  if echo "$tree_output" | grep -q '^audiocontrol '; then
+    echo "audiocontrol-metadata depends on audiocontrol" >&2; fail=1
+  fi
+else
+  fail=1
 fi
-# Crates the player package must not *declare*. --depth 1 rather than the whole
-# graph because one of them cannot be kept out of it: env_logger, which the
-# daemon and every tool need, pulls regex in through env_filter. The rule this
-# enforces is about what the manifest asks for, which is the thing a change can
-# get wrong; moka and aes-gcm reach the player library no other way.
-for forbidden in aes-gcm moka regex; do
-  if cargo tree -p audiocontrol --no-default-features --edges normal --depth 1 --prefix none 2>/dev/null | grep -q "^$forbidden "; then
-    echo "audiocontrol depends on $forbidden, which belongs to the metadata daemon" >&2; fail=1
+# Crates the player package must not *declare*. moka and aes-gcm are checked
+# against the whole graph, since nothing else pulls them in and a future
+# shared crate that started depending on either must still be caught. regex
+# is the one exception: env_logger, which the daemon and every tool need,
+# pulls it in through env_filter, so it is checked only at depth 1 -- the
+# rule this enforces is about what the manifest asks for, which is the thing
+# a change can get wrong.
+for forbidden in aes-gcm moka; do
+  if run_tree -p audiocontrol --no-default-features --edges normal; then
+    if echo "$tree_output" | grep -q "^$forbidden "; then
+      echo "audiocontrol depends on $forbidden, which belongs to the metadata daemon" >&2; fail=1
+    fi
+  else
+    fail=1
   fi
 done
+if run_tree -p audiocontrol --no-default-features --edges normal --depth 1; then
+  if echo "$tree_output" | grep -q '^regex '; then
+    echo "audiocontrol depends on regex, which belongs to the metadata daemon" >&2; fail=1
+  fi
+else
+  fail=1
+fi
 for forbidden in dbus alsa evdev mpd lofty; do
-  if cargo tree -p audiocontrol-metadata --edges normal --prefix none 2>/dev/null | grep -q "^$forbidden "; then
-    echo "audiocontrol-metadata links $forbidden, which belongs to the player daemon" >&2; fail=1
+  if run_tree -p audiocontrol-metadata --edges normal; then
+    if echo "$tree_output" | grep -q "^$forbidden "; then
+      echo "audiocontrol-metadata links $forbidden, which belongs to the player daemon" >&2; fail=1
+    fi
+  else
+    fail=1
   fi
 done
 # The player-only daemon still builds. This is a compile, not a graph query, so

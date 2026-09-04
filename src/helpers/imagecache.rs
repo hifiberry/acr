@@ -380,16 +380,16 @@ impl ImageCache {
             }
         }
         
-        // Write the image data to file
-        match File::create(&full_path) {
-            Ok(mut file) => {
-                if let Err(e) = file.write_all(data) {
-                    return Err(format!("Failed to write image data: {}", e));
-                }
-                debug!("Stored image at {}", full_path.display());
-            },
-            Err(e) => return Err(format!("Failed to create image file: {}", e)),
+        // Write through a temporary file and rename, rather than truncating
+        // the destination and filling it in place. Some callers store at a
+        // path derived from the request rather than from the bytes, so the
+        // same path is rewritten when the entry is refreshed -- and a client
+        // reading it during a `File::create` + `write_all` would get a
+        // truncated image from a URL this daemon vouches for.
+        if let Err(e) = write_file_atomically(&full_path, data) {
+            return Err(format!("Failed to write image data: {}", e));
         }
+        debug!("Stored image at {}", full_path.display());
 
         // Create and store metadata
         let path_str = path_ref.to_string_lossy().to_string();
@@ -1119,6 +1119,42 @@ pub fn get_image_cache() -> parking_lot::MutexGuard<'static, ImageCache> {
     IMAGE_CACHE.lock()
 }
 
+/// The cache-relative path an internal cover art URL names, if it safely
+/// names one.
+///
+/// These URLs are the daemon's own route (`/api/imagecache/<path>`): not
+/// something to fetch over HTTP, which would have the daemon call itself, and
+/// not a filesystem path either.
+///
+/// The confinement check is the point of having this in one place. The
+/// remainder after the prefix is handed to `get_full_path`, which is
+/// `base_path.join(path)` — and `join` on an absolute path discards the base
+/// entirely, while `..` segments walk out of the cache directory. The serving
+/// route is protected from both by Rocket's `PathBuf` guard; callers that
+/// strip the prefix from a string get no such guard, so they get this
+/// instead. The URLs come out of an external endpoint's answer, which is
+/// untrusted.
+pub fn relative_path_from_url(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix(crate::constants::API_PREFIX)?;
+    let relative = rest.strip_prefix("/imagecache/")?;
+
+    if relative.is_empty() || relative.starts_with('/') || relative.starts_with('\\') {
+        return None;
+    }
+    if relative
+        .split(['/', '\\'])
+        .any(|segment| segment == ".." || segment.is_empty())
+    {
+        return None;
+    }
+    // A Windows drive letter would also be absolute once joined.
+    if relative.len() >= 2 && relative.as_bytes()[1] == b':' {
+        return None;
+    }
+
+    Some(relative)
+}
+
 /// Get the full path for a relative path in the image cache
 pub fn get_full_path<P: AsRef<Path>>(path: P) -> PathBuf {
     get_image_cache().get_full_path(path)
@@ -1549,6 +1585,50 @@ mod tests {
         // Now should find one file
         assert_eq!(count_provider_files(&test_path, "test_provider"), 1);
         assert!(provider_files_exist(&test_path, "test_provider"));
+    }
+
+    /// These URLs come out of an external endpoint's answer, and the
+    /// remainder is joined onto the cache directory. `join` on an absolute
+    /// path discards the base entirely, and `..` walks out of it, so a
+    /// rejected path here is the difference between reading a cached cover
+    /// and reading whatever the answer named.
+    #[test]
+    fn relative_path_from_url_refuses_to_leave_the_cache() {
+        for url in [
+            "/api/imagecache/../../etc/passwd",
+            "/api/imagecache//etc/passwd",
+            "/api/imagecache/external/../../../etc/passwd",
+            "/api/imagecache/a/../../b.png",
+            "/api/imagecache/",
+            "/api/imagecache/C:/windows/win.ini",
+            "/api/imagecacheother/x.png",
+            "/notapi/imagecache/x.png",
+            "https://img.example/a.jpg",
+        ] {
+            assert_eq!(
+                relative_path_from_url(url),
+                None,
+                "{} must not resolve to a cache path",
+                url
+            );
+        }
+    }
+
+    #[test]
+    fn relative_path_from_url_accepts_an_ordinary_cached_image() {
+        assert_eq!(
+            relative_path_from_url("/api/imagecache/external/llm/abc123.png"),
+            Some("external/llm/abc123.png")
+        );
+        assert_eq!(
+            relative_path_from_url("/api/imagecache/shairportsync/deadbeef.jpg"),
+            Some("shairportsync/deadbeef.jpg")
+        );
+        // A dot-dot inside a name is a name, not a traversal.
+        assert_eq!(
+            relative_path_from_url("/api/imagecache/a..b/c.png"),
+            Some("a..b/c.png")
+        );
     }
 
     #[test]

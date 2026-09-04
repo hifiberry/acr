@@ -224,6 +224,8 @@ mod tests {
             cache_ttl_days: 30,
             negative_cache_ttl_days: 7,
             max_concurrent: 1,
+            localize: false,
+            max_image_bytes: 8 * 1024 * 1024,
         }
     }
 

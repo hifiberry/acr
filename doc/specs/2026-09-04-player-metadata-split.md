@@ -219,10 +219,12 @@ request: if the stored value is empty, `populate_calculated_artist_fields`
 fills it in regardless of whether an image actually exists, so an MPD client
 always sees a URL and a 404 from it means "no image" — exactly the
 "thumbnails need no call" behaviour this spec originally described, and
-still accurate there. The generic and LMS library paths do not do this: they
-serve `Artist.metadata.thumb_url` exactly as stored, so an artist no lookup
-has found an image for serves an empty list on those backends, and the
-field's presence there is the "an image exists" signal a client acts on.
+still accurate there. MPD is the only backend that does this: the LMS
+library implementation has no such pass and serves `Artist.metadata.thumb_url`
+exactly as stored, so on it an artist no lookup has found an image for
+serves an empty list, and the field's presence is the "an image exists"
+signal a client acts on. (The generic push-based backend has no library
+support at all, so it does not enter into this either way.)
 
 In both cases a **stored** value takes precedence and passes through
 verbatim; nothing rewrites or discards it before serving. `ArtistSummary`

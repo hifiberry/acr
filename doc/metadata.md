@@ -510,7 +510,7 @@ Configure priority and behavior for metadata enhancement:
    - Review separator configuration
    - Check for unusual artist name formats
    - Verify artist splitting is enabled
-   - Test with `helpers::sanitize::split_artist_name()`
+   - Test with `acr_types::artist_split::split_artist_with_separators()`
 
 3. **Missing Artist Images**
    - Verify core metadata provides artist name
@@ -545,14 +545,14 @@ Enable debug logging for both core and enriched metadata operations:
   "logging": {
     "level": "debug",
     "modules": {
-      "helpers::artistupdater": "debug",
-      "helpers::theaudiodb": "debug", 
-      "helpers::lastfm": "debug",
-      "helpers::musicbrainz": "debug",
-      "helpers::sanitize": "debug",
-      "data::metadata": "debug",
-      "players::mpris": "debug",
-      "players::generic": "debug"
+      "audiocontrol_metadata::artistupdater": "debug",
+      "audiocontrol_metadata::theaudiodb": "debug", 
+      "audiocontrol_metadata::lastfm": "debug",
+      "audiocontrol_metadata::musicbrainz": "debug",
+      "acr_types::sanitize": "debug",
+      "acr_types::metadata": "debug",
+      "audiocontrol::players::mpris": "debug",
+      "audiocontrol::players::generic": "debug"
     }
   }
 }

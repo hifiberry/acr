@@ -3348,7 +3348,7 @@ The client application should handle all URL types appropriately and can use the
 Cover art providers can be registered programmatically using the global cover art manager:
 
 ```rust
-use crate::helpers::coverart::{get_coverart_manager, CoverartProvider};
+use audiocontrol_metadata::coverart::{get_coverart_manager, CoverartProvider};
 
 // Register a new provider
 let manager = get_coverart_manager();

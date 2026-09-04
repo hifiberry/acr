@@ -305,7 +305,7 @@ You can also specify custom module filters in the `subsystems` section using ful
 {
   "subsystems": {
     "audiocontrol::players::mpd": "trace",
-    "audiocontrol::helpers::spotify": "debug",
+    "audiocontrol_metadata::spotify": "debug",
     "reqwest": "warn",
     "hyper": "error"
   }

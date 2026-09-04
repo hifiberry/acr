@@ -2,7 +2,7 @@ use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use parking_lot::Mutex;
-use crate::data::{Identifier, track::Track};
+use crate::{Identifier, track::Track};
 
 /// Represents an Album in the music database
 #[derive(Debug, Clone)]

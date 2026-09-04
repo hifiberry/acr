@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use serde::{Serialize, Deserialize};
-use crate::data::{Album, Artist, Identifier};
+use crate::{Album, Artist, Identifier};
 
 /// Represents a many-to-many mapping between albums and artists
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -81,7 +81,7 @@ impl Track {
     }
     
     /// Set the ID for this track
-    pub fn with_id(mut self, id: crate::data::Identifier) -> Self {
+    pub fn with_id(mut self, id: crate::Identifier) -> Self {
         self.id = Some(id);
         self
     }

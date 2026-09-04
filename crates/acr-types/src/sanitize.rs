@@ -14,7 +14,7 @@ use deunicode;
 /// 
 /// # Example
 /// ```
-/// use audiocontrol::helpers::sanitize::safe_truncate;
+/// use acr_types::sanitize::safe_truncate;
 /// let truncated = safe_truncate("Hello, 世界!", 8);
 /// assert_eq!(truncated, "Hello, 世");
 /// ```
@@ -78,7 +78,7 @@ pub fn filename_from_string(input: &str) -> String {
 /// 
 /// # Returns
 /// * `String` - A key in the format "<sanitized_artist>/<sanitized_album>"
-pub fn key_from_album(album: &crate::data::Album) -> String {
+pub fn key_from_album(album: &crate::Album) -> String {
     // Get the list of artists for the album
     let artists = {
         let guard = album.artists.lock();

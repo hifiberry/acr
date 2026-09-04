@@ -19,7 +19,6 @@ pub mod memory_report;
 pub mod stream_helper;
 pub mod musicbrainz;
 pub mod theaudiodb;
-pub mod sanitize;
 pub mod macaddress;
 pub mod http_client;
 pub mod ratelimit;
@@ -35,7 +34,6 @@ pub mod favourites;
 pub mod genre_cleanup;
 pub mod volume;
 pub mod global_volume;
-pub mod url_encoding;
 pub mod configurator;
 pub mod lyrics;
 pub mod songtitlesplitter;
@@ -49,6 +47,7 @@ pub mod shairportsync_messages;
 
 use crate::data::artist::Artist;
 
+pub use acr_types::{sanitize, url_encoding};
 pub use playback_progress::PlayerProgress;
 
 /// Trait for services that can update artist metadata

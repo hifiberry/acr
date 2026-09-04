@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
-use crate::data::{Identifier, metadata::ArtistMeta};
+use crate::{Identifier, metadata::ArtistMeta};
 
 /// Represents an Artist in the music database
 #[derive(Debug, Clone)]

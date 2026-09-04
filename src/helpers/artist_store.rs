@@ -59,8 +59,8 @@ const IMAGE_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// doing the fetch, it is waiting on one, and that fetch is itself allowed to
 /// run for the full download timeout before failing. Waiting that long too
 /// would mean waiting out the winner's own deadline and then still finding
-/// nothing -- so this caller gives up first and answers with whatever it had
-/// before, rather than blocking a second request behind the first.
+/// nothing -- so this caller gives up first and reports no image, rather than
+/// holding a second request open for the whole of the first one's deadline.
 const IMAGE_DOWNLOAD_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long to sleep between polls while waiting on someone else's download.

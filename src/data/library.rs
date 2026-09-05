@@ -917,6 +917,16 @@ mod tests {
     /// time generously: an id-indexed lookup finishes this in well under a
     /// second even in an unoptimised test build, while a reintroduced
     /// per-entry scan does not.
+    ///
+    /// The bound is wall-clock, so the margins are worth recording. On an idle
+    /// machine this finishes in about 0.4 s, and with every core saturated in
+    /// about 0.6 s, against the 2 s bound; a reintroduced per-entry scan takes
+    /// about 4 s. If it ever fails on a loaded build host, raising the bound is
+    /// the wrong fix -- 2 s is only half the regression it exists to catch, so
+    /// a higher bound stops catching it. Replace it with something
+    /// scale-invariant instead: the ratio between two library sizes, or a
+    /// direct count of comparisons, neither of which depends on how busy the
+    /// machine is.
     #[test]
     fn apply_batch_stays_fast_against_a_large_library() {
         const ALBUM_COUNT: u64 = 20_000;

@@ -1437,6 +1437,11 @@ Retrieves a list of all active action plugins.
   }
   ```
 
+Every entry in the configuration's `action_plugins` array that loads is listed
+here, in configuration order. `Lastfm` is listed for the `lastfm` entry as it
+always has been, although the scrobbling that entry configures now runs as a
+worker rather than as an action plugin.
+
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/plugins/actions
@@ -3343,7 +3348,7 @@ The client application should handle all URL types appropriately and can use the
 Cover art providers can be registered programmatically using the global cover art manager:
 
 ```rust
-use crate::helpers::coverart::{get_coverart_manager, CoverartProvider};
+use audiocontrol_metadata::coverart::{get_coverart_manager, CoverartProvider};
 
 // Register a new provider
 let manager = get_coverart_manager();

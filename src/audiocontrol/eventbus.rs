@@ -116,6 +116,16 @@ impl EventBus {
         let mut subscribers = self.subscribers.lock();
         subscribers.remove(&id).is_some()
     }
+
+    /// How many subscribers are currently registered.
+    ///
+    /// `publish` uses `try_send` and discards the error, so a subscriber whose
+    /// receiver has been dropped stays in the map until it unsubscribes. This
+    /// is how a subscriber that is meant to clean up after itself can be shown
+    /// to have done so.
+    pub fn subscriber_count(&self) -> usize {
+        self.subscribers.lock().len()
+    }
     
     /// Publish an event to all relevant subscribers
     pub fn publish(&self, event: PlayerEvent) {

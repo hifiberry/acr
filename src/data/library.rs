@@ -1,6 +1,10 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use parking_lot::RwLock;
+use acr_types::enrichment::{merge_genres, Applied, EnrichmentBatch};
+use acr_types::ArtistMeta;
 use crate::data::album::Album;
 use crate::data::artist::Artist;
 use crate::data::Identifier;
@@ -39,7 +43,12 @@ impl Error for LibraryError {}
 // Library Version Counter
 //
 
-/// A counter that increases whenever a library's contents change.
+/// The change counter behind the library ETags.
+///
+/// Lives here, not in `acr-types`: the metadata crate never touches it — it
+/// hands back an `Option<String>` token in `EnrichmentBatch`/`Applied`, and
+/// the bump happens on the player side (see `MPDLibrary::apply`). Nothing
+/// outside this package constructs or reads one.
 ///
 /// Cloning shares the counter: the library keeps one handle and hands clones to
 /// the background updaters that mutate it, so a bump from any of them is visible
@@ -105,6 +114,126 @@ impl LibraryVersion {
     pub fn token(&self) -> String {
         format!("{}-{}", self.nonce, self.get())
     }
+}
+
+//
+// Enrichment merge
+//
+
+/// Merge one enrichment batch into a library's album and artist maps.
+///
+/// Every backend that implements `EnrichmentSink` calls this. The rules a
+/// client can observe — what replaces what, what counts as a change, how an
+/// album in the batch is found in a map keyed by name — live here once, so two
+/// backends cannot drift into merging the same batch differently.
+///
+/// The caller keeps two decisions this function cannot make: the staleness
+/// check against its own library version (only it knows whether it has one),
+/// and what to do with the `bool` returned here, which says whether anything a
+/// client can observe changed. A backend that tracks a version bumps it exactly
+/// once when that is true, and never when it is false: a mutation that does not
+/// bump serves stale lists, and a bump without a mutation invalidates every
+/// client's cache for nothing.
+///
+/// Merging happens in place, under one write lock per map, which is what makes
+/// a batch idempotent within itself: a repeated entry is compared against what
+/// the earlier one already wrote, so it merges once and is counted once.
+pub fn apply_batch(
+    albums: &RwLock<HashMap<String, Album>>,
+    artists: &RwLock<HashMap<String, Artist>>,
+    batch: &EnrichmentBatch,
+) -> (Applied, bool) {
+    let mut applied = Applied::default();
+    let mut changed = false;
+
+    if !batch.albums.is_empty() {
+        let mut albums = albums.write();
+        // The map is keyed by album name, but a batch carries ids: a name is
+        // not unique across artists and the metadata side never sees the key.
+        // This is the lookup `albumupdater` did by id before the seam.
+        //
+        // Matching by id still has to happen without an O(n) scan per batch
+        // entry: on a 10 000-album library, `values_mut().find(...)` per
+        // incoming album turns a 50-entry batch into 500 000 allocating
+        // comparisons under this write lock, ~200 times over a full sweep.
+        // Building the id -> name index once per batch keeps the per-entry
+        // cost at a hash lookup.
+        let id_to_name: HashMap<String, String> = albums
+            .iter()
+            .map(|(name, album)| (album.id.to_string(), name.clone()))
+            .collect();
+
+        for incoming in &batch.albums {
+            let Some(name) = id_to_name.get(&incoming.id) else {
+                continue;
+            };
+            if let Some(album) = albums.get_mut(name) {
+                if merge_genres(&mut album.genres, &incoming.genres) {
+                    applied.albums += 1;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if !batch.artists.is_empty() {
+        let mut artists = artists.write();
+        for incoming in &batch.artists {
+            let Some(artist) = artists.get_mut(&incoming.name) else {
+                continue;
+            };
+            // A summary that says several artists share this name and carries
+            // nothing else is one whose metadata the lookup cleared: nothing
+            // it found describes a single artist, so there is nothing to say
+            // about one. Such an entry keeps no metadata at all rather than an
+            // empty one, which is the `"metadata": null` the artist routes
+            // have always served for it.
+            if incoming.is_multi
+                && incoming.mbid.is_empty()
+                && incoming.genres.is_empty()
+                && incoming.thumb_url.is_empty()
+            {
+                if artist.metadata.is_some() || !artist.is_multi {
+                    applied.artists += 1;
+                    changed = true;
+                }
+                artist.metadata = None;
+                artist.is_multi = true;
+                continue;
+            }
+
+            // `Artist`'s own `PartialEq` compares ids only — that is identity,
+            // not content — so the change check names the fields a summary
+            // carries. `metadata` appearing at all is one of them: a client
+            // sees `null` become `{}`.
+            let was_multi = artist.is_multi;
+            let had_metadata = artist.metadata.is_some();
+            let meta = artist.metadata.get_or_insert_with(ArtistMeta::new);
+            let mbid_changed = meta.mbid != incoming.mbid;
+            let genres_changed = meta.genres != incoming.genres;
+            let thumbs_changed = meta.thumb_url != incoming.thumb_url;
+            meta.mbid = incoming.mbid.clone();
+            meta.genres = incoming.genres.clone();
+            // Stored as given, empty included: the metadata side writes a
+            // thumbnail URL only when a lookup found an image, so an empty
+            // list is the answer "there is none" and the artist list route
+            // serves it as such.
+            meta.thumb_url = incoming.thumb_url.clone();
+            artist.is_multi = incoming.is_multi;
+
+            if !had_metadata
+                || mbid_changed
+                || genres_changed
+                || thumbs_changed
+                || was_multi != incoming.is_multi
+            {
+                applied.artists += 1;
+                changed = true;
+            }
+        }
+    }
+
+    (applied, changed)
 }
 
 //
@@ -382,18 +511,6 @@ pub trait LibraryInterface {
     /// returns a tuple of (image data, mime type)
     fn get_image(&self, identifier: String) -> Option<(Vec<u8>, String)>;
     
-    /// Update artist metadata in background
-    ///
-    /// This method should update the metadata for all artists in the library using
-    /// background worker thread. The default implementation does nothing.
-    fn update_artist_metadata(&self);
-
-    /// Update album genre metadata in background
-    ///
-    /// Looks up genres from MusicBrainz for albums that have no genre tags and
-    /// caches the results locally. The default implementation does nothing.
-    fn update_album_metadata(&self) {}
-
     /// An opaque token that changes whenever this library's contents change.
     ///
     /// `None` means the backend does not track changes. Callers must then emit
@@ -497,7 +614,6 @@ mod tests {
         }
         fn as_any(&self) -> &dyn std::any::Any { self }
         fn get_image(&self, _identifier: String) -> Option<(Vec<u8>, String)> { None }
-        fn update_artist_metadata(&self) {}
     }
 
     /// A backend that does not override the method must keep the answer it gave
@@ -518,6 +634,336 @@ mod tests {
         let library = CountingLibrary { albums: Vec::new(), calls: Mutex::new(0) };
 
         assert_eq!(library.album_count_for_artist(&Identifier::Numeric(7)), 0);
+    }
+
+    fn maps(
+        albums: Vec<Album>,
+        artists: Vec<Artist>,
+    ) -> (RwLock<HashMap<String, Album>>, RwLock<HashMap<String, Artist>>) {
+        (
+            RwLock::new(albums.into_iter().map(|a| (a.name.clone(), a)).collect()),
+            RwLock::new(artists.into_iter().map(|a| (a.name.clone(), a)).collect()),
+        )
+    }
+
+    fn artist(name: &str) -> Artist {
+        Artist {
+            id: Identifier::String(name.to_string()),
+            name: name.to_string(),
+            is_multi: false,
+            metadata: None,
+        }
+    }
+
+    /// A batch that repeats an entry must merge it once. The merge is by
+    /// comparison against the map, and the map is written in place, so the
+    /// second copy is compared against what the first one wrote.
+    #[test]
+    fn a_repeated_entry_in_one_batch_is_applied_once() {
+        let (albums, artists) = maps(vec![album(1)], vec![]);
+        let genres = acr_types::enrichment::AlbumGenres {
+            id: "1".to_string(),
+            genres: vec!["rock".to_string()],
+        };
+        let batch = EnrichmentBatch {
+            library_version: None,
+            artists: vec![],
+            albums: vec![genres.clone(), genres],
+        };
+
+        let (applied, changed) = apply_batch(&albums, &artists, &batch);
+
+        assert_eq!(applied.albums, 1, "the same genres twice is one change");
+        assert!(changed);
+        assert_eq!(albums.read()["Album 1"].genres, vec!["rock"]);
+    }
+
+    /// Nothing to merge must not report a change: a caller that tracks a
+    /// version bumps on this bool, and a bump invalidates every client's cache.
+    #[test]
+    fn a_batch_that_changes_nothing_reports_no_change() {
+        let mut existing = album(1);
+        existing.genres = vec!["rock".to_string()];
+        let (albums, artists) = maps(vec![existing], vec![]);
+
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![],
+                albums: vec![acr_types::enrichment::AlbumGenres {
+                    id: "1".to_string(),
+                    genres: vec!["rock".to_string()],
+                }],
+            },
+        );
+
+        assert_eq!(applied.albums, 0);
+        assert!(!changed);
+    }
+
+    /// An id no longer in the library is skipped rather than inserted: the
+    /// batch was computed against a list this library may since have reloaded.
+    #[test]
+    fn an_entry_for_something_the_library_does_not_have_is_ignored() {
+        let (albums, artists) = maps(vec![album(1)], vec![artist("Bowie")]);
+
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Someone Else".to_string(),
+                    mbid: vec!["x".to_string()],
+                    ..Default::default()
+                }],
+                albums: vec![acr_types::enrichment::AlbumGenres {
+                    id: "77".to_string(),
+                    genres: vec!["rock".to_string()],
+                }],
+            },
+        );
+
+        assert_eq!((applied.albums, applied.artists), (0, 0));
+        assert!(!changed);
+        assert_eq!(artists.read().len(), 1, "nothing may be inserted");
+    }
+
+    /// `metadata` going from absent to present is visible in the JSON a client
+    /// reads, so it counts as a change even when every field in it is empty.
+    #[test]
+    fn giving_an_artist_its_first_metadata_is_a_change() {
+        let (albums, artists) = maps(vec![], vec![artist("Bowie")]);
+
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Bowie".to_string(),
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        assert_eq!(applied.artists, 1);
+        assert!(changed);
+        assert!(artists.read()["Bowie"].metadata.is_some());
+    }
+
+    /// A name that covers several artists keeps no metadata at all. The
+    /// lookup clears it — nothing it found describes a single artist — and the
+    /// artist routes serve that as `"metadata": null`, which is what a client
+    /// reads to tell "several artists" from "one artist, nothing known".
+    #[test]
+    fn a_cleared_multi_artist_keeps_no_metadata() {
+        let mut existing = artist("Simon & Garfunkel");
+        existing.metadata = Some(ArtistMeta::new());
+        let (albums, artists) = maps(vec![], vec![existing]);
+
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Simon & Garfunkel".to_string(),
+                    is_multi: true,
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        assert_eq!(applied.artists, 1);
+        assert!(changed);
+        let artists = artists.read();
+        assert!(artists["Simon & Garfunkel"].is_multi);
+        assert!(
+            artists["Simon & Garfunkel"].metadata.is_none(),
+            "a cleared multi-artist serves null, not an empty object"
+        );
+    }
+
+    /// Applying the same cleared multi-artist twice must not look like a
+    /// second change: on MPD that would bump the version and invalidate every
+    /// client's cached list for nothing.
+    #[test]
+    fn clearing_an_already_cleared_multi_artist_is_not_a_change() {
+        let mut existing = artist("Simon & Garfunkel");
+        existing.is_multi = true;
+        let (albums, artists) = maps(vec![], vec![existing]);
+
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Simon & Garfunkel".to_string(),
+                    is_multi: true,
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        assert_eq!(applied.artists, 0);
+        assert!(!changed);
+    }
+
+    /// A multi-artist a lookup did find something for keeps what it found:
+    /// only the empty case means "cleared".
+    #[test]
+    fn a_multi_artist_with_something_to_say_keeps_its_metadata() {
+        let (albums, artists) = maps(vec![], vec![artist("Simon & Garfunkel")]);
+
+        apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Simon & Garfunkel".to_string(),
+                    is_multi: true,
+                    genres: vec!["folk".to_string()],
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        let artists = artists.read();
+        let a = &artists["Simon & Garfunkel"];
+        assert!(a.is_multi);
+        assert_eq!(a.metadata.as_ref().unwrap().genres, vec!["folk"]);
+    }
+
+    /// A provider's own URL is stored exactly as it arrives: it is not the
+    /// daemon's to rewrite, and the artist list route serves it verbatim.
+    #[test]
+    fn an_external_thumbnail_url_is_carried_unchanged() {
+        let (albums, artists) = maps(vec![], vec![artist("Bowie")]);
+
+        apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Bowie".to_string(),
+                    thumb_url: vec![
+                        "/api/coverart/artist/YWJj/image".to_string(),
+                        "https://example.com/artist.png".to_string(),
+                    ],
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        let artists = artists.read();
+        assert_eq!(
+            artists["Bowie"].metadata.as_ref().unwrap().thumb_url,
+            vec![
+                "/api/coverart/artist/YWJj/image".to_string(),
+                "https://example.com/artist.png".to_string(),
+            ]
+        );
+    }
+
+    /// An empty genre list never clears what a library already read from tags:
+    /// the tags are better data than a lookup that found nothing.
+    #[test]
+    fn an_empty_genre_list_does_not_clear_existing_genres() {
+        let mut existing = album(1);
+        existing.genres = vec!["jazz".to_string()];
+        let (albums, artists) = maps(vec![existing], vec![]);
+
+        let (_, changed) = apply_batch(
+            &albums,
+            &artists,
+            &EnrichmentBatch {
+                library_version: None,
+                artists: vec![],
+                albums: vec![acr_types::enrichment::AlbumGenres {
+                    id: "1".to_string(),
+                    genres: vec![],
+                }],
+            },
+        );
+
+        assert!(!changed);
+        assert_eq!(albums.read()["Album 1"].genres, vec!["jazz"]);
+    }
+
+    #[test]
+    fn a_backend_that_does_not_opt_in_reports_no_version() {
+        // The mock in this module does not override library_version.
+        let lib = CountingLibrary::new();
+        assert_eq!(lib.library_version(), None);
+    }
+
+    /// `apply_batch`'s album lookup must stay near-constant per entry: on a
+    /// realistically large library, a per-entry `values_mut().find(...)`
+    /// scan turns a handful of batch entries into hundreds of thousands of
+    /// allocating string comparisons under the write lock. This runs the
+    /// same shape a real sweep does (a large library, a batch that touches a
+    /// scattered handful of it, repeated many times) and bounds the total
+    /// time generously: an id-indexed lookup finishes this in well under a
+    /// second even in an unoptimised test build, while a reintroduced
+    /// per-entry scan does not.
+    ///
+    /// The bound is wall-clock, so the margins are worth recording. On an idle
+    /// machine this finishes in about 0.4 s, and with every core saturated in
+    /// about 0.6 s, against the 2 s bound; a reintroduced per-entry scan takes
+    /// about 4 s. If it ever fails on a loaded build host, raising the bound is
+    /// the wrong fix -- 2 s is only half the regression it exists to catch, so
+    /// a higher bound stops catching it. Replace it with something
+    /// scale-invariant instead: the ratio between two library sizes, or a
+    /// direct count of comparisons, neither of which depends on how busy the
+    /// machine is.
+    #[test]
+    fn apply_batch_stays_fast_against_a_large_library() {
+        const ALBUM_COUNT: u64 = 20_000;
+        const BATCH_SIZE: u64 = 50;
+        const SWEEPS: u64 = 50;
+
+        let all_albums: Vec<Album> = (0..ALBUM_COUNT).map(album).collect();
+        let (albums, artists) = maps(all_albums, vec![]);
+
+        let start = std::time::Instant::now();
+        for sweep in 0..SWEEPS {
+            let batch = EnrichmentBatch {
+                library_version: None,
+                artists: vec![],
+                albums: (0..BATCH_SIZE)
+                    .map(|i| {
+                        // Spread the touched ids across the whole library
+                        // rather than clustering them, so an id-based index
+                        // is the only thing that can keep this fast.
+                        let id = (sweep * 977 + i * 4001) % ALBUM_COUNT;
+                        acr_types::enrichment::AlbumGenres {
+                            id: id.to_string(),
+                            genres: vec![format!("genre-{sweep}-{i}")],
+                        }
+                    })
+                    .collect(),
+            };
+            apply_batch(&albums, &artists, &batch);
+        }
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "apply_batch took {elapsed:?} for {SWEEPS} batches of {BATCH_SIZE} \
+             against a {ALBUM_COUNT}-album library; a per-entry linear scan \
+             is the likely cause if this regresses",
+        );
     }
 
     #[test]
@@ -542,13 +988,6 @@ mod tests {
         let handed_to_an_updater = v.clone();
         handed_to_an_updater.bump();
         assert_eq!(v.get(), 1);
-    }
-
-    #[test]
-    fn a_backend_that_does_not_opt_in_reports_no_version() {
-        // The mock in this module does not override library_version.
-        let lib = CountingLibrary::new();
-        assert_eq!(lib.library_version(), None);
     }
 
     #[test]

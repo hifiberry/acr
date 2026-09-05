@@ -7,7 +7,6 @@ use serde_json::Value;
 use chrono::NaiveDate;
 use crate::data::{Album, Track, Identifier, LibraryError};
 use crate::players::lms::jsonrps::LmsRpcClient;
-use crate::helpers::musicbrainz;
 
 /// Number of items to fetch in a single request
 const BATCH_SIZE: u32 = 1000;
@@ -184,8 +183,8 @@ impl LMSLibraryLoader {
         // Create empty tracks list to be populated later
         let tracks = Arc::new(Mutex::new(Vec::<Track>::new()));
         
-        // Create artists list by splitting the album artist string
-        let artists = match musicbrainz::split_artist_names(album_artist, false, custom_separators) {
+        // Create artists list by splitting the album artist string through the resolver
+        let artists = match crate::audiocontrol::resolver::split_album_artist(album_artist, custom_separators) {
             Some(split_artists) => Arc::new(Mutex::new(split_artists)),
             None => Arc::new(Mutex::new(vec![album_artist.to_string()]))
         };

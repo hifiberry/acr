@@ -13,6 +13,18 @@ repository = "https://github.com/hifiberry/hifiberry-os"
 license = "MIT"
 
 [dependencies]
+acr-types = { path = "crates/acr-types" }
+acr-http = { path = "crates/acr-http" }
+acr-images = { path = "crates/acr-images" }
+acr-store = { path = "crates/acr-store" }
+acr-web = { path = "crates/acr-web" }
+# Optional, and only ever reached from src/main.rs. Cargo has no per-binary
+# dependencies, so the honest way to let the composition root link the metadata
+# crate while this package's library does not is a feature: `metadata` is in
+# `default`, the `audiocontrol` binary requires it, and nothing under src/
+# outside main.rs names the crate. scripts/check-crate-deps.sh asserts the
+# library graph without the feature.
+audiocontrol-metadata = { path = "crates/audiocontrol-metadata", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 strum = "0.27.1"
@@ -52,8 +64,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # For transliterating non-ASCII characters to ASCII 
 deunicode = "1.4.1"
 strsim = "0.11.1"
-# For in-memory cache with expiry
-moka = { version = "0.12", features = ["sync"] }
 # LRU cache for fast access to frequently used data
 lru = "0.12"
 # For WebSocket support
@@ -61,17 +71,15 @@ rocket_ws = "0.1.0"
 # For command line argument parsing
 clap = { version = "4.5", features = ["derive"] }
 # For calculating MD5 hashes (Last.fm API signing)
-md5 = "0.7.0"
+md5.workspace = true
 thiserror = "1.0"
 mac_address = "1.1.8"
 get_if_addrs = "0.5.3"
 hex = "0.4.3"
-# For secure storage encryption
-aes-gcm = "0.10.2"
 rand = "0.8.5"
 # For filesystem notifications
 notify = "6.0"
-base64 = "0.21.0"
+base64.workspace = true
 # For testing
 tempfile = "3.8.1"
 # For async trait implementations
@@ -80,8 +88,6 @@ async-trait = "0.1.77"
 ureq = "2.9"
 # For event bus messaging
 event-bus = "0.1.0" # Corrected version
-# For regular expressions
-regex = "1.10"
 # For concurrent data structures and channels
 crossbeam = "0.8.2"
 # Non-poisoning Mutex/RwLock replacements
@@ -91,9 +97,13 @@ lofty = "0.18.0"
 walkdir = "2.4.0"
 
 [features]
-default = ["alsa"]
+default = ["alsa", "metadata"]
 theaudiodb = []
 alsa = ["dep:alsa"]
+# Links the metadata crate into the `audiocontrol` binary. On by default, so an
+# ordinary build and the shipped package are unchanged; off, the library still
+# builds and the binary is not built at all (see its required-features).
+metadata = ["dep:audiocontrol-metadata"]
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
@@ -112,37 +122,30 @@ alsa = { version = "0.9", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"
 
-# Build dependencies
-[build-dependencies]
-base64 = "0.21.0"
-md5 = "0.7.0"
-
 # Development dependencies for testing
 [dev-dependencies]
-serial_test = "3.0"
+serial_test.workspace = true
 tempfile = "3.12"
 tokio-test = "0.4"
 
 # Binary targets
+# Declared explicitly, and deliberately without `required-features`. The
+# `metadata` feature is meaningful only if the binary is built both ways:
+# requiring the feature would mean src/main.rs is never compiled with it off,
+# and the #[cfg(not(feature = "metadata"))] branches in it could never fail to
+# build. scripts/check-crate-deps.sh builds this target with
+# --no-default-features so those branches stay type-checked.
+[[bin]]
+name = "audiocontrol"
+path = "src/main.rs"
+
 [[bin]]
 name = "audiocontrol_lms_client"
 path = "src/tools/acr_lms_client.rs"
 
 [[bin]]
-name = "audiocontrol_musicbrainz_client"
-path = "src/tools/acr_musicbrainz_client.rs"
-
-[[bin]]
 name = "audiocontrol_send_update"
 path = "src/tools/acr_send_update.rs"
-
-[[bin]]
-name = "audiocontrol_dump_store"
-path = "src/tools/acr_dump_store.rs"
-
-[[bin]]
-name = "audiocontrol_dump_cache"
-path = "src/tools/audiocontrol_dump_cache.rs"
 
 [[bin]]
 name = "audiocontrol_player_event_client"
@@ -170,10 +173,6 @@ name = "audiocontrol_listen_shairportsync"
 path = "src/tools/acr_listen_shairportsync.rs"
 
 [[bin]]
-name = "audiocontrol_favourites"
-path = "src/tools/acr_favourites.rs"
-
-[[bin]]
 name = "audiocontrol_input_devices"
 path = "src/tools/acr_input_devices.rs"
 
@@ -188,3 +187,47 @@ lto = true               # Link-time optimization
 codegen-units = 1        # Use single codegen unit (less parallelism, less space)
 panic = "abort"          # Smaller panic handling
 strip = true             # Strip debug symbols
+
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.20.0"
+edition = "2021"
+rust-version = "1.86"
+license = "MIT"
+authors = ["HiFiBerry <support@hifiberry.com>"]
+
+[workspace.dependencies]
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+log = "0.4"
+once_cell = "1.19"
+parking_lot = "0.12"
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3.8.1"
+rocket = { version = "0.5.1", features = ["json"] }
+ureq = "2.9"
+image = { version = "=0.25.6", default-features = false, features = ["jpeg", "png", "webp"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.21.0"
+md5 = "0.7.0"
+urlencoding = "2.1.3"
+deunicode = "1.4.1"
+strsim = "0.11.1"
+lru = "0.12"
+moka = { version = "0.12", features = ["sync"] }
+regex = "1.10"
+crossbeam = "0.8.2"
+strum = "0.27.1"
+strum_macros = "0.27.1"
+serial_test = "3.0"
+env_logger = "0.11.8"
+aes-gcm = "0.10.2"
+rand = "0.8.5"
+hex = "0.4.3"
+url = "2.4"
+tokio = { version = "1.45.0", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }

@@ -1,16 +1,24 @@
+//! The composition root.
+//!
+//! This is the one file in the package that names both crates. The library
+//! `audiocontrol` knows nothing about `audiocontrol-metadata`: it asks for
+//! enrichment, title resolution and Spotify access tokens through traits in
+//! `acr-types`, and `main` is what decides which implementation answers. In
+//! Phase 0 that is the in-process metadata crate, linked behind the default
+//! `metadata` feature; in Phase 1 it becomes a client for a separate daemon,
+//! and only this file changes.
+#[cfg(feature = "metadata")]
+use acr_types::now_playing::LastfmWorkerConfig;
 use audiocontrol::api::server::{self, ServerOutcome};
+#[cfg(feature = "metadata")]
+use audiocontrol::audiocontrol::eventbus::EventBus;
+#[cfg(feature = "metadata")]
+use audiocontrol::audiocontrol::now_playing_bridge;
 use audiocontrol::config::{get_service_config, merge_player_includes};
 use audiocontrol::helpers::imagecache::ImageCache;
-use audiocontrol::helpers::lastfm;
-use audiocontrol::helpers::musicbrainz;
-use audiocontrol::helpers::security_store::SecurityStore;
 use audiocontrol::helpers::settingsdb::SettingsDb;
-use audiocontrol::helpers::spotify;
-use audiocontrol::helpers::theaudiodb;
-use audiocontrol::helpers::fanarttv;
 use audiocontrol::logging;
 use audiocontrol::players::PlayerController;
-use audiocontrol::secrets;
 use audiocontrol::AudioController;
 // Import LMS modules to ensure they're included in the build
 #[allow(unused_imports)]
@@ -27,6 +35,17 @@ use std::time::Duration;
 // Import global Tokio runtime functions from lib.rs
 use audiocontrol::{get_tokio_runtime, initialize_tokio_runtime};
 
+/// What a build without the `metadata` feature says for itself, once, where
+/// the metadata providers would have been brought up.
+///
+/// `metadata` is in `default`, so the shipped daemon never reaches any of
+/// these branches. They exist so that dropping the feature produces a daemon
+/// that says what it cannot do rather than one that silently serves an
+/// unenriched library.
+#[cfg(not(feature = "metadata"))]
+const WITHOUT_METADATA: &str =
+    "built without the metadata crate; no enrichment, no resolver, no Spotify transport";
+
 fn main() {
     // Initialize the Tokio runtime early
     initialize_tokio_runtime();
@@ -41,8 +60,14 @@ fn main() {
     }
 
     // Check for --check-secrets option first (exit early if present)
+    //
+    // The secrets it reports on are compiled into the metadata crate, so the
+    // report lives there too and this only decides whether to ask for it.
     if args.iter().any(|arg| arg == "--check-secrets") {
-        check_secrets_status();
+        #[cfg(feature = "metadata")]
+        audiocontrol_metadata::check_secrets_status();
+        #[cfg(not(feature = "metadata"))]
+        println!("{}", WITHOUT_METADATA);
         return;
     }
 
@@ -133,7 +158,13 @@ fn main() {
         }
     }
 
-    if let Err(e) = SecurityStore::initialize_with_defaults(Some(security_store_path.clone())) {
+    // Stays here rather than joining `initialize_in_process` below: it has to
+    // run before the attribute cache and the settings database, both of which
+    // are set up between this point and there.
+    #[cfg(feature = "metadata")]
+    if let Err(e) = audiocontrol_metadata::security_store::SecurityStore::initialize_with_defaults(
+        Some(security_store_path.clone()),
+    ) {
         error!("Failed to initialize security store at {}: {}. Please check permissions and configuration.", security_store_path.display(), e);
         eprintln!("Error: Security store initialization failed: {}", e);
         eprintln!("Check permissions and configuration at {}", security_store_path.display());
@@ -143,7 +174,10 @@ fn main() {
             "Security store initialized successfully at {}",
             security_store_path.display()
         );
-    } // Get the attribute cache configuration from datastore
+    }
+    #[cfg(not(feature = "metadata"))]
+    let _ = &security_store_path;
+    // Get the attribute cache configuration from datastore
     let (_attribute_cache_path, _preload_prefixes, _cache_size) = if let Some(datastore_config) =
         get_service_config(&controllers_config, "datastore")
     {
@@ -280,28 +314,22 @@ fn main() {
 
     // Initialize the global settings database with the configured path from JSON
     initialize_settingsdb(&settingsdb_path);
-    // Initialize MusicBrainz with the configuration
-    initialize_musicbrainz(&controllers_config);
-
-    // Initialize TheAudioDB with the configuration
-    initialize_theaudiodb(&controllers_config);
-    
-    // Initialize FanArt.tv with the configuration
-    initialize_fanarttv(&controllers_config);
-
-    // Initialize external cover art endpoints with the configuration
-    initialize_external_coverart(&controllers_config);
 
     // Initialize configurator with the configuration
+    //
+    // This used to sit between the cover art and Last.fm initialisations
+    // below, which are now one call into the metadata crate. It reads only the
+    // `configurator` section and writes only its own URL, and nothing in the
+    // metadata crate can see that URL -- it does not link this package -- so
+    // where it sits among them cannot matter.
     initialize_configurator(&controllers_config);
-    
-    // Initialize Last.fm with the configuration
-    initialize_lastfm(&controllers_config);
-    // Initialize Spotify with the configuration
-    if let Some(spotify_config) = get_service_config(&controllers_config, "spotify") {
-        spotify::Spotify::set_global_config(spotify_config);
-    }
-    initialize_spotify(&controllers_config);
+
+    // MusicBrainz, TheAudioDB, FanArt.tv, the external cover art endpoints,
+    // Last.fm and Spotify, in the order they have always been brought up.
+    #[cfg(feature = "metadata")]
+    audiocontrol_metadata::initialize_in_process(&controllers_config);
+    #[cfg(not(feature = "metadata"))]
+    info!("{}", WITHOUT_METADATA);
 
     // Initialize volume control with the configuration
     audiocontrol::helpers::global_volume::initialize_volume_control(&controllers_config);
@@ -322,7 +350,12 @@ fn main() {
     }
 
     // Initialize favourite providers (Last.fm and SettingsDB)
-    audiocontrol::helpers::favourites::initialize_favourite_providers();
+    //
+    // Stays here rather than joining `initialize_in_process`: one of the two
+    // providers is the settings database, and the volume control between them
+    // is set up after it.
+    #[cfg(feature = "metadata")]
+    audiocontrol_metadata::favourites::initialize_favourite_providers();
 
     // Initialize genre cleanup with configuration
     if let Err(e) = audiocontrol::helpers::genre_cleanup::initialize_genre_cleanup_with_config(Some(&controllers_config)) {
@@ -419,11 +452,55 @@ fn main() {
     }
 
     // Initialize cover art providers
-    audiocontrol::helpers::coverart_providers::register_all_providers();
+    //
+    // Stays here rather than joining `initialize_in_process`: the providers are
+    // registered only once the AudioController exists.
+    #[cfg(feature = "metadata")]
+    audiocontrol_metadata::coverart_providers::register_all_providers();
 
-    // The slow endpoints are never on a request path, so their answers reach
-    // clients through this worker and song_information_update.
-    audiocontrol::helpers::external_coverart::worker::start();
+    // Library enrichment -- MusicBrainz ids, artist genres, album genres,
+    // artist images. Each library asks for it as it finishes loading and
+    // receives the answers in batches. Installing the enricher has to happen
+    // before any player starts: a library that loaded first would find no
+    // enricher and stay as loaded until its next reload.
+    #[cfg(feature = "metadata")]
+    audiocontrol::audiocontrol::enrichment::set_enricher(Arc::new(
+        audiocontrol_metadata::library_enricher::InProcessEnricher,
+    ));
+
+    // Resolver -- which half of a split title is the artist, and whether an
+    // album-artist string names one artist or several. Same lifetime rule as
+    // the enricher: installed before any player starts, so no library or
+    // title splitter finds it missing.
+    #[cfg(feature = "metadata")]
+    audiocontrol::audiocontrol::resolver::set_resolver(Arc::new(
+        audiocontrol_metadata::resolver::InProcessResolver,
+    ));
+
+    // Spotify access tokens -- the librespot backend issues Spotify Web API
+    // commands itself but does not own the OAuth client that gets a token for
+    // them. Same lifetime rule as the enricher and the resolver: installed
+    // before any player starts, so librespot never finds it missing.
+    #[cfg(feature = "metadata")]
+    audiocontrol::audiocontrol::token::set_token_source(Arc::new(
+        audiocontrol_metadata::spotify::TokenSource,
+    ));
+
+    // Metadata enrichment -- slow cover art endpoints, Last.fm -- runs on
+    // workers that know nothing about players. This is the whole of the seam:
+    // the bridge forwards song and state changes into a channel, and the same
+    // object answers with what was found, through apply_song_information. When
+    // nothing is configured to read them, the bridge unsubscribes itself rather
+    // than filling a channel no one reads.
+    #[cfg(feature = "metadata")]
+    {
+        let now_playing = now_playing_bridge::start(&EventBus::instance());
+        let sink = Arc::new(now_playing_bridge::ControllerSink(controller.clone()));
+        let lastfm = lastfm_worker_config(&controllers_config);
+        if !audiocontrol_metadata::now_playing::start(now_playing, sink.clone(), sink, lastfm) {
+            info!("No now-playing enrichment is configured");
+        }
+    }
 
     // Get a reference to the AudioController singleton
     let controller = AudioController::instance();
@@ -464,6 +541,25 @@ fn main() {
         debug!("No song currently playing");
     }
 
+    // Read spotify.api_enabled config (default: false)
+    //
+    // Read here rather than in the server: the routes it selects between now
+    // come from the metadata crate, which the server does not name.
+    let spotify_api_enabled = get_service_config(&controllers_config, "spotify")
+        .and_then(|s| s.get("api_enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // The route groups the server does not own. Every one of them is a
+    // metadata route, so a build without the metadata crate mounts none.
+    #[cfg(feature = "metadata")]
+    let extra_routes = audiocontrol_metadata::api::routes(spotify_api_enabled);
+    #[cfg(not(feature = "metadata"))]
+    let extra_routes: Vec<(String, Vec<rocket::Route>)> = {
+        let _ = spotify_api_enabled;
+        Vec::new()
+    };
+
     // Start the API server using the global Tokio runtime
     let controllers_config_clone = controllers_config.clone();
     let api_running = running.clone();
@@ -476,6 +572,7 @@ fn main() {
                 controller,
                 &controllers_config_clone,
                 shutdown_handle,
+                extra_routes,
             )
             .await
         });
@@ -576,165 +673,41 @@ fn initialize_settingsdb(settingsdb_path: &str) {
     }
 }
 
-// Helper function to initialize MusicBrainz
-fn initialize_musicbrainz(config: &serde_json::Value) {
-    musicbrainz::initialize_from_config(config);
-    info!("MusicBrainz initialized successfully");
-}
-
-// Helper function to initialize TheAudioDB
-fn initialize_theaudiodb(config: &serde_json::Value) {
-    theaudiodb::initialize_from_config(config);
-    info!("TheAudioDB initialized successfully");
-}
-
-// Helper function to initialize external cover art endpoints
-fn initialize_external_coverart(config: &serde_json::Value) {
-    audiocontrol::helpers::external_coverart::initialize_from_config(config);
-    info!("External cover art initialized successfully");
-}
-
-// Helper function to initialize FanArt.tv
-fn initialize_fanarttv(config: &serde_json::Value) {
-    fanarttv::initialize_from_config(config);
-    info!("FanArt.tv initialized successfully");
-}
-
 // Helper function to initialize configurator
 fn initialize_configurator(config: &serde_json::Value) {
     audiocontrol::helpers::configurator::initialize_from_config(config);
     info!("Configurator initialized successfully");
 }
 
-// Helper function to initialize Last.fm
-fn initialize_lastfm(config: &serde_json::Value) {
-    if let Some(lastfm_config) = get_service_config(config, "lastfm") {
-        // Check if enabled flag exists and is set to true
-        let enabled = lastfm_config
-            .get("enable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false); // Default to disabled if not specified
+/// The `action_plugins` entry named `lastfm`, if the configuration has one.
+///
+/// That entry used to configure an action plugin; it now configures the Last.fm
+/// worker in the metadata crate. Same array, same key, same fields, so an
+/// existing configuration file needs no change -- and the entry is still
+/// reported by `GET /api/plugins/actions`, which its own registration in
+/// `plugin_factory` takes care of.
+#[cfg(feature = "metadata")]
+fn lastfm_worker_config(config: &serde_json::Value) -> Option<LastfmWorkerConfig> {
+    let entries = config.get("action_plugins")?.as_array()?;
 
-        if enabled {
-            // Initialize with default API credentials
-            if let Err(e) = lastfm::LastfmClient::initialize_with_defaults() {
-                warn!("Failed to initialize Last.fm client: {}", e);
-                return;
-            }
+    for entry in entries {
+        let Some(value) = entry.get("lastfm") else {
+            continue;
+        };
 
-            // Log Last.fm connection status
-            match lastfm::LastfmClient::get_instance() {
-                Ok(client) => {
-                    if client.is_authenticated() {
-                        if let Some(username) = client.get_username() {
-                            info!("Last.fm connected as user: {}", username);
-                        } else {
-                            // This case should ideally not happen if is_authenticated is true
-                            warn!("Last.fm is authenticated but username is not available.");
-                        }
-                    } else {
-                        info!("Last.fm is not connected. User needs to authenticate.");
-                    }
-                }
-                Err(e) => {
-                    // This might happen if initialization failed silently or was never called
-                    warn!(
-                        "Could not get Last.fm client instance to check status: {}",
-                        e
-                    );
-                }
-            }
-            info!("Last.fm initialized successfully"); // This message might be redundant now or could be rephrased
-        } else {
-            info!("Last.fm integration is disabled");
-        }
-    } else {
-        debug!("No Last.fm configuration found, Last.fm features will be unavailable.");
-    }
-}
-
-// Helper function to initialize Spotify
-fn initialize_spotify(config: &serde_json::Value) {
-    info!("Starting Spotify initialization");
-
-    if let Some(spotify_config) = get_service_config(config, "spotify") {
-        // Check if enabled flag exists and is set to true
-        let enabled = spotify_config
-            .get("enable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false); // Default to disabled if not specified
-
-        info!("Spotify enabled in config: {}", enabled);
-
-        if enabled {
-            // Get custom OAuth URL and proxy secret if specified in config
-            let oauth_url = spotify_config
-                .get("oauth_url")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            let proxy_secret = spotify_config
-                .get("proxy_secret")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            info!(
-                "Config values - OAuth URL present: {}, proxy secret present: {}",
-                oauth_url.is_some(),
-                proxy_secret.is_some()
-            );
-
-            // Initialize with values from config or fall back to defaults
-            let init_result = match (oauth_url, proxy_secret) {
-                (Some(url), Some(secret)) if !url.is_empty() && !secret.is_empty() => {
-                    info!(
-                        "Initializing Spotify with configuration from audiocontrol.json, URL: '{}'",
-                        url
-                    );
-                    spotify::Spotify::initialize(url, secret)
-                }
-                _ => {
-                    info!(
-                        "No valid Spotify config in audiocontrol.json, falling back to secrets.txt"
-                    );
-                    spotify::Spotify::initialize_with_defaults()
-                }
-            };
-            if let Err(e) = init_result {
-                warn!("Failed to initialize Spotify client: {}", e);
-
-                // Additional logging to help diagnose the issue
-                info!(
-                    "Checking default OAuth URL directly: '{}'",
-                    spotify::default_spotify_oauth_url()
+        match serde_json::from_value::<LastfmWorkerConfig>(value.clone()) {
+            Ok(config) => return Some(config),
+            Err(e) => {
+                error!(
+                    "Failed to parse the 'lastfm' action_plugins entry: {}. Last.fm will not run.",
+                    e
                 );
-
-                return;
+                return None;
             }
-
-            // Log Spotify connection status
-            match spotify::Spotify::get_instance() {
-                Ok(client) => {
-                    if client.has_valid_tokens() {
-                        info!("Spotify is connected with valid tokens");
-                    } else {
-                        info!("Spotify is not connected. User needs to authenticate.");
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        "Could not get Spotify client instance to check status: {}",
-                        e
-                    );
-                }
-            }
-            info!("Spotify initialized successfully");
-        } else {
-            info!("Spotify integration is disabled");
         }
-    } else {
-        debug!("No Spotify configuration found, Spotify features will be unavailable.");
     }
+
+    None
 }
 
 /// Find config file path from command line arguments (-c option)
@@ -783,115 +756,6 @@ fn find_log_config_in_args(args: &[String]) -> Option<PathBuf> {
     None
 }
 
-/// Check and display the status of compiled secrets
-fn check_secrets_status() {
-    println!("AudioControl - Compiled Secrets Status");
-    println!("=====================================");
-
-    // Get all compiled secrets
-    let secrets_map = secrets::get_all_secrets_obfuscated();
-
-    if secrets_map.is_empty() {
-        println!("❌ No secrets compiled into binary");
-        println!("   This binary was compiled without any secrets configured.");
-        println!("   External API integrations will not work unless configured at runtime.");
-        return;
-    }
-
-    println!("✅ Secrets compiled into binary: {}", secrets_map.len());
-    println!();
-
-    // Check specific known secrets
-    let known_secrets = vec![
-        ("LASTFM_APIKEY", "Last.fm API integration"),
-        ("LASTFM_API_KEY", "Last.fm API integration"),
-        ("LASTFM_APISECRET", "Last.fm API secret"),
-        ("LASTFM_API_SECRET", "Last.fm API secret"),
-        ("ARTISTDB_APIKEY", "TheAudioDB API integration"),
-        ("THEAUDIODB_APIKEY", "TheAudioDB API integration"),
-        ("THEAUDIODB_API_KEY", "TheAudioDB API integration"),
-        ("SECRETS_ENCRYPTION_KEY", "Security store encryption"),
-        ("SECURITY_KEY", "Security store encryption"),
-        ("SPOTIFY_OAUTH_URL", "Spotify OAuth integration"),
-        ("SPOTIFY_PROXY_SECRET", "Spotify proxy authentication"),
-    ];
-
-    println!("Known Integration Status:");
-    println!("------------------------");
-
-    let mut found_any = false;
-    for (key, description) in known_secrets {
-        if secrets_map.contains_key(key) {
-            println!("✅ {} - {}", key, description);
-            found_any = true;
-        }
-    }
-
-    if !found_any {
-        println!("⚠️  No known integration secrets found");
-        println!(
-            "   Available keys: {}",
-            secrets_map.keys().cloned().collect::<Vec<_>>().join(", ")
-        );
-    }
-
-    println!();
-    println!("API Service Status:");
-    println!("------------------");
-
-    // Test specific service functions
-    let lastfm_key = secrets::lastfm_api_key();
-    let audiodb_key = secrets::artistdb_api_key();
-    let encryption_key = secrets::secrets_encryption_key();
-    let spotify_oauth = secrets::spotify_oauth_url();
-    let spotify_secret = secrets::spotify_proxy_secret();
-
-    println!(
-        "🔑 Last.fm API: {}",
-        if lastfm_key != "unknown" {
-            "✅ Available"
-        } else {
-            "❌ Not configured"
-        }
-    );
-    println!(
-        "🔑 TheAudioDB API: {}",
-        if audiodb_key != "unknown" {
-            "✅ Available"
-        } else {
-            "❌ Not configured"
-        }
-    );
-    println!(
-        "🔑 Security Store: {}",
-        if encryption_key != "unknown" {
-            "✅ Available"
-        } else {
-            "❌ Not configured"
-        }
-    );
-    println!(
-        "🔑 Spotify OAuth: {}",
-        if spotify_oauth != "unknown" {
-            "✅ Available"
-        } else {
-            "❌ Not configured"
-        }
-    );
-    println!(
-        "🔑 Spotify Proxy: {}",
-        if spotify_secret != "unknown" {
-            "✅ Available"
-        } else {
-            "❌ Not configured"
-        }
-    );
-
-    println!();
-    println!("Note: This shows compile-time secrets only. Runtime configuration");
-    println!("      may override these values or provide additional secrets.");
-}
-
 /// Print help information for command line usage
 fn print_help() {
     println!("AudioControl Player Controller");
@@ -929,4 +793,85 @@ fn print_help() {
     println!("        Start with debug logging enabled");
     println!();
     println!("For more information, see the documentation in the doc/ directory.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The entry that used to configure the action plugin now configures the
+    /// worker, read from the same array under the same key. An existing
+    /// configuration file has to keep working untouched, scrobbling included.
+    #[test]
+    fn the_lastfm_action_plugins_entry_configures_the_worker() {
+        let config = serde_json::json!({
+            "action_plugins": [
+                { "active-monitor": { "enabled": true } },
+                {
+                    "lastfm": {
+                        "enabled": true,
+                        "api_key": "key",
+                        "api_secret": "secret",
+                        "scrobble": false
+                    }
+                }
+            ]
+        });
+
+        let lastfm = lastfm_worker_config(&config).expect("the entry should be found");
+        assert!(lastfm.enabled);
+        assert_eq!(lastfm.api_key, "key");
+        assert_eq!(lastfm.api_secret, "secret");
+        assert!(!lastfm.scrobble);
+    }
+
+    /// `scrobble` has always defaulted to true when the key is absent, and the
+    /// worker reads the same field, so the default has to survive the move.
+    #[test]
+    fn scrobble_still_defaults_to_true() {
+        let config = serde_json::json!({
+            "action_plugins": [
+                { "lastfm": { "enabled": true, "api_key": "", "api_secret": "" } }
+            ]
+        });
+
+        let lastfm = lastfm_worker_config(&config).expect("the entry should be found");
+        assert!(lastfm.scrobble);
+    }
+
+    /// A disabled entry is still an entry: it is read, and the worker declines
+    /// to start on it, which is what the plugin used to do with it.
+    #[test]
+    fn a_disabled_entry_is_read_rather_than_ignored() {
+        let config = serde_json::json!({
+            "action_plugins": [
+                { "lastfm": { "enabled": false, "api_key": "", "api_secret": "" } }
+            ]
+        });
+
+        let lastfm = lastfm_worker_config(&config).expect("the entry should be found");
+        assert!(!lastfm.enabled);
+    }
+
+    #[test]
+    fn no_action_plugins_and_no_lastfm_entry_both_mean_no_worker() {
+        assert!(lastfm_worker_config(&serde_json::json!({})).is_none());
+        assert!(lastfm_worker_config(&serde_json::json!({ "action_plugins": [] })).is_none());
+        assert!(lastfm_worker_config(&serde_json::json!({
+            "action_plugins": [{ "active-monitor": { "enabled": true } }]
+        }))
+        .is_none());
+    }
+
+    /// An entry missing the credentials the worker needs is a configuration
+    /// error, and starting a worker on a guess would be worse than not starting
+    /// one.
+    #[test]
+    fn an_unusable_entry_starts_no_worker() {
+        let config = serde_json::json!({
+            "action_plugins": [{ "lastfm": { "enabled": true } }]
+        });
+
+        assert!(lastfm_worker_config(&config).is_none());
+    }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "audiocontrol"
-version = "0.20.0"
+version = "0.20.1"
 authors = ["HiFiBerry <support@hifiberry.com>"]
 edition = "2021"
 # The sources use trait upcasting, stabilised in Rust 1.86. Declaring it makes
@@ -121,6 +121,43 @@ alsa = { version = "0.9", optional = true }
 # so this adds no Debian build-dependency.
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"
+# The allocator, on the platform this actually ships to.
+#
+# audiocontrol declared no `#[global_allocator]` until now, so it used the
+# system one -- glibc ptmalloc on a HiFiBerry device. Measured on a Pi 5
+# holding a 202,393-song MPD library, same binary and library throughout with
+# only the allocator swapped:
+#
+#     glibc, default arenas       370 MB RSS   (1.1 GB after a day up)
+#     glibc, MALLOC_ARENA_MAX=2   369 MB RSS   (i.e. no effect)
+#     jemalloc                    255 MB RSS, 177 MB half an hour later
+#
+# Load time was 720 s in all three, so this is not trading memory for speed.
+#
+# **Those numbers come from LD_PRELOADing an *unprefixed* jemalloc, which is
+# not exactly what this dependency does.** tikv-jemalloc-sys prefixes its
+# symbols (`_rjem_`) unless the non-default `unprefixed_malloc_on_supported_
+# platforms` feature is on, so `#[global_allocator]` takes Rust's allocations
+# and leaves bundled SQLite, OpenSSL, dbus and ALSA on glibc -- two heaps in
+# one process. The saving looks Rust-side (the library self-reports 75 MB of
+# data against a 370 MB resident set, i.e. overhead across ~a million small
+# strings), but the shipped configuration has not been measured on a device.
+# Read 255 MB as an upper bound, and re-measure once a package ships.
+#
+# The arena result is worth keeping either way: the memory was never sitting
+# in per-arena free lists, so capping arenas does nothing. Do not "fix" this
+# later by setting MALLOC_ARENA_MAX instead.
+#
+# **`.cargo/config.toml` pins JEMALLOC_SYS_WITH_LG_PAGE, and that is not
+# optional.** jemalloc bakes the page size in from the build host, and a 4 KB-
+# page builder yields a binary that aborts before main() on a 16 KB-page
+# Pi 5. It lives in the cargo config rather than the packaging because a bare
+# `cargo build --release` has to be safe too. See that file.
+#
+# Linux only, deliberately: it is what the devices run and what CI builds, and
+# leaving macOS dev builds on the system allocator spares them a C build step
+# for no benefit. jemalloc-sys does not support MSVC at all.
+tikv-jemallocator = "0.6"
 
 # Development dependencies for testing
 [dev-dependencies]
@@ -193,7 +230,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.20.0"
+version = "0.20.1"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"

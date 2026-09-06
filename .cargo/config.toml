@@ -1,0 +1,40 @@
+# jemalloc's page size is a compile-time constant taken from the machine that
+# built the binary, and getting it wrong does not degrade -- it refuses to
+# start.
+#
+# tikv-jemalloc-sys passes no --with-lg-page, so jemalloc's configure detects
+# LG_PAGE by running a sysconf(_SC_PAGESIZE) probe on the *builder*. At runtime
+# pages_boot() aborts when the live page size exceeds the compiled one:
+#
+#     <jemalloc>: Unsupported system page size
+#     memory allocation of 4 bytes failed
+#
+# That is before main(), so with Restart=on-failure the daemon becomes a
+# restart loop -- from a package that installed perfectly. Reproduced
+# 2026-09-06: a binary built in a 4 KB-page container died with exactly that
+# on a 16 KB-page Pi 5, every time, and started normally once pinned.
+#
+# **Here rather than in debian/rules, because every build path needs it.**
+# The packaging is not the only way a binary reaches a device: .github/
+# workflows/rust.yml runs a bare `cargo build`, build-and-test.sh runs
+# `cargo build --release`, and a developer copying target/release/audiocontrol
+# onto a Pi to test a fix would hit the same abort. A cargo config applies to
+# all of them, including the packaging's own invocation.
+#
+# **14, not 16.** The check is "live page > compiled page", so a larger value
+# is safe on smaller-page hosts -- but it is not free: LG_PAGE sets jemalloc's
+# minimum slab (one page) and moves the small/large boundary, so 16 would mean
+# 64 KB slabs and 64 KB purge granularity on a change whose entire purpose is
+# resident memory. 14 (16 KB) is the largest page any target here actually
+# uses: a Pi 5 runs kernel_2712 at 16384, a Pi 4 and x86-64 run 4096, and
+# Raspberry Pi OS ships no 64 KB-page kernel. Raise it to 16 only if a 64 KB
+# target ever appears, and measure the cost when you do.
+#
+# LG_HUGEPAGE is deliberately left detected. configure.ac derives it from the
+# builder's /proc/meminfo, which is the same build-host-baked-constant hazard,
+# but it is inert while opt_thp stays at its default -- pages_huge() is never
+# called. It becomes live only if someone sets thp:always via MALLOC_CONF, and
+# it would then be silently wrong rather than an abort. Pin it here if that
+# ever happens.
+[env]
+JEMALLOC_SYS_WITH_LG_PAGE = "14"

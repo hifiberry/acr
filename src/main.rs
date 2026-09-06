@@ -7,6 +7,26 @@
 //! Phase 0 that is the in-process metadata crate, linked behind the default
 //! `metadata` feature; in Phase 1 it becomes a client for a separate daemon,
 //! and only this file changes.
+
+// The global allocator, on Linux, where this actually ships.
+//
+// **It has to be declared in the binary crate.** `#[global_allocator]` in
+// `lib.rs` would compile and do nothing for the daemon -- the binary's choice
+// is what the whole process uses -- which is exactly the kind of change that
+// looks applied and is not. Anything linking the library (the test binaries)
+// keeps the system allocator; that is fine, since this is about the daemon's
+// resident set over hours, not about a test run.
+//
+// Measured before adding it: a Pi 5 holding a 202,393-song library sat at
+// 370 MB RSS under glibc and 255 MB under jemalloc, with load time unchanged.
+// That measurement used an LD_PRELOADed *unprefixed* jemalloc, which covers
+// the whole process; this dependency's symbols are prefixed, so it takes
+// Rust's allocations only. See Cargo.toml for the full figures, the caveat,
+// and the MALLOC_ARENA_MAX result that did *not* help.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[cfg(feature = "metadata")]
 use acr_types::now_playing::LastfmWorkerConfig;
 use audiocontrol::api::server::{self, ServerOutcome};

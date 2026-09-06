@@ -2,7 +2,7 @@ use log::{debug, info, warn};
 use acr_types::artist::Artist;
 use acr_types::enrichment::{ArtistRef, ArtistSummary, EnrichmentSink};
 use acr_types::Identifier;
-use crate::library_enricher::{cached_artist_metadata, BatchSender, BATCH_SIZE};
+use crate::library_enricher::{cached_artist_metadata, BatchSender, Swept, BATCH_SIZE};
 use crate::musicbrainz::{search_mbids_for_artist, MusicBrainzSearchResult};
 use crate::ArtistUpdater;
 use std::sync::Arc;
@@ -298,7 +298,7 @@ trait Sweep {
 ///
 /// Stops early, without a final flush, when the library refuses a batch as
 /// stale.
-fn sweep_artists(artists: Vec<ArtistRef>, io: &dyn Sweep, sender: &mut BatchSender) {
+fn sweep_artists(artists: Vec<ArtistRef>, io: &dyn Sweep, sender: &mut BatchSender) -> Swept {
     let total = artists.len();
     let mut batch: Vec<ArtistSummary> = Vec::with_capacity(BATCH_SIZE);
 
@@ -308,7 +308,10 @@ fn sweep_artists(artists: Vec<ArtistRef>, io: &dyn Sweep, sender: &mut BatchSend
 
         batch.push(summarise(&io.update(&reference)));
         if batch.len() >= BATCH_SIZE && !sender.send(std::mem::take(&mut batch), Vec::new()) {
-            return;
+            return Swept {
+                reported: index + 1,
+                stopped_after: Some(index + 1),
+            };
         }
 
         let count = index + 1;
@@ -319,7 +322,16 @@ fn sweep_artists(artists: Vec<ArtistRef>, io: &dyn Sweep, sender: &mut BatchSend
         io.pace();
     }
 
-    sender.send(batch, Vec::new());
+    if !sender.send(batch, Vec::new()) {
+        return Swept {
+            reported: total,
+            stopped_after: Some(total),
+        };
+    }
+    Swept {
+        reported: total,
+        stopped_after: None,
+    }
 }
 
 /// The sweep's real world: the metadata providers, the background job and the
@@ -383,7 +395,7 @@ impl Sweep for LiveSweep {
 /// a library already serving requests.
 pub fn enrich_artists_in_background(
     player: String,
-    version: Option<String>,
+    generation: Option<String>,
     artists: Vec<ArtistRef>,
     sink: Arc<dyn EnrichmentSink>,
 ) {
@@ -416,12 +428,34 @@ pub fn enrich_artists_in_background(
         }
 
         let io = LiveSweep { job_id: job_id.clone() };
-        let mut sender = BatchSender::new(sink, version);
-        sweep_artists(artists, &io, &mut sender);
+        let mut sender = BatchSender::new(sink, generation);
+        let swept = sweep_artists(artists, &io, &mut sender);
 
-        info!("Artist metadata update process completed");
+        // What is reported has to be what happened. A sweep that stopped on a
+        // refusal used to log the same "completed" line as one that finished,
+        // and until the staleness check could actually fire that line could not
+        // be wrong.
+        match swept.stopped_after {
+            Some(reached) => {
+                let message = format!(
+                    "Artist metadata update stopped after {} of {}: the library reloaded",
+                    reached, total
+                );
+                info!("{}", message);
+                if let Err(e) = acr_store::backgroundjobs::update_job(
+                    &job_id,
+                    Some(message),
+                    Some(reached),
+                    Some(total),
+                ) {
+                    warn!("Failed to update background job: {}", e);
+                }
+            }
+            None => info!("Artist metadata update process completed"),
+        }
 
-        // Complete and remove the background job
+        // Complete and remove the background job either way: the job is over,
+        // whether it ran out of artists or out of library.
         if let Err(e) = acr_store::backgroundjobs::complete_job(&job_id) {
             warn!("Failed to complete background job: {}", e);
         }
@@ -580,25 +614,47 @@ mod tests {
     }
 
     /// A refusal stops the sweep where it stands rather than looking up the
-    /// rest for a library that will not take the answers.
+    /// rest for a library that will not take the answers, and says that it
+    /// stopped, so its caller does not log a total it never reached.
     #[test]
     fn a_refused_batch_stops_the_sweep() {
         struct Refusing;
         impl EnrichmentSink for Refusing {
             fn apply(&self, _batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
-                Err(EnrichmentError::Stale { current: None })
+                Err(EnrichmentError::Stale {
+                    current_generation: None,
+                })
             }
         }
 
         let io = FakeSweep::new();
-        let mut sender = BatchSender::new(Arc::new(Refusing), Some("v1".to_string()));
+        let mut sender = BatchSender::new(Arc::new(Refusing), Some("g1".to_string()));
 
-        sweep_artists(refs(120), &io, &mut sender);
+        let swept = sweep_artists(refs(120), &io, &mut sender);
 
         assert_eq!(
             io.seen.lock().started.len(),
             BATCH_SIZE,
             "the artists after the refusal were never looked up"
         );
+        assert_eq!(
+            swept.stopped_after,
+            Some(BATCH_SIZE),
+            "and the caller is told where it stopped, not that it finished"
+        );
+    }
+
+    /// A sweep that ran to the end says so, which is what lets the caller keep
+    /// logging a completion for the ordinary case.
+    #[test]
+    fn a_sweep_that_finishes_reports_no_early_stop() {
+        let io = FakeSweep::new();
+        let sink = Arc::new(Recording::default());
+        let mut sender = BatchSender::new(sink, Some("g1".to_string()));
+
+        let swept = sweep_artists(refs(25), &io, &mut sender);
+
+        assert_eq!(swept.stopped_after, None);
+        assert_eq!(swept.reported, 25);
     }
 }

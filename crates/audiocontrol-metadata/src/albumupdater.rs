@@ -1,7 +1,7 @@
 use log::{debug, info, warn};
 use std::sync::Arc;
 use acr_types::enrichment::{AlbumGenres, AlbumRef, EnrichmentSink};
-use crate::library_enricher::{BatchSender, BATCH_SIZE};
+use crate::library_enricher::{BatchSender, Swept, BATCH_SIZE};
 
 const CACHE_KEY_PREFIX: &str = "album::genres::";
 
@@ -110,9 +110,10 @@ trait Sweep {
 
 /// The sweep itself: decide, ask, accumulate, flush.
 ///
-/// Returns how many albums it had something to say about. Stops early, without
-/// a final flush, when the library refuses a batch as stale.
-fn sweep_albums(albums: Vec<AlbumRef>, io: &dyn Sweep, sender: &mut BatchSender) -> usize {
+/// Reports how many albums it had something to say about, and whether it
+/// stopped early because the library refused a batch as stale - in which case
+/// there is no final flush.
+fn sweep_albums(albums: Vec<AlbumRef>, io: &dyn Sweep, sender: &mut BatchSender) -> Swept {
     let total = albums.len();
     let mut batch: Vec<AlbumGenres> = Vec::with_capacity(BATCH_SIZE);
     let mut updated = 0usize;
@@ -137,7 +138,7 @@ fn sweep_albums(albums: Vec<AlbumRef>, io: &dyn Sweep, sender: &mut BatchSender)
             Plan::Send(genres) => {
                 updated += 1;
                 if !accumulate(&mut batch, AlbumGenres { id: album_id, genres }, sender) {
-                    return updated;
+                    return Swept { reported: updated, stopped_after: Some(index + 1) };
                 }
                 continue;
             }
@@ -149,7 +150,7 @@ fn sweep_albums(albums: Vec<AlbumRef>, io: &dyn Sweep, sender: &mut BatchSender)
                 if !genres.is_empty() {
                     updated += 1;
                     if !accumulate(&mut batch, AlbumGenres { id: album_id, genres }, sender) {
-                        return updated;
+                        return Swept { reported: updated, stopped_after: Some(index + 1) };
                     }
                 }
             }
@@ -162,8 +163,10 @@ fn sweep_albums(albums: Vec<AlbumRef>, io: &dyn Sweep, sender: &mut BatchSender)
         io.pace();
     }
 
-    sender.send(Vec::new(), batch);
-    updated
+    if !sender.send(Vec::new(), batch) {
+        return Swept { reported: updated, stopped_after: Some(total) };
+    }
+    Swept { reported: updated, stopped_after: None }
 }
 
 /// Add one entry to the batch, flushing it if it is now full.
@@ -230,7 +233,7 @@ impl Sweep for LiveSweep {
 /// service behind `fetch_album_genres`.
 pub fn enrich_albums_in_background(
     player: String,
-    version: Option<String>,
+    generation: Option<String>,
     albums: Vec<AlbumRef>,
     sink: Arc<dyn EnrichmentSink>,
 ) {
@@ -258,10 +261,33 @@ pub fn enrich_albums_in_background(
         );
 
         let io = LiveSweep { job_id: job_id.clone() };
-        let mut sender = BatchSender::new(sink, version);
-        let updated = sweep_albums(albums, &io, &mut sender);
+        let mut sender = BatchSender::new(sink, generation);
+        let swept = sweep_albums(albums, &io, &mut sender);
 
-        info!("Album genre update complete: {}/{} albums updated", updated, total);
+        // What is reported has to be what happened. A sweep that stopped on a
+        // refusal used to log the same "complete" line, with a total it never
+        // reached; until the staleness check could actually fire, that line
+        // could not be wrong.
+        match swept.stopped_after {
+            Some(reached) => {
+                let message = format!(
+                    "Album genre update stopped after {} of {}: the library reloaded",
+                    reached, total
+                );
+                info!("{}", message);
+                let _ = acr_store::backgroundjobs::update_job(
+                    &job_id,
+                    Some(message),
+                    Some(reached),
+                    Some(total),
+                );
+            }
+            None => info!(
+                "Album genre update complete: {}/{} albums updated",
+                swept.reported, total
+            ),
+        }
+        // The job is over either way: it ran out of albums or out of library.
         let _ = acr_store::backgroundjobs::complete_job(&job_id);
     });
 }
@@ -398,10 +424,11 @@ mod tests {
         let sink = Arc::new(Recording::default());
         let mut sender = BatchSender::new(sink.clone(), None);
 
-        let updated = sweep_albums(albums, &io, &mut sender);
+        let swept = sweep_albums(albums, &io, &mut sender);
 
         let seen = io.seen.lock();
-        assert_eq!(updated, 120);
+        assert_eq!(swept.reported, 120);
+        assert_eq!(swept.stopped_after, None, "nothing refused it");
         assert_eq!(seen.started.len(), 120, "every album is still announced");
         assert!(seen.fetched.is_empty(), "a cached answer must not be looked up");
         assert_eq!(seen.paced, 0, "an album that cost no request must not be paced");
@@ -423,10 +450,10 @@ mod tests {
         let sink = Arc::new(Recording::default());
         let mut sender = BatchSender::new(sink.clone(), None);
 
-        let updated = sweep_albums(albums, &io, &mut sender);
+        let swept = sweep_albums(albums, &io, &mut sender);
 
         let seen = io.seen.lock();
-        assert_eq!(updated, 0);
+        assert_eq!(swept.reported, 0);
         assert_eq!(seen.paced, 0);
         assert!(seen.milestones.is_empty());
         assert_eq!(seen.recorded_empty, vec!["2"], "the unsearchable album is recorded");
@@ -489,7 +516,9 @@ mod tests {
         struct Refusing;
         impl EnrichmentSink for Refusing {
             fn apply(&self, _batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
-                Err(EnrichmentError::Stale { current: None })
+                Err(EnrichmentError::Stale {
+                    current_generation: None,
+                })
             }
         }
 
@@ -502,11 +531,16 @@ mod tests {
             findable: Vec::new(),
             seen: Mutex::new(Log::default()),
         };
-        let mut sender = BatchSender::new(Arc::new(Refusing), Some("v1".to_string()));
+        let mut sender = BatchSender::new(Arc::new(Refusing), Some("g1".to_string()));
 
-        let updated = sweep_albums(albums, &io, &mut sender);
+        let swept = sweep_albums(albums, &io, &mut sender);
 
-        assert_eq!(updated, BATCH_SIZE, "it stopped at the first flush");
+        assert_eq!(swept.reported, BATCH_SIZE, "it stopped at the first flush");
+        assert_eq!(
+            swept.stopped_after,
+            Some(BATCH_SIZE),
+            "and the caller is told where it stopped, not that it finished"
+        );
         assert_eq!(
             io.seen.lock().started.len(),
             BATCH_SIZE,

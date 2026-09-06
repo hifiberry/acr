@@ -3,7 +3,7 @@ use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use parking_lot::RwLock;
-use acr_types::enrichment::{merge_genres, Applied, EnrichmentBatch};
+use acr_types::enrichment::{merge_genres, Applied, EnrichmentBatch, EnrichmentError, EnrichmentSink};
 use acr_types::ArtistMeta;
 use crate::data::album::Album;
 use crate::data::artist::Artist;
@@ -43,12 +43,18 @@ impl Error for LibraryError {}
 // Library Version Counter
 //
 
-/// The change counter behind the library ETags.
+/// The change counter behind the library ETags, and the reload counter behind
+/// the enrichment staleness check.
+///
+/// Two counters under one nonce: `counter`, whose token is the list ETags'
+/// validator, and `generation`, whose token says which loaded library the
+/// contents belong to. See each field for why one cannot do both jobs.
 ///
 /// Lives here, not in `acr-types`: the metadata crate never touches it — it
 /// hands back an `Option<String>` token in `EnrichmentBatch`/`Applied`, and
-/// the bump happens on the player side (see `MPDLibrary::apply`). Nothing
-/// outside this package constructs or reads one.
+/// the bumps happen on the player side (see `MPDLibrary::apply` and
+/// `MPDLibrary::refresh_library`). Nothing outside this package constructs or
+/// reads one.
 ///
 /// Cloning shares the counter: the library keeps one handle and hands clones to
 /// the background updaters that mutate it, so a bump from any of them is visible
@@ -66,6 +72,22 @@ pub struct LibraryVersion {
     /// random halves collide.
     nonce: String,
     counter: Arc<AtomicU64>,
+    /// Counts *reloads* of the library, not changes to it.
+    ///
+    /// One nonce, two counters, because the two answer different questions and
+    /// the same token cannot answer both. `counter` answers "has anything a
+    /// client can see changed", which an enrichment merge does; `generation`
+    /// answers "was the library rebuilt", which a merge does not. A batch of
+    /// enrichment results is unmergeable only in the second case: the albums
+    /// and artists it describes are gone. Checking it against `counter` would
+    /// refuse a batch because of the previous batch's own bump — with two
+    /// sweeps running against one library, the first artist batch would make
+    /// the album sweep's first batch look stale.
+    ///
+    /// It shares the nonce for the same reason `counter` has one: a generation
+    /// held by a caller across a restart of this daemon must not match the
+    /// generation of the library that comes back.
+    generation: Arc<AtomicU64>,
 }
 
 impl Default for LibraryVersion {
@@ -89,6 +111,7 @@ impl LibraryVersion {
         Self {
             nonce: format!("{:08x}-{:x}", rand::random::<u32>(), sequence),
             counter: Arc::new(AtomicU64::new(0)),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -114,11 +137,62 @@ impl LibraryVersion {
     pub fn token(&self) -> String {
         format!("{}-{}", self.nonce, self.get())
     }
+
+    /// Record that the library was *reloaded* — that its maps were emptied and
+    /// are being rebuilt.
+    ///
+    /// This must be called from exactly one place: next to the statement that
+    /// clears the maps, so the two cannot drift apart. Both failure modes are
+    /// silent. A bump anywhere else refuses a batch computed against a
+    /// perfectly current library, and enrichment then stops for good, because
+    /// the sweep does not restart on a refusal. A missing bump merges results
+    /// computed against the *previous* library into the new one, which is the
+    /// exact write the refusal exists to prevent.
+    ///
+    /// It is deliberately not called by [`Self::bump`]: a merge changes the
+    /// library's contents without reloading it.
+    pub fn bump_generation(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The opaque token naming the library's current generation.
+    ///
+    /// Compare for equality only, like [`Self::token`]. The `g` keeps it from
+    /// ever being equal to a version token of the same counter, so a caller
+    /// that confused the two gets a refusal rather than a silent merge.
+    pub fn generation_token(&self) -> String {
+        format!("{}-g{}", self.nonce, self.generation.load(Ordering::SeqCst))
+    }
 }
 
 //
 // Enrichment merge
 //
+
+/// The check every backend makes before merging an enrichment batch.
+///
+/// Lives here for the same reason [`apply_batch`] does: two backends must not
+/// drift into disagreeing about when a batch is refused. What each backend
+/// supplies is its own `current` generation — `None` from one that cannot track
+/// reloads, which then refuses every batch that names a generation, because it
+/// cannot honour the claim.
+///
+/// A batch naming no generation makes no claim and is applied as it arrives.
+/// The comparison is against the *generation* and never the version: the
+/// version moves on every merge, this batch's own included, so comparing
+/// against it would refuse the second batch of any sweep and every batch of a
+/// second sweep running alongside the first.
+pub fn check_generation(
+    batch: &EnrichmentBatch,
+    current: Option<String>,
+) -> Result<(), EnrichmentError> {
+    if batch.library_generation.is_some() && batch.library_generation != current {
+        return Err(EnrichmentError::Stale {
+            current_generation: current,
+        });
+    }
+    Ok(())
+}
 
 /// Merge one enrichment batch into a library's album and artist maps.
 ///
@@ -128,7 +202,8 @@ impl LibraryVersion {
 /// backends cannot drift into merging the same batch differently.
 ///
 /// The caller keeps two decisions this function cannot make: the staleness
-/// check against its own library version (only it knows whether it has one),
+/// check of the batch against its own library generation (only it knows
+/// whether it has one),
 /// and what to do with the `bool` returned here, which says whether anything a
 /// client can observe changed. A backend that tracks a version bumps it exactly
 /// once when that is true, and never when it is false: a mutation that does not
@@ -520,6 +595,32 @@ pub trait LibraryInterface {
         None
     }
 
+    /// An opaque token naming the generation of this library's contents: it
+    /// changes when the library is *reloaded*, and not when a merge changes
+    /// what it holds.
+    ///
+    /// This is what an enrichment batch names and what a refusal compares, so
+    /// the refusal means "the library was reloaded since you computed this
+    /// batch" and nothing else. `None` means the backend cannot track reloads,
+    /// and a caller must then name no generation in its batches — a backend
+    /// reporting `None` refuses any batch that names one, since it cannot
+    /// honour the claim.
+    ///
+    /// Distinct from [`Self::library_version`], which is the ETag validator on
+    /// the list routes and moves on every change including a merge.
+    fn library_generation(&self) -> Option<String> {
+        None
+    }
+
+    /// This library as an enrichment sink, when it accepts enrichment results.
+    ///
+    /// `None` by default. It is a method rather than a downcast per backend so
+    /// that `POST /api/library/<p>/enrichment` does not have to know which
+    /// concrete libraries exist.
+    fn as_enrichment_sink(&self) -> Option<&dyn EnrichmentSink> {
+        None
+    }
+
     /// Get a list of meta keys for the library
     /// 
     /// This method should return a list of meta keys that are available in the 
@@ -666,7 +767,7 @@ mod tests {
             genres: vec!["rock".to_string()],
         };
         let batch = EnrichmentBatch {
-            library_version: None,
+            library_generation: None,
             artists: vec![],
             albums: vec![genres.clone(), genres],
         };
@@ -690,7 +791,7 @@ mod tests {
             &albums,
             &artists,
             &EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![],
                 albums: vec![acr_types::enrichment::AlbumGenres {
                     id: "1".to_string(),
@@ -713,7 +814,7 @@ mod tests {
             &albums,
             &artists,
             &EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
                     name: "Someone Else".to_string(),
                     mbid: vec!["x".to_string()],
@@ -741,7 +842,7 @@ mod tests {
             &albums,
             &artists,
             &EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
                     name: "Bowie".to_string(),
                     ..Default::default()
@@ -769,7 +870,7 @@ mod tests {
             &albums,
             &artists,
             &EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
                     name: "Simon & Garfunkel".to_string(),
                     is_multi: true,
@@ -802,7 +903,7 @@ mod tests {
             &albums,
             &artists,
             &EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
                     name: "Simon & Garfunkel".to_string(),
                     is_multi: true,
@@ -826,7 +927,7 @@ mod tests {
             &albums,
             &artists,
             &EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
                     name: "Simon & Garfunkel".to_string(),
                     is_multi: true,
@@ -853,7 +954,7 @@ mod tests {
             &albums,
             &artists,
             &EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
                     name: "Bowie".to_string(),
                     thumb_url: vec![
@@ -888,7 +989,7 @@ mod tests {
             &albums,
             &artists,
             &EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![],
                 albums: vec![acr_types::enrichment::AlbumGenres {
                     id: "1".to_string(),
@@ -939,7 +1040,7 @@ mod tests {
         let start = std::time::Instant::now();
         for sweep in 0..SWEEPS {
             let batch = EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![],
                 albums: (0..BATCH_SIZE)
                     .map(|i| {
@@ -1020,5 +1121,60 @@ mod tests {
         let handed_out = v.clone();
         handed_out.bump();
         assert_eq!(v.token(), handed_out.token());
+    }
+
+    /// The two counters answer different questions, so they move
+    /// independently: a change to the contents is not a reload, and a reload
+    /// is not (only) a change. Neither token can be mistaken for the other's.
+    #[test]
+    fn the_generation_and_the_version_move_independently() {
+        let v = LibraryVersion::new();
+        let (version, generation) = (v.token(), v.generation_token());
+
+        v.bump();
+        assert_ne!(v.token(), version, "a change moves the version");
+        assert_eq!(
+            v.generation_token(),
+            generation,
+            "but a change is not a reload"
+        );
+
+        v.bump_generation();
+        assert_ne!(v.generation_token(), generation, "a reload moves it");
+        assert_ne!(
+            v.generation_token(),
+            v.token(),
+            "and no generation token can be read as a version token"
+        );
+    }
+
+    /// The updaters and the API hold clones, so a reload seen through one
+    /// handle has to be seen through all of them — exactly as a bump is.
+    #[test]
+    fn clones_share_one_generation() {
+        let v = LibraryVersion::new();
+        let handed_out = v.clone();
+        handed_out.bump_generation();
+        assert_eq!(v.generation_token(), handed_out.generation_token());
+    }
+
+    /// Two libraries in one process, or one library across a restart, must not
+    /// report the same generation: a caller holding one from before must be
+    /// refused rather than have its batch merged into a different library.
+    #[test]
+    fn two_counters_never_share_a_generation() {
+        let a = LibraryVersion::new();
+        let b = LibraryVersion::new();
+        assert_ne!(a.generation_token(), b.generation_token());
+    }
+
+    #[test]
+    fn a_backend_that_does_not_opt_in_reports_no_generation() {
+        let lib = CountingLibrary::new();
+        assert_eq!(lib.library_generation(), None);
+        assert!(
+            lib.as_enrichment_sink().is_none(),
+            "and accepts no enrichment"
+        );
     }
 }

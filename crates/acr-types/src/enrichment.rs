@@ -58,7 +58,16 @@ pub struct AlbumGenres {
 /// function call.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnrichmentBatch {
-    pub library_version: Option<String>,
+    /// The library generation this batch was computed against, or `None` to
+    /// make no claim.
+    ///
+    /// Deliberately *not* the library version: a version moves on every merge,
+    /// including this batch's own, so two sweeps running against one library
+    /// would read each other's bumps as a reload. A generation moves only when
+    /// the library is rebuilt, which is the one thing that makes a batch
+    /// unmergeable — see `LibraryVersion::bump_generation` on the player side.
+    #[serde(default)]
+    pub library_generation: Option<String>,
     #[serde(default)]
     pub artists: Vec<ArtistSummary>,
     #[serde(default)]
@@ -74,8 +83,10 @@ pub struct Applied {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnrichmentError {
-    /// The batch was computed against a version that is no longer current.
-    Stale { current: Option<String> },
+    /// The batch was computed against a generation of the library that is no
+    /// longer loaded: it was rebuilt in between, and the albums and artists
+    /// the batch describes may no longer be there.
+    Stale { current_generation: Option<String> },
     NoSuchLibrary,
 }
 
@@ -109,10 +120,15 @@ pub trait LibraryEnricher: Send + Sync {
     /// like [`Self::artist_summary`] it must not do network I/O.
     fn album_genres(&self, album_id: &str) -> Option<Vec<String>>;
     /// Start enriching a library. Returns at once; results arrive through the sink.
+    ///
+    /// `generation` is the library generation every batch of this sweep will
+    /// name. It is fixed for the life of the sweep: a library that is rebuilt
+    /// meanwhile refuses the next batch, which ends the sweep, and the rebuild
+    /// asks again for whatever it now needs.
     fn enrich(
         &self,
         player: &str,
-        version: Option<String>,
+        generation: Option<String>,
         artists: Vec<ArtistRef>,
         albums: Vec<AlbumRef>,
         sink: Arc<dyn EnrichmentSink>,
@@ -120,13 +136,37 @@ pub trait LibraryEnricher: Send + Sync {
 }
 
 /// Merge one album's genres the way the in-library updater does: an empty
-/// list never clears, an identical list is not a change.
+/// list never clears, a list holding the same genres is not a change.
 pub fn merge_genres(target: &mut Vec<String>, incoming: &[String]) -> bool {
-    if incoming.is_empty() || target.as_slice() == incoming {
+    if incoming.is_empty() || same_genres(target, incoming) {
         return false;
     }
     *target = incoming.to_vec();
     true
+}
+
+/// Whether two genre lists say the same thing.
+///
+/// Order is not part of what they say: a provider that returns the same genres
+/// in a different order on the next sweep is not new information, and treating
+/// it as a change costs a library version bump, a fresh ETag for every client
+/// and another poll cycle for nothing a client can act on.
+///
+/// This is a comparison only — the *stored* order is left as it is. Sorting
+/// what is stored would change what clients read in `genres`, for no benefit
+/// to them.
+fn same_genres(stored: &[String], incoming: &[String]) -> bool {
+    if stored.len() != incoming.len() {
+        return false;
+    }
+    if stored == incoming {
+        return true;
+    }
+    let mut stored: Vec<&str> = stored.iter().map(String::as_str).collect();
+    let mut incoming: Vec<&str> = incoming.iter().map(String::as_str).collect();
+    stored.sort_unstable();
+    incoming.sort_unstable();
+    stored == incoming
 }
 
 #[cfg(test)]
@@ -153,7 +193,7 @@ mod tests {
         fn enrich(
             &self,
             _player: &str,
-            _version: Option<String>,
+            _generation: Option<String>,
             _artists: Vec<ArtistRef>,
             _albums: Vec<AlbumRef>,
             _sink: Arc<dyn EnrichmentSink>,
@@ -189,6 +229,50 @@ mod tests {
         assert!(!merge_genres(&mut g, &["rock".to_string()]));
     }
 
+    /// The same genres in a different order say nothing new. Counting a
+    /// reorder as a change bumps the library version, invalidates every
+    /// client's cached list and costs another poll cycle, once per sweep, for
+    /// content no client can tell apart.
+    #[test]
+    fn a_reordering_of_the_same_genres_is_not_a_change() {
+        let mut g = vec!["rock".to_string(), "pop".to_string()];
+        assert!(!merge_genres(
+            &mut g,
+            &["pop".to_string(), "rock".to_string()]
+        ));
+        assert_eq!(
+            g,
+            vec!["rock", "pop"],
+            "and what is stored keeps the order a client already read"
+        );
+    }
+
+    /// Order-insensitivity must not swallow a genuinely different list, not
+    /// even one that differs only in how often a genre appears or in a single
+    /// entry among several.
+    #[test]
+    fn a_genuinely_different_list_is_still_a_change() {
+        let mut g = vec!["rock".to_string(), "pop".to_string()];
+        assert!(merge_genres(
+            &mut g,
+            &["pop".to_string(), "folk".to_string()]
+        ));
+        assert_eq!(g, vec!["pop", "folk"]);
+
+        let mut same_length = vec!["rock".to_string(), "rock".to_string()];
+        assert!(merge_genres(
+            &mut same_length,
+            &["rock".to_string(), "pop".to_string()]
+        ));
+
+        let mut longer = vec!["rock".to_string()];
+        assert!(merge_genres(
+            &mut longer,
+            &["rock".to_string(), "pop".to_string()]
+        ));
+        assert_eq!(longer, vec!["rock", "pop"]);
+    }
+
     #[test]
     fn a_different_list_replaces_and_reports() {
         let mut g = vec![];
@@ -218,8 +302,23 @@ mod tests {
     fn a_batch_round_trips_through_json_with_absent_fields_defaulting() {
         let b: EnrichmentBatch =
             serde_json::from_str(r#"{"albums":[{"id":"1"}]}"#).unwrap();
-        assert_eq!(b.library_version, None);
+        assert_eq!(b.library_generation, None);
         assert!(b.artists.is_empty());
         assert!(b.albums[0].genres.is_empty());
+    }
+
+    /// A batch names a *generation*, not a version. The field is what the
+    /// player daemon's route reads, and a caller still sending the old name
+    /// would otherwise silently make no claim at all and have every batch
+    /// applied unchecked.
+    #[test]
+    fn a_batch_carries_the_generation_it_was_computed_against() {
+        let parsed: EnrichmentBatch =
+            serde_json::from_str(r#"{"library_generation":"a3f9-g2","albums":[]}"#).unwrap();
+        assert_eq!(parsed.library_generation.as_deref(), Some("a3f9-g2"));
+
+        let round_tripped: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+        assert_eq!(round_tripped["library_generation"], "a3f9-g2");
     }
 }

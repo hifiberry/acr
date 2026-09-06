@@ -2102,7 +2102,7 @@ mod tests {
                 &RwLock::new(HashMap::new()),
                 &artists,
                 &EnrichmentBatch {
-                    library_version: None,
+                    library_generation: None,
                     artists: vec![
                         ArtistSummary {
                             name: "Pictured".to_string(),

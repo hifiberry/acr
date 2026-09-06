@@ -121,10 +121,15 @@ impl LibraryEnricher for InProcessEnricher {
         crate::albumupdater::load_cached_genres(album_id)
     }
 
+    /// The two sweeps start against one library and run at the same time, and
+    /// both are given the *same* generation. That is what makes them
+    /// independent: neither sweep's writes move the generation, so neither can
+    /// make the other's next batch look stale. Only a reload of the library
+    /// refuses either, which is exactly when both should stop.
     fn enrich(
         &self,
         player: &str,
-        version: Option<String>,
+        generation: Option<String>,
         artists: Vec<ArtistRef>,
         albums: Vec<AlbumRef>,
         sink: Arc<dyn EnrichmentSink>,
@@ -132,13 +137,18 @@ impl LibraryEnricher for InProcessEnricher {
         if !artists.is_empty() {
             crate::artistupdater::enrich_artists_in_background(
                 player.to_string(),
-                version.clone(),
+                generation.clone(),
                 artists,
                 sink.clone(),
             );
         }
         if !albums.is_empty() {
-            crate::albumupdater::enrich_albums_in_background(player.to_string(), version, albums, sink);
+            crate::albumupdater::enrich_albums_in_background(
+                player.to_string(),
+                generation,
+                albums,
+                sink,
+            );
         }
     }
 }
@@ -157,23 +167,31 @@ pub const BATCH_SIZE: usize = 50;
 /// what to do about the version and about a refusal.
 pub struct BatchSender {
     sink: Arc<dyn EnrichmentSink>,
-    /// The version the next batch names, or `None` when the caller supplied
-    /// none. It is only ever adopted from a reply when one was supplied in the
-    /// first place: an in-process caller passes `None` because two updaters run
-    /// against one version counter and would read each other's bumps as a
-    /// reload, and taking a version back from the first reply would put it
-    /// straight back into that state.
-    version: Option<String>,
-    versioned: bool,
+    /// The library generation every batch of this sweep names, or `None` when
+    /// the caller supplied none.
+    ///
+    /// Fixed for the life of the sweep, and never adopted from a reply: a
+    /// generation moves only when the library is reloaded, and a reload is
+    /// precisely the thing this sweep must stop for rather than follow. The
+    /// version in a reply is a different token with a different job — the
+    /// caller's "seen" bookkeeping — and taking it from a reply is what used to
+    /// be needed to survive the sweep's own version bumps.
+    generation: Option<String>,
+}
+
+/// What a sweep got through, so its caller can log and complete its background
+/// job truthfully rather than reporting a total it did not reach.
+pub(crate) struct Swept {
+    /// How many entries the sweep had something to say about.
+    pub(crate) reported: usize,
+    /// `Some(n)` when the library refused a batch and the sweep stopped after
+    /// considering `n` entries; `None` when it ran to the end.
+    pub(crate) stopped_after: Option<usize>,
 }
 
 impl BatchSender {
-    pub fn new(sink: Arc<dyn EnrichmentSink>, version: Option<String>) -> Self {
-        BatchSender {
-            sink,
-            versioned: version.is_some(),
-            version,
-        }
+    pub fn new(sink: Arc<dyn EnrichmentSink>, generation: Option<String>) -> Self {
+        BatchSender { sink, generation }
     }
 
     /// Send one batch.
@@ -186,7 +204,7 @@ impl BatchSender {
             return true;
         }
         let batch = EnrichmentBatch {
-            library_version: self.version.clone(),
+            library_generation: self.generation.clone(),
             artists,
             albums,
         };
@@ -196,15 +214,12 @@ impl BatchSender {
                     "Applied {} artist(s) and {} album(s)",
                     applied.artists, applied.albums
                 );
-                if self.versioned {
-                    self.version = applied.library_version;
-                }
                 true
             }
-            Err(EnrichmentError::Stale { current }) => {
+            Err(EnrichmentError::Stale { current_generation }) => {
                 info!(
-                    "Library moved on while enriching (now {:?}); stopping, the reload asks again",
-                    current
+                    "Library reloaded while enriching (generation now {:?}); stopping, the reload asks again",
+                    current_generation
                 );
                 false
             }
@@ -276,11 +291,10 @@ mod tests {
         assert!(sink.batches.lock().is_empty());
     }
 
-    /// A caller that named no version keeps naming none, whatever the library
-    /// hands back: adopting a version here is what would make the second batch
-    /// of two concurrent updaters look stale.
+    /// A caller that named no generation keeps naming none, whatever the
+    /// library hands back.
     #[test]
-    fn an_unversioned_sender_never_adopts_a_version() {
+    fn a_sender_with_no_generation_never_names_one() {
         let sink = Recording::new(vec![Ok(Applied {
             artists: 1,
             albums: 0,
@@ -293,26 +307,54 @@ mod tests {
 
         let batches = sink.batches.lock();
         assert_eq!(batches.len(), 2);
-        assert_eq!(batches[1].library_version, None);
+        assert_eq!(batches[1].library_generation, None);
     }
 
-    /// A caller that did name one follows the library forward, so its next
-    /// batch names the version its own last batch produced.
+    /// The regression this whole design exists for. Both sweeps run against one
+    /// library and one generation; neither may stop the other, and a version
+    /// coming back in a reply must not be taken for the next batch's
+    /// generation. Before the generation, the album sweep's first batch was
+    /// refused because the artist sweep had already bumped the version — so the
+    /// sink here answers each batch with a *different* version, the way a real
+    /// library does.
     #[test]
-    fn a_versioned_sender_follows_the_library_forward() {
-        let sink = Recording::new(vec![Ok(Applied {
-            artists: 1,
-            albums: 0,
-            library_version: Some("v2".to_string()),
-        })]);
-        let mut sender = BatchSender::new(sink.clone(), Some("v1".to_string()));
+    fn a_sweep_over_a_library_with_both_artists_and_albums_names_one_generation() {
+        let sink = Recording::new(vec![
+            Ok(Applied {
+                artists: 1,
+                albums: 0,
+                library_version: Some("v2".to_string()),
+            }),
+            Ok(Applied {
+                artists: 0,
+                albums: 1,
+                library_version: Some("v3".to_string()),
+            }),
+        ]);
+        let generation = Some("g1".to_string());
+        let mut sender = BatchSender::new(sink.clone(), generation.clone());
 
-        assert!(sender.send(vec![summary("a")], vec![]));
-        assert!(sender.send(vec![summary("b")], vec![]));
+        assert!(sender.send(vec![summary("Pink Floyd")], vec![]));
+        assert!(sender.send(
+            vec![],
+            vec![AlbumGenres {
+                id: "1".to_string(),
+                genres: vec!["rock".to_string()],
+            }]
+        ));
 
         let batches = sink.batches.lock();
-        assert_eq!(batches[0].library_version, Some("v1".to_string()));
-        assert_eq!(batches[1].library_version, Some("v2".to_string()));
+        assert_eq!(batches.len(), 2, "both sweeps' batches reached the library");
+        assert!(
+            batches.iter().all(|b| b.library_generation == generation),
+            "the generation a sweep was started with is the generation every \
+             one of its batches names, whatever version the library reports \
+             back: got {:?}",
+            batches
+                .iter()
+                .map(|b| b.library_generation.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// A refusal ends the sweep. Carrying on would spend a MusicBrainz request
@@ -320,9 +362,9 @@ mod tests {
     #[test]
     fn a_stale_refusal_stops_the_sweep() {
         let sink = Recording::new(vec![Err(EnrichmentError::Stale {
-            current: Some("v9".to_string()),
+            current_generation: Some("g9".to_string()),
         })]);
-        let mut sender = BatchSender::new(sink.clone(), Some("v1".to_string()));
+        let mut sender = BatchSender::new(sink.clone(), Some("g1".to_string()));
 
         assert!(!sender.send(vec![summary("a")], vec![]));
     }

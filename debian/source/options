@@ -1,0 +1,31 @@
+# What dpkg-source puts in the .tar.gz.
+#
+# This is a native (1.0) source package, so `dpkg-source -b` tarballs the whole
+# build directory, and its default exclusion list applies only when asked for.
+# Without this the source package carried the entire .git directory -- 920
+# entries and most of the tarball's 11 MB -- and, when built from a development
+# checkout rather than a clean clone, whatever else happened to be lying
+# around: a local container target directory is routinely several gigabytes.
+#
+# Patterns are matched against the path inside the package directory, which is
+# why each entry needs the `*/` form, and a directory needs a second pattern
+# for its contents.
+#
+# Note what is deliberately *not* excluded: `.cargo/config.toml` pins
+# jemalloc's page size and the packaged build needs it as much as any other
+# build path does, and `secrets.txt` is read by the build script inside the
+# chroot.
+tar-ignore = */.git
+tar-ignore = */.git/*
+tar-ignore = */target
+tar-ignore = */target/*
+tar-ignore = */.docker-target
+tar-ignore = */.docker-target/*
+tar-ignore = */.docker-home
+tar-ignore = */.docker-home/*
+tar-ignore = */.ci-home
+tar-ignore = */.ci-home/*
+tar-ignore = */.superpowers
+tar-ignore = */.superpowers/*
+tar-ignore = */docs/superpowers
+tar-ignore = */docs/superpowers/*

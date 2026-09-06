@@ -31,6 +31,15 @@ hifiberry-audiocontrol (0.20.1) trixie; urgency=medium
   * Linux only. It is what the devices run; macOS development builds keep the
     system allocator and gain no C build step.
 
+  * The source package no longer carries the .git directory. dpkg-source
+    tarballs the whole build directory for a native package and applies its
+    default exclusions only when asked, so every source package until now
+    shipped the full repository history -- 920 entries, most of the tarball.
+    debian/source/options also excludes build and container state, which a
+    package built from a development checkout rather than a clean clone would
+    otherwise pick up; a local container target directory is routinely several
+    gigabytes. .cargo/config.toml is deliberately still included, because the
+    packaged build needs the page-size pin as much as any other build path.
  -- HiFiBerry <support@hifiberry.com>  Sun, 06 Sep 2026 05:59:41 +0000
 
 hifiberry-audiocontrol (0.20.0) trixie; urgency=medium

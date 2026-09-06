@@ -1,3 +1,38 @@
+hifiberry-audiocontrol (0.20.1) trixie; urgency=medium
+
+  * The daemon now uses jemalloc rather than the system allocator on Linux.
+    Measured on a Pi 5 holding a 202,393-song MPD library, same binary and
+    same library throughout, only the allocator swapped: glibc settled at
+    370 MB resident, jemalloc at 255 MB once loaded and 177 MB half an hour
+    later as it returned pages. The glibc process left running for a day had
+    reached 1.1 GB. Library load took 720 s either way, so this is not
+    trading memory for speed.
+  * **Those figures come from LD_PRELOADing an unprefixed jemalloc, which is
+    not quite what this change does.** tikv-jemalloc-sys prefixes its symbols
+    by default, so `#[global_allocator]` routes Rust's allocations and leaves
+    bundled SQLite, OpenSSL, dbus and ALSA on the system allocator. The bulk
+    of what was saved looks Rust-side -- the library's own accounting puts its
+    data at 75 MB against a 370 MB resident set, i.e. per-allocation overhead
+    across roughly a million small strings -- but the shipped configuration
+    has not itself been measured on a device. Treat 255 MB as an upper bound
+    on the saving, not a promise.
+  * Capping glibc's arenas was measured first and does nothing here: 369 MB
+    against 370 MB. The memory was never in per-arena free lists, so anyone
+    reaching for MALLOC_ARENA_MAX later would be repeating a dead end.
+  * The build now pins jemalloc's page size (JEMALLOC_SYS_WITH_LG_PAGE=14,
+    in .cargo/config.toml so every build path gets it, not just the
+    packaging). Without it jemalloc takes the page size from whatever machine
+    built the binary, and a 4 KB-page builder produces one that aborts before
+    main() on a 16 KB-page Pi 5 -- "Unsupported system page size", which with
+    Restart=on-failure is a restart loop from a package that installed
+    perfectly. Reproduced and then fixed on real hardware. 14 is the largest
+    page any current target uses; a larger value would be safe but would
+    coarsen jemalloc's slabs on the very metric this release improves.
+  * Linux only. It is what the devices run; macOS development builds keep the
+    system allocator and gain no C build step.
+
+ -- HiFiBerry <support@hifiberry.com>  Sun, 06 Sep 2026 05:59:41 +0000
+
 hifiberry-audiocontrol (0.20.0) trixie; urgency=medium
 
   * An external cover art endpoint can now hand the daemon the image itself,

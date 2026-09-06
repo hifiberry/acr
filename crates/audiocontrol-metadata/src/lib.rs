@@ -5,6 +5,7 @@ pub mod albumupdater;
 pub mod artist_store;
 pub mod artistsplitter;
 pub mod artistupdater;
+pub mod core_client;
 pub mod coverart;
 pub mod coverart_providers;
 pub mod external_coverart;

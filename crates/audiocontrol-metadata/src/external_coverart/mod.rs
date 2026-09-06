@@ -13,8 +13,10 @@ pub mod protocol;
 pub mod template;
 pub mod worker;
 
+// `pub(crate)`, not `mod`: `core_client`'s tests reuse this stub for the
+// player daemon's HTTP surface rather than standing up a second one.
 #[cfg(test)]
-mod stub_server;
+pub(crate) mod stub_server;
 
 use std::collections::HashSet;
 use std::sync::Arc;

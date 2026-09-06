@@ -7,7 +7,7 @@ use log::{debug, info, error};
 
 // Use the correct rocket_ws imports
 use rocket_ws::{WebSocket, Channel, Message};
-use rocket::futures::{SinkExt, StreamExt};
+use rocket::futures::{Sink, SinkExt, Stream, StreamExt};
 
 use crate::data::PlayerEvent;
 use crate::audiocontrol::eventbus::EventBus;
@@ -607,13 +607,27 @@ enum ClientLoopEnd {
 /// Both mount points run this. They differ only in the subscription they
 /// register and the welcome message they send, and having one loop is what
 /// keeps the ping below from depending on which URL a client connected to.
-async fn run_client_loop(
+///
+/// `player_filter` is the player this connection was opened for, for the log
+/// only; `None` is the unfiltered mount point.
+///
+/// Generic over the stream rather than taking `DuplexStream`, whose constructor
+/// is private to `rocket_ws`, so the tests can run this loop over a pair of
+/// channels and watch what it sends.
+async fn run_client_loop<S>(
     manager: &WebSocketManager,
-    stream: &mut rocket_ws::stream::DuplexStream,
+    stream: &mut S,
     client_id: usize,
     forwarded_prefix: Option<&str>,
+    player_filter: Option<&str>,
     ping_interval: Duration,
-) -> rocket_ws::result::Result<ClientLoopEnd> {
+) -> rocket_ws::result::Result<ClientLoopEnd>
+where
+    S: Stream<Item = rocket_ws::result::Result<Message>>
+        + Sink<Message, Error = rocket_ws::result::Error>
+        + Unpin,
+{
+    let player = player_filter.unwrap_or("all");
     let mut poll = tokio::time::interval(EVENT_POLL_INTERVAL);
 
     // `interval` fires its first tick immediately; start the ping clock one
@@ -670,13 +684,13 @@ async fn run_client_loop(
 
                         match msg {
                             Message::Text(text) => {
-                                debug!("Received message: Client: {}, Text: {}", client_id, text);
+                                debug!("Received message: Client: {}, Player: {}, Text: {}", client_id, player, text);
 
                                 // Try to parse as ClientMessage (EventSubscription)
                                 match serde_json::from_str::<ClientMessage>(&text) {
                                     Ok(ClientMessage::Subscription(subscription)) => {
-                                        debug!("Subscription update: Client: {}, Players: {:?}, Event types: {:?}",
-                                              client_id, subscription.players, subscription.event_types);
+                                        debug!("Subscription update: Client: {}, Player: {}, Players: {:?}, Event types: {:?}",
+                                              client_id, player, subscription.players, subscription.event_types);
 
                                         if manager.update_subscription(client_id, subscription) {
                                             let response = serde_json::json!({
@@ -796,6 +810,7 @@ pub fn event_messages(
                 &mut stream,
                 client_id,
                 forwarded_prefix.as_deref(),
+                None,
                 PING_INTERVAL,
             ).await?;
 
@@ -855,6 +870,7 @@ pub fn player_event_messages(
                 &mut stream,
                 client_id,
                 forwarded_prefix.as_deref(),
+                Some(&player_filter),
                 PING_INTERVAL,
             ).await?;
 
@@ -1045,6 +1061,177 @@ mod tests {
             None,
             "the reaped client left its activity entry behind"
         );
+    }
+
+    // The loop itself, run over a pair of channels. `DuplexStream` cannot be
+    // built outside `rocket_ws`, which is why `run_client_loop` is generic over
+    // its stream: everything below drives the real loop, on paused time, so the
+    // ping it sends is observed rather than assumed.
+
+    use rocket::futures::{Sink, Stream};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::sync::mpsc;
+
+    /// A stand-in for a connection: frames the test writes arrive at the loop,
+    /// frames the loop sends are collected for the test.
+    struct ChannelStream {
+        inbound: mpsc::UnboundedReceiver<rocket_ws::result::Result<Message>>,
+        outbound: mpsc::UnboundedSender<Message>,
+    }
+
+    impl Stream for ChannelStream {
+        type Item = rocket_ws::result::Result<Message>;
+
+        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.inbound.poll_recv(cx)
+        }
+    }
+
+    impl Sink<Message> for ChannelStream {
+        type Error = rocket_ws::result::Error;
+
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.outbound
+                .send(item)
+                .map_err(|_| rocket_ws::result::Error::ConnectionClosed)
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct LoopHarness {
+        manager: WebSocketManager,
+        client_id: usize,
+        to_server: mpsc::UnboundedSender<rocket_ws::result::Result<Message>>,
+        from_server: mpsc::UnboundedReceiver<Message>,
+        task: tokio::task::JoinHandle<rocket_ws::result::Result<ClientLoopEnd>>,
+    }
+
+    /// Register a client and run the real loop for it on this runtime.
+    fn start_loop() -> LoopHarness {
+        let manager = WebSocketManager::new();
+        let client_id = manager.register(EventSubscription { players: None, event_types: None });
+
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let (outbound, from_server) = mpsc::unbounded_channel();
+
+        let in_loop = manager.clone();
+        let task = tokio::spawn(async move {
+            let mut stream = ChannelStream { inbound, outbound };
+            run_client_loop(&in_loop, &mut stream, client_id, None, None, PING_INTERVAL).await
+        });
+
+        LoopHarness { manager, client_id, to_server, from_server, task }
+    }
+
+    impl LoopHarness {
+        /// The next frame the loop sends, or `None` if it sends nothing within
+        /// twenty ping intervals.
+        ///
+        /// Twenty intervals of *paused* time: the runtime advances its own clock
+        /// when it has nothing to run, so this costs no real time and cannot
+        /// flake under load.
+        async fn next_frame(&mut self) -> Option<Message> {
+            tokio::time::timeout(PING_INTERVAL * 20, self.from_server.recv())
+                .await
+                .ok()
+                .flatten()
+        }
+
+        /// Close the connection and wait for the loop to say how it ended.
+        async fn finish(self) -> ClientLoopEnd {
+            let _ = self.to_server.send(Ok(Message::Close(None)));
+            tokio::time::timeout(PING_INTERVAL * 20, self.task)
+                .await
+                .expect("the loop did not return after a close frame")
+                .expect("the loop task panicked")
+                .expect("the loop returned an error")
+        }
+    }
+
+    /// Poll a condition, yielding between attempts. Bounded, and on paused time.
+    async fn eventually(mut condition: impl FnMut() -> bool) -> bool {
+        for _ in 0..100 {
+            if condition() {
+                return true;
+            }
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        false
+    }
+
+    /// The fix itself: a connection nobody talks on is pinged anyway, and goes
+    /// on being pinged. Delete the `ping.tick()` branch and this fails.
+    #[tokio::test(start_paused = true)]
+    async fn the_server_pings_an_idle_connection() {
+        let mut harness = start_loop();
+
+        let first = harness.next_frame().await;
+        assert!(
+            matches!(first, Some(Message::Ping(_))),
+            "an idle connection was not pinged; got {:?}",
+            first
+        );
+
+        let second = harness.next_frame().await;
+        assert!(
+            matches!(second, Some(Message::Ping(_))),
+            "the ping did not repeat; got {:?}",
+            second
+        );
+
+        assert_eq!(harness.finish().await, ClientLoopEnd::Closed);
+    }
+
+    /// End to end, and the reason the ping is the fix: the pong a peer's stack
+    /// sends back without any application code reaches the manager as activity.
+    #[tokio::test(start_paused = true)]
+    async fn a_pong_answering_the_ping_refreshes_activity() {
+        let mut harness = start_loop();
+        let before = harness
+            .manager
+            .last_activity_of(harness.client_id)
+            .expect("a registered client has an activity time");
+
+        let ping = harness.next_frame().await;
+        assert!(
+            matches!(ping, Some(Message::Ping(_))),
+            "expected a ping to answer; got {:?}",
+            ping
+        );
+
+        harness
+            .to_server
+            .send(Ok(Message::Pong(Vec::new())))
+            .expect("the loop is still reading");
+
+        let manager = harness.manager.clone();
+        let client_id = harness.client_id;
+        assert!(
+            eventually(|| manager.last_activity_of(client_id).is_some_and(|at| at > before)).await,
+            "the pong answering the server's ping did not refresh the client's activity time"
+        );
+
+        assert_eq!(harness.finish().await, ClientLoopEnd::Closed);
+    }
+
+    /// A client that goes away properly is reported as closed, so the caller
+    /// unregisters it rather than leaving it to the prune.
+    #[tokio::test(start_paused = true)]
+    async fn a_close_frame_ends_the_loop() {
+        assert_eq!(start_loop().finish().await, ClientLoopEnd::Closed);
     }
 
     /// Pinging often enough to keep a client alive is worthless if one lost

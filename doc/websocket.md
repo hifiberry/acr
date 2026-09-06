@@ -409,12 +409,21 @@ Common error codes:
 
 ## Keeping a connection alive
 
-**A client need not send anything to stay connected.** The server sends a
-WebSocket ping on every open connection every 30 seconds, and the pong that
-comes back is what keeps the connection alive. Ping and pong are protocol
+**From 0.21.0 a client need not send anything to stay connected.** The server
+sends a WebSocket ping on every open connection every 30 seconds, and the pong
+that comes back is what keeps the connection alive. Ping and pong are protocol
 frames: every WebSocket implementation answers a ping on its own, so a browser
 page or a library client that subscribes once and then only listens stays
 connected with no application-level keep-alive and no timer of its own.
+
+**Against an earlier daemon a client that only listens must still send something
+periodically**, because no ping arrives to be answered and only a frame
+travelling client to server refreshes the timer. Clients ship separately from
+this daemon and meet both, so unless you know every installation you talk to is
+0.21.0 or later, keep the periodic send: a WebSocket ping if your library exposes
+one, otherwise re-send the subscription message — see the last paragraph of this
+section. It costs one frame every few minutes against a current daemon and is
+the difference between working and going silently deaf against an older one.
 
 **A client that stops answering is dropped.** The server keeps a last-activity
 time per connected client, refreshed by any frame arriving *client to server* —
@@ -432,8 +441,10 @@ and no close frame is sent, and no further events arrive. A client that suspects
 it has been dropped should reconnect and re-read state rather than wait.
 
 Sending anything of your own also refreshes the timer, and re-sending the
-subscription message is a reasonable way to do it — it is answered with
-`subscription_updated` — but nothing requires it.
+subscription message is the way to do it from a browser, where the JavaScript
+WebSocket API exposes no ping — it is answered with `subscription_updated`. From
+0.21.0 nothing requires it; against an earlier daemon it is what keeps a
+listen-only client alive.
 
 ## Events during a disconnection are lost
 
@@ -452,9 +463,11 @@ and `GET /api/player` for the state.
 2. **Validate messages**: Always check the message format before processing
 3. **Subscription management**: Only subscribe to events you need to minimize traffic
 4. **Backoff strategy**: Use exponential backoff for reconnection attempts
-5. **Answer the server's pings**: Every WebSocket implementation does this
-   automatically, so this is only a warning against turning it off — a client
-   that stops answering is pruned after an hour and goes quietly deaf. See
+5. **Answer the server's pings, and keep sending something of your own until
+   every daemon you talk to is 0.21.0**: answering happens automatically in every
+   WebSocket implementation, so that half is only a warning against turning it
+   off; the periodic send is what an earlier daemon needs, and without it a
+   listen-only client there is pruned after an hour and goes quietly deaf. See
    *Keeping a connection alive* above
 6. **Re-read state after reconnecting**: The stream is not a history — see
    *Events during a disconnection are lost* above

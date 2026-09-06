@@ -38,6 +38,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Get Plugin Information](#get-plugin-information)
 - [Library API](#library-api)
   - [Get Library Information](#get-library-information)
+  - [Apply Enrichment](#apply-enrichment)
   - [Search Library](#search-library)
   - [Browse Artists](#browse-artists)
   - [Browse Albums](#browse-albums)
@@ -151,7 +152,10 @@ carry `Vary: X-Forwarded-Prefix`, and their `ETag`s, along with the
 `library_version` those endpoints and `/api/library/<player>` report, vary with
 the prefix as well as with the library's contents. The remaining
 prefix-dependent responses (`now-playing`, `library/<player>` - whose
-`library_version` varies with the prefix even though it carries no image path -
+`library_version` varies with the prefix even though it carries no image path,
+while the `library_generation` in the same body deliberately does not: it is the
+token an enrichment batch names, not a validator, and a prefixed one would match
+nothing the library holds -
 `album/by-id`, `artist/by-id`,
 `artist/by-name`, `artist/by-mbid`, `albums/by-artist`, `albums/by-artist-id`,
 `albums/by-genre`, `albums/by-category`) return a plain JSON body with neither
@@ -1560,10 +1564,93 @@ Retrieves library information for a specific player.
 | `tracks_count` | integer | Total number of tracks in the library |
 | `supports_delete` | boolean | Whether the player supports deleting tracks |
 | `library_version` | string (opaque) | Changes whenever the library's contents change. Poll this one small response to learn whether any list needs re-fetching, rather than issuing a conditional request per list. **Compare it for equality only** - it is opaque, not ordered, and carries no arithmetic meaning. **Absent** when the backend does not track changes. It also changes when the daemon restarts, which costs one refetch and is what makes it safe to trust. |
+| `library_generation` | string (opaque) | Changes when the library is *reloaded*, and not when its contents change. This is the token an enrichment batch names (see [Apply Enrichment](#apply-enrichment)); it is not a cache validator and, unlike `library_version`, does not vary with a forwarded prefix. **Compare it for equality only.** **Absent** when the backend cannot tell whether it has reloaded, which is a caller's signal to name no generation in its batches. It also changes when the daemon restarts. |
+
+The two tokens are not interchangeable. `library_version` is the validator on
+the list routes and the "have I seen this yet" token; `library_generation` says
+which loaded library the current contents belong to. An enrichment write moves
+the version and not the generation; a reload moves both.
 
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/library/mpd
+```
+
+### Apply Enrichment
+
+Merges what an outside lookup learned about a library's artists and albums into
+that library. This is how the metadata side hands back genres, MusicBrainz IDs
+and artist thumbnails after it has looked them up.
+
+- **Endpoint**: `/api/library/<player-name>/enrichment`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+- **Request Body**:
+  ```json
+  {
+    "library_generation": "5e2b91c0-a3f9c1d2-g3",
+    "artists": [
+      {
+        "name": "The Beatles",
+        "mbid": ["b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"],
+        "is_multi": false,
+        "genres": ["rock"],
+        "thumb_url": ["/api/coverart/artist/YWJj/image"]
+      }
+    ],
+    "albums": [
+      { "id": "1", "genres": ["rock", "pop"] }
+    ]
+  }
+  ```
+
+  Every field is optional. `library_generation` is the `library_generation` from
+  `GET /api/library/<player-name>`, naming the loaded library this batch was
+  computed against; omitting it makes no claim and the batch is applied as it
+  arrives. An artist is matched by `name` and an album by `id`; an entry naming
+  something the library does not have is skipped, never inserted.
+
+- **Responses**:
+
+  | Condition | Status | Body |
+  |---|---|---|
+  | Merged | 200 OK | `{"artists": 1, "albums": 1, "library_version": "..."}` — how many entries changed something, and the library's version after the merge |
+  | The library was reloaded since `library_generation` | 409 Conflict | `{"library_generation": "...", "library_version": "..."}` — the current values of both |
+  | `<player-name>` does not name a known player, or that player has no library | 404 Not Found | `{"error": "..."}` |
+
+**Merge rules**
+
+- Album genres: an empty `genres` list never clears what the library read from
+  the file's own tags — the tags are better data than a lookup that found
+  nothing. A list holding the same genres in a different order is not a change;
+  the stored order is left as it was.
+- Artist `mbid`, `is_multi`, `genres` and `thumb_url` replace what is stored.
+  An artist marked `is_multi` whose other fields are all empty is one whose
+  lookup found nothing describing a single artist: it keeps no metadata at all,
+  which the artist routes serve as `"metadata": null`.
+- `thumb_url` is stored verbatim, a provider's own URL included. An empty list
+  means no image was found, which is what a client reads to tell "no picture"
+  from "not looked up yet".
+- One batch bumps `library_version` at most once, and not at all when nothing
+  changed — a bump invalidates every client's cached list.
+
+The `library_version` in a 200 is the value the caller should record as seen: it
+already accounts for this batch, so polling `GET /api/library/<player-name>` will
+not report the caller's own write back to it as a change. A 409 carries both
+tokens for the same reason — the caller needs the new generation to recompute
+against and the version for its own bookkeeping.
+
+A backend that reports no `library_generation` (LMS) refuses any batch that
+names one, because it cannot honour the claim: it has no way to tell whether it
+has reloaded. Such a caller names no generation.
+
+#### Example
+```bash
+curl -X POST http://<device-ip>:1080/api/library/mpd/enrichment \
+  -H 'Content-Type: application/json' \
+  -d '{"library_generation":"5e2b91c0-a3f9c1d2-g3","albums":[{"id":"1","genres":["rock"]}]}'
 ```
 
 ### Get Player Albums

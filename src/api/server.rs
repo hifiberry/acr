@@ -1,7 +1,7 @@
 use crate::AudioController;
 use crate::api::{
     players, plugins, library, imagecache, events, volume, lyrics, m3u, settings, cache,
-    backgroundjobs, genres, inputs, splitters, capabilities, song_information
+    backgroundjobs, genres, inputs, splitters, capabilities, song_information, enrichment
 };
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
@@ -240,6 +240,7 @@ pub async fn start_rocket_server(
         library::get_artists_by_category,
         library::delete_library_album,
         library::delete_library_track,
+        enrichment::apply_enrichment,
 
         // WebSocket routes
         events::event_messages,

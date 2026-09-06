@@ -19,6 +19,9 @@ pub mod plugins;
 // Export the library module
 pub mod library;
 
+// Export the library enrichment module
+pub mod enrichment;
+
 // Export the event module
 pub mod events;
 

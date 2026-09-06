@@ -109,7 +109,10 @@ When the entire database has been loaded and processed, it sends a final databas
 
 #### Metadata Enhancement
 
-Audiocontrol uses various services to retrieve additional metadata, including artist images. Without this metadata enhancement, artists will appear in the API without thumbnail images:
+Audiocontrol uses various services to retrieve additional metadata, including
+artist images. Before that enhancement has run, the artist list already carries a
+`thumb_url` — the MPD backend fills an empty one with audiocontrol's own cover
+art path on every artist-list request, so a client never sees an empty list here:
 
 ```json
 [
@@ -118,19 +121,30 @@ Audiocontrol uses various services to retrieve additional metadata, including ar
     "id": "4800476484544871526",
     "is_multi": false,
     "album_count": 7,
-    "thumb_url": []
+    "thumb_url": [
+      "/api/coverart/artist/MTYgSG9yc2Vwb3dlcg/image"
+    ]
   },
   {
     "name": "2 Chainz",
     "id": "15793527172476567953",
     "is_multi": false,
     "album_count": 1,
-    "thumb_url": []
+    "thumb_url": [
+      "/api/coverart/artist/MiBDaGFpbno/image"
+    ]
   }
 ]
 ```
 
-After the metadata update completes (which may also be slow initially but uses caching for future lookups), artists will have thumbnail images where available:
+That path answers 404 while no image has been found, and that 404 — not an empty
+`thumb_url` — is how "no image" is expressed. A client can therefore request it
+unconditionally.
+
+After the metadata update completes (which may also be slow initially but uses
+caching for future lookups), an artist an image was actually found for carries
+whatever the metadata side stored. A provider's own URL passes through verbatim,
+because it is not audiocontrol's to rewrite:
 
 ```json
 [
@@ -149,11 +163,15 @@ After the metadata update completes (which may also be slow initially but uses c
     "is_multi": false,
     "album_count": 1,
     "thumb_url": [
-      "https://r2.theaudiodb.com/images/media/artist/thumb/2-chainz-4ff3c2f2aba7b.jpg"
+      "/api/coverart/artist/MiBDaGFpbno/image"
     ]
   }
 ]
 ```
+
+Behind a reverse proxy that announces `X-Forwarded-Prefix`, audiocontrol's own
+paths in this field are rewritten to carry the prefix; an external provider's are
+left alone.
 
 ## Troubleshooting
 

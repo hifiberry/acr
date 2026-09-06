@@ -509,27 +509,40 @@ crate; the rest stay.
 
 ## Packaging
 
-One source package, `hifiberry-audiocontrol`, produces two binary packages:
+One source package, `hifiberry-audiocontrol`, produces **one binary package of
+the same name**, shipping both daemons:
 
-- `hifiberry-audiocontrol`: as today minus the moved tools, minus the secrets.
-  Adds `Breaks: hifiberry-librespot (<< V)`, where `V` is the
-  `hifiberry-librespot` version whose start script fetches the token from
-  port 1084; it is filled in when that package is bumped in HiFiBerry OS.
-- `hifiberry-audiocontrol-metadata`: `Depends: hifiberry-audiocontrol (= ${binary:Version})`
-  for the `audiocontrol` user and the directories. Ships
-  `/usr/bin/audiocontrol-metadata`, the four tools, `/etc/audiocontrol/metadata.json`,
-  `audiocontrol-metadata.service`, `hifiberry-audiocontrol-metadata.nginx`,
-  `audiocontrol-metadata-auth.json`.
-- `hifiberry-audiocontrol` gets `Recommends: hifiberry-audiocontrol-metadata`,
-  and the `hbos-minimal` and `hbos-full` meta-packages in HiFiBerry OS list it
-  explicitly.
+- `/usr/bin/audiocontrol` and `/usr/bin/audiocontrol-metadata`, plus the tools.
+- Two systemd units, `audiocontrol.service` and `audiocontrol-metadata.service`,
+  both enabled — `dh_installsystemd --name=` once for each.
+- The nginx snippets and auth manifests for both prefixes.
+- `/etc/audiocontrol/audiocontrol.json` and `/etc/audiocontrol/metadata.json`.
+- `Breaks: hifiberry-librespot (<< V)`, where `V` is the `hifiberry-librespot`
+  version whose start script fetches the token from port 1084; it is filled in
+  when that package is bumped in HiFiBerry OS.
 
-`debian/rules` runs one `cargo build --release --workspace` and installs from
-`target/release/` into two package trees. The version is one number in
-`debian/changelog` and in every `Cargo.toml`.
+The two daemons therefore always install, upgrade and roll back together, and
+that is the point rather than a convenience. They talk to each other over HTTP.
+Splitting them into two binary packages would let a device run one version of
+the player against another version of the metadata daemon, so every interface
+between them would need its own compatibility path — on top of the one the
+shipped clients already require, because the WebUI and `hbos-ios` do upgrade
+independently. Shipping both in one package keeps those interfaces internal:
+they may change freely within a release, and only the client-facing API carries
+a compatibility promise.
 
-`postinst` of the metadata package, on first configure only (`$2` empty or
-older than the release that introduces it): creates
+What this gives up is running the player without the metadata daemon. That is
+worth little: `Recommends:` would have installed it by default anyway, so the
+optionality would have gone unexercised, and a device that wants no external
+lookups disables the providers in configuration rather than by omitting a
+package.
+
+`debian/rules` runs one `cargo build --release --workspace` and installs
+everything from `target/release/` into the single package tree. The version is
+one number in `debian/changelog` and in every `Cargo.toml`.
+
+`postinst`, on first configure of the release that introduces the metadata
+daemon (`$2` empty or older than that release): creates
 `/var/lib/audiocontrol/metadata` and `/var/lib/audiocontrol/metadata/images`
 owned by `audiocontrol`; copies `/var/lib/audiocontrol/cache/attributes.db`
 and `/var/lib/audiocontrol/db/settings.db` into `/var/lib/audiocontrol/metadata/`

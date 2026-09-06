@@ -49,7 +49,7 @@ pub struct Song {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
     
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genres: Vec<String>,
     
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -70,7 +70,7 @@ pub struct Song {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub composer: Option<String>,
     
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
 }
 

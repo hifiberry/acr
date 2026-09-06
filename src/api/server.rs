@@ -1,7 +1,7 @@
 use crate::AudioController;
 use crate::api::{
     players, plugins, library, imagecache, events, volume, lyrics, m3u, settings, cache,
-    backgroundjobs, genres, inputs, splitters, capabilities
+    backgroundjobs, genres, inputs, splitters, capabilities, song_information
 };
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
@@ -247,6 +247,7 @@ pub async fn start_rocket_server(
         
         // Generic player API endpoints
         player_event_update,
+        song_information::song_information,
     ];
 
     // Define volume routes

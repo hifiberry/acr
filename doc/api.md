@@ -17,6 +17,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Send Command to Active Player](#send-command-to-active-player)
   - [Send Command to Specific Player](#send-command-to-specific-player)
   - [Player Event Update](#player-event-update)
+  - [Song Information Update](#song-information-update)
   - [Get Now Playing Information](#get-now-playing-information)
   - [Get Player Queue](#get-player-queue)
   - [Queue Management Commands](#queue-management-commands)
@@ -576,6 +577,25 @@ curl -X POST http://<device-ip>:1080/api/player/mpd/update \
   }'
 # Response: {"success": false, "message": "Player 'mpd' does not support API event processing"}
 ```
+
+### Song Information Update
+
+Accepts a better version of the currently playing song from an outside lookup (for example, a metadata enrichment process) and merges it into the player's current song.
+
+- **Endpoint**: `/api/player/<player-name>/song-information`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Request Body**: A partial `Song` object. Any field the body omits is not asserted about and is left unchanged; only `title` and `artist` are used to confirm the partial still describes the song being played.
+- **Responses**:
+
+  | Condition | Status | Body |
+  |---|---|---|
+  | `title`/`artist` in the body match the current song | 200 OK | `{"success": true, "applied": true}` |
+  | `title`/`artist` in the body no longer match the current song | 200 OK | `{"success": true, "applied": false}` |
+  | Body has neither `title` nor `artist` | 400 Bad Request | `{"success": false, "message": "..."}` |
+  | `<player-name>` does not name a known player | 404 Not Found | `{"success": false, "message": "..."}` |
+
+The merge follows the rule documented under `song_information_update` in the WebSocket contract: a title or artist the partial carries must match the current song, only `cover_art_url`, `liked` and `metadata` are merged, and artwork that belongs to the song is never replaced. `applied: false` for a song that has moved on is the expected answer, not an error.
 
 ### Get Now Playing Information
 

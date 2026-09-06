@@ -10,6 +10,9 @@ pub use acr_web::{imagecache, imageresponse, urlprefix, validated};
 // Export the players module
 pub mod players;
 
+// Export the song information module
+pub mod song_information;
+
 // Export the plugins module
 pub mod plugins;
 

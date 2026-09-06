@@ -12,6 +12,42 @@ use rocket::futures::{SinkExt, StreamExt};
 use crate::data::PlayerEvent;
 use crate::audiocontrol::eventbus::EventBus;
 
+/// How long a client may go without a frame arriving from it before the prune
+/// task drops it.
+///
+/// This is the reaping policy and it is deliberately unchanged: a connection
+/// whose peer has vanished without a FIN produces no frames and no send error
+/// for a long time, and dropping it after an hour of silence is the only thing
+/// that notices. What changed is *what counts as a frame* - see `PING_INTERVAL`.
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// How often the prune task looks for silent clients and stale events.
+const PRUNE_INTERVAL: Duration = Duration::from_secs(300);
+
+/// How long a queued event stays available for delivery.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often each connection polls for events to deliver.
+const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// How often the server sends a WebSocket ping on each open connection.
+///
+/// Only a frame arriving *from* the peer refreshes that peer's last-activity
+/// time, and a browser page cannot produce one on demand: the JavaScript
+/// WebSocket API exposes no ping. So a client that subscribes once and then
+/// only listens - the WebUI is exactly that - used to be pruned an hour after
+/// connecting with its socket still open: no error, no close frame, events
+/// simply stopped. A server ping fixes it without any client change, because
+/// the peer's WebSocket stack answers a ping with a pong at the protocol level,
+/// and that pong is an inbound frame.
+///
+/// 30 s against a `CLIENT_TIMEOUT` of 3600 s means a live peer answers about
+/// 120 times per timeout window, so reaching the timeout takes a full hour of
+/// consecutively unanswered pings - not one lost packet, one slow scheduler
+/// tick, or one long garbage collection in the browser. A peer that has really
+/// gone away answers none of them and is still reaped on schedule.
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+
 /// New format for WebSocket messages with source at top level
 #[derive(Debug, Clone, Serialize)]
 struct WebSocketMessage {
@@ -162,9 +198,33 @@ impl WebSocketManager {    /// Create a new WebSocket manager
     
     /// Record client activity to prevent timeout
     pub fn record_activity(&self, id: usize) {
-        self.last_activity.lock().insert(id, Instant::now());
+        self.record_activity_at(id, Instant::now());
     }
-    
+
+    /// Record client activity as of a given instant.
+    ///
+    /// Splitting the clock out of `record_activity` lets a test drive the
+    /// interplay between activity and pruning at chosen instants instead of
+    /// waiting for real time to pass.
+    pub fn record_activity_at(&self, id: usize, at: Instant) {
+        self.last_activity.lock().insert(id, at);
+    }
+
+    /// Record that a frame arrived from a client.
+    ///
+    /// Every frame counts, whatever it carries - a `Pong` answering one of our
+    /// pings included. That is what keeps a listen-only client alive, so this
+    /// deliberately does not look at the frame to decide whether it counts.
+    pub fn record_inbound_frame(&self, id: usize, msg: &Message) {
+        self.record_inbound_frame_at(id, msg, Instant::now());
+    }
+
+    /// `record_inbound_frame` with the clock supplied, for tests.
+    pub fn record_inbound_frame_at(&self, id: usize, msg: &Message, at: Instant) {
+        debug!("Inbound frame: Client: {}, Kind: {}", id, frame_kind(msg));
+        self.record_activity_at(id, at);
+    }
+
     /// Queue a new event to be sent to clients
     pub fn queue_event(&self, event: PlayerEvent) {
         let now = Instant::now();
@@ -283,8 +343,19 @@ impl WebSocketManager {    /// Create a new WebSocket manager
     
     /// Prune inactive connections and old events
     pub fn prune_inactive_and_old(&self, client_timeout: Duration, event_timeout: Duration) {
-        let now = Instant::now();
-        
+        self.prune_inactive_and_old_at(Instant::now(), client_timeout, event_timeout);
+    }
+
+    /// Prune as of a given instant.
+    ///
+    /// The instant is a parameter for the same reason the timeouts are: a test
+    /// can then ask "what would this do an hour from now" without sleeping.
+    pub fn prune_inactive_and_old_at(
+        &self,
+        now: Instant,
+        client_timeout: Duration,
+        event_timeout: Duration,
+    ) {
         // Prune inactive clients
         let clients_to_remove = {
             let mut to_remove = Vec::new();
@@ -330,6 +401,31 @@ impl WebSocketManager {    /// Create a new WebSocket manager
                 debug!("Pruned {} old WebSocket events", to_remove);
             }
         }
+    }
+
+    /// Whether a client is still registered.
+    #[cfg(test)]
+    fn is_registered(&self, id: usize) -> bool {
+        self.subscriptions.lock().contains_key(&id)
+    }
+
+    /// The recorded last-activity time of a client, if it has one.
+    #[cfg(test)]
+    fn last_activity_of(&self, id: usize) -> Option<Instant> {
+        self.last_activity.lock().get(&id).copied()
+    }
+}
+
+/// Name a frame for the log. Only used for logging - nothing decides anything
+/// from the kind of an inbound frame.
+fn frame_kind(msg: &Message) -> &'static str {
+    match msg {
+        Message::Text(_) => "text",
+        Message::Binary(_) => "binary",
+        Message::Ping(_) => "ping",
+        Message::Pong(_) => "pong",
+        Message::Close(_) => "close",
+        Message::Frame(_) => "raw frame",
     }
 }
 
@@ -494,20 +590,154 @@ fn event_type_name(event: &PlayerEvent) -> &'static str {
     }
 }
 
+/// How a connection's message loop ended.
+#[derive(Debug, PartialEq, Eq)]
+enum ClientLoopEnd {
+    /// The peer closed, or the stream ended or errored: the caller unregisters
+    /// the client.
+    Closed,
+    /// A send failed, so the connection is already gone. The registration is
+    /// left for the prune task, which is what happened before the two loops
+    /// were shared and is deliberately unchanged here.
+    SendFailed,
+}
+
+/// The message loop shared by every WebSocket connection.
+///
+/// Both mount points run this. They differ only in the subscription they
+/// register and the welcome message they send, and having one loop is what
+/// keeps the ping below from depending on which URL a client connected to.
+async fn run_client_loop(
+    manager: &WebSocketManager,
+    stream: &mut rocket_ws::stream::DuplexStream,
+    client_id: usize,
+    forwarded_prefix: Option<&str>,
+    ping_interval: Duration,
+) -> rocket_ws::result::Result<ClientLoopEnd> {
+    let mut poll = tokio::time::interval(EVENT_POLL_INTERVAL);
+
+    // `interval` fires its first tick immediately; start the ping clock one
+    // interval out so opening a connection does not ping it straight away.
+    let mut ping = tokio::time::interval_at(
+        tokio::time::Instant::now() + ping_interval,
+        ping_interval,
+    );
+
+    loop {
+        tokio::select! {
+            _ = poll.tick() => {
+                // Check for new events
+                let events = manager.get_events_for_client(client_id);
+                for event in events {
+                    // Convert to new format with source at top level
+                    let message = convert_to_websocket_message(&event, forwarded_prefix);
+
+                    if let Ok(json) = serde_json::to_string(&message) {
+                        debug!("Sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}",
+                              client_id, event.player_name().unwrap_or("system"), event_type_name(&event), json.len());
+
+                        if let Err(e) = stream.send(Message::Text(json)).await {
+                            debug!("Error sending event to client {}: {}", client_id, e);
+                            // Connection might be broken, exit the loop
+                            return Ok(ClientLoopEnd::SendFailed);
+                        } else {
+                            debug!("Event sent successfully: Client: {}", client_id);
+                        }
+                    } else {
+                        debug!("Event serialization failed: Client: {}", client_id);
+                    }
+                }
+            }
+            _ = ping.tick() => {
+                // A protocol frame, not an application message: no client has
+                // to know about it, and the peer's WebSocket stack answers it
+                // without any application code. The pong that comes back is
+                // what refreshes this client's last-activity time, which is the
+                // only thing keeping a listen-only client off the prune list.
+                if let Err(e) = stream.send(Message::Ping(Vec::new())).await {
+                    debug!("Error sending ping to client {}: {}", client_id, e);
+                    return Ok(ClientLoopEnd::SendFailed);
+                }
+                debug!("Ping sent: Client: {}", client_id);
+            }
+            Some(msg_result) = stream.next() => {
+                match msg_result {
+                    Ok(msg) => {
+                        // Any frame from the peer is activity - a Pong
+                        // answering our ping included. Recorded before the
+                        // dispatch below so no frame kind can be forgotten.
+                        manager.record_inbound_frame(client_id, &msg);
+
+                        match msg {
+                            Message::Text(text) => {
+                                debug!("Received message: Client: {}, Text: {}", client_id, text);
+
+                                // Try to parse as ClientMessage (EventSubscription)
+                                match serde_json::from_str::<ClientMessage>(&text) {
+                                    Ok(ClientMessage::Subscription(subscription)) => {
+                                        debug!("Subscription update: Client: {}, Players: {:?}, Event types: {:?}",
+                                              client_id, subscription.players, subscription.event_types);
+
+                                        if manager.update_subscription(client_id, subscription) {
+                                            let response = serde_json::json!({
+                                                "type": "subscription_updated",
+                                                "message": "Subscription updated successfully"
+                                            }).to_string();
+                                            if let Err(e) = stream.send(Message::Text(response)).await {
+                                                debug!("Error sending subscription update confirmation to client {}: {}", client_id, e);
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        // Send error back to client
+                                        let error_msg = serde_json::json!({
+                                            "type": "error",
+                                            "message": format!("Invalid message format: {}. Expected EventSubscription.", e)
+                                        }).to_string();
+                                        if let Err(e_send) = stream.send(Message::Text(error_msg)).await {
+                                            debug!("Error sending error message to client {}: {}", client_id, e_send);
+                                        }
+                                    }
+                                }
+                            },
+                            Message::Ping(data) => {
+                                debug!("Received ping: Client: {}, Data length: {}", client_id, data.len());
+                                // Reply with a pong containing the same data
+                                stream.send(Message::Pong(data)).await?;
+                            },
+                            Message::Close(_) => {
+                                debug!("Received close: Client: {}", client_id);
+                                // Client is closing the connection
+                                break;
+                            },
+                            // Pong answers our own ping; the activity it
+                            // represents is already recorded above.
+                            _ => {}
+                        }
+                    },
+                    Err(e) => {
+                        debug!("WebSocket error: {}", e);
+                        break;
+                    }
+                }
+            }
+            else => break,
+        }
+    }
+
+    Ok(ClientLoopEnd::Closed)
+}
+
 /// Create a task to periodically prune inactive connections and old events
 pub fn start_prune_task(ws_manager: Arc<WebSocketManager>) {
     // Create a thread for periodic pruning
     std::thread::spawn(move || {
         loop {
-            // Sleep for 5 minutes
-            std::thread::sleep(Duration::from_secs(300));
-            
-            // Prune connections inactive for more than 1 hour and
-            // events older than 30 seconds
-            ws_manager.prune_inactive_and_old(
-                Duration::from_secs(3600), // 1 hour
-                Duration::from_secs(30)  // 30 seconds
-            );
+            std::thread::sleep(PRUNE_INTERVAL);
+
+            // Drop clients silent for longer than CLIENT_TIMEOUT and events
+            // older than EVENT_TIMEOUT.
+            ws_manager.prune_inactive_and_old(CLIENT_TIMEOUT, EVENT_TIMEOUT);
         }
     });
 }
@@ -546,115 +776,35 @@ pub fn event_messages(
                 players: None,
                 event_types: None,
             });
-            
+
             debug!("websocket connected: Client ID: {}, All players", client_id);
-            
+
             // Send welcome message
             let welcome_msg = serde_json::json!({
                 "type": "welcome",
                 "client_id": client_id,
                 "message": "Connected to ACR WebSocket API"
             }).to_string();
-            
+
             if let Err(e) = stream.send(Message::Text(welcome_msg)).await {
                 error!("Failed to send welcome message: {}", e);
                 return Err(e);
             }
-            
-            // Create a polling interval
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-            
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        // Check for new events
-                        let events = manager.get_events_for_client(client_id);
-                        for event in events {
-                            // Convert to new format with source at top level
-                            let message = convert_to_websocket_message(&event, forwarded_prefix.as_deref());
-                            
-                            if let Ok(json) = serde_json::to_string(&message) {
-                                debug!("sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
-                                      client_id, event.player_name().unwrap_or("system"), event_type_name(&event), json.len());
-                                
-                                if let Err(e) = stream.send(Message::Text(json)).await {
-                                    debug!("Error sending event to client {}: {}", client_id, e);
-                                    // Connection might be broken, exit the loop
-                                    return Ok(());
-                                } else {
-                                    debug!("Event sent successfully: Client: {}", client_id);
-                                }
-                            } else {
-                                debug!("Event serialization failed: Client: {}", client_id);
-                            }
-                        }
-                    }
-                    Some(msg_result) = stream.next() => {
-                        match msg_result {
-                            Ok(msg) => {
-                                // Record activity to prevent timeout
-                                manager.record_activity(client_id);
-                                
-                                match msg {
-                                    Message::Text(text) => {
-                                        // Record activity to prevent timeout
-                                        manager.record_activity(client_id);
-                                        debug!("Received message: Client: {}, Text: {}", client_id, text);
 
-                                        // Try to parse as ClientMessage (EventSubscription)
-                                        match serde_json::from_str::<ClientMessage>(&text) {
-                                            Ok(ClientMessage::Subscription(subscription)) => {
-                                                debug!("Subscription update: Client: {}, Players: {:?}, Event types: {:?}",
-                                                      client_id, subscription.players, subscription.event_types);
+            let end = run_client_loop(
+                &manager,
+                &mut stream,
+                client_id,
+                forwarded_prefix.as_deref(),
+                PING_INTERVAL,
+            ).await?;
 
-                                                if manager.update_subscription(client_id, subscription) {
-                                                    let response = serde_json::json!({
-                                                        "type": "subscription_updated",
-                                                        "message": "Subscription updated successfully"
-                                                    }).to_string();
-                                                    if let Err(e) = stream.send(Message::Text(response)).await {
-                                                        debug!("Error sending subscription update confirmation to client {}: {}", client_id, e);
-                                                    }
-                                                }
-                                            },
-                                            Err(e) => {
-                                                // Send error back to client
-                                                let error_msg = serde_json::json!({
-                                                    "type": "error",
-                                                    "message": format!("Invalid message format: {}. Expected EventSubscription.", e)
-                                                }).to_string();
-                                                if let Err(e_send) = stream.send(Message::Text(error_msg)).await {
-                                                    debug!("Error sending error message to client {}: {}", client_id, e_send);
-                                                }
-                                            }
-                                        }
-                                    },
-                                    Message::Ping(data) => {
-                                        debug!("Received ping: Client: {}, Data length: {}", client_id, data.len());
-                                        // Reply with a pong containing the same data
-                                        stream.send(Message::Pong(data)).await?;
-                                    },
-                                    Message::Close(_) => {
-                                        debug!("Received close: Client: {}", client_id);
-                                        // Client is closing the connection
-                                        break;
-                                    },
-                                    _ => {} // Ignore other message types
-                                }
-                            },
-                            Err(e) => {
-                                debug!("WebSocket error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                    else => break,
-                }
+            if end == ClientLoopEnd::Closed {
+                // Clean up when the connection is closed
+                debug!("WebSocket disconnected: Client: {}", client_id);
+                manager.remove_client(client_id);
             }
-            
-            // Clean up when the connection is closed
-            debug!("WebSocket disconnected: Client: {}", client_id);
-            manager.remove_client(client_id);
+
             Ok(())
         })
     })
@@ -683,117 +833,42 @@ pub fn player_event_messages(
                 players: Some(vec![player_filter.clone()]),
                 event_types: None,
             });
-            
+
             debug!("WebSocket connected: Client ID: {}, Player: {}", client_id, player_filter);
-            
+
             // Send welcome message
             let welcome_msg = serde_json::json!({
                 "type": "welcome",
                 "client_id": client_id,
                 "message": format!("Connected to ACR WebSocket API for player '{}'", player_filter)
             }).to_string();
-            
+
             if let Err(e) = stream.send(Message::Text(welcome_msg)).await {
                 error!("Failed to send welcome message: {}", e);
                 return Err(e);
             }
-            
-            // Create a polling interval
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-            
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        // Check for new events
-                        let events = manager.get_events_for_client(client_id);
-                        for event in events {
-                            // Convert to new format with source at top level
-                            let message = convert_to_websocket_message(&event, forwarded_prefix.as_deref());
-                            
-                            if let Ok(json) = serde_json::to_string(&message) {
-                                debug!("Sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
-                                      client_id, event.player_name().unwrap_or("system"), event_type_name(&event), json.len());
-                                
-                                if let Err(e) = stream.send(Message::Text(json)).await {
-                                    debug!("Error sending event to client {}: {}", client_id, e);
-                                    // Connection might be broken, exit the loop
-                                    return Ok(());
-                                } else {
-                                    debug!("Event sent successfully: Client: {}", client_id);
-                                }
-                            } else {
-                                debug!("Event serialization failed: Client: {}", client_id);
-                            }
-                        }
-                    }
-                    Some(msg_result) = stream.next() => {
-                        match msg_result {
-                            Ok(msg) => {
-                                // Record activity to prevent timeout
-                                manager.record_activity(client_id);
-                                
-                                match msg {
-                                    Message::Text(text) => {
-                                        debug!("Received message: Client: {}, Player: {}, Text: {}", client_id, player_filter, text);
-                                        
-                                        // Try to parse as ClientMessage (EventSubscription only)
-                                        match serde_json::from_str::<ClientMessage>(&text) {
-                                            Ok(ClientMessage::Subscription(subscription)) => {
-                                                debug!("Subscription update: Client: {}, Player: {}, Players: {:?}, Event types: {:?}", 
-                                                      client_id, player_filter, subscription.players, subscription.event_types);
-                                                
-                                                if manager.update_subscription(client_id, subscription) {
-                                                    let response = serde_json::json!({
-                                                        "type": "subscription_updated",
-                                                        "message": "Subscription updated successfully"
-                                                    }).to_string();
-                                                    if let Err(e) = stream.send(Message::Text(response)).await {
-                                                        debug!("Error sending subscription update confirmation to client {}: {}", client_id, e);
-                                                    }
-                                                }
-                                            },
-                                            Err(e) => {
-                                                // Send error back to client
-                                                let error_msg = serde_json::json!({
-                                                    "type": "error",
-                                                    "message": format!("Invalid message format: {}. Expected EventSubscription.", e)
-                                                }).to_string();
-                                                if let Err(e_send) = stream.send(Message::Text(error_msg)).await {
-                                                    debug!("Error sending error message to client {}: {}", client_id, e_send);
-                                                }
-                                            }
-                                        }
-                                    },
-                                    Message::Ping(data) => {
-                                        debug!("Received ping: Client: {}, Data length: {}", client_id, data.len());
-                                        // Reply with a pong containing the same data
-                                        stream.send(Message::Pong(data)).await?;
-                                    },
-                                    Message::Close(_) => {
-                                        debug!("Received close: Client: {}", client_id);
-                                        // Client is closing the connection
-                                        break;
-                                    },
-                                    _ => {} // Ignore other message types
-                                }
-                            },
-                            Err(e) => {
-                                debug!("WebSocket error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                    else => break,
-                }
+
+            // The same loop as the unfiltered mount point: the ping that keeps
+            // a listen-only client alive must not depend on the URL it used.
+            let end = run_client_loop(
+                &manager,
+                &mut stream,
+                client_id,
+                forwarded_prefix.as_deref(),
+                PING_INTERVAL,
+            ).await?;
+
+            if end == ClientLoopEnd::Closed {
+                // Clean up when the connection is closed
+                debug!("WebSocket disconnected: Client: {}", client_id);
+                manager.remove_client(client_id);
             }
-            
-            // Clean up when the connection is closed
-            debug!("WebSocket disconnected: Client: {}", client_id);
-            manager.remove_client(client_id);
+
             Ok(())
         })
     })
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -868,5 +943,126 @@ mod tests {
         let event = PlayerEvent::SongChanged { source: source(), song: None };
         let message = convert_to_websocket_message(&event, Some("/api/audiocontrol"));
         assert_eq!(message.event_data.get("song"), Some(&serde_json::Value::Null));
+    }
+
+    // The tests below drive the clock rather than waiting on it: activity is
+    // recorded at an instant we choose and the prune is asked what it would do
+    // at another. Nothing here sleeps, so nothing here can race a real timer.
+
+    fn manager_with_a_client() -> (WebSocketManager, usize) {
+        let manager = WebSocketManager::new();
+        let id = manager.register(EventSubscription { players: None, event_types: None });
+        (manager, id)
+    }
+
+    fn pong() -> Message {
+        Message::Pong(Vec::new())
+    }
+
+    #[test]
+    fn a_pong_counts_as_activity() {
+        let (manager, id) = manager_with_a_client();
+        let answered_at = Instant::now() + Duration::from_secs(60);
+
+        manager.record_inbound_frame_at(id, &pong(), answered_at);
+
+        assert_eq!(
+            manager.last_activity_of(id),
+            Some(answered_at),
+            "a pong did not refresh the client's last-activity time"
+        );
+    }
+
+    /// The bug this fixes: a client that sends nothing of its own but answers
+    /// the server's pings must survive indefinitely.
+    ///
+    /// Simulated time runs second by second across three timeout windows.
+    /// Pongs arrive on `PING_INTERVAL` and the prune runs on `PRUNE_INTERVAL`,
+    /// the two independent of each other exactly as they are in the daemon - so
+    /// this fails if the ping interval is ever set near or beyond the timeout,
+    /// and it fails if a pong stops counting as activity.
+    #[test]
+    fn a_client_that_answers_pings_is_never_pruned() {
+        let (manager, id) = manager_with_a_client();
+        let start = Instant::now();
+        manager.record_activity_at(id, start);
+
+        let horizon = CLIENT_TIMEOUT * 3;
+        let mut elapsed = Duration::ZERO;
+        while elapsed < horizon {
+            elapsed += Duration::from_secs(1);
+            let now = start + elapsed;
+
+            if elapsed.as_secs() % PING_INTERVAL.as_secs() == 0 {
+                // The pong answering the ping the loop just sent.
+                manager.record_inbound_frame_at(id, &pong(), now);
+            }
+
+            if elapsed.as_secs() % PRUNE_INTERVAL.as_secs() == 0 {
+                manager.prune_inactive_and_old_at(now, CLIENT_TIMEOUT, EVENT_TIMEOUT);
+                assert!(
+                    manager.is_registered(id),
+                    "a client answering every ping was pruned {:?} after connecting",
+                    elapsed
+                );
+            }
+        }
+    }
+
+    /// The property the fix could plausibly have broken: a peer that has gone
+    /// away without a FIN answers no pings, and must still be reaped. Its
+    /// registration survives up to the timeout and is gone once past it.
+    #[test]
+    fn a_client_that_stops_answering_is_still_pruned() {
+        let (manager, id) = manager_with_a_client();
+        let start = Instant::now();
+        manager.record_activity_at(id, start);
+
+        // Three pongs, then the peer vanishes.
+        let mut last_pong = start;
+        for _ in 0..3 {
+            last_pong += PING_INTERVAL;
+            manager.record_inbound_frame_at(id, &pong(), last_pong);
+        }
+
+        manager.prune_inactive_and_old_at(last_pong + CLIENT_TIMEOUT, CLIENT_TIMEOUT, EVENT_TIMEOUT);
+        assert!(
+            manager.is_registered(id),
+            "a client was reaped before the timeout had elapsed"
+        );
+
+        manager.prune_inactive_and_old_at(
+            last_pong + CLIENT_TIMEOUT + Duration::from_secs(1),
+            CLIENT_TIMEOUT,
+            EVENT_TIMEOUT,
+        );
+        assert!(
+            !manager.is_registered(id),
+            "a peer that stopped answering pings was not reaped"
+        );
+        assert_eq!(
+            manager.last_activity_of(id),
+            None,
+            "the reaped client left its activity entry behind"
+        );
+    }
+
+    /// Pinging often enough to keep a client alive is worthless if one lost
+    /// pong strands it, so state the margin as a test: a run of consecutive
+    /// pongs may go missing and the client still lives.
+    #[test]
+    fn several_missed_pongs_do_not_prune_a_client() {
+        let (manager, id) = manager_with_a_client();
+        let start = Instant::now();
+        manager.record_activity_at(id, start);
+
+        // Ten pings in a row unanswered.
+        let ten_missed = start + PING_INTERVAL * 10;
+        manager.prune_inactive_and_old_at(ten_missed, CLIENT_TIMEOUT, EVENT_TIMEOUT);
+
+        assert!(
+            manager.is_registered(id),
+            "ten missed pongs were enough to prune a client; the margin is too thin"
+        );
     }
 }

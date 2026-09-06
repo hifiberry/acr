@@ -409,22 +409,31 @@ Common error codes:
 
 ## Keeping a connection alive
 
-**A client that only listens is dropped after an hour.** The server keeps a
-last-activity time per connected client and prunes any client that has not been
-active for an hour; the check runs every five minutes. Activity means a message
-travelling *client to server* — the subscription, a ping, anything. Events
-flowing the other way do not count.
+**A client need not send anything to stay connected.** The server sends a
+WebSocket ping on every open connection every 30 seconds, and the pong that
+comes back is what keeps the connection alive. Ping and pong are protocol
+frames: every WebSocket implementation answers a ping on its own, so a browser
+page or a library client that subscribes once and then only listens stays
+connected with no application-level keep-alive and no timer of its own.
 
-The failure this produces is silent: the socket stays open, the client sees no
-error and no close frame, and no further events ever arrive. So a long-lived
-client that has nothing to say must still say something. A WebSocket ping is
-enough — the server records it as activity and replies with a pong — and once
-every few minutes is ample against a one-hour timeout. Re-sending the
-subscription message works too, and is answered with `subscription_updated`.
+**A client that stops answering is dropped.** The server keeps a last-activity
+time per connected client, refreshed by any frame arriving *client to server* —
+the automatic pong, a subscription message, anything — and prunes a client that
+has produced nothing for an hour; the check runs every five minutes. Events
+flowing the other way do not count. At one ping every 30 seconds that hour is
+around 120 unanswered pings, so a dropped packet or a stalled page costs
+nothing; it takes a peer that has genuinely gone away.
 
-Browsers do not send WebSocket pings from JavaScript, so a page that subscribes
-once and then only renders events needs an application-level equivalent: send
-the subscription again on a timer, or reconnect periodically.
+That is the point of the timeout: when a peer disappears without closing the
+connection — a laptop suspended, a network dropped — the socket can stay open on
+this side for a long time without any error, and the missing pongs are the only
+evidence. Being pruned is itself silent, though: the socket stays open, no error
+and no close frame is sent, and no further events arrive. A client that suspects
+it has been dropped should reconnect and re-read state rather than wait.
+
+Sending anything of your own also refreshes the timer, and re-sending the
+subscription message is a reasonable way to do it — it is answered with
+`subscription_updated` — but nothing requires it.
 
 ## Events during a disconnection are lost
 
@@ -443,7 +452,9 @@ and `GET /api/player` for the state.
 2. **Validate messages**: Always check the message format before processing
 3. **Subscription management**: Only subscribe to events you need to minimize traffic
 4. **Backoff strategy**: Use exponential backoff for reconnection attempts
-5. **Send something periodically**: A client that never sends is pruned after an
-   hour and goes quietly deaf — see *Keeping a connection alive* above
+5. **Answer the server's pings**: Every WebSocket implementation does this
+   automatically, so this is only a warning against turning it off — a client
+   that stops answering is pruned after an hour and goes quietly deaf. See
+   *Keeping a connection alive* above
 6. **Re-read state after reconnecting**: The stream is not a history — see
    *Events during a disconnection are lost* above

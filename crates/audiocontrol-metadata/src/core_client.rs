@@ -150,13 +150,9 @@ mod tests {
     use super::*;
     use crate::external_coverart::stub_server::StubServer;
 
-    /// `StubServer` records requests only through the end of the headers
-    /// (see its own doc comment: "these requests carry no body"), so the
-    /// partial's presence is checked two ways instead of by reading raw
-    /// body bytes the stub does not capture: the response round-trips
-    /// `applied` correctly, and the recorded `Content-Length` matches the
-    /// exact byte length of the partial actually serialized -- which a
-    /// request carrying a different body could not produce.
+    /// `StubServer` now records the body along with the headers (see its
+    /// own test in `stub_server.rs`), so the partial is checked directly:
+    /// the exact JSON sent, not a proxy for it.
     #[test]
     fn a_song_information_post_carries_the_partial_and_reads_applied() {
         let server = StubServer::serving(200, r#"{"success":true,"applied":true}"#);
@@ -176,14 +172,16 @@ mod tests {
             "unexpected request line: {}",
             requests[0]
         );
-        let expected_len = serde_json::to_string(&partial).unwrap().len();
-        assert!(
-            requests[0]
-                .to_lowercase()
-                .contains(&format!("content-length: {}", expected_len)),
-            "request should carry a body sized for the partial: {}",
-            requests[0]
-        );
+        let body = requests[0]
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("a body after the headers");
+        // Exact equality, not `contains`: this also pins that no field other
+        // than `title` rode along -- `Song`'s other fields all serialize
+        // away when `None`/empty, so a partial that leaked an unset field
+        // would fail this rather than only a `contains` check for `title`.
+        assert_eq!(body, serde_json::to_string(&partial).unwrap());
+        assert_eq!(body, r#"{"title":"Nemo"}"#);
     }
 
     #[test]

@@ -36,6 +36,7 @@ regex.workspace = true
 once_cell.workspace = true
 parking_lot.workspace = true
 crossbeam.workspace = true
+tungstenite.workspace = true
 aes-gcm.workspace = true
 rand.workspace = true
 url.workspace = true

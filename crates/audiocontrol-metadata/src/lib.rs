@@ -17,6 +17,7 @@ pub mod lastfm_worker;
 pub mod library_enricher;
 pub mod musicbrainz;
 pub mod now_playing;
+pub mod now_playing_ws;
 pub mod resolver;
 pub mod security_store;
 pub mod spotify;

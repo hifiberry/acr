@@ -407,9 +407,43 @@ Common error codes:
 - 1002: Unknown player specified
 - 1003: Unknown event type specified
 
+## Keeping a connection alive
+
+**A client that only listens is dropped after an hour.** The server keeps a
+last-activity time per connected client and prunes any client that has not been
+active for an hour; the check runs every five minutes. Activity means a message
+travelling *client to server* — the subscription, a ping, anything. Events
+flowing the other way do not count.
+
+The failure this produces is silent: the socket stays open, the client sees no
+error and no close frame, and no further events ever arrive. So a long-lived
+client that has nothing to say must still say something. A WebSocket ping is
+enough — the server records it as activity and replies with a pong — and once
+every few minutes is ample against a one-hour timeout. Re-sending the
+subscription message works too, and is answered with `subscription_updated`.
+
+Browsers do not send WebSocket pings from JavaScript, so a page that subscribes
+once and then only renders events needs an application-level equivalent: send
+the subscription again on a timer, or reconnect periodically.
+
+## Events during a disconnection are lost
+
+The server holds recent events for 30 seconds and delivers them to each
+connected client from the point that client registered. A client that is not
+connected is not registered, and a client that reconnects registers afresh — so
+nothing that happened during the gap is replayed, however short the gap was.
+
+After every reconnect, read the current state back from the REST API rather than
+assuming the stream is a complete history: `GET /api/now-playing` for the song
+and `GET /api/player` for the state.
+
 ## Best Practices
 
 1. **Handle reconnections**: Implement automatic reconnection if the connection drops
 2. **Validate messages**: Always check the message format before processing
 3. **Subscription management**: Only subscribe to events you need to minimize traffic
 4. **Backoff strategy**: Use exponential backoff for reconnection attempts
+5. **Send something periodically**: A client that never sends is pruned after an
+   hour and goes quietly deaf — see *Keeping a connection alive* above
+6. **Re-read state after reconnecting**: The stream is not a history — see
+   *Events during a disconnection are lost* above

@@ -258,6 +258,11 @@ lru = "0.12"
 moka = { version = "0.12", features = ["sync"] }
 regex = "1.10"
 crossbeam = "0.8.2"
+# The metadata side's WebSocket client for the player daemon's event socket.
+# 0.21 is the version rocket_ws already pulls in through tokio-tungstenite, with
+# the same `handshake` feature, so this adds no crate to the build. Default
+# features are kept: `handshake` is where `connect`, `client` and `accept` live.
+tungstenite = "0.21"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 serial_test = "3.0"

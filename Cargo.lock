@@ -387,6 +387,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tungstenite",
  "ureq",
  "url",
  "urlencoding",

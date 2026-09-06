@@ -633,6 +633,7 @@ mod tests {
         // same for every test in a binary, and because a stale metadata entry
         // for this URL would otherwise be answered from cache instead of
         // measured.
+        crate::test_support::init_test_caches();
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("a clock after the epoch")
@@ -673,6 +674,7 @@ mod tests {
     /// the size of whatever was measured first.
     #[test]
     fn forgetting_a_url_lets_changed_content_be_measured_again() {
+        crate::test_support::init_test_caches();
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("a clock after the epoch")

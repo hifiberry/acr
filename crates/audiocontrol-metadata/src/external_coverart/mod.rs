@@ -854,6 +854,7 @@ mod tests {
     /// image, and what gets cached and returned is a URL this daemon serves.
     #[test]
     fn an_inline_image_is_served_from_the_image_cache() {
+        crate::test_support::init_test_caches();
         use base64::Engine as _;
         let png = tiny_png();
         let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
@@ -886,6 +887,7 @@ mod tests {
     /// against the bytes on the wire rather than against a fake.
     #[test]
     fn a_localised_fetch_carries_the_endpoint_headers() {
+        crate::test_support::init_test_caches();
         // One server answers both requests, which is what lets the image URL
         // name the port it is already listening on. That port is only known
         // after construction, so the queue is set afterwards rather than
@@ -952,6 +954,7 @@ mod tests {
     /// miss rather than be served as a 404.
     #[test]
     fn a_cached_answer_whose_file_is_gone_is_not_returned() {
+        crate::test_support::init_test_caches();
         let query = CoverartQuery::Song {
             title: unique_title(),
             artist: "prune".to_string(),
@@ -979,6 +982,7 @@ mod tests {
     /// what proves it does not.
     #[test]
     fn a_cached_error_still_short_circuits() {
+        crate::test_support::init_test_caches();
         let server = StubServer::serving(200, r#"{"images":[{"url":"https://img.example/a.jpg"}]}"#);
         let provider = provider_for(&server, 5);
         let query = stub_query();

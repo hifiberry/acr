@@ -24,6 +24,9 @@ pub mod title_order;
 pub mod api;
 pub mod secrets;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use acr_types::config::get_service_config;
 use acr_types::Artist;
 use log::{debug, info, warn};

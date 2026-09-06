@@ -84,6 +84,34 @@ The named volume keeps the crates.io registry between runs and
 the first run pays the full compile. `rust:1.86-bookworm` matches the
 `rust-version` in `Cargo.toml`; keep the two in step.
 
+That container runs as root, and CI does not: the GitHub runner executes the
+same `cargo test --workspace` as an ordinary unprivileged user. A test that
+writes to a path the daemon owns in production, such as
+`/var/lib/audiocontrol/cache/images`, can create that directory when it runs
+as root and get a permission error when it doesn't -- so a suite that is
+green in the root container can still fail in CI. Run it as an unprivileged
+user before pushing, the same way CI will:
+
+```sh
+docker build -t acr-build - <<'EOF'
+FROM rust:1.86-bookworm
+RUN apt-get update -qq && apt-get install -y -qq libasound2-dev libdbus-1-dev pkg-config
+EOF
+
+mkdir -p .docker-home .docker-target
+docker run --rm \
+  -v "$PWD":/w -w /w \
+  -e CARGO_HOME=/w/.docker-home -e CARGO_TARGET_DIR=/w/.docker-target -e HOME=/w/.docker-home \
+  --user "$(id -u):$(id -g)" \
+  acr-build \
+  cargo test --workspace
+```
+
+The image build still needs root for `apt-get`, which is why it is a separate
+step; the test run itself uses `--user` to drop to the invoking user, with
+`CARGO_HOME` and `HOME` pointed at ordinary directories under the checkout
+since the invoking user cannot write to the image's own root-owned ones.
+
 Tests live in inline `#[cfg(test)] mod tests` blocks next to the code they
 cover. Run one module with `cargo test --lib players::mpd::mpd::tests`.
 

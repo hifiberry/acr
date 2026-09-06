@@ -125,6 +125,45 @@ impl MPDLibrary {
         self.library_version.clone()
     }
 
+    /// Empty the album map and mark the library reloaded — one step,
+    /// deliberately.
+    ///
+    /// These are one operation because performing either without the other is a
+    /// silent bug, and both directions are silent:
+    ///
+    /// - Clearing without bumping merges a batch of enrichment results computed
+    ///   against the *previous* library into the new one. That is the exact
+    ///   write the 409 exists to prevent, and nothing observable says it
+    ///   happened: the results simply land on whichever albums now happen to
+    ///   carry the ids the batch names.
+    /// - Bumping without clearing refuses a batch computed against a perfectly
+    ///   current library. Enrichment then stops for good, because a sweep does
+    ///   not restart on a refusal — it waits for the next reload, which is not
+    ///   coming.
+    ///
+    /// So clearing this map by any other route would break what the 409 means.
+    /// A caller that needs to empty it calls this; there is no other way to do
+    /// half of it. This is why the pair is a method and not two adjacent lines:
+    /// adjacency is a convention a later edit can undo without any test
+    /// noticing, and a comment cannot stop it.
+    ///
+    /// The generation therefore names a reload of the *album* map specifically.
+    /// The artists map is only ever added to — `create_artists` inserts names it
+    /// does not already hold and removes none — so there is nothing there to
+    /// invalidate a batch against. That makes the refusal conservative in the
+    /// safe direction: it fires for every rebuild of the albums, which is the
+    /// only rebuild that can strand a batch, and never claims to mean more.
+    ///
+    /// The bump is taken before the clear, which matters only for a caller that
+    /// has already read the generation and passed the check: it narrows, rather
+    /// than widens, the window in which such a batch can still reach the
+    /// rebuilt map. The caller holds the map's write lock across this, so no
+    /// merge can interleave with the two statements themselves.
+    fn reset_albums_for_reload(&self, albums: &mut HashMap<String, Album>) {
+        self.library_version.bump_generation();
+        albums.clear();
+    }
+
     /// Ask the enricher for everything this library is missing.
     ///
     /// Returns at once. Results arrive later, in batches, through this
@@ -1100,21 +1139,20 @@ impl LibraryInterface for MPDLibrary {
                 // Update albums collection
                 {
                     let mut self_albums = self.albums.write();
-                    // The one place the generation moves, deliberately written
-                    // against the statement below rather than beside either
-                    // version bump: emptying this map is exactly what makes a
-                    // batch of enrichment results computed against the old
-                    // library unmergeable, so the two lines have to move
-                    // together or not at all. Before the clear, not after: a
-                    // batch computed before it must be refused for the whole
-                    // rebuild, not only once the rebuild finishes.
+                    // The one place the generation moves. Emptying this map is
+                    // exactly what makes a batch of enrichment results computed
+                    // against the old library unmergeable, so the clear and the
+                    // bump are one operation rather than two lines that have to
+                    // be kept together - see `reset_albums_for_reload`. It runs
+                    // here, before the insert loop, and not at the end of the
+                    // rebuild: a batch computed before the clear must be refused
+                    // for the whole rebuild, not only once it finishes.
                     //
-                    // Unlike the version, one bump is enough. The generation
-                    // is not a validator anyone revalidates against; it only
-                    // has to differ from the one a caller was handed before
-                    // this point, and it does from here on.
-                    self.library_version.bump_generation();
-                    self_albums.clear();
+                    // Unlike the version, one bump is enough. The generation is
+                    // not a validator anyone revalidates against; it only has to
+                    // differ from the one a caller was handed before this point,
+                    // and it does from here on.
+                    self.reset_albums_for_reload(&mut self_albums);
 
                     // Add each album to the collection with name as key
                     for mut album in albums {
@@ -2113,6 +2151,68 @@ mod tests {
             <MPDLibrary as LibraryInterface>::as_enrichment_sink(&lib).is_some(),
             "the enrichment route reaches the sink through the trait, not a downcast"
         );
+    }
+
+    /// The reload step itself, both halves of it.
+    ///
+    /// `refresh_library` needs a live MPD, so the *call* to this from inside it
+    /// cannot be tested; the operation can, and this is what makes the pairing
+    /// structural rather than a convention. Either half missing is a silent bug
+    /// — see `reset_albums_for_reload` — so both are asserted here, and a
+    /// version of this method that did only one of the two fails this test.
+    #[test]
+    fn resetting_the_albums_for_a_reload_empties_them_and_moves_the_generation() {
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        let before = lib.library_generation().unwrap();
+
+        {
+            let mut albums = lib.albums.write();
+            lib.reset_albums_for_reload(&mut albums);
+        }
+
+        assert!(
+            lib.albums.read().is_empty(),
+            "the album map is emptied for the rebuild"
+        );
+        assert_ne!(
+            lib.library_generation().unwrap(),
+            before,
+            "and the library is marked reloaded, so a batch computed against \
+             the emptied library's predecessor is refused rather than merged"
+        );
+
+        // And the refusal that pairing exists to produce actually happens.
+        let err = lib
+            .apply(EnrichmentBatch {
+                library_generation: Some(before),
+                albums: vec![album_genres("1", &["rock"])],
+                ..Default::default()
+            })
+            .expect_err("a batch from before the reset must not be merged");
+        assert_eq!(
+            err,
+            EnrichmentError::Stale {
+                current_generation: lib.library_generation()
+            }
+        );
+    }
+
+    /// Repeated resets keep moving the generation: a second reload must not
+    /// leave a caller holding a token from the first one looking current.
+    #[test]
+    fn each_reset_moves_the_generation_again() {
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        let mut seen = vec![lib.library_generation().unwrap()];
+
+        for _ in 0..3 {
+            {
+                let mut albums = lib.albums.write();
+                lib.reset_albums_for_reload(&mut albums);
+            }
+            let now = lib.library_generation().unwrap();
+            assert!(!seen.contains(&now), "{} was already issued", now);
+            seen.push(now);
+        }
     }
 
     /// What `refresh_library` does to a batch in flight, without needing an

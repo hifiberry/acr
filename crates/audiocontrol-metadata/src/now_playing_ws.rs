@@ -48,6 +48,12 @@
 //! [`Timings::idle_tick`] without traffic, which the player's handler treats
 //! as activity.
 //!
+//! The player now pings its clients too, so against a current daemon the pong
+//! this connection's stack sends back would keep the subscription alive on its
+//! own. This ping stays regardless: it is also what keeps a reverse proxy or a
+//! stateful firewall from timing the idle socket out, and it is the only thing
+//! that works against a daemon old enough to predate the server-side ping.
+//!
 //! Only `ws://` is supported. This seam is loopback in Phase 1 and a local
 //! service in Phase 2; adding TLS would mean pulling a TLS stack into
 //! `tungstenite` for a connection that never leaves the machine.
@@ -134,6 +140,52 @@ fn start_with(
     rx
 }
 
+/// How often a subscriber that cannot reach the player daemon at all says so
+/// again.
+///
+/// The first failure of a run is always reported, so a mistyped URL or a player
+/// that is not running is visible immediately rather than at `debug!`. Repeating
+/// every failure would turn an ordinary restart into pages of log at the capped
+/// backoff, so the rest of a run is quiet apart from this reminder - which is
+/// what distinguishes "the player is restarting" from "this has never worked".
+const UNAVAILABLE_REMINDER: Duration = Duration::from_secs(300);
+
+/// Tracks a run of failed connection attempts so the operator hears about it
+/// once, and again if it never ends.
+#[derive(Debug, Default)]
+struct UnavailableWarning {
+    /// When the current run of failures began, if one is in progress.
+    since: Option<Instant>,
+    /// When the operator was last told, if they have been.
+    last_warned: Option<Instant>,
+}
+
+impl UnavailableWarning {
+    /// Record a failed attempt and say whether it is worth a `warn!`.
+    fn record_failure(&mut self, now: Instant, reminder: Duration) -> bool {
+        self.since.get_or_insert(now);
+
+        let due = self
+            .last_warned
+            .is_none_or(|last| now.duration_since(last) >= reminder);
+        if due {
+            self.last_warned = Some(now);
+        }
+        due
+    }
+
+    /// How long the run of failures has lasted.
+    fn failing_for(&self, now: Instant) -> Duration {
+        self.since
+            .map_or(Duration::ZERO, |since| now.duration_since(since))
+    }
+
+    /// A connection proved itself, so the next failure is news again.
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Why a connection ended.
 #[derive(Debug)]
 enum Outcome {
@@ -157,6 +209,7 @@ fn run(
     stop: Option<Receiver<()>>,
 ) {
     let mut backoff = timings.first_backoff;
+    let mut unavailable = UnavailableWarning::default();
     loop {
         match connect(url, &timings) {
             Ok(mut ws) => {
@@ -180,6 +233,10 @@ fn run(
                     } => {
                         if should_reset_backoff(frames, uptime, timings.first_backoff) {
                             backoff = timings.first_backoff;
+                            // This connection worked, so a later failure to
+                            // reach the player is news rather than a
+                            // continuation of a run.
+                            unavailable.clear();
                         }
                         log::info!(
                             "Player daemon event socket ended after {:?} and {} frame(s) ({}); reconnecting in {:?}",
@@ -191,11 +248,29 @@ fn run(
                     }
                 }
             }
-            Err(e) => log::debug!(
-                "Player daemon event socket not available ({}); retrying in {:?}",
-                e,
-                backoff
-            ),
+            Err(e) => {
+                let now = Instant::now();
+                if unavailable.record_failure(now, UNAVAILABLE_REMINDER) {
+                    // The URL is in the message because the likeliest cause of
+                    // never connecting at all is that it is wrong, and nothing
+                    // else in the log says what was tried.
+                    log::warn!(
+                        "Cannot reach the player daemon event socket at {} ({}); \
+                         unreachable for {:?}, retrying in {:?}. Song metadata \
+                         and scrobbling stay stale until this connects.",
+                        url,
+                        e,
+                        unavailable.failing_for(now),
+                        backoff
+                    );
+                } else {
+                    log::debug!(
+                        "Player daemon event socket not available ({}); retrying in {:?}",
+                        e,
+                        backoff
+                    );
+                }
+            }
         }
         if wait_or_stop(&stop, backoff) {
             log::debug!("Now-playing subscriber: asked to stop while waiting to reconnect");
@@ -790,6 +865,69 @@ mod tests {
         assert!(!should_reset_backoff(1, Duration::from_millis(3), first));
         assert!(should_reset_backoff(1, first, first));
         assert!(should_reset_backoff(12, Duration::from_secs(3600), first));
+    }
+
+    /// A player that cannot be reached has to be visible in a default log, and
+    /// the run of retries that follows has to stay quiet.
+    #[test]
+    fn the_first_failure_to_connect_is_reported_and_the_next_one_is_not() {
+        let reminder = Duration::from_secs(300);
+        let mut warning = UnavailableWarning::default();
+        let start = Instant::now();
+
+        assert!(
+            warning.record_failure(start, reminder),
+            "the first failure to reach the player was not reported"
+        );
+        assert!(
+            !warning.record_failure(start + Duration::from_secs(1), reminder),
+            "an ordinary retry was reported again"
+        );
+        assert!(!warning.record_failure(start + reminder - Duration::from_secs(1), reminder));
+    }
+
+    /// ... but a connection that never comes up must not disappear from the log
+    /// entirely, or a mistyped URL is invisible to anyone who arrives later.
+    #[test]
+    fn a_player_that_never_answers_is_reported_again() {
+        let reminder = Duration::from_secs(300);
+        let mut warning = UnavailableWarning::default();
+        let start = Instant::now();
+
+        assert!(warning.record_failure(start, reminder));
+        assert!(!warning.record_failure(start + Duration::from_secs(30), reminder));
+
+        let later = start + reminder;
+        assert!(
+            warning.record_failure(later, reminder),
+            "a subscriber that has never connected went quiet for good"
+        );
+        assert_eq!(warning.failing_for(later), reminder);
+        assert!(!warning.record_failure(later + Duration::from_secs(1), reminder));
+    }
+
+    /// A working connection ends the run, so the next outage is news.
+    #[test]
+    fn a_connection_that_worked_makes_the_next_failure_news_again() {
+        let reminder = Duration::from_secs(300);
+        let mut warning = UnavailableWarning::default();
+        let start = Instant::now();
+
+        assert!(warning.record_failure(start, reminder));
+        assert!(!warning.record_failure(start + Duration::from_secs(1), reminder));
+
+        warning.clear();
+
+        let after = start + Duration::from_secs(2);
+        assert!(
+            warning.record_failure(after, reminder),
+            "an outage after a working connection was not reported"
+        );
+        assert_eq!(
+            warning.failing_for(after),
+            Duration::ZERO,
+            "the new run should be dated from its own first failure"
+        );
     }
 
     /// A URL this seam cannot serve fails as an error, not as a panic and not

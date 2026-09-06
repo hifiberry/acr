@@ -55,7 +55,7 @@ override_dh_auto_build:
 		echo "Fetching dependencies..."; \
 		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo fetch || exit 1; \
 		echo "Building with Cargo..."; \
-		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release --jobs 1 || exit 1; \
+		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release --workspace --jobs 1 || exit 1; \
 		echo "Build completed successfully"; \
 		find $(CURDIR)/target -name "*.rlib" -delete 2>/dev/null || true; \
 		find $(CURDIR)/target -name "*.rmeta" -delete 2>/dev/null || true; \

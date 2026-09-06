@@ -4,6 +4,8 @@ use parking_lot::{Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
 use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface};
+use crate::data::library::apply_batch;
+use acr_types::enrichment::{Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink};
 use crate::helpers::http_client;
 use crate::players::lms::jsonrps::LmsRpcClient;
 use crate::players::lms::lmsaudio::lms_image_url;
@@ -55,6 +57,40 @@ impl LMSLibrary {
             enhance_metadata: true,
         }
     }
+
+    /// Ask the enricher for everything this library is missing.
+    ///
+    /// Returns at once; results arrive later through this library's own
+    /// `EnrichmentSink`.
+    ///
+    /// Only artists are offered. LMS has never looked up album genres — its
+    /// albums carry whatever the server reports and nothing else — and
+    /// offering them here would start a MusicBrainz request per album on a
+    /// backend that has never made one.
+    pub fn request_enrichment(&self) {
+        if !self.enhance_metadata {
+            return;
+        }
+        let Some(enricher) = crate::audiocontrol::enrichment::enricher() else {
+            debug!("No enricher installed, LMS library stays as loaded");
+            return;
+        };
+
+        let artists: Vec<ArtistRef> = self
+            .artists
+            .read()
+            .values()
+            .map(|a| ArtistRef {
+                id: a.id.to_string(),
+                name: a.name.clone(),
+            })
+            .collect();
+
+        // LMS tracks no library version, so there is none to name and none for
+        // a returning batch to be stale against.
+        enricher.enrich("lms", None, artists, Vec::new(), Arc::new(self.clone()));
+    }
+
     /// Populate calculated fields in album objects
     /// 
     /// This adds derived fields like cover_art URL for albums that don't have them yet
@@ -150,29 +186,25 @@ impl LMSLibrary {
                 metadata: None,
             };
 
-            // lookup cache_key "artist::metadata::<artistname>" for cached metadata
-            let cache_key = format!("artist::metadata::{}", artist_name);
-            
-            // Try to load metadata from the attribute cache
+            // What is already known about this artist comes from the enricher,
+            // not from a cache this side reads. Unlike MPD, an artist nothing
+            // is known about is left with no metadata at all rather than an
+            // empty one: that is what this backend has always served.
             let mut artist_with_metadata = artist;
-            match crate::helpers::attributecache::get::<crate::data::ArtistMeta>(&cache_key) {
-                Ok(Some(cached_metadata)) => {
-                    debug!("Loaded metadata for artist {} from attribute cache", artist_name);
-                    artist_with_metadata.metadata = Some(cached_metadata);
-                    
-                    // Check if this is a multi-artist (having multiple MBIDs or partial match)
-                    if let Some(ref meta) = artist_with_metadata.metadata {
-                        if meta.mbid.len() > 1 || meta.is_partial_match {
-                            artist_with_metadata.is_multi = true;
-                            debug!("Marked {} as multi-artist based on cached metadata", artist_name);
-                        }
-                    }
+            match crate::audiocontrol::enrichment::enricher()
+                .and_then(|e| e.artist_summary(&artist_name))
+            {
+                Some(summary) => {
+                    debug!("Loaded summary for artist {} from the enricher", artist_name);
+                    let mut metadata = crate::data::ArtistMeta::new();
+                    metadata.mbid = summary.mbid;
+                    metadata.genres = summary.genres;
+                    metadata.thumb_url = summary.thumb_url;
+                    artist_with_metadata.is_multi = summary.is_multi;
+                    artist_with_metadata.metadata = Some(metadata);
                 },
-                Ok(None) => {
-                    debug!("No cached metadata found for artist {}", artist_name);
-                },
-                Err(e) => {
-                    warn!("Error loading cached metadata for artist {}: {}", artist_name, e);
+                None => {
+                    debug!("Nothing known yet about artist {}", artist_name);
                 }
             }
 
@@ -389,16 +421,8 @@ impl LibraryInterface for LMSLibrary {
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
                 
-                // Start background update of artist metadata now that the library is fully loaded
-                if self.enhance_metadata {
-                    info!("Starting background metadata update for artists");
-                    // LMS does not track library versions, so its lists carry no
-                    // validator — pass None rather than a live counter nothing reads.
-                    crate::helpers::artistupdater::update_library_artists_metadata_in_background(
-                        self.artists.clone(),
-                        None,
-                    );
-                }
+                // Ask for enrichment now that the library is fully loaded
+                self.request_enrichment();
 
                 Ok(())
             },
@@ -432,19 +456,6 @@ impl LibraryInterface for LMSLibrary {
     
     fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
         self.get_artist_by_name(name)
-    }
-    
-    fn update_artist_metadata(&self) {
-        if self.enhance_metadata {
-            info!("Starting background metadata update for LMSLibrary artists");
-            // Use the generic function from artistupdater with only the artists collection.
-            // LMS does not track library versions, so its lists carry no validator —
-            // pass None rather than a live counter nothing reads.
-            crate::helpers::artistupdater::update_library_artists_metadata_in_background(
-                self.artists.clone(),
-                None,
-            );
-        }
     }
     
     fn get_album_by_id(&self, id: &crate::data::Identifier) -> Option<Album> {
@@ -647,5 +658,141 @@ impl LibraryInterface for LMSLibrary {
     
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+impl EnrichmentSink for LMSLibrary {
+    /// Merge one batch of enrichment results into the loaded library.
+    ///
+    /// The merge is `data::library::apply_batch`, the same body MPD uses. What
+    /// differs is only what LMS does not have: no version counter, so nothing
+    /// to bump, nothing for a batch to be stale against, and no validator on
+    /// its lists for a bump to invalidate. A batch that names a version is
+    /// still refused, because this library cannot honour the claim it makes.
+    fn apply(&self, batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
+        let current = self.library_version();
+        if batch.library_version.is_some() && batch.library_version != current {
+            return Err(EnrichmentError::Stale { current });
+        }
+
+        let (applied, _changed) = apply_batch(&self.albums, &self.artists, &batch);
+        Ok(applied)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acr_types::enrichment::{AlbumRef, ArtistSummary, LibraryEnricher};
+    use crate::data::Identifier;
+
+    fn empty_library() -> LMSLibrary {
+        LMSLibrary::with_connection("localhost", 9000)
+    }
+
+    fn test_artist(name: &str) -> Artist {
+        Artist {
+            id: Identifier::String(name.to_string()),
+            name: name.to_string(),
+            is_multi: false,
+            metadata: None,
+        }
+    }
+
+    /// The same merge MPD gets, reached through this backend's own sink.
+    #[test]
+    fn an_artist_summary_replaces_mbid_multi_and_genres() {
+        let lib = empty_library();
+        lib.artists
+            .write()
+            .insert("Simon & Garfunkel".into(), test_artist("Simon & Garfunkel"));
+
+        let applied = lib
+            .apply(EnrichmentBatch {
+                library_version: None,
+                artists: vec![ArtistSummary {
+                    name: "Simon & Garfunkel".into(),
+                    mbid: vec!["a".into(), "b".into()],
+                    is_multi: true,
+                    genres: vec!["folk".into()],
+                    thumb_url: vec![],
+                }],
+                albums: vec![],
+            })
+            .unwrap();
+
+        assert_eq!(applied.artists, 1);
+        assert_eq!(
+            applied.library_version, None,
+            "LMS has no version to hand back"
+        );
+        let artists = lib.artists.read();
+        let a = &artists["Simon & Garfunkel"];
+        assert!(a.is_multi);
+        assert_eq!(a.metadata.as_ref().unwrap().mbid, vec!["a", "b"]);
+        assert_eq!(a.metadata.as_ref().unwrap().genres, vec!["folk"]);
+    }
+
+    /// LMS reports no version, so a batch that names one was computed against
+    /// something this library is not.
+    #[test]
+    fn a_batch_that_names_a_version_is_refused() {
+        let lib = empty_library();
+        let err = lib
+            .apply(EnrichmentBatch {
+                library_version: Some("whatever".into()),
+                ..Default::default()
+            })
+            .unwrap_err();
+
+        assert!(matches!(err, EnrichmentError::Stale { current: None }));
+    }
+
+    struct RecordingEnricher(Mutex<Vec<(String, Option<String>, Vec<ArtistRef>, Vec<AlbumRef>)>>);
+
+    impl LibraryEnricher for RecordingEnricher {
+        fn artist_summary(&self, _name: &str) -> Option<ArtistSummary> {
+            None
+        }
+        fn artist_detail(&self, _name: &str) -> Option<crate::data::ArtistMeta> {
+            None
+        }
+        fn artist_image(&self, _name: &str) -> Option<(Vec<u8>, String)> {
+            None
+        }
+        fn album_genres(&self, _album_id: &str) -> Option<Vec<String>> {
+            None
+        }
+        fn enrich(
+            &self,
+            player: &str,
+            version: Option<String>,
+            artists: Vec<ArtistRef>,
+            albums: Vec<AlbumRef>,
+            _sink: Arc<dyn EnrichmentSink>,
+        ) {
+            self.0.lock().push((player.to_string(), version, artists, albums));
+        }
+    }
+
+    /// LMS asks about artists only. Album genres would be a MusicBrainz
+    /// request per album on a backend that has never made one.
+    #[test]
+    fn requesting_enrichment_asks_about_artists_and_no_albums() {
+        let lib = empty_library();
+        lib.artists
+            .write()
+            .insert("The Beatles".into(), test_artist("The Beatles"));
+
+        let recorder = Arc::new(RecordingEnricher(Mutex::new(Vec::new())));
+        let _guard = crate::audiocontrol::enrichment::testing::install(recorder.clone());
+        lib.request_enrichment();
+
+        let calls = recorder.0.lock();
+        assert_eq!(calls.len(), 1);
+        let (player, version, artists, albums) = &calls[0];
+        assert_eq!(player, "lms");
+        assert_eq!(*version, None);
+        assert_eq!(artists.len(), 1);
+        assert!(albums.is_empty(), "LMS must not ask for album genres");
     }
 }

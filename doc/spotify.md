@@ -106,7 +106,7 @@ To use this example, you must update the following variables in the JavaScript:
 
 To add Spotify support to your own Audiocontrol-based applications, you'll need to:
 
-1. Import the `crate::helpers::spotify::Spotify` module
+1. Import the `audiocontrol_metadata::spotify::Spotify` module
 2. Use the module's methods to check authentication, retrieve tokens, etc.
 3. Implement the OAuth flow as shown in the example
 

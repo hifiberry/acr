@@ -25,7 +25,7 @@ The settings database provides both direct instance methods and convenient globa
 ### Using Global Functions (Recommended)
 
 ```rust
-use audiocontrol::helpers::settingsdb;
+use acr_store::settingsdb;
 
 // Store different types of values
 settingsdb::set_string("user_theme", "dark")?;
@@ -67,7 +67,7 @@ settingsdb::clear()?;
 ### Using Direct Instance
 
 ```rust
-use audiocontrol::helpers::settingsdb::SettingsDb;
+use acr_store::settingsdb::SettingsDb;
 
 let mut db = SettingsDb::with_directory("/path/to/settings");
 db.set_string("key", "value")?;

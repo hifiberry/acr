@@ -3,6 +3,79 @@
 version = 4
 
 [[package]]
+name = "acr-http"
+version = "0.20.0"
+dependencies = [
+ "log",
+ "once_cell",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
+]
+
+[[package]]
+name = "acr-images"
+version = "0.20.0"
+dependencies = [
+ "image",
+ "log",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "acr-store"
+version = "0.20.0"
+dependencies = [
+ "acr-images",
+ "acr-types",
+ "chrono",
+ "image",
+ "log",
+ "lru",
+ "once_cell",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+]
+
+[[package]]
+name = "acr-types"
+version = "0.20.0"
+dependencies = [
+ "base64 0.21.7",
+ "chrono",
+ "deunicode",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
+name = "acr-web"
+version = "0.20.0"
+dependencies = [
+ "acr-store",
+ "acr-types",
+ "log",
+ "md5",
+ "rocket",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -224,9 +297,14 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "audiocontrol"
 version = "0.20.0"
 dependencies = [
- "aes-gcm",
+ "acr-http",
+ "acr-images",
+ "acr-store",
+ "acr-types",
+ "acr-web",
  "alsa",
  "async-trait",
+ "audiocontrol-metadata",
  "base64 0.21.7",
  "bytes",
  "chrono",
@@ -250,14 +328,12 @@ dependencies = [
  "lru",
  "mac_address",
  "md5",
- "moka",
  "mpd",
  "named_pipe",
  "notify",
  "once_cell",
  "parking_lot",
  "rand",
- "regex",
  "reqwest",
  "rocket",
  "rocket_ws",
@@ -276,6 +352,43 @@ dependencies = [
  "url",
  "urlencoding",
  "walkdir",
+]
+
+[[package]]
+name = "audiocontrol-metadata"
+version = "0.20.0"
+dependencies = [
+ "acr-http",
+ "acr-images",
+ "acr-store",
+ "acr-types",
+ "acr-web",
+ "aes-gcm",
+ "base64 0.21.7",
+ "chrono",
+ "clap",
+ "crossbeam",
+ "deunicode",
+ "env_logger",
+ "image",
+ "log",
+ "md5",
+ "moka",
+ "once_cell",
+ "parking_lot",
+ "rand",
+ "regex",
+ "rocket",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "strsim",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "ureq",
+ "url",
+ "urlencoding",
 ]
 
 [[package]]

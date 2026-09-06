@@ -1,0 +1,25 @@
+[package]
+name = "acr-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SQLite attribute cache, settings DB, image cache and background job registry"
+
+[dependencies]
+acr-types = { path = "../acr-types" }
+acr-images = { path = "../acr-images" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+lru.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+image.workspace = true

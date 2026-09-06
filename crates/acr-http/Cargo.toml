@@ -1,0 +1,17 @@
+[package]
+name = "acr-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Blocking HTTP client, retry and rate limiting for the AudioControl daemons"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true

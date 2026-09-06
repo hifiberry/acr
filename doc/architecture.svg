@@ -150,8 +150,8 @@
   <!-- ===== Helpers / Plugins row ===== -->
   <rect x="280" y="540" width="860" height="90" rx="9" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
   <text x="710" y="570" text-anchor="middle" font-size="18" font-weight="700" fill="#1A2225">helpers::*</text>
-  <text x="710" y="593" text-anchor="middle" font-size="14" fill="#7C8A8D">SQLite attribute cache · settings db · image cache</text>
-  <text x="710" y="613" text-anchor="middle" font-size="14" fill="#7C8A8D">MusicBrainz · TheAudioDB · FanartTV · Last.fm · Spotify</text>
+  <text x="710" y="593" text-anchor="middle" font-size="14" fill="#7C8A8D">Volume control · lyrics · m3u · stream-title splitter</text>
+  <text x="710" y="613" text-anchor="middle" font-size="14" fill="#7C8A8D">local cover art · image prewarm · systemd/MPRIS/Bluez helpers</text>
 
   <rect x="1230" y="540" width="860" height="90" rx="9" fill="#FFFFFF" stroke="#9AA6A6" stroke-width="1.5"/>
   <text x="1660" y="570" text-anchor="middle" font-size="18" font-weight="700" fill="#1A2225">plugins::action_plugins::*</text>

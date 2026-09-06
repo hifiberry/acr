@@ -141,8 +141,7 @@ impl MPDLibraryLoader {
         use std::sync::Arc;
         use parking_lot::Mutex;
         use crate::data::{Album, Track, Identifier};
-        use crate::helpers::musicbrainz;
-        
+
         // Extract album name (default to "Unknown Album" if not present)
         let album_name = song.tags.iter()
             .find(|(tag, _)| tag == "Album")
@@ -177,8 +176,8 @@ impl MPDLibraryLoader {
         // Create an empty track list - typically you'd populate this later
         let tracks = Arc::new(Mutex::new(Vec::<Track>::new()));
         
-        // Create artists list by splitting the album artist string using musicbrainz helper with custom separators
-        let artists = match musicbrainz::split_artist_names(&album_artist, false, custom_separators) {
+        // Create artists list by splitting the album artist string through the resolver, with custom separators
+        let artists = match crate::audiocontrol::resolver::split_album_artist(&album_artist, custom_separators) {
             Some(split_artists) => Arc::new(Mutex::new(split_artists)),
             None => Arc::new(Mutex::new(vec![album_artist]))
         };
@@ -444,10 +443,15 @@ impl MPDLibraryLoader {
         // Move albums from HashMap to vector; load any cached genres while we have ownership
         let mut albums = Vec::with_capacity(albums_map.len());
         for (_, mut album) in albums_map.drain() {
-            // If the album has no genres from file tags, try the attribute cache
+            // If the album has no genres from file tags, ask the enricher what
+            // it already knows. The genre cache is the metadata side's, so the
+            // question goes through the seam rather than at its store; a build
+            // with no enricher installed simply loads no cached genres.
             if album.genres.is_empty() {
                 let album_id = album.id.to_string();
-                if let Some(cached) = crate::helpers::albumupdater::load_cached_genres(&album_id) {
+                if let Some(cached) = crate::audiocontrol::enrichment::enricher()
+                    .and_then(|e| e.album_genres(&album_id))
+                {
                     if !cached.is_empty() {
                         debug!("Loaded {} cached genre(s) for album '{}'", cached.len(), album.name);
                         album.genres = cached;

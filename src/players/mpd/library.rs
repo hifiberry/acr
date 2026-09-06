@@ -5,7 +5,10 @@ use std::time::Instant;
 use log::{debug, info, warn, error};
 use chrono::Datelike;
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
-use crate::data::library::LibraryVersion;
+use crate::data::library::{apply_batch, LibraryVersion};
+use acr_types::enrichment::{
+    AlbumRef, Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink,
+};
 use crate::players::mpd::mpd::{MPDPlayerController, mpd_image_url};
 use crate::helpers::url_encoding;
 use crate::helpers::lyrics::LyricsProvider;
@@ -120,6 +123,55 @@ impl MPDLibrary {
     /// A handle on this library's version counter, for the background updaters.
     pub fn version(&self) -> LibraryVersion {
         self.library_version.clone()
+    }
+
+    /// Ask the enricher for everything this library is missing.
+    ///
+    /// Returns at once. Results arrive later, in batches, through this
+    /// library's own `EnrichmentSink`; nothing here waits for them and nothing
+    /// here knows how they are found.
+    pub fn request_enrichment(&self) {
+        if !self.enhance_metadata {
+            return;
+        }
+        let Some(enricher) = crate::audiocontrol::enrichment::enricher() else {
+            debug!("No enricher installed, MPD library stays as loaded");
+            return;
+        };
+
+        let artists: Vec<ArtistRef> = self
+            .artists
+            .read()
+            .values()
+            .map(|a| ArtistRef {
+                id: a.id.to_string(),
+                name: a.name.clone(),
+            })
+            .collect();
+
+        // Only albums with no genres at all: an album that carries genre tags
+        // needs no lookup, and this is the same filter the album updater
+        // applied to the map before the seam existed.
+        let albums: Vec<AlbumRef> = self
+            .albums
+            .read()
+            .values()
+            .filter(|a| a.genres.is_empty())
+            .map(|a| AlbumRef {
+                id: a.id.to_string(),
+                name: a.name.clone(),
+                artist: a.artists.lock().first().cloned().unwrap_or_default(),
+            })
+            .collect();
+
+        // No version is handed over, and the batches that come back therefore
+        // carry none. This library's version counter is not a generation
+        // number: artist and album enrichment run at the same time against one
+        // counter, so each would see the other's bumps as the library having
+        // been reloaded and give up. The staleness check on `apply` below is
+        // for a caller that holds a version of its own - the metadata daemon
+        // in Phase 1, which is told one and keeps it across a reload.
+        enricher.enrich("mpd", None, artists, albums, Arc::new(self.clone()));
     }
     
     /// Set custom artist separators for use in library operations
@@ -508,35 +560,32 @@ impl MPDLibrary {
                 metadata: None,
             };
 
-            // lookup cache_key "artist::metadata::<artistname>" for cached metadata
-            let cache_key = format!("artist::metadata::{}", artist_name);
-            
-            // Try to load metadata from the attribute cache
+            // What is already known about this artist comes from the enricher,
+            // not from a cache this side reads: the metadata cache belongs to
+            // the metadata side, and in Phase 1 it is not even in this process.
+            // With no enricher installed the artist loads unenriched, which is
+            // what a daemon built without metadata enrichment serves.
             let mut artist_with_metadata = artist;
-            match crate::helpers::attributecache::get::<crate::data::ArtistMeta>(&cache_key) {
-                Ok(Some(cached_metadata)) => {
-                    debug!("Loaded metadata for artist {} from attribute cache", artist_name);
-                    artist_with_metadata.metadata = Some(cached_metadata);
-                    
-                    // Check if this is a multi-artist (having multiple MBIDs or partial match)
-                    if let Some(ref meta) = artist_with_metadata.metadata {
-                        if meta.mbid.len() > 1 || meta.is_partial_match {
-                            artist_with_metadata.is_multi = true;
-                            debug!("Marked {} as multi-artist based on cached metadata", artist_name);
-                        }
-                    }
-                },
-                Ok(None) => {
-                    debug!("No cached metadata found for artist {}", artist_name);
-                    // Create new metadata for album artists
-                    let metadata = crate::data::ArtistMeta::new();
+            match crate::audiocontrol::enrichment::enricher()
+                .and_then(|e| e.artist_summary(&artist_name))
+            {
+                Some(summary) => {
+                    debug!("Loaded summary for artist {} from the enricher", artist_name);
+                    let mut metadata = crate::data::ArtistMeta::new();
+                    metadata.mbid = summary.mbid;
+                    metadata.genres = summary.genres;
+                    metadata.thumb_url = summary.thumb_url;
+                    // The multi-artist rule (more than one MBID, or a partial
+                    // match) is the enricher's to apply; this side stores what
+                    // it is told.
+                    artist_with_metadata.is_multi = summary.is_multi;
                     artist_with_metadata.metadata = Some(metadata);
                 },
-                Err(e) => {
-                    warn!("Error loading cached metadata for artist {}: {}", artist_name, e);
-                    // Create new metadata as fallback
-                    let metadata = crate::data::ArtistMeta::new();
-                    artist_with_metadata.metadata = Some(metadata);
+                None => {
+                    debug!("Nothing known yet about artist {}", artist_name);
+                    // An album artist always carries metadata, even empty: it
+                    // is what a client sees on the artist routes.
+                    artist_with_metadata.metadata = Some(crate::data::ArtistMeta::new());
                 }
             }
 
@@ -815,69 +864,24 @@ impl MPDLibrary {
         }
     }
     
-    /// Get artist cover art using the artist store
-    /// 
+    /// Get artist cover art from whatever enrichment this build installed.
+    ///
+    /// Both halves of this -- looking in the artist store, and downloading an
+    /// image when nothing is cached -- are the metadata side's, so the whole
+    /// of it moved behind `LibraryEnricher::artist_image` and this asks. A
+    /// build with no enricher installed serves no artist image rather than
+    /// reaching for one itself.
+    ///
     /// # Arguments
     /// * `artist_name` - The name of the artist
-    /// 
+    ///
     /// # Returns
     /// Option containing (image data, mime type) if found
     pub fn get_artist_cover(&self, artist_name: &str) -> Option<(Vec<u8>, String)> {
-        debug!("Getting artist cover for: {}", artist_name);
-        
-        // Use the artist store to get the cached image path
-        if let Some(cache_path) = crate::helpers::artist_store::get_artist_cached_image(artist_name) {
-            debug!("Found cached artist image at: {}", cache_path);
-            
-            // Read the image data from the cache file
-            if let Ok(image_data) = std::fs::read(&cache_path) {
-                // Determine MIME type based on file extension
-                let mime_type = if cache_path.ends_with(".jpg") || cache_path.ends_with(".jpeg") {
-                    "image/jpeg".to_string()
-                } else if cache_path.ends_with(".png") {
-                    "image/png".to_string()
-                } else if cache_path.ends_with(".webp") {
-                    "image/webp".to_string()
-                } else {
-                    "image/jpeg".to_string() // Default to JPEG
-                };
-                
-                debug!("Successfully loaded artist image for {}: {} bytes, MIME: {}", 
-                       artist_name, image_data.len(), mime_type);
-                return Some((image_data, mime_type));
-            } else {
-                warn!("Failed to read cached artist image from: {}", cache_path);
-            }
-        }
-        
-        // If no cached image found, try to download one
-        if let Some(cache_path) = crate::helpers::artist_store::get_or_download_artist_image(artist_name) {
-            debug!("Downloaded new artist image at: {}", cache_path);
-            
-            // Read the newly downloaded image
-            if let Ok(image_data) = std::fs::read(&cache_path) {
-                let mime_type = if cache_path.ends_with(".jpg") || cache_path.ends_with(".jpeg") {
-                    "image/jpeg".to_string()
-                } else if cache_path.ends_with(".png") {
-                    "image/png".to_string()
-                } else if cache_path.ends_with(".webp") {
-                    "image/webp".to_string()
-                } else {
-                    "image/jpeg".to_string()
-                };
-                
-                debug!("Successfully loaded downloaded artist image for {}: {} bytes, MIME: {}", 
-                       artist_name, image_data.len(), mime_type);
-                return Some((image_data, mime_type));
-            } else {
-                warn!("Failed to read downloaded artist image from: {}", cache_path);
-            }
-        }
-        
-        debug!("No artist cover found for: {}", artist_name);
-        None
+        crate::audiocontrol::enrichment::enricher()
+            .and_then(|e| e.artist_image(artist_name))
     }
-    
+
     /// Extract the album directory from a track URI
     fn get_album_directory(&self, uri: &str) -> Option<String> {
         debug!("Extracting album directory from URI: {}", uri);
@@ -1119,16 +1123,9 @@ impl LibraryInterface for MPDLibrary {
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
                 
-                // Start background metadata updates now that the library is fully loaded
+                // Ask for enrichment now that the library is fully loaded
+                self.request_enrichment();
                 if self.enhance_metadata {
-                    info!("Starting background metadata update for artists");
-                    crate::helpers::artistupdater::update_library_artists_metadata_in_background(
-                        self.artists.clone(), Some(self.version())
-                    );
-                    info!("Starting background genre update for albums");
-                    crate::helpers::albumupdater::update_library_albums_genres_in_background(
-                        self.albums.clone(), Some(self.version())
-                    );
                     crate::helpers::imageprewarm::prewarm_album_variants_in_background(
                         self.albums.clone(),
                     );
@@ -1170,21 +1167,6 @@ impl LibraryInterface for MPDLibrary {
     
     fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
         self.get_artist_by_name(name)
-    }
-    
-    fn update_artist_metadata(&self) {
-        if self.enhance_metadata {
-            info!("Starting background metadata update for MPDLibrary artists");
-            crate::helpers::artistupdater::update_library_artists_metadata_in_background(self.artists.clone(), Some(self.version()));
-        }
-    }
-
-    fn update_album_metadata(&self) {
-        if self.enhance_metadata {
-            info!("Starting background genre update for MPDLibrary albums");
-            crate::helpers::albumupdater::update_library_albums_genres_in_background(self.albums.clone(), Some(self.version()));
-            crate::helpers::imageprewarm::prewarm_album_variants_in_background(self.albums.clone());
-        }
     }
     
     fn get_album_by_id(&self, id: &crate::data::Identifier) -> Option<Album> {
@@ -1532,6 +1514,32 @@ impl LibraryInterface for MPDLibrary {
     }
 }
 
+impl EnrichmentSink for MPDLibrary {
+    /// Merge one batch of enrichment results into the loaded library.
+    ///
+    /// The merge itself is `data::library::apply_batch`, shared with every
+    /// other backend. What is MPD's alone is the version: one bump for a batch
+    /// that changed anything, none for a batch that changed nothing, and the
+    /// resulting version handed back so the caller's next batch can name it.
+    fn apply(&self, batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
+        let current = self.library_version();
+        // A batch that names no version is applied as it arrives - that is
+        // every in-process batch. One that names a version is claiming to have
+        // been computed against it, and applying it to a library that has since
+        // reloaded would write results for albums and artists that are gone.
+        if batch.library_version.is_some() && batch.library_version != current {
+            return Err(EnrichmentError::Stale { current });
+        }
+
+        let (mut applied, changed) = apply_batch(&self.albums, &self.artists, &batch);
+        if changed {
+            self.library_version.bump();
+        }
+        applied.library_version = self.library_version();
+        Ok(applied)
+    }
+}
+
 impl MPDLibrary {
     /// Get the effective music directory from the controller
     pub fn get_music_directory(&self) -> Option<String> {
@@ -1739,6 +1747,232 @@ mod tests {
         assert!(library
             .get_album_by_track_uri("music/Other Artist/Other Album/01 Other.flac")
             .is_none());
+    }
+
+    fn test_album(id: &str, name: &str, artist: &str) -> Album {
+        Album {
+            id: Identifier::String(id.to_string()),
+            name: name.to_string(),
+            artists: Arc::new(Mutex::new(vec![artist.to_string()])),
+            artists_flat: None,
+            release_date: None,
+            tracks: Arc::new(Mutex::new(Vec::new())),
+            cover_art: None,
+            uri: None,
+            genres: Vec::new(),
+        }
+    }
+
+    fn test_artist(name: &str) -> Artist {
+        Artist {
+            id: Identifier::String(name.to_string()),
+            name: name.to_string(),
+            is_multi: false,
+            metadata: None,
+        }
+    }
+
+    /// One batch is one bump, however many entries it carries and however many
+    /// of them repeat: a bump is what invalidates every client's cached list.
+    #[test]
+    fn an_enrichment_batch_sets_genres_and_bumps_the_version_once() {
+        let lib = empty_library();
+        lib.albums
+            .write()
+            .insert("Abbey Road".into(), test_album("1", "Abbey Road", "The Beatles"));
+        let before = lib.library_version();
+
+        let applied = lib
+            .apply(EnrichmentBatch {
+                library_version: before.clone(),
+                artists: vec![],
+                albums: vec![
+                    acr_types::enrichment::AlbumGenres {
+                        id: "1".into(),
+                        genres: vec!["rock".into()],
+                    },
+                    acr_types::enrichment::AlbumGenres {
+                        id: "1".into(),
+                        genres: vec!["rock".into()],
+                    },
+                ],
+            })
+            .unwrap();
+
+        assert_eq!(applied.albums, 1);
+        assert_ne!(lib.library_version(), before);
+        assert_eq!(lib.albums.read()["Abbey Road"].genres, vec!["rock"]);
+        assert_eq!(
+            applied.library_version,
+            lib.library_version(),
+            "the caller is handed the version its batch produced"
+        );
+    }
+
+    /// A batch computed against a library that has since reloaded is refused
+    /// rather than merged into whatever is loaded now.
+    #[test]
+    fn a_batch_against_a_stale_version_is_refused() {
+        let lib = empty_library();
+        let err = lib
+            .apply(EnrichmentBatch {
+                library_version: Some("old".into()),
+                ..Default::default()
+            })
+            .unwrap_err();
+
+        assert!(matches!(err, EnrichmentError::Stale { .. }));
+    }
+
+    /// A batch that names no version is the in-process case: applied as it
+    /// arrives, with no claim about when it was computed.
+    #[test]
+    fn a_batch_without_a_version_is_applied() {
+        let lib = empty_library();
+        lib.albums
+            .write()
+            .insert("Abbey Road".into(), test_album("1", "Abbey Road", "The Beatles"));
+
+        let applied = lib
+            .apply(EnrichmentBatch {
+                library_version: None,
+                artists: vec![],
+                albums: vec![acr_types::enrichment::AlbumGenres {
+                    id: "1".into(),
+                    genres: vec!["rock".into()],
+                }],
+            })
+            .unwrap();
+
+        assert_eq!(applied.albums, 1);
+    }
+
+    /// A batch that changes nothing must not move the version: every client
+    /// holding a cached list would revalidate for no new content.
+    #[test]
+    fn a_batch_that_changes_nothing_does_not_bump_the_version() {
+        let lib = empty_library();
+        let before = lib.library_version();
+
+        let applied = lib
+            .apply(EnrichmentBatch {
+                library_version: before.clone(),
+                artists: vec![],
+                albums: vec![acr_types::enrichment::AlbumGenres {
+                    id: "no such album".into(),
+                    genres: vec!["rock".into()],
+                }],
+            })
+            .unwrap();
+
+        assert_eq!(applied.albums, 0);
+        assert_eq!(lib.library_version(), before);
+    }
+
+    #[test]
+    fn an_artist_summary_replaces_mbid_multi_and_genres() {
+        let lib = empty_library();
+        lib.artists
+            .write()
+            .insert("Simon & Garfunkel".into(), test_artist("Simon & Garfunkel"));
+
+        lib.apply(EnrichmentBatch {
+            library_version: lib.library_version(),
+            artists: vec![acr_types::enrichment::ArtistSummary {
+                name: "Simon & Garfunkel".into(),
+                mbid: vec!["a".into(), "b".into()],
+                is_multi: true,
+                genres: vec!["folk".into()],
+                thumb_url: vec!["/api/coverart/artist/YWJj/image".into()],
+            }],
+            albums: vec![],
+        })
+        .unwrap();
+
+        let artists = lib.artists.read();
+        let a = &artists["Simon & Garfunkel"];
+        assert!(a.is_multi);
+        assert_eq!(a.metadata.as_ref().unwrap().mbid, vec!["a", "b"]);
+        assert_eq!(a.metadata.as_ref().unwrap().genres, vec!["folk"]);
+        assert_eq!(
+            a.metadata.as_ref().unwrap().thumb_url,
+            vec!["/api/coverart/artist/YWJj/image"],
+            "the artist list route serves this field out of the map"
+        );
+    }
+
+    /// What an enricher is asked for, recorded rather than acted on.
+    struct RecordingEnricher(Mutex<Vec<(String, Option<String>, Vec<ArtistRef>, Vec<AlbumRef>)>>);
+
+    impl acr_types::enrichment::LibraryEnricher for RecordingEnricher {
+        fn artist_summary(&self, _name: &str) -> Option<acr_types::enrichment::ArtistSummary> {
+            None
+        }
+        fn artist_detail(&self, _name: &str) -> Option<crate::data::ArtistMeta> {
+            None
+        }
+        fn artist_image(&self, _name: &str) -> Option<(Vec<u8>, String)> {
+            None
+        }
+        fn album_genres(&self, _album_id: &str) -> Option<Vec<String>> {
+            None
+        }
+        fn enrich(
+            &self,
+            player: &str,
+            version: Option<String>,
+            artists: Vec<ArtistRef>,
+            albums: Vec<AlbumRef>,
+            _sink: Arc<dyn EnrichmentSink>,
+        ) {
+            self.0.lock().push((player.to_string(), version, artists, albums));
+        }
+    }
+
+    /// Every artist is offered, but only albums with no genres of their own:
+    /// an album that came with genre tags needs no lookup, and asking for one
+    /// would be a MusicBrainz request per album in the library.
+    #[test]
+    fn requesting_enrichment_offers_every_artist_and_only_albums_without_genres() {
+        let lib = empty_library();
+        {
+            let mut albums = lib.albums.write();
+            albums.insert("Bare".into(), test_album("1", "Bare", "The Beatles"));
+            let mut tagged = test_album("2", "Tagged", "The Beatles");
+            tagged.genres = vec!["rock".into()];
+            albums.insert("Tagged".into(), tagged);
+            lib.artists.write().insert("The Beatles".into(), test_artist("The Beatles"));
+        }
+
+        let recorder = Arc::new(RecordingEnricher(Mutex::new(Vec::new())));
+        let _guard = crate::audiocontrol::enrichment::testing::install(recorder.clone());
+        lib.request_enrichment();
+
+        let calls = recorder.0.lock();
+        assert_eq!(calls.len(), 1);
+        let (player, version, artists, albums) = &calls[0];
+        assert_eq!(player, "mpd");
+        assert_eq!(
+            *version, None,
+            "an in-process batch names no version: the two workers share one counter"
+        );
+        assert_eq!(artists.len(), 1);
+        assert_eq!(artists[0].name, "The Beatles");
+        assert_eq!(albums.len(), 1, "the tagged album must not be asked about");
+        assert_eq!(albums[0].name, "Bare");
+        assert_eq!(albums[0].artist, "The Beatles");
+    }
+
+    /// A daemon with no enricher installed loads its library and serves it.
+    #[test]
+    fn requesting_enrichment_without_an_enricher_does_nothing() {
+        let lib = empty_library();
+        lib.artists.write().insert("The Beatles".into(), test_artist("The Beatles"));
+        let before = lib.library_version();
+
+        lib.request_enrichment();
+
+        assert_eq!(lib.library_version(), before);
     }
 
     #[test]

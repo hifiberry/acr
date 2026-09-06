@@ -1318,6 +1318,44 @@ fn get_artist_internal(
                     }
                 };
                 
+                // The library keeps only what its lists are built from. The
+                // rest of what is known about an artist — the biography and
+                // the images — belongs to the metadata side, and is merged in
+                // here, on the one route that serves it.
+                let artist = artist.map(|mut artist| {
+                    if let Some(detail) = crate::audiocontrol::enrichment::enricher()
+                        .and_then(|e| e.artist_detail(&artist.name))
+                    {
+                        let meta = artist
+                            .metadata
+                            .get_or_insert_with(crate::data::ArtistMeta::new);
+                        meta.biography = detail.biography;
+                        meta.biography_source = detail.biography_source;
+                        // What the library already carries wins: an enricher
+                        // that knows no images must not blank the ones a
+                        // backend supplied itself.
+                        if meta.thumb_url.is_empty() {
+                            meta.thumb_url = detail.thumb_url;
+                        }
+                        if meta.banner_url.is_empty() {
+                            meta.banner_url = detail.banner_url;
+                        }
+                        // `is_partial_match` is deliberately not carried through
+                        // here. Nothing in this build ever writes it true: both
+                        // writers (the artist updater and the artist store) set
+                        // it inside `if let Some(meta) = &mut artist.metadata`
+                        // after `clear_metadata()` has already set that same
+                        // metadata to `None` on the same path, so it can only
+                        // ever be `false` or absent today. Only an
+                        // attribute-cache entry written by an older release
+                        // could carry `true`, and `#[serde(skip_serializing_if
+                        // = "Not::not")]` on the field means the only visible
+                        // effect either way is whether the key appears in the
+                        // payload at all.
+                    }
+                    artist
+                });
+
                 return Ok(Json(ArtistResponse::new(
                     player_name.to_string(),
                     artist,
@@ -1340,36 +1378,11 @@ fn get_artist_internal(
      ))
 }
 
-/// Interpret the `size` query parameter.
-///
-/// `Ok(None)` means "serve the original": either no size was asked for, or the
-/// request is larger than the top rung and acr does not upscale. `Err` is a client
-/// mistake and must become a 400 — a client sending nonsense should find out rather
-/// than silently receive a 243 KB original.
-pub fn parse_size(raw: Option<&str>) -> Result<Option<u32>, String> {
-    let Some(raw) = raw else { return Ok(None) };
-
-    let requested: u32 = raw
-        .parse()
-        .map_err(|_| format!("Invalid size '{}': expected a positive integer", raw))?;
-    if requested == 0 {
-        return Err(format!("Invalid size '{}': expected a positive integer", raw));
-    }
-
-    Ok(crate::helpers::imageresize::snap_to_rung(requested))
-}
-
-/// Build the body of a 400 for a bad `size`, including the sizes that would work.
-///
-/// Being told only that a value was wrong leaves a client guessing; the list costs
-/// a few bytes on a path that is already an error.
-pub fn size_error_body(message: &str) -> String {
-    serde_json::json!({
-        "error": message,
-        "image_sizes": crate::helpers::imageresize::sizes(),
-    })
-    .to_string()
-}
+/// Interpreting the `size` query parameter, and the 400 body that names the
+/// sizes that would have worked, live with the resize ladder they wrap: both
+/// daemons serve resized images, and the cover art routes moved out of this
+/// package.
+pub use acr_images::imageresize::{parse_size, size_error_body};
 
 /// Produce a downscaled version of a library image through the image cache.
 ///
@@ -1719,38 +1732,6 @@ mod tests {
     // from the file's existing imports; only `Mutex` is new here.
     use parking_lot::Mutex;
 
-    #[test]
-    fn absent_size_means_the_original() {
-        assert_eq!(parse_size(None).unwrap(), None);
-    }
-
-    #[test]
-    fn a_valid_size_snaps_up_to_a_rung() {
-        assert_eq!(parse_size(Some("360")).unwrap(), Some(400));
-        assert_eq!(parse_size(Some("100")).unwrap(), Some(100));
-    }
-
-    #[test]
-    fn a_size_above_the_ladder_means_the_original() {
-        assert_eq!(parse_size(Some("2000")).unwrap(), None);
-    }
-
-    #[test]
-    fn nonsense_sizes_are_rejected_rather_than_ignored() {
-        assert!(parse_size(Some("wide")).is_err());
-        assert!(parse_size(Some("0")).is_err());
-        assert!(parse_size(Some("-40")).is_err());
-        assert!(parse_size(Some("")).is_err());
-    }
-
-    #[test]
-    fn size_errors_carry_the_valid_sizes() {
-        let body: serde_json::Value =
-            serde_json::from_str(&size_error_body("Invalid size 'wide'")).unwrap();
-        assert_eq!(body["error"], "Invalid size 'wide'");
-        assert_eq!(body["image_sizes"], serde_json::json!([100, 140, 200, 280, 400, 800]));
-    }
-
     // Both `resize_via_cache` tests below only need to reach the identifier
     // and album-id parsing at the top of the function, so they never actually
     // touch the cache — but they still point the global image cache at a
@@ -1944,7 +1925,6 @@ mod tests {
         fn get_image(&self, _identifier: String) -> Option<(Vec<u8>, String)> {
             None
         }
-        fn update_artist_metadata(&self) {}
         fn library_version(&self) -> Option<String> {
             Some("42".to_string())
         }
@@ -2080,6 +2060,208 @@ mod tests {
         assert_eq!(
             body["artist"]["metadata"]["thumb_url"][0],
             "/api/coverart/artist/YWJj/image"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // The artist list's thumbnails, end to end.
+    //
+    // A library carries no images of its own: everything the list route shows
+    // in `thumb_url` arrived through an enrichment batch and was merged in by
+    // `data::library::apply_batch`. These build a library the same way and
+    // read the field back out of the JSON a client receives, because that
+    // field disappearing from the wire is the whole failure being guarded
+    // against, and no assertion about the structs in memory would catch it.
+    // ---------------------------------------------------------------------
+
+    /// A library whose artist metadata arrived the way a real one's does.
+    /// "Pictured" was found an image; "Unpictured" was not, and a lookup that
+    /// finds none writes nothing, which is how a client tells the two apart.
+    struct EnrichedLibrary {
+        artists: Vec<Artist>,
+    }
+
+    impl EnrichedLibrary {
+        fn new() -> Self {
+            use acr_types::enrichment::{ArtistSummary, EnrichmentBatch};
+            use parking_lot::RwLock;
+            use std::collections::HashMap;
+
+            let bare = |name: &str| Artist {
+                id: Identifier::String(name.to_string()),
+                name: name.to_string(),
+                is_multi: false,
+                metadata: None,
+            };
+            let artists = RwLock::new(HashMap::from([
+                ("Pictured".to_string(), bare("Pictured")),
+                ("Unpictured".to_string(), bare("Unpictured")),
+            ]));
+
+            crate::data::library::apply_batch(
+                &RwLock::new(HashMap::new()),
+                &artists,
+                &EnrichmentBatch {
+                    library_version: None,
+                    artists: vec![
+                        ArtistSummary {
+                            name: "Pictured".to_string(),
+                            // Both shapes the field takes: the daemon's own
+                            // cover art URL, and a provider's own, which is
+                            // not the daemon's to rewrite.
+                            thumb_url: vec![
+                                "/api/coverart/artist/YWJj/image".to_string(),
+                                "https://example.com/artist.png".to_string(),
+                            ],
+                            ..Default::default()
+                        },
+                        ArtistSummary {
+                            name: "Unpictured".to_string(),
+                            ..Default::default()
+                        },
+                    ],
+                    albums: vec![],
+                },
+            );
+
+            EnrichedLibrary {
+                artists: artists.into_inner().into_values().collect(),
+            }
+        }
+    }
+
+    impl LibraryInterface for EnrichedLibrary {
+        fn new() -> Self {
+            EnrichedLibrary::new()
+        }
+        fn is_loaded(&self) -> bool {
+            true
+        }
+        fn refresh_library(&self) -> Result<(), LibraryError> {
+            Ok(())
+        }
+        fn get_albums(&self) -> Vec<Album> {
+            Vec::new()
+        }
+        fn get_artists(&self) -> Vec<Artist> {
+            self.artists.clone()
+        }
+        fn get_album_by_artist_and_name(&self, _artist: &str, _album: &str) -> Option<Album> {
+            None
+        }
+        fn get_album_by_id(&self, _id: &Identifier) -> Option<Album> {
+            None
+        }
+        fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
+            self.artists.iter().find(|a| a.name == name).cloned()
+        }
+        fn get_albums_by_artist_id(&self, _artist_id: &Identifier) -> Vec<Album> {
+            Vec::new()
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn get_image(&self, _identifier: String) -> Option<(Vec<u8>, String)> {
+            None
+        }
+        fn library_version(&self) -> Option<String> {
+            Some("1".to_string())
+        }
+    }
+
+    struct EnrichedPlayer;
+
+    impl PlayerController for EnrichedPlayer {
+        fn get_capabilities(&self) -> PlayerCapabilitySet {
+            PlayerCapabilitySet::empty()
+        }
+        fn get_song(&self) -> Option<Song> {
+            None
+        }
+        fn get_queue(&self) -> Vec<Track> {
+            Vec::new()
+        }
+        fn get_loop_mode(&self) -> LoopMode {
+            LoopMode::None
+        }
+        fn get_playback_state(&self) -> PlaybackState {
+            PlaybackState::Stopped
+        }
+        fn get_position(&self) -> Option<f64> {
+            None
+        }
+        fn get_shuffle(&self) -> bool {
+            false
+        }
+        fn get_player_name(&self) -> String {
+            "enriched".to_string()
+        }
+        fn get_player_id(&self) -> String {
+            "enriched".to_string()
+        }
+        fn get_last_seen(&self) -> Option<std::time::SystemTime> {
+            None
+        }
+        fn send_command(&self, _command: PlayerCommand) -> bool {
+            true
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn start(&self) -> bool {
+            true
+        }
+        fn stop(&self) -> bool {
+            true
+        }
+        fn get_library(&self) -> Option<Box<dyn LibraryInterface>> {
+            Some(Box::new(EnrichedLibrary::new()))
+        }
+    }
+
+    /// The artist list of the enriched player, sorted by name as the route
+    /// sorts it: "Pictured" first, "Unpictured" second.
+    fn enriched_artists_json() -> serde_json::Value {
+        let mut controller = AudioController::new();
+        controller.add_controller(Box::new(EnrichedPlayer));
+        let rocket = rocket::build()
+            .manage(Arc::new(controller))
+            .mount("/api", rocket::routes![get_player_artists]);
+        let client = Client::tracked(rocket).unwrap();
+
+        let response = client.get("/api/library/enriched/artists").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+        serde_json::from_str(&response.into_string().unwrap()).unwrap()
+    }
+
+    /// An enriched artist's thumbnail reaches the list route unchanged. This
+    /// is the field the web interface reads to show an artist's picture.
+    #[test]
+    fn the_artists_route_serves_a_thumbnail_that_enrichment_carried() {
+        let body = enriched_artists_json();
+        assert_eq!(body["artists"][0]["name"], "Pictured");
+        assert_eq!(
+            body["artists"][0]["thumb_url"][0],
+            "/api/coverart/artist/YWJj/image"
+        );
+        assert_eq!(
+            body["artists"][0]["thumb_url"][1],
+            "https://example.com/artist.png",
+            "a provider's own URL reaches the client verbatim"
+        );
+    }
+
+    /// An artist no image was found for serves an empty list, not a fabricated
+    /// URL: the metadata side writes one only when a lookup found something,
+    /// so the field's emptiness is the answer.
+    #[test]
+    fn the_artists_route_serves_no_thumbnail_for_an_artist_without_one() {
+        let body = enriched_artists_json();
+        assert_eq!(body["artists"][1]["name"], "Unpictured");
+        assert_eq!(
+            body["artists"][1]["thumb_url"],
+            serde_json::json!([]),
+            "an artist with no image must serve an empty list"
         );
     }
 

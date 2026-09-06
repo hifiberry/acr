@@ -2,7 +2,7 @@ use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::stream_details::StreamDetails;
 use crate::helpers::playback_progress::PlayerProgress;
-use crate::helpers::spotify::Spotify;
+use crate::players::librespot::spotify_transport;
 use delegate::delegate;
 use std::sync::Arc;
 use parking_lot::RwLock;
@@ -306,14 +306,19 @@ impl PlayerController for LibrespotPlayerController {
                     return false;
                 }
                 
-                let spotify = Spotify::new();
-                match spotify.send_command("play", &serde_json::json!({})) {
-                    Ok(_) => {
-                        info!("Successfully sent play command to Spotify API");
-                        true
-                    }
-                    Err(e) => {
-                        error!("Failed to send play command to Spotify API: {}", e);
+                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                    Some(token) => match spotify_transport::send_command(&token, "play", &serde_json::json!({})) {
+                        Ok(_) => {
+                            info!("Successfully sent play command to Spotify API");
+                            true
+                        }
+                        Err(e) => {
+                            error!("Failed to send play command to Spotify API: {}", e);
+                            false
+                        }
+                    },
+                    None => {
+                        warn!("Cannot execute play command: no valid Spotify access token");
                         false
                     }
                 }
@@ -325,14 +330,19 @@ impl PlayerController for LibrespotPlayerController {
                     return self.handle_legacy_pause_command();
                 }
                 
-                let spotify = Spotify::new();
-                match spotify.send_command("pause", &serde_json::json!({})) {
-                    Ok(_) => {
-                        info!("Successfully sent pause command to Spotify API");
-                        true
-                    }
-                    Err(e) => {
-                        error!("Failed to send pause command to Spotify API: {}", e);
+                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                    Some(token) => match spotify_transport::send_command(&token, "pause", &serde_json::json!({})) {
+                        Ok(_) => {
+                            info!("Successfully sent pause command to Spotify API");
+                            true
+                        }
+                        Err(e) => {
+                            error!("Failed to send pause command to Spotify API: {}", e);
+                            false
+                        }
+                    },
+                    None => {
+                        warn!("Cannot execute pause command: no valid Spotify access token");
                         false
                     }
                 }
@@ -344,14 +354,19 @@ impl PlayerController for LibrespotPlayerController {
                     return self.handle_legacy_stop_command();
                 }
                 
-                let spotify = Spotify::new();
-                match spotify.send_command("pause", &serde_json::json!({})) {
-                    Ok(_) => {
-                        info!("Successfully sent stop (pause) command to Spotify API");
-                        true
-                    }
-                    Err(e) => {
-                        error!("Failed to send stop (pause) command to Spotify API: {}", e);
+                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                    Some(token) => match spotify_transport::send_command(&token, "pause", &serde_json::json!({})) {
+                        Ok(_) => {
+                            info!("Successfully sent stop (pause) command to Spotify API");
+                            true
+                        }
+                        Err(e) => {
+                            error!("Failed to send stop (pause) command to Spotify API: {}", e);
+                            false
+                        }
+                    },
+                    None => {
+                        warn!("Cannot execute stop command: no valid Spotify access token");
                         false
                     }
                 }
@@ -363,14 +378,19 @@ impl PlayerController for LibrespotPlayerController {
                     return false;
                 }
                 
-                let spotify = Spotify::new();
-                match spotify.send_command("next", &serde_json::json!({})) {
-                    Ok(_) => {
-                        info!("Successfully sent next command to Spotify API");
-                        true
-                    }
-                    Err(e) => {
-                        error!("Failed to send next command to Spotify API: {}", e);
+                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                    Some(token) => match spotify_transport::send_command(&token, "next", &serde_json::json!({})) {
+                        Ok(_) => {
+                            info!("Successfully sent next command to Spotify API");
+                            true
+                        }
+                        Err(e) => {
+                            error!("Failed to send next command to Spotify API: {}", e);
+                            false
+                        }
+                    },
+                    None => {
+                        warn!("Cannot execute next command: no valid Spotify access token");
                         false
                     }
                 }
@@ -382,14 +402,19 @@ impl PlayerController for LibrespotPlayerController {
                     return false;
                 }
                 
-                let spotify = Spotify::new();
-                match spotify.send_command("previous", &serde_json::json!({})) {
-                    Ok(_) => {
-                        info!("Successfully sent previous command to Spotify API");
-                        true
-                    }
-                    Err(e) => {
-                        error!("Failed to send previous command to Spotify API: {}", e);
+                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                    Some(token) => match spotify_transport::send_command(&token, "previous", &serde_json::json!({})) {
+                        Ok(_) => {
+                            info!("Successfully sent previous command to Spotify API");
+                            true
+                        }
+                        Err(e) => {
+                            error!("Failed to send previous command to Spotify API: {}", e);
+                            false
+                        }
+                    },
+                    None => {
+                        warn!("Cannot execute previous command: no valid Spotify access token");
                         false
                     }
                 }
@@ -402,14 +427,19 @@ impl PlayerController for LibrespotPlayerController {
                 }
                 
                 let position_ms = (position * 1000.0) as u64;
-                let spotify = Spotify::new();
-                match spotify.send_command("seek", &serde_json::json!({"position_ms": position_ms})) {
-                    Ok(_) => {
-                        info!("Successfully sent seek command to Spotify API (position: {}ms)", position_ms);
-                        true
-                    }
-                    Err(e) => {
-                        error!("Failed to send seek command to Spotify API: {}", e);
+                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                    Some(token) => match spotify_transport::send_command(&token, "seek", &serde_json::json!({"position_ms": position_ms})) {
+                        Ok(_) => {
+                            info!("Successfully sent seek command to Spotify API (position: {}ms)", position_ms);
+                            true
+                        }
+                        Err(e) => {
+                            error!("Failed to send seek command to Spotify API: {}", e);
+                            false
+                        }
+                    },
+                    None => {
+                        warn!("Cannot execute seek command: no valid Spotify access token");
                         false
                     }
                 }
@@ -421,14 +451,19 @@ impl PlayerController for LibrespotPlayerController {
                     return false;
                 }
                 
-                let spotify = Spotify::new();
-                match spotify.send_command("shuffle", &serde_json::json!({"state": enabled})) {
-                    Ok(_) => {
-                        info!("Successfully sent shuffle command to Spotify API (enabled: {})", enabled);
-                        true
-                    }
-                    Err(e) => {
-                        error!("Failed to send shuffle command to Spotify API: {}", e);
+                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                    Some(token) => match spotify_transport::send_command(&token, "shuffle", &serde_json::json!({"state": enabled})) {
+                        Ok(_) => {
+                            info!("Successfully sent shuffle command to Spotify API (enabled: {})", enabled);
+                            true
+                        }
+                        Err(e) => {
+                            error!("Failed to send shuffle command to Spotify API: {}", e);
+                            false
+                        }
+                    },
+                    None => {
+                        warn!("Cannot execute shuffle command: no valid Spotify access token");
                         false
                     }
                 }
@@ -446,14 +481,19 @@ impl PlayerController for LibrespotPlayerController {
                     LoopMode::None => "off",
                 };
                 
-                let spotify = Spotify::new();
-                match spotify.send_command("repeat", &serde_json::json!({"state": repeat_state})) {
-                    Ok(_) => {
-                        info!("Successfully sent repeat command to Spotify API (mode: {})", repeat_state);
-                        true
-                    }
-                    Err(e) => {
-                        error!("Failed to send repeat command to Spotify API: {}", e);
+                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                    Some(token) => match spotify_transport::send_command(&token, "repeat", &serde_json::json!({"state": repeat_state})) {
+                        Ok(_) => {
+                            info!("Successfully sent repeat command to Spotify API (mode: {})", repeat_state);
+                            true
+                        }
+                        Err(e) => {
+                            error!("Failed to send repeat command to Spotify API: {}", e);
+                            false
+                        }
+                    },
+                    None => {
+                        warn!("Cannot execute repeat command: no valid Spotify access token");
                         false
                     }
                 }
@@ -480,14 +520,13 @@ impl PlayerController for LibrespotPlayerController {
         info!("Starting Librespot player controller (API mode only, accepting updates via audiocontrol_notify_librespot)");
         
         // Check if we have a valid Spotify access token
-        let spotify = Spotify::new();
-        let has_valid_token = match spotify.ensure_valid_token() {
-            Ok(_) => {
+        let has_valid_token = match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+            Some(_) => {
                 info!("Valid Spotify access token found - enabling full playback control capabilities");
                 true
             }
-            Err(e) => {
-                info!("No valid Spotify access token available ({}), using limited capabilities", e);
+            None => {
+                info!("No valid Spotify access token available, using limited capabilities");
                 false
             }
         };

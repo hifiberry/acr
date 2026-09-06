@@ -1,0 +1,17 @@
+[package]
+name = "acr-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Rocket request guards and responders shared by the AudioControl daemons"
+
+[dependencies]
+acr-types = { path = "../acr-types" }
+acr-store = { path = "../acr-store" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+rocket.workspace = true
+md5.workspace = true

@@ -681,4 +681,68 @@ mod tests {
             broken.join("\n  ")
         );
     }
+
+    /// A key in `subsystems` is either shorthand for a `LoggingSubsystem`
+    /// variant (checked above) or an explicit module path used as a `log`
+    /// target -- and the same failure mode applies to both: a path naming no
+    /// module does not error, it just never matches anything.
+    ///
+    /// `configs/logging.json` is shipped verbatim by the Debian package to
+    /// `/etc/audiocontrol/logging.json`, so unlike `LoggingSubsystem` there is
+    /// no compiler in the loop to notice when a module it names moves. This
+    /// is what caught 23 of its 39 `audiocontrol::helpers::*` entries pointing
+    /// at modules that had moved into workspace crates.
+    fn key_is_subsystem_shorthand(key: &str) -> bool {
+        serde_json::from_value::<LoggingSubsystem>(serde_json::Value::String(key.to_string()))
+            .is_ok()
+    }
+
+    #[test]
+    fn shipped_logging_config_names_modules_that_exist() {
+        assert!(
+            std::path::Path::new("crates/acr-types/src/lib.rs").exists(),
+            "not running from the workspace root; cannot check module prefixes"
+        );
+
+        let config = LoggingConfig::from_file("configs/logging.json")
+            .expect("configs/logging.json must parse as a LoggingConfig");
+        assert!(
+            !config.subsystems.is_empty(),
+            "configs/logging.json has no subsystems entries; is this test reading the right file?"
+        );
+
+        let mut broken = Vec::new();
+        for key in config.subsystems.keys() {
+            if key_is_subsystem_shorthand(key) {
+                continue;
+            }
+
+            let krate = match key.split("::").next() {
+                Some(k) if !k.is_empty() => k,
+                _ => {
+                    broken.push(format!("{:?} is not a usable module path", key));
+                    continue;
+                }
+            };
+            if FOREIGN_TARGETS.contains(&krate) {
+                continue;
+            }
+
+            match module_source(key) {
+                Some(path) if path.exists() => {}
+                Some(path) => broken.push(format!(
+                    "{} -> no such module ({})",
+                    key,
+                    path.display()
+                )),
+                None => broken.push(format!("{} -> unknown crate {}", key, krate)),
+            }
+        }
+
+        assert!(
+            broken.is_empty(),
+            "configs/logging.json names modules that do not exist:\n  {}",
+            broken.join("\n  ")
+        );
+    }
 }

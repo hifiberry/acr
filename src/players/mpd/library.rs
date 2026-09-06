@@ -142,8 +142,11 @@ impl MPDLibrary {
     ///   coming.
     ///
     /// So clearing this map by any other route would break what the 409 means.
-    /// A caller that needs to empty it calls this; there is no other way to do
-    /// half of it. This is why the pair is a method and not two adjacent lines:
+    /// A caller that needs to empty it calls this. The map is private to this
+    /// module, which is what keeps that true from outside; inside it nothing stops
+    /// a later edit clearing the map directly, so this is a strong convention and
+    /// not an enforced one. It is still worth being a method rather than two
+    /// adjacent lines:
     /// adjacency is a convention a later edit can undo without any test
     /// noticing, and a comment cannot stop it.
     ///
@@ -159,6 +162,14 @@ impl MPDLibrary {
     /// than widens, the window in which such a batch can still reach the
     /// rebuilt map. The caller holds the map's write lock across this, so no
     /// merge can interleave with the two statements themselves.
+    ///
+    /// One other path ends a library's life without coming through here: on a
+    /// connection retry `mpd.rs` puts a freshly constructed `MPDLibrary` into the
+    /// controller rather than reloading this one. That is safe for a different
+    /// reason — a new `LibraryVersion` carries a new nonce, so a generation held
+    /// across the swap cannot match one issued after it — and it is worth
+    /// knowing, because turning that replacement into a reuse of the existing
+    /// counter would reintroduce exactly the stale merge this method prevents.
     fn reset_albums_for_reload(&self, albums: &mut HashMap<String, Album>) {
         self.library_version.bump_generation();
         albums.clear();
@@ -1118,7 +1129,7 @@ impl LibraryInterface for MPDLibrary {
                 *self.library_loaded.lock() = false;
 
                 // Bump here too, not just at the end of this function. The
-                // mutation actually starts now - self_albums.clear() below,
+                // mutation actually starts now - reset_albums_for_reload() below,
                 // then the insert loop, then create_artists() - and runs for
                 // roughly a second on a large library. A conditional request
                 // arriving in that window would otherwise still carry the

@@ -701,8 +701,12 @@ mod tests {
 
         let start = std::time::Instant::now();
         assert_eq!(provider.lookup(&stub_query()), Lookup::Error);
+        // If this queued instead of giving up, it would wait for the first
+        // lookup's whole 5s timeout against the silent server; 2s leaves
+        // generous headroom for a loaded runner while staying well clear of
+        // that signal.
         assert!(
-            start.elapsed() < Duration::from_secs(1),
+            start.elapsed() < Duration::from_secs(2),
             "the second lookup waited instead of giving up"
         );
 
@@ -724,7 +728,11 @@ mod tests {
 
         let start = Instant::now();
         assert!(slots.try_acquire().is_none(), "a held slot must not be handed out");
-        assert!(start.elapsed() < Duration::from_millis(50), "try_acquire must not block");
+        // `held` is not dropped until after this assertion, so a `try_acquire`
+        // that actually blocked would hang the test rather than merely run
+        // slow; this bound only guards against that regression, not against
+        // scheduling jitter, so it can be generous.
+        assert!(start.elapsed() < Duration::from_secs(2), "try_acquire must not block");
 
         drop(held);
     }
@@ -774,8 +782,12 @@ mod tests {
 
         let start = Instant::now();
         assert!(slots.acquire_blocking(Duration::from_millis(100)).is_none());
+        // `held` is not dropped until after this assertion, so a call that
+        // ignored its 100ms deadline would hang here rather than merely run
+        // slow; this bound only guards against that regression, not against
+        // scheduling jitter, so it can be generous.
         assert!(
-            start.elapsed() < Duration::from_secs(1),
+            start.elapsed() < Duration::from_secs(2),
             "acquire_blocking did not honour its own timeout"
         );
 
@@ -795,8 +807,12 @@ mod tests {
             provider.lookup_with(&stub_query(), LookupMode::Background),
             Lookup::Error
         );
+        // If Background actually tried the network instead of giving up, it
+        // would run into the silent server's 5s timeout; 2s leaves generous
+        // headroom for a loaded runner while staying well clear of that
+        // signal.
         assert!(
-            start.elapsed() < Duration::from_millis(200),
+            start.elapsed() < Duration::from_secs(2),
             "Background must not wait for a held slot"
         );
 

@@ -494,8 +494,35 @@ pub fn get_coverart_manager() -> Arc<Mutex<CoverartManager>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use serial_test::serial;
+
+    /// Counts how many `SlowStub`s are inside their delay at the same
+    /// instant, so a test can prove providers ran concurrently without
+    /// depending on a wall-clock elapsed-time margin: a loaded runner can
+    /// stretch the elapsed time of even a genuinely parallel fan-out well
+    /// past a "should be quick" threshold, which is what made the previous
+    /// version of this test flaky under load.
+    #[derive(Default)]
+    struct ConcurrencyTracker {
+        current: AtomicUsize,
+        max: AtomicUsize,
+    }
+
+    impl ConcurrencyTracker {
+        fn enter(&self) {
+            let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max.fetch_max(now, Ordering::SeqCst);
+        }
+
+        fn exit(&self) {
+            self.current.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn max_concurrent(&self) -> usize {
+            self.max.load(Ordering::SeqCst)
+        }
+    }
 
     /// A provider that blocks for `delay`, so a test can tell a sequential
     /// fan-out from a parallel one and see whether a deadline is honoured.
@@ -504,6 +531,7 @@ mod tests {
         delay: Duration,
         url: String,
         called: Arc<AtomicBool>,
+        tracker: Option<Arc<ConcurrencyTracker>>,
     }
 
     impl CoverartProvider for SlowStub {
@@ -516,7 +544,13 @@ mod tests {
         }
         fn get_artist_coverart_impl(&self, _artist: &str) -> Vec<String> {
             self.called.store(true, Ordering::SeqCst);
+            if let Some(tracker) = &self.tracker {
+                tracker.enter();
+            }
             std::thread::sleep(self.delay);
+            if let Some(tracker) = &self.tracker {
+                tracker.exit();
+            }
             vec![self.url.clone()]
         }
     }
@@ -530,8 +564,21 @@ mod tests {
             // the fan-out, and `CoverartResult::new` tolerates a failed fetch.
             url: format!("https://coverart.invalid/{}.jpg", name),
             called: called.clone(),
+            tracker: None,
         });
         (stub, called)
+    }
+
+    /// Like `stub`, but reports into a shared `ConcurrencyTracker` while
+    /// blocked, so a test can measure how many stubs were in flight at once.
+    fn stub_tracked(name: &str, delay_ms: u64, tracker: &Arc<ConcurrencyTracker>) -> Arc<SlowStub> {
+        Arc::new(SlowStub {
+            name: name.to_string(),
+            delay: Duration::from_millis(delay_ms),
+            url: format!("https://coverart.invalid/{}.jpg", name),
+            called: Arc::new(AtomicBool::new(false)),
+            tracker: Some(tracker.clone()),
+        })
     }
 
     fn providers(list: Vec<Arc<SlowStub>>) -> Vec<Arc<dyn CoverartProvider + Send + Sync>> {
@@ -541,14 +588,17 @@ mod tests {
     }
 
     /// Three providers that each block for 300ms must finish together, not
-    /// one after another. Sequentially this is 900ms; the assertion leaves
-    /// generous room for a loaded CI machine while still failing a serial
-    /// implementation.
+    /// one after another. Proved by having each report into a shared
+    /// concurrency counter while blocked, rather than by an elapsed-time
+    /// margin: a loaded runner can stretch even a genuinely parallel
+    /// fan-out's wall-clock time arbitrarily far past a "should be quick"
+    /// threshold, which used to make this test fail under load.
     #[test]
     fn providers_are_queried_in_parallel() {
-        let (a, _) = stub("a", 300);
-        let (b, _) = stub("b", 300);
-        let (c, _) = stub("c", 300);
+        let tracker = Arc::new(ConcurrencyTracker::default());
+        let a = stub_tracked("a", 300, &tracker);
+        let b = stub_tracked("b", 300, &tracker);
+        let c = stub_tracked("c", 300, &tracker);
 
         let start = Instant::now();
         let results = fan_out(
@@ -559,11 +609,14 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert_eq!(results.len(), 3, "every provider answered");
-        assert!(
-            elapsed < Duration::from_millis(700),
-            "fan-out took {:?}; a sequential one would take ~900ms",
-            elapsed
+        assert_eq!(
+            tracker.max_concurrent(),
+            3,
+            "all three providers must be blocked at the same time for a parallel fan-out"
         );
+        // Generous sanity bound, not the load-bearing assertion: only meant
+        // to catch a fan-out that hangs rather than to time it precisely.
+        assert!(elapsed < Duration::from_secs(5), "fan-out took {:?}", elapsed);
     }
 
     /// Results keep registration order however the threads finish, because
@@ -654,18 +707,21 @@ mod tests {
         // finished -- so the stub never outlives this test.
         let _guard = ProviderGuard("holds-the-lock".to_string());
 
-        let done = Arc::new(AtomicBool::new(false));
-        let flag = done.clone();
+        let (tx_done, rx_done) = mpsc::channel::<()>();
         std::thread::spawn(move || {
             query_coverart(
                 &CoverartQuery::Artist("Alva Noto".to_string()),
                 &QueryOptions::default(),
             );
-            flag.store(true, Ordering::SeqCst);
+            let _ = tx_done.send(());
         });
 
         // Give the query time to reach the provider call, then prove the
-        // registry is still lockable while it is in flight.
+        // registry is still lockable while it is in flight. This is not a
+        // race against the 200ms provider delay: `query_coverart` drops the
+        // registry lock as soon as it has snapshotted the providers, well
+        // before any provider thread is even spawned, so the lock is gone
+        // long before this sleep elapses either way.
         std::thread::sleep(Duration::from_millis(50));
         let manager = get_coverart_manager();
         let guard = manager.try_lock();
@@ -675,8 +731,15 @@ mod tests {
         );
         drop(guard);
 
-        std::thread::sleep(Duration::from_millis(400));
-        assert!(done.load(Ordering::SeqCst), "the query finished");
+        // Wait for the query to actually finish rather than sleeping a fixed
+        // "should be long enough" duration: on a loaded runner the query --
+        // including the metadata fetch attempt `CoverartResult::new` makes
+        // against the stub's fabricated URL -- can take much longer than the
+        // provider's artificial 200ms delay. The bound here only guards
+        // against a genuine hang.
+        rx_done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the query did not finish within 10s");
     }
 
     /// A provider that is slow, answers only from its cache, and records

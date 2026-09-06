@@ -1162,6 +1162,21 @@ mod tests {
         (cache, temp_dir)
     }
 
+    /// Force a key into the expired state by rewriting `expires_at` directly,
+    /// instead of sleeping past a short TTL. Expiry tests otherwise need a
+    /// TTL short enough to sleep past quickly and long enough that the
+    /// "still available" check run immediately after the write cannot be
+    /// starved past it on a loaded runner -- those two constraints don't
+    /// both fit in a couple of seconds, so tests use a TTL that is
+    /// comfortably long for the immediate check and force expiry here
+    /// instead of waiting for the wall clock.
+    fn force_expire(db: &mut rusqlite::Connection, key: &str) {
+        db.execute(
+            "UPDATE cache SET expires_at = 1 WHERE key = ?1",
+            params![key],
+        ).expect("Failed to force expiry");
+    }
+
     #[test]
     fn test_new_cache() {
         let (cache, _temp_dir) = create_test_cache();
@@ -1855,6 +1870,7 @@ mod tests {
 
         // Set a value
         cache.set(key, &value).unwrap();
+        let (created_at, updated_at) = cache.get_timestamps(key).unwrap().unwrap();
 
         // Wait a moment
         std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -1871,6 +1887,7 @@ mod tests {
         // Update the value
         std::thread::sleep(std::time::Duration::from_millis(1100));
         cache.set(key, "updated_value").unwrap();
+        let (new_created_at, new_updated_at) = cache.get_timestamps(key).unwrap().unwrap();
 
         let new_age = cache.get_age(key).unwrap().unwrap();
         let new_last_updated_age = cache.get_last_updated_age(key).unwrap().unwrap();
@@ -1878,7 +1895,15 @@ mod tests {
         // Age should be older than last updated age now
         assert!(new_age > new_last_updated_age);
         assert!(new_age >= age); // Age should have increased
-        assert!(new_last_updated_age < last_updated_age); // Last updated should be more recent
+
+        // Updating the value must move `updated_at` forward while leaving
+        // `created_at` untouched. Check that on the timestamps themselves
+        // rather than on the whole-second ages: a write and the read right
+        // after it can straddle a second boundary on a loaded runner, which
+        // would round both `new_last_updated_age` and `last_updated_age` to
+        // the same second and make a `<` comparison between them flaky.
+        assert_eq!(new_created_at, created_at); // created_at must not change on update
+        assert!(new_updated_at > updated_at); // updated_at must move forward on update
     }
 
     #[test]
@@ -2069,14 +2094,16 @@ mod tests {
         let key = "expiry_test";
         let value = "test_value";
 
-        // Test setting with TTL
-        cache.set_with_ttl(key, &value, 2).unwrap(); // 2 seconds TTL
+        // Test setting with TTL. Generous on purpose: the "available
+        // immediately" read below must not be able to lose a race against
+        // the runner's scheduler on a loaded box.
+        cache.set_with_ttl(key, &value, 3600).unwrap();
 
         // Should be available immediately
         assert_eq!(cache.get::<String>(key).unwrap(), Some(value.to_string()));
 
-        // Wait for expiry
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        // Force expiry deterministically rather than sleeping past a short TTL.
+        force_expire(cache.db.as_mut().unwrap(), key);
 
         // Should be expired and removed
         assert_eq!(cache.get::<String>(key).unwrap(), None);
@@ -2089,20 +2116,22 @@ mod tests {
         let key = "expiry_timestamp_test";
         let value = "test_value";
 
-        // Set expiry to 2 seconds from now
+        // Set expiry far in the future: the "available immediately" read
+        // below must not be able to lose a race against the runner's
+        // scheduler on a loaded box.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        let expires_at = now + 2;
+        let expires_at = now + 3600;
 
         cache.set_with_expiry(key, &value, Some(expires_at)).unwrap();
 
         // Should be available immediately
         assert_eq!(cache.get::<String>(key).unwrap(), Some(value.to_string()));
 
-        // Wait for expiry
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        // Force expiry deterministically rather than sleeping past a short TTL.
+        force_expire(cache.db.as_mut().unwrap(), key);
 
         // Should be expired and removed
         assert_eq!(cache.get::<String>(key).unwrap(), None);
@@ -2135,14 +2164,16 @@ mod tests {
         let key = "memory_expiry_test";
         let value = "test_value";
 
-        // Set with short TTL
-        cache.set_with_ttl(key, &value, 1).unwrap(); // 1 second TTL
+        // Set with a generous TTL: the immediate access right below must
+        // populate the memory cache while the entry is unambiguously live,
+        // not race a short TTL against the runner's scheduler.
+        cache.set_with_ttl(key, &value, 3600).unwrap();
 
         // First access should populate memory cache
         assert_eq!(cache.get::<String>(key).unwrap(), Some(value.to_string()));
 
-        // Wait for expiry
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        // Force expiry deterministically rather than sleeping past a short TTL.
+        force_expire(cache.db.as_mut().unwrap(), key);
 
         // Even though it's in memory cache, should check database expiry and remove
         assert_eq!(cache.get::<String>(key).unwrap(), None);
@@ -2162,14 +2193,22 @@ mod tests {
         let key = "global_expiry_test";
         let value = "test_value";
 
-        // Test global TTL function
-        set_with_ttl(key, &value, 2).unwrap(); // 2 seconds TTL
+        // Test global TTL function. The TTL is deliberately generous (not the
+        // few seconds this test used to use): the line below checks the
+        // entry is still there right after the write, and on a starved
+        // runner the scheduling gap between the write and that read is not
+        // bounded, so a short TTL could expire the entry before the read
+        // ever ran.
+        set_with_ttl(key, &value, 3600).unwrap();
 
         // Should be available immediately
         assert_eq!(get::<String>(key).unwrap(), Some(value.to_string()));
 
-        // Wait for expiry
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        // Force expiry deterministically rather than sleeping past a short TTL.
+        {
+            let mut guard = super::get_attribute_cache();
+            force_expire(guard.db.as_mut().expect("Global cache has no database connection"), key);
+        }
 
         // Should be expired
         assert_eq!(get::<String>(key).unwrap(), None);

@@ -391,12 +391,11 @@ pub fn start_after_core_is_listening(config: &serde_json::Value) {
     // afterwards, which is what is wanted.
     let sink: Arc<dyn SongInformationSink> = core.clone();
     let state: Arc<dyn PlaybackStateSource> = core.clone();
-    if let Err(events) = now_playing::start(events, sink, state, lastfm_worker_config(config)) {
+    if !now_playing::start(events, sink, state, lastfm_worker_config(config)) {
         info!(
             "No now-playing enrichment is configured; the event socket stays up for \
              library changes"
         );
-        keep_the_socket_open(events);
     }
 }
 
@@ -421,62 +420,12 @@ pub fn start_after_core_is_listening(config: &serde_json::Value) {
 /// Draining rather than holding the receiver idle: an unbounded channel nobody
 /// reads grows by one event per song change for the life of the daemon, which is
 /// the same reason `now_playing::start` refuses to pretend it consumes them.
-fn keep_the_socket_open(events: Receiver<acr_types::now_playing::NowPlayingEvent>) {
-    std::thread::Builder::new()
-        .name("now-playing-discard".into())
-        .spawn(move || {
-            for _ in events {}
-            debug!("Now-playing discard stopped: its event channel closed");
-        })
-        .expect("spawn now-playing discard");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::external_coverart::stub_server::StubServer;
-    use acr_types::now_playing::NowPlayingEvent;
-    use acr_types::{PlaybackState, PlayerSource};
     use serial_test::serial;
 
-    /// With no now-playing worker configured, the event socket has to stay up:
-    /// it is what carries `library_changed`, and the subscriber closes it at the
-    /// first event it cannot deliver. So the receiver must go on being read, not
-    /// be dropped.
-    ///
-    /// Asserted on the sender still being connected after the discard has
-    /// consumed what was queued -- the exact thing the subscriber checks.
-    #[test]
-    fn events_nobody_consumes_are_discarded_rather_than_left_undelivered() {
-        let (tx, rx) = unbounded();
-        let event = NowPlayingEvent::StateChanged {
-            source: PlayerSource::new("mpd".into(), "mpd:1".into()),
-            state: PlaybackState::Playing,
-        };
-
-        keep_the_socket_open(rx);
-
-        for _ in 0..3 {
-            tx.send(event.clone())
-                .expect("the discard keeps the channel open");
-        }
-        // Wait for the queue to drain, then send again: a receiver that had been
-        // dropped instead would fail here, which is what closes the socket.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !tx.is_empty() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(tx.is_empty(), "the discard should have consumed the events");
-        assert!(
-            tx.send(event).is_ok(),
-            "the socket must stay deliverable after the queue empties"
-        );
-    }
-
-    /// The asymmetry with `services.metadata`: an absent section is the
-    /// defaults, not "make no calls". Checked for all three ways it can be
-    /// absent, because the third -- no `services` key at all -- is what an
-    /// existing installed configuration file looks like.
     #[test]
     fn an_absent_core_section_means_the_defaults() {
         for config in [

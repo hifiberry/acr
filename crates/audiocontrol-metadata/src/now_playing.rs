@@ -13,21 +13,29 @@ use std::sync::Arc;
 
 use crate::lastfm_worker::LastfmWorkerConfig;
 
-/// Start the enrichment workers on `events`, or hand `events` back untouched.
+/// Start the enrichment workers on `events`. **Always consumes `events`.**
 ///
-/// `Ok(())` means something is reading them. **`Err(events)` returns the
-/// receiver unconsumed, and the caller must decide what to do with it** --
-/// because dropping it is no longer a harmless way of saying "nobody wants
-/// these". The subscriber in [`crate::now_playing_ws`] ends its loop and closes
-/// the socket at the first event it cannot deliver, and that socket now carries
-/// `library_changed` for the library puller as well; dropping this receiver
-/// therefore stops library enrichment being told anything, on an installation
-/// whose only fault is having no now-playing worker configured.
+/// `true` means a worker is reading them; `false` means none was configured and
+/// they are being drained and discarded. Either way this function, and not its
+/// caller, is what keeps reading the channel -- because a caller that forgot to
+/// would break something far away and silently.
 ///
-/// This used to return a plain `bool` and drop the receiver on the way out,
-/// which was right while now-playing was the socket's only purpose.
-/// (`now_playing_bridge` on the player side had the same contract and
-/// unsubscribed from the event bus instead, but the daemon no longer uses it.)
+/// The subscriber in [`crate::now_playing_ws`] ends its loop and closes the
+/// socket at the first event it cannot deliver, and that socket also carries
+/// `library_changed` for the library puller. So a dropped receiver stops
+/// library enrichment being told anything at all, on an installation whose only
+/// fault is having no now-playing worker configured -- and it does it after the
+/// first song change, with a healthy-looking log.
+///
+/// That is why draining lives here rather than in the caller. An earlier
+/// version returned the receiver for the caller to deal with; every test passed
+/// with the caller dropping it, and the failure only appeared on a real daemon
+/// with real song changes. A contract that has to be honoured by whoever calls
+/// it is a contract that will one day not be.
+///
+/// What has not changed is why an unread channel is refused rather than left to
+/// fill: an unbounded channel nobody reads grows by one event per song change
+/// for the life of the daemon.
 ///
 /// What has not changed is why an unread channel is refused rather than filled:
 /// an unbounded channel nobody reads grows by one event per song change for the
@@ -37,7 +45,7 @@ pub fn start(
     sink: Arc<dyn SongInformationSink>,
     state: Arc<dyn PlaybackStateSource>,
     lastfm: Option<LastfmWorkerConfig>,
-) -> Result<(), Receiver<NowPlayingEvent>> {
+) -> bool {
     let mut senders: Vec<Sender<NowPlayingEvent>> = Vec::new();
 
     let (cover_tx, cover_rx) = unbounded();
@@ -53,8 +61,9 @@ pub fn start(
     }
 
     if senders.is_empty() {
-        debug!("No now-playing workers configured; not consuming events");
-        return Err(events);
+        debug!("No now-playing workers configured; draining events instead");
+        drain_and_discard(events);
+        return false;
     }
 
     info!(
@@ -62,7 +71,23 @@ pub fn start(
         senders.len()
     );
     fan_out(events, senders);
-    Ok(())
+    true
+}
+
+/// Read and throw away every event, so the channel stays open.
+///
+/// Not the same as dropping the receiver: dropping it disconnects the channel,
+/// which ends the subscriber's loop and closes a socket that library enrichment
+/// also depends on. Reading and discarding keeps the socket up for the events
+/// this process does still care about.
+fn drain_and_discard(events: Receiver<NowPlayingEvent>) {
+    std::thread::Builder::new()
+        .name("now-playing-discard".into())
+        .spawn(move || {
+            for _ in events {}
+            debug!("Now-playing discard stopped: its event channel closed");
+        })
+        .expect("spawn now-playing discard");
 }
 
 /// Copy every event to every worker, on a thread of its own.
@@ -85,6 +110,7 @@ fn fan_out(events: Receiver<NowPlayingEvent>, senders: Vec<Sender<NowPlayingEven
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
     use super::*;
     use acr_types::{PlaybackState, PlayerSource, Song};
     use std::time::Duration;
@@ -160,8 +186,17 @@ mod tests {
     /// that matters to the caller: the socket feeding it also carries
     /// `library_changed`, so whoever asked has to keep it open even with no
     /// now-playing worker to hand it to.
+    /// With nothing configured, `start` drains the channel itself rather than
+    /// handing it back. The property asserted is the one the subscriber checks:
+    /// the sender is still connected afterwards, and stays connected once the
+    /// queue has been consumed.
+    ///
+    /// It used to return the receiver for the caller to drain, and the caller
+    /// dropping it broke library enrichment on a real daemon while every test
+    /// stayed green. So the assertion is deliberately made through `start`'s own
+    /// return, with no cooperation from this test beyond sending events.
     #[test]
-    fn nothing_configured_means_the_events_are_handed_back_unconsumed() {
+    fn nothing_configured_still_leaves_the_channel_alive() {
         // `configured_providers` reads a process-global installed from the
         // configuration, so say what this test needs rather than depending on
         // no other test in this process having installed one.
@@ -169,15 +204,27 @@ mod tests {
 
         let (tx, events) = unbounded();
         let sink = Arc::new(NullSink);
-        let returned = start(events, sink.clone(), sink, None)
-            .expect_err("nothing is configured, so nothing consumes the events");
+        assert!(
+            !start(events, sink.clone(), sink, None),
+            "nothing is configured, so no worker is reading"
+        );
 
-        tx.send(state_event())
-            .expect("the returned receiver keeps the channel open");
-        assert_eq!(
-            returned.recv_timeout(Duration::from_secs(1)).unwrap(),
-            state_event(),
-            "and it is the same channel, not a fresh one"
+        for _ in 0..3 {
+            tx.send(state_event())
+                .expect("start must keep the channel open, not drop the receiver");
+        }
+
+        // Drain, then send again: a dropped receiver disconnects the channel,
+        // which is what ends the subscriber's loop and closes the socket that
+        // library_changed also travels on.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !tx.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(tx.is_empty(), "the drain should have consumed the events");
+        assert!(
+            tx.send(state_event()).is_ok(),
+            "and the channel is still connected afterwards"
         );
     }
 }

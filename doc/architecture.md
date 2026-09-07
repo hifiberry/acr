@@ -52,9 +52,9 @@ route on the other:
 
 | Seam | Direction | How it travels |
 |---|---|---|
-| Now playing | player → metadata | the metadata side subscribes to the daemon's own WebSocket at `ws://127.0.0.1:1080/api/events` |
+| Now playing, and library changes | player → metadata | the metadata side subscribes to the daemon's own WebSocket at `ws://127.0.0.1:1080/api/events` |
 | Enrichment results, playback state | metadata → player | `POST /api/player/<name>/song-information`, `GET /api/player`, `GET /api/now-playing` |
-| Library enrichment | both | the metadata side polls `GET /api/library/...` and posts batches to `POST /api/library/<p>/enrichment`; the player side hints with `POST /api/enrich/nudge` |
+| Library enrichment | metadata → player | the metadata side reads `GET /api/library/...` and posts batches to `POST /api/library/<p>/enrichment`. What tells it to look is the `library_changed` event on the seam above, plus a slow backstop sweep; the player daemon calls nothing |
 | Artist detail, the two resolvers | player → metadata | `GET /api/artist/...`, `/api/resolve/...` |
 | The Spotify access token | metadata → player | `GET /api/spotify/access_token` — the player daemon owns the account, so playback control needs no HTTP at all |
 

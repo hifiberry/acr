@@ -5,15 +5,46 @@
 //! called into the enricher directly. Over HTTP the player daemon cannot call
 //! a function, and making it push the whole library would put the retry, the
 //! backlog and the "have I done this already?" bookkeeping on the side that
-//! has none of it. So this side pulls: `GET /api/library` every
-//! [`LIBRARY_POLL_INTERVAL`], `GET /api/library/<p>` for each player that has
-//! a loaded library, and a sweep for each library whose version has moved
-//! since the last one. `POST /api/enrich/nudge?player=<p>` shortens the wait
-//! after a load; a nudge that arrives nowhere costs nothing, because the poll
-//! covers it regardless.
+//! has none of it. So this side pulls: `GET /api/library` for the list,
+//! `GET /api/library/<p>` for each player that has a loaded library, and a
+//! sweep for each library whose version has moved since the last one.
 //!
-//! The two tokens the player daemon reports do different jobs, and both are
-//! used here:
+//! **What tells it to look has changed.** Phase 1 discovered work by polling
+//! every 30 s, with `POST /api/enrich/nudge` as an advisory hint the player
+//! daemon sent after a load to shorten the wait. Both are gone. The player
+//! daemon now announces a load as a `library_changed` event on the stream this
+//! side already subscribes to, and that event is what wakes this loop —
+//! [`crate::now_playing_ws`] turns one into a [`Wake`]. The route went with the
+//! hint, because a route the player daemon calls is the thing this phase exists
+//! to remove. The poll stays, demoted to a backstop: see
+//! [`LIBRARY_POLL_INTERVAL`].
+//!
+//! **The event is a doorbell, not a payload.** It carries the player's
+//! `library_version` and `library_generation` for a human and for clients
+//! reading the stream, and this side reads neither. A [`Wake`] names a player
+//! and nothing else, so the tokens are dropped where the frame is parsed and
+//! cannot reach the comparison below. There are two independent reasons, and
+//! the second is the one that decides it:
+//!
+//! - The event's `library_version` is the player's raw counter, while
+//!   `GET /api/library/<p>` folds the caller's forwarded prefix into the one it
+//!   reports, so the two never compare equal — not even with no proxy in the
+//!   path, because the folding hashes the empty prefix rather than skipping it.
+//!   (The *generation* is not folded on either side, so this half of the
+//!   argument does not apply to it.)
+//! - The generation says the library *reloaded*, not that its contents changed,
+//!   and "have I enriched this already?" is a question only the version
+//!   answers. So the generation cannot stand in for the version even though it
+//!   would compare cleanly.
+//!
+//! Getting this wrong would be Phase 1's defect arriving by a new road: a
+//! puller that reads a change out of every event re-enriches every library for
+//! as long as it runs, and a suite whose fixtures use the same literal on both
+//! sides of the comparison cannot see it.
+//! `a_burst_of_events_does_not_re_enrich_an_unchanged_library` is the guard.
+//!
+//! The two tokens the player daemon reports over REST do different jobs, and
+//! both are used here:
 //!
 //! - `library_version` answers "has this library changed since I last
 //!   enriched it?". It is the [`SeenVersions`] bookkeeping below.
@@ -28,15 +59,40 @@ use crate::library_enricher::InProcessEnricher;
 use acr_types::enrichment::{
     AlbumRef, Applied, EnrichmentBatch, EnrichmentError, EnrichmentSink, LibraryEnricher,
 };
+use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use log::{debug, info, warn};
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// How often every player's library is checked. The spec's value.
-pub const LIBRARY_POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// How often every player's library is checked without anything asking for it.
+///
+/// **A backstop, not the discovery mechanism.** The `library_changed` event is
+/// what starts a sweep now, so this interval covers only a change nobody heard
+/// about. It used to be two things, and neither still holds:
+///
+/// - It was how work was *discovered*. Nothing announced a library load, so the
+///   only way to learn of one was to ask; at 30 s a finished load waited up to
+///   half a minute to be enriched.
+/// - It was how a *missed nudge* was recovered, within the same half minute. A
+///   nudge was a fire-and-forget POST that could be dropped for any reason and
+///   told nobody it had been, so something had to cover it on a schedule.
+///
+/// What replaced both is stronger than a shorter interval. A load emits an
+/// event on a socket this side holds open and reconnects to with backoff, and
+/// every (re)connect asks for a full sweep ([`Wake::Everything`]) — so a change
+/// made while the socket was down is picked up when it comes back rather than
+/// at the next tick. What is left for this interval is the case where an event
+/// was neither delivered nor covered by a connect: a bug in either half's event
+/// plumbing, or a library that changed without announcing it at all. Ten
+/// minutes keeps that recovery while taking the machinery off the common path.
+///
+/// It is not longer than ten minutes because this is also the only thing that
+/// re-enriches a library whose backend reports no version at all — see
+/// [`UNVERSIONED_REFETCH_INTERVAL`], which needs a pass to happen before it can
+/// decide anything.
+pub const LIBRARY_POLL_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// How often a library that reports no version is enriched again anyway.
 ///
@@ -125,66 +181,135 @@ impl SeenVersions {
     }
 }
 
-/// Where a nudge is delivered, when a puller is running to receive it.
+/// What the puller has been asked to look at.
 ///
-/// A process-wide handle because [`nudge`] is called from a Rocket route,
-/// which has no puller in hand and should not have to be given one to accept a
-/// hint it is allowed to drop. `None` means no puller has started; the route
-/// still answers 202, because the periodic poll covers what the nudge would
-/// have.
-fn nudges() -> &'static Mutex<Option<Sender<String>>> {
-    static NUDGES: OnceLock<Mutex<Option<Sender<String>>>> = OnceLock::new();
-    NUDGES.get_or_init(|| Mutex::new(None))
+/// **Neither variant carries a version or a generation, and that is the point.**
+/// The `library_changed` event that produces a [`Wake::Library`] does carry
+/// both, and they are dropped where the frame is parsed rather than passed
+/// along: a token that never reaches this side cannot be compared against the
+/// one `GET /api/library/<p>` reports, which is the mistake the module comment
+/// describes. What a wake says is "look at this player", and the answer to
+/// "has it changed?" is always read from the route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wake {
+    /// Every player the daemon lists.
+    ///
+    /// What a (re)connect to the event socket asks for. A gap in the stream
+    /// means events were missed and there is no way to learn which, so the only
+    /// honest recovery is to look at everything.
+    Everything,
+    /// One player, named by a `library_changed` event.
+    Library(String),
 }
 
-/// Ask the running puller to look at one player's library now, rather than at
-/// its next poll.
+/// The sending end of a puller's wake channel.
 ///
-/// Advisory in every direction: with no puller running, or with one whose loop
-/// has ended, this does nothing and says so at debug. Nothing upstream should
-/// treat a nudge as a promise — `POST /api/enrich/nudge` answers 202 either
-/// way, which is the honest code for "accepted for consideration".
-pub fn nudge(player: &str) {
-    match nudges().lock().as_ref() {
-        Some(tx) if tx.send(player.to_string()).is_ok() => {
-            debug!("enrichment nudge for player '{}' handed to the puller", player)
+/// Held by the event subscriber, which is the only thing that wakes a puller
+/// now. It is a value passed from one to the other rather than the process-wide
+/// handle the nudge route needed: with no route to serve, there is no caller
+/// left that cannot be handed the channel it wants to send on, and a value that
+/// is passed cannot be raced for by two tests in one binary the way a static
+/// can.
+#[derive(Clone)]
+pub struct Wakes(Sender<Wake>);
+
+impl Wakes {
+    /// A `library_changed` event arrived for `player`.
+    pub fn library_changed(&self, player: &str) {
+        self.send(Wake::Library(player.to_string()));
+    }
+
+    /// The event socket has just (re)connected, so the puller should look at
+    /// everything once.
+    ///
+    /// The seed that covers a gap, and the counterpart of the now-playing seed
+    /// the same connect performs. On the very first connect it asks for a sweep
+    /// the puller's opening pass has just done; that costs one `GET` per
+    /// library and is guarded by [`SeenVersions::changed`] like any other pass.
+    pub fn reconnected(&self) {
+        self.send(Wake::Everything);
+    }
+
+    /// Advisory in both directions: a puller whose loop has ended is not an
+    /// error here, and nothing upstream waits for a wake to be acted on.
+    fn send(&self, wake: Wake) {
+        match self.0.send(wake.clone()) {
+            Ok(()) => debug!("library puller woken: {:?}", wake),
+            Err(_) => debug!(
+                "library wake dropped ({:?}): the puller's loop has ended",
+                wake
+            ),
         }
-        Some(_) => debug!(
-            "enrichment nudge for player '{}' dropped: the puller's loop has ended",
-            player
-        ),
-        None => debug!(
-            "enrichment nudge for player '{}' dropped: no library puller is running",
-            player
-        ),
     }
 }
 
-/// Start the puller on a thread of its own, and arm [`nudge`].
+/// A wake channel: the handle the subscriber holds and the end a puller reads.
 ///
-/// `poll` is [`LIBRARY_POLL_INTERVAL`] in production; it is a parameter so a
-/// deployment that wants a slower poll has one place to change, not so tests
-/// can shorten it — a test that depends on the interval elapsing is a test
-/// that depends on a clock.
-pub fn start(core: Arc<CoreClient>, poll: Duration) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    *nudges().lock() = Some(tx);
+/// Public so a test can hold the receiver and observe exactly what the
+/// subscriber sends, without a puller running at all.
+pub fn wake_channel() -> (Wakes, Receiver<Wake>) {
+    let (tx, rx) = unbounded();
+    (Wakes(tx), rx)
+}
+
+/// Start the puller on a thread of its own, and hand back the [`Wakes`] the
+/// event subscriber sends on.
+///
+/// The handle must be kept: dropping it leaves the puller with nothing that can
+/// wake it and only [`LIBRARY_POLL_INTERVAL`] to work from.
+///
+/// `poll` is [`LIBRARY_POLL_INTERVAL`] in production. It is a parameter so a
+/// deployment that wants a different backstop has one place to change it — and
+/// so the tests of the backstop itself can ask for one that has elapsed by the
+/// time they look, which is the one property no event can stand in for.
+#[must_use = "dropping the Wakes leaves the puller with no event trigger at all"]
+pub fn start(core: Arc<CoreClient>, poll: Duration) -> Wakes {
+    let (wakes, rx) = wake_channel();
     let seen = Arc::new(Mutex::new(SeenVersions::default()));
     let enricher: Arc<dyn LibraryEnricher> = Arc::new(InProcessEnricher);
 
     std::thread::spawn(move || run(core, poll, rx, seen, enricher));
     info!(
-        "library puller started; polling every {}s",
+        "library puller started; libraries are discovered from library_changed events, \
+         with a backstop sweep every {}s",
         poll.as_secs()
     );
+    wakes
 }
 
-/// What the next wake of the loop should look at.
+/// What the next pass of the loop should look at.
 enum Due {
-    /// Every player the daemon lists. What a tick means.
+    /// Every player the daemon lists. What a backstop tick and a
+    /// [`Wake::Everything`] both mean.
     All,
-    /// Only these, because they were nudged.
+    /// Only these, because an event named them.
     Named(Vec<String>),
+}
+
+/// Fold `first` and everything already queued behind it into one pass.
+///
+/// A library load emits one event, but a reconnect and an event can arrive
+/// together, and several players can load at once. [`Wake::Everything`]
+/// absorbs the rest: a pass over every player already includes each named one,
+/// and doing both would pull the same libraries twice for nothing.
+fn coalesced(first: Wake, wakes: &Receiver<Wake>) -> Due {
+    let mut players: Vec<String> = Vec::new();
+    let mut everything = false;
+    for wake in std::iter::once(first).chain(wakes.try_iter()) {
+        match wake {
+            Wake::Everything => everything = true,
+            Wake::Library(player) => {
+                if !players.contains(&player) {
+                    players.push(player);
+                }
+            }
+        }
+    }
+    if everything {
+        Due::All
+    } else {
+        Due::Named(players)
+    }
 }
 
 /// The loop. Extracted from [`start`] so that its body is a plain function
@@ -193,13 +318,16 @@ enum Due {
 fn run(
     core: Arc<CoreClient>,
     poll: Duration,
-    nudges: Receiver<String>,
+    wakes: Receiver<Wake>,
     seen: Arc<Mutex<SeenVersions>>,
     enricher: Arc<dyn LibraryEnricher>,
 ) {
     // The first pass is a full one and happens immediately: a daemon that has
-    // just started should not wait a poll interval before looking.
+    // just started should not wait for an event or a tick before looking. It is
+    // also what covers a library that finished loading before this side
+    // subscribed to anything.
     let mut due = Due::All;
+    let mut deaf = false;
     loop {
         match due {
             Due::All => sweep_all(&core, &seen, enricher.as_ref()),
@@ -210,26 +338,36 @@ fn run(
             }
         }
 
-        due = match nudges.recv_timeout(poll) {
-            Ok(player) => {
-                // Coalesce whatever else arrived while we were working: a
-                // library load can nudge several times, and each pull is
-                // guarded by `changed` anyway.
-                let mut players = vec![player];
-                while let Ok(more) = nudges.try_recv() {
-                    if !players.contains(&more) {
-                        players.push(more);
-                    }
-                }
-                Due::Named(players)
-            }
+        due = match wakes.recv_timeout(poll) {
+            Ok(wake) => coalesced(wake, &wakes),
             Err(RecvTimeoutError::Timeout) => Due::All,
             Err(RecvTimeoutError::Disconnected) => {
-                // Only reachable if another `start` replaced the sender this
-                // loop was listening on. Ending is right: two loops polling
-                // one daemon would each undo the other's bookkeeping.
-                info!("library puller stopping: its nudge channel was replaced");
-                return;
+                // Every sender is gone, so nothing can wake this loop again --
+                // the event subscriber's thread has ended, which happens when
+                // the daemon is shutting down. The loop keeps going on the
+                // backstop rather than returning: the backstop is exactly what
+                // covers "no events are arriving", and a puller that stopped
+                // here would leave a running daemon with no enrichment at all
+                // and nothing in the log to say why. `recv_timeout` returns
+                // immediately once disconnected, so the wait has to be taken
+                // here instead.
+                if !deaf {
+                    // Expected during shutdown -- the subscriber's thread ends
+                    // and takes the sender with it -- and a fault at any other
+                    // time. Only the second is worth waking an operator for.
+                    if crate::startup::stop_was_requested() {
+                        debug!("the library puller's wake channel closed during shutdown");
+                    } else {
+                        warn!(
+                            "the library puller can no longer be woken by library_changed \
+                             events; falling back to a sweep every {}s",
+                            poll.as_secs()
+                        );
+                    }
+                    deaf = true;
+                }
+                std::thread::sleep(poll);
+                Due::All
             }
         };
     }
@@ -240,15 +378,21 @@ fn sweep_all(core: &Arc<CoreClient>, seen: &Arc<Mutex<SeenVersions>>, enricher: 
     let players = match core.libraries() {
         Ok(players) => players,
         Err(e) => {
-            // Debug, not warn: this fires on a schedule rather than on an
-            // event, so a player daemon that is down would otherwise write a
-            // warning every thirty seconds for as long as it stays down.
+            // Debug, not warn: a pass also happens on a schedule rather than
+            // only on an event, so a player daemon that is down would otherwise
+            // write a warning for as long as it stays down.
             debug!("the player daemon's library list is not readable: {}", e);
             return;
         }
     };
 
     for player in players {
+        // The list's own answer, and this guard is not the one in `pull`. A
+        // player the list reports unloaded is not asked about at all, which is
+        // what keeps a full sweep from costing one `GET /api/library/<p>` per
+        // library that has nothing to offer. `pull`'s guard is what protects a
+        // library named directly by an event, where no list was consulted;
+        // each is covered by a test of its own.
         if !player.has_library || !player.is_loaded {
             continue;
         }
@@ -257,6 +401,12 @@ fn sweep_all(core: &Arc<CoreClient>, seen: &Arc<Mutex<SeenVersions>>, enricher: 
 }
 
 /// Consider one player's library, and enrich it if it has moved.
+///
+/// The entry point for a [`Wake::Library`] as well as for each player of a
+/// sweep, and the `is_loaded` check below is the only thing standing between a
+/// half-loaded library and an enrichment pass on that path. That case is not
+/// hypothetical: a load is what emits `library_changed`, and both backends emit
+/// one as the rebuild *starts*, when the library reports `is_loaded: false`.
 fn pull(
     core: &Arc<CoreClient>,
     seen: &Arc<Mutex<SeenVersions>>,
@@ -680,22 +830,35 @@ mod tests {
     /// lists are incomplete, and enriching half a library would record a
     /// version that covers all of it.
     ///
-    /// The library described here has an artist and an album to enrich, which
-    /// is the point — an empty one would be skipped for having nothing to do
-    /// and this test would pass with every `is_loaded` check deleted.
+    /// **The list's guard specifically, and there are two.** The detail body
+    /// queued after the list reports a library that is loaded and has an artist
+    /// and an album to enrich, so a `sweep_all` that ignored what the *list*
+    /// said would pull it and sweep it. Deleting `pull`'s guard instead leaves
+    /// this test green — `an_event_naming_a_library_that_is_not_loaded_is_not_swept`
+    /// is what fails then. One test covering both at once passed with either
+    /// guard deleted, which is how they came to be two.
     #[test]
-    fn a_library_that_is_not_loaded_is_left_alone() {
-        let body = r#"{"players":[{"player_name":"mpd","has_library":true,"is_loaded":false}],
-            "has_library":true,"is_loaded":false,"library_version":"v1","library_generation":"g1",
-            "artists":[{"name":"The Beatles","id":"7"}],
-            "albums":[{"id":"12","name":"Abbey Road","artists":["The Beatles"]}]}"#;
-        let server = StubServer::serving(200, body);
+    fn a_player_the_list_reports_unloaded_is_not_even_asked_about() {
+        let list = r#"{"players":[{"player_name":"mpd","has_library":true,"is_loaded":false}]}"#;
+        let server = StubServer::queued(vec![
+            Canned::json(200, list),
+            Canned::json(200, &versioned()),
+        ]);
         let seen = Arc::new(Mutex::new(SeenVersions::default()));
         let enricher = RecordingEnricher::new(false);
 
         sweep_all(&client(&server), &seen, enricher.as_ref());
 
-        assert!(enricher.calls.lock().is_empty());
+        assert!(
+            enricher.calls.lock().is_empty(),
+            "a library the list reports unloaded must not be swept"
+        );
+        assert_eq!(
+            server.requests().len(),
+            1,
+            "and must not even be asked about: {:?}",
+            server.requests()
+        );
     }
 
     // --- the batch on the wire -------------------------------------------
@@ -932,47 +1095,220 @@ mod tests {
         );
     }
 
-    // --- the nudge --------------------------------------------------------
+    // --- the event, and the loop it wakes ---------------------------------
 
-    /// The nudge, through the route that receives it, against a running
-    /// puller whose poll interval is the production one. Nothing here waits
-    /// for a tick: at thirty seconds, a pull that happens is a pull the nudge
-    /// caused.
+    /// Run the loop on a thread with a wake channel of the test's own.
     ///
-    /// This is the only test in this module that arms the process-wide nudge
-    /// channel, and it must stay that way — a second one would race it for
-    /// the sender.
-    #[test]
-    fn a_nudge_pulls_before_the_poll_interval_could_elapse() {
-        // The first pass happens as soon as the puller starts, so the stub
-        // reports a library with nothing to enrich until the test is ready.
-        let empty = r#"{"players":[],"has_library":false,"is_loaded":false}"#;
-        let server = StubServer::serving(200, empty);
-        let enricher = RecordingEnricher::new(false);
+    /// No process-wide state is involved: the channel is a value now, not a
+    /// static, so several of these run side by side in one binary without
+    /// racing each other for the sender. The nudge tests had to be limited to
+    /// one per binary for exactly that reason.
+    ///
+    /// The thread outlives the test. It is a loop with no exit, as it is in
+    /// production; when the returned handle is dropped it falls back to its
+    /// backstop and keeps sweeping its own stub server, which nothing else
+    /// looks at.
+    fn puller(core: Arc<CoreClient>, poll: Duration, enricher: Arc<RecordingEnricher>) -> Wakes {
+        let (wakes, rx) = wake_channel();
         let seen = Arc::new(Mutex::new(SeenVersions::default()));
+        let swept: Arc<dyn LibraryEnricher> = enricher;
+        std::thread::spawn(move || run(core, poll, rx, seen, swept));
+        wakes
+    }
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        *nudges().lock() = Some(tx);
-        let core = client(&server);
-        let swept: Arc<dyn LibraryEnricher> = enricher.clone();
-        std::thread::spawn(move || run(core, LIBRARY_POLL_INTERVAL, rx, seen, swept));
+    /// The players each recorded sweep was for, in order.
+    fn swept(enricher: &RecordingEnricher) -> Vec<String> {
+        enricher
+            .calls
+            .lock()
+            .iter()
+            .map(|c| c.player.clone())
+            .collect()
+    }
 
-        // Wait for the puller's opening pass to be over, so that what follows
-        // can only be the nudge's doing.
+    /// An event pulls the library it names, at the production backstop
+    /// interval. Nothing waits for a tick: at ten minutes, a pull that happens
+    /// is a pull the event caused.
+    #[test]
+    fn an_event_pulls_the_library_it_names() {
+        // The opening pass happens as soon as the loop starts, so the stub
+        // reports nothing to enrich until the test is ready.
+        let server = StubServer::serving(200, r#"{"players":[]}"#);
+        let enricher = RecordingEnricher::new(false);
+        let wakes = puller(client(&server), LIBRARY_POLL_INTERVAL, enricher.clone());
+
         wait_until(|| !server.requests().is_empty());
         server.set_queue(vec![Canned::json(200, &versioned())]);
 
-        let route = rocket::local::blocking::Client::tracked(
-            rocket::build().mount("/api", rocket::routes![crate::api::enrich::nudge]),
-        )
-        .expect("rocket should launch");
-        let response = route.post("/api/enrich/nudge?player=mpd").dispatch();
-        assert_eq!(response.status(), rocket::http::Status::Accepted);
+        wakes.library_changed("mpd");
 
-        // "a call naming mpd", not "the first call": another test in this
-        // binary may post a nudge of its own to the route, and an extra pull
-        // it caused must not be able to fail this one.
-        wait_until(|| enricher.calls.lock().iter().any(|c| c.player == "mpd"));
+        wait_until(|| !swept(&enricher).is_empty());
+        assert_eq!(swept(&enricher), vec!["mpd"]);
+    }
+
+    /// **The ruling this task turns on.** The event is a doorbell: five of them
+    /// for a library that has not changed produce no second sweep, because the
+    /// answer to "has this changed?" is read from `GET /api/library/<p>` and
+    /// never from the event. A consumer that compared the event's own
+    /// `library_version` against the route's would find a change every time and
+    /// re-enrich the whole library on every event, forever — Phase 1's defect,
+    /// arriving by a new road.
+    ///
+    /// The sentinel is what makes this a test rather than a hope. Proving "no
+    /// second sweep" by waiting proves nothing, so the last event names a
+    /// library that *must* be swept: one loop consumes the wakes in order, so
+    /// once its sweep is recorded every event before it has been acted on — and
+    /// a re-enrichment of mpd would sit in the list ahead of it.
+    #[test]
+    fn a_burst_of_events_does_not_re_enrich_an_unchanged_library() {
+        let server = StubServer::serving(200, &versioned());
+        let enricher = RecordingEnricher::new(false);
+        let wakes = puller(client(&server), LIBRARY_POLL_INTERVAL, enricher.clone());
+
+        // The opening pass sweeps mpd once. That is the state the burst must
+        // not add to.
+        wait_until(|| swept(&enricher) == vec!["mpd"]);
+
+        for _ in 0..5 {
+            wakes.library_changed("mpd");
+        }
+        // Never listed, so never seen, so it is swept: the sentinel.
+        wakes.library_changed("other");
+
+        wait_until(|| swept(&enricher).contains(&"other".to_string()));
+        assert_eq!(
+            swept(&enricher),
+            vec!["mpd", "other"],
+            "five events for an unchanged library must add nothing"
+        );
+    }
+
+    /// The `is_loaded` guard on the path where it is the only one there is.
+    ///
+    /// An event names a player directly, so no list is consulted and
+    /// `sweep_all`'s check is not in the way. This is not a corner case: a
+    /// library load is what emits `library_changed`, and both backends emit one
+    /// as the rebuild *starts*, with `is_loaded` false for the whole of it. The
+    /// event that finds work is the second one, sent once the load has finished
+    /// — the sentinel here stands in for it, so this proves the wake path works
+    /// rather than only that nothing happened.
+    #[test]
+    fn an_event_naming_a_library_that_is_not_loaded_is_not_swept() {
+        let unloaded = r#"{"player_name":"mpd","has_library":true,"is_loaded":false,
+            "library_version":"v1","library_generation":"g1",
+            "artists":[{"name":"The Beatles","id":"7"}],
+            "albums":[{"id":"12","name":"Abbey Road","artists":["The Beatles"]}]}"#;
+        let server = StubServer::queued(vec![
+            // The opening pass: nothing listed.
+            Canned::json(200, r#"{"players":[]}"#),
+            // The event for mpd: a library mid-rebuild, with work in it that a
+            // missing guard would happily sweep.
+            Canned::json(200, unloaded),
+            // Everything the sentinel asks for. Repeated, being last.
+            Canned::json(200, &versioned()),
+        ]);
+        let enricher = RecordingEnricher::new(false);
+        let wakes = puller(client(&server), LIBRARY_POLL_INTERVAL, enricher.clone());
+
+        wait_until(|| !server.requests().is_empty());
+        wakes.library_changed("mpd");
+        wakes.library_changed("other");
+
+        wait_until(|| swept(&enricher).contains(&"other".to_string()));
+        assert_eq!(
+            swept(&enricher),
+            vec!["other"],
+            "a library that has not finished loading must not be swept"
+        );
+    }
+
+    /// The property the poll exists for, and the one the demotion must not
+    /// lose: a change nobody heard about is still picked up.
+    ///
+    /// No wake is delivered at all. The library appears only after the opening
+    /// pass has been and gone, so the sweep that finds it can only be a
+    /// backstop tick. The interval is short because the assertion is on the
+    /// sweep having happened and not on how long it took — `wait_until` bounds
+    /// the failure, and nothing here measures elapsed time.
+    #[test]
+    fn a_missed_event_is_still_recovered_by_the_backstop() {
+        let server = StubServer::serving(200, r#"{"players":[]}"#);
+        let enricher = RecordingEnricher::new(false);
+        let _wakes = puller(
+            client(&server),
+            Duration::from_millis(50),
+            enricher.clone(),
+        );
+
+        // The opening pass finds nothing, so what follows cannot be it.
+        wait_until(|| !server.requests().is_empty());
+        server.set_queue(vec![Canned::json(200, &versioned())]);
+
+        wait_until(|| swept(&enricher).contains(&"mpd".to_string()));
+    }
+
+    /// The subscriber's thread ending must not end the puller with it.
+    ///
+    /// Its wake channel disconnects, which this loop used to treat as a reason
+    /// to stop -- there, it could only mean "another `start` replaced my
+    /// sender". Here it means "nothing will ever wake me again", and stopping
+    /// would leave a running daemon with no enrichment at all and nothing in the
+    /// log to say why. The backstop is exactly what covers that, so the loop
+    /// keeps sweeping: the handle is dropped before the library appears, so the
+    /// sweep that finds it happens with no sender left in existence.
+    #[test]
+    fn a_puller_nothing_can_wake_any_more_keeps_sweeping() {
+        let server = StubServer::serving(200, r#"{"players":[]}"#);
+        let enricher = RecordingEnricher::new(false);
+        let wakes = puller(client(&server), Duration::from_millis(50), enricher.clone());
+
+        wait_until(|| !server.requests().is_empty());
+        drop(wakes);
+        server.set_queue(vec![Canned::json(200, &versioned())]);
+
+        wait_until(|| swept(&enricher).contains(&"mpd".to_string()));
+    }
+
+    /// A reconnect and a burst of events can arrive together, and
+    /// [`Wake::Everything`] absorbs the named players rather than the other way
+    /// round: a pass over every library already covers each named one, while
+    /// the reverse would turn a reconnect — the only thing that recovers an
+    /// event missed while the socket was down — into a pull of whatever
+    /// happened to be queued beside it.
+    #[test]
+    fn a_reconnect_in_a_burst_of_events_sweeps_everything() {
+        let (wakes, rx) = wake_channel();
+
+        wakes.library_changed("mpd");
+        wakes.reconnected();
+        wakes.library_changed("lms");
+        let first = rx.recv().expect("a wake to have been queued");
+        assert!(
+            matches!(coalesced(first, &rx), Due::All),
+            "a reconnect asks for everything, whatever else is queued with it"
+        );
+
+        // ... and with no reconnect among them, only the players named, each
+        // once however many times it arrived.
+        wakes.library_changed("mpd");
+        wakes.library_changed("lms");
+        wakes.library_changed("mpd");
+        let first = rx.recv().expect("a wake to have been queued");
+        match coalesced(first, &rx) {
+            Due::Named(players) => assert_eq!(players, vec!["mpd", "lms"]),
+            Due::All => panic!("no reconnect arrived, so no full sweep should be due"),
+        }
+    }
+
+    /// A wake nothing is listening for is dropped rather than an error. The
+    /// subscriber holds this handle for the life of the process and must not
+    /// have to know whether a puller is still running.
+    #[test]
+    fn a_wake_with_no_puller_listening_is_dropped() {
+        let (wakes, rx) = wake_channel();
+        drop(rx);
+        wakes.library_changed("mpd");
+        wakes.reconnected();
     }
 
     /// Poll a condition rather than sleep for a fixed time: the assertion is
@@ -988,11 +1324,4 @@ mod tests {
         }
         panic!("the puller did not act within ten seconds");
     }
-
-    // `nudge` with no puller running is deliberately *not* covered by a test.
-    // The branch is process-wide state: whether it is reached at all depends
-    // on whether the nudge test above has already armed the channel, which
-    // depends on the order the harness runs them in. A test that passes
-    // because it happened to run first proves nothing, so there is no test
-    // here claiming otherwise.
 }

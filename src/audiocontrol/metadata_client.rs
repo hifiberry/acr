@@ -1,7 +1,8 @@
 //! `MetadataClient` -- the player side's client for the two seams the
 //! metadata side answers over HTTP: title-order and artist-split resolution,
-//! and library enrichment (artist detail, artist images, and the enrichment
-//! nudge).
+//! and library enrichment (artist detail and artist images -- the enrichment
+//! nudge that used to be the third is gone with the route it called, see
+//! `enrich` below).
 //!
 //! `main` installs this in place of the in-process implementations from
 //! `audiocontrol-metadata` when `services.metadata` names a base URL. With
@@ -217,34 +218,36 @@ impl LibraryEnricher for MetadataClient {
         None
     }
 
-    /// Ask the metadata side to pull this player's library sooner than its
-    /// next periodic poll, via `POST /enrich/nudge?player=`. Errors are
-    /// ignored: the route's own contract is that a nudge which fails costs
-    /// nothing, because the periodic poll covers it regardless.
+    /// Does nothing, and makes no request.
     ///
-    /// `generation`, `artists` and `albums` are all ignored: the nudge names
-    /// only the player, not a generation or a specific set of items, and the
-    /// generation the metadata side computes its answers against is whatever
-    /// its own pull reads when it runs, not whatever this call happened to
-    /// see a moment earlier. `sink` is dropped without being called, for the
-    /// same reason as the two arguments above -- results come back through
-    /// `POST /api/library/<p>/enrichment`, a route this client never calls,
-    /// not through the sink -- and it is dropped explicitly here so the
-    /// omission reads as deliberate rather than as a call that was
+    /// This used to `POST /enrich/nudge?player=` to ask the metadata side to
+    /// look at a library that had just finished loading. **That route no longer
+    /// exists, and this call is the reason it could be deleted.** Nothing on the
+    /// metadata daemon may be called by this one after the one-way seam, so the
+    /// announcement travels the other way: the load emits a `library_changed`
+    /// event on `/api/events`, a route this daemon already serves and the
+    /// metadata side already subscribes to. A nudge was advisory in both
+    /// directions, so what is lost by not sending it is a round trip.
+    ///
+    /// Every argument is unused, `sink` included. Results have never come back
+    /// through the sink on this path -- they arrive at
+    /// `POST /api/library/<p>/enrichment`, which this client does not call -- and
+    /// the generation the metadata side computes against is whatever its own
+    /// pull reads, not whatever this call saw a moment earlier. `sink` is
+    /// dropped explicitly so the omission reads as deliberate rather than
     /// forgotten.
+    ///
+    /// The method stays only because `LibraryEnricher` requires it; it goes with
+    /// the rest of this client when the last seam call from this daemon goes.
     fn enrich(
         &self,
-        player: &str,
+        _player: &str,
         _generation: Option<String>,
         _artists: Vec<ArtistRef>,
         _albums: Vec<AlbumRef>,
         sink: Arc<dyn EnrichmentSink>,
     ) {
         drop(sink);
-        let path = format!("/enrich/nudge?player={}", urlencoding::encode(player));
-        let _ = self
-            .detail_client
-            .post_json_value(&self.url(&path), serde_json::Value::Null);
     }
 }
 
@@ -469,10 +472,17 @@ mod tests {
         assert!(dead.artist_image("Pink Floyd").is_none());
     }
 
-    /// `enrich` names the player on the nudge route and never touches the
-    /// sink it was handed, whether or not the request even lands.
+    /// `enrich` calls the metadata side at all any more -- which is the rule the
+    /// one-way seam exists to establish, asserted where it can be broken.
+    ///
+    /// This test used to assert the opposite: that the call POSTed
+    /// `/api/enrich/nudge?player=mpd`. That route is gone, and the library load
+    /// that used to send the nudge now announces itself as a `library_changed`
+    /// event instead. Re-adding any request here would put this daemon back to
+    /// calling the metadata daemon, so the assertion is on the request log being
+    /// empty rather than on the absence of one particular path.
     #[test]
-    fn enrich_nudges_with_the_player_name_and_never_touches_the_sink() {
+    fn enrich_makes_no_request_at_all_and_never_touches_the_sink() {
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let recorded = seen.clone();
         let server = stub(move |path| {
@@ -482,17 +492,15 @@ mod tests {
         let client = MetadataClient::new(&server.base(), 1000, 5000);
         client.enrich("mpd", None, vec![], vec![], Arc::new(UnusedSink));
 
-        let requests = seen.lock();
-        assert_eq!(requests.len(), 1);
+        let requests = seen.lock().clone();
         assert!(
-            requests[0].starts_with("/api/enrich/nudge?player=mpd"),
-            "unexpected request path: {}",
-            requests[0]
+            requests.is_empty(),
+            "the player daemon must not call the metadata daemon here; it asked for {:?}",
+            requests
         );
-        drop(requests);
 
         let dead = MetadataClient::new("http://127.0.0.1:1/api", 1000, 5000);
-        // Must not panic even when nothing is listening.
+        // Must not panic, and must not block, with nothing listening.
         dead.enrich("mpd", None, vec![], vec![], Arc::new(UnusedSink));
     }
 }

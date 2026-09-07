@@ -2263,7 +2263,6 @@ What is mounted under `/api/metadata/`:
 | `/api/metadata/artist/<artist_b64>` | [Get Artist Detail](#get-artist-detail) |
 | `/api/metadata/resolve/title-order` | [Resolve Title Order](#resolve-title-order) |
 | `/api/metadata/resolve/artist-split` | [Resolve Artist Split](#resolve-artist-split) |
-| `/api/metadata/enrich/nudge` | [Nudge Enrichment](#nudge-enrichment) |
 | `/api/metadata/audiodb/mbid/<mbid>` | [TheAudioDB Integration](#theaudiodb-integration) |
 | `/api/metadata/coverart/...` | [Cover Art API](#cover-art-api) |
 | `/api/metadata/imagecache/...` | the image cache paths |
@@ -2402,33 +2401,22 @@ check both library loaders run at load time on every album's artist field.
   The answer is cached without expiry once computed, keyed on the exact input
   string.
 
-#### Nudge Enrichment
+#### Enrichment is not requested over a route
 
-Advisory hint that the metadata side should pull one player's library sooner
-than its next periodic poll, e.g. right after a library load.
+There was a `POST /api/enrich/nudge?player=` here, an advisory hint that the
+metadata side should look at one player's library sooner than its next periodic
+poll. **It is gone, and nothing replaced it as a route.** No route on the
+metadata side is called by the player daemon any more, so the announcement
+travels the other way instead: a library load emits
+[`library_changed`](websocket.md#library_changed) on `/api/events`, and the
+metadata side reacts to that.
 
-- **Endpoint**: `/api/enrich/nudge`
-- **Method**: POST
-- **Query Parameters**:
-  - `player` (string, required): the player name whose library changed
-- **Response** (202 Accepted): always, whether or not anything acts on the
-  nudge before this call returns. A nudge that is dropped or ignored is
-  harmless: the periodic poll covers it regardless.
-
-The name is handed to the library puller, which pulls that player's library at
-once instead of waiting for its next poll: `GET /api/library/<p>` for the two
-tokens, and — if the `library_version` differs from the one last enriched — the
-artist and album lists, followed by enrichment batches posted back to
-`POST /api/library/<p>/enrichment`. A player whose library reports no version
-is pulled again every 30 minutes regardless.
-
-The 202 still promises nothing. It is the answer when no puller is running at
-all, when the named player has no library, and when the library turns out to be
-at a version already enriched.
-
-```bash
-curl -X POST "http://<device-ip>:1080/api/enrich/nudge?player=mpd"
-```
+It is recorded here rather than dropped silently because the route did exist in
+this repository, though never in a released package — it was added and removed
+within 0.22.0, so no shipped client can have called it. A caller that somehow
+does gets a 404. Nothing else about enrichment changed: the metadata side still
+reads `GET /api/library/<p>`, `/artists` and `/albums`, and still posts results
+to [Apply Enrichment](#apply-enrichment).
 
 ### Favourites API
 

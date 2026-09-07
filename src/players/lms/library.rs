@@ -69,8 +69,37 @@ impl LMSLibrary {
     /// treats the event as a doorbell rather than a value to compare. Before
     /// this event existed, nothing told the metadata daemon a reload had
     /// happened at all; it waited for the next 30-minute poll to notice.
+    ///
+    /// This announcement says a rebuild has *started*, and `library_loaded` is
+    /// false for the whole of it — see [`Self::mark_loaded_and_announce`], which
+    /// makes the one a consumer can act on.
     fn reset_albums_for_reload(&self, albums: &mut HashMap<String, Album>) {
         albums.clear();
+        self.announce_library_changed();
+    }
+
+    /// Mark the library loaded and announce the finished load — one step.
+    ///
+    /// **This is the announcement a consumer of `library_changed` acts on.** The
+    /// reset's is made with `library_loaded` false and it stays false until the
+    /// rebuild ends, so anything reacting to that event alone would ask
+    /// `GET /api/library/lms`, correctly decline to enrich a library reporting
+    /// `is_loaded: false`, and never hear that it had become readable. The
+    /// metadata daemon's library puller is exactly such a consumer.
+    ///
+    /// The flag and the event are one call so that moving either alone cannot
+    /// silently reopen that gap. MPD pairs the same two for the same reason,
+    /// with tokens it actually has.
+    fn mark_loaded_and_announce(&self) {
+        *self.library_loaded.lock() = true;
+        self.announce_library_changed();
+    }
+
+    /// The event both announcements send. Identical either way: LMS has no
+    /// version machinery, so there is nothing to distinguish them by, and
+    /// nothing that needs to be — a doorbell that rings twice is still a
+    /// doorbell.
+    fn announce_library_changed(&self) {
         crate::audiocontrol::eventbus::EventBus::instance().publish(PlayerEvent::LibraryChanged {
             source: PlayerSource::new("lms".to_string(), "lms".to_string()),
             library_version: None,
@@ -430,12 +459,10 @@ impl LibraryInterface for LMSLibrary {
                 if let Err(e) = self.create_artists() {
                     error!("Error creating artists: {}", e);
                 }
-                // Mark as loaded and update progress
-                {
-                    let mut loaded = self.library_loaded.lock();
-                    *loaded = true;
-                    info!("Setting library_loaded flag to true");
-                }
+                // Mark as loaded, announce it, and update progress. The flag and
+                // the event are one call - see `mark_loaded_and_announce`.
+                info!("Setting library_loaded flag to true");
+                self.mark_loaded_and_announce();
 
                 { let mut progress = self.loading_progress.lock(); *progress = 1.0; }
                 
@@ -758,6 +785,49 @@ mod tests {
             }
             other => panic!("expected LibraryChanged, got {other:?}"),
         }
+    }
+
+    /// The announcement a consumer acts on, and why there are two.
+    ///
+    /// The reset's is made while `library_loaded` is false — asserted here,
+    /// because that is the whole reason the second one exists: a consumer that
+    /// pulled on the reset's event alone would find `is_loaded: false`, correctly
+    /// decline to enrich a library mid-rebuild, and never hear that it had
+    /// finished. The flag and the announcement are one call, so this asserts
+    /// both moved together.
+    #[test]
+    fn a_finished_load_marks_the_library_loaded_and_announces_it() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+
+        let lib = empty_library();
+        {
+            let mut albums = lib.albums.write();
+            lib.reset_albums_for_reload(&mut albums);
+        }
+        assert!(
+            !lib.is_loaded(),
+            "the reset's announcement is made with the library unloaded"
+        );
+
+        let bus = EventBus::instance();
+        let (id, receiver) = bus.subscribe(vec![EventSubscription::LibraryChanged]);
+
+        lib.mark_loaded_and_announce();
+
+        let event = receiver.try_iter().find(|event| {
+            matches!(event, PlayerEvent::LibraryChanged { source, .. } if source.player_name() == "lms")
+        });
+        bus.unsubscribe(id);
+
+        assert!(
+            event.is_some(),
+            "a finished load must announce itself over the event bus"
+        );
+        assert!(
+            lib.is_loaded(),
+            "and must have marked the library loaded first, or the consumer that \
+             reacts to the event finds nothing to do"
+        );
     }
 
     /// The same merge MPD gets, reached through this backend's own sink.

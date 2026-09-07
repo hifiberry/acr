@@ -175,9 +175,41 @@ impl MPDLibrary {
         albums.clear();
 
         // Announce the reload over the event stream, in the same operation
-        // as the bump and the clear: this is the moment the metadata daemon
-        // needs to know about, so it can react instead of polling for the
-        // same fact. The tokens travel raw — see `notify_library_changed`.
+        // as the bump and the clear: a client holding a view of this library
+        // should invalidate it now, not when the rebuild finishes minutes
+        // later. The tokens travel raw — see `notify_library_changed`.
+        //
+        // This announcement says a rebuild has *started*, and `library_loaded`
+        // is false for the whole of it. It is therefore not the one a consumer
+        // that wants to read the library can act on; `mark_loaded_and_announce`
+        // makes that one.
+        self.controller.notify_library_changed(
+            Some(self.library_version.token()),
+            Some(self.library_version.generation_token()),
+        );
+    }
+
+    /// Mark the library loaded and announce the finished load — one step, for
+    /// the same reason as the reset above.
+    ///
+    /// **This is the announcement a consumer of `library_changed` acts on**, and
+    /// pairing it with the flag is what keeps it that way. The reset's
+    /// announcement is made while `library_loaded` is false and stays false
+    /// until the rebuild ends, so anything that reacted to that event alone
+    /// would ask `GET /api/library/mpd`, correctly decline to enrich a library
+    /// that reports `is_loaded: false`, and then never hear that it had become
+    /// readable. That is not a hypothetical: it is what the metadata daemon's
+    /// library puller does, and with only the first announcement it would wait
+    /// for its slow backstop sweep on every single load.
+    ///
+    /// A later edit that sets the flag somewhere else, or announces somewhere
+    /// else, reopens that gap silently — which is why the two are one call.
+    ///
+    /// It runs after `refresh_library`'s closing bump so the tokens it names are
+    /// the ones the library ends the load on, rather than a version two bumps
+    /// stale.
+    fn mark_loaded_and_announce(&self) {
+        *self.library_loaded.lock() = true;
         self.controller.notify_library_changed(
             Some(self.library_version.token()),
             Some(self.library_version.generation_token()),
@@ -1188,8 +1220,8 @@ impl LibraryInterface for MPDLibrary {
                     error!("Error creating artists: {}", e);
                 }
 
-                // Mark as loaded and update progress
-                *self.library_loaded.lock() = true;
+                // Update progress. The loaded flag is set below, together with
+                // the announcement that goes with it.
                 {
                     let mut progress = self.loading_progress.lock();
                     *progress = 1.0;
@@ -1200,6 +1232,12 @@ impl LibraryInterface for MPDLibrary {
                 // window between it and now. Neither is redundant with the
                 // other.
                 self.library_version.bump();
+
+                // Loaded, and announced as loaded. After the bump, so the
+                // event names the version this load ends on - see
+                // `mark_loaded_and_announce` for why the flag and the event
+                // are one call.
+                self.mark_loaded_and_announce();
 
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
@@ -2258,6 +2296,63 @@ mod tests {
             }
             other => panic!("expected LibraryChanged, got {other:?}"),
         }
+    }
+
+    /// The announcement a consumer acts on, and the reason there are two.
+    ///
+    /// The reset's announcement above is made while `library_loaded` is false
+    /// and stays false for the whole rebuild, so a consumer that pulled on it
+    /// would find `is_loaded: false`, decline to enrich a half-built library and
+    /// never be told it had become readable. This one is paired with the flag,
+    /// and it names the tokens the load *ends* on rather than the two-bumps-stale
+    /// pair the reset emitted — asserted by bumping in between, exactly as
+    /// `refresh_library` does before it calls this.
+    #[test]
+    fn a_finished_load_announces_itself_as_loaded_with_the_tokens_it_ends_on() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        {
+            let mut albums = lib.albums.write();
+            lib.reset_albums_for_reload(&mut albums);
+        }
+        assert!(
+            !lib.is_loaded(),
+            "a library mid-rebuild reports itself unloaded; that is the state the \
+             reset's announcement is made in"
+        );
+        // `refresh_library`'s closing bump, which happens before it announces.
+        let stale = lib.library_version.token();
+        lib.library_version.bump();
+        let expected = lib.library_version.token();
+        assert_ne!(
+            stale, expected,
+            "the bump has to move the token for this to prove anything"
+        );
+
+        let bus = EventBus::instance();
+        let (id, receiver) = bus.subscribe(vec![EventSubscription::LibraryChanged]);
+
+        lib.mark_loaded_and_announce();
+
+        // The version carries this library's own nonce, so it identifies the
+        // event on a bus every other test publishes to as well.
+        let event = receiver.try_iter().find(|event| {
+            matches!(event, PlayerEvent::LibraryChanged { library_version, .. }
+                if library_version.as_deref() == Some(expected.as_str()))
+        });
+        bus.unsubscribe(id);
+
+        assert!(
+            event.is_some(),
+            "a finished load must announce itself naming the version it ends on ({})",
+            expected
+        );
+        assert!(
+            lib.is_loaded(),
+            "and the library must already report itself loaded, or a consumer that \
+             pulls on the event finds nothing to do"
+        );
     }
 
     /// Repeated resets keep moving the generation: a second reload must not

@@ -6,6 +6,15 @@
 //! from the event bus. Nothing downstream changes -- `now_playing::start`
 //! takes the receiver either way.
 //!
+//! **It feeds two consumers, not one.** A `library_changed` frame is a doorbell
+//! for the library puller rather than a now-playing event, so it leaves by a
+//! different door: [`Wakes`], handed in by whoever started the puller. That is
+//! what replaced `POST /api/enrich/nudge`, the last route the player daemon
+//! called on this side. The frame's own `library_version` and
+//! `library_generation` are dropped in [`parse_frame`] rather than forwarded --
+//! see [`crate::library_puller::Wake`] for why carrying them would be a bug and
+//! not a convenience.
+//!
 //! Three things make this seam different from the other two in this phase,
 //! and all three are about the connection rather than the mapping:
 //!
@@ -21,11 +30,13 @@
 //! **What arrives during a gap is lost.** The player holds recent events for
 //! 30 s and delivers them to each connected client from the point that client
 //! registered; a reconnect registers afresh, so nothing from the gap is
-//! replayed however short it was. Two things cover that, both deliberate: on every
-//! (re)connect the subscriber asks `GET /now-playing` and emits one
-//! `SongChanged` for whatever is playing now, and the Last.fm worker
-//! reconciles the playback state against the player every 30 s through
-//! `PlaybackStateSource` rather than trusting the stream. What is genuinely
+//! replayed however short it was. Three things cover that, all deliberate: on
+//! every (re)connect the subscriber asks `GET /now-playing` and emits one
+//! `SongChanged` for whatever is playing now, the same connect tells the library
+//! puller to sweep every library once ([`Wakes::reconnected`]) because a missed
+//! `library_changed` is otherwise not recovered until the next one, and the
+//! Last.fm worker reconciles the playback state against the player every 30 s
+//! through `PlaybackStateSource` rather than trusting the stream. What is genuinely
 //! lost is the *intermediate* history -- tracks that started and ended inside
 //! the gap are never enriched and never scrobbled. That is a property of the
 //! seam, not a bug to be fixed here: recovering it would need the player to
@@ -68,11 +79,17 @@ use std::time::{Duration, Instant};
 use tungstenite::{Message, WebSocket};
 
 use crate::core_client::CoreClient;
+use crate::library_puller::Wakes;
 
-/// The subscription this client sends: every player, only the two event kinds
-/// enrichment acts on. Narrowing it server-side is what keeps a
-/// `position_changed` every second from crossing the seam at all.
-const SUBSCRIPTION: &str = r#"{"players":null,"event_types":["song_changed","state_changed"]}"#;
+/// The subscription this client sends: every player, only the event kinds this
+/// side acts on. Narrowing it server-side is what keeps a `position_changed`
+/// every second from crossing the seam at all.
+///
+/// `library_changed` is on the list because this socket is how library
+/// enrichment discovers work now. Such a frame goes to the library puller, not
+/// to the now-playing workers -- see [`Frame`].
+const SUBSCRIPTION: &str =
+    r#"{"players":null,"event_types":["song_changed","state_changed","library_changed"]}"#;
 
 /// The timings of the connection loop, in one place so tests can shrink them.
 ///
@@ -127,9 +144,10 @@ impl Default for Timings {
 pub fn start(
     events_url: &str,
     core: Arc<CoreClient>,
+    wakes: Wakes,
     stop: Option<Receiver<()>>,
 ) -> Receiver<NowPlayingEvent> {
-    start_with(events_url, core, Timings::default(), stop)
+    start_with(events_url, core, wakes, Timings::default(), stop)
 }
 
 /// `stop` is checked at every wait in the loop -- the backoff between attempts
@@ -140,6 +158,7 @@ pub fn start(
 fn start_with(
     events_url: &str,
     core: Arc<CoreClient>,
+    wakes: Wakes,
     timings: Timings,
     stop: Option<Receiver<()>>,
 ) -> Receiver<NowPlayingEvent> {
@@ -147,7 +166,7 @@ fn start_with(
     let url = events_url.to_string();
     std::thread::Builder::new()
         .name("now-playing-ws".into())
-        .spawn(move || run(&url, core, tx, timings, stop))
+        .spawn(move || run(&url, core, tx, wakes, timings, stop))
         .expect("spawn now-playing ws subscriber");
     rx
 }
@@ -217,6 +236,7 @@ fn run(
     url: &str,
     core: Arc<CoreClient>,
     tx: Sender<NowPlayingEvent>,
+    wakes: Wakes,
     timings: Timings,
     stop: Option<Receiver<()>>,
 ) {
@@ -226,7 +246,7 @@ fn run(
         match connect(url, &timings) {
             Ok(mut ws) => {
                 let started = Instant::now();
-                match subscribe_and_read(&mut ws, &core, &tx, &timings, &stop, started) {
+                match subscribe_and_read(&mut ws, &core, &tx, &wakes, &timings, &stop, started) {
                     Outcome::Shutdown => {
                         log::debug!(
                             "Now-playing subscriber: nothing is listening any more, closing the event socket"
@@ -363,12 +383,13 @@ fn connect(url: &str, timings: &Timings) -> Result<WebSocket<TcpStream>, String>
     Err(last_error)
 }
 
-/// Send the subscription, seed the current song, then forward frames until the
+/// Send the subscription, seed both consumers, then forward frames until the
 /// connection ends or nothing is listening.
 fn subscribe_and_read(
     ws: &mut WebSocket<TcpStream>,
     core: &CoreClient,
     tx: &Sender<NowPlayingEvent>,
+    wakes: &Wakes,
     timings: &Timings,
     stop: &Option<Receiver<()>>,
     started: Instant,
@@ -381,6 +402,14 @@ fn subscribe_and_read(
             reason: format!("the subscription could not be sent: {}", e),
         };
     }
+
+    // The library half of the gap recovery, and the reason the puller's own
+    // interval can be slow: a `library_changed` that happened while this socket
+    // was down is replayed by nobody, so every connect asks for one sweep of
+    // everything. It is sent before the read loop rather than after the
+    // now-playing seed below so that a player daemon which does not answer
+    // `GET /now-playing` cannot cost the puller its seed.
+    wakes.reconnected();
 
     // The gap-recovery step. On the first connect this also means a daemon
     // restart mid-track enriches that track instead of waiting for the next
@@ -411,10 +440,18 @@ fn subscribe_and_read(
         match ws.read() {
             Ok(Message::Text(text)) => {
                 frames += 1;
-                if let Some(event) = parse_frame(&text) {
-                    if tx.send(event).is_err() {
-                        return Outcome::Shutdown;
+                match parse_frame(&text) {
+                    Some(Frame::NowPlaying(event)) => {
+                        if tx.send(event).is_err() {
+                            return Outcome::Shutdown;
+                        }
                     }
+                    // The puller is told and the connection carries on. A wake
+                    // that reaches no puller is dropped there, not here: this
+                    // side must not treat "nothing is enriching" as a reason to
+                    // stop reading now-playing events.
+                    Some(Frame::LibraryChanged { player }) => wakes.library_changed(&player),
+                    None => {}
                 }
             }
             // Pongs answering our keepalive, and the player's own pings, which
@@ -478,15 +515,37 @@ fn should_reset_backoff(frames: usize, uptime: Duration, first_backoff: Duration
     frames > 0 && uptime >= first_backoff
 }
 
-/// Map one server frame onto a `NowPlayingEvent`, or `None` for a frame that
-/// is not one.
+/// What a frame on the player daemon's event socket means to this side.
+///
+/// The two variants leave by different doors, which is the only reason this
+/// type exists rather than the parser returning a `NowPlayingEvent`.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Frame {
+    /// Forwarded to the enrichment workers.
+    NowPlaying(NowPlayingEvent),
+    /// A doorbell for the library puller.
+    ///
+    /// **It names the player and nothing else.** The frame carries a
+    /// `library_version` and a `library_generation`; they are dropped here on
+    /// purpose, because the version is the player's raw counter while
+    /// `GET /api/library/<p>` reports one folded for the caller's forwarded
+    /// prefix -- comparing them concludes "changed" every time -- and the
+    /// generation answers a different question ("did it reload?") from the one
+    /// the puller asks ("have I enriched this?"). Dropping them at the parse
+    /// boundary is what makes the mistake unavailable rather than merely
+    /// discouraged; `doc/websocket.md` states the same contract for every other
+    /// client.
+    LibraryChanged { player: String },
+}
+
+/// Map one server frame onto a [`Frame`], or `None` for one this side ignores.
 ///
 /// `player_name` and `player_id` are read from the top level, not from
 /// `source`: `convert_to_websocket_message` in `src/api/events.rs` builds
 /// `source.player_id` by appending the hardcoded MPD port to the player name,
 /// so it is wrong for every other player. `doc/websocket.md` documents that
 /// and tells clients to do exactly this.
-pub(crate) fn parse_frame(text: &str) -> Option<NowPlayingEvent> {
+pub(crate) fn parse_frame(text: &str) -> Option<Frame> {
     let v: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => {
@@ -495,20 +554,32 @@ pub(crate) fn parse_frame(text: &str) -> Option<NowPlayingEvent> {
         }
     };
     // `welcome`, `subscription_updated` and `error` carry no player, and
-    // neither does `volume_changed`; none of them is a now-playing event.
+    // neither does `volume_changed`; none of them is a frame this side acts on.
     let event_type = v.get("type").and_then(|t| t.as_str())?;
-    if event_type != "song_changed" && event_type != "state_changed" {
+    if event_type != "song_changed"
+        && event_type != "state_changed"
+        && event_type != "library_changed"
+    {
         log::trace!("Ignoring {} on the player event socket", event_type);
         return None;
     }
     let player_name = v.get("player_name").and_then(|n| n.as_str())?;
+
+    // The library doorbell needs the name and nothing else -- not even the
+    // player id, which the puller has no route to address.
+    if event_type == "library_changed" {
+        return Some(Frame::LibraryChanged {
+            player: player_name.to_string(),
+        });
+    }
+
     let player_id = v
         .get("player_id")
         .and_then(|i| i.as_str())
         .unwrap_or_default();
     let source = PlayerSource::new(player_name.to_string(), player_id.to_string());
 
-    match event_type {
+    let event = match event_type {
         // A null song is what a stopping player reports, and the Last.fm
         // worker clears its track data on it, so it has to survive as
         // `Some(SongChanged { song: None })` rather than be dropped.
@@ -537,7 +608,8 @@ pub(crate) fn parse_frame(text: &str) -> Option<NowPlayingEvent> {
             }
         },
         _ => None,
-    }
+    };
+    event.map(Frame::NowPlaying)
 }
 
 #[cfg(test)]
@@ -576,15 +648,27 @@ mod tests {
     /// subscriber still reconnecting to it would steal that test's connection.
     /// Holding the sender for the length of the test and dropping it at the end
     /// makes each one self-contained.
-    fn subscriber(addr: std::net::SocketAddr, core: Arc<CoreClient>) -> (Receiver<NowPlayingEvent>, Sender<()>) {
+    /// The wake receiver comes back too. Every connect sends one, so a test
+    /// that ignored it would leave the channel filling silently; and it is what
+    /// the library tests below assert on.
+    fn subscriber(
+        addr: std::net::SocketAddr,
+        core: Arc<CoreClient>,
+    ) -> (
+        Receiver<NowPlayingEvent>,
+        Receiver<crate::library_puller::Wake>,
+        Sender<()>,
+    ) {
         let (stop_tx, stop_rx) = unbounded();
+        let (wakes, wake_rx) = crate::library_puller::wake_channel();
         let rx = start_with(
             &format!("ws://{}/api/events", addr),
             core,
+            wakes,
             quick(),
             Some(stop_rx),
         );
-        (rx, stop_tx)
+        (rx, wake_rx, stop_tx)
     }
 
     /// The frame `convert_to_websocket_message` actually produces, `source`
@@ -596,6 +680,20 @@ mod tests {
             "player_id": "mpd:1",
             "song": {"title": title, "artist": "Nightwish"},
             "source": {"player_name": "mpd", "player_id": "mpd:6600"}
+        })
+        .to_string()
+    }
+
+    /// A `library_changed` frame as `src/api/events.rs` emits it: both tokens
+    /// present and raw, unfolded for any prefix.
+    fn library_changed_frame(player: &str) -> String {
+        serde_json::json!({
+            "type": "library_changed",
+            "player_name": player,
+            "player_id": "mpd:1",
+            "library_version": "3f9a2b10-4-7",
+            "library_generation": "3f9a2b10-4-g2",
+            "source": {"player_name": player, "player_id": "mpd:6600"}
         })
         .to_string()
     }
@@ -622,7 +720,12 @@ mod tests {
                 .iter()
                 .map(|t| t.as_str().unwrap())
                 .collect();
-            assert_eq!(types, vec!["song_changed", "state_changed"]);
+            assert_eq!(
+                types,
+                vec!["song_changed", "state_changed", "library_changed"],
+                "library_changed is how library enrichment discovers work: {}",
+                first
+            );
 
             ws.send(Message::Text(
                 r#"{"type":"welcome","client_id":1,"message":"Connected"}"#.to_string(),
@@ -632,7 +735,7 @@ mod tests {
             ws
         });
 
-        let (rx, _stop) = subscriber(addr, absent_core());
+        let (rx, _wakes, _stop) = subscriber(addr, absent_core());
         let event = rx.recv_timeout(PATIENCE).expect("an event should arrive");
         match event {
             NowPlayingEvent::SongChanged { source, song } => {
@@ -666,7 +769,7 @@ mod tests {
             }
         });
 
-        let (rx, _stop) = subscriber(addr, absent_core());
+        let (rx, _wakes, _stop) = subscriber(addr, absent_core());
 
         for expected in ["first", "second"] {
             match rx.recv_timeout(PATIENCE) {
@@ -675,6 +778,82 @@ mod tests {
                 }
                 other => panic!("expected {} over its own connection, got {:?}", expected, other),
             }
+        }
+        server.join().unwrap();
+    }
+
+    /// A `library_changed` frame goes to the puller and nowhere else -- and it
+    /// arrives naming the player and nothing more.
+    ///
+    /// The frame carries a `library_version` and a `library_generation`, and
+    /// asserting the wake is exactly `Wake::Library("mpd")` is what pins them as
+    /// dropped: a [`Wake`](crate::library_puller::Wake) that carried either
+    /// could not be equal to this. That is the ruling, enforced by a type rather
+    /// than by a comment asking nobody to compare them.
+    #[test]
+    fn a_library_changed_frame_wakes_the_puller_and_is_not_a_now_playing_event() {
+        use crate::library_puller::Wake;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = accept(stream).unwrap();
+            ws.read().unwrap(); // the subscription
+            ws.send(Message::Text(library_changed_frame("mpd"))).unwrap();
+            ws
+        });
+
+        let (rx, wakes, _stop) = subscriber(addr, absent_core());
+
+        // The connect's own seed comes first, then the frame's wake.
+        assert_eq!(
+            wakes.recv_timeout(PATIENCE).expect("the connect seed"),
+            Wake::Everything
+        );
+        assert_eq!(
+            wakes.recv_timeout(PATIENCE).expect("the frame's wake"),
+            Wake::Library("mpd".to_string()),
+            "a library doorbell names the player and carries no token"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a library_changed frame is not a now-playing event"
+        );
+        let _ws = server.join().unwrap();
+    }
+
+    /// Every connect asks the puller for a full sweep, not just the first.
+    ///
+    /// This is the library half of the gap recovery, and the whole reason the
+    /// puller's own interval can be slow: nothing replays a `library_changed`
+    /// missed while the socket was down, so a reconnect has to assume it missed
+    /// one. Proved over two connections, so nothing here depends on timing.
+    #[test]
+    fn every_connect_asks_the_puller_to_sweep_everything() {
+        use crate::library_puller::Wake;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                let mut ws = accept(stream).unwrap();
+                ws.read().unwrap(); // the subscription
+                // Dropped here: the connection is lost and the subscriber
+                // reconnects, which is the second connect this asserts on.
+            }
+        });
+
+        let (_rx, wakes, _stop) = subscriber(addr, absent_core());
+
+        for connect in ["the first connect", "the reconnect"] {
+            assert_eq!(
+                wakes.recv_timeout(PATIENCE).expect(connect),
+                Wake::Everything,
+                "{} must ask the puller to sweep everything",
+                connect
+            );
         }
         server.join().unwrap();
     }
@@ -699,7 +878,7 @@ mod tests {
             (ws, next)
         });
 
-        let (_rx, _stop) = subscriber(addr, absent_core());
+        let (_rx, _wakes, _stop) = subscriber(addr, absent_core());
         let (_ws, next) = server.join().expect("the server thread should finish");
         assert!(
             matches!(next, Ok(Message::Ping(_))),
@@ -711,6 +890,13 @@ mod tests {
     /// Dropping the receiver is how the daemon says nothing wants these
     /// events, and the subscriber has to notice rather than hold a
     /// subscription open. Observed by the thread finishing, not by a timer.
+    ///
+    /// **It takes the library puller's trigger with it**, asserted below,
+    /// because that consequence is what makes dropping this receiver a decision
+    /// rather than a tidy-up: the socket is also the only thing that tells the
+    /// puller a library has finished loading. `startup::keep_the_socket_open` is
+    /// what stops an installation with no now-playing worker configured from
+    /// taking this path a second after it starts.
     #[test]
     fn dropping_the_receiver_ends_the_subscriber() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -737,10 +923,14 @@ mod tests {
         let (tx, rx) = unbounded();
         let (done_tx, done_rx) = unbounded();
         let url = format!("ws://{}/api/events", addr);
+        // The wake receiver is held for the length of the test: a dropped one
+        // would make the connect's seed fail, which is not what is under test
+        // here and must not be what ends the loop.
+        let (wakes, wake_rx) = crate::library_puller::wake_channel();
         // No stop channel here: the dropped receiver has to be enough on its
         // own, which is the whole point of the test.
         std::thread::spawn(move || {
-            run(&url, absent_core(), tx, quick(), None);
+            run(&url, absent_core(), tx, wakes, quick(), None);
             let _ = done_tx.send(());
         });
 
@@ -752,6 +942,19 @@ mod tests {
         done_rx
             .recv_timeout(PATIENCE)
             .expect("the subscriber must stop once nothing is listening");
+        // Past the connect's own seed, which is already queued: `recv` drains
+        // what is there and then reports the channel closed, so this terminates
+        // exactly when the sender is gone.
+        let mut wake = wake_rx.recv();
+        while wake.is_ok() {
+            wake = wake_rx.recv();
+        }
+        assert_eq!(
+            wake,
+            Err(crossbeam::channel::RecvError),
+            "the subscriber holds the puller's only trigger, so a socket closed \
+             here leaves the puller with nothing but its backstop"
+        );
         server.join().unwrap();
     }
 
@@ -774,7 +977,7 @@ mod tests {
             ws
         });
 
-        let (rx, _stop) = subscriber(addr, Arc::new(CoreClient::new(&core.base_url())));
+        let (rx, _wakes, _stop) = subscriber(addr, Arc::new(CoreClient::new(&core.base_url())));
         match rx.recv_timeout(PATIENCE) {
             Ok(NowPlayingEvent::SongChanged { source, song }) => {
                 assert_eq!(source.player_name, "spotify");
@@ -797,17 +1000,17 @@ mod tests {
         .to_string();
         assert_eq!(
             parse_frame(&frame),
-            Some(NowPlayingEvent::StateChanged {
+            Some(Frame::NowPlaying(NowPlayingEvent::StateChanged {
                 source: PlayerSource::new("mpd".into(), "mpd:1".into()),
                 state: PlaybackState::Paused,
-            })
+            }))
         );
     }
 
-    /// The frames the player sends that are not events, plus the one event
-    /// that has no player at all.
+    /// The frames the player sends that this side acts on none of, plus the one
+    /// event that has no player at all.
     #[test]
-    fn frames_that_are_not_now_playing_events_are_ignored() {
+    fn frames_that_are_not_acted_on_are_ignored() {
         for frame in [
             r#"{"type":"welcome","client_id":3,"message":"Connected to ACR WebSocket API"}"#,
             r#"{"type":"subscription_updated","message":"Subscription updated successfully"}"#,
@@ -816,11 +1019,36 @@ mod tests {
             r#"{"type":"volume_changed","control_name":"Digital","percentage":40}"#,
             r#"{"type":"song_changed","player_id":"mpd:1","song":{"title":"Nemo"}}"#,
             r#"{"type":"state_changed","player_name":"mpd","player_id":"mpd:1","state":"levitating"}"#,
+            // A library doorbell that names no player is one nothing can act
+            // on: the puller addresses `GET /api/library/<p>` by that name.
+            r#"{"type":"library_changed","library_version":"v1","library_generation":"g1"}"#,
             "not json at all",
             "{}",
         ] {
             assert_eq!(parse_frame(frame), None, "should be ignored: {}", frame);
         }
+    }
+
+    /// A library doorbell keeps its player and loses its tokens. The parse is
+    /// where that happens, so it is asserted here as well as through the socket:
+    /// the variant has nowhere to put a version, which is the point.
+    #[test]
+    fn a_library_changed_frame_parses_to_the_player_alone() {
+        assert_eq!(
+            parse_frame(&library_changed_frame("lms")),
+            Some(Frame::LibraryChanged {
+                player: "lms".to_string()
+            })
+        );
+        // Both tokens null, which is what LMS sends: still a doorbell.
+        assert_eq!(
+            parse_frame(
+                r#"{"type":"library_changed","player_name":"lms","player_id":"lms","library_version":null,"library_generation":null}"#
+            ),
+            Some(Frame::LibraryChanged {
+                player: "lms".to_string()
+            })
+        );
     }
 
     /// A stopping player reports a null song, and the Last.fm worker clears
@@ -831,10 +1059,10 @@ mod tests {
         let frame = r#"{"type":"song_changed","player_name":"mpd","player_id":"mpd:1","song":null}"#;
         assert_eq!(
             parse_frame(frame),
-            Some(NowPlayingEvent::SongChanged {
+            Some(Frame::NowPlaying(NowPlayingEvent::SongChanged {
                 source: PlayerSource::new("mpd".into(), "mpd:1".into()),
                 song: None,
-            })
+            }))
         );
     }
 

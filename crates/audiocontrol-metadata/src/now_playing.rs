@@ -13,21 +13,31 @@ use std::sync::Arc;
 
 use crate::lastfm_worker::LastfmWorkerConfig;
 
-/// Start the enrichment workers on `events`.
+/// Start the enrichment workers on `events`, or hand `events` back untouched.
 ///
-/// Returns whether anything is reading them. `false` means the caller should
-/// drop the sending end rather than fill a channel nobody reads: the
-/// subscriber in [`crate::now_playing_ws`], which is what feeds `events`,
-/// ends its loop and closes the socket at the first event it cannot deliver.
+/// `Ok(())` means something is reading them. **`Err(events)` returns the
+/// receiver unconsumed, and the caller must decide what to do with it** --
+/// because dropping it is no longer a harmless way of saying "nobody wants
+/// these". The subscriber in [`crate::now_playing_ws`] ends its loop and closes
+/// the socket at the first event it cannot deliver, and that socket now carries
+/// `library_changed` for the library puller as well; dropping this receiver
+/// therefore stops library enrichment being told anything, on an installation
+/// whose only fault is having no now-playing worker configured.
+///
+/// This used to return a plain `bool` and drop the receiver on the way out,
+/// which was right while now-playing was the socket's only purpose.
 /// (`now_playing_bridge` on the player side had the same contract and
-/// unsubscribed from the event bus instead, but the daemon no longer uses
-/// it.)
+/// unsubscribed from the event bus instead, but the daemon no longer uses it.)
+///
+/// What has not changed is why an unread channel is refused rather than filled:
+/// an unbounded channel nobody reads grows by one event per song change for the
+/// life of the daemon.
 pub fn start(
     events: Receiver<NowPlayingEvent>,
     sink: Arc<dyn SongInformationSink>,
     state: Arc<dyn PlaybackStateSource>,
     lastfm: Option<LastfmWorkerConfig>,
-) -> bool {
+) -> Result<(), Receiver<NowPlayingEvent>> {
     let mut senders: Vec<Sender<NowPlayingEvent>> = Vec::new();
 
     let (cover_tx, cover_rx) = unbounded();
@@ -44,7 +54,7 @@ pub fn start(
 
     if senders.is_empty() {
         debug!("No now-playing workers configured; not consuming events");
-        return false;
+        return Err(events);
     }
 
     info!(
@@ -52,7 +62,7 @@ pub fn start(
         senders.len()
     );
     fan_out(events, senders);
-    true
+    Ok(())
 }
 
 /// Copy every event to every worker, on a thread of its own.
@@ -143,18 +153,31 @@ mod tests {
     }
 
     /// With no cover art endpoint configured and no Last.fm entry there is
-    /// nothing to enrich with, and saying so is what lets the player side stop
-    /// producing events. Answering `true` here would leave an unbounded channel
-    /// growing for the life of the daemon.
+    /// nothing to enrich with, and saying so is what keeps an unbounded channel
+    /// nobody reads from growing for the life of the daemon.
+    ///
+    /// **The receiver comes back rather than being dropped**, which is the part
+    /// that matters to the caller: the socket feeding it also carries
+    /// `library_changed`, so whoever asked has to keep it open even with no
+    /// now-playing worker to hand it to.
     #[test]
-    fn nothing_configured_means_nothing_consumes_the_events() {
+    fn nothing_configured_means_the_events_are_handed_back_unconsumed() {
         // `configured_providers` reads a process-global installed from the
         // configuration, so say what this test needs rather than depending on
         // no other test in this process having installed one.
         crate::external_coverart::initialize_from_config(&serde_json::json!({}));
 
-        let (_tx, events) = unbounded();
+        let (tx, events) = unbounded();
         let sink = Arc::new(NullSink);
-        assert!(!start(events, sink.clone(), sink, None));
+        let returned = start(events, sink.clone(), sink, None)
+            .expect_err("nothing is configured, so nothing consumes the events");
+
+        tx.send(state_event())
+            .expect("the returned receiver keeps the channel open");
+        assert_eq!(
+            returned.recv_timeout(Duration::from_secs(1)).unwrap(),
+            state_event(),
+            "and it is the same channel, not a fresh one"
+        );
     }
 }

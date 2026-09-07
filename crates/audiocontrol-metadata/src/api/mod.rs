@@ -1,7 +1,6 @@
 pub mod artist;
 pub mod capabilities;
 pub mod coverart;
-pub mod enrich;
 pub mod favourites;
 pub mod lastfm;
 pub mod resolve;
@@ -14,6 +13,15 @@ pub mod theaudiodb;
 /// a collision by rank and then by declaration order, so both have to be
 /// carried across unchanged.
 ///
+/// **There is no `/enrich` route any more.** `POST /enrich/nudge` was how the
+/// player daemon asked this side to look at a library it had just loaded, and
+/// nothing on this daemon may be called by the player daemon after the one-way
+/// seam. The `library_changed` event replaced it, travelling the other way over
+/// the socket this side already holds open; see `crate::library_puller`. The
+/// route is deleted rather than deprecated because it was introduced in the
+/// unreleased 0.22.0 and its only caller ships in the same release, so there is
+/// no stale caller a deprecation window could protect.
+///
 /// **There is no `/spotify` group any more.** The account moved to the player
 /// daemon with the one-way seam, and all thirteen of its routes went with it
 /// (`src/api/spotify.rs` there). The client-visible paths are unchanged; what
@@ -24,7 +32,7 @@ pub fn routes() -> Vec<(String, Vec<rocket::Route>)> {
     vec![
         // Mounted at the bare API prefix, as it was when it sat inline in the
         // daemon's own `api_routes` list. `theaudiodb::lookup_artist_by_mbid`
-        // came first; the four routes after it are new in this phase and are
+        // came first; the three routes after it are new in this phase and are
         // appended rather than interleaved so its declaration position is
         // unchanged.
         (
@@ -34,7 +42,6 @@ pub fn routes() -> Vec<(String, Vec<rocket::Route>)> {
                 artist::get_artist,
                 resolve::title_order,
                 resolve::artist_split,
-                enrich::nudge,
             ],
         ),
         (

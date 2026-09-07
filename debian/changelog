@@ -23,8 +23,15 @@ hifiberry-audiocontrol (0.22.0) trixie; urgency=medium
     every close instead -- see doc/websocket.md.
 
   * New routes for the metadata side, mounted both at their existing paths
-    and under /api/metadata/: artist detail, the two resolvers, an enrichment
-    nudge and a capabilities report. Existing paths are unchanged.
+    and under /api/metadata/: artist detail, the two resolvers and a
+    capabilities report. Existing paths are unchanged.
+
+  * New WebSocket event, library_changed, sent when a player's library is
+    loaded or reloaded. A client that does not subscribe to it sees no
+    difference; one that displays library contents can use it to refresh
+    instead of polling. A reload sends it twice -- once as the rebuild starts
+    and once when the finished library is readable -- and it is a signal to
+    re-read rather than a value to compare: see doc/websocket.md.
 
   * The library gains a generation token, distinct from its version, so an
     enrichment batch computed against a library that has since reloaded is

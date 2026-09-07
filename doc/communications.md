@@ -81,9 +81,9 @@ graph TB
             PROV["providers<br/>MusicBrainz · TheAudioDB<br/>FanArt.tv · Last.fm · Spotify"]
             STORE["artist_store<br/>cover art, images, bios"]
             WS["now_playing_ws<br/>WebSocket subscriber"]
-            PULL["library_puller<br/>30 s poll"]
+            PULL["library_puller<br/>event-driven<br/>10 min backstop"]
             CC["core_client<br/><b>CoreClient</b>"]
-            MAPI["api/<br/>artist · resolve · enrich<br/>capabilities"]
+            MAPI["api/<br/>artist · resolve<br/>capabilities"]
         end
     end
 
@@ -190,12 +190,11 @@ graph LR
     P["player half"]
     M["metadata half"]
 
-    P -->|"1a. events over WebSocket"| M
+    P -->|"1a. events over WebSocket<br/>song, state, library"| M
     M -->|"1b. POST song-information"| P
     M -->|"1c. GET player — playback state"| P
     M -->|"2a. GET library, artists, albums"| P
     M -->|"2b. POST library enrichment"| P
-    P -->|"2c. POST enrich/nudge"| M
     P -->|"3. GET resolve/*"| M
     M -->|"4. GET spotify/access_token"| P
     P -->|"detail: GET artist, coverart image"| M
@@ -203,12 +202,11 @@ graph LR
 
 | # | Seam | Direction | Transport | Timeout | On failure |
 |---|---|---|---|---|---|
-| 1a | Song and state changes | player → metadata | WebSocket, `ws://…/api/events` | reconnect backoff capped at 30 s | nothing is enriched during a gap; a per-connect seed recovers the current song |
+| 1a | Song, state and library changes | player → metadata | WebSocket, `ws://…/api/events` | reconnect backoff capped at 30 s | nothing is enriched during a gap; a per-connect seed recovers the current song and asks the puller to sweep every library |
 | 1b | Enrichment results | metadata → player | `POST /api/player/<name>/song-information` | 5 s | result is dropped; the next lookup re-sends |
 | 1c | Playback state | metadata → player | `GET /api/player` | 5 s | the Last.fm worker skips one 30 s reconciliation |
-| 2a | Library contents | metadata → player | `GET /api/library`, `/library/<p>`, `/artists`, `/albums` | 5 s | the sweep does not start; the next poll retries |
+| 2a | Library contents | metadata → player | `GET /api/library`, `/library/<p>`, `/artists`, `/albums` | 5 s | the sweep does not start; the next event or backstop sweep retries |
 | 2b | Enrichment batches | metadata → player | `POST /api/library/<p>/enrichment` | 5 s | 409 ends the sweep and the next poll re-pulls; 404 ends it |
-| 2c | Nudge | player → metadata | `POST /api/enrich/nudge?player=` | 1 s | ignored — the 30 s poll covers it |
 | 3 | Title order, artist split | player → metadata | `GET /api/resolve/…` | 5 s | `unknown` order; plain separator split |
 | 4 | Spotify access token | metadata → player | `GET /api/spotify/access_token` | 5 s | `None`; 60 s cache bounds re-asking |
 | — | Artist detail | player → metadata | `GET /api/artist/<b64>` | 1 s | `None` — the field is simply absent |
@@ -218,7 +216,8 @@ The two clients:
 
 - **`MetadataClient`** — `src/audiocontrol/metadata_client.rs`, player half,
   pointed at `services.metadata.url`. Carries `Resolver` and
-  `LibraryEnricher`.
+  `LibraryEnricher` -- whose `enrich` is now a no-op, since the route it called
+  is gone.
 - **`CoreClient`** — `crates/audiocontrol-metadata/src/core_client.rs`,
   metadata half, pointed at `services.core.url`. Carries
   `SongInformationSink`, `PlaybackStateSource` and `AccessTokenSource`, and
@@ -308,26 +307,36 @@ has gone away stops answering and is still reaped.
 
 ## Seam 2: library enrichment
 
-The metadata half discovers libraries by polling, enriches what is new, and
-posts results back in batches. The player half may hint that a library has just
-loaded, but nothing depends on the hint arriving.
+The metadata half is told when a library changes, enriches what is new, and
+posts results back in batches. It is told over seam 1a — the `library_changed`
+event — and it also sweeps every library on every connect, because nothing
+replays an event missed while the socket was down. A slow periodic sweep remains
+as a backstop for an event that was neither delivered nor seeded.
+
+**A reload announces itself twice, and only the second announcement finds
+work.** Both backends emit the event as the rebuild starts, when the library
+reports `is_loaded: false`; the puller correctly declines to enrich a
+half-rebuilt library and does nothing at all. The announcement that matters is
+the one made when the load has finished. That is why `mark_loaded_and_announce`
+sets the loaded flag and sends the event in a single call on both backends: with
+only the first announcement, enrichment would wait for the backstop on every
+load.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant PLIB as MPD library
-    participant MC as MetadataClient
+    participant WS as api/events → now_playing_ws
     participant PULL as library_puller
     participant CC as CoreClient
     participant SINK as HttpEnrichmentSink
     participant ROUTE as api/enrichment
 
-    Note over PLIB,MC: optional hint — the poll covers it either way
-    PLIB->>MC: request_enrichment (after a load)
-    MC->>PULL: POST /api/enrich/nudge?player=mpd
-    PULL-->>MC: 202 Accepted
+    Note over PLIB,WS: the load announces itself; nothing is called on the metadata side
+    PLIB->>WS: library_changed (loaded, tokens raw)
+    WS->>PULL: wake naming "mpd" — no tokens travel
 
-    loop every 30 s, or on a nudge
+    loop on a wake, on every connect, or every 10 min
         PULL->>CC: GET /api/library
         CC-->>PULL: players with has_library && is_loaded
         PULL->>CC: GET /api/library/mpd
@@ -348,7 +357,7 @@ sequenceDiagram
                     Note over SINK: record the returned version as seen —<br/>the merge bumped it, and our own<br/>write must not look like a change
                 else library reloaded since
                     ROUTE-->>SINK: 409 {library_generation, library_version}
-                    Note over SINK: sweep ends; next poll re-pulls
+                    Note over SINK: sweep ends; the next pass re-pulls
                 else no such player or library
                     ROUTE-->>SINK: 404
                     Note over SINK: sweep ends
@@ -732,10 +741,12 @@ Phase 2 needs a start-up check that `core.url` is set, not a comment.
 
 Written down because a document that only describes what works is not a map.
 
-- **`enhance_metadata: false` no longer disables library enrichment.** It
-  suppresses only the nudge; the puller sweeps every loaded library regardless.
-  The design document said this flag becomes a no-op and is removed from the
-  docs — it is currently neither, so it looks live and is half-live.
+- **`enhance_metadata: false` no longer disables library enrichment.** It now
+  suppresses nothing at all: it guards `request_enrichment`, whose HTTP form is
+  a no-op since the nudge route went, while the puller sweeps every loaded
+  library regardless. The design document said this flag becomes a no-op and is
+  removed from the docs — it is now the first and still not the second, so it
+  looks live and is dead.
 - **The auth manifest was not extended to `/api/audiocontrol/metadata/…`.**
   Reads that are permissive on the historical path fall into the authenticated
   catch-all there. Fail-closed, so nothing is less safe, but a client written
@@ -746,8 +757,10 @@ Written down because a document that only describes what works is not a map.
   `artist_separators` in configuration does not invalidate what is already
   cached.
 - **`request_enrichment` builds a payload that is discarded.** It clones every
-  artist and album reference; the HTTP form sends only the nudge. On a large
-  library that is tens of thousands of allocations per load for nothing.
+  artist and album reference and the HTTP form now sends nothing at all — it
+  used to at least send the nudge. On a large library that is tens of thousands
+  of allocations per load for nothing, and the call site should go when
+  `MetadataClient` does.
 - **`EnrichmentSink`'s error type cannot express a transport failure**, so a
   dropped request is reported as "the library is gone" and abandons the sweep.
   Harmless on loopback; in Phase 2 one dropped request costs a whole sweep

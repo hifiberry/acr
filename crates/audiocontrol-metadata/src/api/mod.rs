@@ -1,6 +1,10 @@
+pub mod artist;
+pub mod capabilities;
 pub mod coverart;
+pub mod enrich;
 pub mod favourites;
 pub mod lastfm;
+pub mod resolve;
 pub mod spotify;
 pub mod theaudiodb;
 
@@ -47,8 +51,20 @@ pub fn routes(spotify_api_enabled: bool) -> Vec<(String, Vec<rocket::Route>)> {
 
     vec![
         // Mounted at the bare API prefix, as it was when it sat inline in the
-        // daemon's own `api_routes` list.
-        ("".to_string(), rocket::routes![theaudiodb::lookup_artist_by_mbid]),
+        // daemon's own `api_routes` list. `theaudiodb::lookup_artist_by_mbid`
+        // came first; the four routes after it are new in this phase and are
+        // appended rather than interleaved so its declaration position is
+        // unchanged.
+        (
+            "".to_string(),
+            rocket::routes![
+                theaudiodb::lookup_artist_by_mbid,
+                artist::get_artist,
+                resolve::title_order,
+                resolve::artist_split,
+                enrich::nudge,
+            ],
+        ),
         (
             "/lastfm".to_string(),
             rocket::routes![
@@ -79,4 +95,63 @@ pub fn routes(spotify_api_enabled: bool) -> Vec<(String, Vec<rocket::Route>)> {
             ],
         ),
     ]
+}
+
+/// Routes this crate serves only when it runs its own Rocket, not when it
+/// shares one with the player daemon.
+///
+/// Today (this phase) [`routes`] is the whole story: everything in it is
+/// mounted into the player daemon's Rocket alongside `src/api/server.rs`'s
+/// own routes, at `src/main.rs`. `capabilities::get_capabilities` cannot join
+/// it there — the player daemon already serves `GET /capabilities` at the
+/// same mount point and rank (`src/api/server.rs`'s own `api_routes`), and
+/// Rocket refuses to ignite over an exact duplicate route rather than
+/// resolving it by declaration order. This function exists so that route is
+/// written and tested now rather than invented from scratch once this crate
+/// serves a Rocket of its own — it is simply not part of the set the shared
+/// process mounts.
+///
+/// Shaped the same as [`routes`] (mount point, routes) rather than a bare
+/// `Vec<Route>`, so a later addition to this list — this phase has exactly
+/// one entry — needs no change to how a caller mounts it.
+pub fn standalone_routes() -> Vec<(String, Vec<rocket::Route>)> {
+    vec![("".to_string(), rocket::routes![capabilities::get_capabilities])]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rocket::http::Status;
+    use rocket::local::blocking::Client;
+
+    /// `standalone_routes` mounted the way a standalone metadata Rocket
+    /// would mount it -- proving the function itself wires the route through,
+    /// not just that `capabilities::get_capabilities` works when mounted by
+    /// hand (that is `capabilities`'s own test).
+    #[test]
+    fn standalone_routes_serve_capabilities() {
+        let mut rocket = rocket::build();
+        for (mount, routes) in standalone_routes() {
+            rocket = rocket.mount(format!("/api{}", mount), routes);
+        }
+        let client = Client::tracked(rocket).unwrap();
+        let response = client.get("/api/capabilities").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+    }
+
+    /// `routes(..)` never gains `capabilities::get_capabilities` back: that
+    /// route mounting at the same rank the player daemon already serves it
+    /// at is exactly the collision this split exists to avoid.
+    #[test]
+    fn routes_never_reclaims_the_capabilities_path() {
+        for (_, group) in routes(false) {
+            for route in group {
+                assert_ne!(
+                    (route.method, route.uri.path()),
+                    (rocket::http::Method::Get, "/capabilities"),
+                    "api::routes must not mount /capabilities -- it collides with the player daemon's own"
+                );
+            }
+        }
+    }
 }

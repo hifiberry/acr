@@ -894,4 +894,57 @@ mod tests {
 
         assert!(lastfm_worker_config(&config).is_none());
     }
+
+    /// The class of bug this guards against already happened once: the
+    /// metadata crate's plan for `GET /capabilities` put it in
+    /// `audiocontrol_metadata::api::routes(..)`'s `""` group, which mounts at
+    /// the same `API_PREFIX` this daemon's own `api_routes()` mounts at, and
+    /// the daemon already serves `GET /capabilities` there itself. Two
+    /// routes at the same method, path and rank make Rocket refuse to
+    /// ignite rather than pick one -- see `src/api/server.rs`'s comment on
+    /// `extra_routes`, and the `capabilities.rs` module doc in the metadata
+    /// crate that this test exists precisely so nobody has to remember that
+    /// history to avoid repeating it.
+    ///
+    /// `extra_routes` (near the top of `main`, where the two route sets
+    /// actually meet) does not itself get exercised here -- neither list is
+    /// built without also standing up the rest of `main`'s startup, which
+    /// this test has no interest in. What can be checked cheaply is that the
+    /// two route sets that `extra_routes` is mounted alongside stay disjoint
+    /// by (method, full path); that is the only thing a Rocket collision
+    /// actually cares about.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn the_metadata_crates_routes_do_not_collide_with_the_daemons_own() {
+        use audiocontrol::api::server;
+        use audiocontrol::constants::API_PREFIX;
+        use rocket::http::Method;
+        use std::collections::HashSet;
+
+        fn full_path(prefix: &str, route: &rocket::Route) -> (Method, String) {
+            (route.method, format!("{}{}", prefix, route.uri.path()))
+        }
+
+        let daemon_routes: HashSet<(Method, String)> = server::api_routes()
+            .iter()
+            .map(|route| full_path(API_PREFIX, route))
+            .collect();
+
+        // If this is empty the loop below would pass vacuously; make sure
+        // there is actually something in it to collide with.
+        assert!(daemon_routes.contains(&(Method::Get, format!("{}/capabilities", API_PREFIX))));
+
+        for (mount, routes) in audiocontrol_metadata::api::routes(false) {
+            let prefix = format!("{}{}", API_PREFIX, mount);
+            for route in &routes {
+                let key = full_path(&prefix, route);
+                assert!(
+                    !daemon_routes.contains(&key),
+                    "metadata route {:?} {} collides with a route the daemon already mounts there",
+                    key.0,
+                    key.1
+                );
+            }
+        }
+    }
 }

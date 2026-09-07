@@ -52,6 +52,7 @@ This document describes the REST API endpoints available in the Audio Control RE
 - [External Services API](#external-services-api)
   - [MusicBrainz Integration](#musicbrainz-integration)
   - [TheAudioDB Integration](#theaudiodb-integration)
+  - [Metadata Service Routes](#metadata-service-routes)
   - [Last.fm Integration](#lastfm-integration)
   - [Favourites Management](#favourites-management)
 - [Lyrics API](#lyrics-api)
@@ -2131,6 +2132,117 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 - Validating artist MusicBrainz ID mappings
 - Testing external service rate limiting
 - Debugging TheAudioDB API configuration
+
+### Metadata Service Routes
+
+These four routes are served by the metadata side of the daemon (the code that
+will become a separate `audiocontrol-metadata` process in a later phase) but
+answer at `/api` alongside everything else in this document, because both
+halves currently share one Rocket. They exist so the player daemon can ask
+over HTTP for what it used to compute in-process; nothing about calling them
+from outside the daemon is unsupported, but the player-facing routes earlier
+in this document (`Get Artist by Name`, `Get Artist by ID`, `Get Artist by
+MusicBrainz ID`, `Stream Title Splitting`) are almost always the better fit
+for a client, since they merge this data with what the player daemon already
+knows.
+
+*`GET /capabilities` is not one of the four.* The metadata crate carries its
+own copy of that route for the future standalone process, but it is not
+mounted here: the player daemon already serves `GET /capabilities` (see
+above) at the same path, and two identical routes at the same rank make
+Rocket refuse to start rather than pick one.
+
+#### Get Artist Detail
+
+Returns what the metadata side knows about one artist, by name.
+
+- **Endpoint**: `/api/artist/<artist_b64>`
+- **Method**: GET
+- **Path Parameters**:
+  - `artist_b64` (string): The artist name, URL-safe base64 encoded (see
+    [URL-Safe Base64 Encoding](#url-safe-base64-encoding))
+- **Query Parameters**:
+  - `lookup` (boolean, optional, default `false`): when `true` and nothing is
+    cached yet, run a synchronous lookup through the provider chain (the same
+    one a library load runs) before answering. The player daemon never sets
+    this; it accepts a miss and waits for the next enrichment batch instead of
+    paying for a lookup on every request.
+- **Response** (200 OK): the cached `ArtistMeta` --- MusicBrainz IDs, thumbnail
+  and banner URLs (in the daemon's own internal form, the same as elsewhere in
+  this API), biography, biography source, genres, and whether the name is a
+  partial match on a multi-artist string.
+- **Response** (404 Not Found): nothing is cached for this artist, and either
+  `lookup` was not set or the lookup found nothing.
+
+```bash
+curl "http://<device-ip>:1080/api/artist/UGluayBGbG95ZA"
+```
+
+#### Resolve Title Order
+
+Guesses which half of a two-part radio stream title is the artist, the same
+MusicBrainz-backed guess the stream title splitter makes for MPD stations.
+
+- **Endpoint**: `/api/resolve/title-order`
+- **Method**: GET
+- **Query Parameters**:
+  - `part1` (string, required): the first half of the split title
+  - `part2` (string, required): the second half
+- **Response** (200 OK):
+
+  ```json
+  { "order": "artist_song" }
+  ```
+
+  `order` is one of `artist_song`, `song_artist`, `unknown` (neither reading
+  matched anything) or `undecided` (both readings did). With MusicBrainz
+  lookups disabled the answer is always `unknown`, which callers already treat
+  as "keep the fallback order and don't learn from this."
+
+#### Resolve Artist Split
+
+Decides whether a combined artist string names more than one artist, the same
+check both library loaders run at load time on every album's artist field.
+
+- **Endpoint**: `/api/resolve/artist-split`
+- **Method**: GET
+- **Query Parameters**:
+  - `name` (string, required): the combined artist string, e.g. `Simon &
+    Garfunkel`
+  - `separators` (string, optional): a comma-separated list of separators to
+    try instead of the built-in defaults (`,`, `&`, ` feat `, ` feat.`, `
+    featuring `, ` with `)
+- **Response** (200 OK):
+
+  ```json
+  { "artists": ["Simon", "Garfunkel"] }
+  ```
+
+  or, when the name is a single artist:
+
+  ```json
+  { "artists": null }
+  ```
+
+  The answer is cached without expiry once computed, keyed on the exact input
+  string.
+
+#### Nudge Enrichment
+
+Advisory hint that the metadata side should pull one player's library sooner
+than its next periodic poll, e.g. right after a library load.
+
+- **Endpoint**: `/api/enrich/nudge`
+- **Method**: POST
+- **Query Parameters**:
+  - `player` (string, required): the player name whose library changed
+- **Response** (202 Accepted): always, whether or not anything acts on the
+  nudge before this call returns. A nudge that is dropped or ignored is
+  harmless: the periodic poll covers it regardless.
+
+```bash
+curl -X POST "http://<device-ip>:1080/api/enrich/nudge?player=mpd"
+```
 
 ### Favourites API
 

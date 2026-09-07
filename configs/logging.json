@@ -36,7 +36,7 @@
     "acr_http::ratelimit": "info",
     "acr_http::retry": "info",
     "acr_types::sanitize": "info",
-    "audiocontrol_metadata::security_store": "info",
+    "acr_secrets::security_store": "info",
     "acr_store::settingsdb": "info",
     "audiocontrol::helpers::shairportsync_messages": "info",
     "audiocontrol::helpers::songsplitmanager": "info",

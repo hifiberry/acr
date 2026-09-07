@@ -11,7 +11,7 @@ use thiserror::Error;
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
 
-use crate::security_store::SecurityStore;
+use acr_secrets::security_store::SecurityStore;
 use acr_types::sanitize;
 
 // Constants for token storage
@@ -62,7 +62,7 @@ pub enum SpotifyError {
     TokenNotFound,
     
     #[error("Security store error: {0}")]
-    SecurityStoreError(#[from] crate::security_store::SecurityStoreError),
+    SecurityStoreError(#[from] acr_secrets::security_store::SecurityStoreError),
     
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),

@@ -109,7 +109,7 @@ Available log levels in order of verbosity:
 
 #### `security`
 - **Description**: Security store and sensitive data handling
-- **Modules**: `audiocontrol_metadata::security_store`
+- **Modules**: `acr_secrets::security_store`
 - **Typical Messages**: Encryption operations, key management
 
 ### Infrastructure Subsystems

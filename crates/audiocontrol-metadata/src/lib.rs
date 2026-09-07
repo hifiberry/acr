@@ -20,7 +20,6 @@ pub mod musicbrainz;
 pub mod now_playing;
 pub mod now_playing_ws;
 pub mod resolver;
-pub mod security_store;
 pub mod spotify;
 pub mod startup;
 pub mod theaudiodb;

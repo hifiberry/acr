@@ -87,7 +87,7 @@ impl LoggingSubsystem {
             // one was wrong before the crates moved.
             LoggingSubsystem::WebSocket => "audiocontrol::api::events,rocket_ws",
             LoggingSubsystem::Library => "audiocontrol::data::library",
-            LoggingSubsystem::Security => "audiocontrol_metadata::security_store",
+            LoggingSubsystem::Security => "acr_secrets::security_store",
             LoggingSubsystem::Http => "acr_http::http_client,reqwest,hyper",
             LoggingSubsystem::Network => "tokio,mio",
             // Was `sled`, which this workspace has never depended on, and then
@@ -574,6 +574,7 @@ mod tests {
         ("acr_images", "crates/acr-images/src"),
         ("acr_store", "crates/acr-store/src"),
         ("acr_web", "crates/acr-web/src"),
+        ("acr_secrets", "crates/acr-secrets/src"),
     ];
 
     /// Log targets that belong to crates we do not own, so nothing here can

@@ -57,14 +57,18 @@ if run_tree -p audiocontrol-metadata --edges normal; then
 else
   fail=1
 fi
-# Crates the player package must not *declare*. moka and aes-gcm are checked
-# against the whole graph, since nothing else pulls them in and a future
-# shared crate that started depending on either must still be caught. regex
-# is the one exception: env_logger, which the daemon and every tool need,
-# pulls it in through env_filter, so it is checked only at depth 1 -- the
-# rule this enforces is about what the manifest asks for, which is the thing
-# a change can get wrong.
-for forbidden in aes-gcm moka; do
+# Crates the player package must not *declare*. moka is checked against the
+# whole graph, since nothing else pulls it in and a future shared crate that
+# started depending on it must still be caught. regex is the one exception:
+# env_logger, which the daemon and every tool need, pulls it in through
+# env_filter, so it is checked only at depth 1 -- the rule this enforces is
+# about what the manifest asks for, which is the thing a change can get wrong.
+#
+# aes-gcm was forbidden here while credentials belonged to the metadata
+# daemon alone. The main daemon now owns the Spotify account, so it holds
+# credentials of its own through acr-secrets and legitimately depends on it.
+# moka and regex are unchanged: nothing in the player package needs either.
+for forbidden in moka; do
   if run_tree -p audiocontrol --no-default-features --edges normal; then
     if echo "$tree_output" | grep -q "^$forbidden "; then
       echo "audiocontrol depends on $forbidden, which belongs to the metadata daemon" >&2; fail=1

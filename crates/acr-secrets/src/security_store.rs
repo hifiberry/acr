@@ -20,17 +20,6 @@ use aes_gcm::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rand::{rngs::OsRng, RngCore};
 
-// Compiled from secrets.txt at build time
-#[cfg(not(test))]
-pub fn default_encryption_key() -> String {
-    crate::secrets::secrets_encryption_key()
-}
-
-#[cfg(test)]
-pub fn default_encryption_key() -> String {
-    "test_encryption_key".to_string()
-}
-
 // Error type for security store operations
 #[derive(Error, Debug)]
 pub enum SecurityStoreError {
@@ -218,16 +207,26 @@ impl SecurityStore {
         Ok(())
     }
 
-    pub fn initialize_with_defaults(file_path: Option<PathBuf>) -> Result<()> {
-        let encryption_key = default_encryption_key();
-
+    /// Initialise the store the way `initialize` does, except the caller's
+    /// default encryption key is named in the call rather than read here.
+    ///
+    /// Before this crate existed, this function read the default key itself
+    /// via a `default_encryption_key()` that called
+    /// `crate::secrets::secrets_encryption_key()` -- a build-time obfuscated
+    /// secret compiled into the metadata crate from `secrets.txt`. Now that
+    /// this store is shared by both daemons, it cannot call back into either
+    /// one's secrets module: that would make the shared crate depend on one
+    /// of its own callers. So the key is a parameter instead, and each binary
+    /// passes its own build-time secret -- the metadata daemon passes
+    /// `crate::secrets::secrets_encryption_key()`.
+    pub fn initialize_with_defaults(encryption_key: &str, file_path: Option<PathBuf>) -> Result<()> {
         if encryption_key == "unknown" {
             debug!("Using unknown encryption key");
         } else {
             debug!("Using default encryption key");
         }
 
-        Self::initialize(&encryption_key, file_path)
+        Self::initialize(encryption_key, file_path)
     }
 
     // Check if the store is initialized
@@ -685,5 +684,37 @@ mod tests {
         // Verify values are still there
         assert_eq!(SecurityStore::get("key1").unwrap(), "value1");
         assert_eq!(SecurityStore::get("key2").unwrap(), "value2");
+    }
+
+    /// A store written by 0.22.0 (the release at the head of `main` when
+    /// `acr-secrets` was extracted, before this test existed) must still
+    /// open. The fixture was produced by the pre-extraction
+    /// `security_store.rs` calling `SecurityStore::initialize("test-key",
+    /// ..)` and `SecurityStore::set("fixture::probe", "kept")` -- the same
+    /// two calls this test makes, just captured to disk beforehand. A
+    /// round-trip test cannot catch a key-derivation or file-format
+    /// regression because it writes with the same code it reads with; this
+    /// one reads bytes only the old code could have produced.
+    #[test]
+    fn a_store_written_by_the_previous_release_still_opens() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        {
+            let store = SECURITY_STORE.clone();
+            *store.initialized.lock() = false;
+            *store.encryption_key.write() = String::new();
+            *store.cipher.lock() = None;
+            *store.data.lock() = SecurityStoreData::default();
+        }
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("security_store.json");
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/security_store_0.22.json"),
+            &path,
+        )
+        .unwrap();
+
+        SecurityStore::initialize("test-key", Some(path)).unwrap();
+        assert_eq!(SecurityStore::get("fixture::probe").unwrap(), "kept");
     }
 }

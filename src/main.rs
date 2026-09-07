@@ -177,7 +177,8 @@ fn main() {
     // run before the attribute cache and the settings database, both of which
     // are set up between this point and there.
     #[cfg(feature = "metadata")]
-    if let Err(e) = audiocontrol_metadata::security_store::SecurityStore::initialize_with_defaults(
+    if let Err(e) = acr_secrets::security_store::SecurityStore::initialize_with_defaults(
+        &audiocontrol_metadata::secrets::secrets_encryption_key(),
         Some(security_store_path.clone()),
     ) {
         error!("Failed to initialize security store at {}: {}. Please check permissions and configuration.", security_store_path.display(), e);

@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use ureq;
 use parking_lot::Mutex;
 // Import SecurityStore and its error type
-use crate::security_store::{SecurityStore, SecurityStoreError};
+use acr_secrets::security_store::{SecurityStore, SecurityStoreError};
 
 const LASTFM_API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 const LASTFM_AUTH_URL: &str = "http://www.last.fm/api/auth/";

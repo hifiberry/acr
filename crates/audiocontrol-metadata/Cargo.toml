@@ -18,6 +18,9 @@ acr-http = { path = "../acr-http" }
 acr-images = { path = "../acr-images" }
 acr-store = { path = "../acr-store" }
 acr-web = { path = "../acr-web" }
+# The encrypted key-value store: this daemon's Last.fm session key and, until
+# it moves to the main daemon, its Spotify tokens.
+acr-secrets = { path = "../acr-secrets" }
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
@@ -37,8 +40,6 @@ once_cell.workspace = true
 parking_lot.workspace = true
 crossbeam.workspace = true
 tungstenite.workspace = true
-aes-gcm.workspace = true
-rand.workspace = true
 url.workspace = true
 # For the command line tools in src/bin/
 clap.workspace = true

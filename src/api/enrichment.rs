@@ -420,6 +420,34 @@ mod tests {
         assert!(lib.albums.read()["Abbey Road"].genres.is_empty());
     }
 
+    /// A batch naming a field the route does not know is refused, not parsed
+    /// with the field dropped.
+    ///
+    /// `library_version` is the one that matters: it is the *other* token in
+    /// this exchange, so it is what a caller writes by mistake, and every
+    /// field of a batch is optional. Without the refusal this body would parse
+    /// into a batch claiming no generation at all, which the route applies
+    /// unchecked — the staleness check defeated by a typo. `doc/api.md`
+    /// documents the 422; this is what holds it to it.
+    #[test]
+    fn a_batch_naming_an_unknown_field_is_refused_rather_than_applied() {
+        let (client, lib) = client_with_library(
+            vec![test_album(1, "Abbey Road", "The Beatles")],
+            vec![],
+        );
+
+        let r = post(
+            &client,
+            "/api/library/mpd/enrichment",
+            r#"{"library_version":"whatever","albums":[{"id":"1","genres":["rock"]}]}"#.to_string(),
+        );
+        assert_eq!(r.status(), Status::UnprocessableEntity);
+        assert!(
+            lib.albums.read()["Abbey Road"].genres.is_empty(),
+            "and nothing was merged from a batch that claimed nothing"
+        );
+    }
+
     #[test]
     fn an_unknown_player_is_not_found() {
         let (client, _lib) = client_with_library(vec![], vec![]);

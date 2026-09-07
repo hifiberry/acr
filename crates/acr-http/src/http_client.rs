@@ -30,7 +30,30 @@ pub enum HttpClientError {
 pub trait HttpClient: Send + Sync + std::fmt::Debug {
     /// Send a POST request with a JSON payload
     fn post_json_value(&self, url: &str, payload: Value) -> Result<Value, HttpClientError>;
-    
+
+    /// Send a POST request with a JSON payload and report the status code
+    /// alongside the parsed body.
+    ///
+    /// [`Self::post_json_value`] above cannot see either: ureq hands a non-2xx
+    /// back as `Err(Error::Status(code, response))` and that method turns the
+    /// whole thing into a `RequestError` string, so the response is dropped and
+    /// the status survives only as text inside an error message. A caller that
+    /// has to *read* a 409's body -- the enrichment seam does, for the library
+    /// generation it carries -- cannot be built on it.
+    ///
+    /// So `Err` here means only that the exchange did not happen or its answer
+    /// was not JSON: a transport failure, a payload that would not serialise,
+    /// or a body that would not parse. **Every HTTP status, 2xx or not, comes
+    /// back as `Ok((status, body))`** -- seeing the status is the entire point
+    /// of the method.
+    ///
+    /// An empty body is `Ok((status, Value::Null))` rather than
+    /// [`HttpClientError::EmptyResponse`], for the same reason: a 404 commonly
+    /// has no body at all, and erroring there would throw away the status the
+    /// caller asked for.
+    fn post_json_status(&self, url: &str, payload: Value) -> Result<(u16, Value), HttpClientError>;
+
+
     /// Send a GET request and return text response
     fn get_text(&self, url: &str) -> Result<String, HttpClientError>;
     
@@ -218,6 +241,62 @@ impl HttpClient for UreqHttpClient {
         }
     }
     
+    fn post_json_status(&self, url: &str, payload: Value) -> Result<(u16, Value), HttpClientError> {
+        debug!("POST request (status-carrying) to {}", url);
+
+        let json_string = match serde_json::to_string(&payload) {
+            Ok(str) => str,
+            Err(e) => {
+                debug!("Failed to serialize JSON payload: {}", e);
+                return Err(HttpClientError::ParseError(format!(
+                    "Failed to serialize JSON payload: {}",
+                    e
+                )));
+            }
+        };
+
+        // The one line that distinguishes this from `post_json_value`: a
+        // non-2xx arrives as `Error::Status(code, response)`, and the response
+        // it carries is the answer, not a failure to have one.
+        let response = match ureq::post(url)
+            .timeout(self.timeout)
+            .set("Content-Type", "application/json")
+            .send_string(&json_string)
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(_, resp)) => resp,
+            Err(e) => {
+                debug!("POST request failed: {}", e);
+                return Err(HttpClientError::RequestError(e.to_string()));
+            }
+        };
+
+        let status = response.status();
+        let response_text = match response.into_string() {
+            Ok(text) => text,
+            Err(e) => {
+                debug!("Failed to read response body: {}", e);
+                return Err(HttpClientError::ParseError(format!(
+                    "Failed to read response body: {}",
+                    e
+                )));
+            }
+        };
+
+        if response_text.trim().is_empty() {
+            return Ok((status, Value::Null));
+        }
+
+        match serde_json::from_str::<Value>(&response_text) {
+            Ok(json_value) => Ok((status, json_value)),
+            Err(e) => {
+                debug!("Failed to parse JSON response: {}", e);
+                debug!("Response text: {}", response_text);
+                Err(HttpClientError::ParseError(e.to_string()))
+            }
+        }
+    }
+
     fn get_text(&self, url: &str) -> Result<String, HttpClientError> {
         debug!("GET text request to {}", url);
         
@@ -869,5 +948,70 @@ mod tests {
             .expect("a body at the cap is allowed");
 
         assert_eq!(bytes.len(), 1000);
+    }
+
+    /// The whole reason `post_json_status` exists: a refusal's body is what the
+    /// caller has to act on. `post_json_value` on the same exchange returns
+    /// `Err(RequestError)` with the body gone, which is asserted alongside so
+    /// that a future "simplification" of one into the other fails here.
+    #[test]
+    fn a_refusal_carries_its_status_and_its_body() {
+        let (port, _rx) = serve_once(
+            409,
+            "application/json",
+            br#"{"library_generation":"g2","library_version":"v9"}"#.to_vec(),
+        );
+        let client = UreqHttpClient::new(5);
+        let url = format!("http://127.0.0.1:{}/enrichment", port);
+
+        let (status, body) = client
+            .post_json_status(&url, serde_json::json!({"albums": []}))
+            .expect("a 409 is an answer, not a failure to get one");
+
+        assert_eq!(status, 409);
+        assert_eq!(body["library_generation"], "g2");
+
+        let (port, _rx) = serve_once(
+            409,
+            "application/json",
+            br#"{"library_generation":"g2"}"#.to_vec(),
+        );
+        let url = format!("http://127.0.0.1:{}/enrichment", port);
+        assert!(
+            client
+                .post_json_value(&url, serde_json::json!({"albums": []}))
+                .is_err(),
+            "the older method still cannot see a refusal's body; that is why this one exists"
+        );
+    }
+
+    /// A 404 from the enrichment route has no body at all. Reporting
+    /// `EmptyResponse` there would lose the status, which is the one thing the
+    /// caller came for.
+    #[test]
+    fn an_empty_body_is_a_null_value_and_not_an_error() {
+        let (port, _rx) = serve_once(404, "application/json", Vec::new());
+        let client = UreqHttpClient::new(5);
+
+        let (status, body) = client
+            .post_json_status(
+                &format!("http://127.0.0.1:{}/enrichment", port),
+                serde_json::json!({}),
+            )
+            .expect("an empty body must not hide the status");
+
+        assert_eq!(status, 404);
+        assert_eq!(body, Value::Null);
+    }
+
+    /// `Err` is reserved for the exchange not happening. Port 1 refuses the
+    /// connection immediately, so this is the transport branch and not a
+    /// timeout.
+    #[test]
+    fn an_unreachable_host_is_still_an_error() {
+        let client = UreqHttpClient::new(5);
+        assert!(client
+            .post_json_status("http://127.0.0.1:1/enrichment", serde_json::json!({}))
+            .is_err());
     }
 }

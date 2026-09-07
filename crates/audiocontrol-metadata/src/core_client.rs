@@ -13,8 +13,93 @@
 //! `services.metadata.url`, which in Phase 2 is the other daemon and has no
 //! `/player`.
 use acr_http::http_client;
+use acr_types::enrichment::{
+    AlbumRef, Applied, ArtistRef, EnrichmentBatch, EnrichmentError,
+};
 use acr_types::now_playing::{PlaybackStateSource, SongInformationSink};
 use acr_types::{PlaybackState, PlayerSource, Song};
+use serde::Deserialize;
+
+/// One player as `GET /library` lists it.
+///
+/// Only the three fields the puller filters on are read; the route also serves
+/// `player_id` and `supports_delete`, which are no business of this side.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LibraryPlayer {
+    pub player_name: String,
+    #[serde(default)]
+    pub has_library: bool,
+    #[serde(default)]
+    pub is_loaded: bool,
+}
+
+/// What `GET /library/<p>` says about one player's library.
+///
+/// The two tokens do different jobs and are both carried. `library_version`
+/// moves on every change a client can observe, this side's own merges
+/// included, and is what the "have I enriched this already?" comparison uses.
+/// `library_generation` moves only when the library is rebuilt, and is what a
+/// batch names so the player daemon can refuse work computed against a library
+/// that no longer exists. Either may be absent, from a backend that tracks
+/// neither.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LibraryDetail {
+    #[serde(default)]
+    pub has_library: bool,
+    #[serde(default)]
+    pub is_loaded: bool,
+    #[serde(default)]
+    pub library_version: Option<String>,
+    #[serde(default)]
+    pub library_generation: Option<String>,
+}
+
+/// One album as `GET /library/<p>/albums` lists it.
+///
+/// `genres` comes along because it is what decides whether the album is worth
+/// looking up at all; the caller filters on it rather than this client, so a
+/// second caller with a different rule does not have to work around one baked
+/// in here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryAlbum {
+    pub album: AlbumRef,
+    pub genres: Vec<String>,
+}
+
+/// Why a batch did not merge.
+///
+/// [`EnrichmentError`] alone cannot say this: its two variants are both the
+/// *library* speaking, and a network that dropped the request is a different
+/// thing that must not be logged as "the library is gone". The distinction is
+/// the caller's to collapse — [`EnrichmentSink::apply`] has only the two
+/// variants to return — but it should collapse it knowing which happened.
+///
+/// [`EnrichmentSink::apply`]: acr_types::enrichment::EnrichmentSink::apply
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnrichmentPostError {
+    /// The library refused the batch: a 409 (it has since reloaded) or a 404
+    /// (there is no such player, or it has no library).
+    Refused(EnrichmentError),
+    /// The exchange did not happen, or its answer made no sense: a transport
+    /// failure, an unparseable body, or a status the route does not document.
+    Failed(String),
+}
+
+impl std::fmt::Display for EnrichmentPostError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnrichmentPostError::Refused(EnrichmentError::Stale { current_generation }) => write!(
+                f,
+                "the library was reloaded while this batch was computed (generation is now {:?})",
+                current_generation
+            ),
+            EnrichmentPostError::Refused(EnrichmentError::NoSuchLibrary) => {
+                write!(f, "there is no such player, or it has no library")
+            }
+            EnrichmentPostError::Failed(reason) => write!(f, "{}", reason),
+        }
+    }
+}
 
 /// A client for the player daemon's HTTP API, from the metadata side.
 ///
@@ -95,6 +180,154 @@ impl CoreClient {
         let name = v["player"]["name"].as_str().unwrap_or_default().to_string();
         let id = v["player"]["id"].as_str().unwrap_or_default().to_string();
         Ok(Some((PlayerSource::new(name, id), song)))
+    }
+
+    fn get(&self, path: &str) -> Result<serde_json::Value, String> {
+        let client = http_client::new_http_client(self.timeout_secs);
+        client
+            .get_json_with_headers(&format!("{}{}", self.base, path), &[])
+            .map_err(|e| e.to_string())
+    }
+
+    /// Every player the daemon knows, with whether it has a library and
+    /// whether that library has finished loading. `GET /library`.
+    pub fn libraries(&self) -> Result<Vec<LibraryPlayer>, String> {
+        let v = self.get("/library")?;
+        serde_json::from_value(v["players"].clone()).map_err(|e| e.to_string())
+    }
+
+    /// One player's library status and its two tokens. `GET /library/<p>`.
+    ///
+    /// A player that exists but has no library is answered 404 by the route,
+    /// which arrives here as an error rather than as a `has_library: false`
+    /// body — so a caller must not read `Err` as "no such player".
+    pub fn library(&self, player: &str) -> Result<LibraryDetail, String> {
+        let v = self.get(&format!("/library/{}", urlencoding::encode(player)))?;
+        serde_json::from_value(v).map_err(|e| e.to_string())
+    }
+
+    /// The library's artists, as much of each as a lookup needs.
+    /// `GET /library/<p>/artists`.
+    ///
+    /// No `If-None-Match` is sent, and no ETag is kept. Not an oversight: the
+    /// only caller fetches this list *because* the library version moved, and
+    /// the ETag the route emits is built from that same version
+    /// (`acr_web::validated`), so a conditional request from here could only
+    /// ever be answered 200. Where the version is absent — the backend tracks
+    /// no changes — the route emits no validator at all and ignores
+    /// `If-None-Match` outright, so there is nothing to condition on there
+    /// either. A stored ETag would be state that can only be stale, and the
+    /// 304 branch it justified could not be reached.
+    pub fn artists(&self, player: &str) -> Result<Vec<ArtistRef>, String> {
+        let v = self.get(&format!("/library/{}/artists", urlencoding::encode(player)))?;
+        let Some(artists) = v.get("artists").and_then(|a| a.as_array()) else {
+            // The route omits the key when the library holds no artists.
+            return Ok(Vec::new());
+        };
+        Ok(artists
+            .iter()
+            .filter_map(|a| {
+                Some(ArtistRef {
+                    id: a.get("id")?.as_str()?.to_string(),
+                    name: a.get("name")?.as_str()?.to_string(),
+                })
+            })
+            .collect())
+    }
+
+    /// The library's albums with the genres each already carries.
+    /// `GET /library/<p>/albums`. See [`Self::artists`] for why no ETag is sent.
+    pub fn albums(&self, player: &str) -> Result<Vec<LibraryAlbum>, String> {
+        let v = self.get(&format!("/library/{}/albums", urlencoding::encode(player)))?;
+        let Some(albums) = v.get("albums").and_then(|a| a.as_array()) else {
+            return Ok(Vec::new());
+        };
+        Ok(albums
+            .iter()
+            .filter_map(|a| {
+                Some(LibraryAlbum {
+                    album: AlbumRef {
+                        id: a.get("id")?.as_str()?.to_string(),
+                        name: a.get("name")?.as_str()?.to_string(),
+                        // The lookup searches on one artist name. An album
+                        // with none is still worth carrying: the sweep records
+                        // that it cannot be looked up, so the next sweep does
+                        // not consider it again.
+                        artist: a
+                            .get("artists")
+                            .and_then(|v| v.as_array())
+                            .and_then(|v| v.first())
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    },
+                    // Absent when empty, which is exactly the case the caller
+                    // is looking for.
+                    genres: a
+                        .get("genres")
+                        .and_then(|g| g.as_array())
+                        .map(|g| {
+                            g.iter()
+                                .filter_map(|s| s.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+            })
+            .collect())
+    }
+
+    /// Hand one batch of results to a player's library.
+    /// `POST /library/<p>/enrichment`.
+    ///
+    /// The three answers the route documents are all read here rather than
+    /// collapsed into "it worked or it didn't":
+    ///
+    /// - 200 carries what merged and the library version the caller should now
+    ///   treat as seen — its own merge moved that version, and reading it back
+    ///   is what stops the next poll seeing its own write as a change.
+    /// - 409 carries the generation the library is on now. The batch was
+    ///   computed against one that is gone.
+    /// - 404 is no such player, or a player with no library.
+    ///
+    /// This is the first producer of [`EnrichmentError::NoSuchLibrary`] in the
+    /// codebase: Phase 0 defined it for exactly this 404 and no in-process sink
+    /// could ever construct one.
+    pub fn enrichment(
+        &self,
+        player: &str,
+        batch: &EnrichmentBatch,
+    ) -> Result<Applied, EnrichmentPostError> {
+        let url = format!(
+            "{}/library/{}/enrichment",
+            self.base,
+            urlencoding::encode(player)
+        );
+        let payload =
+            serde_json::to_value(batch).map_err(|e| EnrichmentPostError::Failed(e.to_string()))?;
+        let client = http_client::new_http_client(self.timeout_secs);
+        // `post_json_status`, not `post_json_value`: the latter turns a 409
+        // into an error string with the body discarded, and the body is where
+        // the generation is.
+        let (status, body) = client
+            .post_json_status(&url, payload)
+            .map_err(|e| EnrichmentPostError::Failed(e.to_string()))?;
+
+        match status {
+            200 => serde_json::from_value(body)
+                .map_err(|e| EnrichmentPostError::Failed(e.to_string())),
+            409 => Err(EnrichmentPostError::Refused(EnrichmentError::Stale {
+                current_generation: body
+                    .get("library_generation")
+                    .and_then(|g| g.as_str())
+                    .map(str::to_string),
+            })),
+            404 => Err(EnrichmentPostError::Refused(EnrichmentError::NoSuchLibrary)),
+            other => Err(EnrichmentPostError::Failed(format!(
+                "the enrichment route answered {} with {}",
+                other, body
+            ))),
+        }
     }
 }
 

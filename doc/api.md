@@ -1613,6 +1613,15 @@ and artist thumbnails after it has looked them up.
   arrives. An artist is matched by `name` and an album by `id`; an entry naming
   something the library does not have is skipped, never inserted.
 
+  A field this list does not name is an error: the body is refused with 422
+  rather than parsed with the unknown field dropped. That is deliberate, and it
+  is about the one name above that matters. Because every field is optional, a
+  caller that wrote `library_version` here instead of `library_generation` would
+  otherwise be understood as making *no* staleness claim, and would have every
+  batch applied unchecked — silently, and precisely where the check is what
+  keeps a rebuilt library from being written with results computed against the
+  library it replaced.
+
 - **Responses**:
 
   | Condition | Status | Body |
@@ -2239,6 +2248,17 @@ than its next periodic poll, e.g. right after a library load.
 - **Response** (202 Accepted): always, whether or not anything acts on the
   nudge before this call returns. A nudge that is dropped or ignored is
   harmless: the periodic poll covers it regardless.
+
+The name is handed to the library puller, which pulls that player's library at
+once instead of waiting for its next poll: `GET /api/library/<p>` for the two
+tokens, and — if the `library_version` differs from the one last enriched — the
+artist and album lists, followed by enrichment batches posted back to
+`POST /api/library/<p>/enrichment`. A player whose library reports no version
+is pulled again every 30 minutes regardless.
+
+The 202 still promises nothing. It is the answer when no puller is running at
+all, when the named player has no library, and when the library turns out to be
+at a version already enriched.
 
 ```bash
 curl -X POST "http://<device-ip>:1080/api/enrich/nudge?player=mpd"

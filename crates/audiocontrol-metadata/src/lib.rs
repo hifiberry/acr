@@ -15,6 +15,7 @@ pub mod image_meta;
 pub mod lastfm;
 pub mod lastfm_worker;
 pub mod library_enricher;
+pub mod library_puller;
 pub mod musicbrainz;
 pub mod now_playing;
 pub mod now_playing_ws;

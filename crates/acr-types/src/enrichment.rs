@@ -56,7 +56,21 @@ pub struct AlbumGenres {
 /// A batch of results for one player's library. This is the JSON body of
 /// `POST /api/library/<p>/enrichment` in Phase 1; in Phase 0 it crosses a
 /// function call.
+///
+/// Unknown fields are refused rather than ignored, and that is not tidiness.
+/// Every field here is `#[serde(default)]`, so a caller that named the
+/// *version* field instead of the generation would parse cleanly, leave
+/// `library_generation` at `None` — which means "make no claim" — and have
+/// every batch merged unchecked. The failure the generation exists to prevent
+/// would arrive through a typo, silently. Refusing the field turns that into a
+/// 422 the caller cannot miss.
+///
+/// The trade is deliberate: adding a field later means an older peer refuses a
+/// batch carrying it. Both daemons ship in one package, so the only window is
+/// the seconds of an upgrade in which one has restarted and the other has not,
+/// and the puller retries — a few refused batches against a silent no-op.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnrichmentBatch {
     /// The library generation this batch was computed against, or `None` to
     /// make no claim.
@@ -320,5 +334,26 @@ mod tests {
         let round_tripped: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
         assert_eq!(round_tripped["library_generation"], "a3f9-g2");
+    }
+
+    /// And a batch that names something else is refused rather than quietly
+    /// making no claim at all.
+    ///
+    /// `library_version` is the field to test with, because it is the one a
+    /// caller would plausibly write by mistake: it is the other token in this
+    /// exchange, it appears in the 200 and the 409, and every field here
+    /// defaults — so without the refusal this body would parse into a batch
+    /// with `library_generation: None`, which the route applies unchecked.
+    #[test]
+    fn a_batch_naming_an_unknown_field_is_refused() {
+        let error = serde_json::from_str::<EnrichmentBatch>(
+            r#"{"library_version":"a3f9-c7","albums":[]}"#,
+        )
+        .expect_err("the wrong token must not parse into a batch that claims nothing");
+        assert!(
+            error.to_string().contains("library_version"),
+            "the refusal should name the field that was not understood, got: {}",
+            error
+        );
     }
 }

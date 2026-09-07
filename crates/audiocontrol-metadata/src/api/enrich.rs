@@ -8,19 +8,19 @@
 //! not anything is listening: the request is accepted for consideration, not
 //! guaranteed to do anything before this call returns.
 
-use log::debug;
 use rocket::http::Status;
 use rocket::post;
 
 /// Nudge library enrichment for one player.
 ///
-/// There is no puller yet — a later task adds one and this becomes a call
-/// into it — so today this only logs the request at debug and answers 202.
-/// Nothing here needs a placeholder to call: an empty body that still
-/// answers 202 is the honest state of "accepted, nothing acts on it yet".
+/// Hands the name to the library puller, which pulls that player's library at
+/// once instead of at its next poll. The answer is 202 whether or not a puller
+/// is running to receive it, and whether or not the pull finds anything to do:
+/// the nudge is a hint, the poll is the guarantee, and a caller must not be
+/// given a status that invites it to retry.
 #[post("/enrich/nudge?<player>")]
 pub fn nudge(player: &str) -> Status {
-    debug!("enrichment nudge requested for player '{}'; no puller wired up yet", player);
+    crate::library_puller::nudge(player);
     Status::Accepted
 }
 

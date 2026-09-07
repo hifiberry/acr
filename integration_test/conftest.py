@@ -31,6 +31,7 @@ TEST_PORTS = {
     'volume': 18080,
     'coverart': 18080,
     'cache': 18080,
+    'metadata': 18080,
 }
 
 # Path configurations for different test types
@@ -44,6 +45,7 @@ TEST_CONFIGS = {
     'volume': Path(__file__).parent / "test_config_volume.json",
     'coverart': Path(__file__).parent / "test_config_generic.json",
     'cache': Path(__file__).parent / "test_config_cache.json",
+    'metadata': Path(__file__).parent / "test_config_metadata.json",
 }
 
 # Default path to static configuration file
@@ -791,6 +793,14 @@ def cache_server():
     """Fixture for cache integration tests"""
     server = AudioControlTestServer("cache", TEST_PORTS['cache'])
     assert server.start_server(), "Failed to start cache test server"
+    yield server
+    server.stop_server()
+
+@pytest.fixture
+def metadata_server():
+    """Fixture for the player/metadata seam integration tests"""
+    server = AudioControlTestServer("metadata", TEST_PORTS['metadata'])
+    assert server.start_server(), "Failed to start metadata test server"
     yield server
     server.stop_server()
 

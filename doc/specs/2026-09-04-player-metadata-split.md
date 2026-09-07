@@ -254,7 +254,10 @@ and starts a pull at once; a nudge that fails is ignored, since the poll
 covers it.
 
 **Delivery: the metadata daemon calls back.** Results are posted in batches
-of at most 200 items:
+of at most `BATCH_SIZE` items, which is 50 (`library_enricher.rs`). The trade
+is between how long a client waits to see a lookup and how often every
+client's cached list is invalidated, since a library bumps `library_version`
+once per batch that changed something:
 
 ```
 POST /api/library/<p>/enrichment
@@ -671,8 +674,10 @@ to the same process. Mount the metadata routes under `/api/metadata/` as well
 as their current paths. Ship, and observe on a device.
 
 **Phase 2: two processes.** Add the second `main.rs`, `metadata.json`, the
-second package, the unit, the nginx snippet, the auth manifest, the postinst
-copy, the librespot start-script change and the docs. Split the caches by
+second unit, the nginx snippet, the auth manifest, the postinst copy, the
+librespot start-script change and the docs. **One binary package still, holding
+both daemons** -- see Packaging above; an earlier draft of this list said "the
+second package" and that is the one thing in it that does not happen. Split the caches by
 moving the metadata daemon's image cache and settings to its directories.
 Because Phase 1 already runs over loopback, this phase is packaging and
 configuration.

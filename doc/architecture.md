@@ -72,6 +72,12 @@ cannot run "just the player half". What the split buys is that the seams are
 already written, exercised and documented as HTTP, so moving the metadata half
 into its own process is a packaging change rather than a redesign.
 
+[**How the parts communicate**](communications.md) is the detail behind this
+section: every seam with its routes, payloads, timeouts and failure behaviour,
+sequence diagrams for each, the two library tokens and how they differ, a
+failure matrix, and what Phase 2 changes. Read it before changing anything that
+crosses the seam.
+
 Two consequences worth knowing when reading the code. First, a failure across a
 seam is a *network* failure with a timeout, not a `None` return — every caller
 has a documented fallback, listed in the module docs of the two clients above.

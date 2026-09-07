@@ -173,6 +173,15 @@ impl MPDLibrary {
     fn reset_albums_for_reload(&self, albums: &mut HashMap<String, Album>) {
         self.library_version.bump_generation();
         albums.clear();
+
+        // Announce the reload over the event stream, in the same operation
+        // as the bump and the clear: this is the moment the metadata daemon
+        // needs to know about, so it can react instead of polling for the
+        // same fact. The tokens travel raw — see `notify_library_changed`.
+        self.controller.notify_library_changed(
+            Some(self.library_version.token()),
+            Some(self.library_version.generation_token()),
+        );
     }
 
     /// Ask the enricher for everything this library is missing.
@@ -1658,7 +1667,7 @@ impl MPDLibrary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{Identifier, Track};
+    use crate::data::{Identifier, PlayerEvent, Track};
 
     /// Build an empty library plus a bare album carrying the given id.
     fn empty_library() -> MPDLibrary {
@@ -2206,6 +2215,49 @@ mod tests {
                 current_generation: lib.library_generation()
             }
         );
+    }
+
+    /// A reload announces itself over the event bus, naming both of this
+    /// reload's tokens, so the metadata daemon can react to it instead of
+    /// polling for the same fact.
+    ///
+    /// The bus is a process-wide singleton, so this filters for the
+    /// generation this reload actually produced rather than trusting the
+    /// first `LibraryChanged` to arrive — a concurrently running test's
+    /// reload would otherwise make this pass or fail for the wrong reason.
+    #[test]
+    fn a_library_reload_announces_itself_with_both_tokens() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        let bus = EventBus::instance();
+        let (id, receiver) = bus.subscribe(vec![EventSubscription::LibraryChanged]);
+
+        {
+            let mut albums = lib.albums.write();
+            lib.reset_albums_for_reload(&mut albums);
+        }
+        let expected_generation = lib.library_generation();
+
+        let event = receiver.try_iter().find(|event| {
+            matches!(event, PlayerEvent::LibraryChanged { library_generation, .. }
+                if *library_generation == expected_generation)
+        });
+        bus.unsubscribe(id);
+
+        match event.expect("a library_changed event naming this reload's generation") {
+            PlayerEvent::LibraryChanged { library_version, library_generation, .. } => {
+                assert_eq!(
+                    library_generation, expected_generation,
+                    "the event names the generation this reload actually produced"
+                );
+                assert!(
+                    library_version.is_some(),
+                    "MPD always has a version token to report, unlike LMS"
+                );
+            }
+            other => panic!("expected LibraryChanged, got {other:?}"),
+        }
     }
 
     /// Repeated resets keep moving the generation: a second reload must not

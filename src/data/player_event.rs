@@ -69,6 +69,26 @@ pub enum PlayerEvent {
         source: PlayerSource,
     },
 
+    /// A player's library finished loading or reloading.
+    ///
+    /// This is a doorbell, not a payload: it is broadcast to every subscriber
+    /// at once, so `library_version` and `library_generation` travel raw,
+    /// exactly as this player's own counters read at the moment of the
+    /// reload. They cannot be folded for any one caller's forwarded prefix
+    /// the way `GET /api/library/<p>` folds its response, so a subscriber
+    /// must not compare either field against that route's answer — see
+    /// `doc/websocket.md`. The correct reaction is to re-read the library,
+    /// not to validate a cached copy against these tokens.
+    ///
+    /// A backend with no generation machinery — LMS — still emits this event,
+    /// with both fields `None`. That is not a degraded form of the event; it
+    /// is the same doorbell ring with nothing worth attaching to it.
+    LibraryChanged {
+        source: PlayerSource,
+        library_version: Option<String>,
+        library_generation: Option<String>,
+    },
+
     /// Active player has changed
     ActivePlayerChanged {
         source: PlayerSource,
@@ -103,6 +123,7 @@ impl PlayerEvent {
             PlayerEvent::PositionChanged { source, .. } => Some(source),
             PlayerEvent::DatabaseUpdating { source, .. } => Some(source),
             PlayerEvent::QueueChanged { source } => Some(source),
+            PlayerEvent::LibraryChanged { source, .. } => Some(source),
             PlayerEvent::SongInformationUpdate { source, .. } => Some(source),
             PlayerEvent::ActivePlayerChanged { source, .. } => Some(source),
             PlayerEvent::VolumeChanged { .. } => None, // Volume events are system-wide
@@ -130,6 +151,7 @@ impl PlayerEvent {
             PlayerEvent::PositionChanged { .. } => "position_changed",
             PlayerEvent::DatabaseUpdating { .. } => "database_updating",
             PlayerEvent::QueueChanged { .. } => "queue_changed",
+            PlayerEvent::LibraryChanged { .. } => "library_changed",
             PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
             PlayerEvent::ActivePlayerChanged { .. } => "active_player_changed",
             PlayerEvent::VolumeChanged { .. } => "volume_changed",
@@ -179,6 +201,15 @@ impl fmt::Display for PlayerEvent {
                 write!(f, "Player {} database updating {}", source, details.trim())
             }            PlayerEvent::QueueChanged { source } => {
                 write!(f, "Player {} queue changed", source)
+            }
+            PlayerEvent::LibraryChanged { source, library_version, library_generation } => {
+                write!(
+                    f,
+                    "Player {} library changed (version: {}, generation: {})",
+                    source,
+                    library_version.as_deref().unwrap_or("none"),
+                    library_generation.as_deref().unwrap_or("none")
+                )
             }
             PlayerEvent::SongInformationUpdate { source, song } => {
                 write!(f, "Player {} song information updated for '{}'", source, song)

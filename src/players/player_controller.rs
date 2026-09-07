@@ -554,13 +554,38 @@ impl BasePlayerController {
         let event = PlayerEvent::QueueChanged {
             source: self.create_player_source(),
         };
-        
+
         // Publish to the global event bus
         debug!("Publishing queue changed event to the global event bus");
         crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
-        
+
     }
-    
+
+    /// Notify listeners that this player's library finished loading or
+    /// reloading.
+    ///
+    /// `library_version` and `library_generation` are whatever this player's
+    /// own counters read right now — passed in raw. This event reaches every
+    /// subscriber at once, so it cannot fold either token for one caller's
+    /// forwarded prefix the way `GET /api/library/<p>` does; a caller must
+    /// treat it as a signal to re-read, never as a value to validate a cached
+    /// copy against.
+    pub fn notify_library_changed(
+        &self,
+        library_version: Option<String>,
+        library_generation: Option<String>,
+    ) {
+        let event = PlayerEvent::LibraryChanged {
+            source: self.create_player_source(),
+            library_version,
+            library_generation,
+        };
+
+        // Publish to the global event bus
+        debug!("Publishing library changed event to the global event bus");
+        crate::audiocontrol::eventbus::EventBus::instance().publish(event.clone());
+    }
+
     /// Notify listeners that the active player has changed
     pub fn notify_active_player_changed(&self, player_id: String) {
         let event = PlayerEvent::ActivePlayerChanged {

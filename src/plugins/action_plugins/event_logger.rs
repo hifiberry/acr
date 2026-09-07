@@ -96,6 +96,7 @@ impl EventLogger {
             PlayerEvent::PositionChanged { .. } => "position_changed",
             PlayerEvent::DatabaseUpdating { .. } => "database_updating",
             PlayerEvent::QueueChanged { .. } => "queue_changed",
+            PlayerEvent::LibraryChanged { .. } => "library_changed",
             PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
             PlayerEvent::ActivePlayerChanged { .. } => "active_player_changed",
             PlayerEvent::VolumeChanged { .. } => "volume_changed",
@@ -268,6 +269,18 @@ impl EventLogger {
                         "Player {} (ID: {}) queue changed",
                         source.player_name(),
                         source.player_id()
+                    ),
+                    is_active_player
+                );
+            },
+            PlayerEvent::LibraryChanged { source, library_version, library_generation } => {
+                self.log_message(
+                    &format!(
+                        "Player {} (ID: {}) library changed (version: {}, generation: {})",
+                        source.player_name(),
+                        source.player_id(),
+                        library_version.as_deref().unwrap_or("none"),
+                        library_generation.as_deref().unwrap_or("none")
                     ),
                     is_active_player
                 );

@@ -805,13 +805,19 @@ impl MPDPlayerController {
         self.song_split_manager.save(url)
     }
       /// Notify all registered listeners that the database is being updated
-    pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>, 
+    pub fn notify_database_update(&self, artist: Option<String>, album: Option<String>,
                                  song: Option<String>, percentage: Option<f32>) {
         // The source parameter is redundant since BasePlayerController creates its own source
         // Just pass the remaining parameters to the base method
         self.base.notify_database_update(artist, album, song, percentage);
     }
-    
+
+    /// Notify all registered listeners that this player's library finished
+    /// loading or reloading, naming its current version and generation.
+    pub fn notify_library_changed(&self, library_version: Option<String>, library_generation: Option<String>) {
+        self.base.notify_library_changed(library_version, library_generation);
+    }
+
     /// Initialize the MPD library with retry logic
     /// 
     /// This method attempts to initialize the library and will retry with exponential backoff

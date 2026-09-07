@@ -3,7 +3,7 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
-use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface};
+use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface, PlayerEvent, PlayerSource};
 use crate::data::library::{apply_batch, check_generation};
 use acr_types::enrichment::{Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink};
 use crate::helpers::http_client;
@@ -56,6 +56,26 @@ impl LMSLibrary {
             artist_separators: Arc::new(Mutex::new(None)),
             enhance_metadata: true,
         }
+    }
+
+    /// Empty the album map for a reload and announce it over the event
+    /// stream.
+    ///
+    /// LMS carries no `LibraryVersion` — see `library_version` and
+    /// `library_generation`, both always `None` — so there is no bump to
+    /// pair with the clear the way MPD's `reset_albums_for_reload` does. The
+    /// event still fires, with both tokens `None`: this backend has nothing
+    /// meaningful to put in them and does not need to, because a subscriber
+    /// treats the event as a doorbell rather than a value to compare. Before
+    /// this event existed, nothing told the metadata daemon a reload had
+    /// happened at all; it waited for the next 30-minute poll to notice.
+    fn reset_albums_for_reload(&self, albums: &mut HashMap<String, Album>) {
+        albums.clear();
+        crate::audiocontrol::eventbus::EventBus::instance().publish(PlayerEvent::LibraryChanged {
+            source: PlayerSource::new("lms".to_string(), "lms".to_string()),
+            library_version: None,
+            library_generation: None,
+        });
     }
 
     /// Ask the enricher for everything this library is missing.
@@ -395,7 +415,7 @@ impl LibraryInterface for LMSLibrary {
                 // Update albums collection
                 {
                     let mut self_albums = self.albums.write();
-                    self_albums.clear();
+                    self.reset_albums_for_reload(&mut self_albums);
 
                     // Add each album to the collection with name as key
                     for mut album in albums {
@@ -702,6 +722,41 @@ mod tests {
             name: name.to_string(),
             is_multi: false,
             metadata: None,
+        }
+    }
+
+    /// LMS has no version or generation to report, but a reload still rings
+    /// the doorbell: without this event, nothing told the metadata daemon a
+    /// reload had happened until the 30-minute backstop poll caught it. Both
+    /// tokens go out `None` rather than the event being skipped.
+    ///
+    /// The bus is a process-wide singleton, so this filters for events from
+    /// this test's own source rather than trusting the first `LibraryChanged`
+    /// to arrive.
+    #[test]
+    fn a_reload_announces_itself_even_with_no_version_machinery() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+
+        let lib = empty_library();
+        let bus = EventBus::instance();
+        let (id, receiver) = bus.subscribe(vec![EventSubscription::LibraryChanged]);
+
+        {
+            let mut albums = lib.albums.write();
+            lib.reset_albums_for_reload(&mut albums);
+        }
+
+        let event = receiver.try_iter().find(|event| {
+            matches!(event, PlayerEvent::LibraryChanged { source, .. } if source.player_name() == "lms")
+        });
+        bus.unsubscribe(id);
+
+        match event.expect("a library_changed event from the lms source") {
+            PlayerEvent::LibraryChanged { library_version, library_generation, .. } => {
+                assert_eq!(library_version, None, "LMS has no version to report");
+                assert_eq!(library_generation, None, "LMS has no generation to report");
+            }
+            other => panic!("expected LibraryChanged, got {other:?}"),
         }
     }
 

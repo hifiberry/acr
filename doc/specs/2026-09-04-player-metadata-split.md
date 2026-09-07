@@ -242,8 +242,11 @@ external link for a 404.
 `GET http://127.0.0.1:1080/api/library` every 30 s and, for each player with
 `has_library` and `is_loaded`, `GET /api/library/<p>` for `library_version`.
 When the version differs from the one it last enriched, it fetches
-`/api/library/<p>/artists` and `/api/library/<p>/albums` with `If-None-Match`
-and enriches what is new. A player whose backend reports no
+`/api/library/<p>/artists` and `/api/library/<p>/albums` and enriches what is
+new. It sends no `If-None-Match`: the list ETags are built from
+`library_version`, and the fetch happens only because that version moved, so a
+conditional request could never be answered 304. A backend that reports no
+version (LMS) emits no validator at all. A player whose backend reports no
 `library_version` (LMS) is re-fetched every 30 minutes instead. The player
 daemon may shorten the wait after a load by calling
 `POST http://127.0.0.1:1084/api/enrich/nudge?player=<p>`, which answers 202
@@ -274,7 +277,7 @@ existing `by-genre`, `by-category`, ETag and acr-webmcp behaviour hold.
 
 | Status | Body | When |
 |---|---|---|
-| 200 | `{"applied": {"artists": n, "albums": m}, "library_version": "..."}` | merged; the returned version is the one the caller should now treat as seen |
+| 200 | `{"artists": n, "albums": m, "library_version": "..."}` | merged; the returned version is the one the caller should now treat as seen |
 | 409 | `{"library_generation": "...", "library_version": "..."}` | the batch was computed against a library that has since reloaded; the caller re-pulls |
 | 404 | | no such player or no library |
 

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acr-http"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "log",
  "once_cell",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "acr-images"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "image",
  "log",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "acr-store"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "acr-images",
  "acr-types",
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "acr-types"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "base64 0.21.7",
  "chrono",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "acr-web"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "acr-store",
  "acr-types",
@@ -295,7 +295,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audiocontrol"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "acr-http",
  "acr-images",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "audiocontrol-metadata"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "acr-http",
  "acr-images",

@@ -429,7 +429,7 @@ Common error codes:
 
 ## Keeping a connection alive
 
-**From 0.21.0 a client need not send anything to stay connected.** The server
+**From 0.22.0 a client need not send anything to stay connected.** The server
 sends a WebSocket ping on every open connection every 30 seconds, and the pong
 that comes back is what keeps the connection alive. Ping and pong are protocol
 frames: every WebSocket implementation answers a ping on its own, so a browser
@@ -440,7 +440,7 @@ connected with no application-level keep-alive and no timer of its own.
 periodically**, because no ping arrives to be answered and only a frame
 travelling client to server refreshes the timer. Clients ship separately from
 this daemon and meet both, so unless you know every installation you talk to is
-0.21.0 or later, keep the periodic send: a WebSocket ping if your library exposes
+0.22.0 or later, keep the periodic send: a WebSocket ping if your library exposes
 one, otherwise re-send the subscription message — see the last paragraph of this
 section. It costs one frame every few minutes against a current daemon and is
 the difference between working and going silently deaf against an older one.
@@ -463,7 +463,7 @@ it has been dropped should reconnect and re-read state rather than wait.
 Sending anything of your own also refreshes the timer, and re-sending the
 subscription message is the way to do it from a browser, where the JavaScript
 WebSocket API exposes no ping — it is answered with `subscription_updated`. From
-0.21.0 nothing requires it; against an earlier daemon it is what keeps a
+0.22.0 nothing requires it; against an earlier daemon it is what keeps a
 listen-only client alive.
 
 ## Events during a disconnection are lost
@@ -479,7 +479,7 @@ and `GET /api/player` for the state.
 
 ## The server closes the connection when the daemon stops
 
-From 0.21.0, a daemon that is shutting down — `systemctl stop`, a restart, a
+From 0.22.0, a daemon that is shutting down — `systemctl stop`, a restart, a
 package upgrade — sends a WebSocket **Close** frame with code `1001` ("going
 away") on every open connection, then closes the socket. This is not an error
 and needs no special handling beyond what a client already does for a dropped
@@ -499,8 +499,8 @@ is the inverse, and it is a common idiom:
 socket.onclose = (e) => { if (!e.wasClean) reconnect(); };
 ```
 
-Against a daemon before 0.21.0 every shutdown produced code `1006` with
-`wasClean: false`, so this reconnected. Against 0.21.0 it receives a clean
+Against a daemon before 0.22.0 every shutdown produced code `1006` with
+`wasClean: false`, so this reconnected. Against 0.22.0 it receives a clean
 close and **stops reconnecting** — across exactly the events where reconnecting
 matters most, a restart or a package upgrade. Reconnect on every close, clean
 or not, and let the backoff handle a server that is still coming back up.
@@ -512,7 +512,7 @@ or not, and let the backoff handle a server that is still coming back up.
 3. **Subscription management**: Only subscribe to events you need to minimize traffic
 4. **Backoff strategy**: Use exponential backoff for reconnection attempts
 5. **Answer the server's pings, and keep sending something of your own until
-   every daemon you talk to is 0.21.0**: answering happens automatically in every
+   every daemon you talk to is 0.22.0**: answering happens automatically in every
    WebSocket implementation, so that half is only a warning against turning it
    off; the periodic send is what an earlier daemon needs, and without it a
    listen-only client there is pruned after an hour and goes quietly deaf. See

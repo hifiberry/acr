@@ -1,3 +1,37 @@
+hifiberry-audiocontrol (0.22.0) trixie; urgency=medium
+
+  * The player daemon and its external-metadata code now talk to each other
+    over HTTP on loopback rather than through in-process calls. Enrichment
+    results, library batches, the title-order and artist-split resolvers and
+    the Spotify access token all cross the same routes a separate metadata
+    daemon will serve. Both halves still ship in this one package and run in
+    one process; the split is internal, and no device runs one half without
+    the other.
+
+  * WebSocket connections are now kept alive by a server-side ping every 30
+    seconds. Before this, a client that only listened was pruned after an
+    hour with the socket still open: the browser WebSocket API exposes no way
+    to send a ping, so a page that had subscribed and then waited simply went
+    deaf, with no error and nothing in any log. Clients no longer need a
+    periodic send of their own, though one remains harmless.
+
+  * A daemon that is shutting down now sends a WebSocket close frame (code
+    1001) before closing the socket, instead of letting the connection be
+    torn down at the end of its grace period. This cuts a stop or a restart
+    with a browser attached from about five seconds to about two. Clients
+    whose reconnect logic is guarded on an unclean close should reconnect on
+    every close instead -- see doc/websocket.md.
+
+  * New routes for the metadata side, mounted both at their existing paths
+    and under /api/metadata/: artist detail, the two resolvers, an enrichment
+    nudge and a capabilities report. Existing paths are unchanged.
+
+  * The library gains a generation token, distinct from its version, so an
+    enrichment batch computed against a library that has since reloaded is
+    refused rather than merged into the wrong contents.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 07 Sep 2026 16:00:00 +0200
+
 hifiberry-audiocontrol (0.21.0) trixie; urgency=medium
 
   * The volume percentage reported for an ALSA hardware control now follows a

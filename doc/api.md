@@ -1015,17 +1015,18 @@ curl http://<device-ip>:1080/api/player/active/meta/volume
 
 Radio streams announce a single combined title such as `Nightwish - Nemo`. The
 server splits it into artist and song. The order is not fixed — some stations
-announce `Title - Artist` — so it is guessed per station with a MusicBrainz
-lookup, and the result is learned over time.
+announce `Title - Artist` — so a station this daemon has neither been told
+about nor learned falls back to reading it as `Artist - Title`, which is what
+streams overwhelmingly announce. That fallback is a fixed guess, not a lookup:
+this daemon does not ask anyone before deciding.
 
-Guessing has two limits: it can be wrong, and on a device with no internet
-access it cannot happen at all. These endpoints report what a station's
-splitter has learned and let the order and separator be **set** outright. A set
-value wins over anything guessed or learned, and is used without any lookup.
-
-When neither a set nor a learned order is available and the lookup cannot
-decide, the split falls back to reading the title as `Artist - Title`, which is
-what streams overwhelmingly announce.
+The guess can be wrong. Two things correct it over time: these endpoints let
+the order and separator be **set** outright, and a companion metadata process
+can report what it has separately worked out for a station — typically with a
+MusicBrainz lookup this daemon no longer makes itself — as an **observation**.
+A set value always wins, over both the guess and any observation; an
+observation only ever moves what the station has **learned**, which is what a
+client reads back as `learned_order`/`learned_separator`.
 
 Splitting is MPD-only; other players return 400.
 
@@ -1057,8 +1058,10 @@ same encoding used elsewhere in this API.
   }
   ```
   `order` and `separator` are what was set explicitly; `learned_order` and
-  `learned_separator` are what the station taught the server. Either may be
-  `null`. The counts are lookup outcomes, not play counts.
+  `learned_separator` are what the station taught the server, through
+  observations (below). Either may be `null`. The counts are observation
+  outcomes, not play counts, and do not include the fallback guess: a guess
+  is not fed back as an observation of itself.
 
 Only stations played since the last restart are listed.
 
@@ -1098,6 +1101,47 @@ Unlike the list, this also finds stations persisted by an earlier run.
 
 The setting is saved, so it survives a restart.
 
+#### Report an Observation
+
+- **Endpoint**: `/api/player/<player-name>/splitter/<station>/observation`
+- **Method**: POST
+- **Request Body**:
+  ```json
+  { "order": "song_artist" }
+  ```
+  - `order`: `artist_song` or `song_artist`, required. `unknown` and
+    `undecided` are outcomes of a lookup, not readings of a title, so they
+    are never a valid observation.
+- **Response**: the resulting splitter object, as above.
+- **Errors**: 400 for an unrecognised order or `<station>`, 404 if the
+  player has no splitter for that station and the manager is not otherwise
+  able to create one, 500 if the observation was recorded but could not be
+  persisted.
+
+This is how a companion metadata process feeds what it has separately
+determined about a station — typically a MusicBrainz-backed correction of
+this daemon's own guess — back into `learned_order`. **It never touches
+`order`**: a value set through *Set a Splitter* keeps winning regardless of
+how many observations disagree with it, and the intended caller only ever
+reports an observation when its own answer disagrees with what this daemon
+assumed, so a station whose guess already happens to be right accumulates no
+observations and needs none. Repeated agreeing observations are what
+establish `learned_order`, the same threshold `learned_order` has always
+used.
+
+This is also the only route on this daemon that a companion metadata
+process calls — every other exchange between the two travels the other way,
+initiated by the metadata side. A title-order correction cannot be relayed
+through [Song Information Update](#song-information-update): that route
+identifies a song by its current title and artist and refuses a partial
+that disagrees with either, and a swapped order disagrees with both by
+construction. The **currently playing** song therefore keeps whatever split
+it was first given, right or wrong; only the *next* title from that station
+benefits from an observation recorded against it.
+
+Recorded observations are saved along with everything else this splitter
+holds, so they survive a restart.
+
 #### Delete a Splitter
 
 - **Endpoint**: `/api/player/<player-name>/splitter/<station>`
@@ -1123,6 +1167,12 @@ curl http://<device-ip>:1080/api/player/mpd/splitter/$STATION
 # Back to guessing
 curl -X POST http://<device-ip>:1080/api/player/mpd/splitter/$STATION \
   -H "Content-Type: application/json" -d '{}'
+
+# A companion metadata process reports what it separately determined --
+# this feeds learned_order, and does nothing if the station's order was
+# set explicitly (as just above)
+curl -X POST http://<device-ip>:1080/api/player/mpd/splitter/$STATION/observation \
+  -H "Content-Type: application/json" -d '{"order": "song_artist"}'
 ```
 
 ### Player Capabilities and Support Matrix

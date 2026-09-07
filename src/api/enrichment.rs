@@ -31,10 +31,25 @@ fn not_found(what: &str) -> Custom<Json<serde_json::Value>> {
 /// The 409 carries *both* tokens, because a caller that gets one needs both: the
 /// generation to recompute against, and the version for the "seen" bookkeeping
 /// it does against `GET /api/library/<p>`.
+///
+/// **The `library_version` in both bodies is folded with the caller's own
+/// forwarded prefix**, exactly as `GET /api/library/<p>` folds the one it
+/// reports. That is what makes the two comparable: the 200's version is
+/// documented as the value a caller records as seen, and the thing it will
+/// compare that against is the version *it* is told by the GET, on its own
+/// route. Emitted raw here, the two could never be equal — `prefix_tag(None)`
+/// hashes the empty string rather than short-circuiting, so even a direct
+/// caller with no prefix at all gets a tagged token from the GET and would read
+/// every poll as a change, re-sweeping the whole library forever.
+///
+/// The **generation** stays raw, and must. It is not a validator for anything a
+/// proxy rewrites, and a prefixed one would match nothing the library holds —
+/// see `library_generation` on `LibraryResponse`.
 #[post("/library/<player_name>/enrichment", data = "<batch>")]
 pub fn apply_enrichment(
     player_name: &str,
     batch: Json<EnrichmentBatch>,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>,
 ) -> Result<Json<Applied>, Custom<Json<serde_json::Value>>> {
     let Some(player) = controller.get_player_by_name(player_name) else {
@@ -46,12 +61,21 @@ pub fn apply_enrichment(
     let sink = library.as_enrichment_sink().ok_or_else(|| not_found("library"))?;
 
     match sink.apply(batch.into_inner()) {
-        Ok(applied) => Ok(Json(applied)),
+        Ok(mut applied) => {
+            applied.library_version = crate::api::urlprefix::prefixed_library_version(
+                applied.library_version,
+                forwarded_prefix.as_deref(),
+            );
+            Ok(Json(applied))
+        }
         Err(EnrichmentError::Stale { current_generation }) => Err(Custom(
             Status::Conflict,
             Json(serde_json::json!({
                 "library_generation": current_generation,
-                "library_version": library.library_version(),
+                "library_version": crate::api::urlprefix::prefixed_library_version(
+                    library.library_version(),
+                    forwarded_prefix.as_deref(),
+                ),
             })),
         )),
         Err(EnrichmentError::NoSuchLibrary) => Err(not_found("library")),
@@ -296,10 +320,87 @@ mod tests {
         );
         assert_eq!(
             body["library_version"],
-            serde_json::Value::from(lib.library_version()),
-            "and it is the library's current one"
+            serde_json::Value::from(prefixed(lib.library_version(), None)),
+            "and it is the library's current one, tagged for this caller's route"
         );
         assert_eq!(lib.albums.read()["Abbey Road"].genres, vec!["rock"]);
+    }
+
+    fn prefixed(version: Option<String>, prefix: Option<&str>) -> Option<String> {
+        crate::api::urlprefix::prefixed_library_version(version, prefix)
+    }
+
+    /// The property the whole "seen version" scheme rests on: the version a
+    /// caller is handed by a 200 is *the same string* the next
+    /// `GET /api/library/<p>` will report to that same caller. If it is not,
+    /// the caller reads its own merge as a change and re-enriches the library
+    /// on every poll, forever.
+    ///
+    /// This is asserted for a direct caller and for a proxied one, because the
+    /// mistake it guards against is not "the proxy case was forgotten" — it is
+    /// that the tokens are folded on one route and not the other.
+    /// `prefix_tag(None)` hashes the empty string rather than short-circuiting,
+    /// so the direct case is tagged too and a raw token from this route matches
+    /// nothing at all.
+    #[test]
+    fn the_version_a_200_returns_is_what_the_library_route_then_reports() {
+        for prefix in [None, Some("/music")] {
+            let library = TestLibrary::with(
+                vec![test_album(1, "Abbey Road", "The Beatles")],
+                vec![],
+            );
+            let mut controller = AudioController::new();
+            controller.add_controller(Box::new(LibraryPlayer(library.clone())));
+            let rocket = rocket::build().manage(Arc::new(controller)).mount(
+                "/api",
+                rocket::routes![apply_enrichment, crate::api::library::get_library_info],
+            );
+            let client = Client::tracked(rocket).expect("rocket should launch");
+
+            let get = |client: &Client| {
+                let mut request = client.get("/api/library/mpd");
+                if let Some(prefix) = prefix {
+                    request = request.header(rocket::http::Header::new(
+                        "X-Forwarded-Prefix",
+                        prefix,
+                    ));
+                }
+                request.dispatch().into_json::<serde_json::Value>().unwrap()["library_version"]
+                    .clone()
+            };
+
+            let before = get(&client);
+            let generation = library.library_generation().unwrap();
+
+            let mut request = client
+                .post("/api/library/mpd/enrichment")
+                .header(ContentType::JSON)
+                .body(format!(
+                    r#"{{"library_generation":"{}","albums":[{{"id":"1","genres":["rock"]}}]}}"#,
+                    generation
+                ));
+            if let Some(prefix) = prefix {
+                request =
+                    request.header(rocket::http::Header::new("X-Forwarded-Prefix", prefix));
+            }
+            let response = request.dispatch();
+            assert_eq!(response.status(), Status::Ok);
+            let applied = response.into_json::<serde_json::Value>().unwrap()["library_version"]
+                .clone();
+
+            assert_ne!(
+                applied, before,
+                "the merge moved the version, so there is something to agree about ({:?})",
+                prefix
+            );
+            assert_eq!(
+                applied,
+                get(&client),
+                "the version a caller records as seen must be the one its next \
+                 poll is told, on its own route ({:?})",
+                prefix
+            );
+        }
     }
 
     /// A batch naming no generation makes no claim, and is applied. This is the
@@ -377,12 +478,18 @@ mod tests {
         assert_eq!(r.status(), Status::Conflict);
 
         let body = r.into_json::<serde_json::Value>().unwrap();
-        assert_eq!(body["library_generation"], lib.library_generation().unwrap());
+        assert_eq!(
+            body["library_generation"],
+            lib.library_generation().unwrap(),
+            "the generation is raw: it is not a validator, and a prefixed one \
+             would match nothing the library holds"
+        );
         assert_eq!(
             body["library_version"],
-            lib.library_version().unwrap(),
+            serde_json::Value::from(prefixed(lib.library_version(), None)),
             "the caller needs the version too: it re-pulls the library and \
-             records what it has seen"
+             records what it has seen -- so it is tagged the way the library \
+             route tags the one this caller compares it against"
         );
         assert!(
             lib.albums.read()["Abbey Road"].genres.is_empty(),

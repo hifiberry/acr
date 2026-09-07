@@ -48,17 +48,29 @@ pub const UNVERSIONED_REFETCH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 /// What has already been enriched, per player.
 ///
-/// **The tokens compared here must come from the same side of the prefix.**
-/// `GET /api/library/<p>` reports a `library_version` that folds in the
-/// client's `X-Forwarded-Prefix`, because the paths in the lists it validates
-/// are built for that prefix. The version handed back by the enrichment
-/// route's 200 is the library's own, raw. They are the same string only
-/// because this client talks to loopback and sends no prefix — the puller is
-/// correct, but correct by an accident of its own deployment. Put a proxy in
-/// front of that loopback call and the two stop matching: every poll would see
-/// a change, re-enrich the whole library, and no test here would fail. If that
-/// ever becomes possible, strip the prefix component before comparing rather
-/// than hoping.
+/// **The two tokens compared here are folded the same way, and that is a
+/// property of the routes, not of this deployment.** `GET /api/library/<p>`
+/// reports a `library_version` that folds in the caller's own
+/// `X-Forwarded-Prefix`, because the paths in the lists it validates are built
+/// for that prefix. `POST /api/library/<p>/enrichment` folds the version in its
+/// 200 and its 409 the same way, with the same request's prefix — so whatever
+/// route a caller is on, the version it records as seen is the string its next
+/// poll will be handed. Comparing them for equality is therefore right for a
+/// proxied caller as well as a direct one.
+///
+/// This is worth stating because the obvious assumption is wrong. It is not
+/// that the two agree "because there is no proxy on loopback":
+/// `acr_web::urlprefix::prefix_tag(None)` hashes the *empty string* rather than
+/// short-circuiting, so a direct caller's token is tagged too
+/// (`d41d8cd9-<raw>`), and an enrichment route that emitted the version raw
+/// would match nothing at all — every poll a change, the whole library
+/// re-swept every thirty seconds, forever. Nothing here can detect that; the
+/// guard is `the_version_a_200_returns_is_what_the_library_route_then_reports`
+/// in `src/api/enrichment.rs`, which pins the two routes against each other.
+///
+/// The **generation** is not folded, on either route, and must not be: it is
+/// not a validator for anything a proxy rewrites, and a prefixed one would
+/// match nothing the library holds.
 #[derive(Default)]
 pub struct SeenVersions {
     seen: HashMap<String, Seen>,
@@ -725,6 +737,62 @@ mod tests {
             "and carry the album it is about: {}",
             body
         );
+    }
+
+    /// The same thing as `a_version_that_has_not_changed_is_not_re_enriched`,
+    /// but with the tokens the daemon really emits rather than `"v1"`.
+    ///
+    /// Every other fixture in this module says `"v1"` on both sides of the
+    /// comparison, which is exactly why the suite could not see that the
+    /// enrichment route was returning a raw version while
+    /// `GET /api/library/<p>` returned a prefix-tagged one: the two never
+    /// matched, so the library was re-fetched, re-swept and re-posted on every
+    /// poll. Here the library reports `d41d8cd9-<counter>` — the tag a caller
+    /// with no forwarded prefix gets, since `prefix_tag(None)` hashes the empty
+    /// string — the merge moves the counter, and the 200 hands back the moved
+    /// token folded the same way. The second pass must then find nothing to do.
+    #[test]
+    fn a_second_pass_over_a_library_this_puller_just_enriched_does_nothing() {
+        let at = |version: &str| {
+            format!(
+                r#"{{"players":[{{"player_name":"mpd","has_library":true,"is_loaded":true}}],
+                     "has_library":true,"is_loaded":true,
+                     "library_version":"{}","library_generation":"a3f9c1d2-g0",
+                     "artists":[],
+                     "albums":[{{"id":"12","name":"Abbey Road","artists":["The Beatles"]}}]}}"#,
+                version
+            )
+        };
+        let before = "d41d8cd9-a3f9c1d2-0-42";
+        let after = "d41d8cd9-a3f9c1d2-0-43";
+        let server = StubServer::queued(vec![
+            Canned::json(200, &at(before)), // GET /library
+            Canned::json(200, &at(before)), // GET /library/mpd
+            Canned::json(200, &at(before)), // GET /library/mpd/artists
+            Canned::json(200, &at(before)), // GET /library/mpd/albums
+            // The merge bumped the version, and the route hands it back folded
+            // for this caller -- the same way the GET below reports it.
+            Canned::json(
+                200,
+                &format!(r#"{{"artists":0,"albums":1,"library_version":"{}"}}"#, after),
+            ),
+            Canned::json(200, &at(after)), // second pass: GET /library
+            Canned::json(200, &at(after)), // second pass: GET /library/mpd
+        ]);
+        let core = client(&server);
+        let seen = Arc::new(Mutex::new(SeenVersions::default()));
+        let enricher = RecordingEnricher::new(true);
+
+        sweep_all(&core, &seen, enricher.as_ref());
+        sweep_all(&core, &seen, enricher.as_ref());
+
+        assert_eq!(
+            enricher.calls.lock().len(),
+            1,
+            "the second pass saw the version this puller's own merge produced, \
+             not a change"
+        );
+        assert_eq!(posts(&server).len(), 1, "and posted nothing further");
     }
 
     /// The version a merge produced is the one to compare against next time.

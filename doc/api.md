@@ -152,11 +152,13 @@ responses — `/api/library/<player>/albums` and `/api/library/<player>/artists`
 carry `Vary: X-Forwarded-Prefix`, and their `ETag`s, along with the
 `library_version` those endpoints and `/api/library/<player>` report, vary with
 the prefix as well as with the library's contents. The remaining
-prefix-dependent responses (`now-playing`, `library/<player>` - whose
-`library_version` varies with the prefix even though it carries no image path,
-while the `library_generation` in the same body deliberately does not: it is the
-token an enrichment batch names, not a validator, and a prefixed one would match
-nothing the library holds -
+prefix-dependent responses (`now-playing`, `library/<player>` and the 200 and
+409 of `library/<player>/enrichment` - whose `library_version` varies with the
+prefix even though neither carries an image path, so that a caller can compare
+the version one route hands it against the version the other reports, while the
+`library_generation` in those bodies deliberately does not: it is the token an
+enrichment batch names, not a validator, and a prefixed one would match nothing
+the library holds -
 `album/by-id`, `artist/by-id`,
 `artist/by-name`, `artist/by-mbid`, `albums/by-artist`, `albums/by-artist-id`,
 `albums/by-genre`, `albums/by-category`) return a plain JSON body with neither
@@ -1626,8 +1628,8 @@ and artist thumbnails after it has looked them up.
 
   | Condition | Status | Body |
   |---|---|---|
-  | Merged | 200 OK | `{"artists": 1, "albums": 1, "library_version": "..."}` — how many entries changed something, and the library's version after the merge |
-  | The library was reloaded since `library_generation` | 409 Conflict | `{"library_generation": "...", "library_version": "..."}` — the current values of both |
+  | Merged | 200 OK | `{"artists": 1, "albums": 1, "library_version": "..."}` — how many entries changed something, and the library's version after the merge, folded with this request's prefix |
+  | The library was reloaded since `library_generation` | 409 Conflict | `{"library_generation": "...", "library_version": "..."}` — the current values of both; the version folded with this request's prefix, the generation not |
   | `<player-name>` does not name a known player, or that player has no library | 404 Not Found | `{"error": "..."}` |
 
 **Merge rules**
@@ -1651,6 +1653,18 @@ already accounts for this batch, so polling `GET /api/library/<player-name>` wil
 not report the caller's own write back to it as a change. A 409 carries both
 tokens for the same reason — the caller needs the new generation to recompute
 against and the version for its own bookkeeping.
+
+Both bodies fold that version with **this request's** `X-Forwarded-Prefix`,
+exactly as `GET /api/library/<player-name>` folds the one it reports. That is
+what makes the two comparable: a caller records the version it was handed here
+and compares it against what the library route tells *it*, on its own route.
+Note that a request with no prefix at all still gets a folded token rather than
+the library's bare counter, so a client must compare the two tokens for equality
+and never assume either is the raw value.
+
+The `library_generation` is deliberately **not** folded, in either body. It is
+not a validator for anything a proxy rewrites, and a prefixed one would match
+nothing the library holds.
 
 A backend that reports no `library_generation` (LMS) refuses any batch that
 names one, because it cannot honour the claim: it has no way to tell whether it

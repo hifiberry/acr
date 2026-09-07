@@ -121,11 +121,6 @@ impl LibraryEnricher for InProcessEnricher {
         crate::albumupdater::load_cached_genres(album_id)
     }
 
-    /// The two sweeps start against one library and run at the same time, and
-    /// both are given the *same* generation. That is what makes them
-    /// independent: neither sweep's writes move the generation, so neither can
-    /// make the other's next batch look stale. Only a reload of the library
-    /// refuses either, which is exactly when both should stop.
     fn enrich(
         &self,
         player: &str,
@@ -134,22 +129,51 @@ impl LibraryEnricher for InProcessEnricher {
         albums: Vec<AlbumRef>,
         sink: Arc<dyn EnrichmentSink>,
     ) {
-        if !artists.is_empty() {
-            crate::artistupdater::enrich_artists_in_background(
-                player.to_string(),
-                generation.clone(),
-                artists,
-                sink.clone(),
-            );
-        }
-        if !albums.is_empty() {
-            crate::albumupdater::enrich_albums_in_background(
-                player.to_string(),
-                generation,
-                albums,
-                sink,
-            );
-        }
+        start_sweeps(
+            player,
+            generation,
+            artists,
+            albums,
+            sink,
+            &crate::artistupdater::enrich_artists_in_background,
+            &crate::albumupdater::enrich_albums_in_background,
+        );
+    }
+}
+
+/// Start the two sweeps a library needs, on one generation.
+///
+/// **Both are given the *same* generation, and that is the whole point.** It is
+/// what makes them independent: neither sweep's writes move the generation, so
+/// neither can make the other's next batch look stale. Only a reload of the
+/// library refuses either, which is exactly when both should stop. Give the
+/// album sweep a generation of its own and the symptom is oblique — album
+/// genres stop after one batch on any library that also has artists.
+///
+/// The two starters are arguments rather than called directly so that this
+/// hand-out can be watched. Each real one spawns a thread that talks to
+/// MusicBrainz, which is why the invariant went untested through two rounds:
+/// there was no seam between "one generation is chosen" and "the network is
+/// reached".
+fn start_sweeps(
+    player: &str,
+    generation: Option<String>,
+    artists: Vec<ArtistRef>,
+    albums: Vec<AlbumRef>,
+    sink: Arc<dyn EnrichmentSink>,
+    start_artists: &dyn Fn(String, Option<String>, Vec<ArtistRef>, Arc<dyn EnrichmentSink>),
+    start_albums: &dyn Fn(String, Option<String>, Vec<AlbumRef>, Arc<dyn EnrichmentSink>),
+) {
+    if !artists.is_empty() {
+        start_artists(
+            player.to_string(),
+            generation.clone(),
+            artists,
+            sink.clone(),
+        );
+    }
+    if !albums.is_empty() {
+        start_albums(player.to_string(), generation, albums, sink);
     }
 }
 
@@ -355,6 +379,73 @@ mod tests {
                 .map(|b| b.library_generation.clone())
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// What the test above does *not* cover, because it builds one
+    /// `BatchSender` by hand: that the fan-out hands the two sweeps one
+    /// generation rather than two. Both halves must be watched at the point
+    /// they are started, or a change giving the album sweep a generation of its
+    /// own passes the whole suite.
+    #[test]
+    fn both_sweeps_are_started_on_the_one_generation_they_were_given() {
+        let started: Mutex<Vec<(&'static str, Option<String>)>> = Mutex::new(Vec::new());
+        let generation = Some("g1".to_string());
+
+        start_sweeps(
+            "mpd",
+            generation.clone(),
+            vec![ArtistRef {
+                id: "7".to_string(),
+                name: "Pink Floyd".to_string(),
+            }],
+            vec![AlbumRef {
+                id: "1".to_string(),
+                name: "Animals".to_string(),
+                artist: "Pink Floyd".to_string(),
+            }],
+            Recording::new(vec![]),
+            &|_, g, _, _| started.lock().push(("artists", g)),
+            &|_, g, _, _| started.lock().push(("albums", g)),
+        );
+
+        let started = started.lock();
+        assert_eq!(
+            started.len(),
+            2,
+            "a library with both needs both sweeps: {:?}",
+            started
+        );
+        assert_eq!(
+            started[0].1, started[1].1,
+            "the two sweeps must run against one generation, or each makes the \
+             other's next batch look stale: {:?}",
+            started
+        );
+        assert_eq!(started[0].1, generation, "and it is the one handed in");
+    }
+
+    /// The other half of the fan-out: nothing to sweep starts no sweep. A
+    /// thread, a background job and a MusicBrainz sweep over an empty list is
+    /// all cost and no answer.
+    #[test]
+    fn a_sweep_is_not_started_for_a_list_that_is_empty() {
+        let started: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+        start_sweeps(
+            "mpd",
+            None,
+            Vec::new(),
+            vec![AlbumRef {
+                id: "1".to_string(),
+                name: "Animals".to_string(),
+                artist: "Pink Floyd".to_string(),
+            }],
+            Recording::new(vec![]),
+            &|_, _, _, _| started.lock().push("artists"),
+            &|_, _, _, _| started.lock().push("albums"),
+        );
+
+        assert_eq!(*started.lock(), vec!["albums"]);
     }
 
     /// A refusal ends the sweep. Carrying on would spend a MusicBrainz request

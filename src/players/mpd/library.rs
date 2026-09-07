@@ -5,7 +5,7 @@ use std::time::Instant;
 use log::{debug, info, warn, error};
 use chrono::Datelike;
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
-use crate::data::library::{apply_batch, LibraryVersion};
+use crate::data::library::{apply_batch, check_generation, LibraryVersion};
 use acr_types::enrichment::{
     AlbumRef, Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink,
 };
@@ -125,6 +125,56 @@ impl MPDLibrary {
         self.library_version.clone()
     }
 
+    /// Empty the album map and mark the library reloaded — one step,
+    /// deliberately.
+    ///
+    /// These are one operation because performing either without the other is a
+    /// silent bug, and both directions are silent:
+    ///
+    /// - Clearing without bumping merges a batch of enrichment results computed
+    ///   against the *previous* library into the new one. That is the exact
+    ///   write the 409 exists to prevent, and nothing observable says it
+    ///   happened: the results simply land on whichever albums now happen to
+    ///   carry the ids the batch names.
+    /// - Bumping without clearing refuses a batch computed against a perfectly
+    ///   current library. Enrichment then stops for good, because a sweep does
+    ///   not restart on a refusal — it waits for the next reload, which is not
+    ///   coming.
+    ///
+    /// So clearing this map by any other route would break what the 409 means.
+    /// A caller that needs to empty it calls this. The map is private to this
+    /// module, which is what keeps that true from outside; inside it nothing stops
+    /// a later edit clearing the map directly, so this is a strong convention and
+    /// not an enforced one. It is still worth being a method rather than two
+    /// adjacent lines:
+    /// adjacency is a convention a later edit can undo without any test
+    /// noticing, and a comment cannot stop it.
+    ///
+    /// The generation therefore names a reload of the *album* map specifically.
+    /// The artists map is only ever added to — `create_artists` inserts names it
+    /// does not already hold and removes none — so there is nothing there to
+    /// invalidate a batch against. That makes the refusal conservative in the
+    /// safe direction: it fires for every rebuild of the albums, which is the
+    /// only rebuild that can strand a batch, and never claims to mean more.
+    ///
+    /// The bump is taken before the clear, which matters only for a caller that
+    /// has already read the generation and passed the check: it narrows, rather
+    /// than widens, the window in which such a batch can still reach the
+    /// rebuilt map. The caller holds the map's write lock across this, so no
+    /// merge can interleave with the two statements themselves.
+    ///
+    /// One other path ends a library's life without coming through here: on a
+    /// connection retry `mpd.rs` puts a freshly constructed `MPDLibrary` into the
+    /// controller rather than reloading this one. That is safe for a different
+    /// reason — a new `LibraryVersion` carries a new nonce, so a generation held
+    /// across the swap cannot match one issued after it — and it is worth
+    /// knowing, because turning that replacement into a reuse of the existing
+    /// counter would reintroduce exactly the stale merge this method prevents.
+    fn reset_albums_for_reload(&self, albums: &mut HashMap<String, Album>) {
+        self.library_version.bump_generation();
+        albums.clear();
+    }
+
     /// Ask the enricher for everything this library is missing.
     ///
     /// Returns at once. Results arrive later, in batches, through this
@@ -164,14 +214,15 @@ impl MPDLibrary {
             })
             .collect();
 
-        // No version is handed over, and the batches that come back therefore
-        // carry none. This library's version counter is not a generation
-        // number: artist and album enrichment run at the same time against one
-        // counter, so each would see the other's bumps as the library having
-        // been reloaded and give up. The staleness check on `apply` below is
-        // for a caller that holds a version of its own - the metadata daemon
-        // in Phase 1, which is told one and keeps it across a reload.
-        enricher.enrich("mpd", None, artists, albums, Arc::new(self.clone()));
+        // The generation this library is in right now, which every batch of
+        // this sweep will name. It is not the version counter: that moves on
+        // every merge, including the sweep's own, so artist and album
+        // enrichment - which run at the same time against one library - would
+        // read each other's bumps as a reload and give up. The generation
+        // moves only where `refresh_library` clears the maps, which is the one
+        // event that makes a batch unmergeable.
+        let generation = Some(self.library_version.generation_token());
+        enricher.enrich("mpd", generation, artists, albums, Arc::new(self.clone()));
     }
     
     /// Set custom artist separators for use in library operations
@@ -1054,6 +1105,14 @@ impl LibraryInterface for MPDLibrary {
         Some(self.library_version.token())
     }
 
+    fn library_generation(&self) -> Option<String> {
+        Some(self.library_version.generation_token())
+    }
+
+    fn as_enrichment_sink(&self) -> Option<&dyn EnrichmentSink> {
+        Some(self)
+    }
+
     fn refresh_library(&self) -> Result<(), LibraryError> {
         debug!("Refreshing MPD library data using MPDLibraryLoader");
         let start_time = Instant::now();
@@ -1070,7 +1129,7 @@ impl LibraryInterface for MPDLibrary {
                 *self.library_loaded.lock() = false;
 
                 // Bump here too, not just at the end of this function. The
-                // mutation actually starts now - self_albums.clear() below,
+                // mutation actually starts now - reset_albums_for_reload() below,
                 // then the insert loop, then create_artists() - and runs for
                 // roughly a second on a large library. A conditional request
                 // arriving in that window would otherwise still carry the
@@ -1091,7 +1150,20 @@ impl LibraryInterface for MPDLibrary {
                 // Update albums collection
                 {
                     let mut self_albums = self.albums.write();
-                    self_albums.clear();
+                    // The one place the generation moves. Emptying this map is
+                    // exactly what makes a batch of enrichment results computed
+                    // against the old library unmergeable, so the clear and the
+                    // bump are one operation rather than two lines that have to
+                    // be kept together - see `reset_albums_for_reload`. It runs
+                    // here, before the insert loop, and not at the end of the
+                    // rebuild: a batch computed before the clear must be refused
+                    // for the whole rebuild, not only once it finishes.
+                    //
+                    // Unlike the version, one bump is enough. The generation is
+                    // not a validator anyone revalidates against; it only has to
+                    // differ from the one a caller was handed before this point,
+                    // and it does from here on.
+                    self.reset_albums_for_reload(&mut self_albums);
 
                     // Add each album to the collection with name as key
                     for mut album in albums {
@@ -1520,16 +1592,14 @@ impl EnrichmentSink for MPDLibrary {
     /// The merge itself is `data::library::apply_batch`, shared with every
     /// other backend. What is MPD's alone is the version: one bump for a batch
     /// that changed anything, none for a batch that changed nothing, and the
-    /// resulting version handed back so the caller's next batch can name it.
+    /// resulting version handed back so the caller can record it as seen.
     fn apply(&self, batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
-        let current = self.library_version();
-        // A batch that names no version is applied as it arrives - that is
-        // every in-process batch. One that names a version is claiming to have
-        // been computed against it, and applying it to a library that has since
-        // reloaded would write results for albums and artists that are gone.
-        if batch.library_version.is_some() && batch.library_version != current {
-            return Err(EnrichmentError::Stale { current });
-        }
+        // A batch that names a generation is claiming to have been computed
+        // against that generation of this library; applying it after a reload
+        // would write results for albums and artists that are gone. The check
+        // itself is `data::library::check_generation`, shared so that no two
+        // backends can disagree about when a batch is refused.
+        check_generation(&batch, self.library_generation())?;
 
         let (mut applied, changed) = apply_batch(&self.albums, &self.artists, &batch);
         if changed {
@@ -1772,6 +1842,29 @@ mod tests {
         }
     }
 
+    /// A library holding exactly the given albums, plus the given artists.
+    fn library_with(albums: Vec<Album>, artists: Vec<Artist>) -> MPDLibrary {
+        let lib = empty_library();
+        {
+            let mut map = lib.albums.write();
+            for album in albums {
+                map.insert(album.name.clone(), album);
+            }
+            let mut map = lib.artists.write();
+            for artist in artists {
+                map.insert(artist.name.clone(), artist);
+            }
+        }
+        lib
+    }
+
+    fn album_genres(id: &str, genres: &[&str]) -> acr_types::enrichment::AlbumGenres {
+        acr_types::enrichment::AlbumGenres {
+            id: id.into(),
+            genres: genres.iter().map(|g| g.to_string()).collect(),
+        }
+    }
+
     /// One batch is one bump, however many entries it carries and however many
     /// of them repeat: a bump is what invalidates every client's cached list.
     #[test]
@@ -1784,7 +1877,7 @@ mod tests {
 
         let applied = lib
             .apply(EnrichmentBatch {
-                library_version: before.clone(),
+                library_generation: lib.library_generation(),
                 artists: vec![],
                 albums: vec![
                     acr_types::enrichment::AlbumGenres {
@@ -1810,24 +1903,112 @@ mod tests {
     }
 
     /// A batch computed against a library that has since reloaded is refused
-    /// rather than merged into whatever is loaded now.
+    /// rather than merged into whatever is loaded now, and the refusal names
+    /// the generation the caller would have to recompute against.
     #[test]
-    fn a_batch_against_a_stale_version_is_refused() {
-        let lib = empty_library();
+    fn a_batch_naming_an_older_generation_is_refused() {
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
         let err = lib
             .apply(EnrichmentBatch {
-                library_version: Some("old".into()),
+                library_generation: Some("stale".into()),
+                albums: vec![album_genres("1", &["rock"])],
                 ..Default::default()
             })
-            .unwrap_err();
+            .expect_err("a batch computed against another library must not be merged");
 
-        assert!(matches!(err, EnrichmentError::Stale { .. }));
+        assert_eq!(
+            err,
+            EnrichmentError::Stale {
+                current_generation: lib.library_generation()
+            }
+        );
+        assert!(
+            lib.albums.read()["Abbey Road"].genres.is_empty(),
+            "and nothing in it was written"
+        );
     }
 
-    /// A batch that names no version is the in-process case: applied as it
-    /// arrives, with no claim about when it was computed.
+    /// The point of the generation: an enrichment write does not move it,
+    /// though it does move the version, which is what a client revalidates
+    /// against. Were it otherwise, every sweep would refuse its own second
+    /// batch.
     #[test]
-    fn a_batch_without_a_version_is_applied() {
+    fn a_merge_moves_the_version_but_not_the_generation() {
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        let generation = lib.library_generation().unwrap();
+        let before_version = lib.library_version().unwrap();
+
+        lib.apply(EnrichmentBatch {
+            library_generation: Some(generation.clone()),
+            albums: vec![album_genres("1", &["rock"])],
+            ..Default::default()
+        })
+        .expect("a batch naming the current generation is applied");
+
+        assert_eq!(
+            lib.library_generation().unwrap(),
+            generation,
+            "a merge is not a reload"
+        );
+        assert_ne!(
+            lib.library_version().unwrap(),
+            before_version,
+            "but it is still a change clients can see"
+        );
+    }
+
+    /// The regression the generation exists for, through the library's own
+    /// sink. Both halves of a sweep name the generation the sweep started with,
+    /// and neither may be refused because of the other's version bump. Before
+    /// the generation, the second batch here was refused and album genres
+    /// stopped after one batch on any library that also had artists.
+    #[test]
+    fn both_halves_of_one_sweep_are_applied_to_a_library_with_artists_and_albums() {
+        let lib = library_with(
+            vec![test_album("1", "Abbey Road", "The Beatles")],
+            vec![test_artist("The Beatles")],
+        );
+        let generation = lib.library_generation().unwrap();
+
+        let artists = lib
+            .apply(EnrichmentBatch {
+                library_generation: Some(generation.clone()),
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "The Beatles".into(),
+                    genres: vec!["rock".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("the artist sweep's batch is applied");
+        assert_eq!(artists.artists, 1);
+
+        let albums = lib
+            .apply(EnrichmentBatch {
+                // The same generation, because the sweep was started with it
+                // and a merge does not move it.
+                library_generation: Some(generation),
+                albums: vec![album_genres("1", &["rock"])],
+                ..Default::default()
+            })
+            .expect("the album sweep must not be refused because of the artist sweep");
+        assert_eq!(albums.albums, 1);
+
+        assert_eq!(lib.albums.read()["Abbey Road"].genres, vec!["rock"]);
+        assert_eq!(
+            lib.artists.read()["The Beatles"]
+                .metadata
+                .as_ref()
+                .unwrap()
+                .genres,
+            vec!["rock"]
+        );
+    }
+
+    /// A batch that names no generation is a caller with no way to know which
+    /// library it was answering about: applied as it arrives.
+    #[test]
+    fn a_batch_without_a_generation_is_applied() {
         let lib = empty_library();
         lib.albums
             .write()
@@ -1835,12 +2016,9 @@ mod tests {
 
         let applied = lib
             .apply(EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![],
-                albums: vec![acr_types::enrichment::AlbumGenres {
-                    id: "1".into(),
-                    genres: vec!["rock".into()],
-                }],
+                albums: vec![album_genres("1", &["rock"])],
             })
             .unwrap();
 
@@ -1856,12 +2034,9 @@ mod tests {
 
         let applied = lib
             .apply(EnrichmentBatch {
-                library_version: before.clone(),
+                library_generation: lib.library_generation(),
                 artists: vec![],
-                albums: vec![acr_types::enrichment::AlbumGenres {
-                    id: "no such album".into(),
-                    genres: vec!["rock".into()],
-                }],
+                albums: vec![album_genres("no such album", &["rock"])],
             })
             .unwrap();
 
@@ -1877,7 +2052,7 @@ mod tests {
             .insert("Simon & Garfunkel".into(), test_artist("Simon & Garfunkel"));
 
         lib.apply(EnrichmentBatch {
-            library_version: lib.library_version(),
+            library_generation: lib.library_generation(),
             artists: vec![acr_types::enrichment::ArtistSummary {
                 name: "Simon & Garfunkel".into(),
                 mbid: vec!["a".into(), "b".into()],
@@ -1920,12 +2095,12 @@ mod tests {
         fn enrich(
             &self,
             player: &str,
-            version: Option<String>,
+            generation: Option<String>,
             artists: Vec<ArtistRef>,
             albums: Vec<AlbumRef>,
             _sink: Arc<dyn EnrichmentSink>,
         ) {
-            self.0.lock().push((player.to_string(), version, artists, albums));
+            self.0.lock().push((player.to_string(), generation, artists, albums));
         }
     }
 
@@ -1950,11 +2125,13 @@ mod tests {
 
         let calls = recorder.0.lock();
         assert_eq!(calls.len(), 1);
-        let (player, version, artists, albums) = &calls[0];
+        let (player, generation, artists, albums) = &calls[0];
         assert_eq!(player, "mpd");
         assert_eq!(
-            *version, None,
-            "an in-process batch names no version: the two workers share one counter"
+            *generation,
+            lib.library_generation(),
+            "the sweep is told the generation it is answering about, so that a \
+             reload in the middle of it is what - and all that - refuses its batches"
         );
         assert_eq!(artists.len(), 1);
         assert_eq!(artists[0].name, "The Beatles");
@@ -1980,6 +2157,100 @@ mod tests {
         let lib = MPDLibrary::new();
         // Some(_) rather than None: MPD opts in, unlike the trait default.
         assert!(lib.library_version().is_some());
+        assert!(lib.library_generation().is_some());
+        assert!(
+            <MPDLibrary as LibraryInterface>::as_enrichment_sink(&lib).is_some(),
+            "the enrichment route reaches the sink through the trait, not a downcast"
+        );
+    }
+
+    /// The reload step itself, both halves of it.
+    ///
+    /// `refresh_library` needs a live MPD, so the *call* to this from inside it
+    /// cannot be tested; the operation can, and this is what makes the pairing
+    /// structural rather than a convention. Either half missing is a silent bug
+    /// — see `reset_albums_for_reload` — so both are asserted here, and a
+    /// version of this method that did only one of the two fails this test.
+    #[test]
+    fn resetting_the_albums_for_a_reload_empties_them_and_moves_the_generation() {
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        let before = lib.library_generation().unwrap();
+
+        {
+            let mut albums = lib.albums.write();
+            lib.reset_albums_for_reload(&mut albums);
+        }
+
+        assert!(
+            lib.albums.read().is_empty(),
+            "the album map is emptied for the rebuild"
+        );
+        assert_ne!(
+            lib.library_generation().unwrap(),
+            before,
+            "and the library is marked reloaded, so a batch computed against \
+             the emptied library's predecessor is refused rather than merged"
+        );
+
+        // And the refusal that pairing exists to produce actually happens.
+        let err = lib
+            .apply(EnrichmentBatch {
+                library_generation: Some(before),
+                albums: vec![album_genres("1", &["rock"])],
+                ..Default::default()
+            })
+            .expect_err("a batch from before the reset must not be merged");
+        assert_eq!(
+            err,
+            EnrichmentError::Stale {
+                current_generation: lib.library_generation()
+            }
+        );
+    }
+
+    /// Repeated resets keep moving the generation: a second reload must not
+    /// leave a caller holding a token from the first one looking current.
+    #[test]
+    fn each_reset_moves_the_generation_again() {
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        let mut seen = vec![lib.library_generation().unwrap()];
+
+        for _ in 0..3 {
+            {
+                let mut albums = lib.albums.write();
+                lib.reset_albums_for_reload(&mut albums);
+            }
+            let now = lib.library_generation().unwrap();
+            assert!(!seen.contains(&now), "{} was already issued", now);
+            seen.push(now);
+        }
+    }
+
+    /// What `refresh_library` does to a batch in flight, without needing an
+    /// MPD to reload from: the bump the clear is written against is the whole
+    /// of the reload as far as a batch is concerned. A caller holding the
+    /// pre-reload generation is refused and told the new one.
+    #[test]
+    fn a_batch_computed_before_a_reload_is_refused_after_it() {
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        let held = lib.library_generation();
+
+        lib.version().bump_generation();
+
+        let err = lib
+            .apply(EnrichmentBatch {
+                library_generation: held.clone(),
+                albums: vec![album_genres("1", &["rock"])],
+                ..Default::default()
+            })
+            .expect_err("the library this batch describes is gone");
+        assert_eq!(
+            err,
+            EnrichmentError::Stale {
+                current_generation: lib.library_generation()
+            }
+        );
+        assert_ne!(lib.library_generation(), held);
     }
 
     #[test]

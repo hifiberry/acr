@@ -17,6 +17,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Send Command to Active Player](#send-command-to-active-player)
   - [Send Command to Specific Player](#send-command-to-specific-player)
   - [Player Event Update](#player-event-update)
+  - [Song Information Update](#song-information-update)
   - [Get Now Playing Information](#get-now-playing-information)
   - [Get Player Queue](#get-player-queue)
   - [Queue Management Commands](#queue-management-commands)
@@ -37,6 +38,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [Get Plugin Information](#get-plugin-information)
 - [Library API](#library-api)
   - [Get Library Information](#get-library-information)
+  - [Apply Enrichment](#apply-enrichment)
   - [Search Library](#search-library)
   - [Browse Artists](#browse-artists)
   - [Browse Albums](#browse-albums)
@@ -50,6 +52,8 @@ This document describes the REST API endpoints available in the Audio Control RE
 - [External Services API](#external-services-api)
   - [MusicBrainz Integration](#musicbrainz-integration)
   - [TheAudioDB Integration](#theaudiodb-integration)
+  - [Metadata Service Routes](#metadata-service-routes)
+    - [The `/api/metadata/` mount](#the-apimetadata-mount)
   - [Last.fm Integration](#lastfm-integration)
   - [Favourites Management](#favourites-management)
 - [Lyrics API](#lyrics-api)
@@ -149,8 +153,13 @@ responses — `/api/library/<player>/albums` and `/api/library/<player>/artists`
 carry `Vary: X-Forwarded-Prefix`, and their `ETag`s, along with the
 `library_version` those endpoints and `/api/library/<player>` report, vary with
 the prefix as well as with the library's contents. The remaining
-prefix-dependent responses (`now-playing`, `library/<player>` - whose
-`library_version` varies with the prefix even though it carries no image path -
+prefix-dependent responses (`now-playing`, `library/<player>` and the 200 and
+409 of `library/<player>/enrichment` - whose `library_version` varies with the
+prefix even though neither carries an image path, so that a caller can compare
+the version one route hands it against the version the other reports, while the
+`library_generation` in those bodies deliberately does not: it is the token an
+enrichment batch names, not a validator, and a prefixed one would match nothing
+the library holds -
 `album/by-id`, `artist/by-id`,
 `artist/by-name`, `artist/by-mbid`, `albums/by-artist`, `albums/by-artist-id`,
 `albums/by-genre`, `albums/by-category`) return a plain JSON body with neither
@@ -576,6 +585,25 @@ curl -X POST http://<device-ip>:1080/api/player/mpd/update \
   }'
 # Response: {"success": false, "message": "Player 'mpd' does not support API event processing"}
 ```
+
+### Song Information Update
+
+Accepts a better version of the currently playing song from an outside lookup (for example, a metadata enrichment process) and merges it into the player's current song.
+
+- **Endpoint**: `/api/player/<player-name>/song-information`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Request Body**: A partial `Song` object. Any field the body omits is not asserted about and is left unchanged; only `title` and `artist` are used to confirm the partial still describes the song being played.
+- **Responses**:
+
+  | Condition | Status | Body |
+  |---|---|---|
+  | `title`/`artist` in the body match the current song | 200 OK | `{"success": true, "applied": true}` |
+  | `title`/`artist` in the body no longer match the current song | 200 OK | `{"success": true, "applied": false}` |
+  | Body has neither `title` nor `artist` | 400 Bad Request | `{"success": false, "message": "..."}` |
+  | `<player-name>` does not name a known player | 404 Not Found | `{"success": false, "message": "..."}` |
+
+The merge follows the rule documented under `song_information_update` in the WebSocket contract: a title or artist the partial carries must match the current song, only `cover_art_url`, `liked` and `metadata` are merged, and artwork that belongs to the song is never replaced. `applied: false` for a song that has moved on is the expected answer, not an error.
 
 ### Get Now Playing Information
 
@@ -1596,10 +1624,114 @@ Retrieves library information for a specific player.
 | `tracks_count` | integer | Total number of tracks in the library |
 | `supports_delete` | boolean | Whether the player supports deleting tracks |
 | `library_version` | string (opaque) | Changes whenever the library's contents change. Poll this one small response to learn whether any list needs re-fetching, rather than issuing a conditional request per list. **Compare it for equality only** - it is opaque, not ordered, and carries no arithmetic meaning. **Absent** when the backend does not track changes. It also changes when the daemon restarts, which costs one refetch and is what makes it safe to trust. |
+| `library_generation` | string (opaque) | Changes when the library is *reloaded*, and not when its contents change. This is the token an enrichment batch names (see [Apply Enrichment](#apply-enrichment)); it is not a cache validator and, unlike `library_version`, does not vary with a forwarded prefix. **Compare it for equality only.** **Absent** when the backend cannot tell whether it has reloaded, which is a caller's signal to name no generation in its batches. It also changes when the daemon restarts. |
+
+The two tokens are not interchangeable. `library_version` is the validator on
+the list routes and the "have I seen this yet" token; `library_generation` says
+which loaded library the current contents belong to. An enrichment write moves
+the version and not the generation; a reload moves both.
 
 #### Example
 ```bash
 curl http://<device-ip>:1080/api/library/mpd
+```
+
+### Apply Enrichment
+
+Merges what an outside lookup learned about a library's artists and albums into
+that library. This is how the metadata side hands back genres, MusicBrainz IDs
+and artist thumbnails after it has looked them up.
+
+- **Endpoint**: `/api/library/<player-name>/enrichment`
+- **Method**: POST
+- **Content-Type**: `application/json`
+- **Path Parameters**:
+  - `player-name` (string): The name of the player
+- **Request Body**:
+  ```json
+  {
+    "library_generation": "5e2b91c0-a3f9c1d2-g3",
+    "artists": [
+      {
+        "name": "The Beatles",
+        "mbid": ["b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"],
+        "is_multi": false,
+        "genres": ["rock"],
+        "thumb_url": ["/api/coverart/artist/YWJj/image"]
+      }
+    ],
+    "albums": [
+      { "id": "1", "genres": ["rock", "pop"] }
+    ]
+  }
+  ```
+
+  Every field is optional. `library_generation` is the `library_generation` from
+  `GET /api/library/<player-name>`, naming the loaded library this batch was
+  computed against; omitting it makes no claim and the batch is applied as it
+  arrives. An artist is matched by `name` and an album by `id`; an entry naming
+  something the library does not have is skipped, never inserted.
+
+  A field this list does not name is an error: the body is refused with 422
+  rather than parsed with the unknown field dropped. That is deliberate, and it
+  is about the one name above that matters. Because every field is optional, a
+  caller that wrote `library_version` here instead of `library_generation` would
+  otherwise be understood as making *no* staleness claim, and would have every
+  batch applied unchecked — silently, and precisely where the check is what
+  keeps a rebuilt library from being written with results computed against the
+  library it replaced.
+
+- **Responses**:
+
+  | Condition | Status | Body |
+  |---|---|---|
+  | Merged | 200 OK | `{"artists": 1, "albums": 1, "library_version": "..."}` — how many entries changed something, and the library's version after the merge, folded with this request's prefix |
+  | The library was reloaded since `library_generation` | 409 Conflict | `{"library_generation": "...", "library_version": "..."}` — the current values of both; the version folded with this request's prefix, the generation not |
+  | `<player-name>` does not name a known player, or that player has no library | 404 Not Found | `{"error": "..."}` |
+
+**Merge rules**
+
+- Album genres: an empty `genres` list never clears what the library read from
+  the file's own tags — the tags are better data than a lookup that found
+  nothing. A list holding the same genres in a different order is not a change;
+  the stored order is left as it was.
+- Artist `mbid`, `is_multi`, `genres` and `thumb_url` replace what is stored.
+  An artist marked `is_multi` whose other fields are all empty is one whose
+  lookup found nothing describing a single artist: it keeps no metadata at all,
+  which the artist routes serve as `"metadata": null`.
+- `thumb_url` is stored verbatim, a provider's own URL included. An empty list
+  means no image was found, which is what a client reads to tell "no picture"
+  from "not looked up yet".
+- One batch bumps `library_version` at most once, and not at all when nothing
+  changed — a bump invalidates every client's cached list.
+
+The `library_version` in a 200 is the value the caller should record as seen: it
+already accounts for this batch, so polling `GET /api/library/<player-name>` will
+not report the caller's own write back to it as a change. A 409 carries both
+tokens for the same reason — the caller needs the new generation to recompute
+against and the version for its own bookkeeping.
+
+Both bodies fold that version with **this request's** `X-Forwarded-Prefix`,
+exactly as `GET /api/library/<player-name>` folds the one it reports. That is
+what makes the two comparable: a caller records the version it was handed here
+and compares it against what the library route tells *it*, on its own route.
+Note that a request with no prefix at all still gets a folded token rather than
+the library's bare counter, so a client must compare the two tokens for equality
+and never assume either is the raw value.
+
+The `library_generation` is deliberately **not** folded, in either body. It is
+not a validator for anything a proxy rewrites, and a prefixed one would match
+nothing the library holds.
+
+A backend that reports no `library_generation` (LMS) refuses any batch that
+names one, because it cannot honour the claim: it has no way to tell whether it
+has reloaded. Such a caller names no generation.
+
+#### Example
+```bash
+curl -X POST http://<device-ip>:1080/api/library/mpd/enrichment \
+  -H 'Content-Type: application/json' \
+  -d '{"library_generation":"5e2b91c0-a3f9c1d2-g3","albums":[{"id":"1","genres":["rock"]}]}'
 ```
 
 ### Get Player Albums
@@ -2080,6 +2212,184 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 - Validating artist MusicBrainz ID mappings
 - Testing external service rate limiting
 - Debugging TheAudioDB API configuration
+
+### Metadata Service Routes
+
+These four routes are served by the metadata side of the daemon (the code that
+will become a separate `audiocontrol-metadata` process in a later phase) but
+answer at `/api` alongside everything else in this document, because both
+halves currently share one Rocket. They exist so the player daemon can ask
+over HTTP for what it used to compute in-process, and it now does:
+enrichment, the two resolvers and the Spotify access token all cross loopback
+rather than a function call, even though both halves are in one process. See
+[architecture](architecture.md) for what that means and does not mean.
+
+Nothing about calling them from outside the daemon is unsupported, but the
+player-facing routes earlier in this document (`Get Artist by Name`, `Get
+Artist by ID`, `Get Artist by MusicBrainz ID`, `Stream Title Splitting`) are
+almost always the better fit for a client, since they merge this data with
+what the player daemon already knows.
+
+*`GET /capabilities` is not one of the four.* The player daemon already
+serves `GET /api/capabilities` (see above), and two identical routes at the
+same path and rank make Rocket refuse to start rather than pick one. The
+metadata side's own copy answers under the second mount below instead.
+
+#### The `/api/metadata/` mount
+
+Every metadata route is mounted a second time under `/api/metadata/`, and the
+two mounts mean different things.
+
+- **`/api/...`** — the historical paths, and the ones this process calls
+  itself. `services.metadata.url` in `audiocontrol.json` names this base
+  (`http://127.0.0.1:1080/api` by default), and both shipped clients reach
+  these paths through nginx's `/api/audiocontrol/` prefix. They are not going
+  to move.
+- **`/api/metadata/...`** — the same routes under the prefix a client will use
+  once the metadata side answers on a port of its own. In a later phase nginx
+  routes `/api/metadata/` to that process; today it reaches the same code in
+  the same process, so a client can be written against it now and keep
+  working across the split.
+
+What is mounted under `/api/metadata/`:
+
+| Path | Same as |
+| --- | --- |
+| `/api/metadata/artist/<artist_b64>` | [Get Artist Detail](#get-artist-detail) |
+| `/api/metadata/resolve/title-order` | [Resolve Title Order](#resolve-title-order) |
+| `/api/metadata/resolve/artist-split` | [Resolve Artist Split](#resolve-artist-split) |
+| `/api/metadata/enrich/nudge` | [Nudge Enrichment](#nudge-enrichment) |
+| `/api/metadata/audiodb/mbid/<mbid>` | [TheAudioDB Integration](#theaudiodb-integration) |
+| `/api/metadata/coverart/...` | [Cover Art API](#cover-art-api) |
+| `/api/metadata/imagecache/...` | the image cache paths |
+| `/api/metadata/lastfm/...` | [Last.fm Integration](#lastfm-integration) |
+| `/api/metadata/spotify/...` | the Spotify account and playback routes |
+| `/api/metadata/favourites/...` | [Favourites API](#favourites-api) |
+| `/api/metadata/capabilities` | the metadata side's own capabilities report |
+
+`GET /api/metadata/capabilities` is the one path that exists *only* under this
+mount, for the reason given above. It reports the metadata side's image size
+ladder in the same shape as the player daemon's own capabilities response.
+Today both halves read one `images.sizes` list, because they are one process;
+once they are two, the list is configured in each and the two must agree.
+
+Everything else in this table answers identically under either prefix, and a
+response's own image paths are written with whatever prefix the request
+carried, exactly as described in [Image and Lyrics Paths](#image-and-lyrics-paths).
+
+The player daemon's own routes — players, library, volume, lyrics, settings,
+cache, background jobs, genres and the WebSocket — are *not* under
+`/api/metadata/`. They stay where they are and will stay on this process after
+the split.
+
+#### Get Artist Detail
+
+Returns what the metadata side knows about one artist, by name.
+
+- **Endpoint**: `/api/artist/<artist_b64>`
+- **Method**: GET
+- **Path Parameters**:
+  - `artist_b64` (string): The artist name, URL-safe base64 encoded (see
+    [URL-Safe Base64 Encoding](#url-safe-base64-encoding))
+- **Query Parameters**:
+  - `lookup` (boolean, optional, default `false`): when `true` and nothing is
+    cached yet, run a synchronous lookup through the provider chain (the same
+    one a library load runs) before answering. The player daemon never sets
+    this; it accepts a miss and waits for the next enrichment batch instead of
+    paying for a lookup on every request.
+- **Response** (200 OK): the cached `ArtistMeta` --- MusicBrainz IDs, thumbnail
+  and banner URLs (in the daemon's own internal form, the same as elsewhere in
+  this API), biography, biography source, genres, and whether the name is a
+  partial match on a multi-artist string.
+- **Response** (404 Not Found): nothing is cached for this artist, and either
+  `lookup` was not set or the lookup found nothing.
+
+```bash
+curl "http://<device-ip>:1080/api/artist/UGluayBGbG95ZA"
+```
+
+#### Resolve Title Order
+
+Guesses which half of a two-part radio stream title is the artist, the same
+MusicBrainz-backed guess the stream title splitter makes for MPD stations.
+
+- **Endpoint**: `/api/resolve/title-order`
+- **Method**: GET
+- **Query Parameters**:
+  - `part1` (string, required): the first half of the split title
+  - `part2` (string, required): the second half
+- **Response** (200 OK):
+
+  ```json
+  { "order": "artist_song" }
+  ```
+
+  `order` is one of `artist_song`, `song_artist`, `unknown` (neither reading
+  matched anything) or `undecided` (both readings did). With MusicBrainz
+  lookups disabled the answer is always `unknown`, which callers already treat
+  as "keep the fallback order and don't learn from this."
+
+#### Resolve Artist Split
+
+Decides whether a combined artist string names more than one artist, the same
+check both library loaders run at load time on every album's artist field.
+
+- **Endpoint**: `/api/resolve/artist-split`
+- **Method**: GET
+- **Query Parameters**:
+  - `name` (string, required): the combined artist string, e.g. `Simon &
+    Garfunkel`
+  - `separator` (string, repeatable, optional): one separator per occurrence —
+    `?name=X&separator=,&separator=%26` — to try instead of the built-in
+    defaults (`,`, `&`, ` feat `, ` feat.`, ` featuring `, ` with `). Omit it
+    entirely for the defaults; sending none is the same as omitting it.
+
+    Repeated rather than one comma-separated value, because `,` is itself the
+    first default separator: a comma-joined list cannot carry it, and a
+    separator of `", "` would arrive as `" "` and split every two-word artist
+    name in two.
+- **Response** (200 OK):
+
+  ```json
+  { "artists": ["Simon", "Garfunkel"] }
+  ```
+
+  or, when the name is a single artist:
+
+  ```json
+  { "artists": null }
+  ```
+
+  The answer is cached without expiry once computed, keyed on the exact input
+  string.
+
+#### Nudge Enrichment
+
+Advisory hint that the metadata side should pull one player's library sooner
+than its next periodic poll, e.g. right after a library load.
+
+- **Endpoint**: `/api/enrich/nudge`
+- **Method**: POST
+- **Query Parameters**:
+  - `player` (string, required): the player name whose library changed
+- **Response** (202 Accepted): always, whether or not anything acts on the
+  nudge before this call returns. A nudge that is dropped or ignored is
+  harmless: the periodic poll covers it regardless.
+
+The name is handed to the library puller, which pulls that player's library at
+once instead of waiting for its next poll: `GET /api/library/<p>` for the two
+tokens, and — if the `library_version` differs from the one last enriched — the
+artist and album lists, followed by enrichment batches posted back to
+`POST /api/library/<p>/enrichment`. A player whose library reports no version
+is pulled again every 30 minutes regardless.
+
+The 202 still promises nothing. It is the answer when no puller is running at
+all, when the named player has no library, and when the library turns out to be
+at a version already enriched.
+
+```bash
+curl -X POST "http://<device-ip>:1080/api/enrich/nudge?player=mpd"
+```
 
 ### Favourites API
 

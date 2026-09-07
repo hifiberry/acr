@@ -4,7 +4,7 @@ use parking_lot::{Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
 use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface};
-use crate::data::library::apply_batch;
+use crate::data::library::{apply_batch, check_generation};
 use acr_types::enrichment::{Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink};
 use crate::helpers::http_client;
 use crate::players::lms::jsonrps::LmsRpcClient;
@@ -86,8 +86,9 @@ impl LMSLibrary {
             })
             .collect();
 
-        // LMS tracks no library version, so there is none to name and none for
-        // a returning batch to be stale against.
+        // LMS tracks no generation, so there is none to name and none for a
+        // returning batch to be stale against: it cannot tell whether it has
+        // reloaded, so it does not claim it has not.
         enricher.enrich("lms", None, artists, Vec::new(), Arc::new(self.clone()));
     }
 
@@ -659,20 +660,26 @@ impl LibraryInterface for LMSLibrary {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// LMS accepts enrichment results even though it tracks neither a version
+    /// nor a generation. `library_generation()` stays absent, which is what
+    /// tells a caller to name none.
+    fn as_enrichment_sink(&self) -> Option<&dyn EnrichmentSink> {
+        Some(self)
+    }
 }
 impl EnrichmentSink for LMSLibrary {
     /// Merge one batch of enrichment results into the loaded library.
     ///
     /// The merge is `data::library::apply_batch`, the same body MPD uses. What
-    /// differs is only what LMS does not have: no version counter, so nothing
-    /// to bump, nothing for a batch to be stale against, and no validator on
-    /// its lists for a bump to invalidate. A batch that names a version is
-    /// still refused, because this library cannot honour the claim it makes.
+    /// differs is only what LMS does not have: no counters, so nothing to bump,
+    /// no generation for a batch to be stale against, and no validator on its
+    /// lists for a bump to invalidate. A batch that names a generation is still
+    /// refused, because this library cannot honour the claim it makes - it
+    /// cannot tell whether it has reloaded since. A caller reads that off
+    /// `library_generation()` being absent and names none.
     fn apply(&self, batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
-        let current = self.library_version();
-        if batch.library_version.is_some() && batch.library_version != current {
-            return Err(EnrichmentError::Stale { current });
-        }
+        check_generation(&batch, self.library_generation())?;
 
         let (applied, _changed) = apply_batch(&self.albums, &self.artists, &batch);
         Ok(applied)
@@ -708,7 +715,7 @@ mod tests {
 
         let applied = lib
             .apply(EnrichmentBatch {
-                library_version: None,
+                library_generation: None,
                 artists: vec![ArtistSummary {
                     name: "Simon & Garfunkel".into(),
                     mbid: vec!["a".into(), "b".into()],
@@ -732,19 +739,29 @@ mod tests {
         assert_eq!(a.metadata.as_ref().unwrap().genres, vec!["folk"]);
     }
 
-    /// LMS reports no version, so a batch that names one was computed against
-    /// something this library is not.
+    /// LMS reports no generation, so a batch that names one was computed
+    /// against something this library is not.
     #[test]
-    fn a_batch_that_names_a_version_is_refused() {
+    fn a_batch_that_names_a_generation_is_refused() {
         let lib = empty_library();
         let err = lib
             .apply(EnrichmentBatch {
-                library_version: Some("whatever".into()),
+                library_generation: Some("whatever".into()),
                 ..Default::default()
             })
             .unwrap_err();
 
-        assert!(matches!(err, EnrichmentError::Stale { current: None }));
+        assert_eq!(
+            err,
+            EnrichmentError::Stale {
+                current_generation: None
+            }
+        );
+        assert_eq!(
+            lib.library_generation(),
+            None,
+            "and the absent generation is what tells a caller to name none"
+        );
     }
 
     struct RecordingEnricher(Mutex<Vec<(String, Option<String>, Vec<ArtistRef>, Vec<AlbumRef>)>>);
@@ -765,12 +782,12 @@ mod tests {
         fn enrich(
             &self,
             player: &str,
-            version: Option<String>,
+            generation: Option<String>,
             artists: Vec<ArtistRef>,
             albums: Vec<AlbumRef>,
             _sink: Arc<dyn EnrichmentSink>,
         ) {
-            self.0.lock().push((player.to_string(), version, artists, albums));
+            self.0.lock().push((player.to_string(), generation, artists, albums));
         }
     }
 
@@ -789,9 +806,12 @@ mod tests {
 
         let calls = recorder.0.lock();
         assert_eq!(calls.len(), 1);
-        let (player, version, artists, albums) = &calls[0];
+        let (player, generation, artists, albums) = &calls[0];
         assert_eq!(player, "lms");
-        assert_eq!(*version, None);
+        assert_eq!(
+            *generation, None,
+            "a backend that cannot tell whether it reloaded names no generation"
+        );
         assert_eq!(artists.len(), 1);
         assert!(albums.is_empty(), "LMS must not ask for album genres");
     }

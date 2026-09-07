@@ -42,6 +42,51 @@ The eighth player module, `players::generic`, is different from the other seven:
 no daemon of its own. It is a two-way bridge that any external player can drive over
 plain REST — see [Generic backend interface](#generic-backend-interface) below.
 
+### The two halves talk over loopback
+
+The process is internally divided into a *player* half (`src/`) and
+a *metadata* half (`crates/audiocontrol-metadata`), and everything that crosses
+between them is an HTTP request to `127.0.0.1:1080` — the port this same process
+is listening on. There are four seams, and each has a client on one side and a
+route on the other:
+
+| Seam | Direction | How it travels |
+|---|---|---|
+| Now playing | player → metadata | the metadata side subscribes to the daemon's own WebSocket at `ws://127.0.0.1:1080/api/events` |
+| Enrichment results, playback state | metadata → player | `POST /api/player/<name>/song-information`, `GET /api/player`, `GET /api/now-playing` |
+| Library enrichment | both | the metadata side polls `GET /api/library/...` and posts batches to `POST /api/library/<p>/enrichment`; the player side hints with `POST /api/enrich/nudge` |
+| Artist detail, the two resolvers, the Spotify token | player → metadata | `GET /api/artist/...`, `/api/resolve/...`, `/api/spotify/access_token` |
+
+`MetadataClient` (`src/audiocontrol/metadata_client.rs`) is the player side's
+client, pointed at `services.metadata.url`; `CoreClient`
+(`crates/audiocontrol-metadata/src/core_client.rs`) is the metadata side's,
+pointed at `services.core.url`. Both default to loopback on the port the
+daemon binds — `http://127.0.0.1:1080/api` with the shipped configuration —
+because today both ends are this process.
+
+**This split is internal, and not a deployment choice a device makes.** There is
+one binary, one systemd unit and one configuration file, and from the phase that
+introduces the second process there will still be one package. Nothing here is
+separately installable, separately versioned, or optional: an installation
+cannot run "just the player half". What the split buys is that the seams are
+already written, exercised and documented as HTTP, so moving the metadata half
+into its own process is a packaging change rather than a redesign.
+
+[**How the parts communicate**](communications.md) is the detail behind this
+section: every seam with its routes, payloads, timeouts and failure behaviour,
+sequence diagrams for each, the two library tokens and how they differ, a
+failure matrix, and what Phase 2 changes. Read it before changing anything that
+crosses the seam.
+
+Two consequences worth knowing when reading the code. First, a failure across a
+seam is a *network* failure with a timeout, not a `None` return — every caller
+has a documented fallback, listed in the module docs of the two clients above.
+Second, start-up has two stages on the metadata side:
+`audiocontrol_metadata::initialize_in_process` brings up the providers early,
+while `audiocontrol_metadata::startup::start_after_core_is_listening` starts the
+WebSocket subscriber and the library puller only after the API server has bound
+its port, since both are clients of it.
+
 ## Core abstractions
 
 | Abstraction | Location | Role |
@@ -103,7 +148,7 @@ Full request/response shapes for both directions are in
 | Module | Responsibility | Key files |
 |---|---|---|
 | `api/` | Rocket server and every REST/WebSocket route, grouped by domain (players, library, volume, coverart, lastfm, spotify, genres, settings…). | `server.rs`, `players.rs`, `events.rs`, `library.rs` |
-| `audiocontrol/` | The engine: `AudioController` (player registry + active selection) and `EventBus` (pub/sub). `now_playing_bridge.rs` is the whole of what the player side knows about metadata enrichment: it forwards song and state changes into a channel and applies what comes back through `apply_song_information`. | `audiocontrol.rs`, `eventbus.rs`, `now_playing_bridge.rs` |
+| `audiocontrol/` | The engine: `AudioController` (player registry + active selection) and `EventBus` (pub/sub). `metadata_client.rs` is the player side's HTTP client for the metadata half. `now_playing_bridge.rs` is the in-process forwarder that preceded it; the daemon no longer uses it — song and state changes now reach the metadata side over the WebSocket, and results come back through `POST /api/player/<name>/song-information`. | `audiocontrol.rs`, `eventbus.rs`, `metadata_client.rs` |
 | `players/` | `PlayerController` trait, shared `BaseController`, the eight backend implementations, a JSON-driven factory, and the generic push endpoint. | `player_controller.rs`, `player_factory.rs`, `event_api.rs`, `mpd/`, `librespot/`, `raat/`, `lms/`, `bluetooth/`, `mpris/`, `shairport/`, `generic/` |
 | `data/` | Shared domain types passed between every layer: `Song`, `Track`, `PlayerCommand`, `PlayerEvent`, `PlaybackState`, capability sets. | `song.rs`, `player_command.rs`, `player_event.rs`, `capabilities.rs` |
 | `helpers/` | Cross-cutting services that stay with the player daemon: volume control and its configurator client, lyrics, m3u parsing, the stream-title splitter, local cover art and image prewarm, and the systemd/MPRIS/Bluez/mac-address process helpers. The SQLite caches, the provider clients and the secret store moved out to the shared crates and `audiocontrol-metadata` — see the module map below. | `volume.rs`, `global_volume.rs`, `configurator.rs`, `lyrics.rs`, `songtitlesplitter.rs`, `local_coverart.rs`, `imageprewarm.rs` |
@@ -127,7 +172,7 @@ links both.
 | `acr-images` | Image resizing and format handling shared by every cache that serves `?size=` variants: rung snapping, `@<size>` naming, format sniffing, grading. | `imageresize.rs`, `sniff.rs`, `image_grader.rs` |
 | `acr-store` | The persistent stores each daemon initialises over its own directory: the SQLite attribute cache and settings DB, the image cache and its retired-rung purge, background jobs, genre cleanup. | `attributecache.rs`, `settingsdb.rs`, `imagecache.rs`, `imagepurge.rs`, `backgroundjobs.rs` |
 | `acr-web` | The Rocket pieces both APIs share: the `ForwardedPrefix` guard, image responses with ETag/304, path validation, and the `/imagecache/<path..>` route factory each daemon mounts over its own cache. | `imageresponse.rs`, `validated.rs`, `imagecache.rs`, `urlprefix.rs` |
-| `audiocontrol-metadata` | The metadata code: MusicBrainz/TheAudioDB/fanart.tv/Last.fm/Spotify clients, cover-art providers, the artist store, the library enricher and resolver the player daemon injects at startup, the security store, and the four CLI tools that only need this crate's code. | `musicbrainz.rs`, `lastfm.rs`, `spotify.rs`, `library_enricher.rs`, `security_store.rs`, `src/bin/*.rs` |
+| `audiocontrol-metadata` | The metadata code: MusicBrainz/TheAudioDB/fanart.tv/Last.fm/Spotify clients, cover-art providers, the artist store, the library enricher and resolvers, the security store, its own Rocket routes, its clients of the player daemon (`core_client.rs`, `now_playing_ws.rs`, `library_puller.rs`), the two-stage start-up in `startup.rs`, and the four CLI tools that only need this crate's code. | `musicbrainz.rs`, `lastfm.rs`, `spotify.rs`, `library_enricher.rs`, `core_client.rs`, `now_playing_ws.rs`, `library_puller.rs`, `startup.rs`, `api/`, `src/bin/*.rs` |
 
 ## The acr-webmcp bridge
 
@@ -159,7 +204,11 @@ the local network.
    `BaseController::notify_song_changed()`.
 5. `EventBus` publishes `PlayerEvent::SongChanged` to every subscriber.
 6. `ActiveMonitor` makes librespot the active player; WebSocket clients get the new
-   track; the Last.fm plugin scrobbles it.
+   track.
+7. One of those WebSocket clients is the metadata half of this same process. Its
+   subscriber turns the frame back into a `SongChanged` and hands it to the
+   enrichment workers and the Last.fm scrobbler; anything they find comes back
+   through `POST /api/player/librespot/song-information`.
 
 ### "Pause the music" via Claude (command flowing inward)
 

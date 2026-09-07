@@ -110,7 +110,7 @@ impl StubServer {
         format!("http://127.0.0.1:{}", self.port)
     }
 
-    /// The most recent request, headers included, as received.
+    /// The most recent request, headers and body included, as received.
     pub fn last_request(&self) -> Option<String> {
         self.last_request.lock().clone()
     }
@@ -137,7 +137,11 @@ fn handle(
     recorded: Arc<Mutex<Option<String>>>,
     all: Arc<Mutex<Vec<String>>>,
 ) {
-    // Read up to the end of the headers. These requests carry no body.
+    // Read up to the end of the headers, then -- when a Content-Length says
+    // there is one -- the body that follows, so the recorded request carries
+    // what a POST actually sent, not just its headers. A request with no
+    // Content-Length (every GET these servers have ever seen) reads zero
+    // further bytes, so it cannot block waiting for a body that never comes.
     let mut request = Vec::new();
     let mut byte = [0u8; 1];
     while stream.read_exact(&mut byte).is_ok() {
@@ -146,6 +150,23 @@ fn handle(
             break;
         }
     }
+
+    let content_length = String::from_utf8_lossy(&request)
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim().eq_ignore_ascii_case("content-length").then(|| value.trim().to_string())
+        })
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+
+    if content_length > 0 {
+        let mut body = vec![0u8; content_length];
+        if stream.read_exact(&mut body).is_ok() {
+            request.extend_from_slice(&body);
+        }
+    }
+
     let request = String::from_utf8_lossy(&request).into_owned();
     *recorded.lock() = Some(request.clone());
     all.lock().push(request);
@@ -167,4 +188,49 @@ fn handle(
     let _ = stream.write_all(head.as_bytes());
     let _ = stream.write_all(&canned.body);
     let _ = stream.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acr_http::http_client;
+
+    /// The capability `core_client`'s tests rely on: a POST's body is
+    /// captured, not just its headers. Guarded here directly rather than
+    /// only being exercised incidentally by a client test elsewhere.
+    #[test]
+    fn a_posted_body_is_recorded_in_the_request_log() {
+        let server = StubServer::serving(200, r#"{"ok":true}"#);
+        let client = http_client::new_http_client(5);
+        let _ = client.post_json_value(
+            &format!("{}/thing", server.base_url()),
+            serde_json::json!({"title": "Nemo", "artist": "Nightwish"}),
+        );
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        let body = requests[0]
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("a body after the headers");
+        // Not a fixed string: `serde_json::json!` builds a `Value` backed by
+        // a `BTreeMap`, so its wire order is alphabetical by key rather than
+        // the order written here.
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("valid JSON body");
+        assert_eq!(parsed["title"], "Nemo");
+        assert_eq!(parsed["artist"], "Nightwish");
+    }
+
+    /// A request with no body (every GET) must not block waiting for one
+    /// that never arrives.
+    #[test]
+    fn a_bodyless_request_is_recorded_without_blocking() {
+        let server = StubServer::serving(200, r#"{"images":[]}"#);
+        let client = http_client::new_http_client(5);
+        let _ = client.get_json_with_headers(&server.url(), &[]);
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /coverart HTTP/1.1"));
+    }
 }

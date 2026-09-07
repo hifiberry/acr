@@ -143,6 +143,24 @@ that links both, behind the default `metadata` feature — `cargo build
 --no-default-features --bin audiocontrol` builds the player daemon alone,
 which is what that script also checks.
 
+**That script leaves a crippled binary behind.** Its last step builds
+`--no-default-features` into the same target directory, so
+`target/debug/audiocontrol` afterwards is a daemon with **no metadata routes**.
+Run the Python integration suite or start a daemon straight after it and around
+forty route lookups answer 404, which looks exactly like a regression in the
+route mounting and is not. Rebuild with default features first:
+
+```sh
+sh scripts/check-crate-deps.sh
+cargo build --bin audiocontrol      # <- before any daemon run or Python test
+```
+
+The same trap has a second form: the Python tests run a *binary*, so reverting
+a source file is not reverting the system under test. After undoing an
+experiment, rebuild before re-running, or a stale binary will report a failure
+in code you have already restored. Between them these two have cost several
+full test runs.
+
 ## Writing testable code
 
 Much of this daemon talks to a player over a socket and cannot be unit tested

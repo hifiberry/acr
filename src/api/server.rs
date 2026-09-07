@@ -1,7 +1,7 @@
 use crate::AudioController;
 use crate::api::{
     players, plugins, library, imagecache, events, volume, lyrics, m3u, settings, cache,
-    backgroundjobs, genres, inputs, splitters, capabilities
+    backgroundjobs, genres, inputs, splitters, capabilities, song_information, enrichment
 };
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
@@ -146,6 +146,76 @@ fn rocket_config(host: &str, port: u64) -> Figment {
         .merge(("limits", Limits::default().limit("json", 4.mebibytes())))
 }
 
+/// The daemon's own routes, mounted at the bare `API_PREFIX` in
+/// [`start_rocket_server`].
+///
+/// Extracted so a test can list them without building a Rocket: the guard
+/// against a route in here colliding with one the metadata crate mounts at
+/// the same prefix (`audiocontrol_metadata::api::routes`'s `""` group -- see
+/// its module doc) needs this list on its own, not only assembled into a
+/// `rocket::Rocket`. Purely additive -- `start_rocket_server` below calls
+/// this instead of building the list inline, and mounts the result exactly
+/// as before.
+pub fn api_routes() -> Vec<rocket::Route> {
+    routes![
+        get_version,
+        capabilities::get_capabilities,
+
+        // Player routes
+        players::get_current_player,
+        players::list_players,
+        players::send_command_to_player_by_name,
+        players::get_now_playing,
+        players::get_player_queue,
+        players::get_player_metadata,
+        players::get_player_metadata_key,
+        players::pause_all_players,
+        players::stop_all_players,
+        // Plugin routes
+        plugins::list_action_plugins,
+
+        // Stream title splitter routes
+        splitters::list_splitters,
+        splitters::get_splitter,
+        splitters::set_splitter,
+        splitters::delete_splitter,
+
+        // Library routes
+        library::list_libraries,
+        library::get_library_info,
+        library::get_player_albums,
+        library::get_player_artists,
+        library::get_album_by_id,
+        library::get_albums_by_artist,
+        library::get_albums_by_artist_id,
+        library::refresh_player_library,
+        library::update_player_library,
+        library::get_artist_by_name,
+        library::get_artist_by_id,
+        library::get_artist_by_mbid,
+        library::get_image,
+        library::get_library_metadata,
+        library::get_library_metadata_key,
+        library::get_library_genres,
+        library::get_albums_by_genre,
+        library::get_artists_by_genre,
+        library::get_library_categories,
+        library::get_albums_by_category,
+        library::get_artists_by_category,
+        library::delete_library_album,
+        library::delete_library_track,
+        enrichment::apply_enrichment,
+
+        // WebSocket routes
+        events::event_messages,
+        events::player_event_messages,
+
+        // Generic player API endpoints
+        player_event_update,
+        song_information::song_information,
+    ]
+}
+
 // Start the Rocket server
 pub async fn start_rocket_server(
     controller: Arc<AudioController>,
@@ -193,61 +263,7 @@ pub async fn start_rocket_server(
     let ws_manager = Arc::new(WebSocketManager::new());
     events::start_prune_task(ws_manager.clone());
     
-    let api_routes = routes![
-        get_version,
-        capabilities::get_capabilities,
-
-        // Player routes
-        players::get_current_player,
-        players::list_players,
-        players::send_command_to_player_by_name,
-        players::get_now_playing,
-        players::get_player_queue,
-        players::get_player_metadata,      
-        players::get_player_metadata_key,
-        players::pause_all_players,
-        players::stop_all_players,        
-        // Plugin routes
-        plugins::list_action_plugins,
-        
-        // Stream title splitter routes
-        splitters::list_splitters,
-        splitters::get_splitter,
-        splitters::set_splitter,
-        splitters::delete_splitter,
-
-        // Library routes
-        library::list_libraries,
-        library::get_library_info,
-        library::get_player_albums,
-        library::get_player_artists,
-        library::get_album_by_id,
-        library::get_albums_by_artist,
-        library::get_albums_by_artist_id,
-        library::refresh_player_library,
-        library::update_player_library,
-        library::get_artist_by_name,
-        library::get_artist_by_id,
-        library::get_artist_by_mbid,
-        library::get_image,
-        library::get_library_metadata,
-        library::get_library_metadata_key,
-        library::get_library_genres,
-        library::get_albums_by_genre,
-        library::get_artists_by_genre,
-        library::get_library_categories,
-        library::get_albums_by_category,
-        library::get_artists_by_category,
-        library::delete_library_album,
-        library::delete_library_track,
-
-        // WebSocket routes
-        events::event_messages,
-        events::player_event_messages,
-        
-        // Generic player API endpoints
-        player_event_update,
-    ];
+    let api_routes = api_routes();
 
     // Define volume routes
     let volume_routes = routes![
@@ -319,14 +335,31 @@ pub async fn start_rocket_server(
         .manage(controller)
         .manage(ws_manager); // Add WebSocket manager as managed state
 
-    // Route groups from outside this package: the metadata crate's cover art,
-    // Last.fm, Spotify, TheAudioDB and favourites endpoints. Their mount
-    // points are not all disjoint from the ones above — TheAudioDB's group
-    // mounts at `""`, i.e. at API_PREFIX itself, the same base as
-    // `api_routes` — but no path collides today, so mounting them after
-    // changes no resolution order within any group. A future route added to
-    // either group would surface as a Rocket collision at ignite rather than
-    // as the declaration-order resolution this comment used to promise.
+    // The route groups this function does not own. `src/main.rs` assembles
+    // them (`metadata_route_groups`), and they are not one set but three:
+    // the metadata crate's own routes at the mounts they have always had, the
+    // *same* routes again under `/metadata`, and this package's own
+    // `imagecache` routes under `/metadata` as well -- the metadata side
+    // serves the external image cache, and a separate daemon will serve it on
+    // its own port. So "from outside this package" is no longer true of every
+    // group, and the second mount is the surprising part: one handler,
+    // reachable at two prefixes, deliberately.
+    //
+    // Their mount points are not all disjoint from the ones above — the
+    // metadata crate's first group mounts at `""`, i.e. at API_PREFIX itself,
+    // the same base as `api_routes` — but no path collides, so mounting them
+    // after changes no resolution order within any group. A route added to
+    // either set that did collide would surface as a Rocket collision at
+    // ignite, i.e. as a daemon that does not start; `src/main.rs`'s
+    // `the_metadata_crates_routes_do_not_collide_with_the_daemons_own` is
+    // what catches that in a test run instead.
+    //
+    // There is a fourth group, and it is the one worth knowing about:
+    // `standalone_routes()` under `/metadata` only. It holds the routes the
+    // metadata crate will serve on its own but that this daemon already serves
+    // itself -- `capabilities` today -- so it must never reach the bare mount,
+    // where it would be the exact duplicate that stops the daemon starting.
+    // It is also what puts `GET /api/metadata/capabilities` on the wire.
     for (mount, routes) in extra_routes {
         rocket_builder = rocket_builder.mount(format!("{}{}", API_PREFIX, mount), routes);
     }

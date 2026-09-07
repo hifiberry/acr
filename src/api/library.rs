@@ -32,6 +32,18 @@ pub struct LibraryResponse {
     /// that does not track changes - the same signal as a missing ETag.
     #[serde(skip_serializing_if = "Option::is_none")]
     library_version: Option<String>,
+    /// Changes when the library is *reloaded*, and not when its contents
+    /// change. This is what a caller names in an enrichment batch and what a
+    /// 409 from `POST /library/<p>/enrichment` compares; `library_version`
+    /// above is the ETag validator and the seen-token, and the two are not
+    /// interchangeable.
+    ///
+    /// Unlike `library_version` it carries no prefix component: it is not a
+    /// validator for anything a proxy rewrites, and a prefixed one would never
+    /// match the token the library actually holds. Absent for a backend that
+    /// cannot track reloads, which tells a caller to name no generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    library_generation: Option<String>,
 }
 
 /// Response structure for library list - lists all players with library info
@@ -396,6 +408,7 @@ pub fn get_library_info(
                     tracks_count,
                     supports_delete,
                     library_version,
+                    library_generation: library.library_generation(),
                 }));
             } else {
                 // Player exists but doesn't have a library
@@ -411,6 +424,7 @@ pub fn get_library_info(
                         tracks_count: 0,
                         supports_delete: false,
                         library_version: None,
+                        library_generation: None,
                     }),
                 ));
             }
@@ -430,6 +444,7 @@ pub fn get_library_info(
             tracks_count: 0,
             supports_delete: false,
             library_version: None,
+            library_generation: None,
         }),
     ))
 }
@@ -1115,6 +1130,10 @@ pub fn refresh_player_library(
                             tracks_count,
                             supports_delete: library.supports_delete(),
                             library_version,
+                            // Read after the refresh, so a caller that
+                            // triggered one is told the generation it produced
+                            // rather than the one it replaced.
+                            library_generation: library.library_generation(),
                         }));
                     },
                     Err(e) => {
@@ -1928,6 +1947,9 @@ mod tests {
         fn library_version(&self) -> Option<String> {
             Some("42".to_string())
         }
+        fn library_generation(&self) -> Option<String> {
+            Some("g7".to_string())
+        }
     }
 
     /// The smallest player that owns a library, so the handlers' controller
@@ -2102,7 +2124,7 @@ mod tests {
                 &RwLock::new(HashMap::new()),
                 &artists,
                 &EnrichmentBatch {
-                    library_version: None,
+                    library_generation: None,
                     artists: vec![
                         ArtistSummary {
                             name: "Pictured".to_string(),
@@ -2341,6 +2363,49 @@ mod tests {
             .header(Header::new("If-None-Match", proxied))
             .dispatch();
         assert_eq!(response.status(), Status::NotModified);
+    }
+
+    /// `library_generation` is what a caller names in an enrichment batch, so
+    /// unlike `library_version` it must reach the client as the library's own
+    /// token: a prefixed one would never match what the library holds and every
+    /// batch naming it would be refused.
+    #[test]
+    fn the_polled_library_generation_carries_no_prefix() {
+        let direct = get_json("/api/library/stub", None);
+        let proxied = get_json("/api/library/stub", Some("/api/audiocontrol"));
+
+        assert_eq!(direct["library_generation"], "g7");
+        assert_eq!(
+            direct["library_generation"], proxied["library_generation"],
+            "the generation is the library's own token, whatever route reached it"
+        );
+        assert_ne!(
+            direct["library_version"], proxied["library_version"],
+            "while the version, being a validator, still varies with the prefix"
+        );
+    }
+
+    /// A backend that cannot track reloads omits the field rather than sending
+    /// null: that absence is what tells a caller to name no generation in its
+    /// batches.
+    #[test]
+    fn a_library_without_a_generation_omits_the_field() {
+        let body = serde_json::to_value(LibraryResponse {
+            player_name: "x".to_string(),
+            player_id: "x".to_string(),
+            has_library: true,
+            is_loaded: true,
+            albums_count: 0,
+            artists_count: 0,
+            tracks_count: 0,
+            supports_delete: false,
+            library_version: None,
+            library_generation: None,
+        })
+        .unwrap();
+
+        assert!(body.get("library_generation").is_none());
+        assert!(body.get("library_version").is_none());
     }
 
     #[test]

@@ -51,6 +51,17 @@
                 }
             ]
         },
+        "metadata": {
+            "url": "http://127.0.0.1:1080/api",
+            "detail_timeout_ms": 1000,
+            "resolve_timeout_ms": 5000,
+            "_comment": "Where the player side reaches the metadata side. The same port the webserver above binds, because both halves run in this one process; a different port once they are separate daemons. Omitting this section disables enrichment, the resolvers and the Spotify token source rather than defaulting them."
+        },
+        "core": {
+            "url": "http://127.0.0.1:1080/api",
+            "library_poll_seconds": 30,
+            "_comment": "Where the metadata side reaches the player side: the now-playing WebSocket, the song-information push and the library sweep. Unlike 'metadata' above, omitting this section means these defaults and not 'make no calls' - the metadata side always has a player daemon to talk to. With no url given the port is taken from services.webserver above, since that is the API this process is about to serve."
+        },
         "datastore": {
             "attribute_cache": {
                 "dbfile": "/var/lib/audiocontrol/cache/attributes.db",

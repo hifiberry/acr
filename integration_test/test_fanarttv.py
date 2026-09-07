@@ -299,8 +299,8 @@ def test_fanarttv_john_williams(fanarttv_server):
         
         # Don't fail the test if other providers found results
         total_images = sum(len(result['images']) for result in results)
-        if total_urls > 0:
-            print(f"Other providers found {total_urls} URLs total")
+        if total_images > 0:
+            print(f"Other providers found {total_images} URLs total")
         else:
             print("No cover art found from any provider")
 

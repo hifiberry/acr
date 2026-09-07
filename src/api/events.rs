@@ -7,10 +7,47 @@ use log::{debug, info, error};
 
 // Use the correct rocket_ws imports
 use rocket_ws::{WebSocket, Channel, Message};
-use rocket::futures::{SinkExt, StreamExt};
+use rocket_ws::frame::{CloseCode, CloseFrame};
+use rocket::futures::{Sink, SinkExt, Stream, StreamExt};
 
 use crate::data::PlayerEvent;
 use crate::audiocontrol::eventbus::EventBus;
+
+/// How long a client may go without a frame arriving from it before the prune
+/// task drops it.
+///
+/// This is the reaping policy and it is deliberately unchanged: a connection
+/// whose peer has vanished without a FIN produces no frames and no send error
+/// for a long time, and dropping it after an hour of silence is the only thing
+/// that notices. What changed is *what counts as a frame* - see `PING_INTERVAL`.
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// How often the prune task looks for silent clients and stale events.
+const PRUNE_INTERVAL: Duration = Duration::from_secs(300);
+
+/// How long a queued event stays available for delivery.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often each connection polls for events to deliver.
+const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// How often the server sends a WebSocket ping on each open connection.
+///
+/// Only a frame arriving *from* the peer refreshes that peer's last-activity
+/// time, and a browser page cannot produce one on demand: the JavaScript
+/// WebSocket API exposes no ping. So a client that subscribes once and then
+/// only listens - the WebUI is exactly that - used to be pruned an hour after
+/// connecting with its socket still open: no error, no close frame, events
+/// simply stopped. A server ping fixes it without any client change, because
+/// the peer's WebSocket stack answers a ping with a pong at the protocol level,
+/// and that pong is an inbound frame.
+///
+/// 30 s against a `CLIENT_TIMEOUT` of 3600 s means a live peer answers about
+/// 120 times per timeout window, so reaching the timeout takes a full hour of
+/// consecutively unanswered pings - not one lost packet, one slow scheduler
+/// tick, or one long garbage collection in the browser. A peer that has really
+/// gone away answers none of them and is still reaped on schedule.
+const PING_INTERVAL: Duration = Duration::from_secs(30);
 
 /// New format for WebSocket messages with source at top level
 #[derive(Debug, Clone, Serialize)]
@@ -162,9 +199,33 @@ impl WebSocketManager {    /// Create a new WebSocket manager
     
     /// Record client activity to prevent timeout
     pub fn record_activity(&self, id: usize) {
-        self.last_activity.lock().insert(id, Instant::now());
+        self.record_activity_at(id, Instant::now());
     }
-    
+
+    /// Record client activity as of a given instant.
+    ///
+    /// Splitting the clock out of `record_activity` lets a test drive the
+    /// interplay between activity and pruning at chosen instants instead of
+    /// waiting for real time to pass.
+    pub fn record_activity_at(&self, id: usize, at: Instant) {
+        self.last_activity.lock().insert(id, at);
+    }
+
+    /// Record that a frame arrived from a client.
+    ///
+    /// Every frame counts, whatever it carries - a `Pong` answering one of our
+    /// pings included. That is what keeps a listen-only client alive, so this
+    /// deliberately does not look at the frame to decide whether it counts.
+    pub fn record_inbound_frame(&self, id: usize, msg: &Message) {
+        self.record_inbound_frame_at(id, msg, Instant::now());
+    }
+
+    /// `record_inbound_frame` with the clock supplied, for tests.
+    pub fn record_inbound_frame_at(&self, id: usize, msg: &Message, at: Instant) {
+        debug!("Inbound frame: Client: {}, Kind: {}", id, frame_kind(msg));
+        self.record_activity_at(id, at);
+    }
+
     /// Queue a new event to be sent to clients
     pub fn queue_event(&self, event: PlayerEvent) {
         let now = Instant::now();
@@ -283,8 +344,19 @@ impl WebSocketManager {    /// Create a new WebSocket manager
     
     /// Prune inactive connections and old events
     pub fn prune_inactive_and_old(&self, client_timeout: Duration, event_timeout: Duration) {
-        let now = Instant::now();
-        
+        self.prune_inactive_and_old_at(Instant::now(), client_timeout, event_timeout);
+    }
+
+    /// Prune as of a given instant.
+    ///
+    /// The instant is a parameter for the same reason the timeouts are: a test
+    /// can then ask "what would this do an hour from now" without sleeping.
+    pub fn prune_inactive_and_old_at(
+        &self,
+        now: Instant,
+        client_timeout: Duration,
+        event_timeout: Duration,
+    ) {
         // Prune inactive clients
         let clients_to_remove = {
             let mut to_remove = Vec::new();
@@ -330,6 +402,31 @@ impl WebSocketManager {    /// Create a new WebSocket manager
                 debug!("Pruned {} old WebSocket events", to_remove);
             }
         }
+    }
+
+    /// Whether a client is still registered.
+    #[cfg(test)]
+    fn is_registered(&self, id: usize) -> bool {
+        self.subscriptions.lock().contains_key(&id)
+    }
+
+    /// The recorded last-activity time of a client, if it has one.
+    #[cfg(test)]
+    fn last_activity_of(&self, id: usize) -> Option<Instant> {
+        self.last_activity.lock().get(&id).copied()
+    }
+}
+
+/// Name a frame for the log. Only used for logging - nothing decides anything
+/// from the kind of an inbound frame.
+fn frame_kind(msg: &Message) -> &'static str {
+    match msg {
+        Message::Text(_) => "text",
+        Message::Binary(_) => "binary",
+        Message::Ping(_) => "ping",
+        Message::Pong(_) => "pong",
+        Message::Close(_) => "close",
+        Message::Frame(_) => "raw frame",
     }
 }
 
@@ -494,20 +591,211 @@ fn event_type_name(event: &PlayerEvent) -> &'static str {
     }
 }
 
+/// How a connection's message loop ended.
+#[derive(Debug, PartialEq, Eq)]
+enum ClientLoopEnd {
+    /// The peer closed, or the stream ended or errored: the caller unregisters
+    /// the client.
+    Closed,
+    /// A send failed, so the connection is already gone. The registration is
+    /// left for the prune task, which is what happened before the two loops
+    /// were shared and is deliberately unchanged here.
+    SendFailed,
+    /// The daemon is shutting down. Treated like `Closed` by the caller -- the
+    /// client is unregistered -- but named separately so the log says which
+    /// end went away, and so a test can tell "we closed" from "they closed".
+    ShuttingDown,
+}
+
+/// The message loop shared by every WebSocket connection.
+///
+/// Both mount points run this. They differ only in the subscription they
+/// register and the welcome message they send, and having one loop is what
+/// keeps the ping below from depending on which URL a client connected to.
+///
+/// `player_filter` is the player this connection was opened for, for the log
+/// only; `None` is the unfiltered mount point.
+///
+/// `shutdown` is Rocket's own shutdown future, and this loop closing on it is
+/// what keeps stopping the daemon quick. **An open WebSocket is pending I/O
+/// that Rocket waits out for the whole of `shutdown.grace`, and then spends
+/// `shutdown.mercy` on because it had to force the connection closed.** With
+/// grace at 2 s and mercy at 3 s that is five seconds added to every
+/// `systemctl stop`, restart and package upgrade for as long as one client --
+/// the WebUI, or this daemon's own metadata half -- has the socket open.
+/// Closing from this side instead brings that back to about two seconds:
+/// mercy is no longer spent at all, and the remaining two are `shutdown.grace`
+/// itself, which rocket 0.5's `Arc<Rocket>` strong count makes a WebSocket task
+/// pay even after its socket is closed. A tenth of a second is what a daemon
+/// that never upgraded a connection costs, not what this saves. A test passes
+/// `std::future::pending()` for a loop that should never see one.
+///
+/// Generic over the stream rather than taking `DuplexStream`, whose constructor
+/// is private to `rocket_ws`, so the tests can run this loop over a pair of
+/// channels and watch what it sends.
+async fn run_client_loop<S>(
+    manager: &WebSocketManager,
+    stream: &mut S,
+    client_id: usize,
+    forwarded_prefix: Option<&str>,
+    player_filter: Option<&str>,
+    ping_interval: Duration,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> rocket_ws::result::Result<ClientLoopEnd>
+where
+    S: Stream<Item = rocket_ws::result::Result<Message>>
+        + Sink<Message, Error = rocket_ws::result::Error>
+        + Unpin,
+{
+    // Pinned once, outside the loop: `select!` polls it on every pass and a
+    // future that was recreated each time would never make progress.
+    let shutdown = std::pin::pin!(shutdown);
+    let mut shutdown = shutdown;
+    let player = player_filter.unwrap_or("all");
+    let mut poll = tokio::time::interval(EVENT_POLL_INTERVAL);
+
+    // `interval` fires its first tick immediately; start the ping clock one
+    // interval out so opening a connection does not ping it straight away.
+    let mut ping = tokio::time::interval_at(
+        tokio::time::Instant::now() + ping_interval,
+        ping_interval,
+    );
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                // A Close frame, not a dropped socket: the peer learns the
+                // server is going away and can reconnect deliberately, and
+                // Rocket sees the connection finish inside its grace period
+                // instead of having to force it at the end of one.
+                //
+                // Code 1001 "going away", not an empty close: a bare
+                // `Close(None)` reaches a browser as code 1005 "no status
+                // received", which says nothing at all and would leave this
+                // comment describing something no client can actually observe.
+                debug!("Shutting down: closing WebSocket for client {}", client_id);
+                let _ = stream
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::Away,
+                        reason: "server shutting down".into(),
+                    })))
+                    .await;
+                let _ = stream.flush().await;
+                return Ok(ClientLoopEnd::ShuttingDown);
+            }
+            _ = poll.tick() => {
+                // Check for new events
+                let events = manager.get_events_for_client(client_id);
+                for event in events {
+                    // Convert to new format with source at top level
+                    let message = convert_to_websocket_message(&event, forwarded_prefix);
+
+                    if let Ok(json) = serde_json::to_string(&message) {
+                        debug!("Sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}",
+                              client_id, event.player_name().unwrap_or("system"), event_type_name(&event), json.len());
+
+                        if let Err(e) = stream.send(Message::Text(json)).await {
+                            debug!("Error sending event to client {}: {}", client_id, e);
+                            // Connection might be broken, exit the loop
+                            return Ok(ClientLoopEnd::SendFailed);
+                        } else {
+                            debug!("Event sent successfully: Client: {}", client_id);
+                        }
+                    } else {
+                        debug!("Event serialization failed: Client: {}", client_id);
+                    }
+                }
+            }
+            _ = ping.tick() => {
+                // A protocol frame, not an application message: no client has
+                // to know about it, and the peer's WebSocket stack answers it
+                // without any application code. The pong that comes back is
+                // what refreshes this client's last-activity time, which is the
+                // only thing keeping a listen-only client off the prune list.
+                if let Err(e) = stream.send(Message::Ping(Vec::new())).await {
+                    debug!("Error sending ping to client {}: {}", client_id, e);
+                    return Ok(ClientLoopEnd::SendFailed);
+                }
+                debug!("Ping sent: Client: {}", client_id);
+            }
+            Some(msg_result) = stream.next() => {
+                match msg_result {
+                    Ok(msg) => {
+                        // Any frame from the peer is activity - a Pong
+                        // answering our ping included. Recorded before the
+                        // dispatch below so no frame kind can be forgotten.
+                        manager.record_inbound_frame(client_id, &msg);
+
+                        match msg {
+                            Message::Text(text) => {
+                                debug!("Received message: Client: {}, Player: {}, Text: {}", client_id, player, text);
+
+                                // Try to parse as ClientMessage (EventSubscription)
+                                match serde_json::from_str::<ClientMessage>(&text) {
+                                    Ok(ClientMessage::Subscription(subscription)) => {
+                                        debug!("Subscription update: Client: {}, Player: {}, Players: {:?}, Event types: {:?}",
+                                              client_id, player, subscription.players, subscription.event_types);
+
+                                        if manager.update_subscription(client_id, subscription) {
+                                            let response = serde_json::json!({
+                                                "type": "subscription_updated",
+                                                "message": "Subscription updated successfully"
+                                            }).to_string();
+                                            if let Err(e) = stream.send(Message::Text(response)).await {
+                                                debug!("Error sending subscription update confirmation to client {}: {}", client_id, e);
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        // Send error back to client
+                                        let error_msg = serde_json::json!({
+                                            "type": "error",
+                                            "message": format!("Invalid message format: {}. Expected EventSubscription.", e)
+                                        }).to_string();
+                                        if let Err(e_send) = stream.send(Message::Text(error_msg)).await {
+                                            debug!("Error sending error message to client {}: {}", client_id, e_send);
+                                        }
+                                    }
+                                }
+                            },
+                            Message::Ping(data) => {
+                                debug!("Received ping: Client: {}, Data length: {}", client_id, data.len());
+                                // Reply with a pong containing the same data
+                                stream.send(Message::Pong(data)).await?;
+                            },
+                            Message::Close(_) => {
+                                debug!("Received close: Client: {}", client_id);
+                                // Client is closing the connection
+                                break;
+                            },
+                            // Pong answers our own ping; the activity it
+                            // represents is already recorded above.
+                            _ => {}
+                        }
+                    },
+                    Err(e) => {
+                        debug!("WebSocket error: {}", e);
+                        break;
+                    }
+                }
+            }
+            else => break,
+        }
+    }
+
+    Ok(ClientLoopEnd::Closed)
+}
+
 /// Create a task to periodically prune inactive connections and old events
 pub fn start_prune_task(ws_manager: Arc<WebSocketManager>) {
     // Create a thread for periodic pruning
     std::thread::spawn(move || {
         loop {
-            // Sleep for 5 minutes
-            std::thread::sleep(Duration::from_secs(300));
-            
-            // Prune connections inactive for more than 1 hour and
-            // events older than 30 seconds
-            ws_manager.prune_inactive_and_old(
-                Duration::from_secs(3600), // 1 hour
-                Duration::from_secs(30)  // 30 seconds
-            );
+            std::thread::sleep(PRUNE_INTERVAL);
+
+            // Drop clients silent for longer than CLIENT_TIMEOUT and events
+            // older than EVENT_TIMEOUT.
+            ws_manager.prune_inactive_and_old(CLIENT_TIMEOUT, EVENT_TIMEOUT);
         }
     });
 }
@@ -531,6 +819,7 @@ pub fn event_messages(
     ws: WebSocket,
     forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     ws_manager: &rocket::State<Arc<WebSocketManager>>,
+    shutdown: rocket::Shutdown,
 ) -> Channel<'static> { // Removed audio_controller
     // Clone the manager to avoid lifetime issues
     let manager = ws_manager.inner().clone();
@@ -546,115 +835,37 @@ pub fn event_messages(
                 players: None,
                 event_types: None,
             });
-            
+
             debug!("websocket connected: Client ID: {}, All players", client_id);
-            
+
             // Send welcome message
             let welcome_msg = serde_json::json!({
                 "type": "welcome",
                 "client_id": client_id,
                 "message": "Connected to ACR WebSocket API"
             }).to_string();
-            
+
             if let Err(e) = stream.send(Message::Text(welcome_msg)).await {
                 error!("Failed to send welcome message: {}", e);
                 return Err(e);
             }
-            
-            // Create a polling interval
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-            
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        // Check for new events
-                        let events = manager.get_events_for_client(client_id);
-                        for event in events {
-                            // Convert to new format with source at top level
-                            let message = convert_to_websocket_message(&event, forwarded_prefix.as_deref());
-                            
-                            if let Ok(json) = serde_json::to_string(&message) {
-                                debug!("sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
-                                      client_id, event.player_name().unwrap_or("system"), event_type_name(&event), json.len());
-                                
-                                if let Err(e) = stream.send(Message::Text(json)).await {
-                                    debug!("Error sending event to client {}: {}", client_id, e);
-                                    // Connection might be broken, exit the loop
-                                    return Ok(());
-                                } else {
-                                    debug!("Event sent successfully: Client: {}", client_id);
-                                }
-                            } else {
-                                debug!("Event serialization failed: Client: {}", client_id);
-                            }
-                        }
-                    }
-                    Some(msg_result) = stream.next() => {
-                        match msg_result {
-                            Ok(msg) => {
-                                // Record activity to prevent timeout
-                                manager.record_activity(client_id);
-                                
-                                match msg {
-                                    Message::Text(text) => {
-                                        // Record activity to prevent timeout
-                                        manager.record_activity(client_id);
-                                        debug!("Received message: Client: {}, Text: {}", client_id, text);
 
-                                        // Try to parse as ClientMessage (EventSubscription)
-                                        match serde_json::from_str::<ClientMessage>(&text) {
-                                            Ok(ClientMessage::Subscription(subscription)) => {
-                                                debug!("Subscription update: Client: {}, Players: {:?}, Event types: {:?}",
-                                                      client_id, subscription.players, subscription.event_types);
+            let end = run_client_loop(
+                &manager,
+                &mut stream,
+                client_id,
+                forwarded_prefix.as_deref(),
+                None,
+                PING_INTERVAL,
+                shutdown,
+            ).await?;
 
-                                                if manager.update_subscription(client_id, subscription) {
-                                                    let response = serde_json::json!({
-                                                        "type": "subscription_updated",
-                                                        "message": "Subscription updated successfully"
-                                                    }).to_string();
-                                                    if let Err(e) = stream.send(Message::Text(response)).await {
-                                                        debug!("Error sending subscription update confirmation to client {}: {}", client_id, e);
-                                                    }
-                                                }
-                                            },
-                                            Err(e) => {
-                                                // Send error back to client
-                                                let error_msg = serde_json::json!({
-                                                    "type": "error",
-                                                    "message": format!("Invalid message format: {}. Expected EventSubscription.", e)
-                                                }).to_string();
-                                                if let Err(e_send) = stream.send(Message::Text(error_msg)).await {
-                                                    debug!("Error sending error message to client {}: {}", client_id, e_send);
-                                                }
-                                            }
-                                        }
-                                    },
-                                    Message::Ping(data) => {
-                                        debug!("Received ping: Client: {}, Data length: {}", client_id, data.len());
-                                        // Reply with a pong containing the same data
-                                        stream.send(Message::Pong(data)).await?;
-                                    },
-                                    Message::Close(_) => {
-                                        debug!("Received close: Client: {}", client_id);
-                                        // Client is closing the connection
-                                        break;
-                                    },
-                                    _ => {} // Ignore other message types
-                                }
-                            },
-                            Err(e) => {
-                                debug!("WebSocket error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                    else => break,
-                }
+            if end == ClientLoopEnd::Closed || end == ClientLoopEnd::ShuttingDown {
+                // Clean up when the connection is closed
+                debug!("WebSocket disconnected: Client: {}", client_id);
+                manager.remove_client(client_id);
             }
-            
-            // Clean up when the connection is closed
-            debug!("WebSocket disconnected: Client: {}", client_id);
-            manager.remove_client(client_id);
+
             Ok(())
         })
     })
@@ -667,6 +878,7 @@ pub fn player_event_messages(
     player_name: &str,
     forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     ws_manager: &rocket::State<Arc<WebSocketManager>>,
+    shutdown: rocket::Shutdown,
 ) -> Channel<'static> { // Removed audio_controller
     // Clone the manager and player name to avoid lifetime issues
     let manager = ws_manager.inner().clone();
@@ -683,117 +895,44 @@ pub fn player_event_messages(
                 players: Some(vec![player_filter.clone()]),
                 event_types: None,
             });
-            
+
             debug!("WebSocket connected: Client ID: {}, Player: {}", client_id, player_filter);
-            
+
             // Send welcome message
             let welcome_msg = serde_json::json!({
                 "type": "welcome",
                 "client_id": client_id,
                 "message": format!("Connected to ACR WebSocket API for player '{}'", player_filter)
             }).to_string();
-            
+
             if let Err(e) = stream.send(Message::Text(welcome_msg)).await {
                 error!("Failed to send welcome message: {}", e);
                 return Err(e);
             }
-            
-            // Create a polling interval
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-            
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        // Check for new events
-                        let events = manager.get_events_for_client(client_id);
-                        for event in events {
-                            // Convert to new format with source at top level
-                            let message = convert_to_websocket_message(&event, forwarded_prefix.as_deref());
-                            
-                            if let Ok(json) = serde_json::to_string(&message) {
-                                debug!("Sending event: Client: {}, Player: {}, Type: {:?}, JSON length: {}", 
-                                      client_id, event.player_name().unwrap_or("system"), event_type_name(&event), json.len());
-                                
-                                if let Err(e) = stream.send(Message::Text(json)).await {
-                                    debug!("Error sending event to client {}: {}", client_id, e);
-                                    // Connection might be broken, exit the loop
-                                    return Ok(());
-                                } else {
-                                    debug!("Event sent successfully: Client: {}", client_id);
-                                }
-                            } else {
-                                debug!("Event serialization failed: Client: {}", client_id);
-                            }
-                        }
-                    }
-                    Some(msg_result) = stream.next() => {
-                        match msg_result {
-                            Ok(msg) => {
-                                // Record activity to prevent timeout
-                                manager.record_activity(client_id);
-                                
-                                match msg {
-                                    Message::Text(text) => {
-                                        debug!("Received message: Client: {}, Player: {}, Text: {}", client_id, player_filter, text);
-                                        
-                                        // Try to parse as ClientMessage (EventSubscription only)
-                                        match serde_json::from_str::<ClientMessage>(&text) {
-                                            Ok(ClientMessage::Subscription(subscription)) => {
-                                                debug!("Subscription update: Client: {}, Player: {}, Players: {:?}, Event types: {:?}", 
-                                                      client_id, player_filter, subscription.players, subscription.event_types);
-                                                
-                                                if manager.update_subscription(client_id, subscription) {
-                                                    let response = serde_json::json!({
-                                                        "type": "subscription_updated",
-                                                        "message": "Subscription updated successfully"
-                                                    }).to_string();
-                                                    if let Err(e) = stream.send(Message::Text(response)).await {
-                                                        debug!("Error sending subscription update confirmation to client {}: {}", client_id, e);
-                                                    }
-                                                }
-                                            },
-                                            Err(e) => {
-                                                // Send error back to client
-                                                let error_msg = serde_json::json!({
-                                                    "type": "error",
-                                                    "message": format!("Invalid message format: {}. Expected EventSubscription.", e)
-                                                }).to_string();
-                                                if let Err(e_send) = stream.send(Message::Text(error_msg)).await {
-                                                    debug!("Error sending error message to client {}: {}", client_id, e_send);
-                                                }
-                                            }
-                                        }
-                                    },
-                                    Message::Ping(data) => {
-                                        debug!("Received ping: Client: {}, Data length: {}", client_id, data.len());
-                                        // Reply with a pong containing the same data
-                                        stream.send(Message::Pong(data)).await?;
-                                    },
-                                    Message::Close(_) => {
-                                        debug!("Received close: Client: {}", client_id);
-                                        // Client is closing the connection
-                                        break;
-                                    },
-                                    _ => {} // Ignore other message types
-                                }
-                            },
-                            Err(e) => {
-                                debug!("WebSocket error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                    else => break,
-                }
+
+            // The same loop as the unfiltered mount point: the ping that keeps
+            // a listen-only client alive must not depend on the URL it used.
+            let end = run_client_loop(
+                &manager,
+                &mut stream,
+                client_id,
+                forwarded_prefix.as_deref(),
+                Some(&player_filter),
+                PING_INTERVAL,
+                shutdown,
+            ).await?;
+
+            if end == ClientLoopEnd::Closed || end == ClientLoopEnd::ShuttingDown {
+                // Clean up when the connection is closed
+                debug!("WebSocket disconnected: Client: {}", client_id);
+                manager.remove_client(client_id);
             }
-            
-            // Clean up when the connection is closed
-            debug!("WebSocket disconnected: Client: {}", client_id);
-            manager.remove_client(client_id);
+
             Ok(())
         })
     })
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -868,5 +1007,358 @@ mod tests {
         let event = PlayerEvent::SongChanged { source: source(), song: None };
         let message = convert_to_websocket_message(&event, Some("/api/audiocontrol"));
         assert_eq!(message.event_data.get("song"), Some(&serde_json::Value::Null));
+    }
+
+    // The tests below drive the clock rather than waiting on it: activity is
+    // recorded at an instant we choose and the prune is asked what it would do
+    // at another. Nothing here sleeps, so nothing here can race a real timer.
+
+    fn manager_with_a_client() -> (WebSocketManager, usize) {
+        let manager = WebSocketManager::new();
+        let id = manager.register(EventSubscription { players: None, event_types: None });
+        (manager, id)
+    }
+
+    fn pong() -> Message {
+        Message::Pong(Vec::new())
+    }
+
+    #[test]
+    fn a_pong_counts_as_activity() {
+        let (manager, id) = manager_with_a_client();
+        let answered_at = Instant::now() + Duration::from_secs(60);
+
+        manager.record_inbound_frame_at(id, &pong(), answered_at);
+
+        assert_eq!(
+            manager.last_activity_of(id),
+            Some(answered_at),
+            "a pong did not refresh the client's last-activity time"
+        );
+    }
+
+    /// The bug this fixes: a client that sends nothing of its own but answers
+    /// the server's pings must survive indefinitely.
+    ///
+    /// Simulated time runs second by second across three timeout windows.
+    /// Pongs arrive on `PING_INTERVAL` and the prune runs on `PRUNE_INTERVAL`,
+    /// the two independent of each other exactly as they are in the daemon - so
+    /// this fails if the ping interval is ever set near or beyond the timeout,
+    /// and it fails if a pong stops counting as activity.
+    #[test]
+    fn a_client_that_answers_pings_is_never_pruned() {
+        let (manager, id) = manager_with_a_client();
+        let start = Instant::now();
+        manager.record_activity_at(id, start);
+
+        let horizon = CLIENT_TIMEOUT * 3;
+        let mut elapsed = Duration::ZERO;
+        while elapsed < horizon {
+            elapsed += Duration::from_secs(1);
+            let now = start + elapsed;
+
+            if elapsed.as_secs() % PING_INTERVAL.as_secs() == 0 {
+                // The pong answering the ping the loop just sent.
+                manager.record_inbound_frame_at(id, &pong(), now);
+            }
+
+            if elapsed.as_secs() % PRUNE_INTERVAL.as_secs() == 0 {
+                manager.prune_inactive_and_old_at(now, CLIENT_TIMEOUT, EVENT_TIMEOUT);
+                assert!(
+                    manager.is_registered(id),
+                    "a client answering every ping was pruned {:?} after connecting",
+                    elapsed
+                );
+            }
+        }
+    }
+
+    /// The property the fix could plausibly have broken: a peer that has gone
+    /// away without a FIN answers no pings, and must still be reaped. Its
+    /// registration survives up to the timeout and is gone once past it.
+    #[test]
+    fn a_client_that_stops_answering_is_still_pruned() {
+        let (manager, id) = manager_with_a_client();
+        let start = Instant::now();
+        manager.record_activity_at(id, start);
+
+        // Three pongs, then the peer vanishes.
+        let mut last_pong = start;
+        for _ in 0..3 {
+            last_pong += PING_INTERVAL;
+            manager.record_inbound_frame_at(id, &pong(), last_pong);
+        }
+
+        manager.prune_inactive_and_old_at(last_pong + CLIENT_TIMEOUT, CLIENT_TIMEOUT, EVENT_TIMEOUT);
+        assert!(
+            manager.is_registered(id),
+            "a client was reaped before the timeout had elapsed"
+        );
+
+        manager.prune_inactive_and_old_at(
+            last_pong + CLIENT_TIMEOUT + Duration::from_secs(1),
+            CLIENT_TIMEOUT,
+            EVENT_TIMEOUT,
+        );
+        assert!(
+            !manager.is_registered(id),
+            "a peer that stopped answering pings was not reaped"
+        );
+        assert_eq!(
+            manager.last_activity_of(id),
+            None,
+            "the reaped client left its activity entry behind"
+        );
+    }
+
+    // The loop itself, run over a pair of channels. `DuplexStream` cannot be
+    // built outside `rocket_ws`, which is why `run_client_loop` is generic over
+    // its stream: everything below drives the real loop, on paused time, so the
+    // ping it sends is observed rather than assumed.
+
+    use rocket::futures::{Sink, Stream};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::sync::mpsc;
+
+    /// A stand-in for a connection: frames the test writes arrive at the loop,
+    /// frames the loop sends are collected for the test.
+    struct ChannelStream {
+        inbound: mpsc::UnboundedReceiver<rocket_ws::result::Result<Message>>,
+        outbound: mpsc::UnboundedSender<Message>,
+    }
+
+    impl Stream for ChannelStream {
+        type Item = rocket_ws::result::Result<Message>;
+
+        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.inbound.poll_recv(cx)
+        }
+    }
+
+    impl Sink<Message> for ChannelStream {
+        type Error = rocket_ws::result::Error;
+
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.outbound
+                .send(item)
+                .map_err(|_| rocket_ws::result::Error::ConnectionClosed)
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct LoopHarness {
+        manager: WebSocketManager,
+        client_id: usize,
+        to_server: mpsc::UnboundedSender<rocket_ws::result::Result<Message>>,
+        from_server: mpsc::UnboundedReceiver<Message>,
+        task: tokio::task::JoinHandle<rocket_ws::result::Result<ClientLoopEnd>>,
+    }
+
+    /// Register a client and run the real loop for it on this runtime.
+    ///
+    /// The loop never sees a shutdown: `pending()` is a future that never
+    /// resolves, which is what every test but the shutdown one below wants.
+    fn start_loop() -> LoopHarness {
+        start_loop_with_shutdown(std::future::pending())
+    }
+
+    fn start_loop_with_shutdown(
+        shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> LoopHarness {
+        let manager = WebSocketManager::new();
+        let client_id = manager.register(EventSubscription { players: None, event_types: None });
+
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let (outbound, from_server) = mpsc::unbounded_channel();
+
+        let in_loop = manager.clone();
+        let task = tokio::spawn(async move {
+            let mut stream = ChannelStream { inbound, outbound };
+            run_client_loop(
+                &in_loop,
+                &mut stream,
+                client_id,
+                None,
+                None,
+                PING_INTERVAL,
+                shutdown,
+            )
+            .await
+        });
+
+        LoopHarness { manager, client_id, to_server, from_server, task }
+    }
+
+    impl LoopHarness {
+        /// The next frame the loop sends, or `None` if it sends nothing within
+        /// twenty ping intervals.
+        ///
+        /// Twenty intervals of *paused* time: the runtime advances its own clock
+        /// when it has nothing to run, so this costs no real time and cannot
+        /// flake under load.
+        async fn next_frame(&mut self) -> Option<Message> {
+            tokio::time::timeout(PING_INTERVAL * 20, self.from_server.recv())
+                .await
+                .ok()
+                .flatten()
+        }
+
+        /// Close the connection and wait for the loop to say how it ended.
+        async fn finish(self) -> ClientLoopEnd {
+            let _ = self.to_server.send(Ok(Message::Close(None)));
+            tokio::time::timeout(PING_INTERVAL * 20, self.task)
+                .await
+                .expect("the loop did not return after a close frame")
+                .expect("the loop task panicked")
+                .expect("the loop returned an error")
+        }
+    }
+
+    /// The daemon shutting down closes the connection from this end, with a
+    /// Close frame, rather than leaving it open for Rocket to force at the end
+    /// of its grace period.
+    ///
+    /// This is worth a test because the cost of getting it wrong is invisible
+    /// in every functional test and only shows up on the clock: an open
+    /// WebSocket makes Rocket spend its whole `shutdown.grace` and then its
+    /// whole `shutdown.mercy`, which measured as five seconds added to every
+    /// stop, restart and package upgrade while any client -- a browser on the
+    /// WebUI, or this daemon's own metadata half -- had the socket open.
+    #[tokio::test(start_paused = true)]
+    async fn a_shutdown_closes_the_connection_from_this_end() {
+        let (trigger, shutdown) = tokio::sync::oneshot::channel::<()>();
+        let mut harness = start_loop_with_shutdown(async {
+            let _ = shutdown.await;
+        });
+
+        let _ = trigger.send(());
+
+        // The code matters, not just the frame: a bare `Close(None)` reaches a
+        // browser as 1005 "no status received", which tells a client nothing
+        // about why the connection ended. 1001 is what doc/websocket.md
+        // promises, and what distinguishes a planned stop from a fault.
+        match harness.next_frame().await {
+            Some(Message::Close(Some(frame))) => assert_eq!(
+                frame.code,
+                CloseCode::Away,
+                "a shutdown close must say 'going away', not just close"
+            ),
+            other => panic!(
+                "the loop should send a Close frame carrying a code when the \
+                 daemon is shutting down, got {other:?}"
+            ),
+        }
+
+        let end = tokio::time::timeout(PING_INTERVAL * 20, harness.task)
+            .await
+            .expect("the loop should return once it has closed")
+            .expect("the loop task panicked")
+            .expect("the loop returned an error");
+        assert_eq!(end, ClientLoopEnd::ShuttingDown);
+    }
+
+    /// Poll a condition, yielding between attempts. Bounded, and on paused time.
+    async fn eventually(mut condition: impl FnMut() -> bool) -> bool {
+        for _ in 0..100 {
+            if condition() {
+                return true;
+            }
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        false
+    }
+
+    /// The fix itself: a connection nobody talks on is pinged anyway, and goes
+    /// on being pinged. Delete the `ping.tick()` branch and this fails.
+    #[tokio::test(start_paused = true)]
+    async fn the_server_pings_an_idle_connection() {
+        let mut harness = start_loop();
+
+        let first = harness.next_frame().await;
+        assert!(
+            matches!(first, Some(Message::Ping(_))),
+            "an idle connection was not pinged; got {:?}",
+            first
+        );
+
+        let second = harness.next_frame().await;
+        assert!(
+            matches!(second, Some(Message::Ping(_))),
+            "the ping did not repeat; got {:?}",
+            second
+        );
+
+        assert_eq!(harness.finish().await, ClientLoopEnd::Closed);
+    }
+
+    /// End to end, and the reason the ping is the fix: the pong a peer's stack
+    /// sends back without any application code reaches the manager as activity.
+    #[tokio::test(start_paused = true)]
+    async fn a_pong_answering_the_ping_refreshes_activity() {
+        let mut harness = start_loop();
+        let before = harness
+            .manager
+            .last_activity_of(harness.client_id)
+            .expect("a registered client has an activity time");
+
+        let ping = harness.next_frame().await;
+        assert!(
+            matches!(ping, Some(Message::Ping(_))),
+            "expected a ping to answer; got {:?}",
+            ping
+        );
+
+        harness
+            .to_server
+            .send(Ok(Message::Pong(Vec::new())))
+            .expect("the loop is still reading");
+
+        let manager = harness.manager.clone();
+        let client_id = harness.client_id;
+        assert!(
+            eventually(|| manager.last_activity_of(client_id).is_some_and(|at| at > before)).await,
+            "the pong answering the server's ping did not refresh the client's activity time"
+        );
+
+        assert_eq!(harness.finish().await, ClientLoopEnd::Closed);
+    }
+
+    /// A client that goes away properly is reported as closed, so the caller
+    /// unregisters it rather than leaving it to the prune.
+    #[tokio::test(start_paused = true)]
+    async fn a_close_frame_ends_the_loop() {
+        assert_eq!(start_loop().finish().await, ClientLoopEnd::Closed);
+    }
+
+    /// Pinging often enough to keep a client alive is worthless if one lost
+    /// pong strands it, so state the margin as a test: a run of consecutive
+    /// pongs may go missing and the client still lives.
+    #[test]
+    fn several_missed_pongs_do_not_prune_a_client() {
+        let (manager, id) = manager_with_a_client();
+        let start = Instant::now();
+        manager.record_activity_at(id, start);
+
+        // Ten pings in a row unanswered.
+        let ten_missed = start + PING_INTERVAL * 10;
+        manager.prune_inactive_and_old_at(ten_missed, CLIENT_TIMEOUT, EVENT_TIMEOUT);
+
+        assert!(
+            manager.is_registered(id),
+            "ten missed pongs were enough to prune a client; the margin is too thin"
+        );
     }
 }

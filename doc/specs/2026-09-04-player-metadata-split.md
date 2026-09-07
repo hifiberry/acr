@@ -242,8 +242,11 @@ external link for a 404.
 `GET http://127.0.0.1:1080/api/library` every 30 s and, for each player with
 `has_library` and `is_loaded`, `GET /api/library/<p>` for `library_version`.
 When the version differs from the one it last enriched, it fetches
-`/api/library/<p>/artists` and `/api/library/<p>/albums` with `If-None-Match`
-and enriches what is new. A player whose backend reports no
+`/api/library/<p>/artists` and `/api/library/<p>/albums` and enriches what is
+new. It sends no `If-None-Match`: the list ETags are built from
+`library_version`, and the fetch happens only because that version moved, so a
+conditional request could never be answered 304. A backend that reports no
+version (LMS) emits no validator at all. A player whose backend reports no
 `library_version` (LMS) is re-fetched every 30 minutes instead. The player
 daemon may shorten the wait after a load by calling
 `POST http://127.0.0.1:1084/api/enrich/nudge?player=<p>`, which answers 202
@@ -251,13 +254,16 @@ and starts a pull at once; a nudge that fails is ignored, since the poll
 covers it.
 
 **Delivery: the metadata daemon calls back.** Results are posted in batches
-of at most 200 items:
+of at most `BATCH_SIZE` items, which is 50 (`library_enricher.rs`). The trade
+is between how long a client waits to see a lookup and how often every
+client's cached list is invalidated, since a library bumps `library_version`
+once per batch that changed something:
 
 ```
 POST /api/library/<p>/enrichment
 Content-Type: application/json
 
-{ "library_version": "5e2b91c0-a3f9c1d2-42",
+{ "library_generation": "5e2b91c0-a3f9c1d2-g3",
   "artists": [ { "name": "Pink Floyd",
                  "mbid": ["83d91898-..."],
                  "is_multi": false,
@@ -274,13 +280,41 @@ existing `by-genre`, `by-category`, ETag and acr-webmcp behaviour hold.
 
 | Status | Body | When |
 |---|---|---|
-| 200 | `{"applied": {"artists": n, "albums": m}, "library_version": "..."}` | merged; the returned version is the one the caller should now treat as seen |
-| 409 | `{"library_version": "..."}` | the batch was computed against a version that is no longer current; the caller re-pulls |
+| 200 | `{"artists": n, "albums": m, "library_version": "..."}` | merged; the returned version is the one the caller should now treat as seen |
+| 409 | `{"library_generation": "...", "library_version": "..."}` | the batch was computed against a library that has since reloaded; the caller re-pulls |
 | 404 | | no such player or no library |
 
 Because the merge bumps `library_version`, the metadata daemon records the
 version returned in the 200 as "seen" so its own write does not look like a
 change on the next poll.
+
+**What the 409 compares, and why it is not `library_version`.** The batch names
+a **library generation**: a second, coarser counter the player daemon keeps
+beside the version, bumped only where a reload clears the library's album and
+artist maps and never by an enrichment merge. `GET /api/library/<p>` reports it
+as its own field next to `library_version`, and the refusal means exactly one
+thing — the library was reloaded since this batch was computed, so the albums
+and artists it describes may be gone.
+
+`library_version` cannot answer that question. It is the ETag validator on the
+library's lists, so it is bumped by every change a client can observe,
+including the merge above; a batch and a reload both move it. Nor can the two
+be told apart by looking inside the token: the counter behind it is constructed
+once, when the library object is created, and a reload keeps the same nonce and
+bumps the same counter, so within one process a reload and an enrichment write
+are indistinguishable in it. The token is opaque by contract for a further
+reason — a caller that stripped the nonce to compare counters would reintroduce
+the stale-serve the nonce exists to prevent — so parsing it is not a way out
+either. The generation carries the same nonce, which is what keeps a generation
+from before a restart from matching one after it.
+
+The distinction is not academic, because enrichment arrives as two sweeps.
+Artists and albums are looked up concurrently against one library: were the
+comparison against `library_version`, the first artist batch's bump would make
+the album sweep's first batch stale and stop it, on any library that has
+artists. Against the generation neither sweep invalidates the other, and
+`library_version` keeps its own two jobs — the validator on the lists, and the
+token the 200 hands back so the poller does not read its own write as a change.
 
 **Detail: the player daemon asks once.** The three artist-detail routes
 (`by-id`, `by-name`, `by-mbid`) call
@@ -602,7 +636,8 @@ code. New tests, by interface:
    discrepancy between the worker's own idea of the state and what the read
    returns, and the read timing out or the player being unreachable.
 2. `enrichment` route: merge semantics (empty genres never clear, version
-   bumps once per batch, 409 on a stale version), and the puller in the
+   bumps once per batch, 409 on a stale generation), that a sweep of a library
+   holding both artists and albums applies both, and the puller in the
    metadata daemon against a fake player daemon for the "seen version" rule.
    The detail routes with the daemon absent, timing out, and answering.
 3. `resolve/title-order` and `resolve/artist-split`: the four order outcomes,
@@ -639,8 +674,10 @@ to the same process. Mount the metadata routes under `/api/metadata/` as well
 as their current paths. Ship, and observe on a device.
 
 **Phase 2: two processes.** Add the second `main.rs`, `metadata.json`, the
-second package, the unit, the nginx snippet, the auth manifest, the postinst
-copy, the librespot start-script change and the docs. Split the caches by
+second unit, the nginx snippet, the auth manifest, the postinst copy, the
+librespot start-script change and the docs. **One binary package still, holding
+both daemons** -- see Packaging above; an earlier draft of this list said "the
+second package" and that is the one thing in it that does not happen. Split the caches by
 moving the metadata daemon's image cache and settings to its directories.
 Because Phase 1 already runs over loopback, this phase is packaging and
 configuration.

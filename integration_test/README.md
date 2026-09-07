@@ -14,6 +14,14 @@ The tests start AudioControl server instances and make HTTP API requests to test
 - `test_raat_integration.py` - Tests RAAT player integration
 - `test_mpd_integration.py` - Tests MPD player integration
 - `test_websocket.py` - Tests WebSocket event notifications
+- `test_metadata_seams.py` - Tests the player/metadata HTTP seams from the
+  player/metadata split: song-information reaching `now-playing`, a stale
+  song-information update being refused, the `/api/metadata/capabilities`
+  mount, artist-split resolution with MusicBrainz disabled, and `GET
+  /api/player` reporting playback state. Uses `test_config_metadata.json`,
+  which points `services.metadata` and `services.core` back at the daemon's
+  own port -- in this phase both halves share one process, so the seams are
+  loopback calls to itself.
 
 ### Known Issues
 

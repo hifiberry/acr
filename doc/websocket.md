@@ -427,9 +427,95 @@ Common error codes:
 - 1002: Unknown player specified
 - 1003: Unknown event type specified
 
+## Keeping a connection alive
+
+**From 0.22.0 a client need not send anything to stay connected.** The server
+sends a WebSocket ping on every open connection every 30 seconds, and the pong
+that comes back is what keeps the connection alive. Ping and pong are protocol
+frames: every WebSocket implementation answers a ping on its own, so a browser
+page or a library client that subscribes once and then only listens stays
+connected with no application-level keep-alive and no timer of its own.
+
+**Against an earlier daemon a client that only listens must still send something
+periodically**, because no ping arrives to be answered and only a frame
+travelling client to server refreshes the timer. Clients ship separately from
+this daemon and meet both, so unless you know every installation you talk to is
+0.22.0 or later, keep the periodic send: a WebSocket ping if your library exposes
+one, otherwise re-send the subscription message — see the last paragraph of this
+section. It costs one frame every few minutes against a current daemon and is
+the difference between working and going silently deaf against an older one.
+
+**A client that stops answering is dropped.** The server keeps a last-activity
+time per connected client, refreshed by any frame arriving *client to server* —
+the automatic pong, a subscription message, anything — and prunes a client that
+has produced nothing for an hour; the check runs every five minutes. Events
+flowing the other way do not count. At one ping every 30 seconds that hour is
+around 120 unanswered pings, so a dropped packet or a stalled page costs
+nothing; it takes a peer that has genuinely gone away.
+
+That is the point of the timeout: when a peer disappears without closing the
+connection — a laptop suspended, a network dropped — the socket can stay open on
+this side for a long time without any error, and the missing pongs are the only
+evidence. Being pruned is itself silent, though: the socket stays open, no error
+and no close frame is sent, and no further events arrive. A client that suspects
+it has been dropped should reconnect and re-read state rather than wait.
+
+Sending anything of your own also refreshes the timer, and re-sending the
+subscription message is the way to do it from a browser, where the JavaScript
+WebSocket API exposes no ping — it is answered with `subscription_updated`. From
+0.22.0 nothing requires it; against an earlier daemon it is what keeps a
+listen-only client alive.
+
+## Events during a disconnection are lost
+
+The server holds recent events for 30 seconds and delivers them to each
+connected client from the point that client registered. A client that is not
+connected is not registered, and a client that reconnects registers afresh — so
+nothing that happened during the gap is replayed, however short the gap was.
+
+After every reconnect, read the current state back from the REST API rather than
+assuming the stream is a complete history: `GET /api/now-playing` for the song
+and `GET /api/player` for the state.
+
+## The server closes the connection when the daemon stops
+
+From 0.22.0, a daemon that is shutting down — `systemctl stop`, a restart, a
+package upgrade — sends a WebSocket **Close** frame with code `1001` ("going
+away") on every open connection, then closes the socket. This is not an error
+and needs no special handling beyond what a client already does for a dropped
+connection: reconnect with backoff, and read the current state back as above.
+
+Earlier daemons sent nothing and let the connection be torn down at the end of
+their shutdown grace period. Clients saw an abrupt reset instead of a close,
+and — because an open connection is I/O the web server waits out — the daemon
+took about five seconds to stop for as long as any client had the socket open.
+
+**Check your reconnect condition before assuming this changes nothing.** The
+risk is not a client that treats a Close as a fault — that one reports an error
+where it used to report a dropped connection, and both mean the same thing. It
+is the inverse, and it is a common idiom:
+
+```js
+socket.onclose = (e) => { if (!e.wasClean) reconnect(); };
+```
+
+Against a daemon before 0.22.0 every shutdown produced code `1006` with
+`wasClean: false`, so this reconnected. Against 0.22.0 it receives a clean
+close and **stops reconnecting** — across exactly the events where reconnecting
+matters most, a restart or a package upgrade. Reconnect on every close, clean
+or not, and let the backoff handle a server that is still coming back up.
+
 ## Best Practices
 
 1. **Handle reconnections**: Implement automatic reconnection if the connection drops
 2. **Validate messages**: Always check the message format before processing
 3. **Subscription management**: Only subscribe to events you need to minimize traffic
 4. **Backoff strategy**: Use exponential backoff for reconnection attempts
+5. **Answer the server's pings, and keep sending something of your own until
+   every daemon you talk to is 0.22.0**: answering happens automatically in every
+   WebSocket implementation, so that half is only a warning against turning it
+   off; the periodic send is what an earlier daemon needs, and without it a
+   listen-only client there is pruned after an hour and goes quietly deaf. See
+   *Keeping a connection alive* above
+6. **Re-read state after reconnecting**: The stream is not a history — see
+   *Events during a disconnection are lost* above

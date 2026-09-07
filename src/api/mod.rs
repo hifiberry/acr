@@ -10,11 +10,17 @@ pub use acr_web::{imagecache, imageresponse, urlprefix, validated};
 // Export the players module
 pub mod players;
 
+// Export the song information module
+pub mod song_information;
+
 // Export the plugins module
 pub mod plugins;
 
 // Export the library module
 pub mod library;
+
+// Export the library enrichment module
+pub mod enrichment;
 
 // Export the event module
 pub mod events;

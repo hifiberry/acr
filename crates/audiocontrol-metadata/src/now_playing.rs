@@ -163,13 +163,24 @@ fn correctable(song: &Song) -> Option<(&str, &str)> {
 
 /// Whether a MusicBrainz verdict is worth reporting as an observation.
 ///
-/// Only `SongArtist` disagrees with what the player already assumed:
-/// `detect_order(artist, title)` returning it means the player's `artist`
-/// field is actually the song and its `title` field is actually the artist.
-/// `ArtistSong` confirms the split the player already made -- nothing to
-/// report -- and `Unknown`/`Undecided` decided nothing at all.
+/// Both decided verdicts are, and reporting only the disagreement was a bug.
+/// `SongArtist` means the player's `artist` field is actually the song;
+/// `ArtistSong` confirms the split it already made. `Unknown` and `Undecided`
+/// decided nothing and are not observations of anything.
+///
+/// Reporting only disagreements looks like an economy and poisons the
+/// statistics, because the player's confidence test is a *ratio*: a default
+/// order is locked in at twenty observations with ninety-five per cent
+/// agreement. If only disagreements are ever recorded then every observation
+/// is `SongArtist` and that ratio is always a hundred per cent, so a station
+/// whose titles are *mostly* the other way round still flips after twenty
+/// exceptions -- and a learned default beats the heuristic, so from then on the
+/// majority is split wrongly, permanently. Sending the agreements too is what
+/// makes the ratio mean what the threshold assumes it means: ninety per cent
+/// agreement stays below the bar and no default is set, which is the right
+/// answer for a station that is genuinely inconsistent.
 fn is_actionable(order: OrderResult) -> bool {
-    order == OrderResult::SongArtist
+    matches!(order, OrderResult::SongArtist | OrderResult::ArtistSong)
 }
 
 /// Reports a wrong artist/title split as a per-station observation, on a
@@ -228,8 +239,8 @@ fn start_title_order_correction(
                 let order = crate::title_order::detect_order(artist, title);
                 if is_actionable(order.clone()) {
                     debug!(
-                        "Title order observation for station {}: {:?}/{:?} looks swapped",
-                        station, song.artist, song.title
+                        "Title order observation for station {}: {:?}/{:?} reads as {:?}",
+                        station, song.artist, song.title, order
                     );
                     observations.record_order_observation(&source.player_name, station, order);
                 }
@@ -425,14 +436,21 @@ mod tests {
         );
     }
 
-    /// The one actionable verdict: `SongArtist` means the player's `artist`
-    /// field is actually the song and its `title` field is actually the
-    /// artist. `ArtistSong` confirms the existing split, and `Unknown`/
-    /// `Undecided` decided nothing -- none of the three is worth reporting.
+    /// Both decided verdicts are reported, not only the disagreement.
+    ///
+    /// Sending just `SongArtist` looks like an economy and poisons the
+    /// statistics: the player locks in a default at twenty observations with
+    /// ninety-five per cent agreement, so if every observation is a
+    /// disagreement then the ratio is always a hundred per cent and a station
+    /// that is mostly the other way round still flips after twenty exceptions.
+    /// `Unknown` and `Undecided` decided nothing and are not observations.
     #[test]
-    fn only_song_artist_is_actionable() {
+    fn both_decided_verdicts_are_reported_and_the_undecided_ones_are_not() {
         assert!(is_actionable(OrderResult::SongArtist));
-        assert!(!is_actionable(OrderResult::ArtistSong));
+        assert!(
+            is_actionable(OrderResult::ArtistSong),
+            "an agreement is what keeps the ratio honest"
+        );
         assert!(!is_actionable(OrderResult::Unknown));
         assert!(!is_actionable(OrderResult::Undecided));
     }

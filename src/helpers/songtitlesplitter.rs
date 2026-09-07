@@ -989,6 +989,50 @@ mod tests {
         );
     }
 
+    /// A station that is *mostly* one way round is never taught the order of
+    /// its exceptions.
+    ///
+    /// This is the failure that reporting only disagreements causes. The
+    /// threshold is a ratio -- 95% of at least 20 -- so twenty `SongArtist`
+    /// observations with no `ArtistSong` ones alongside them read as a hundred
+    /// per cent confidence and lock in the *minority* order. A learned default
+    /// beats the heuristic, so every later title from that station is then split
+    /// the wrong way, and `check_and_set_default_order` only ever sets a
+    /// default, never clears one, so it stays wrong.
+    ///
+    /// With the agreements recorded too, the same twenty exceptions sit against
+    /// a hundred and eighty confirmations. Ninety per cent is below the bar, so
+    /// **nothing** is locked in -- which is the right answer for a station that
+    /// is genuinely inconsistent: the heuristic keeps deciding, and it already
+    /// answers the majority order. The assertion is therefore that the minority
+    /// was not learned, not that something particular was.
+    #[test]
+    fn a_mostly_consistent_station_is_never_taught_its_exceptions() {
+        let mut splitter = SongTitleSplitter::new("station");
+
+        for i in 0..200 {
+            if i % 10 == 0 {
+                splitter.record_correction("P - Q", OrderResult::SongArtist);
+            } else {
+                splitter.record_correction("X - Y", OrderResult::ArtistSong);
+            }
+        }
+
+        assert_ne!(
+            splitter.get_default_order(),
+            Some(OrderResult::SongArtist),
+            "the minority order must never be learned: a learned default beats \
+             the heuristic and is never cleared, so this would split every later \
+             title from this station the wrong way"
+        );
+
+        // And the station still reads the way it mostly is, via the heuristic.
+        assert_eq!(
+            splitter.split_song("A - B"),
+            Some(("A".to_string(), "B".to_string()))
+        );
+    }
+
     /// A title with no separator has nothing to split; the fallback must not
     /// invent an artist out of the whole title.
     #[test]

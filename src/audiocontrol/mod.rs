@@ -2,7 +2,9 @@
 pub mod audiocontrol;
 // EventBus for distributing PlayerEvents to subscribers
 pub mod eventbus;
-// The one seam between the player side and metadata enrichment
+// The in-process forwarder that used to be the seam to metadata enrichment.
+// The daemon no longer calls it: that seam is HTTP now (see metadata_client
+// below, and audiocontrol_metadata::now_playing_ws for the other direction).
 pub mod now_playing_bridge;
 // Where the player side finds the library enricher, if one was injected
 pub mod enrichment;

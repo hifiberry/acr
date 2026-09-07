@@ -108,23 +108,34 @@ impl Default for Timings {
 /// Subscribe to the player daemon's event socket and forward what enrichment
 /// cares about.
 ///
-/// The thread runs for the life of the process. Dropping the returned receiver
-/// is how a caller says it wants nothing: the next event that cannot be
+/// The thread runs for the life of the process. There are two ways out.
+///
+/// Dropping the returned receiver is one: the next event that cannot be
 /// delivered ends the loop, the connection is closed properly and the player
 /// drops the subscription. That is the same contract the in-process bridge
 /// had, and it has the same limit -- an idle player produces nothing to fail
 /// on, so the exit happens at the next event rather than immediately.
-pub fn start(events_url: &str, core: Arc<CoreClient>) -> Receiver<NowPlayingEvent> {
-    start_with(events_url, core, Timings::default(), None)
+///
+/// `stop` is the other, and the one that matters at shutdown. **A subscriber
+/// with no `stop` makes the player daemon take five seconds to stop instead of
+/// a tenth of one.** Measured: this connection is open I/O that Rocket waits
+/// out for its whole `shutdown.grace`, and then the loop *reconnects* inside
+/// the `shutdown.mercy` window and holds that open too, so both run out in
+/// full. Pass `Some` and the reconnect does not happen: the loop is asked to
+/// stop while it waits, and mercy ends as soon as the runtime is idle.
+pub fn start(
+    events_url: &str,
+    core: Arc<CoreClient>,
+    stop: Option<Receiver<()>>,
+) -> Receiver<NowPlayingEvent> {
+    start_with(events_url, core, Timings::default(), stop)
 }
 
-/// `stop` is a second way out, and the only one that does not wait for an
-/// event: every wait in the loop -- the backoff between attempts and the idle
-/// tick between reads -- is a wait on it, so dropping its sender ends the
-/// thread promptly even while the socket is silent. `start` passes `None`,
-/// because the daemon has nothing to stop this with yet; the tests below use
-/// it so that none of them leaves a thread reconnecting to a port another test
-/// may later be given.
+/// `stop` is checked at every wait in the loop -- the backoff between attempts
+/// and the idle tick between reads -- so a stop that arrives, or a sender that
+/// is dropped, ends the thread without waiting for an event. The tests below
+/// use it so that none of them leaves a thread reconnecting to a port another
+/// test may later be given.
 fn start_with(
     events_url: &str,
     core: Arc<CoreClient>,

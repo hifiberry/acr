@@ -26,12 +26,15 @@
 //! did not exist when it was written, not an operator asking for a metadata
 //! side that talks to nobody. So an absent section means the defaults below.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use acr_types::config::get_service_config;
 use acr_types::now_playing::{LastfmWorkerConfig, PlaybackStateSource, SongInformationSink};
-use log::{error, info, warn};
+use crossbeam::channel::{unbounded, Receiver, Sender};
+use log::{debug, error, info, warn};
+use parking_lot::Mutex;
 
 use crate::core_client::CoreClient;
 use crate::{library_puller, now_playing, now_playing_ws};
@@ -177,20 +180,111 @@ pub fn lastfm_worker_config(config: &serde_json::Value) -> Option<LastfmWorkerCo
     None
 }
 
-/// Ask `GET /version` until the player daemon answers, or until `limit` has
-/// passed.
+/// Where [`stop`] finds the running subscriber.
 ///
-/// Returns whether it answered. One attempt is always made, so a `limit` of
-/// zero is "try once" rather than "do not try".
-fn wait_for_core(core: &CoreClient, limit: Duration, tick: Duration) -> bool {
+/// A process-wide handle for the same reason `library_puller::nudges` is one:
+/// the caller is the daemon's signal handler, which is registered long before
+/// this module starts anything and cannot be handed a channel that does not
+/// exist yet. There is exactly one subscriber per process, so there is nothing
+/// to disambiguate.
+fn stop_channel() -> &'static Mutex<Option<Sender<()>>> {
+    static STOP: OnceLock<Mutex<Option<Sender<()>>>> = OnceLock::new();
+    STOP.get_or_init(|| Mutex::new(None))
+}
+
+/// Whether a stop has been asked for at any point.
+///
+/// Separate from the channel because the two orderings differ: a stop asked
+/// for *before* [`start_after_core_is_listening`] runs has no channel to
+/// arrive on, and must still be remembered -- otherwise a signal caught in the
+/// second or so between the API thread starting and this module starting would
+/// be followed by a subscriber opening a connection into a daemon that is
+/// shutting down, which is the exact thing the stop exists to prevent.
+fn stop_flag() -> &'static AtomicBool {
+    static REQUESTED: OnceLock<AtomicBool> = OnceLock::new();
+    REQUESTED.get_or_init(|| AtomicBool::new(false))
+}
+
+/// Arm [`stop`], and hand back the receiver the subscriber waits on.
+fn register_stop() -> Receiver<()> {
+    let (tx, rx) = unbounded();
+    *stop_channel().lock() = Some(tx);
+    rx
+}
+
+/// Ask the metadata side to close its connection to the player daemon and stop.
+///
+/// Called from the daemon's signal handler, before the API server has been
+/// asked to shut down. **This is not housekeeping.** The subscriber's
+/// WebSocket is open I/O that Rocket waits out for its whole
+/// `shutdown.grace`, and a loop that reconnects during `shutdown.mercy` holds
+/// that open too: without this the daemon takes about five seconds to stop
+/// rather than about a tenth of one, on every `systemctl stop` and every
+/// upgrade. See [`now_playing_ws::start`].
+///
+/// Advisory and idempotent. With nothing started yet the request is
+/// remembered, and [`start_after_core_is_listening`] then starts nothing at
+/// all.
+pub fn stop() {
+    stop_flag().store(true, Ordering::SeqCst);
+
+    match stop_channel().lock().as_ref() {
+        Some(tx) => {
+            // A send that fails means the subscriber's thread has already
+            // ended, which is the state this asks for.
+            let _ = tx.send(());
+            debug!("the metadata side's event subscriber has been asked to stop");
+        }
+        None => debug!("no metadata event subscriber is running; nothing to stop"),
+    }
+}
+
+/// How [`wait_for_core`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoreWait {
+    /// `GET /version` answered.
+    Answered,
+    /// `limit` passed with no answer. The caller starts anyway.
+    TimedOut,
+    /// A stop was asked for while waiting. The caller starts nothing.
+    Stopped,
+}
+
+/// Forget any stop that has been asked for.
+///
+/// Test-only. The flag and the channel are process-wide, so a test that asks
+/// for a stop would otherwise decide the answer for every later test in this
+/// binary -- `wait_for_core` returns `Stopped` for all of them.
+#[cfg(test)]
+fn clear_stop_for_test() {
+    stop_flag().store(false, Ordering::SeqCst);
+    *stop_channel().lock() = None;
+}
+
+/// Ask `GET /version` until the player daemon answers, until `limit` has
+/// passed, or until a stop is asked for.
+///
+/// One attempt is always made, so a `limit` of zero is "try once" rather than
+/// "do not try".
+///
+/// The stop check is what keeps this off the shutdown path. This runs on the
+/// daemon's main thread, which is also the thread that ends the process, so a
+/// wait that ignored a signal would hold the whole shutdown until it finished
+/// -- measured at the full eight seconds of `main`'s force-exit watchdog when
+/// the configured URL answers nothing.
+fn wait_for_core(core: &CoreClient, limit: Duration, tick: Duration) -> CoreWait {
     let started = Instant::now();
     let mut reported = false;
 
     loop {
+        if stop_flag().load(Ordering::SeqCst) {
+            return CoreWait::Stopped;
+        }
+
         match core.version() {
             Ok(version) => {
                 info!("The player daemon's API answered; it is version {}", version);
-                return true;
+                return CoreWait::Answered;
             }
             Err(e) => {
                 // Once, not once per attempt: on a normal start this loop
@@ -204,7 +298,7 @@ fn wait_for_core(core: &CoreClient, limit: Duration, tick: Duration) -> bool {
         }
 
         if started.elapsed() >= limit {
-            return false;
+            return CoreWait::TimedOut;
         }
         std::thread::sleep(tick);
     }
@@ -217,17 +311,32 @@ fn wait_for_core(core: &CoreClient, limit: Duration, tick: Duration) -> bool {
 /// Called once, from the composition root, after the API server is listening.
 /// Returns as soon as both are running on their own threads; the wait for the
 /// player daemon is bounded by [`CORE_WAIT_LIMIT`] and never fails the start.
+///
+/// Starts nothing if [`stop`] has already been called: a signal arriving in
+/// the stretch between the API thread and this call means the daemon is on its
+/// way out, and opening a WebSocket into a Rocket that is shutting down would
+/// hold its grace period open for no purpose.
 pub fn start_after_core_is_listening(config: &serde_json::Value) {
+    if stop_flag().load(Ordering::SeqCst) {
+        info!("A stop was asked for before the metadata side started; not starting it");
+        return;
+    }
+
     let settings = core_settings(config);
     let core = Arc::new(CoreClient::new(&settings.url));
 
-    if !wait_for_core(&core, CORE_WAIT_LIMIT, CORE_WAIT_TICK) {
-        warn!(
+    match wait_for_core(&core, CORE_WAIT_LIMIT, CORE_WAIT_TICK) {
+        CoreWait::Answered => {}
+        CoreWait::TimedOut => warn!(
             "The player daemon's API at {} did not answer within {:?}. Starting the \
              metadata side anyway: the event subscriber reconnects with backoff and the \
              library puller retries at its poll interval.",
             settings.url, CORE_WAIT_LIMIT
-        );
+        ),
+        CoreWait::Stopped => {
+            info!("A stop was asked for while waiting for the player daemon's API; not starting the metadata side");
+            return;
+        }
     }
 
     // Interface 1, both directions, in one object: the subscriber reads the
@@ -235,7 +344,11 @@ pub fn start_after_core_is_listening(config: &serde_json::Value) {
     // results back through and what the Last.fm worker asks for the playback
     // state. This is what `now_playing_bridge`'s `ControllerSink` used to be
     // on the player side, with an HTTP round trip where the method call was.
-    let events = now_playing_ws::start(&events_url(&settings.url), Arc::clone(&core));
+    let events = now_playing_ws::start(
+        &events_url(&settings.url),
+        Arc::clone(&core),
+        Some(register_stop()),
+    );
     // `core.clone()`, not `Arc::clone(&core)`: the expected type drives
     // inference through the associated function, so `Arc::clone` would be
     // asked for an `Arc<dyn ...>` it was not given. The method call unsizes
@@ -253,6 +366,7 @@ pub fn start_after_core_is_listening(config: &serde_json::Value) {
 mod tests {
     use super::*;
     use crate::external_coverart::stub_server::StubServer;
+    use serial_test::serial;
 
     /// The asymmetry with `services.metadata`: an absent section is the
     /// defaults, not "make no calls". Checked for all three ways it can be
@@ -353,15 +467,16 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn a_core_that_answers_ends_the_wait() {
+        clear_stop_for_test();
         let server = StubServer::serving(200, r#"{"version":"0.13.0"}"#);
         let core = CoreClient::new(&server.base_url());
 
-        assert!(wait_for_core(
-            &core,
-            Duration::from_secs(5),
-            Duration::from_millis(10)
-        ));
+        assert_eq!(
+            wait_for_core(&core, Duration::from_secs(5), Duration::from_millis(10)),
+            CoreWait::Answered
+        );
 
         let requests = server.requests();
         assert!(
@@ -374,15 +489,80 @@ mod tests {
     /// Nothing listening on the port, and a limit that is already spent: the
     /// wait gives up and says so, rather than blocking start-up.
     #[test]
+    #[serial]
     fn a_core_that_never_answers_gives_up_and_reports_it() {
+        clear_stop_for_test();
         // Port 1 needs no listener to be refused, and the refusal is
         // immediate, so this asserts on the answer rather than on a clock.
         let core = CoreClient::new("http://127.0.0.1:1/api");
-        assert!(!wait_for_core(
-            &core,
-            Duration::ZERO,
-            Duration::from_millis(10)
-        ));
+        assert_eq!(
+            wait_for_core(&core, Duration::ZERO, Duration::from_millis(10)),
+            CoreWait::TimedOut
+        );
+    }
+
+    /// A stop asked for while the daemon is still starting cuts the wait
+    /// short, rather than holding the main thread -- and with it the process
+    /// -- until the player daemon answers or the 30 s bound expires.
+    ///
+    /// This is what a `systemctl stop` moments after a start does. Measured
+    /// before it was handled: the whole eight seconds of `main`'s force-exit
+    /// watchdog, because the thread that ends the process was inside this
+    /// wait. The URL here answers nothing, so the only way out is the stop.
+    #[test]
+    #[serial]
+    fn a_stop_ends_the_wait_rather_than_the_bound() {
+        clear_stop_for_test();
+        let core = CoreClient::new("http://127.0.0.1:1/api");
+
+        stop();
+
+        assert_eq!(
+            // Long enough that the bound cannot be what ends this, short
+            // enough that a broken implementation fails rather than hangs.
+            wait_for_core(&core, Duration::from_secs(5), Duration::from_millis(10)),
+            CoreWait::Stopped,
+            "a wait that outlives a stop request holds up the whole shutdown"
+        );
+        clear_stop_for_test();
+    }
+
+    /// `stop` reaches the receiver the subscriber is waiting on. That receiver
+    /// is the only thing standing between a shutdown and a subscriber that
+    /// reconnects inside Rocket's mercy window.
+    #[test]
+    #[serial]
+    fn a_stop_reaches_the_registered_subscriber() {
+        clear_stop_for_test();
+        let rx = register_stop();
+
+        stop();
+
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the subscriber's stop receiver heard nothing"
+        );
+        clear_stop_for_test();
+    }
+
+    /// A stop asked for before anything started is remembered, so the
+    /// subscriber is never opened into a daemon that is shutting down.
+    #[test]
+    #[serial]
+    fn a_stop_before_the_start_is_remembered() {
+        clear_stop_for_test();
+        stop();
+
+        // Returns without reaching `core_settings`, the version probe, the
+        // subscriber or the puller -- which is also why calling it here is
+        // safe.
+        start_after_core_is_listening(&serde_json::json!({}));
+
+        assert!(
+            stop_channel().lock().is_none(),
+            "nothing should have been armed: the subscriber must not start during a shutdown"
+        );
+        clear_stop_for_test();
     }
 
     /// The entry that used to configure the action plugin now configures the

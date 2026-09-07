@@ -414,6 +414,17 @@ fn main() {
         // unwinding.
         let asked_the_server = handle_in_signal.request_stop();
 
+        // The metadata side's subscriber holds a WebSocket open against this
+        // process's own API, and Rocket waits out its whole grace period for
+        // open I/O -- then the subscriber reconnects inside the mercy window
+        // and holds that open too, so both run out in full. Measured: 0.03 s
+        // to stop without a subscriber, 5.05 s with one. Asking it to stop
+        // here is what keeps `systemctl stop` and every upgrade at a tenth of
+        // a second. Second, not first: `request_stop` above is what actually
+        // stops the daemon, and nothing that could fail may come before it.
+        #[cfg(feature = "metadata")]
+        audiocontrol_metadata::startup::stop();
+
         // The force-exit watchdog, armed whichever way the shutdown goes: one
         // that overruns and one that never gets going both end here rather
         // than at systemd's SIGKILL. Eight seconds sits above the six the
@@ -883,33 +894,42 @@ mod tests {
         // there is actually something in it to collide with.
         assert!(daemon_routes.contains(&(Method::Get, format!("{}/capabilities", API_PREFIX))));
 
-        let mut mounted: HashSet<(Method, String)> = HashSet::new();
-        for (mount, routes) in metadata_route_groups(false) {
-            let prefix = format!("{}{}", API_PREFIX, mount);
-            for route in &routes {
-                let key = full_path(&prefix, route);
-                assert!(
-                    !daemon_routes.contains(&key),
-                    "metadata route {:?} {} collides with a route the daemon already mounts there",
-                    key.0,
-                    key.1
-                );
-                assert!(
-                    mounted.insert(key.clone()),
-                    "metadata route {:?} {} is mounted twice by metadata_route_groups",
-                    key.0,
-                    key.1
-                );
+        // Both branches. `spotify.api_enabled` adds four routes to the
+        // `/spotify` group, and therefore to both of its mounts; a daemon
+        // that ignites with the flag off and refuses to start with it on
+        // would be a configuration option that breaks the daemon, found by
+        // whoever set it.
+        for spotify_api_enabled in [false, true] {
+            let mut mounted: HashSet<(Method, String)> = HashSet::new();
+            for (mount, routes) in metadata_route_groups(spotify_api_enabled) {
+                let prefix = format!("{}{}", API_PREFIX, mount);
+                for route in &routes {
+                    let key = full_path(&prefix, route);
+                    assert!(
+                        !daemon_routes.contains(&key),
+                        "metadata route {:?} {} collides with a route the daemon already mounts there (spotify.api_enabled = {})",
+                        key.0,
+                        key.1,
+                        spotify_api_enabled
+                    );
+                    assert!(
+                        mounted.insert(key.clone()),
+                        "metadata route {:?} {} is mounted twice by metadata_route_groups (spotify.api_enabled = {})",
+                        key.0,
+                        key.1,
+                        spotify_api_enabled
+                    );
+                }
             }
-        }
 
-        // The client-facing mount actually carries the capabilities route,
-        // which is the whole reason `standalone_routes()` is in the set: a
-        // check that only looks for collisions passes just as happily when
-        // nothing is mounted at all.
-        assert!(
-            mounted.contains(&(Method::Get, format!("{}/metadata/capabilities", API_PREFIX))),
-            "the /metadata mount should serve the capabilities route"
-        );
+            // The client-facing mount actually carries the capabilities route,
+            // which is the whole reason `standalone_routes()` is in the set: a
+            // check that only looks for collisions passes just as happily when
+            // nothing is mounted at all.
+            assert!(
+                mounted.contains(&(Method::Get, format!("{}/metadata/capabilities", API_PREFIX))),
+                "the /metadata mount should serve the capabilities route"
+            );
+        }
     }
 }

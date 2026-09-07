@@ -1,8 +1,19 @@
 //! Forwards SongChanged and StateChanged from the EventBus into a channel of
 //! NowPlayingEvent, and answers the metadata side's two questions about the
-//! player through the controller. This is the whole of what the player side
-//! knows about enrichment: no worker here reaches into the bus or the
-//! controller, and nothing here knows what enrichment does.
+//! player through the controller.
+//!
+//! **The daemon does not use this.** It was the whole of the seam while both
+//! halves shared a call stack; since the halves speak HTTP to each other, the
+//! metadata side subscribes to `/api/events` over a WebSocket
+//! (`audiocontrol_metadata::now_playing_ws`) and answers through
+//! `POST /api/player/<name>/song-information`
+//! (`audiocontrol_metadata::core_client`) instead. `src/main.rs` calls
+//! neither `start` nor `ControllerSink` any more.
+//!
+//! It stays because it is the in-process implementation of an interface that
+//! is still defined in `acr-types`, it is covered by its own tests, and it is
+//! the reference for what the HTTP seam has to reproduce. Nothing new should
+//! be built on it.
 
 use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
 use crate::audiocontrol::AudioController;

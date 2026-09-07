@@ -15,9 +15,13 @@ use crate::lastfm_worker::LastfmWorkerConfig;
 
 /// Start the enrichment workers on `events`.
 ///
-/// Returns whether anything is reading them. When nothing is, the caller should
-/// drop its end: the player side's bridge then unsubscribes from the event bus
-/// rather than filling a channel forever.
+/// Returns whether anything is reading them. `false` means the caller should
+/// drop the sending end rather than fill a channel nobody reads: the
+/// subscriber in [`crate::now_playing_ws`], which is what feeds `events`,
+/// ends its loop and closes the socket at the first event it cannot deliver.
+/// (`now_playing_bridge` on the player side had the same contract and
+/// unsubscribed from the event bus instead, but the daemon no longer uses
+/// it.)
 pub fn start(
     events: Receiver<NowPlayingEvent>,
     sink: Arc<dyn SongInformationSink>,

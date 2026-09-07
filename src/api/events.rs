@@ -600,6 +600,10 @@ enum ClientLoopEnd {
     /// left for the prune task, which is what happened before the two loops
     /// were shared and is deliberately unchanged here.
     SendFailed,
+    /// The daemon is shutting down. Treated like `Closed` by the caller -- the
+    /// client is unregistered -- but named separately so the log says which
+    /// end went away, and so a test can tell "we closed" from "they closed".
+    ShuttingDown,
 }
 
 /// The message loop shared by every WebSocket connection.
@@ -611,6 +615,17 @@ enum ClientLoopEnd {
 /// `player_filter` is the player this connection was opened for, for the log
 /// only; `None` is the unfiltered mount point.
 ///
+/// `shutdown` is Rocket's own shutdown future, and this loop closing on it is
+/// what keeps stopping the daemon quick. **An open WebSocket is pending I/O
+/// that Rocket waits out for the whole of `shutdown.grace`, and then spends
+/// `shutdown.mercy` on because it had to force the connection closed.** With
+/// grace at 2 s and mercy at 3 s that is five seconds added to every
+/// `systemctl stop`, restart and package upgrade for as long as one client --
+/// the WebUI, or this daemon's own metadata half -- has the socket open.
+/// Closing from this side instead makes the same shutdown take about a tenth
+/// of a second. A test passes `std::future::pending()` for a loop that should
+/// never see one.
+///
 /// Generic over the stream rather than taking `DuplexStream`, whose constructor
 /// is private to `rocket_ws`, so the tests can run this loop over a pair of
 /// channels and watch what it sends.
@@ -621,12 +636,17 @@ async fn run_client_loop<S>(
     forwarded_prefix: Option<&str>,
     player_filter: Option<&str>,
     ping_interval: Duration,
+    shutdown: impl std::future::Future<Output = ()>,
 ) -> rocket_ws::result::Result<ClientLoopEnd>
 where
     S: Stream<Item = rocket_ws::result::Result<Message>>
         + Sink<Message, Error = rocket_ws::result::Error>
         + Unpin,
 {
+    // Pinned once, outside the loop: `select!` polls it on every pass and a
+    // future that was recreated each time would never make progress.
+    let shutdown = std::pin::pin!(shutdown);
+    let mut shutdown = shutdown;
     let player = player_filter.unwrap_or("all");
     let mut poll = tokio::time::interval(EVENT_POLL_INTERVAL);
 
@@ -639,6 +659,16 @@ where
 
     loop {
         tokio::select! {
+            _ = &mut shutdown => {
+                // A Close frame, not a dropped socket: the peer learns the
+                // server is going away and can reconnect deliberately, and
+                // Rocket sees the connection finish inside its grace period
+                // instead of having to force it at the end of one.
+                debug!("Shutting down: closing WebSocket for client {}", client_id);
+                let _ = stream.send(Message::Close(None)).await;
+                let _ = stream.flush().await;
+                return Ok(ClientLoopEnd::ShuttingDown);
+            }
             _ = poll.tick() => {
                 // Check for new events
                 let events = manager.get_events_for_client(client_id);
@@ -775,6 +805,7 @@ pub fn event_messages(
     ws: WebSocket,
     forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     ws_manager: &rocket::State<Arc<WebSocketManager>>,
+    shutdown: rocket::Shutdown,
 ) -> Channel<'static> { // Removed audio_controller
     // Clone the manager to avoid lifetime issues
     let manager = ws_manager.inner().clone();
@@ -812,9 +843,10 @@ pub fn event_messages(
                 forwarded_prefix.as_deref(),
                 None,
                 PING_INTERVAL,
+                shutdown,
             ).await?;
 
-            if end == ClientLoopEnd::Closed {
+            if end == ClientLoopEnd::Closed || end == ClientLoopEnd::ShuttingDown {
                 // Clean up when the connection is closed
                 debug!("WebSocket disconnected: Client: {}", client_id);
                 manager.remove_client(client_id);
@@ -832,6 +864,7 @@ pub fn player_event_messages(
     player_name: &str,
     forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     ws_manager: &rocket::State<Arc<WebSocketManager>>,
+    shutdown: rocket::Shutdown,
 ) -> Channel<'static> { // Removed audio_controller
     // Clone the manager and player name to avoid lifetime issues
     let manager = ws_manager.inner().clone();
@@ -872,9 +905,10 @@ pub fn player_event_messages(
                 forwarded_prefix.as_deref(),
                 Some(&player_filter),
                 PING_INTERVAL,
+                shutdown,
             ).await?;
 
-            if end == ClientLoopEnd::Closed {
+            if end == ClientLoopEnd::Closed || end == ClientLoopEnd::ShuttingDown {
                 // Clean up when the connection is closed
                 debug!("WebSocket disconnected: Client: {}", client_id);
                 manager.remove_client(client_id);
@@ -1119,7 +1153,16 @@ mod tests {
     }
 
     /// Register a client and run the real loop for it on this runtime.
+    ///
+    /// The loop never sees a shutdown: `pending()` is a future that never
+    /// resolves, which is what every test but the shutdown one below wants.
     fn start_loop() -> LoopHarness {
+        start_loop_with_shutdown(std::future::pending())
+    }
+
+    fn start_loop_with_shutdown(
+        shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> LoopHarness {
         let manager = WebSocketManager::new();
         let client_id = manager.register(EventSubscription { players: None, event_types: None });
 
@@ -1129,7 +1172,16 @@ mod tests {
         let in_loop = manager.clone();
         let task = tokio::spawn(async move {
             let mut stream = ChannelStream { inbound, outbound };
-            run_client_loop(&in_loop, &mut stream, client_id, None, None, PING_INTERVAL).await
+            run_client_loop(
+                &in_loop,
+                &mut stream,
+                client_id,
+                None,
+                None,
+                PING_INTERVAL,
+                shutdown,
+            )
+            .await
         });
 
         LoopHarness { manager, client_id, to_server, from_server, task }
@@ -1158,6 +1210,38 @@ mod tests {
                 .expect("the loop task panicked")
                 .expect("the loop returned an error")
         }
+    }
+
+    /// The daemon shutting down closes the connection from this end, with a
+    /// Close frame, rather than leaving it open for Rocket to force at the end
+    /// of its grace period.
+    ///
+    /// This is worth a test because the cost of getting it wrong is invisible
+    /// in every functional test and only shows up on the clock: an open
+    /// WebSocket makes Rocket spend its whole `shutdown.grace` and then its
+    /// whole `shutdown.mercy`, which measured as five seconds added to every
+    /// stop, restart and package upgrade while any client -- a browser on the
+    /// WebUI, or this daemon's own metadata half -- had the socket open.
+    #[tokio::test(start_paused = true)]
+    async fn a_shutdown_closes_the_connection_from_this_end() {
+        let (trigger, shutdown) = tokio::sync::oneshot::channel::<()>();
+        let mut harness = start_loop_with_shutdown(async {
+            let _ = shutdown.await;
+        });
+
+        let _ = trigger.send(());
+
+        assert!(
+            matches!(harness.next_frame().await, Some(Message::Close(_))),
+            "the loop should send a Close frame when the daemon is shutting down"
+        );
+
+        let end = tokio::time::timeout(PING_INTERVAL * 20, harness.task)
+            .await
+            .expect("the loop should return once it has closed")
+            .expect("the loop task panicked")
+            .expect("the loop returned an error");
+        assert_eq!(end, ClientLoopEnd::ShuttingDown);
     }
 
     /// Poll a condition, yielding between attempts. Bounded, and on paused time.

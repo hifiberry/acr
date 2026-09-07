@@ -457,6 +457,22 @@ After every reconnect, read the current state back from the REST API rather than
 assuming the stream is a complete history: `GET /api/now-playing` for the song
 and `GET /api/player` for the state.
 
+## The server closes the connection when the daemon stops
+
+A daemon that is shutting down — `systemctl stop`, a restart, a package upgrade
+— sends a WebSocket **Close** frame on every open connection and then closes the
+socket. This is not an error and needs no special handling beyond what a client
+already does for a dropped connection: reconnect with backoff, and read the
+current state back as above.
+
+Earlier daemons sent nothing and let the connection be torn down at the end of
+their shutdown grace period. Clients saw an abrupt reset instead of a
+close, and — because an open connection is I/O the web server waits out — the
+daemon took about five seconds to stop for as long as any client had the socket
+open. A client that treats a Close frame as a fault rather than as "the server
+is going away" will report an error where it used to report a dropped
+connection; both mean the same thing.
+
 ## Best Practices
 
 1. **Handle reconnections**: Implement automatic reconnection if the connection drops

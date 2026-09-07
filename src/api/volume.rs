@@ -29,6 +29,13 @@ pub struct VolumeControlInfoResponse {
     pub display_name: String,
     /// Decibel range information (if supported)
     pub decibel_range: Option<DecibelRangeResponse>,
+    /// Domain the `percentage` values in this API live in.
+    ///
+    /// `"perceptual"` follows a cube-root loudness curve over `decibel_range`;
+    /// `"raw"` is a linear position within the hardware's own range. A client
+    /// that stores a percentage must record this alongside it, because the same
+    /// number means a different level in each domain.
+    pub volume_scale: String,
 }
 
 /// Decibel range information for API response
@@ -79,6 +86,7 @@ impl From<VolumeControlInfo> for VolumeControlInfoResponse {
             internal_name: info.internal_name,
             display_name: info.display_name,
             decibel_range: info.decibel_range.map(Into::into),
+            volume_scale: info.scale.as_str().to_string(),
         }
     }
 }

@@ -37,12 +37,24 @@ pub fn title_order(part1: &str, part2: &str) -> Json<serde_json::Value> {
 /// Split a combined artist string into its individual artists, if it names
 /// more than one.
 ///
-/// `separators` is a comma-separated list of the separators to try; absent
-/// means the module's own defaults.
-#[get("/resolve/artist-split?<name>&<separators>")]
-pub fn artist_split(name: &str, separators: Option<&str>) -> Json<serde_json::Value> {
-    let seps: Option<Vec<String>> = separators
-        .map(|s| s.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect());
+/// Each separator is its own `separator=` parameter, repeated; no parameter at
+/// all means the module's own defaults.
+///
+/// Deliberately not one comma-separated parameter, which is what this route
+/// first shipped with and which could not survive its own default list: `,` is
+/// itself the first entry of `DEFAULT_ARTIST_SEPARATORS`, so joining on a comma
+/// and splitting on one turned the defaults into `["", "&", " feat ", ...]` and
+/// stopped comma-separated artists splitting at all. Worse, a configured
+/// `[", "]` arrived as `[" "]` and split every two-word artist name in the
+/// library into two artists. A separator is arbitrary text; it cannot share a
+/// delimiter with the list that carries it.
+#[get("/resolve/artist-split?<name>&<separator>")]
+pub fn artist_split(name: &str, separator: Vec<String>) -> Json<serde_json::Value> {
+    // Absent and empty are the same request: the caller named no separators,
+    // so the defaults apply. `split_album_artist` never sends an empty list,
+    // and a caller that did cannot mean "split on nothing" -- that would make
+    // every name a single artist, which is what `None` already answers.
+    let seps: Option<Vec<String>> = if separator.is_empty() { None } else { Some(separator) };
     let answer =
         crate::artistsplitter::split_artist_names_with_mbid_lookup(name, false, seps.as_deref());
     Json(serde_json::json!({ "artists": answer }))
@@ -81,6 +93,70 @@ mod tests {
         assert!(["artist_song", "song_artist", "unknown", "undecided"].contains(&order.as_str()));
     }
 
+    /// The case a comma-joined separator list cannot express, and the one the
+    /// route first shipped broken: a comma IS a separator, and it is the first
+    /// of the defaults. Each name here is split by a different entry of
+    /// `DEFAULT_ARTIST_SEPARATORS`, sent the way `MetadataClient` sends them.
+    #[test]
+    fn every_default_separator_survives_the_query_string() {
+        crate::test_support::init_test_caches();
+        let client = test_client();
+
+        let defaults: Vec<String> = acr_types::artist_split::DEFAULT_ARTIST_SEPARATORS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let query: String = defaults
+            .iter()
+            .map(|s| format!("&separator={}", urlencoding::encode(s)))
+            .collect();
+
+        for (name, expected) in [
+            ("Sepcomma Alpha, Sepcomma Beta", vec!["Sepcomma Alpha", "Sepcomma Beta"]),
+            ("Sepamp Alpha & Sepamp Beta", vec!["Sepamp Alpha", "Sepamp Beta"]),
+            ("Sepfeat Alpha feat Sepfeat Beta", vec!["Sepfeat Alpha", "Sepfeat Beta"]),
+        ] {
+            let r = client
+                .get(format!(
+                    "/api/resolve/artist-split?name={}{}",
+                    urlencoding::encode(name),
+                    query
+                ))
+                .dispatch();
+            assert_eq!(
+                r.into_json::<serde_json::Value>().unwrap()["artists"],
+                serde_json::json!(expected),
+                "{name} should split on its own default separator"
+            );
+        }
+    }
+
+    /// A configured separator that contains a comma. Under the joined encoding
+    /// this arrived as a bare space and split every two-word artist name.
+    #[test]
+    fn a_separator_containing_a_comma_is_not_torn_apart() {
+        crate::test_support::init_test_caches();
+        let client = test_client();
+
+        let r = client
+            .get("/api/resolve/artist-split?name=Comma%20Sep%20Floyd&separator=%2C%20")
+            .dispatch();
+        assert_eq!(
+            r.into_json::<serde_json::Value>().unwrap()["artists"],
+            serde_json::json!(null),
+            "\", \" must not degrade into \" \", which would split every two-word name"
+        );
+
+        let r = client
+            .get("/api/resolve/artist-split?name=Commapair%20One%2C%20Commapair%20Two&separator=%2C%20")
+            .dispatch();
+        assert_eq!(
+            r.into_json::<serde_json::Value>().unwrap()["artists"],
+            serde_json::json!(["Commapair One", "Commapair Two"]),
+            "and it must still split where it genuinely occurs"
+        );
+    }
+
     #[test]
     fn artist_split_without_musicbrainz_is_the_plain_split() {
         crate::test_support::init_test_caches();
@@ -107,15 +183,32 @@ mod tests {
     }
 
     #[test]
-    fn custom_separators_are_parsed_from_the_comma_separated_query_value() {
+    fn a_custom_separator_replaces_the_defaults_rather_than_adding_to_them() {
         crate::test_support::init_test_caches();
         let client = test_client();
+
         let r = client
-            .get("/api/resolve/artist-split?name=A%7CB&separators=%7C")
+            .get("/api/resolve/artist-split?name=Pipe%20Alpha%7CPipe%20Beta&separator=%7C")
             .dispatch();
         assert_eq!(
             r.into_json::<serde_json::Value>().unwrap()["artists"],
-            serde_json::json!(["A", "B"])
+            serde_json::json!(["Pipe Alpha", "Pipe Beta"])
+        );
+
+        // And the defaults are gone while it is named: `&` is a default, so a
+        // caller that asked only for `|` must not get a split on `&` as well.
+        //
+        // A name no other test uses, deliberately. `split_artist_names_with_
+        // mbid_lookup` caches on the NAME ALONE -- the separators are not part
+        // of the key -- so a name another test has already split would be
+        // answered from that cache and this assertion would pass or fail on
+        // test ordering rather than on the code it names.
+        let r = client
+            .get("/api/resolve/artist-split?name=Onlypipe%20Alpha%20%26%20Onlypipe%20Beta&separator=%7C")
+            .dispatch();
+        assert_eq!(
+            r.into_json::<serde_json::Value>().unwrap()["artists"],
+            serde_json::json!(null)
         );
     }
 }

@@ -104,6 +104,33 @@ def test_resolve_artist_split_without_musicbrainz_is_plain(metadata_server):
     assert r.json()["artists"] == ["A", "B"]
 
 
+def test_default_separators_survive_the_query_string(metadata_server):
+    """The encoding regression this route shipped with, over the real wire.
+
+    `MetadataClient` sends one `separator=` per separator. It first sent them
+    joined by a comma -- and `,` is itself the first of the daemon's default
+    separators, so the list could not survive carrying itself: comma-separated
+    artists stopped splitting, and a configured `", "` arrived as `" "` and
+    split every two-word artist name in two. Names here are unique to this
+    test because the split cache is keyed on the name alone."""
+    base = metadata_server.server_url + "/api/metadata"
+    defaults = [",", "&", " feat ", " feat.", " featuring ", " with "]
+
+    r = requests.get(
+        f"{base}/resolve/artist-split",
+        params={"name": "Wire Alpha, Wire Beta", "separator": defaults},
+    )
+    assert r.status_code == 200
+    assert r.json()["artists"] == ["Wire Alpha", "Wire Beta"]
+
+    # A separator that contains the old delimiter must stay one separator.
+    r = requests.get(
+        f"{base}/resolve/artist-split",
+        params={"name": "Wirecomma Pink Floyd", "separator": [", "]},
+    )
+    assert r.json()["artists"] is None
+
+
 def test_current_player_reports_a_state(metadata_server):
     """The field the scrobble timer reconciles against every 30 s (Task 2).
     No route was added for it -- `GET /api/player` already answered it before

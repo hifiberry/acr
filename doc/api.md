@@ -2339,9 +2339,15 @@ check both library loaders run at load time on every album's artist field.
 - **Query Parameters**:
   - `name` (string, required): the combined artist string, e.g. `Simon &
     Garfunkel`
-  - `separators` (string, optional): a comma-separated list of separators to
-    try instead of the built-in defaults (`,`, `&`, ` feat `, ` feat.`, `
-    featuring `, ` with `)
+  - `separator` (string, repeatable, optional): one separator per occurrence —
+    `?name=X&separator=,&separator=%26` — to try instead of the built-in
+    defaults (`,`, `&`, ` feat `, ` feat.`, ` featuring `, ` with `). Omit it
+    entirely for the defaults; sending none is the same as omitting it.
+
+    Repeated rather than one comma-separated value, because `,` is itself the
+    first default separator: a comma-joined list cannot carry it, and a
+    separator of `", "` would arrive as `" "` and split every two-word artist
+    name in two.
 - **Response** (200 OK):
 
   ```json

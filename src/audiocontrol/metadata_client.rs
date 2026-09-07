@@ -160,11 +160,15 @@ impl Resolver for MetadataClient {
     }
 
     fn artist_split(&self, name: &str, separators: &[String]) -> Option<Vec<String>> {
-        let path = format!(
-            "/resolve/artist-split?name={}&separators={}",
-            urlencoding::encode(name),
-            urlencoding::encode(&separators.join(","))
-        );
+        // One `separator=` per separator. Joining them with any delimiter is
+        // wrong for the same reason a separator list cannot be comma-joined:
+        // `,` is itself the first of `DEFAULT_ARTIST_SEPARATORS`, so a joined
+        // list loses it and mangles the rest. See the route's doc comment.
+        let mut path = format!("/resolve/artist-split?name={}", urlencoding::encode(name));
+        for separator in separators {
+            path.push_str("&separator=");
+            path.push_str(&urlencoding::encode(separator));
+        }
         match self.get_json(self.resolve_client.as_ref(), &path) {
             Some(v) => serde_json::from_value(v["artists"].clone()).unwrap_or(None),
             None => {
@@ -388,6 +392,46 @@ mod tests {
         assert_eq!(
             dead.artist_split("A & B", &[" & ".to_string()]),
             Some(vec!["A".into(), "B".into()])
+        );
+    }
+
+    /// The regression this route shipped with, caught at the client end: the
+    /// separators went out joined by a comma, and `,` is itself the first of
+    /// `DEFAULT_ARTIST_SEPARATORS`, so the list could not survive its own
+    /// contents. Asserting on the query string rather than the answer, because
+    /// the answer comes from a stub -- what has to be right here is what goes
+    /// on the wire.
+    #[test]
+    fn every_separator_crosses_the_wire_as_its_own_parameter() {
+        let seen = Arc::new(Mutex::new(String::new()));
+        let recorder = seen.clone();
+        let server = stub(move |path| {
+            *recorder.lock() = path.to_string();
+            (200, r#"{"artists":null}"#)
+        });
+
+        let defaults: Vec<String> = acr_types::artist_split::DEFAULT_ARTIST_SEPARATORS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let client = MetadataClient::new(&server.base(), 1000, 5000);
+        client.artist_split("Simon, Garfunkel", &defaults);
+
+        let path = seen.lock().clone();
+        assert_eq!(
+            path.matches("&separator=").count(),
+            defaults.len(),
+            "one parameter per separator, got: {path}"
+        );
+        // The comma must arrive percent-encoded and alone, not as a delimiter
+        // between two other values.
+        assert!(
+            path.contains("&separator=%2C&"),
+            "the comma separator must survive as its own value, got: {path}"
+        );
+        assert!(
+            path.contains("&separator=%20feat%20"),
+            "a separator with spaces must survive intact, got: {path}"
         );
     }
 

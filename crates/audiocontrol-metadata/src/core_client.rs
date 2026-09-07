@@ -16,9 +16,10 @@ use acr_http::http_client;
 use acr_types::enrichment::{
     AlbumRef, Applied, ArtistRef, EnrichmentBatch, EnrichmentError,
 };
-use acr_types::now_playing::{PlaybackStateSource, SongInformationSink};
+use acr_types::now_playing::{PlaybackStateSource, SongInformationSink, SplitterObservationSink};
 use acr_types::token::AccessTokenSource;
-use acr_types::{PlaybackState, PlayerSource, Song};
+use acr_types::url_encoding::encode_url_safe;
+use acr_types::{OrderResult, PlaybackState, PlayerSource, Song};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
@@ -168,6 +169,34 @@ impl CoreClient {
             .get("applied")
             .and_then(|v| v.as_bool())
             .unwrap_or(false))
+    }
+
+    /// Report an observed title order to a station's splitter, through
+    /// `POST /player/<name>/splitter/<station>/observation`.
+    ///
+    /// `station` is the un-encoded stream URL; this method applies the same
+    /// URL-safe base64 encoding `<station>` uses everywhere else in that
+    /// API, and the player daemon's route reverses it. The route feeds only
+    /// what the station has *learned* — an order a user set explicitly is
+    /// never touched by this call, whatever it reports.
+    pub fn splitter_observation(
+        &self,
+        player_name: &str,
+        station: &str,
+        order: OrderResult,
+    ) -> Result<(), String> {
+        let url = format!(
+            "{}/player/{}/splitter/{}/observation",
+            self.base,
+            urlencoding::encode(player_name),
+            encode_url_safe(station)
+        );
+        let payload = serde_json::json!({ "order": crate::api::resolve::order_name(order) });
+        let client = http_client::new_http_client(self.timeout_secs);
+        client
+            .post_json_value(&url, payload)
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// The player daemon's version string, read from `GET /version`.
@@ -458,6 +487,24 @@ impl SongInformationSink for CoreClient {
     }
 }
 
+impl SplitterObservationSink for CoreClient {
+    /// `false` on any error, logged at warn level — same rate reasoning as
+    /// `SongInformationSink::apply` above: this changes at most once per
+    /// disagreeing track, not once a second.
+    fn record_order_observation(&self, player_name: &str, station: &str, order: OrderResult) -> bool {
+        match self.splitter_observation(player_name, station, order) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!(
+                    "title-order observation not delivered to the player daemon: {}",
+                    e
+                );
+                false
+            }
+        }
+    }
+}
+
 impl PlaybackStateSource for CoreClient {
     /// `PlaybackState::Unknown` on any error: a timeout, a connection
     /// failure or a body that will not parse. The Last.fm worker reads
@@ -614,6 +661,49 @@ mod tests {
             .song_information(&source, &Song::default())
             .expect_err("success: false must not read as Ok");
         assert_eq!(err, "player not found");
+    }
+
+    #[test]
+    fn a_splitter_observation_posts_the_order_to_the_encoded_station() {
+        let server = StubServer::serving(200, r#"{"station":"http://stream.example/radio"}"#);
+        let client = CoreClient::new(&server.base_url());
+
+        assert_eq!(
+            client.splitter_observation("mpd", "http://stream.example/radio", OrderResult::SongArtist),
+            Ok(())
+        );
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1, "exactly one request should be sent");
+        let expected_path = format!(
+            "POST /player/mpd/splitter/{}/observation HTTP/1.1",
+            encode_url_safe("http://stream.example/radio")
+        );
+        assert!(
+            requests[0].starts_with(&expected_path),
+            "unexpected request line: {} (expected to start with {})",
+            requests[0],
+            expected_path
+        );
+        let body = requests[0]
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("a body after the headers");
+        assert_eq!(body, r#"{"order":"song_artist"}"#);
+    }
+
+    /// `SplitterObservationSink::record_order_observation` is the trait
+    /// method the correction worker actually calls; it must collapse a
+    /// transport error into `false` rather than panicking or propagating.
+    #[test]
+    fn an_unreachable_player_daemon_answers_false_for_an_observation() {
+        let dead = CoreClient::new("http://127.0.0.1:1/api");
+        assert!(!SplitterObservationSink::record_order_observation(
+            &dead,
+            "mpd",
+            "http://stream.example/radio",
+            OrderResult::SongArtist
+        ));
     }
 
     /// The pull half: what the Last.fm worker reconciles against.

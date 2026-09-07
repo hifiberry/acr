@@ -1,10 +1,24 @@
 //! REST API for per-station artist/title splitting.
 //!
 //! Radio streams announce a single combined title. The server splits it into
-//! artist and song, guessing the order from MusicBrainz and learning per
-//! station. The guess can be wrong, and on a device without internet access it
-//! cannot be made at all — so the order and separator can also be set outright,
-//! per station, and a set value wins over anything guessed or learned.
+//! artist and song, falling back to a fixed heuristic ("Artist - Title",
+//! which streams overwhelmingly announce) for a station it has neither been
+//! told about nor learned. The heuristic can be wrong — this process no
+//! longer asks anyone before deciding, so it is a guess rather than a lookup —
+//! and on top of that the order and separator can also be set outright, per
+//! station, and a set value wins over anything guessed, learned or observed.
+//!
+//! **Two ways a station's order becomes learned, not just guessed.** A user
+//! sets it outright through [`set_splitter`] below. The metadata daemon
+//! reports what it has observed — typically a MusicBrainz-backed correction
+//! of the heuristic's guess — through [`record_observation`], which is the
+//! only route this crate's main daemon is called on for this feature (see
+//! `doc/specs/2026-09-07-one-way-seam.md`: no route the player daemon calls
+//! on the metadata daemon may survive that document, and this is what an
+//! observation travels through instead, in the allowed direction). Both feed
+//! the same `learned_order`/`learned_separator` a client reads back; only
+//! [`set_splitter`] can also set `order`/`separator`, and only those are
+//! ever allowed to override a guess or a learned value.
 
 use crate::helpers::songsplitmanager::SplitterState;
 use crate::helpers::songtitlesplitter::OrderResult;
@@ -114,6 +128,19 @@ pub struct SetSplitterRequest {
     pub order: Option<String>,
     #[serde(default)]
     pub separator: Option<String>,
+}
+
+/// Body of a request reporting an order observed for a station — typically
+/// the metadata daemon, reporting a MusicBrainz-backed correction of the
+/// heuristic guess the player made locally.
+///
+/// Unlike [`SetSplitterRequest`], this has no `separator` and never touches
+/// `order` — the order a user set explicitly. It feeds only `learned_order`,
+/// through [`record_observation`], so a station's explicit setting keeps
+/// winning regardless of how many observations disagree with it.
+#[derive(Deserialize)]
+pub struct ObservedOrderRequest {
+    pub order: String,
 }
 
 /// Find an MPD controller by player name.
@@ -226,6 +253,45 @@ pub fn set_splitter(
     }
 }
 
+/// Report an order observed for a station, feeding only what it has
+/// learned.
+///
+/// This is the metadata daemon's route for the same job
+/// `GET /resolve/title-order` used to do the other way round: rather than
+/// this daemon asking the metadata daemon which half of a split title is the
+/// artist on every stream title change, the player decides locally and
+/// immediately (see `crate::helpers::songtitlesplitter`), and the metadata
+/// daemon corrects a wrong guess afterwards by calling here. A user's
+/// explicit setting is untouched by this route, and keeps winning regardless
+/// of how many observations disagree with it — see the module doc comment.
+#[post("/player/<player_name>/splitter/<station>/observation", data = "<request>")]
+pub fn record_observation(
+    player_name: &str,
+    station: &str,
+    request: Json<ObservedOrderRequest>,
+    controller: &State<Arc<AudioController>>,
+) -> Result<Json<SplitterResponse>, Custom<String>> {
+    let url = decode_station(station)?;
+    let order = parse_order(&request.order).map_err(|e| Custom(Status::BadRequest, e))?;
+
+    let outcome = with_mpd_controller(controller, player_name, |mpd| {
+        mpd.record_splitter_observation(&url, order)
+            .map(|state| (state, mpd.save_title_splitter(&url)))
+    })?;
+
+    match outcome {
+        Some((state, Ok(()))) => Ok(Json(SplitterResponse::from(state))),
+        Some((_, Err(e))) => Err(Custom(
+            Status::InternalServerError,
+            format!("Observation recorded but could not be saved: {}", e),
+        )),
+        None => Err(Custom(
+            Status::InsufficientStorage,
+            "No splitter slot available for this station".to_string(),
+        )),
+    }
+}
+
 /// Forget a station's splitter, discarding both what was learned and what was set.
 #[delete("/player/<player_name>/splitter/<station>")]
 pub fn delete_splitter(
@@ -292,5 +358,19 @@ mod tests {
     fn a_separator_must_be_a_single_character() {
         assert!(parse_separator("").is_err());
         assert!(parse_separator(" - ").is_err());
+    }
+
+    /// `record_observation`'s body has no `separator` field: an observation
+    /// is a title-order verdict, never a claim about where a title splits.
+    #[test]
+    fn observed_order_request_has_only_an_order_field() {
+        let request: ObservedOrderRequest = serde_json::from_str(r#"{"order":"song_artist"}"#)
+            .expect("the documented shape should deserialize");
+        assert_eq!(request.order, "song_artist");
+
+        assert!(
+            serde_json::from_str::<ObservedOrderRequest>(r#"{}"#).is_err(),
+            "order is required -- an observation naming no order says nothing"
+        );
     }
 }

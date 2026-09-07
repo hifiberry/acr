@@ -13,12 +13,16 @@ use rocket::serde::json::Json;
 
 /// Wire name of an order.
 ///
-/// Copied from `src/api/splitters.rs`'s `order_name` rather than shared: the
-/// player crate owns its own `OrderResult` wire mapping for the splitter
-/// settings API and must not depend on this crate, so the two mappings are
-/// kept in sync by eye. The spelling — `artist_song` / `song_artist` /
-/// `unknown` / `undecided` — is the one wire format both sides agree on.
-fn order_name(order: OrderResult) -> &'static str {
+/// Copied from `src/api/splitters.rs`'s `order_name` rather than shared
+/// *across crates*: the player crate owns its own `OrderResult` wire mapping
+/// for the splitter settings API and must not depend on this crate, so the
+/// two mappings are kept in sync by eye. `pub(crate)` because `core_client`,
+/// in this same crate, needs the identical mapping to report a title-order
+/// observation to that same player-crate route — a second copy in this crate
+/// would be exactly the duplication this comment already exists to explain,
+/// for no reason. The spelling — `artist_song` / `song_artist` / `unknown` /
+/// `undecided` — is the one wire format both sides agree on.
+pub(crate) fn order_name(order: OrderResult) -> &'static str {
     match order {
         OrderResult::ArtistSong => "artist_song",
         OrderResult::SongArtist => "song_artist",

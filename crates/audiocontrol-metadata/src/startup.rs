@@ -31,7 +31,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use acr_types::config::get_service_config;
-use acr_types::now_playing::{LastfmWorkerConfig, PlaybackStateSource, SongInformationSink};
+use acr_types::now_playing::{
+    LastfmWorkerConfig, PlaybackStateSource, SongInformationSink, SplitterObservationSink,
+};
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
@@ -391,7 +393,8 @@ pub fn start_after_core_is_listening(config: &serde_json::Value) {
     // afterwards, which is what is wanted.
     let sink: Arc<dyn SongInformationSink> = core.clone();
     let state: Arc<dyn PlaybackStateSource> = core.clone();
-    if !now_playing::start(events, sink, state, lastfm_worker_config(config)) {
+    let observations: Arc<dyn SplitterObservationSink> = core.clone();
+    if !now_playing::start(events, sink, state, observations, lastfm_worker_config(config)) {
         info!(
             "No now-playing enrichment is configured; the event socket stays up for \
              library changes"

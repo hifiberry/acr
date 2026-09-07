@@ -6,7 +6,9 @@
 //! disabled -- gets no channel at all: an unbounded channel nobody reads is a
 //! leak that grows by one event per song change for as long as the daemon runs.
 
-use acr_types::now_playing::{NowPlayingEvent, PlaybackStateSource, SongInformationSink};
+use acr_types::now_playing::{
+    NowPlayingEvent, PlaybackStateSource, SongInformationSink, SplitterObservationSink,
+};
 use acr_types::{OrderResult, Song};
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use log::{debug, info};
@@ -45,6 +47,7 @@ pub fn start(
     events: Receiver<NowPlayingEvent>,
     sink: Arc<dyn SongInformationSink>,
     state: Arc<dyn PlaybackStateSource>,
+    observations: Arc<dyn SplitterObservationSink>,
     lastfm: Option<LastfmWorkerConfig>,
 ) -> bool {
     let mut senders: Vec<Sender<NowPlayingEvent>> = Vec::new();
@@ -64,15 +67,15 @@ pub fn start(
     // Only worth a channel and a thread when MusicBrainz is actually
     // reachable: `detect_order` already answers `Unknown` for everything
     // when it is disabled (`crate::title_order::detect_order` ->
-    // `musicbrainz::search_recording` -> `is_enabled()`), which
-    // `corrected_song` treats as nothing to correct -- so an always-on
-    // worker would be a channel and a thread that never had anything to send.
-    // Gating it here also keeps `nothing_configured_still_leaves_the_channel_alive`
-    // below meaningful: with MusicBrainz off too, "nothing configured" still
-    // means zero workers, and the drain path stays reachable.
+    // `musicbrainz::search_recording` -> `is_enabled()`), which is not
+    // actionable -- so an always-on worker would be a channel and a thread
+    // that never had anything to report. Gating it here also keeps
+    // `nothing_configured_still_leaves_the_channel_alive` below meaningful:
+    // with MusicBrainz off too, "nothing configured" still means zero
+    // workers, and the drain path stays reachable.
     if crate::musicbrainz::is_enabled() {
         let (order_tx, order_rx) = unbounded();
-        start_title_order_correction(order_rx, sink);
+        start_title_order_correction(order_rx, observations);
         senders.push(order_tx);
     }
 
@@ -124,7 +127,28 @@ fn fan_out(events: Receiver<NowPlayingEvent>, senders: Vec<Sender<NowPlayingEven
         .expect("spawn now-playing fan-out");
 }
 
-/// Whether a title-order correction is even worth asking MusicBrainz about:
+/// The station a title-order observation would be reported against, or
+/// `None` when `song` has nothing that could plausibly be one.
+///
+/// MPD sets `stream_url` on every song it reports, radio and local library
+/// track alike (`stream_url: Some(mpd_song.file.clone())` in
+/// `src/players/mpd/mpd.rs`), but the splitter route's `<station>` is
+/// documented as *the stream URL* -- and MPD only ever calls into the
+/// splitter for a title with no artist tag at all, which a local file
+/// almost always has. Reporting an observation for a local file's own path
+/// would create a splitter entry, and spend a MusicBrainz lookup, for a
+/// track nothing ever tried to split. Requiring a scheme (`"://"`) is what
+/// tells a stream URL apart from a filesystem path here.
+fn station_for(song: &Song) -> Option<&str> {
+    let url = song.stream_url.as_deref()?;
+    if url.contains("://") {
+        Some(url)
+    } else {
+        None
+    }
+}
+
+/// Whether a title-order observation is even worth asking MusicBrainz about:
 /// both halves present and distinct. A song with no artist at all -- many
 /// AirPlay sources never send one -- or a title identical to its artist has
 /// nothing to teach the splitter and nothing to ask about.
@@ -137,45 +161,56 @@ fn correctable(song: &Song) -> Option<(&str, &str)> {
     Some((artist, title))
 }
 
-/// The corrected `Song` to report back, given what MusicBrainz said about the
-/// two halves the player already split -- or `None` when the split was
-/// already right, or MusicBrainz could not decide.
+/// Whether a MusicBrainz verdict is worth reporting as an observation.
 ///
-/// Only `SongArtist` is actionable: `detect_order(artist, title)` returning
-/// it means the player's `artist` field is actually the song and its `title`
-/// field is actually the artist, so the two are swapped. `ArtistSong`
-/// confirms the split the player already made; `Unknown` and `Undecided` are
-/// exactly as uninformative as no answer at all.
-fn corrected_song(song: &Song, order: OrderResult) -> Option<Song> {
-    match order {
-        OrderResult::SongArtist => Some(Song {
-            title: song.artist.clone(),
-            artist: song.title.clone(),
-            ..Default::default()
-        }),
-        OrderResult::ArtistSong | OrderResult::Unknown | OrderResult::Undecided => None,
-    }
+/// Only `SongArtist` disagrees with what the player already assumed:
+/// `detect_order(artist, title)` returning it means the player's `artist`
+/// field is actually the song and its `title` field is actually the artist.
+/// `ArtistSong` confirms the split the player already made -- nothing to
+/// report -- and `Unknown`/`Undecided` decided nothing at all.
+fn is_actionable(order: OrderResult) -> bool {
+    order == OrderResult::SongArtist
 }
 
-/// Corrects a wrong artist/title split, on a thread of its own.
+/// Reports a wrong artist/title split as a per-station observation, on a
+/// thread of its own.
 ///
 /// This is what replaced asking the player daemon a network question on
 /// every stream title change: `GET /resolve/title-order` is gone with the
 /// one-way seam, and `SongTitleSplitter` on the player side now decides
 /// locally and immediately, using a fixed heuristic for a title it has
 /// neither been told about nor learned. What used to be answered before the
-/// split happened is now corrected afterwards, through the same
-/// `song-information` sink cover art and Last.fm answers already use -- and
-/// like both of those, a MusicBrainz lookup can take a while, which is why
-/// this reads its own channel on its own thread rather than running inline
-/// in `fan_out`.
+/// split happened is now corrected afterwards.
+///
+/// **Not through `song-information`.** That route identifies a song by
+/// title and artist and refuses a partial that disagrees with either -- a
+/// swap disagrees with both by construction, so it can never pass. The
+/// correction travels instead through `POST
+/// /player/<name>/splitter/<station>/observation`
+/// (`SplitterObservationSink`), the same route a user sets a station's order
+/// through by hand -- an order observation is per-station splitter state,
+/// not information about one song. Like the cover art and Last.fm workers,
+/// a MusicBrainz lookup can take a while, which is why this reads its own
+/// channel on its own thread rather than running inline in `fan_out`.
+///
+/// **The currently playing song keeps its original, possibly wrong, split.**
+/// Correcting it would need the song-information merge policy to accept a
+/// re-identification, which is out of scope here -- see the module doc
+/// comment on `SplitterObservationSink`. This is an accepted, bounded
+/// regression against the resolver this replaces: most radio is "Artist -
+/// Title", so the fallback the player used is right more often than not;
+/// the resolver often answered `Unknown` anyway; and the *next* track from
+/// the same station reads correctly once this observation is recorded.
+/// Re-deriving the current song from its raw stream title once the splitter
+/// has learned is possible later, and touches no merge policy -- just not
+/// done here.
 ///
 /// Returns the thread's `JoinHandle` so a test can wait for it to actually
 /// finish processing -- by joining after closing its channel, not by
 /// sleeping -- rather than for the daemon to do anything with it.
 fn start_title_order_correction(
     events: Receiver<NowPlayingEvent>,
-    sink: Arc<dyn SongInformationSink>,
+    observations: Arc<dyn SplitterObservationSink>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("title-order-correction".into())
@@ -184,16 +219,19 @@ fn start_title_order_correction(
                 let NowPlayingEvent::SongChanged { source, song: Some(song) } = event else {
                     continue;
                 };
+                let Some(station) = station_for(&song) else {
+                    continue;
+                };
                 let Some((artist, title)) = correctable(&song) else {
                     continue;
                 };
                 let order = crate::title_order::detect_order(artist, title);
-                if let Some(corrected) = corrected_song(&song, order) {
+                if is_actionable(order.clone()) {
                     debug!(
-                        "Title order correction for {:?}/{:?}: swapping to {:?}/{:?}",
-                        song.artist, song.title, corrected.artist, corrected.title
+                        "Title order observation for station {}: {:?}/{:?} looks swapped",
+                        station, song.artist, song.title
                     );
-                    sink.apply(&source, &corrected);
+                    observations.record_order_observation(&source.player_name, station, order);
                 }
             }
             debug!("Title-order correction stopped: its event channel closed");
@@ -219,6 +257,12 @@ mod tests {
     impl PlaybackStateSource for NullSink {
         fn playback_state(&self) -> PlaybackState {
             PlaybackState::Stopped
+        }
+    }
+
+    impl SplitterObservationSink for NullSink {
+        fn record_order_observation(&self, _player_name: &str, _station: &str, _order: OrderResult) -> bool {
+            false
         }
     }
 
@@ -300,7 +344,7 @@ mod tests {
         let (tx, events) = unbounded();
         let sink = Arc::new(NullSink);
         assert!(
-            !start(events, sink.clone(), sink, None),
+            !start(events, sink.clone(), sink.clone(), sink, None),
             "nothing is configured, so no worker is reading"
         );
 
@@ -323,10 +367,13 @@ mod tests {
         );
     }
 
+    /// A radio-stream song: both halves present, and a `stream_url` that
+    /// looks like one -- the shape `station_for` is looking for.
     fn song(artist: &str, title: &str) -> Song {
         Song {
             artist: Some(artist.to_string()),
             title: Some(title.to_string()),
+            stream_url: Some("http://stream.example/radio".to_string()),
             ..Default::default()
         }
     }
@@ -350,60 +397,74 @@ mod tests {
         assert!(correctable(&song("Same", "Same")).is_none());
     }
 
+    /// `station_for` is what stops a title-order observation -- and the
+    /// MusicBrainz lookup that would precede it -- being sent for every
+    /// ordinary library track MPD plays, not just radio streams. A local
+    /// file's own path (no scheme) must not read as a station; a stream URL
+    /// must; no `stream_url` at all (every other backend) must not either.
+    #[test]
+    fn station_for_needs_a_url_shaped_stream_url() {
+        assert_eq!(
+            station_for(&song("Artist", "Title")),
+            Some("http://stream.example/radio")
+        );
+        assert_eq!(
+            station_for(&Song {
+                stream_url: Some("Music/Artist/Album/Track.flac".to_string()),
+                ..song("Artist", "Title")
+            }),
+            None,
+            "a local file's own path is not a splitter station"
+        );
+        assert_eq!(
+            station_for(&Song {
+                stream_url: None,
+                ..song("Artist", "Title")
+            }),
+            None
+        );
+    }
+
     /// The one actionable verdict: `SongArtist` means the player's `artist`
     /// field is actually the song and its `title` field is actually the
-    /// artist, so the correction swaps them.
+    /// artist. `ArtistSong` confirms the existing split, and `Unknown`/
+    /// `Undecided` decided nothing -- none of the three is worth reporting.
     #[test]
-    fn a_song_artist_verdict_swaps_the_fields() {
-        let original = song("Hey Jude", "The Beatles");
-
-        let corrected = corrected_song(&original, OrderResult::SongArtist)
-            .expect("a disagreeing verdict must produce a correction");
-
-        assert_eq!(corrected.artist.as_deref(), Some("The Beatles"));
-        assert_eq!(corrected.title.as_deref(), Some("Hey Jude"));
+    fn only_song_artist_is_actionable() {
+        assert!(is_actionable(OrderResult::SongArtist));
+        assert!(!is_actionable(OrderResult::ArtistSong));
+        assert!(!is_actionable(OrderResult::Unknown));
+        assert!(!is_actionable(OrderResult::Undecided));
     }
 
-    /// `ArtistSong` confirms the split the player already made -- there is
-    /// nothing to correct, and this must not be mistaken for "no verdict".
-    #[test]
-    fn an_artist_song_verdict_corrects_nothing() {
-        let original = song("The Beatles", "Hey Jude");
-        assert_eq!(corrected_song(&original, OrderResult::ArtistSong), None);
-    }
+    /// A stub that records every observation it is handed, so a test can
+    /// assert on what the worker actually reported rather than trusting that
+    /// it ran.
+    struct RecordingObservationSink(std::sync::Mutex<Vec<(String, String, OrderResult)>>);
 
-    /// `Unknown` and `Undecided` are exactly as uninformative as no answer at
-    /// all: neither is a reason to touch the song.
-    #[test]
-    fn an_undecided_or_unknown_verdict_corrects_nothing() {
-        let original = song("Whoever", "Whatever");
-        assert_eq!(corrected_song(&original, OrderResult::Unknown), None);
-        assert_eq!(corrected_song(&original, OrderResult::Undecided), None);
-    }
-
-    /// A stub that records every partial it is handed, so a test can assert
-    /// on what the worker actually sent rather than trusting that it ran.
-    struct RecordingSink(std::sync::Mutex<Vec<Song>>);
-
-    impl SongInformationSink for RecordingSink {
-        fn apply(&self, _source: &PlayerSource, partial: &Song) -> bool {
-            self.0.lock().unwrap().push(partial.clone());
+    impl SplitterObservationSink for RecordingObservationSink {
+        fn record_order_observation(&self, player_name: &str, station: &str, order: OrderResult) -> bool {
+            self.0
+                .lock()
+                .unwrap()
+                .push((player_name.to_string(), station.to_string(), order));
             true
         }
     }
 
     /// With MusicBrainz disabled -- the default in this process, and every
     /// build that has not configured it -- `detect_order` answers `Unknown`
-    /// for everything, so the correction worker must never call the sink at
-    /// all. This is the one live-wiring behaviour of the worker this test
-    /// suite can assert without reaching MusicBrainz over the network: it
-    /// reads its events and stays quiet rather than hanging or panicking.
+    /// for everything, which `is_actionable` rejects, so the correction
+    /// worker must never call the sink at all. This is the one live-wiring
+    /// behaviour of the worker this test suite can assert without reaching
+    /// MusicBrainz over the network: it reads its events and stays quiet
+    /// rather than hanging or panicking.
     #[test]
-    fn with_musicbrainz_disabled_the_worker_sends_no_correction() {
+    fn with_musicbrainz_disabled_the_worker_sends_no_observation() {
         crate::musicbrainz::initialize_from_config(&serde_json::json!({}));
 
         let (tx, events) = unbounded();
-        let sink = Arc::new(RecordingSink(std::sync::Mutex::new(Vec::new())));
+        let sink = Arc::new(RecordingObservationSink(std::sync::Mutex::new(Vec::new())));
         let handle = start_title_order_correction(events, sink.clone());
 
         tx.send(NowPlayingEvent::SongChanged {

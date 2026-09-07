@@ -281,6 +281,54 @@ impl SongSplitManager {
         Some(SplitterState::of(splitter_id, splitter))
     }
 
+    /// Record an order observed for a station -- from a correction, not a
+    /// user setting.
+    ///
+    /// Unlike `set_forced`, this never touches `forced_order`: it feeds
+    /// [`SongTitleSplitter::record_correction`], which moves only the
+    /// *learned* statistics. A station whose order was set explicitly keeps
+    /// answering with that order regardless of how many observations
+    /// disagree with it -- `set_forced` is the user's word, and an
+    /// observation is not.
+    ///
+    /// # Returns
+    /// * `Option<SplitterState>` - the resulting state, or `None` if no
+    ///   splitter could be created because the manager is at its limit
+    pub fn record_observation(&self, splitter_id: &str, order: OrderResult) -> Option<SplitterState> {
+        let mut splitters = self.splitters.lock();
+
+        if !splitters.contains_key(splitter_id) {
+            if splitters.len() >= self.max_splitters {
+                warn!("Maximum number of splitters ({}) reached, cannot create new splitter for ID: {}",
+                      self.max_splitters, splitter_id);
+                return None;
+            }
+
+            let new_splitter = if let Some(cached) = self.load_from_cache(splitter_id) {
+                debug!("Loaded splitter for ID '{}' from persistent storage to record an observation", splitter_id);
+                cached
+            } else {
+                debug!("Creating new splitter for ID: {}", splitter_id);
+                SongTitleSplitter::new(splitter_id)
+            };
+            splitters.insert(splitter_id.to_string(), new_splitter);
+        }
+
+        let splitter = splitters.get_mut(splitter_id)?;
+        // `record_correction` takes a combined title to cache against for a
+        // repeated *exact* title, but this call crosses the seam from the
+        // metadata daemon, which never sees the raw, unsplit stream title --
+        // only the already-split (and here, disagreeing) artist/title pair.
+        // `splitter_id` (the station URL) stands in for it: a real song
+        // title is never a URL, so this can never collide with, or answer
+        // for, an actual title -- only the statistics update below is what
+        // this call is for.
+        splitter.record_correction(splitter_id, order);
+        info!("Recorded an observed order for splitter '{}'", splitter_id);
+
+        Some(SplitterState::of(splitter_id, splitter))
+    }
+
     /// Full state of one station, from memory or from persistent storage.
     ///
     /// Unlike `set_forced` this never creates a splitter: a station that has
@@ -493,6 +541,57 @@ mod tests {
         let manager = SongSplitManager::new();
 
         assert!(manager.get_state("http://stream.example/never-played").is_none());
+    }
+
+    /// Enough agreeing observations establish a learned order, which is then
+    /// what `split_song` uses -- the metadata daemon's replacement for the
+    /// resolver lookup that used to feed this directly.
+    #[test]
+    fn enough_observations_establish_a_learned_order_that_changes_splitting() {
+        let manager = SongSplitManager::new();
+        let id = "http://stream.example/backwards-station";
+
+        for _ in 0..20 {
+            manager.record_observation(id, OrderResult::SongArtist);
+        }
+
+        let state = manager.get_state(id).expect("an observation should have created state");
+        assert_eq!(state.learned_order, Some(OrderResult::SongArtist));
+
+        assert_eq!(
+            manager.split_song(id, "A - B"),
+            Some(("B".to_string(), "A".to_string())),
+            "a never-before-seen title on this station should read the learned way"
+        );
+    }
+
+    /// The property this fix round exists for: an observation must never
+    /// override a station's explicitly set order, however many of them
+    /// disagree with it. `set_forced` is the user's word; `record_observation`
+    /// is a guess from outside, however well informed.
+    #[test]
+    fn an_observation_never_overrides_a_forced_order() {
+        let manager = SongSplitManager::new();
+        let id = "http://stream.example/user-corrected-station";
+
+        manager.set_forced(id, Some(OrderResult::ArtistSong), None);
+
+        for _ in 0..20 {
+            manager.record_observation(id, OrderResult::SongArtist);
+        }
+
+        let state = manager.get_state(id).expect("station should have state");
+        assert_eq!(
+            state.forced_order,
+            Some(OrderResult::ArtistSong),
+            "the forced order must survive any number of disagreeing observations"
+        );
+
+        assert_eq!(
+            manager.split_song(id, "A - B"),
+            Some(("A".to_string(), "B".to_string())),
+            "detect_order must still answer with the forced order, not the observed one"
+        );
     }
 
     #[test]

@@ -179,6 +179,7 @@ pub fn api_routes() -> Vec<rocket::Route> {
         splitters::list_splitters,
         splitters::get_splitter,
         splitters::set_splitter,
+        splitters::record_observation,
         splitters::delete_splitter,
 
         // Library routes

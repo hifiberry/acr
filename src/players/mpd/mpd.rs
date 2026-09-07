@@ -800,6 +800,19 @@ impl MPDPlayerController {
         self.song_split_manager.set_forced(url, order, separator)
     }
 
+    /// Record an order observed for a station's splitter -- e.g. a
+    /// MusicBrainz-backed correction from the metadata daemon. Feeds only
+    /// what has been learned; a station's explicitly set order is untouched
+    /// and keeps winning regardless of how many observations disagree with
+    /// it. See `SongSplitManager::record_observation`.
+    pub fn record_splitter_observation(
+        &self,
+        url: &str,
+        order: crate::helpers::songtitlesplitter::OrderResult,
+    ) -> Option<crate::helpers::songsplitmanager::SplitterState> {
+        self.song_split_manager.record_observation(url, order)
+    }
+
     /// Persist a station's splitter so its settings survive a restart
     pub fn save_title_splitter(&self, url: &str) -> Result<(), String> {
         self.song_split_manager.save(url)

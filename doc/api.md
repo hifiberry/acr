@@ -2219,10 +2219,15 @@ These four routes are served by the metadata side of the daemon (the code that
 will become a separate `audiocontrol-metadata` process in a later phase) but
 answer at `/api` alongside everything else in this document, because both
 halves currently share one Rocket. They exist so the player daemon can ask
-over HTTP for what it used to compute in-process, and it now does:
-enrichment, the two resolvers and the Spotify access token all cross loopback
-rather than a function call, even though both halves are in one process. See
-[architecture](architecture.md) for what that means and does not mean.
+over HTTP for what it used to compute in-process, and it now does: enrichment
+and the two resolvers cross loopback rather than a function call, even though
+both halves are in one process. See [architecture](architecture.md) for what
+that means and does not mean.
+
+The Spotify access token used to be a fourth such call and now runs the other
+way. The account lives in the player daemon, which serves
+`GET /api/spotify/access_token` to the metadata side rather than asking it —
+see [Spotify Routes](#spotify-routes) below.
 
 Nothing about calling them from outside the daemon is unsupported, but the
 player-facing routes earlier in this document (`Get Artist by Name`, `Get
@@ -2263,7 +2268,6 @@ What is mounted under `/api/metadata/`:
 | `/api/metadata/coverart/...` | [Cover Art API](#cover-art-api) |
 | `/api/metadata/imagecache/...` | the image cache paths |
 | `/api/metadata/lastfm/...` | [Last.fm Integration](#lastfm-integration) |
-| `/api/metadata/spotify/...` | the Spotify account and playback routes |
 | `/api/metadata/favourites/...` | [Favourites API](#favourites-api) |
 | `/api/metadata/capabilities` | the metadata side's own capabilities report |
 
@@ -2278,9 +2282,43 @@ response's own image paths are written with whatever prefix the request
 carried, exactly as described in [Image and Lyrics Paths](#image-and-lyrics-paths).
 
 The player daemon's own routes — players, library, volume, lyrics, settings,
-cache, background jobs, genres and the WebSocket — are *not* under
+cache, background jobs, genres, **Spotify** and the WebSocket — are *not* under
 `/api/metadata/`. They stay where they are and will stay on this process after
 the split.
+
+`/api/metadata/spotify/...` was in this table in an earlier release and is
+gone. The Spotify account moved to the player daemon, so `/api/spotify/...` —
+the historical path every shipped client already uses — is the only one. No
+client-facing URL changed; a client that had adopted the `/api/metadata/`
+prefix for Spotify specifically must use `/api/spotify/` instead.
+
+### Spotify Routes
+
+Served by the player daemon at `/api/spotify/`, which through nginx is
+`/api/audiocontrol/spotify/`. These paths have not changed and are not going
+to.
+
+| Path | Method | Purpose |
+| --- | --- | --- |
+| `/api/spotify/tokens` | POST | store the tokens an OAuth flow produced |
+| `/api/spotify/status` | GET | whether an account is linked, and when its token expires |
+| `/api/spotify/logout` | POST | forget the account |
+| `/api/spotify/oauth_config` | GET | the OAuth proxy URL and redirect URI |
+| `/api/spotify/create_session` | GET | begin a browser-mediated login |
+| `/api/spotify/login/<session_id>` | GET | the Spotify authorize URL for that session |
+| `/api/spotify/poll/<session_id>` | GET | poll for the tokens that login produced |
+| `/api/spotify/check_server` | GET | whether the OAuth proxy is reachable |
+| `/api/spotify/access_token` | GET | the current bearer token as `text/plain`; 404 when no account is linked |
+| `/api/spotify/playback` | GET | the Spotify playback state |
+| `/api/spotify/command/<command>` | POST | play, pause, next, previous, seek, repeat, shuffle |
+| `/api/spotify/currently_playing` | GET | the currently playing track |
+| `/api/spotify/search` | POST | search Spotify for artists, albums or tracks |
+
+The last four are served only when `services.spotify.api_enabled` is `true` in
+`audiocontrol.json`; the rest are served whether it is set or not. That
+includes `access_token`, which the metadata side reads for its cover-art and
+favourites providers — gating it on a flag meant for client-facing playback
+routes would turn off Spotify cover art on every device that has not set it.
 
 #### Get Artist Detail
 

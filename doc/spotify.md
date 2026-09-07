@@ -88,6 +88,21 @@ Clears all Spotify tokens and logs the user out.
 
 The Spotify tokens are stored in the Audiocontrol security store, which encrypts sensitive data using AES-256-GCM encryption. The encryption key is defined in the `secrets.txt` file.
 
+## Which half owns the account
+
+The account — the OAuth flow, the stored tokens and their refresh — belongs to
+the **player** daemon, not the metadata half, and every route above is served
+there. The reason is playback: the librespot backend turns `Play`, `Pause`,
+`Next` and the rest into Spotify Web API calls, so a token that had to be
+fetched from the metadata half would make pressing play depend on it. It does
+not.
+
+The metadata half only *searches* Spotify, for cover art and for the
+favourites provider. It reads a token from `GET /api/spotify/access_token` and
+caches it for 60 seconds; with no token it contributes nothing, which is what
+it already did on a device with no account linked. See
+[communications](communications.md#seam-4-the-spotify-access-token).
+
 ## Example Implementation
 
 An example implementation is provided in the `example/web/spotify.html` file. This web page demonstrates how to:
@@ -106,9 +121,15 @@ To use this example, you must update the following variables in the JavaScript:
 
 To add Spotify support to your own Audiocontrol-based applications, you'll need to:
 
-1. Import the `audiocontrol_metadata::spotify::Spotify` module
-2. Use the module's methods to check authentication, retrieve tokens, etc.
+1. Import the `audiocontrol::players::librespot::spotify_account` module —
+   the account lives in the player daemon, beside the librespot backend whose
+   playback commands need its token
+2. Use `SpotifyAccount`'s methods to check authentication, retrieve tokens, etc.
 3. Implement the OAuth flow as shown in the example
+
+Code that only wants to *search* Spotify and has a token already should use
+`audiocontrol_metadata::spotify::search` instead; it takes a bearer token as an
+argument and owns no account.
 
 ## Limitations
 

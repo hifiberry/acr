@@ -81,7 +81,13 @@ impl LoggingSubsystem {
             LoggingSubsystem::Players => "audiocontrol::players,audiocontrol::players::mpd::libraryloader,audiocontrol::players::lms::libraryloader",
             LoggingSubsystem::Cache => "acr_store::attributecache,acr_store::imagecache",
             LoggingSubsystem::Metadata => "audiocontrol_metadata::musicbrainz,audiocontrol_metadata::theaudiodb,audiocontrol_metadata::lastfm,audiocontrol_metadata::library_enricher",
-            LoggingSubsystem::Spotify => "audiocontrol_metadata::spotify",
+            // Four modules since the account moved to this daemon: the
+            // account and the requests it makes, the routes that manage it,
+            // and the token-taking search client the metadata side kept. A
+            // prefix that still named only the metadata one would leave the
+            // `spotify` subsystem covering nothing that matters -- the OAuth
+            // flow, the refresh and every playback command log from here now.
+            LoggingSubsystem::Spotify => "audiocontrol::players::librespot::spotify_account,audiocontrol::players::librespot::spotify_transport,audiocontrol::api::spotify,audiocontrol_metadata::spotify",
             // The WebSocket endpoint is api::events. `api::websocket` has never
             // existed in this repository -- unlike the rest of this list, that
             // one was wrong before the crates moved.

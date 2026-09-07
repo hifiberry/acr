@@ -141,8 +141,8 @@ type.
 | `SongInformationSink` | `CoreClient` | metadata half |
 | `PlaybackStateSource` | `CoreClient` | metadata half |
 | `EnrichmentSink` | `HttpEnrichmentSink` | metadata half |
+| `AccessTokenSource` | `CoreClient` | metadata half |
 | `Resolver` | `MetadataClient` | player half |
-| `AccessTokenSource` | `MetadataClient` | player half |
 | `LibraryEnricher` | `MetadataClient` | player half |
 
 Note the direction: a trait *implemented* on the metadata side is one the
@@ -197,7 +197,7 @@ graph LR
     M -->|"2b. POST library enrichment"| P
     P -->|"2c. POST enrich/nudge"| M
     P -->|"3. GET resolve/*"| M
-    P -->|"4. GET spotify/access_token"| M
+    M -->|"4. GET spotify/access_token"| P
     P -->|"detail: GET artist, coverart image"| M
 ```
 
@@ -210,18 +210,19 @@ graph LR
 | 2b | Enrichment batches | metadata → player | `POST /api/library/<p>/enrichment` | 5 s | 409 ends the sweep and the next poll re-pulls; 404 ends it |
 | 2c | Nudge | player → metadata | `POST /api/enrich/nudge?player=` | 1 s | ignored — the 30 s poll covers it |
 | 3 | Title order, artist split | player → metadata | `GET /api/resolve/…` | 5 s | `unknown` order; plain separator split |
-| 4 | Spotify access token | player → metadata | `GET /api/spotify/access_token` | 1 s | `None`; 60 s cache bounds re-asking |
+| 4 | Spotify access token | metadata → player | `GET /api/spotify/access_token` | 5 s | `None`; 60 s cache bounds re-asking |
 | — | Artist detail | player → metadata | `GET /api/artist/<b64>` | 1 s | `None` — the field is simply absent |
 | — | Artist image | player → metadata | `GET /api/coverart/artist/<b64>/image` | 5 s | `None` — the route 404s to its caller |
 
 The two clients:
 
 - **`MetadataClient`** — `src/audiocontrol/metadata_client.rs`, player half,
-  pointed at `services.metadata.url`. Carries `Resolver`,
-  `AccessTokenSource` and `LibraryEnricher`.
+  pointed at `services.metadata.url`. Carries `Resolver` and
+  `LibraryEnricher`.
 - **`CoreClient`** — `crates/audiocontrol-metadata/src/core_client.rs`,
   metadata half, pointed at `services.core.url`. Carries
-  `SongInformationSink` and `PlaybackStateSource`, and the library reads.
+  `SongInformationSink`, `PlaybackStateSource` and `AccessTokenSource`, and
+  the library reads.
 
 Both default to loopback on the port the daemon binds. `CoreClient` uses one
 5 s timeout for every call; `MetadataClient` holds three clients, because
@@ -429,31 +430,43 @@ answers a MusicBrainz-disabled build produces.
 
 ## Seam 4: the Spotify access token
 
-The player half needs a bearer token; the metadata half owns the credentials
-and the refresh.
+**This seam runs metadata → player, and it is the only one that changed
+direction.** The Spotify account — the OAuth flow, the stored tokens and their
+refresh — lives in the player half, because its primary consumer is playback
+control: the librespot backend turns `PlayerCommand::Play`, `Pause`, `Next` and
+the rest into Spotify Web API calls, at nine call sites. While the token was
+fetched across the seam, a metadata half that was down meant pressing play did
+nothing, which inverts the priority the split is designed around.
+
+So the player half reads its own account (no HTTP at all), and the metadata
+half asks *it* for a token, for the two providers that search Spotify.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant P as player half
-    participant MC as MetadataClient
-    participant SP as api/spotify
+    participant PR as coverart / favourites provider
+    participant CC as CoreClient
+    participant SP as api/spotify (player half)
 
-    P->>MC: access_token()
+    PR->>CC: spotify_access_token()
     alt cached and younger than 60 s
-        MC-->>P: Some(token)
+        CC-->>PR: Some(token)
     else
-        MC->>SP: GET /api/spotify/access_token
+        CC->>SP: GET /api/spotify/access_token
         alt an account is linked
-            SP-->>MC: 200 text/plain — the token
-            MC->>MC: cache it with a 60 s TTL
-            MC-->>P: Some(token)
+            SP-->>CC: 200 text/plain — the token
+            CC->>CC: cache it with a 60 s TTL
+            CC-->>PR: Some(token)
         else no account, or refresh failed
-            SP-->>MC: 404
-            MC-->>P: None
+            SP-->>CC: 404
+            CC-->>PR: None
         end
     end
 ```
+
+`None` means the provider contributes nothing, which is what it already did on
+a device with no Spotify account linked. Playback control is unaffected either
+way: it never asks over HTTP.
 
 The 60 s cache bounds how often the token is fetched and, equally, how long a
 token survives an account being unlinked. A stale token fails at Spotify with
@@ -461,11 +474,17 @@ its own 401, so the TTL is about traffic rather than correctness.
 
 **A known limitation, documented in the code.** `acr-http`'s `get_text` maps
 every non-2xx to an error string, so a 404 — meaning no account is linked — is
-indistinguishable from the metadata side being unreachable. Both answer `None`,
+indistinguishable from the player half being unreachable. Both answer `None`,
 and a cached token is left alone in either case. The `post_json_status` method
 added for the enrichment 409 exists precisely because that information loss
 mattered there; extending it to GET was left as unnecessary rather than done
 speculatively.
+
+**Search is duplicated, deliberately.** The metadata half holds its own
+sixty-line Spotify search client rather than calling the player half's
+`POST /api/spotify/search`. Proxying would put rate-limited provider network
+work on the player half's Rocket workers and make a cover-art lookup two hops.
+What is duplicated is one documented GET, not an abstraction.
 
 ---
 
@@ -620,7 +639,7 @@ paths, and again under `/api/metadata/`.
 | | Path | Who it is for |
 |---|---|---|
 | Historical | `/api/coverart/…`, `/api/lastfm/…`, `/api/spotify/…`, `/api/favourites/…`, `/api/audiodb/…` | existing clients — unchanged, and not going to move |
-| New mount | `/api/metadata/…` | the same routes, plus `capabilities`, at the prefix nginx will route to a separate daemon |
+| New mount | `/api/metadata/…` | the same routes, plus `capabilities`, at the prefix nginx will route to a separate daemon. **Not `/api/metadata/spotify/…`**: the account is the player half's, so `/api/spotify/…` is its only path. |
 | Loopback only | bare `/api/…` on 127.0.0.1 | the two clients above. Not a client-facing surface. |
 
 `GET /api/metadata/capabilities` is the one path that exists *only* under the

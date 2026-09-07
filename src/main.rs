@@ -2,11 +2,19 @@
 //!
 //! This is the one file in the package that names both crates. The library
 //! `audiocontrol` knows nothing about `audiocontrol-metadata`: it asks for
-//! enrichment, title resolution and Spotify access tokens through traits in
-//! `acr-types`, and `main` is what decides which implementation answers. In
-//! Phase 0 that is the in-process metadata crate, linked behind the default
-//! `metadata` feature; in Phase 1 it becomes a client for a separate daemon,
-//! and only this file changes.
+//! enrichment and title resolution through traits in `acr-types`, and `main`
+//! is what decides which implementation answers. In Phase 0 that is the
+//! in-process metadata crate, linked behind the default `metadata` feature; in
+//! Phase 1 it becomes a client for a separate daemon, and only this file
+//! changes.
+//!
+//! The Spotify access token used to be a third such seam and is not any more.
+//! The account lives in this daemon now
+//! (`audiocontrol::players::librespot::spotify_account`), because the
+//! librespot backend's playback commands need it and must keep working with
+//! no metadata half at all. What `main` still has to supply is the OAuth
+//! proxy URL and secret: those are compiled from `secrets.txt` by the metadata
+//! crate's build script, and this package has none of its own.
 
 // The global allocator, on Linux, where this actually ships.
 //
@@ -340,12 +348,41 @@ fn main() {
     // where it sits among them cannot matter.
     initialize_configurator(&controllers_config);
 
-    // MusicBrainz, TheAudioDB, FanArt.tv, the external cover art endpoints,
-    // Last.fm and Spotify, in the order they have always been brought up.
+    // MusicBrainz, TheAudioDB, FanArt.tv, the external cover art endpoints and
+    // Last.fm, in the order they have always been brought up. Spotify used to
+    // be the last of them and is not there any more: its account belongs to
+    // this daemon now, and comes up immediately below.
     #[cfg(feature = "metadata")]
     audiocontrol_metadata::initialize_in_process(&controllers_config);
     #[cfg(not(feature = "metadata"))]
     info!("{}", WITHOUT_METADATA);
+
+    // The Spotify account: the OAuth tokens, their refresh, and the routes
+    // that manage them. It is this daemon's own, so that a playback command
+    // needs nothing from the metadata half -- and it comes up here, where
+    // Spotify came up before, so its position relative to the security store
+    // (above) and the favourite providers (below) is unchanged.
+    //
+    // The two arguments are the OAuth proxy URL and secret compiled from
+    // `secrets.txt`. The generator is the metadata crate's build script and
+    // this package has none, so the composition root reads them -- the same
+    // arrangement as the security store's encryption key just above. A build
+    // without the metadata crate has no secrets at all and passes the
+    // sentinel the generator itself uses for a missing value, which the
+    // account rejects: no OAuth proxy, so no account, which is what such a
+    // build could do anyway.
+    #[cfg(feature = "metadata")]
+    audiocontrol::players::librespot::spotify_account::initialize_from_config(
+        &controllers_config,
+        &audiocontrol_metadata::secrets::spotify_oauth_url(),
+        &audiocontrol_metadata::secrets::spotify_proxy_secret(),
+    );
+    #[cfg(not(feature = "metadata"))]
+    audiocontrol::players::librespot::spotify_account::initialize_from_config(
+        &controllers_config,
+        "unknown",
+        "unknown",
+    );
 
     // Initialize volume control with the configuration
     audiocontrol::helpers::global_volume::initialize_volume_control(&controllers_config);
@@ -487,29 +524,28 @@ fn main() {
     #[cfg(feature = "metadata")]
     audiocontrol_metadata::coverart_providers::register_all_providers();
 
-    // Library enrichment, resolvers and Spotify access tokens -- the three
-    // player-side seams the metadata side now answers over HTTP.
+    // Library enrichment and the resolvers -- the two player-side seams the
+    // metadata side answers over HTTP.
     // `MetadataClient` lives in this package and names nothing from
     // `audiocontrol-metadata`, so building and installing it does not need
     // the `metadata` feature: even a `--no-default-features` daemon reaches
     // the metadata side over loopback once `services.metadata` is
     // configured, which is the phase working as intended. With no
     // `services.metadata` section, nothing is installed and every caller
-    // keeps the offline fallback it already has (see `resolver`, `token` and
+    // keeps the offline fallback it already has (see `resolver` and
     // `enrichment` in this crate).
     //
-    // Installed before any player starts, so no library, title splitter or
-    // librespot backend finds any of the three missing -- the same lifetime
-    // rule the old in-process setters kept.
+    // Installed before any player starts, so no library or title splitter
+    // finds either of the two missing -- the same lifetime rule the old
+    // in-process setters kept.
     match MetadataClient::from_config(&controllers_config) {
         Some(client) => {
             let client = Arc::new(client);
             audiocontrol::audiocontrol::enrichment::set_enricher(client.clone());
-            audiocontrol::audiocontrol::resolver::set_resolver(client.clone());
-            audiocontrol::audiocontrol::token::set_token_source(client);
+            audiocontrol::audiocontrol::resolver::set_resolver(client);
         }
         None => {
-            info!("services.metadata is not configured: no resolver, Spotify token source or library enricher installed");
+            info!("services.metadata is not configured: no resolver or library enricher installed");
         }
     }
 
@@ -562,24 +598,16 @@ fn main() {
         debug!("No song currently playing");
     }
 
-    // Read spotify.api_enabled config (default: false)
-    //
-    // Read here rather than in the server: the routes it selects between now
-    // come from the metadata crate, which the server does not name.
-    let spotify_api_enabled = get_service_config(&controllers_config, "spotify")
-        .and_then(|s| s.get("api_enabled"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
     // The route groups the server does not own. Every one of them is a
     // metadata route, so a build without the metadata crate mounts none.
+    //
+    // `spotify.api_enabled` used to be read here, to pick between the
+    // metadata crate's two Spotify route lists. Those routes are this
+    // daemon's own now, so `src/api/server.rs` reads the flag itself.
     #[cfg(feature = "metadata")]
-    let extra_routes = metadata_route_groups(spotify_api_enabled);
+    let extra_routes = metadata_route_groups();
     #[cfg(not(feature = "metadata"))]
-    let extra_routes: Vec<(String, Vec<rocket::Route>)> = {
-        let _ = spotify_api_enabled;
-        Vec::new()
-    };
+    let extra_routes: Vec<(String, Vec<rocket::Route>)> = Vec::new();
 
     // Start the API server using the global Tokio runtime
     let controllers_config_clone = controllers_config.clone();
@@ -725,8 +753,8 @@ fn initialize_configurator(config: &serde_json::Value) {
 ///
 /// There are two mounts, and they are not interchangeable.
 ///
-/// The **bare** mounts -- `""`, `/lastfm`, `/spotify`, `/favourites`,
-/// `/coverart` -- are where these routes have always been served, and where
+/// The **bare** mounts -- `""`, `/lastfm`, `/favourites`, `/coverart` -- are
+/// where these routes have always been served, and where
 /// `services.metadata.url` points: `http://127.0.0.1:1080/api`. The player
 /// side's own `MetadataClient` calls them over loopback, so moving or
 /// renaming them would break this process's conversation with itself as well
@@ -749,10 +777,10 @@ fn initialize_configurator(config: &serde_json::Value) {
 /// refuses to mount one `Route` value at two mount points, so the two sets
 /// have to be built independently.
 #[cfg(feature = "metadata")]
-fn metadata_route_groups(spotify_api_enabled: bool) -> Vec<(String, Vec<rocket::Route>)> {
-    let mut groups = audiocontrol_metadata::api::routes(spotify_api_enabled);
+fn metadata_route_groups() -> Vec<(String, Vec<rocket::Route>)> {
+    let mut groups = audiocontrol_metadata::api::routes();
 
-    for (mount, routes) in audiocontrol_metadata::api::routes(spotify_api_enabled) {
+    for (mount, routes) in audiocontrol_metadata::api::routes() {
         groups.push((format!("/metadata{}", mount), routes));
     }
     for (mount, routes) in audiocontrol_metadata::api::standalone_routes() {
@@ -871,6 +899,10 @@ mod tests {
     /// First, no group collides with the daemon's own routes -- the original
     /// check, now over [`metadata_route_groups`] rather than
     /// `api::routes(..)`, so the `/metadata` mounts are covered by it too.
+    /// "The daemon's own" means both `api_routes()` and every group
+    /// `daemon_route_groups` mounts below the prefix, which matters since the
+    /// Spotify account moved: `/api/spotify` is a mount both sides could serve
+    /// and only one may.
     ///
     /// Second, the groups do not collide with *each other*. That is what
     /// catches `standalone_routes()` being appended to the shared set instead
@@ -894,23 +926,51 @@ mod tests {
             (route.method, format!("{}{}", prefix, route.uri.path()))
         }
 
-        let daemon_routes: HashSet<(Method, String)> = server::api_routes()
-            .iter()
-            .map(|route| full_path(API_PREFIX, route))
-            .collect();
-
-        // If this is empty the loop below would pass vacuously; make sure
-        // there is actually something in it to collide with.
-        assert!(daemon_routes.contains(&(Method::Get, format!("{}/capabilities", API_PREFIX))));
-
         // Both branches. `spotify.api_enabled` adds four routes to the
-        // `/spotify` group, and therefore to both of its mounts; a daemon
-        // that ignites with the flag off and refuses to start with it on
-        // would be a configuration option that breaks the daemon, found by
-        // whoever set it.
+        // daemon's own `/spotify` group; a daemon that ignites with the flag
+        // off and refuses to start with it on would be a configuration option
+        // that breaks the daemon, found by whoever set it.
         for spotify_api_enabled in [false, true] {
+            let config = serde_json::json!({
+                "services": { "spotify": { "api_enabled": spotify_api_enabled } }
+            });
+
+            // Every route the daemon itself mounts: the bare prefix *and*
+            // every sub-prefixed group. Until the Spotify account moved this
+            // was `api_routes()` alone, which was enough because nothing the
+            // metadata crate mounted shared a sub-prefix with the daemon.
+            // `/api/spotify` is now served by this daemon, so leaving the
+            // groups out would miss exactly the collision this test is for.
+            let mut daemon_routes: HashSet<(Method, String)> = server::api_routes()
+                .iter()
+                .map(|route| full_path(API_PREFIX, route))
+                .collect();
+            for (mount, routes) in server::daemon_route_groups(&config) {
+                let prefix = format!("{}{}", API_PREFIX, mount);
+                for route in &routes {
+                    let key = full_path(&prefix, route);
+                    assert!(
+                        daemon_routes.insert(key.clone()),
+                        "the daemon mounts {:?} {} twice itself (spotify.api_enabled = {})",
+                        key.0,
+                        key.1,
+                        spotify_api_enabled
+                    );
+                }
+            }
+
+            // If these were empty the loop below would pass vacuously; make
+            // sure there is actually something in it to collide with. One
+            // from each of the two sources, so a `daemon_route_groups` that
+            // returned nothing at all would be caught.
+            assert!(daemon_routes.contains(&(Method::Get, format!("{}/capabilities", API_PREFIX))));
+            assert!(
+                daemon_routes.contains(&(Method::Get, format!("{}/spotify/access_token", API_PREFIX))),
+                "the daemon must serve the Spotify token route the metadata side reads"
+            );
+
             let mut mounted: HashSet<(Method, String)> = HashSet::new();
-            for (mount, routes) in metadata_route_groups(spotify_api_enabled) {
+            for (mount, routes) in metadata_route_groups() {
                 let prefix = format!("{}{}", API_PREFIX, mount);
                 for route in &routes {
                     let key = full_path(&prefix, route);

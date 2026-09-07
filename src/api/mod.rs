@@ -3,8 +3,10 @@ pub use crate::constants::API_PREFIX;
 
 // The forwarded-prefix guard and the image/validation responders moved to
 // acr-web, shared with the future metadata daemon. The cover art, Last.fm,
-// Spotify, TheAudioDB and favourites routes moved to audiocontrol-metadata;
-// the daemon receives them through `start_rocket_server`'s `extra_routes`.
+// TheAudioDB and favourites routes moved to audiocontrol-metadata; the daemon
+// receives them through `start_rocket_server`'s `extra_routes`. The Spotify
+// routes went the other way and came back: the account belongs to the daemon
+// that plays, so `spotify` below is this package's own again.
 pub use acr_web::{imagecache, imageresponse, urlprefix, validated};
 
 // Export the players module
@@ -51,6 +53,9 @@ pub mod genres;
 
 // Export the splitters module
 pub mod splitters;
+
+// Export the Spotify account module
+pub mod spotify;
 
 // Export the server module
 pub mod server;

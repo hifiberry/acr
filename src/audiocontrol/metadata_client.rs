@@ -1,13 +1,23 @@
-//! `MetadataClient` -- the player side's client for the three seams the
+//! `MetadataClient` -- the player side's client for the two seams the
 //! metadata side answers over HTTP: title-order and artist-split resolution,
-//! a Spotify access token, and library enrichment (artist detail, artist
-//! images, and the enrichment nudge).
+//! and library enrichment (artist detail, artist images, and the enrichment
+//! nudge).
 //!
 //! `main` installs this in place of the in-process implementations from
 //! `audiocontrol-metadata` when `services.metadata` names a base URL. With
 //! nothing configured, nothing is installed, and every caller falls back to
 //! the behaviour a MusicBrainz-disabled, enrichment-less build already has --
-//! see `resolver`, `token` and `enrichment` in this module's parent.
+//! see `resolver` and `enrichment` in this module's parent.
+//!
+//! **Not here any more: the Spotify access token.** It was a third seam,
+//! `GET /spotify/access_token` against the metadata side, and it is the one
+//! the one-way-seam spec singles out: the librespot backend turned every
+//! playback command into a Spotify Web API call and fetched its bearer token
+//! through here, so a metadata half that was down meant pressing play did
+//! nothing. The account now lives in this daemon
+//! (`crate::players::librespot::spotify_account`) and the token travels the
+//! other way, from `audiocontrol_metadata::core_client::CoreClient` to
+//! `GET /api/spotify/access_token` here.
 //!
 //! **Not here: `PlaybackStateSource`.** It reads `GET /api/player`, a route of
 //! the *player* daemon, while this client addresses `services.metadata.url`
@@ -24,21 +34,9 @@ use acr_types::artist_split::split_artist_with_separators;
 use acr_types::config::get_service_config;
 use acr_types::enrichment::{AlbumRef, ArtistRef, ArtistSummary, EnrichmentSink, LibraryEnricher};
 use acr_types::resolver::Resolver;
-use acr_types::token::AccessTokenSource;
 use acr_types::url_encoding::encode_url_safe;
 use acr_types::{ArtistMeta, OrderResult};
-use parking_lot::Mutex;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-/// How long a fetched Spotify access token is reused before asking again.
-///
-/// Not the token's own expiry -- the metadata side already refreshes before
-/// handing one out -- but a bound on how long a stale answer survives an
-/// account being unlinked in between. A token that outlived that would fail
-/// at Spotify with its own 401 regardless, so this only bounds how long the
-/// unlink takes to be noticed, not correctness.
-const TOKEN_TTL: Duration = Duration::from_secs(60);
 
 /// The spec's two configurable timeouts, used when `services.metadata` names
 /// neither. Named rather than inlined at the one call site that reads them so
@@ -81,7 +79,6 @@ pub struct MetadataClient {
     detail_client: Box<dyn HttpClient>,
     resolve_client: Box<dyn HttpClient>,
     image_client: Box<dyn HttpClient>,
-    token: Mutex<Option<(String, Instant)>>,
 }
 
 impl MetadataClient {
@@ -95,7 +92,6 @@ impl MetadataClient {
             detail_client: http_client::new_http_client(ceil_secs(detail_timeout_ms)),
             resolve_client: http_client::new_http_client(ceil_secs(resolve_timeout_ms)),
             image_client: http_client::new_http_client(IMAGE_TIMEOUT_SECS),
-            token: Mutex::new(None),
         }
     }
 
@@ -187,42 +183,6 @@ impl Resolver for MetadataClient {
     }
 }
 
-impl AccessTokenSource for MetadataClient {
-    /// `None` when no account is linked, the metadata side cannot be
-    /// reached, or the body it sent back is otherwise unusable. Cached for
-    /// `TOKEN_TTL` under the mutex.
-    ///
-    /// The route answers 404 specifically when no Spotify account is linked,
-    /// but `get_text` collapses every non-2xx status into the same
-    /// `RequestError`, discarding the code -- so a 404 is indistinguishable
-    /// here from the metadata side simply being down. Sniffing `"404"` out of
-    /// the error string would work today and break the moment the message
-    /// wording changes, so instead every failure is treated identically: it
-    /// answers `None` and leaves whatever is already cached untouched. The
-    /// 60 s TTL already bounds how long a token survives an account being
-    /// unlinked, and a token that outlived that fails at Spotify with a 401
-    /// of its own regardless.
-    fn access_token(&self) -> Option<String> {
-        let mut guard = self.token.lock();
-        if let Some((token, fetched_at)) = guard.as_ref() {
-            if fetched_at.elapsed() < TOKEN_TTL {
-                return Some(token.clone());
-            }
-        }
-
-        match self
-            .detail_client
-            .get_text(&self.url("/spotify/access_token"))
-        {
-            Ok(token) => {
-                *guard = Some((token.clone(), Instant::now()));
-                Some(token)
-            }
-            Err(_) => None,
-        }
-    }
-}
-
 impl LibraryEnricher for MetadataClient {
     /// Always `None`.
     ///
@@ -292,9 +252,9 @@ impl LibraryEnricher for MetadataClient {
 mod tests {
     use super::*;
     use acr_types::enrichment::{Applied, EnrichmentBatch, EnrichmentError};
+    use parking_lot::Mutex;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A stub HTTP server that answers a status and body a closure picks
     /// from the request path, then keeps listening. Binds port 0 and reports
@@ -433,28 +393,6 @@ mod tests {
             path.contains("&separator=%20feat%20"),
             "a separator with spaces must survive intact, got: {path}"
         );
-    }
-
-    #[test]
-    fn the_token_is_cached_for_a_minute() {
-        let hits = Arc::new(AtomicUsize::new(0));
-        let h = hits.clone();
-        let server = stub(move |_| {
-            h.fetch_add(1, Ordering::SeqCst);
-            (200, "tok")
-        });
-        let client = MetadataClient::new(&server.base(), 1000, 5000);
-        assert_eq!(client.access_token().as_deref(), Some("tok"));
-        assert_eq!(client.access_token().as_deref(), Some("tok"));
-        assert_eq!(hits.load(Ordering::SeqCst), 1);
-    }
-
-    /// Any failure -- here, total unreachability -- must answer `None`
-    /// rather than panic or return something stale from an empty cache.
-    #[test]
-    fn an_unreachable_metadata_side_answers_no_token() {
-        let dead = MetadataClient::new("http://127.0.0.1:1/api", 1000, 5000);
-        assert_eq!(dead.access_token(), None);
     }
 
     #[test]

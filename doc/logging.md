@@ -94,7 +94,7 @@ Available log levels in order of verbosity:
 
 #### `spotify`
 - **Description**: Spotify integration and authentication
-- **Modules**: `audiocontrol_metadata::spotify`
+- **Modules**: `audiocontrol::players::librespot::spotify_account`, `audiocontrol::players::librespot::spotify_transport`, `audiocontrol::api::spotify`, `audiocontrol_metadata::spotify`
 - **Typical Messages**: OAuth flow, API requests, token management
 
 #### `websocket`
@@ -305,7 +305,7 @@ You can also specify custom module filters in the `subsystems` section using ful
 {
   "subsystems": {
     "audiocontrol::players::mpd": "trace",
-    "audiocontrol_metadata::spotify": "debug",
+    "audiocontrol::players::librespot::spotify_account": "debug",
     "reqwest": "warn",
     "hyper": "error"
   }

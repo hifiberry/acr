@@ -338,6 +338,13 @@ pub fn start_after_core_is_listening(config: &serde_json::Value) {
         }
     }
 
+    // The Spotify token, connection 4 of the seam. Installed here rather than
+    // at provider registration because it needs the `CoreClient` this
+    // function builds, and the providers only ask for a token when a lookup
+    // actually happens -- long after this. Before the account moved this ran
+    // in the opposite direction, with the player daemon calling this side.
+    crate::spotify::set_token_source(core.clone());
+
     // Interface 1, both directions, in one object: the subscriber reads the
     // event socket, and the same `CoreClient` is what the workers push
     // results back through and what the Last.fm worker asks for the playback

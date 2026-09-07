@@ -2,7 +2,7 @@ use crate::players::player_controller::{BasePlayerController, PlayerController};
 use crate::data::{PlayerCapability, PlayerCapabilitySet, Song, LoopMode, PlaybackState, PlayerCommand, PlayerState, Track};
 use crate::data::stream_details::StreamDetails;
 use crate::helpers::playback_progress::PlayerProgress;
-use crate::players::librespot::spotify_transport;
+use crate::players::librespot::{spotify_account, spotify_transport};
 use delegate::delegate;
 use std::sync::Arc;
 use parking_lot::RwLock;
@@ -306,7 +306,7 @@ impl PlayerController for LibrespotPlayerController {
                     return false;
                 }
                 
-                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                match spotify_account::access_token() {
                     Some(token) => match spotify_transport::send_command(&token, "play", &serde_json::json!({})) {
                         Ok(_) => {
                             info!("Successfully sent play command to Spotify API");
@@ -330,7 +330,7 @@ impl PlayerController for LibrespotPlayerController {
                     return self.handle_legacy_pause_command();
                 }
                 
-                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                match spotify_account::access_token() {
                     Some(token) => match spotify_transport::send_command(&token, "pause", &serde_json::json!({})) {
                         Ok(_) => {
                             info!("Successfully sent pause command to Spotify API");
@@ -354,7 +354,7 @@ impl PlayerController for LibrespotPlayerController {
                     return self.handle_legacy_stop_command();
                 }
                 
-                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                match spotify_account::access_token() {
                     Some(token) => match spotify_transport::send_command(&token, "pause", &serde_json::json!({})) {
                         Ok(_) => {
                             info!("Successfully sent stop (pause) command to Spotify API");
@@ -378,7 +378,7 @@ impl PlayerController for LibrespotPlayerController {
                     return false;
                 }
                 
-                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                match spotify_account::access_token() {
                     Some(token) => match spotify_transport::send_command(&token, "next", &serde_json::json!({})) {
                         Ok(_) => {
                             info!("Successfully sent next command to Spotify API");
@@ -402,7 +402,7 @@ impl PlayerController for LibrespotPlayerController {
                     return false;
                 }
                 
-                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                match spotify_account::access_token() {
                     Some(token) => match spotify_transport::send_command(&token, "previous", &serde_json::json!({})) {
                         Ok(_) => {
                             info!("Successfully sent previous command to Spotify API");
@@ -427,7 +427,7 @@ impl PlayerController for LibrespotPlayerController {
                 }
                 
                 let position_ms = (position * 1000.0) as u64;
-                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                match spotify_account::access_token() {
                     Some(token) => match spotify_transport::send_command(&token, "seek", &serde_json::json!({"position_ms": position_ms})) {
                         Ok(_) => {
                             info!("Successfully sent seek command to Spotify API (position: {}ms)", position_ms);
@@ -451,7 +451,7 @@ impl PlayerController for LibrespotPlayerController {
                     return false;
                 }
                 
-                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                match spotify_account::access_token() {
                     Some(token) => match spotify_transport::send_command(&token, "shuffle", &serde_json::json!({"state": enabled})) {
                         Ok(_) => {
                             info!("Successfully sent shuffle command to Spotify API (enabled: {})", enabled);
@@ -481,7 +481,7 @@ impl PlayerController for LibrespotPlayerController {
                     LoopMode::None => "off",
                 };
                 
-                match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+                match spotify_account::access_token() {
                     Some(token) => match spotify_transport::send_command(&token, "repeat", &serde_json::json!({"state": repeat_state})) {
                         Ok(_) => {
                             info!("Successfully sent repeat command to Spotify API (mode: {})", repeat_state);
@@ -520,7 +520,7 @@ impl PlayerController for LibrespotPlayerController {
         info!("Starting Librespot player controller (API mode only, accepting updates via audiocontrol_notify_librespot)");
         
         // Check if we have a valid Spotify access token
-        let has_valid_token = match crate::audiocontrol::token::token_source().and_then(|t| t.access_token()) {
+        let has_valid_token = match spotify_account::access_token() {
             Some(_) => {
                 info!("Valid Spotify access token found - enabling full playback control capabilities");
                 true
@@ -930,9 +930,154 @@ impl LibrespotPlayerController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn controller() -> LibrespotPlayerController {
         LibrespotPlayerController::with_full_config("librespot-test", None)
+    }
+
+    /// A stub standing in for `api.spotify.com`, answering `200 {}` to
+    /// everything and recording what it was asked. Binds port 0 and reports
+    /// the port actually assigned, so this needs no fixed port and runs
+    /// unprivileged.
+    struct SpotifyStub {
+        port: u16,
+        requests: Arc<RwLock<Vec<String>>>,
+        hits: Arc<AtomicUsize>,
+    }
+
+    impl SpotifyStub {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("a free local port");
+            let port = listener.local_addr().expect("a bound address").port();
+            let requests = Arc::new(RwLock::new(Vec::new()));
+            let hits = Arc::new(AtomicUsize::new(0));
+            let recorded = Arc::clone(&requests);
+            let counted = Arc::clone(&hits);
+
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let mut request = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    // Read to the header terminator. The bodies these
+                    // requests carry are `{}`, and nothing here reads them.
+                    loop {
+                        let Ok(n) = stream.read(&mut buf) else { break };
+                        if n == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buf[..n]);
+                        if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    recorded
+                        .write()
+                        .push(String::from_utf8_lossy(&request).to_string());
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    );
+                    let _ = stream.flush();
+                }
+            });
+
+            Self { port, requests, hits }
+        }
+
+        /// The API root, i.e. what `https://api.spotify.com/v1` is.
+        fn root(&self) -> String {
+            format!("http://127.0.0.1:{}/v1", self.port)
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.read().clone()
+        }
+
+        fn hits(&self) -> usize {
+            self.hits.load(Ordering::SeqCst)
+        }
+    }
+
+    /// **The reason the Spotify account moved to this daemon.**
+    ///
+    /// Nothing of the metadata side exists in this test: no
+    /// `services.metadata`, no metadata daemon, and -- since the account
+    /// moved -- no token source to install, because
+    /// `crate::audiocontrol::token` is gone. A play command must still reach
+    /// the Spotify Web API, which is what the one-way-seam spec means by
+    /// "playback control survives the metadata daemon being absent".
+    ///
+    /// `start()` is called rather than the token flag being poked, because
+    /// `start()` is where the *capability* decision reads a token too: a
+    /// device that came up with the metadata half down used to advertise a
+    /// player with no Play capability at all, and that has to be gone as well.
+    ///
+    /// The Spotify API itself is a local stub. Only *that* is stubbed: the
+    /// token is read through exactly the code path the daemon runs, so putting
+    /// the fetch back across the seam fails this test.
+    #[test]
+    fn a_play_command_works_with_no_metadata_side_configured() {
+        let stub = SpotifyStub::start();
+        let _api = spotify_transport::testing::redirect_api(&stub.root());
+        // Not a real credential -- an obvious placeholder for the test.
+        let _account = spotify_account::testing::link_account("placeholder-token");
+
+        let controller = controller();
+
+        assert!(controller.start(), "the controller must start");
+        assert!(
+            controller
+                .get_capabilities()
+                .has_capability(PlayerCapability::Play),
+            "an account linked locally must give the player its Play capability"
+        );
+
+        assert!(
+            controller.send_command(PlayerCommand::Play),
+            "a play command must succeed with no metadata side configured at all"
+        );
+
+        assert_eq!(stub.hits(), 1, "exactly one Spotify request should be made");
+        let request = &stub.requests()[0];
+        assert!(
+            request.starts_with("PUT /v1/me/player/play HTTP/1.1"),
+            "unexpected request line: {}",
+            request.lines().next().unwrap_or_default()
+        );
+        // The bearer is checked for presence, not printed: a token in a test
+        // log is a token in a log.
+        assert!(
+            request
+                .lines()
+                .any(|line| line.to_ascii_lowercase().starts_with("authorization: bearer ")),
+            "the request must carry a bearer token"
+        );
+    }
+
+    /// The other half of the same property: with no account linked -- and,
+    /// again, no metadata side to ask -- a play command fails locally and
+    /// makes no request. Without this, the test above would pass just as
+    /// happily if `has_valid_token` were hardwired true.
+    #[test]
+    fn with_no_account_linked_a_play_command_makes_no_request() {
+        let stub = SpotifyStub::start();
+        let _api = spotify_transport::testing::redirect_api(&stub.root());
+
+        let controller = controller();
+
+        assert!(controller.start());
+        assert!(
+            !controller
+                .get_capabilities()
+                .has_capability(PlayerCapability::Play),
+            "with no account linked the player must not advertise Play"
+        );
+        assert!(!controller.send_command(PlayerCommand::Play));
+        assert_eq!(stub.hits(), 0, "no account means no Spotify request");
     }
 
     /// librespot pushes songs as API events and delivers them progressively:

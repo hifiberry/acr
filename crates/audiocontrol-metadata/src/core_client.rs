@@ -17,8 +17,20 @@ use acr_types::enrichment::{
     AlbumRef, Applied, ArtistRef, EnrichmentBatch, EnrichmentError,
 };
 use acr_types::now_playing::{PlaybackStateSource, SongInformationSink};
+use acr_types::token::AccessTokenSource;
 use acr_types::{PlaybackState, PlayerSource, Song};
+use parking_lot::Mutex;
 use serde::Deserialize;
+use std::time::{Duration, Instant};
+
+/// How long a fetched Spotify access token is reused before asking again.
+///
+/// Not the token's own expiry -- the player daemon refreshes before handing
+/// one out -- but a bound on two things: how often this side asks, and how
+/// long a stale answer survives an account being unlinked in between. A token
+/// that outlived that fails at Spotify with its own 401 regardless, so the TTL
+/// is about traffic, not correctness.
+const SPOTIFY_TOKEN_TTL: Duration = Duration::from_secs(60);
 
 /// One player as `GET /library` lists it.
 ///
@@ -108,6 +120,8 @@ impl std::fmt::Display for EnrichmentPostError {
 pub struct CoreClient {
     base: String,
     timeout_secs: u64,
+    /// The last Spotify access token read from the player daemon, and when.
+    spotify_token: Mutex<Option<(String, Instant)>>,
 }
 
 impl CoreClient {
@@ -115,6 +129,7 @@ impl CoreClient {
         Self {
             base: base_url.trim_end_matches('/').to_string(),
             timeout_secs: 5,
+            spotify_token: Mutex::new(None),
         }
     }
 
@@ -196,6 +211,54 @@ impl CoreClient {
         let name = v["player"]["name"].as_str().unwrap_or_default().to_string();
         let id = v["player"]["id"].as_str().unwrap_or_default().to_string();
         Ok(Some((PlayerSource::new(name, id), song)))
+    }
+
+    /// The Spotify bearer token, from the player daemon that owns the account.
+    ///
+    /// Cached for 60 s: this bounds both how often it is fetched and how long
+    /// a token survives an account being unlinked. A stale token fails at
+    /// Spotify with its own 401, so the TTL is about traffic, not correctness.
+    ///
+    /// This is connection ④ of the one-way seam, and the direction is the
+    /// whole point. Before the account moved, the player daemon called the
+    /// metadata daemon for this token on every playback command, so a metadata
+    /// half that was down stopped playback. Now the account is in the player
+    /// daemon and this side asks *it* -- and getting no answer costs only
+    /// cover art and favourites, which is what the metadata half is allowed to
+    /// cost.
+    ///
+    /// `GET /spotify/access_token` answers 404 specifically when no account is
+    /// linked, but `get_text` collapses every non-2xx status into the same
+    /// error with the code discarded, so a 404 is indistinguishable here from
+    /// the player daemon being unreachable. Sniffing `"404"` out of an error
+    /// string would work today and break the moment its wording changed, so
+    /// every failure is treated identically: answer `None` and leave whatever
+    /// is cached untouched. The 60 s TTL already bounds how long an unlink
+    /// takes to be noticed.
+    pub fn spotify_access_token(&self) -> Option<String> {
+        let mut guard = self.spotify_token.lock();
+        if let Some((token, fetched_at)) = guard.as_ref() {
+            if fetched_at.elapsed() < SPOTIFY_TOKEN_TTL {
+                return Some(token.clone());
+            }
+        }
+
+        let client = http_client::new_http_client(self.timeout_secs);
+        match client.get_text(&format!("{}/spotify/access_token", self.base)) {
+            Ok(token) => {
+                // A blank body is not a token. The route cannot send one --
+                // it answers 404 with no account linked -- but a proxy in
+                // between could, and an empty bearer would be cached for a
+                // minute and rejected by Spotify for every call in it.
+                let token = token.trim().to_string();
+                if token.is_empty() {
+                    return None;
+                }
+                *guard = Some((token.clone(), Instant::now()));
+                Some(token)
+            }
+            Err(_) => None,
+        }
     }
 
     fn get(&self, path: &str) -> Result<serde_json::Value, String> {
@@ -347,6 +410,18 @@ impl CoreClient {
     }
 }
 
+impl AccessTokenSource for CoreClient {
+    /// The same token [`CoreClient::spotify_access_token`] returns.
+    ///
+    /// The trait is what `crate::spotify` holds this client behind, so the
+    /// providers need not know where the token comes from -- and it is the
+    /// same trait the player side used for the seam in the other direction,
+    /// now with its only implementor on this side.
+    fn access_token(&self) -> Option<String> {
+        self.spotify_access_token()
+    }
+}
+
 impl SongInformationSink for CoreClient {
     /// `false` on any error -- unreachable player, a malformed response, or
     /// one that reports itself unsuccessful -- logged at warn level.
@@ -398,6 +473,62 @@ impl PlaybackStateSource for CoreClient {
 mod tests {
     use super::*;
     use crate::external_coverart::stub_server::StubServer;
+
+    /// The token is fetched once and reused for the TTL. Two calls, one
+    /// request: without the cache every provider lookup would ask the player
+    /// daemon again.
+    #[test]
+    fn the_spotify_token_is_cached() {
+        use crate::external_coverart::stub_server::Canned;
+        let server = StubServer::queued(vec![Canned::bytes(
+            200,
+            "text/plain",
+            b"placeholder-token".to_vec(),
+        )]);
+        let client = CoreClient::new(&server.base_url());
+
+        assert_eq!(
+            client.spotify_access_token().as_deref(),
+            Some("placeholder-token")
+        );
+        assert_eq!(
+            client.spotify_access_token().as_deref(),
+            Some("placeholder-token")
+        );
+
+        assert_eq!(
+            server.requests().len(),
+            1,
+            "the second read should come from the cache"
+        );
+        assert!(
+            server.requests()[0].starts_with("GET /spotify/access_token HTTP/1.1"),
+            "unexpected request line: {}",
+            server.requests()[0]
+        );
+    }
+
+    /// No account linked is a 404, and an unreachable player daemon is a
+    /// transport failure. Both answer `None`, which every caller reads as
+    /// "contribute nothing".
+    #[test]
+    fn no_account_and_no_daemon_both_answer_no_token() {
+        let no_account = StubServer::serving(404, "");
+        assert_eq!(CoreClient::new(&no_account.base_url()).spotify_access_token(), None);
+
+        let dead = CoreClient::new("http://127.0.0.1:1/api");
+        assert_eq!(dead.spotify_access_token(), None);
+    }
+
+    /// A blank body is not a token: caching one would hand an empty bearer to
+    /// every Spotify call for the next minute.
+    #[test]
+    fn a_blank_body_is_not_a_token() {
+        let blank = StubServer::queued(vec![
+            crate::external_coverart::stub_server::Canned::bytes(200, "text/plain", b"  \n".to_vec()),
+        ]);
+        assert_eq!(CoreClient::new(&blank.base_url()).spotify_access_token(), None);
+    }
 
     /// `StubServer` now records the body along with the headers (see its
     /// own test in `stub_server.rs`), so the partial is checked directly:

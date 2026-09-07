@@ -7,6 +7,7 @@
 //! leak that grows by one event per song change for as long as the daemon runs.
 
 use acr_types::now_playing::{NowPlayingEvent, PlaybackStateSource, SongInformationSink};
+use acr_types::{OrderResult, Song};
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use log::{debug, info};
 use std::sync::Arc;
@@ -55,9 +56,24 @@ pub fn start(
 
     if let Some(config) = lastfm {
         let (lastfm_tx, lastfm_rx) = unbounded();
-        if crate::lastfm_worker::start(config, lastfm_rx, sink, state) {
+        if crate::lastfm_worker::start(config, lastfm_rx, Arc::clone(&sink), state) {
             senders.push(lastfm_tx);
         }
+    }
+
+    // Only worth a channel and a thread when MusicBrainz is actually
+    // reachable: `detect_order` already answers `Unknown` for everything
+    // when it is disabled (`crate::title_order::detect_order` ->
+    // `musicbrainz::search_recording` -> `is_enabled()`), which
+    // `corrected_song` treats as nothing to correct -- so an always-on
+    // worker would be a channel and a thread that never had anything to send.
+    // Gating it here also keeps `nothing_configured_still_leaves_the_channel_alive`
+    // below meaningful: with MusicBrainz off too, "nothing configured" still
+    // means zero workers, and the drain path stays reachable.
+    if crate::musicbrainz::is_enabled() {
+        let (order_tx, order_rx) = unbounded();
+        start_title_order_correction(order_rx, sink);
+        senders.push(order_tx);
     }
 
     if senders.is_empty() {
@@ -106,6 +122,83 @@ fn fan_out(events: Receiver<NowPlayingEvent>, senders: Vec<Sender<NowPlayingEven
             debug!("Now-playing fan-out stopped: its event channel closed");
         })
         .expect("spawn now-playing fan-out");
+}
+
+/// Whether a title-order correction is even worth asking MusicBrainz about:
+/// both halves present and distinct. A song with no artist at all -- many
+/// AirPlay sources never send one -- or a title identical to its artist has
+/// nothing to teach the splitter and nothing to ask about.
+fn correctable(song: &Song) -> Option<(&str, &str)> {
+    let title = song.title.as_deref()?;
+    let artist = song.artist.as_deref()?;
+    if title.is_empty() || artist.is_empty() || title == artist {
+        return None;
+    }
+    Some((artist, title))
+}
+
+/// The corrected `Song` to report back, given what MusicBrainz said about the
+/// two halves the player already split -- or `None` when the split was
+/// already right, or MusicBrainz could not decide.
+///
+/// Only `SongArtist` is actionable: `detect_order(artist, title)` returning
+/// it means the player's `artist` field is actually the song and its `title`
+/// field is actually the artist, so the two are swapped. `ArtistSong`
+/// confirms the split the player already made; `Unknown` and `Undecided` are
+/// exactly as uninformative as no answer at all.
+fn corrected_song(song: &Song, order: OrderResult) -> Option<Song> {
+    match order {
+        OrderResult::SongArtist => Some(Song {
+            title: song.artist.clone(),
+            artist: song.title.clone(),
+            ..Default::default()
+        }),
+        OrderResult::ArtistSong | OrderResult::Unknown | OrderResult::Undecided => None,
+    }
+}
+
+/// Corrects a wrong artist/title split, on a thread of its own.
+///
+/// This is what replaced asking the player daemon a network question on
+/// every stream title change: `GET /resolve/title-order` is gone with the
+/// one-way seam, and `SongTitleSplitter` on the player side now decides
+/// locally and immediately, using a fixed heuristic for a title it has
+/// neither been told about nor learned. What used to be answered before the
+/// split happened is now corrected afterwards, through the same
+/// `song-information` sink cover art and Last.fm answers already use -- and
+/// like both of those, a MusicBrainz lookup can take a while, which is why
+/// this reads its own channel on its own thread rather than running inline
+/// in `fan_out`.
+///
+/// Returns the thread's `JoinHandle` so a test can wait for it to actually
+/// finish processing -- by joining after closing its channel, not by
+/// sleeping -- rather than for the daemon to do anything with it.
+fn start_title_order_correction(
+    events: Receiver<NowPlayingEvent>,
+    sink: Arc<dyn SongInformationSink>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("title-order-correction".into())
+        .spawn(move || {
+            for event in events {
+                let NowPlayingEvent::SongChanged { source, song: Some(song) } = event else {
+                    continue;
+                };
+                let Some((artist, title)) = correctable(&song) else {
+                    continue;
+                };
+                let order = crate::title_order::detect_order(artist, title);
+                if let Some(corrected) = corrected_song(&song, order) {
+                    debug!(
+                        "Title order correction for {:?}/{:?}: swapping to {:?}/{:?}",
+                        song.artist, song.title, corrected.artist, corrected.title
+                    );
+                    sink.apply(&source, &corrected);
+                }
+            }
+            debug!("Title-order correction stopped: its event channel closed");
+        })
+        .expect("spawn title-order correction")
 }
 
 #[cfg(test)]
@@ -197,10 +290,12 @@ mod tests {
     /// return, with no cooperation from this test beyond sending events.
     #[test]
     fn nothing_configured_still_leaves_the_channel_alive() {
-        // `configured_providers` reads a process-global installed from the
-        // configuration, so say what this test needs rather than depending on
-        // no other test in this process having installed one.
+        // `configured_providers` and `musicbrainz::is_enabled` both read a
+        // process-global installed from the configuration, so say what this
+        // test needs rather than depending on no other test in this process
+        // having installed one.
         crate::external_coverart::initialize_from_config(&serde_json::json!({}));
+        crate::musicbrainz::initialize_from_config(&serde_json::json!({}));
 
         let (tx, events) = unbounded();
         let sink = Arc::new(NullSink);
@@ -226,5 +321,103 @@ mod tests {
             tx.send(state_event()).is_ok(),
             "and the channel is still connected afterwards"
         );
+    }
+
+    fn song(artist: &str, title: &str) -> Song {
+        Song {
+            artist: Some(artist.to_string()),
+            title: Some(title.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn correctable_needs_both_halves_present_and_distinct() {
+        assert!(correctable(&song("Artist", "Title")).is_some());
+        assert!(correctable(&Song {
+            artist: None,
+            title: Some("Title".to_string()),
+            ..Default::default()
+        })
+        .is_none());
+        assert!(correctable(&Song {
+            artist: Some("Artist".to_string()),
+            title: None,
+            ..Default::default()
+        })
+        .is_none());
+        // Nothing to teach the splitter when both halves already agree.
+        assert!(correctable(&song("Same", "Same")).is_none());
+    }
+
+    /// The one actionable verdict: `SongArtist` means the player's `artist`
+    /// field is actually the song and its `title` field is actually the
+    /// artist, so the correction swaps them.
+    #[test]
+    fn a_song_artist_verdict_swaps_the_fields() {
+        let original = song("Hey Jude", "The Beatles");
+
+        let corrected = corrected_song(&original, OrderResult::SongArtist)
+            .expect("a disagreeing verdict must produce a correction");
+
+        assert_eq!(corrected.artist.as_deref(), Some("The Beatles"));
+        assert_eq!(corrected.title.as_deref(), Some("Hey Jude"));
+    }
+
+    /// `ArtistSong` confirms the split the player already made -- there is
+    /// nothing to correct, and this must not be mistaken for "no verdict".
+    #[test]
+    fn an_artist_song_verdict_corrects_nothing() {
+        let original = song("The Beatles", "Hey Jude");
+        assert_eq!(corrected_song(&original, OrderResult::ArtistSong), None);
+    }
+
+    /// `Unknown` and `Undecided` are exactly as uninformative as no answer at
+    /// all: neither is a reason to touch the song.
+    #[test]
+    fn an_undecided_or_unknown_verdict_corrects_nothing() {
+        let original = song("Whoever", "Whatever");
+        assert_eq!(corrected_song(&original, OrderResult::Unknown), None);
+        assert_eq!(corrected_song(&original, OrderResult::Undecided), None);
+    }
+
+    /// A stub that records every partial it is handed, so a test can assert
+    /// on what the worker actually sent rather than trusting that it ran.
+    struct RecordingSink(std::sync::Mutex<Vec<Song>>);
+
+    impl SongInformationSink for RecordingSink {
+        fn apply(&self, _source: &PlayerSource, partial: &Song) -> bool {
+            self.0.lock().unwrap().push(partial.clone());
+            true
+        }
+    }
+
+    /// With MusicBrainz disabled -- the default in this process, and every
+    /// build that has not configured it -- `detect_order` answers `Unknown`
+    /// for everything, so the correction worker must never call the sink at
+    /// all. This is the one live-wiring behaviour of the worker this test
+    /// suite can assert without reaching MusicBrainz over the network: it
+    /// reads its events and stays quiet rather than hanging or panicking.
+    #[test]
+    fn with_musicbrainz_disabled_the_worker_sends_no_correction() {
+        crate::musicbrainz::initialize_from_config(&serde_json::json!({}));
+
+        let (tx, events) = unbounded();
+        let sink = Arc::new(RecordingSink(std::sync::Mutex::new(Vec::new())));
+        let handle = start_title_order_correction(events, sink.clone());
+
+        tx.send(NowPlayingEvent::SongChanged {
+            source: PlayerSource::new("mpd".to_string(), "mpd".to_string()),
+            song: Some(song("Hey Jude", "The Beatles")),
+        })
+        .expect("the worker should be reading");
+
+        // Closing the channel and joining the thread waits for it to have
+        // actually finished processing the event, rather than sleeping and
+        // hoping: with MusicBrainz off, `detect_order` cannot have answered
+        // `SongArtist`, so nothing should have reached the sink.
+        drop(tx);
+        handle.join().expect("the worker thread should not panic");
+        assert!(sink.0.lock().unwrap().is_empty());
     }
 }

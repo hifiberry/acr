@@ -1,11 +1,23 @@
-//! The two synchronous questions the player side asks about names: which half
-//! of a split title is the artist, and whether an album-artist string names
-//! one artist or several. `main` installs a resolver — in Phase 0 the
-//! in-process one from `audiocontrol-metadata`, in Phase 1 an HTTP client for
-//! the metadata daemon — and every caller asks here instead of reaching for
-//! MusicBrainz directly. With no resolver installed, each question has the
-//! answer a MusicBrainz-disabled install gives today: `title_order` is always
-//! `Unknown`, and `split_album_artist` falls back to a plain separator split.
+//! Whether an album-artist string names one artist or several -- the one
+//! synchronous question the player side still asks about names. `main`
+//! installs a resolver — in Phase 0 the in-process one from
+//! `audiocontrol-metadata`, in Phase 1 an HTTP client for the metadata
+//! daemon — and `split_album_artist` asks here instead of reaching for
+//! MusicBrainz directly. With no resolver installed, the answer is the one a
+//! MusicBrainz-disabled install gives today: a plain separator split.
+//!
+//! **The other question this module used to answer, gone with the one-way
+//! seam:** which half of a split stream title is the artist. That used to be
+//! `title_order`, a call to `GET /resolve/title-order` on the metadata
+//! daemon on every stream title change. `SongTitleSplitter`
+//! (`crate::helpers::songtitlesplitter`) now decides that locally --
+//! `forced_order`, then a learned `default_order`, then a fixed heuristic --
+//! and the metadata daemon corrects a wrong guess afterwards through
+//! `POST song-information` rather than being asked first. The `Resolver`
+//! trait still declares `title_order` (`MetadataClient` still implements it,
+//! and the metadata daemon's own in-process resolver still answers it for
+//! its own use), but nothing on this side calls it through this module any
+//! more.
 //!
 //! There is deliberately no memo here in front of the resolver.
 //! `split_artist_names_with_mbid_lookup` already caches its answer in the
@@ -17,7 +29,6 @@
 
 use acr_types::artist_split::{split_artist_with_separators, DEFAULT_ARTIST_SEPARATORS};
 use acr_types::resolver::Resolver;
-use acr_types::OrderResult;
 use std::sync::{Arc, OnceLock};
 
 static RESOLVER: OnceLock<Arc<dyn Resolver>> = OnceLock::new();
@@ -43,15 +54,6 @@ pub fn resolver() -> Option<Arc<dyn Resolver>> {
         return Some(r);
     }
     RESOLVER.get().cloned()
-}
-
-/// Which half of a split title is the artist. `Unknown` with no resolver
-/// installed, matching a MusicBrainz-disabled install today.
-pub fn title_order(part1: &str, part2: &str) -> OrderResult {
-    match resolver() {
-        Some(r) => r.title_order(part1, part2),
-        None => OrderResult::Unknown,
-    }
 }
 
 /// `None` means one artist. Names without a separator never reach the
@@ -129,11 +131,10 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn without_a_resolver_the_order_is_unknown() {
-        assert_eq!(title_order("a", "b"), OrderResult::Unknown);
-    }
+    // `Resolver` still declares `title_order`, so `Fixed` below still has to
+    // implement it even though this module no longer calls it -- see the
+    // module doc comment.
+    use acr_types::OrderResult;
 
     #[test]
     fn without_a_resolver_a_separator_split_is_plain() {
@@ -158,7 +159,6 @@ mod tests {
     #[test]
     fn an_installed_resolver_is_the_one_asked() {
         let _guard = testing::install(Arc::new(Fixed(OrderResult::SongArtist, None)));
-        assert_eq!(title_order("a", "b"), OrderResult::SongArtist);
         // A name with a separator reaches the resolver, whatever it answers.
         assert_eq!(split_album_artist("A & B", None), None);
     }
@@ -171,7 +171,6 @@ mod tests {
             OrderResult::ArtistSong,
             Some(vec!["A".to_string(), "B".to_string()]),
         )));
-        assert_eq!(title_order("a", "b"), OrderResult::ArtistSong);
         assert_eq!(
             split_album_artist("A & B", None),
             Some(vec!["A".to_string(), "B".to_string()])

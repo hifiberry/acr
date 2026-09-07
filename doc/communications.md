@@ -481,7 +481,8 @@ mattered there; extending it to GET was left as unnecessary rather than done
 speculatively.
 
 **Search is duplicated, deliberately.** The metadata half holds its own
-sixty-line Spotify search client rather than calling the player half's
+small Spotify client -- search and a saved-tracks check, no account and no
+refresh -- rather than calling the player half's
 `POST /api/spotify/search`. Proxying would put rate-limited provider network
 work on the player half's Rocket workers and make a cover-art lookup two hops.
 What is duplicated is one documented GET, not an abstraction.

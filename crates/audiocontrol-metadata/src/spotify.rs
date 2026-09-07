@@ -379,6 +379,30 @@ mod tests {
     use super::*;
     use crate::favourites::FavouriteProvider;
 
+    /// The counterpart of `an_unknown_filter_is_not_folded_into_the_query` in
+    /// `src/players/librespot/spotify_transport.rs`, and the reason this file
+    /// has one at all.
+    ///
+    /// The search client is deliberately duplicated across the two crates:
+    /// each half calls Spotify with its own token, and sharing one builder
+    /// would mean the player daemon doing provider work on its request
+    /// threads. The cost of that choice is that the two builders can drift,
+    /// and it was demonstrated rather than argued -- changing this side's
+    /// filter list alone left the entire suite green, because only the player
+    /// side had this test. A filter the API does not define must be dropped
+    /// rather than folded into `q`, and now both sides say so.
+    #[test]
+    fn an_unknown_filter_is_not_folded_into_the_query() {
+        assert_eq!(
+            search_url(
+                "Wishmaster",
+                &["album"],
+                Some(&serde_json::json!({ "nonsense": "value" }))
+            ),
+            "https://api.spotify.com/v1/search?q=Wishmaster&type=album"
+        );
+    }
+
     /// With no source installed there is no token, and every caller here
     /// degrades to contributing nothing rather than failing loudly.
     #[test]

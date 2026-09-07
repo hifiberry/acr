@@ -2286,8 +2286,9 @@ cache, background jobs, genres, **Spotify** and the WebSocket — are *not* unde
 `/api/metadata/`. They stay where they are and will stay on this process after
 the split.
 
-`/api/metadata/spotify/...` was in this table in an earlier release and is
-gone. The Spotify account moved to the player daemon, so `/api/spotify/...` —
+`/api/metadata/spotify/...` is gone. It never reached a release: it was added
+by the mount that put every metadata route under a second prefix, in this same
+unreleased version, so no shipped client can have used it. The Spotify account moved to the player daemon, so `/api/spotify/...` —
 the historical path every shipped client already uses — is the only one. No
 client-facing URL changed; a client that had adopted the `/api/metadata/`
 prefix for Spotify specifically must use `/api/spotify/` instead.

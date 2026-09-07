@@ -67,7 +67,8 @@ use audiocontrol::{get_tokio_runtime, initialize_tokio_runtime};
 /// unenriched library.
 #[cfg(not(feature = "metadata"))]
 const WITHOUT_METADATA: &str =
-    "built without the metadata crate; no enrichment, no resolver, no Spotify transport";
+    "built without the metadata crate; no enrichment and no resolver. The
+     Spotify transport is present: it belongs to the player half now.";
 
 fn main() {
     // Initialize the Tokio runtime early

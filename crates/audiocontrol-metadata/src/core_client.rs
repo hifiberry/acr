@@ -121,7 +121,7 @@ pub struct CoreClient {
     base: String,
     timeout_secs: u64,
     /// The last Spotify access token read from the player daemon, and when.
-    spotify_token: Mutex<Option<(String, Instant)>>,
+    spotify_token: Mutex<Option<(Option<String>, Instant)>>,
 }
 
 impl CoreClient {
@@ -237,9 +237,12 @@ impl CoreClient {
     /// takes to be noticed.
     pub fn spotify_access_token(&self) -> Option<String> {
         let mut guard = self.spotify_token.lock();
-        if let Some((token, fetched_at)) = guard.as_ref() {
+        if let Some((answer, fetched_at)) = guard.as_ref() {
             if fetched_at.elapsed() < SPOTIFY_TOKEN_TTL {
-                return Some(token.clone());
+                // Including a cached `None`: "there is no account linked" is
+                // an answer worth remembering for the TTL, not a reason to ask
+                // again on the next call.
+                return answer.clone();
             }
         }
 
@@ -254,10 +257,20 @@ impl CoreClient {
                 if token.is_empty() {
                     return None;
                 }
-                *guard = Some((token.clone(), Instant::now()));
+                *guard = Some((Some(token.clone()), Instant::now()));
                 Some(token)
             }
-            Err(_) => None,
+            Err(_) => {
+                // Cache the absence for the same TTL. A device with no
+                // Spotify account linked is the common case, and every
+                // favourites operation and every cover art lookup asks --
+                // `is_enabled()` is `access_token().is_some()`. Without this
+                // each of those is a fresh HTTP GET with a fresh client, and
+                // once the halves are two processes each one waits out the
+                // full timeout when the player daemon is slow.
+                *guard = Some((None, Instant::now()));
+                None
+            }
         }
     }
 

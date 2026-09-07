@@ -335,9 +335,9 @@ pub fn initialize_from_config(
 /// answered from this process's own security store: a metadata half that is
 /// absent, unconfigured or down cannot stop a play command any more.
 pub fn access_token() -> Option<String> {
-    // See `crate::audiocontrol::token` for why this is a thread-local
-    // override in tests rather than a global: the account is process-wide
-    // state, and two tests that each want their own would otherwise depend on
+    // A thread-local override in tests rather than a global: the account is
+    // process-wide state, and two tests that each want their own would
+    // otherwise depend on
     // which ran first.
     #[cfg(test)]
     if let Some(t) = testing::current_token() {

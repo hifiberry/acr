@@ -1,3 +1,47 @@
+hifiberry-audiocontrol (0.21.0) trixie; urgency=medium
+
+  * The volume percentage reported for an ALSA hardware control now follows a
+    perceptual scale rather than the raw mixer position. A hardware mixer's
+    raw range is normally linear in decibels, so reading it directly as
+    0-100% spread a ~104 dB span evenly across the slider: on an Amp2's
+    "Digital" control the mid-point sat at about -52 dB, inaudible, and every
+    usable listening level was crushed into the top third of the travel.
+    The percentage now follows the cube-root loudness curve that alsamixer
+    and PulseAudio apply, which puts 50% near -17.6 dB and moves the -40 dB
+    to -10 dB window from 29% of the travel to 47%. Reported against an Amp2
+    driven over AirPlay, where the same hardware state that MPD and the phone
+    both called 26% was shown as 66%.
+
+  * The decibel value reported by /api/volume/info is now read from the
+    hardware. It was previously interpolated from the percentage against the
+    advertised range, so it described the daemon's own mapping rather than
+    the control's, and setting a level in dB round-tripped through that same
+    interpolation.
+
+  * The advertised decibel range no longer contains an invented figure. A
+    control whose bottom step is a hard mute reports ALSA's
+    SND_CTL_TLV_DB_GAIN_MUTE sentinel for it; the daemon read that as
+    unusable and substituted a fixed -120 dB, which the API then published as
+    fact. It now probes for the quietest step carrying a real value, and a
+    control with no usable decibel data reports none instead of a guess.
+
+  * Volume changes seen by the polling monitor and those read back from the
+    API now go through one conversion, so an event and a subsequent read
+    cannot disagree, and a write reports the level the quantised hardware
+    settled on rather than the one that was asked for.
+
+  * Minor rather than patch: /api/volume/info gained a volume_scale field,
+    and services.volume gained a volume_scale setting ("perceptual", the
+    default, or "raw" for the previous behaviour).
+
+    Clients that store a percentage must store the scale with it. The same
+    number means a different level in each domain -- 78 is -22.8 dB as a raw
+    position and -6.3 dB perceptually, about 16 dB apart -- so a value saved
+    by an older version and replayed against this one plays back far louder
+    than intended. A missing volume_scale means "raw".
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 07 Sep 2026 10:15:44 +0000
+
 hifiberry-audiocontrol (0.20.1) trixie; urgency=medium
 
   * The daemon now uses jemalloc rather than the system allocator on Linux.

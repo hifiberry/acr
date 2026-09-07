@@ -8,6 +8,20 @@ port -- in this phase the two halves share one process, so the seams are
 loopback calls to itself. See `doc/architecture.md` and
 `doc/specs/2026-09-04-player-metadata-split.md` for the full picture; each
 test below is pinned to one seam from that spec, named in its docstring.
+
+What this suite does **not** cover, so that nobody reads a green run as more
+than it is. The test config enables no metadata provider -- no MusicBrainz, no
+TheAudioDB, no Spotify, and Last.fm with `now_playing_enabled: false` -- which
+is deliberate, because a provider that reaches the network makes the answers
+non-deterministic. The daemon therefore logs "No now-playing enrichment is
+configured" on start-up, and no worker consumes the WebSocket subscriber's
+events here. The subscriber and the library puller *do* start (visible as
+"library puller started" and "WebSocket client registered (id: 0)"), so the
+seam is live and its start-up path is exercised; what is not exercised is a
+lookup travelling from a provider back through `POST
+/player/<name>/song-information`. That path is covered by unit tests on both
+sides of the seam, and end to end only by running a real daemon with real
+credentials.
 """
 
 import requests

@@ -2,6 +2,8 @@ use crate::helpers::volume::VolumeControl;
 #[cfg(all(feature = "alsa", not(windows)))]
 use crate::helpers::volume::AlsaVolumeControl;
 use crate::helpers::volume::DummyVolumeControl;
+#[cfg(all(feature = "alsa", not(windows)))]
+use crate::helpers::volume::VolumeScale;
 use crate::helpers::configurator;
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -68,6 +70,22 @@ pub fn initialize_volume_control(config: &Value) {
                     .get("display_name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Master Volume");
+
+                // How the user-facing percentage maps onto the hardware range.
+                // Defaults to the perceptual curve; "raw" restores the linear
+                // mapping ACR used before, for setups that stored percentages
+                // in that domain.
+                let scale = match volume_config.get("volume_scale").and_then(|v| v.as_str()) {
+                    Some(name) => match VolumeScale::parse(name) {
+                        Some(scale) => scale,
+                        None => {
+                            warn!("Unknown volume_scale '{}', using '{}'",
+                                  name, VolumeScale::Perceptual);
+                            VolumeScale::Perceptual
+                        }
+                    },
+                    None => VolumeScale::Perceptual,
+                };
 
                 // Auto-detect device and control name from configurator API if not provided
                 let (final_device, final_control_name) = if device.is_empty() || control_name.is_empty() {
@@ -170,9 +188,10 @@ pub fn initialize_volume_control(config: &Value) {
                     (device.to_string(), control_name.to_string())
                 };
                 
-                match AlsaVolumeControl::new(final_device.clone(), final_control_name.clone(), display_name.to_string()) {
+                match AlsaVolumeControl::with_scale(final_device.clone(), final_control_name.clone(), display_name.to_string(), scale) {
                     Ok(alsa_control) => {
-                        info!("Successfully initialized ALSA volume control on device '{}', control '{}'", final_device, final_control_name);
+                        info!("Successfully initialized ALSA volume control on device '{}', control '{}' using the '{}' volume scale",
+                              final_device, final_control_name, alsa_control.get_info().scale);
                         log::debug!("ALSA volume control supports change monitoring: {}", alsa_control.supports_change_monitoring());
                         log::debug!("To start volume change monitoring, call start_volume_change_monitoring()");
                         Box::new(alsa_control)

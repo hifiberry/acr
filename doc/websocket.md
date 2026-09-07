@@ -328,6 +328,26 @@ A system-wide event with no player source. `decibels` and `raw_value` are option
 }
 ```
 
+`percentage` is a control position in the same domain as the REST volume
+endpoints, not a position within the hardware's raw range. The
+event does not name that domain — read `control_info.volume_scale` from
+`/api/volume/info` once and apply it to every event from that control. The
+scale does not change while the daemon is running.
+
+The event carries no scale field on purpose: adding one would have changed the
+event shape for clients that already parse it. A client that only displays the
+percentage needs no change at all.
+
+**The meaning of `percentage` changed.** Releases before the `volume_scale`
+field reported a linear position within the raw mixer range, which on a typical
+DAC control put most of the audible range above 60%. Controls that report
+usable decibel data now default to a perceptual scale, so the same hardware
+state produces a substantially lower number — around 42% where it used to say
+79%. `decibels` and `raw_value` are unchanged, and `decibels` is now read from
+the hardware rather than interpolated from the percentage. A client that stores
+a percentage and replays it later must record the scale alongside it; see
+[Volume scales](api.md#volume-scales).
+
 ### Events that do not exist
 
 Earlier revisions of this document listed `metadata_changed`. It has never been

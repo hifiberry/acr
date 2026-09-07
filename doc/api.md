@@ -1211,7 +1211,8 @@ Retrieves information about the available volume control and current state.
       "decibel_range": {
         "min_db": -96.0,
         "max_db": 0.0
-      }
+      },
+      "volume_scale": "perceptual"
     },
     "current_state": {
       "percentage": 75.0,
@@ -1228,12 +1229,22 @@ Retrieves information about the available volume control and current state.
 - `control_info` (object): Information about the volume control hardware
   - `internal_name` (string): Internal system name for the volume control
   - `display_name` (string): Human-readable name for the control
-  - `decibel_range` (object): Supported decibel range (if available)
-    - `min_db` (number): Minimum volume in decibels
+  - `decibel_range` (object): Supported decibel range, or `null` when the
+    control exposes none. These are the levels the hardware actually reports,
+    read from its ALSA TLV data.
+    - `min_db` (number): Quietest audible level in decibels. A control whose
+      bottom step is a hard mute reports the quietest step above it, not the
+      mute.
     - `max_db` (number): Maximum volume in decibels
+  - `volume_scale` (string): The domain every `percentage` in this API lives
+    in. See [Volume scales](#volume-scales).
 - `current_state` (object): Current volume state (if available)
-  - `percentage` (number): Current volume as percentage (0-100)
-  - `decibels` (number): Current volume in decibels (if supported)
+  - `percentage` (number): Current volume as percentage (0-100), in the domain
+    named by `control_info.volume_scale`
+  - `decibels` (number): Current volume in decibels as reported by the hardware,
+    or `null` when it reports no usable level. Independent of `decibel_range`: a
+    control can report where it is now without describing the span it covers, so
+    `decibels` may be present when `decibel_range` is `null`.
   - `raw_value` (number): Raw hardware control value (implementation specific)
 - `supports_change_monitoring` (boolean): Whether the system can monitor volume changes
 
@@ -1241,6 +1252,51 @@ Retrieves information about the available volume control and current state.
 ```bash
 curl http://<device-ip>:1080/api/volume/info
 ```
+
+### Volume scales
+
+`percentage` is a user-facing control position, not a position within the
+hardware's raw range. `control_info.volume_scale` says which mapping is in use:
+
+- **`perceptual`** (default) — the percentage follows a cube-root loudness
+  curve across `decibel_range`, the same normalisation `alsamixer` and
+  PulseAudio apply. This is what makes a slider behave: on a control spanning
+  -103.5 dB to 0 dB, 50% lands near -17.6 dB.
+- **`raw`** — the percentage is a linear position within the hardware's raw
+  mixer range. Used automatically for controls that expose no usable decibel
+  information, and selectable with `volume_scale: "raw"` under
+  `services.volume` in the configuration.
+
+Selecting `raw` restores the earlier *percentage* mapping only. `decibels` and
+`decibel_range` are corrected either way: they are read from the hardware
+rather than interpolated, and a control whose bottom step is a mute no longer
+has a placeholder minimum invented for it. There is no setting that brings
+those back, because what they reported before was not a property of the
+hardware.
+
+A hardware mixer's raw range is normally linear in decibels, so the `raw` scale
+spreads a ~100 dB span evenly across the slider and pushes nearly all of the
+audible change into its top quarter. The two scales therefore report very
+different numbers for the same hardware state:
+
+| Raw value | Hardware level | `perceptual` | `raw` |
+| --: | --: | --: | --: |
+| 137 | -35.0 dB | 24.7% | 66.2% |
+| 163 | -22.0 dB | 41.9% | 78.7% |
+| 193 | -7.0 dB | 76.0% | 93.2% |
+
+**Clients that persist a percentage must persist the scale with it.** A stored
+`78` means -22.8 dB under `raw` and -6.3 dB under `perceptual` — replaying the
+wrong one is roughly a 16 dB error. Releases predating this field behaved as
+`raw` throughout, so treat a missing `volume_scale` as `raw`.
+
+`decibels` and `raw_value` are unaffected by the scale, and `raw_value` remains
+the way to address the hardware range directly.
+
+`/api/volume/increase` and `/api/volume/decrease` step by percentage points in
+the active scale. Under `perceptual` a 5-point step is a gentle change near the
+top of the range and a larger one down in the quiet tail, which is what a volume
+button is expected to do; under `raw` it was a fixed dB step at every position.
 
 ### Get Current Volume State
 

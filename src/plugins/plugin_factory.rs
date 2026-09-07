@@ -80,23 +80,29 @@ impl PluginFactory {
         });
 
         // Last.fm is no longer a plugin: the same `action_plugins` entry now
-        // configures a worker in the metadata crate, which `main` starts. The
-        // entry is still registered, as a descriptor, because
-        // `GET /api/plugins/actions` reports the registered plugins and the
-        // clients reading it ship separately from the daemon. The configuration
-        // is still parsed here, so an entry that would not have produced a
-        // plugin before does not produce a descriptor now either.
+        // configures a worker in the metadata crate, started by
+        // `audiocontrol_metadata::startup`. The entry is still registered, as
+        // a descriptor, because `GET /api/plugins/actions` reports the
+        // registered plugins and the clients reading it ship separately from
+        // the daemon. The configuration is still parsed here, so an entry that
+        // would not have produced a plugin before does not produce a
+        // descriptor now either.
+        //
+        // The two messages below say only what this decides. Whether the
+        // worker *runs* is decided where it is started, from the same entry,
+        // and is logged there -- so a support log must not read as though a
+        // malformed entry here stopped a plugin, which no longer exists.
         self.register("lastfm", |config_value| {
             if let Some(value) = config_value {
                 match serde_json::from_value::<LastfmWorkerConfig>(value.clone()) {
                     Ok(_) => Some(Box::new(WorkerDescriptor::new(LASTFM_WORKER_NAME)) as Box<dyn Plugin>),
                     Err(e) => {
-                        error!("Failed to parse LastfmConfig for \'lastfm\' plugin: {}. Plugin will not be loaded.", e);
+                        error!("Failed to parse the \'lastfm\' action_plugins entry: {}. It will not be reported by GET /api/plugins/actions.", e);
                         None
                     }
                 }
             } else {
-                error!("\'lastfm\' plugin requires configuration (api_key, api_secret). Plugin will not be loaded.");
+                error!("The \'lastfm\' action_plugins entry needs configuration (api_key, api_secret). It will not be reported by GET /api/plugins/actions.");
                 None
             }
         });

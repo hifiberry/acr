@@ -97,19 +97,19 @@ pub fn routes(spotify_api_enabled: bool) -> Vec<(String, Vec<rocket::Route>)> {
     ]
 }
 
-/// Routes this crate serves only when it runs its own Rocket, not when it
-/// shares one with the player daemon.
+/// Routes this crate serves only under its own prefix, never at the bare
+/// `/api` the player daemon shares with it.
 ///
-/// Today (this phase) [`routes`] is the whole story: everything in it is
-/// mounted into the player daemon's Rocket alongside `src/api/server.rs`'s
-/// own routes, at `src/main.rs`. `capabilities::get_capabilities` cannot join
-/// it there — the player daemon already serves `GET /capabilities` at the
-/// same mount point and rank (`src/api/server.rs`'s own `api_routes`), and
-/// Rocket refuses to ignite over an exact duplicate route rather than
-/// resolving it by declaration order. This function exists so that route is
-/// written and tested now rather than invented from scratch once this crate
-/// serves a Rocket of its own — it is simply not part of the set the shared
-/// process mounts.
+/// `capabilities::get_capabilities` cannot join [`routes`]: that function's
+/// `""` group mounts at `/api` itself, where the player daemon already serves
+/// `GET /capabilities` (`src/api/server.rs`'s own `api_routes`), and Rocket
+/// refuses to ignite over an exact duplicate route rather than resolving it
+/// by declaration order — the daemon would not start at all.
+///
+/// It is not unmounted, though. `src/main.rs` mounts this list under
+/// `/api/metadata`, alongside a second copy of [`routes`], so the route
+/// answers at `GET /api/metadata/capabilities` — the path the spec gives it,
+/// and the one it keeps when this crate serves a Rocket of its own.
 ///
 /// Shaped the same as [`routes`] (mount point, routes) rather than a bare
 /// `Vec<Route>`, so a later addition to this list — this phase has exactly

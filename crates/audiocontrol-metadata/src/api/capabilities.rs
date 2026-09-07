@@ -5,10 +5,14 @@
 //! Rocket both halves currently run in, at the same rank this crate's own
 //! copy would claim, and Rocket refuses to ignite over an exact duplicate
 //! route. So `get_capabilities` here is deliberately left out of
-//! [`super::routes`] and offered only through [`super::standalone_routes`],
-//! for the Rocket this crate will serve on its own once the two halves are
-//! separate processes. Until then it is exercised only against its own test
-//! Rocket, below.
+//! [`super::routes`] and offered only through [`super::standalone_routes`].
+//!
+//! That does not mean it is unreachable. `src/main.rs` mounts
+//! `standalone_routes` under `/api/metadata`, where there is nothing to
+//! collide with, so it answers at `GET /api/metadata/capabilities` -- the
+//! path the spec gives it, and the one it keeps once this crate serves a
+//! Rocket of its own. What it must never do is rejoin [`super::routes`],
+//! whose `""` group mounts at `API_PREFIX` as well as under `/api/metadata`.
 
 use rocket::get;
 use rocket::serde::json::Json;

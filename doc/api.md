@@ -53,6 +53,7 @@ This document describes the REST API endpoints available in the Audio Control RE
   - [MusicBrainz Integration](#musicbrainz-integration)
   - [TheAudioDB Integration](#theaudiodb-integration)
   - [Metadata Service Routes](#metadata-service-routes)
+    - [The `/api/metadata/` mount](#the-apimetadata-mount)
   - [Last.fm Integration](#lastfm-integration)
   - [Favourites Management](#favourites-management)
 - [Lyrics API](#lyrics-api)
@@ -2162,18 +2163,68 @@ These four routes are served by the metadata side of the daemon (the code that
 will become a separate `audiocontrol-metadata` process in a later phase) but
 answer at `/api` alongside everything else in this document, because both
 halves currently share one Rocket. They exist so the player daemon can ask
-over HTTP for what it used to compute in-process; nothing about calling them
-from outside the daemon is unsupported, but the player-facing routes earlier
-in this document (`Get Artist by Name`, `Get Artist by ID`, `Get Artist by
-MusicBrainz ID`, `Stream Title Splitting`) are almost always the better fit
-for a client, since they merge this data with what the player daemon already
-knows.
+over HTTP for what it used to compute in-process, and it now does:
+enrichment, the two resolvers and the Spotify access token all cross loopback
+rather than a function call, even though both halves are in one process. See
+[architecture](architecture.md) for what that means and does not mean.
 
-*`GET /capabilities` is not one of the four.* The metadata crate carries its
-own copy of that route for the future standalone process, but it is not
-mounted here: the player daemon already serves `GET /capabilities` (see
-above) at the same path, and two identical routes at the same rank make
-Rocket refuse to start rather than pick one.
+Nothing about calling them from outside the daemon is unsupported, but the
+player-facing routes earlier in this document (`Get Artist by Name`, `Get
+Artist by ID`, `Get Artist by MusicBrainz ID`, `Stream Title Splitting`) are
+almost always the better fit for a client, since they merge this data with
+what the player daemon already knows.
+
+*`GET /capabilities` is not one of the four.* The player daemon already
+serves `GET /api/capabilities` (see above), and two identical routes at the
+same path and rank make Rocket refuse to start rather than pick one. The
+metadata side's own copy answers under the second mount below instead.
+
+#### The `/api/metadata/` mount
+
+Every metadata route is mounted a second time under `/api/metadata/`, and the
+two mounts mean different things.
+
+- **`/api/...`** — the historical paths, and the ones this process calls
+  itself. `services.metadata.url` in `audiocontrol.json` names this base
+  (`http://127.0.0.1:1080/api` by default), and both shipped clients reach
+  these paths through nginx's `/api/audiocontrol/` prefix. They are not going
+  to move.
+- **`/api/metadata/...`** — the same routes under the prefix a client will use
+  once the metadata side answers on a port of its own. In a later phase nginx
+  routes `/api/metadata/` to that process; today it reaches the same code in
+  the same process, so a client can be written against it now and keep
+  working across the split.
+
+What is mounted under `/api/metadata/`:
+
+| Path | Same as |
+| --- | --- |
+| `/api/metadata/artist/<artist_b64>` | [Get Artist Detail](#get-artist-detail) |
+| `/api/metadata/resolve/title-order` | [Resolve Title Order](#resolve-title-order) |
+| `/api/metadata/resolve/artist-split` | [Resolve Artist Split](#resolve-artist-split) |
+| `/api/metadata/enrich/nudge` | [Nudge Enrichment](#nudge-enrichment) |
+| `/api/metadata/audiodb/mbid/<mbid>` | [TheAudioDB Integration](#theaudiodb-integration) |
+| `/api/metadata/coverart/...` | [Cover Art API](#cover-art-api) |
+| `/api/metadata/imagecache/...` | the image cache paths |
+| `/api/metadata/lastfm/...` | [Last.fm Integration](#lastfm-integration) |
+| `/api/metadata/spotify/...` | the Spotify account and playback routes |
+| `/api/metadata/favourites/...` | [Favourites API](#favourites-api) |
+| `/api/metadata/capabilities` | the metadata side's own capabilities report |
+
+`GET /api/metadata/capabilities` is the one path that exists *only* under this
+mount, for the reason given above. It reports the metadata side's image size
+ladder in the same shape as the player daemon's own capabilities response.
+Today both halves read one `images.sizes` list, because they are one process;
+once they are two, the list is configured in each and the two must agree.
+
+Everything else in this table answers identically under either prefix, and a
+response's own image paths are written with whatever prefix the request
+carried, exactly as described in [Image and Lyrics Paths](#image-and-lyrics-paths).
+
+The player daemon's own routes — players, library, volume, lyrics, settings,
+cache, background jobs, genres and the WebSocket — are *not* under
+`/api/metadata/`. They stay where they are and will stay on this process after
+the split.
 
 #### Get Artist Detail
 

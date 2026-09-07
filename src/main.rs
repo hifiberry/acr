@@ -27,13 +27,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "metadata")]
-use acr_types::now_playing::LastfmWorkerConfig;
 use audiocontrol::api::server::{self, ServerOutcome};
-#[cfg(feature = "metadata")]
-use audiocontrol::audiocontrol::eventbus::EventBus;
-#[cfg(feature = "metadata")]
-use audiocontrol::audiocontrol::now_playing_bridge;
 use audiocontrol::audiocontrol::metadata_client::MetadataClient;
 use audiocontrol::config::{get_service_config, merge_player_includes};
 use audiocontrol::helpers::imagecache::ImageCache;
@@ -506,20 +500,14 @@ fn main() {
     }
 
     // Metadata enrichment -- slow cover art endpoints, Last.fm -- runs on
-    // workers that know nothing about players. This is the whole of the seam:
-    // the bridge forwards song and state changes into a channel, and the same
-    // object answers with what was found, through apply_song_information. When
-    // nothing is configured to read them, the bridge unsubscribes itself rather
-    // than filling a channel no one reads.
-    #[cfg(feature = "metadata")]
-    {
-        let now_playing = now_playing_bridge::start(&EventBus::instance());
-        let sink = Arc::new(now_playing_bridge::ControllerSink(controller.clone()));
-        let lastfm = lastfm_worker_config(&controllers_config);
-        if !audiocontrol_metadata::now_playing::start(now_playing, sink.clone(), sink, lastfm) {
-            info!("No now-playing enrichment is configured");
-        }
-    }
+    // workers that know nothing about players, and no longer starts here.
+    // Both halves of that seam are HTTP now: the events arrive over the
+    // daemon's own WebSocket and results go back through
+    // `POST /api/player/<name>/song-information`, so the subscriber cannot
+    // start until the server has bound its port. See
+    // `audiocontrol_metadata::startup::start_after_core_is_listening`, called
+    // after the API thread below. `now_playing_bridge` stays in the library,
+    // and is exercised by its own tests, but nothing in the daemon uses it.
 
     // Get a reference to the AudioController singleton
     let controller = AudioController::instance();
@@ -572,7 +560,7 @@ fn main() {
     // The route groups the server does not own. Every one of them is a
     // metadata route, so a build without the metadata crate mounts none.
     #[cfg(feature = "metadata")]
-    let extra_routes = audiocontrol_metadata::api::routes(spotify_api_enabled);
+    let extra_routes = metadata_route_groups(spotify_api_enabled);
     #[cfg(not(feature = "metadata"))]
     let extra_routes: Vec<(String, Vec<rocket::Route>)> = {
         let _ = spotify_api_enabled;
@@ -667,6 +655,20 @@ fn main() {
     // daemon answered nothing for about a minute on the 0.12.0 upgrade.
     audiocontrol::helpers::imagepurge::purge_retired_in_background();
 
+    // The rest of the metadata side: the now-playing subscriber and the
+    // library puller, both of which are HTTP clients of the server the thread
+    // above just started. `initialize_in_process` (near the top of this
+    // function) cannot host them -- it runs before anything has bound a port,
+    // so the subscriber's first connection would be refused and the puller's
+    // first sweep would fail.
+    //
+    // This blocks while it waits for the server to answer `GET /api/version`,
+    // bounded at 30 s and then starting anyway. Placed after the purge above
+    // so a slow start here cannot delay it, and before the keep-alive loop
+    // because there is nothing left to do first.
+    #[cfg(feature = "metadata")]
+    audiocontrol_metadata::startup::start_after_core_is_listening(&controllers_config);
+
     // Keep the main thread alive until the API server stops, or until a
     // signal arrives with no server running to pass it to.
     while running.load(Ordering::SeqCst) {
@@ -698,35 +700,50 @@ fn initialize_configurator(config: &serde_json::Value) {
     info!("Configurator initialized successfully");
 }
 
-/// The `action_plugins` entry named `lastfm`, if the configuration has one.
+/// Every route group the metadata crate contributes, and where each mounts
+/// relative to the daemon's `/api` prefix.
 ///
-/// That entry used to configure an action plugin; it now configures the Last.fm
-/// worker in the metadata crate. Same array, same key, same fields, so an
-/// existing configuration file needs no change -- and the entry is still
-/// reported by `GET /api/plugins/actions`, which its own registration in
-/// `plugin_factory` takes care of.
+/// There are two mounts, and they are not interchangeable.
+///
+/// The **bare** mounts -- `""`, `/lastfm`, `/spotify`, `/favourites`,
+/// `/coverart` -- are where these routes have always been served, and where
+/// `services.metadata.url` points: `http://127.0.0.1:1080/api`. The player
+/// side's own `MetadataClient` calls them over loopback, so moving or
+/// renaming them would break this process's conversation with itself as well
+/// as every shipped client.
+///
+/// The **`/metadata`** mounts are the client-facing address the spec gives
+/// this side, the one nginx routes to the separate daemon in Phase 2. It
+/// carries the same set *plus* `api::standalone_routes()`, which is
+/// `GET /capabilities`. That route cannot join the bare group: the daemon
+/// serves `GET /api/capabilities` itself, and two routes at one method, path
+/// and rank make Rocket refuse to ignite -- the daemon would not start at
+/// all. Under `/api/metadata` there is nothing to collide with, and
+/// `/api/metadata/capabilities` is where the spec puts it.
+///
+/// `imagecache` rides along under `/metadata` for the same reason: it lives
+/// in `acr-web` because both sides serve it, and the spec's nginx snippet
+/// routes `/imagecache/external/` to the metadata daemon.
+///
+/// Every `routes()` call here is a *second call*, never a clone: Rocket
+/// refuses to mount one `Route` value at two mount points, so the two sets
+/// have to be built independently.
 #[cfg(feature = "metadata")]
-fn lastfm_worker_config(config: &serde_json::Value) -> Option<LastfmWorkerConfig> {
-    let entries = config.get("action_plugins")?.as_array()?;
+fn metadata_route_groups(spotify_api_enabled: bool) -> Vec<(String, Vec<rocket::Route>)> {
+    let mut groups = audiocontrol_metadata::api::routes(spotify_api_enabled);
 
-    for entry in entries {
-        let Some(value) = entry.get("lastfm") else {
-            continue;
-        };
-
-        match serde_json::from_value::<LastfmWorkerConfig>(value.clone()) {
-            Ok(config) => return Some(config),
-            Err(e) => {
-                error!(
-                    "Failed to parse the 'lastfm' action_plugins entry: {}. Last.fm will not run.",
-                    e
-                );
-                return None;
-            }
-        }
+    for (mount, routes) in audiocontrol_metadata::api::routes(spotify_api_enabled) {
+        groups.push((format!("/metadata{}", mount), routes));
     }
+    for (mount, routes) in audiocontrol_metadata::api::standalone_routes() {
+        groups.push((format!("/metadata{}", mount), routes));
+    }
+    groups.push((
+        "/metadata/imagecache".to_string(),
+        audiocontrol::api::imagecache::routes(),
+    ));
 
-    None
+    groups
 }
 
 /// Find config file path from command line arguments (-c option)
@@ -818,82 +835,6 @@ fn print_help() {
 mod tests {
     use super::*;
 
-    /// The entry that used to configure the action plugin now configures the
-    /// worker, read from the same array under the same key. An existing
-    /// configuration file has to keep working untouched, scrobbling included.
-    #[test]
-    fn the_lastfm_action_plugins_entry_configures_the_worker() {
-        let config = serde_json::json!({
-            "action_plugins": [
-                { "active-monitor": { "enabled": true } },
-                {
-                    "lastfm": {
-                        "enabled": true,
-                        "api_key": "key",
-                        "api_secret": "secret",
-                        "scrobble": false
-                    }
-                }
-            ]
-        });
-
-        let lastfm = lastfm_worker_config(&config).expect("the entry should be found");
-        assert!(lastfm.enabled);
-        assert_eq!(lastfm.api_key, "key");
-        assert_eq!(lastfm.api_secret, "secret");
-        assert!(!lastfm.scrobble);
-    }
-
-    /// `scrobble` has always defaulted to true when the key is absent, and the
-    /// worker reads the same field, so the default has to survive the move.
-    #[test]
-    fn scrobble_still_defaults_to_true() {
-        let config = serde_json::json!({
-            "action_plugins": [
-                { "lastfm": { "enabled": true, "api_key": "", "api_secret": "" } }
-            ]
-        });
-
-        let lastfm = lastfm_worker_config(&config).expect("the entry should be found");
-        assert!(lastfm.scrobble);
-    }
-
-    /// A disabled entry is still an entry: it is read, and the worker declines
-    /// to start on it, which is what the plugin used to do with it.
-    #[test]
-    fn a_disabled_entry_is_read_rather_than_ignored() {
-        let config = serde_json::json!({
-            "action_plugins": [
-                { "lastfm": { "enabled": false, "api_key": "", "api_secret": "" } }
-            ]
-        });
-
-        let lastfm = lastfm_worker_config(&config).expect("the entry should be found");
-        assert!(!lastfm.enabled);
-    }
-
-    #[test]
-    fn no_action_plugins_and_no_lastfm_entry_both_mean_no_worker() {
-        assert!(lastfm_worker_config(&serde_json::json!({})).is_none());
-        assert!(lastfm_worker_config(&serde_json::json!({ "action_plugins": [] })).is_none());
-        assert!(lastfm_worker_config(&serde_json::json!({
-            "action_plugins": [{ "active-monitor": { "enabled": true } }]
-        }))
-        .is_none());
-    }
-
-    /// An entry missing the credentials the worker needs is a configuration
-    /// error, and starting a worker on a guess would be worse than not starting
-    /// one.
-    #[test]
-    fn an_unusable_entry_starts_no_worker() {
-        let config = serde_json::json!({
-            "action_plugins": [{ "lastfm": { "enabled": true } }]
-        });
-
-        assert!(lastfm_worker_config(&config).is_none());
-    }
-
     /// The class of bug this guards against already happened once: the
     /// metadata crate's plan for `GET /capabilities` put it in
     /// `audiocontrol_metadata::api::routes(..)`'s `""` group, which mounts at
@@ -905,13 +846,22 @@ mod tests {
     /// crate that this test exists precisely so nobody has to remember that
     /// history to avoid repeating it.
     ///
-    /// `extra_routes` (near the top of `main`, where the two route sets
-    /// actually meet) does not itself get exercised here -- neither list is
-    /// built without also standing up the rest of `main`'s startup, which
-    /// this test has no interest in. What can be checked cheaply is that the
-    /// two route sets that `extra_routes` is mounted alongside stay disjoint
-    /// by (method, full path); that is the only thing a Rocket collision
-    /// actually cares about.
+    /// Two things are checked, because there are now two mounts.
+    ///
+    /// First, no group collides with the daemon's own routes -- the original
+    /// check, now over [`metadata_route_groups`] rather than
+    /// `api::routes(..)`, so the `/metadata` mounts are covered by it too.
+    ///
+    /// Second, the groups do not collide with *each other*. That is what
+    /// catches `standalone_routes()` being appended to the shared set instead
+    /// of the `/metadata` one, or the same group being pushed twice at one
+    /// mount: either is a daemon that will not start, and neither shows up in
+    /// the first check.
+    ///
+    /// A Rocket built from these lists is still not stood up here -- doing
+    /// that needs the managed state the whole of `main` assembles -- so what
+    /// is compared is (method, full path), which is what a Rocket collision
+    /// actually turns on.
     #[cfg(feature = "metadata")]
     #[test]
     fn the_metadata_crates_routes_do_not_collide_with_the_daemons_own() {
@@ -933,7 +883,8 @@ mod tests {
         // there is actually something in it to collide with.
         assert!(daemon_routes.contains(&(Method::Get, format!("{}/capabilities", API_PREFIX))));
 
-        for (mount, routes) in audiocontrol_metadata::api::routes(false) {
+        let mut mounted: HashSet<(Method, String)> = HashSet::new();
+        for (mount, routes) in metadata_route_groups(false) {
             let prefix = format!("{}{}", API_PREFIX, mount);
             for route in &routes {
                 let key = full_path(&prefix, route);
@@ -943,7 +894,22 @@ mod tests {
                     key.0,
                     key.1
                 );
+                assert!(
+                    mounted.insert(key.clone()),
+                    "metadata route {:?} {} is mounted twice by metadata_route_groups",
+                    key.0,
+                    key.1
+                );
             }
         }
+
+        // The client-facing mount actually carries the capabilities route,
+        // which is the whole reason `standalone_routes()` is in the set: a
+        // check that only looks for collisions passes just as happily when
+        // nothing is mounted at all.
+        assert!(
+            mounted.contains(&(Method::Get, format!("{}/metadata/capabilities", API_PREFIX))),
+            "the /metadata mount should serve the capabilities route"
+        );
     }
 }

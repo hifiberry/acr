@@ -22,6 +22,7 @@ pub mod now_playing_ws;
 pub mod resolver;
 pub mod security_store;
 pub mod spotify;
+pub mod startup;
 pub mod theaudiodb;
 pub mod title_order;
 pub mod api;
@@ -65,6 +66,12 @@ pub trait ArtistUpdater {
 /// database, the favourite providers come after the settings database and the
 /// volume control, and the cover art providers are registered only once the
 /// `AudioController` exists.
+///
+/// This is not the whole of start-up. The parts of this crate that are
+/// *clients* of the player daemon's HTTP API -- the now-playing subscriber
+/// and the library puller -- cannot start here, because nothing has bound a
+/// port yet. They start from [`startup::start_after_core_is_listening`],
+/// which the composition root calls once the API server is up.
 pub fn initialize_in_process(config: &serde_json::Value) {
     initialize_musicbrainz(config);
     initialize_theaudiodb(config);

@@ -155,6 +155,22 @@ impl CoreClient {
             .unwrap_or(false))
     }
 
+    /// The player daemon's version string, read from `GET /version`.
+    ///
+    /// The cheapest route the daemon serves that takes no parameters and
+    /// touches no player, which is what makes it the liveness probe
+    /// `startup::start_after_core_is_listening` waits on. The version itself
+    /// is only logged; nothing branches on it, and nothing should -- this
+    /// side's compatibility with the player daemon is a property of the
+    /// routes it calls, not of a number.
+    pub fn version(&self) -> Result<String, String> {
+        let v = self.get("/version")?;
+        v.get("version")
+            .and_then(|s| s.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("no version in the answer to GET /version: {}", v))
+    }
+
     /// The active player's state, read from `GET /player`. The fallible core
     /// behind `PlaybackStateSource` below.
     pub fn current_player(&self) -> Result<PlaybackState, String> {

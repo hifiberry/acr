@@ -337,12 +337,20 @@ pub trait VolumeControl {
     }
 }
 
+// The volume-mapping policy below is deliberately not gated on the `alsa`
+// feature: keeping it platform-independent is what lets it be tested anywhere,
+// including on machines where this crate cannot link ALSA at all. A build
+// without the feature and without tests therefore has no caller for it, which
+// is all the `dead_code` allowances here mean.
+
 /// Decibel values below this are ALSA's "no gain at all" sentinel
 /// (`SND_CTL_TLV_DB_GAIN_MUTE`) rather than a level the hardware can produce.
+#[allow(dead_code)]
 const DB_SENTINEL_FLOOR: f64 = -200.0;
 
 /// How far above the bottom of the raw range to look for the quietest step that
 /// carries a real decibel value.
+#[allow(dead_code)]
 const MUTE_PROBE_STEPS: i64 = 16;
 
 /// Decide a control's usable decibel range from what it reports about itself.
@@ -351,6 +359,7 @@ const MUTE_PROBE_STEPS: i64 = 16;
 /// exercised against a simulated control. That matters: inventing a range here
 /// instead of probing for one is the defect behind issue #42, and it is not
 /// reachable from a test that needs a real mixer.
+#[allow(dead_code)]
 fn resolve_db_range<F>(
     raw_range: Option<(i64, i64)>,
     reported_min_db: f64,
@@ -408,6 +417,7 @@ where
 ///
 /// `raw_for_db` is the control's own dB-to-step lookup, injected so the mapping
 /// can be tested without a mixer.
+#[allow(dead_code)]
 fn raw_for_percent<F>(
     percent: f64,
     raw_min: i64,
@@ -438,6 +448,7 @@ where
 }
 
 /// The percentage and reportable decibel value for a control's current position.
+#[allow(dead_code)]
 fn state_from_reading(
     raw_min: i64,
     raw_max: i64,

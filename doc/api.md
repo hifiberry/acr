@@ -1267,6 +1267,13 @@ hardware's raw range. `control_info.volume_scale` says which mapping is in use:
   information, and selectable with `volume_scale: "raw"` under
   `services.volume` in the configuration.
 
+Selecting `raw` restores the earlier *percentage* mapping only. `decibels` and
+`decibel_range` are corrected either way: they are read from the hardware
+rather than interpolated, and a control whose bottom step is a mute no longer
+has a placeholder minimum invented for it. There is no setting that brings
+those back, because what they reported before was not a property of the
+hardware.
+
 A hardware mixer's raw range is normally linear in decibels, so the `raw` scale
 spreads a ~100 dB span evenly across the slider and pushes nearly all of the
 audible change into its top quarter. The two scales therefore report very

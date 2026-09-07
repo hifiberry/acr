@@ -51,6 +51,11 @@
                 }
             ]
         },
+        "metadata": {
+            "url": "http://127.0.0.1:1080/api",
+            "detail_timeout_ms": 1000,
+            "resolve_timeout_ms": 5000
+        },
         "datastore": {
             "attribute_cache": {
                 "dbfile": "/var/lib/audiocontrol/cache/attributes.db",

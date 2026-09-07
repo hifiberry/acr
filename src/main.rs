@@ -34,6 +34,7 @@ use audiocontrol::api::server::{self, ServerOutcome};
 use audiocontrol::audiocontrol::eventbus::EventBus;
 #[cfg(feature = "metadata")]
 use audiocontrol::audiocontrol::now_playing_bridge;
+use audiocontrol::audiocontrol::metadata_client::MetadataClient;
 use audiocontrol::config::{get_service_config, merge_player_includes};
 use audiocontrol::helpers::imagecache::ImageCache;
 use audiocontrol::helpers::settingsdb::SettingsDb;
@@ -478,33 +479,31 @@ fn main() {
     #[cfg(feature = "metadata")]
     audiocontrol_metadata::coverart_providers::register_all_providers();
 
-    // Library enrichment -- MusicBrainz ids, artist genres, album genres,
-    // artist images. Each library asks for it as it finishes loading and
-    // receives the answers in batches. Installing the enricher has to happen
-    // before any player starts: a library that loaded first would find no
-    // enricher and stay as loaded until its next reload.
-    #[cfg(feature = "metadata")]
-    audiocontrol::audiocontrol::enrichment::set_enricher(Arc::new(
-        audiocontrol_metadata::library_enricher::InProcessEnricher,
-    ));
-
-    // Resolver -- which half of a split title is the artist, and whether an
-    // album-artist string names one artist or several. Same lifetime rule as
-    // the enricher: installed before any player starts, so no library or
-    // title splitter finds it missing.
-    #[cfg(feature = "metadata")]
-    audiocontrol::audiocontrol::resolver::set_resolver(Arc::new(
-        audiocontrol_metadata::resolver::InProcessResolver,
-    ));
-
-    // Spotify access tokens -- the librespot backend issues Spotify Web API
-    // commands itself but does not own the OAuth client that gets a token for
-    // them. Same lifetime rule as the enricher and the resolver: installed
-    // before any player starts, so librespot never finds it missing.
-    #[cfg(feature = "metadata")]
-    audiocontrol::audiocontrol::token::set_token_source(Arc::new(
-        audiocontrol_metadata::spotify::TokenSource,
-    ));
+    // Library enrichment, resolvers and Spotify access tokens -- the three
+    // player-side seams the metadata side now answers over HTTP.
+    // `MetadataClient` lives in this package and names nothing from
+    // `audiocontrol-metadata`, so building and installing it does not need
+    // the `metadata` feature: even a `--no-default-features` daemon reaches
+    // the metadata side over loopback once `services.metadata` is
+    // configured, which is the phase working as intended. With no
+    // `services.metadata` section, nothing is installed and every caller
+    // keeps the offline fallback it already has (see `resolver`, `token` and
+    // `enrichment` in this crate).
+    //
+    // Installed before any player starts, so no library, title splitter or
+    // librespot backend finds any of the three missing -- the same lifetime
+    // rule the old in-process setters kept.
+    match MetadataClient::from_config(&controllers_config) {
+        Some(client) => {
+            let client = Arc::new(client);
+            audiocontrol::audiocontrol::enrichment::set_enricher(client.clone());
+            audiocontrol::audiocontrol::resolver::set_resolver(client.clone());
+            audiocontrol::audiocontrol::token::set_token_source(client);
+        }
+        None => {
+            info!("services.metadata is not configured: no resolver, Spotify token source or library enricher installed");
+        }
+    }
 
     // Metadata enrichment -- slow cover art endpoints, Last.fm -- runs on
     // workers that know nothing about players. This is the whole of the seam:

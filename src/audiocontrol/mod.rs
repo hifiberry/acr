@@ -6,6 +6,8 @@ pub mod eventbus;
 pub mod now_playing_bridge;
 // Where the player side finds the library enricher, if one was injected
 pub mod enrichment;
+// The player side's HTTP client for the three seams the metadata side answers
+pub mod metadata_client;
 // Where the player side finds the resolver, if one was injected
 pub mod resolver;
 // Where the player side finds a Spotify access token source, if one was injected

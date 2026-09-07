@@ -346,7 +346,7 @@ pub fn toggle_mute() -> Json<VolumeOperationResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::volume::{VolumeControlInfo, DecibelRange};
+    use crate::helpers::volume::{VolumeControlInfo, DecibelRange, VolumeScale};
 
     #[test]
     fn test_volume_control_info_conversion() {
@@ -363,6 +363,33 @@ mod tests {
         let db_response = response.decibel_range.unwrap();
         assert_eq!(db_response.min_db, -60.0);
         assert_eq!(db_response.max_db, 0.0);
+    }
+
+    #[test]
+    fn test_volume_scale_reaches_the_response_verbatim() {
+        // A client that persists a percentage keys it on this string. Reporting
+        // a raw control as "perceptual" would make it replay a stored 78 as
+        // -6.3 dB instead of -22.8 dB, about 16 dB louder than intended, so the
+        // mapping is asserted rather than assumed.
+        for (scale, expected) in [
+            (VolumeScale::Raw, "raw"),
+            (VolumeScale::Perceptual, "perceptual"),
+        ] {
+            let info = VolumeControlInfo::new("test".to_string(), "Test".to_string())
+                .with_scale(scale);
+            let response: VolumeControlInfoResponse = info.into();
+            assert_eq!(response.volume_scale, expected, "{:?} serialised wrongly", scale);
+        }
+    }
+
+    #[test]
+    fn test_a_control_without_a_declared_scale_reports_raw() {
+        // The default has to stay `raw`: it is what older clients assume when
+        // the field is absent, so a control that never declares a scale must
+        // not claim the perceptual domain.
+        let info = VolumeControlInfo::new("test".to_string(), "Test".to_string());
+        let response: VolumeControlInfoResponse = info.into();
+        assert_eq!(response.volume_scale, "raw");
     }
 
     #[test]

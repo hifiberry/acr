@@ -116,13 +116,14 @@ impl Default for Timings {
 /// had, and it has the same limit -- an idle player produces nothing to fail
 /// on, so the exit happens at the next event rather than immediately.
 ///
-/// `stop` is the other, and the one that matters at shutdown. **A subscriber
-/// with no `stop` makes the player daemon take five seconds to stop instead of
-/// a tenth of one.** Measured: this connection is open I/O that Rocket waits
-/// out for its whole `shutdown.grace`, and then the loop *reconnects* inside
-/// the `shutdown.mercy` window and holds that open too, so both run out in
-/// full. Pass `Some` and the reconnect does not happen: the loop is asked to
-/// stop while it waits, and mercy ends as soon as the runtime is idle.
+/// `stop` is the other. It stops the loop reconnecting into a daemon that is
+/// going away, and it shares the flag `wait_for_core` watches. It is **not**
+/// what makes shutdown quick, and an earlier version of this comment said it
+/// was: measured on its own it changes nothing, because the loop notices a
+/// stop only at a wait and spends shutdown parked in a blocking `read` with a
+/// 30 s timeout. What recovers the time is the *server* closing the connection
+/// from its end -- `run_client_loop` in `src/api/events.rs` -- which works
+/// whether the peer is this subscriber or a browser.
 pub fn start(
     events_url: &str,
     core: Arc<CoreClient>,

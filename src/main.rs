@@ -416,12 +416,14 @@ fn main() {
 
         // The metadata side's subscriber holds a WebSocket open against this
         // process's own API, and Rocket waits out its whole grace period for
-        // open I/O -- then the subscriber reconnects inside the mercy window
-        // and holds that open too, so both run out in full. Measured: 0.03 s
-        // to stop without a subscriber, 5.05 s with one. Asking it to stop
-        // here is what keeps `systemctl stop` and every upgrade at a tenth of
-        // a second. Second, not first: `request_stop` above is what actually
-        // stops the daemon, and nothing that could fail may come before it.
+        // open I/O. What brings `systemctl stop` back from 5 s to 2 s is the
+        // server closing the connection from its end -- see `run_client_loop`.
+        // This call is not that. It stops the subscriber reconnecting into a
+        // daemon that is going away, and it shares the flag `wait_for_core`
+        // watches, which is what turns a signal during start-up from the full
+        // 8 s force-exit into 0.14 s. Second, not first: `request_stop` above
+        // is what actually stops the daemon, and nothing that could fail may
+        // come before it.
         #[cfg(feature = "metadata")]
         audiocontrol_metadata::startup::stop();
 
@@ -673,10 +675,16 @@ fn main() {
     // so the subscriber's first connection would be refused and the puller's
     // first sweep would fail.
     //
-    // This blocks while it waits for the server to answer `GET /api/version`,
-    // bounded at 30 s and then starting anyway. Placed after the purge above
-    // so a slow start here cannot delay it, and before the keep-alive loop
-    // because there is nothing left to do first.
+    // This blocks while it waits for the server to answer `GET /api/version`.
+    // It ends three ways: the server answers, the 30 s bound expires and the
+    // subscriber starts anyway to let its own reconnect logic take over, or a
+    // signal arrives and it gives up at once. The third matters as much as the
+    // other two -- this wait runs on the thread that ends the process, so
+    // before it could be interrupted a SIGTERM during start-up cost the full
+    // 8 s force-exit below rather than the 0.14 s it costs now.
+    //
+    // Placed after the purge above so a slow start here cannot delay it, and
+    // before the keep-alive loop because there is nothing left to do first.
     #[cfg(feature = "metadata")]
     audiocontrol_metadata::startup::start_after_core_is_listening(&controllers_config);
 

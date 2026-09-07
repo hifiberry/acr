@@ -459,19 +459,31 @@ and `GET /api/player` for the state.
 
 ## The server closes the connection when the daemon stops
 
-A daemon that is shutting down — `systemctl stop`, a restart, a package upgrade
-— sends a WebSocket **Close** frame on every open connection and then closes the
-socket. This is not an error and needs no special handling beyond what a client
-already does for a dropped connection: reconnect with backoff, and read the
-current state back as above.
+From 0.21.0, a daemon that is shutting down — `systemctl stop`, a restart, a
+package upgrade — sends a WebSocket **Close** frame with code `1001` ("going
+away") on every open connection, then closes the socket. This is not an error
+and needs no special handling beyond what a client already does for a dropped
+connection: reconnect with backoff, and read the current state back as above.
 
 Earlier daemons sent nothing and let the connection be torn down at the end of
-their shutdown grace period. Clients saw an abrupt reset instead of a
-close, and — because an open connection is I/O the web server waits out — the
-daemon took about five seconds to stop for as long as any client had the socket
-open. A client that treats a Close frame as a fault rather than as "the server
-is going away" will report an error where it used to report a dropped
-connection; both mean the same thing.
+their shutdown grace period. Clients saw an abrupt reset instead of a close,
+and — because an open connection is I/O the web server waits out — the daemon
+took about five seconds to stop for as long as any client had the socket open.
+
+**Check your reconnect condition before assuming this changes nothing.** The
+risk is not a client that treats a Close as a fault — that one reports an error
+where it used to report a dropped connection, and both mean the same thing. It
+is the inverse, and it is a common idiom:
+
+```js
+socket.onclose = (e) => { if (!e.wasClean) reconnect(); };
+```
+
+Against a daemon before 0.21.0 every shutdown produced code `1006` with
+`wasClean: false`, so this reconnected. Against 0.21.0 it receives a clean
+close and **stops reconnecting** — across exactly the events where reconnecting
+matters most, a restart or a package upgrade. Reconnect on every close, clean
+or not, and let the backoff handle a server that is still coming back up.
 
 ## Best Practices
 

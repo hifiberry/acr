@@ -7,6 +7,7 @@ use log::{debug, info, error};
 
 // Use the correct rocket_ws imports
 use rocket_ws::{WebSocket, Channel, Message};
+use rocket_ws::frame::{CloseCode, CloseFrame};
 use rocket::futures::{Sink, SinkExt, Stream, StreamExt};
 
 use crate::data::PlayerEvent;
@@ -622,9 +623,12 @@ enum ClientLoopEnd {
 /// grace at 2 s and mercy at 3 s that is five seconds added to every
 /// `systemctl stop`, restart and package upgrade for as long as one client --
 /// the WebUI, or this daemon's own metadata half -- has the socket open.
-/// Closing from this side instead makes the same shutdown take about a tenth
-/// of a second. A test passes `std::future::pending()` for a loop that should
-/// never see one.
+/// Closing from this side instead brings that back to about two seconds:
+/// mercy is no longer spent at all, and the remaining two are `shutdown.grace`
+/// itself, which rocket 0.5's `Arc<Rocket>` strong count makes a WebSocket task
+/// pay even after its socket is closed. A tenth of a second is what a daemon
+/// that never upgraded a connection costs, not what this saves. A test passes
+/// `std::future::pending()` for a loop that should never see one.
 ///
 /// Generic over the stream rather than taking `DuplexStream`, whose constructor
 /// is private to `rocket_ws`, so the tests can run this loop over a pair of
@@ -664,8 +668,18 @@ where
                 // server is going away and can reconnect deliberately, and
                 // Rocket sees the connection finish inside its grace period
                 // instead of having to force it at the end of one.
+                //
+                // Code 1001 "going away", not an empty close: a bare
+                // `Close(None)` reaches a browser as code 1005 "no status
+                // received", which says nothing at all and would leave this
+                // comment describing something no client can actually observe.
                 debug!("Shutting down: closing WebSocket for client {}", client_id);
-                let _ = stream.send(Message::Close(None)).await;
+                let _ = stream
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::Away,
+                        reason: "server shutting down".into(),
+                    })))
+                    .await;
                 let _ = stream.flush().await;
                 return Ok(ClientLoopEnd::ShuttingDown);
             }
@@ -1231,10 +1245,21 @@ mod tests {
 
         let _ = trigger.send(());
 
-        assert!(
-            matches!(harness.next_frame().await, Some(Message::Close(_))),
-            "the loop should send a Close frame when the daemon is shutting down"
-        );
+        // The code matters, not just the frame: a bare `Close(None)` reaches a
+        // browser as 1005 "no status received", which tells a client nothing
+        // about why the connection ended. 1001 is what doc/websocket.md
+        // promises, and what distinguishes a planned stop from a fault.
+        match harness.next_frame().await {
+            Some(Message::Close(Some(frame))) => assert_eq!(
+                frame.code,
+                CloseCode::Away,
+                "a shutdown close must say 'going away', not just close"
+            ),
+            other => panic!(
+                "the loop should send a Close frame carrying a code when the \
+                 daemon is shutting down, got {other:?}"
+            ),
+        }
 
         let end = tokio::time::timeout(PING_INTERVAL * 20, harness.task)
             .await

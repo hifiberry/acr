@@ -353,6 +353,13 @@ pub async fn start_rocket_server(
     // ignite, i.e. as a daemon that does not start; `src/main.rs`'s
     // `the_metadata_crates_routes_do_not_collide_with_the_daemons_own` is
     // what catches that in a test run instead.
+    //
+    // There is a fourth group, and it is the one worth knowing about:
+    // `standalone_routes()` under `/metadata` only. It holds the routes the
+    // metadata crate will serve on its own but that this daemon already serves
+    // itself -- `capabilities` today -- so it must never reach the bare mount,
+    // where it would be the exact duplicate that stops the daemon starting.
+    // It is also what puts `GET /api/metadata/capabilities` on the wire.
     for (mount, routes) in extra_routes {
         rocket_builder = rocket_builder.mount(format!("{}{}", API_PREFIX, mount), routes);
     }

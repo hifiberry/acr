@@ -215,12 +215,11 @@ fn register_stop() -> Receiver<()> {
 /// Ask the metadata side to close its connection to the player daemon and stop.
 ///
 /// Called from the daemon's signal handler, before the API server has been
-/// asked to shut down. **This is not housekeeping.** The subscriber's
-/// WebSocket is open I/O that Rocket waits out for its whole
-/// `shutdown.grace`, and a loop that reconnects during `shutdown.mercy` holds
-/// that open too: without this the daemon takes about five seconds to stop
-/// rather than about a tenth of one, on every `systemctl stop` and every
-/// upgrade. See [`now_playing_ws::start`].
+/// asked to shut down. It keeps the subscriber from reconnecting into a daemon
+/// that is going away, and it sets the flag `wait_for_core` watches, which is
+/// what turns a signal arriving during start-up from the full 8 s force-exit
+/// into 0.14 s. It is **not** what makes a normal shutdown quick -- the server
+/// closing the connection from its end is, see [`now_playing_ws::start`].
 ///
 /// Advisory and idempotent. With nothing started yet the request is
 /// remembered, and [`start_after_core_is_listening`] then starts nothing at

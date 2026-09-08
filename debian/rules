@@ -192,3 +192,29 @@ override_dh_installsystemd:
 override_dh_strip:
 	# Skip debug symbol extraction - don't create dbgsym package
 	dh_strip --no-automatic-dbgsym
+
+# Check the GENERATED maintainer scripts, not just the ones in debian/.
+#
+# dh substitutes #DEBHELPER# wherever the token appears -- comments included.
+# A comment that merely mentioned the token by name once had its trailing
+# comma left behind as a command, so postinst exited 127 and dpkg left the
+# package half-configured on a device. The source script passed `bash -n`,
+# because the source was valid; only the substituted form was broken. So the
+# substituted form is what has to be checked, and this is the only place it
+# exists before the .deb is sealed.
+override_dh_installdeb:
+	dh_installdeb
+	@set -e; \
+	for s in debian/hifiberry-audiocontrol/DEBIAN/postinst \
+	         debian/hifiberry-audiocontrol/DEBIAN/preinst \
+	         debian/hifiberry-audiocontrol/DEBIAN/prerm \
+	         debian/hifiberry-audiocontrol/DEBIAN/postrm; do \
+	  [ -f "$$s" ] || continue; \
+	  bash -n "$$s" || { echo "ERROR: generated $$s is not valid shell" >&2; exit 1; }; \
+	  if grep -q 'DEBHELPER' "$$s"; then \
+	    echo "ERROR: $$s still contains a DEBHELPER token after substitution;" >&2; \
+	    echo "       a comment naming the token gets substituted too." >&2; \
+	    grep -n 'DEBHELPER' "$$s" >&2; exit 1; \
+	  fi; \
+	  echo "generated $$(basename $$s): valid shell, no leftover token"; \
+	done

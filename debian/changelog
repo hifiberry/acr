@@ -1,3 +1,22 @@
+hifiberry-audiocontrol (0.23.3) trixie; urgency=medium
+
+  * 0.23.2 could not be configured. A comment in the maintainer script
+    mentioned the debhelper substitution token by name, and dh replaces that
+    token wherever it appears, comments included - so the rest of that comment
+    line was left behind as a command, postinst exited 127, and dpkg stopped
+    with the package half-configured. The daemons kept running, because the
+    section that starts them had already gone by, but nothing after that point
+    ran: on an upgrade that included new routing, nginx was never reloaded.
+
+    The comment no longer names the token. The package build now also checks
+    the generated maintainer scripts rather than only the ones in the source
+    tree: it refuses to build if a generated script is not valid shell, or if
+    it still contains a substitution token. The source script was valid the
+    whole time - only the generated one was broken - so checking the source is
+    not enough to catch this class of fault.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 08 Sep 2026 22:40:00 +0200
+
 hifiberry-audiocontrol (0.23.2) trixie; urgency=medium
 
   * Installing the package now reloads nginx, which is what 0.23.0 was

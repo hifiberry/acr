@@ -61,7 +61,10 @@ copy_verified() {
 #   configure  -- our own snippet changed. The only path that reaches this one.
 #   triggered  -- somebody else's snippet in the directory changed.
 #
-# The configure call is at the very bottom of this script, after #DEBHELPER#,
+# The configure call is at the very bottom of this script, below the
+# debhelper section (the token is deliberately not written out here: dh
+# substitutes it wherever it appears, comments included, which once left a
+# stray comma behind as a command and broke configure),
 # on purpose: dh_installsystemd's snippet there starts or restarts the two
 # daemons, and reloading before it would point nginx at port 1084 while the
 # process listening on it is still the pre-upgrade one. Reloading after it
@@ -469,7 +472,7 @@ esac
 
 #DEBHELPER#
 
-# nginx last, deliberately below #DEBHELPER# rather than inside the configure
+# nginx last, deliberately below the debhelper section rather than inside the configure
 # arm above. The debhelper snippet is what starts audiocontrol.service and
 # audiocontrol-metadata.service, and this snippet's metadata prefixes point at
 # the port the second one listens on -- reload before that and nginx routes to

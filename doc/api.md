@@ -119,6 +119,15 @@ This document describes the REST API endpoints available in the Audio Control RE
 > `auth_request`, so any endpoint below can return `401` with a
 > `WWW-Authenticate-Hint` header even though audiocontrol itself never produces
 > one.
+>
+> **Two daemons answer these routes, and nginx decides which.** The player
+> daemon on port 1080 serves the players, library, volume, Spotify and
+> WebSocket routes; the metadata daemon on port 1084 serves cover art, the
+> artist store, Last.fm, favourites, TheAudioDB and the resolvers, both at
+> their historical paths and under `/api/metadata/`. No client-facing URL
+> depends on which — see [The `/api/metadata/` mount](#the-apimetadata-mount).
+> Testing against port 1080 directly reaches the player daemon only, so the
+> metadata routes 404 there; reach them on 1084, or through nginx.
 
 ## Image and Lyrics Paths
 
@@ -212,6 +221,15 @@ Retrieves the current version of the API.
 ```bash
 curl http://<device-ip>:1080/api/version
 ```
+
+> **Only the player daemon serves this.** The metadata daemon on port 1084
+> mounts its metadata routes and nothing else, so there is no way to ask it its
+> version over HTTP. The two always ship in one package and are upgraded
+> together, so `/api/version` is the version of both — but a caller that wants
+> to know whether the *metadata* daemon is up has to ask it something it does
+> serve, such as `GET /api/metadata/capabilities`. The metadata daemon's own
+> start-up probe of `GET /api/version` runs in the other direction, against the
+> player daemon.
 
 ### GET /capabilities
 
@@ -2356,11 +2374,13 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 
 ### Metadata Service Routes
 
-These routes are served by the metadata side of the daemon (the code that will
-become a separate `audiocontrol-metadata` process in a later phase) but answer
-at `/api` alongside everything else in this document, because both halves
-currently share one Rocket. See [architecture](architecture.md) for what that
-means and does not mean.
+These routes are served by the `audiocontrol-metadata` daemon on port 1084, not
+by the player daemon on 1080. They are documented at `/api` alongside
+everything else here because that is the path a client uses: nginx forwards
+them, and no client-facing URL says which daemon answers. See
+[architecture](architecture.md) for what that means and does not mean, and
+[the `/api/metadata/` mount](#the-apimetadata-mount) for exactly which prefixes
+nginx sends where.
 
 **They exist for clients, and no longer for the player daemon.** They used to
 be how it asked over HTTP for what it once computed in-process: artist detail,
@@ -2372,9 +2392,9 @@ side at all. What replaced each is in
 in the enrichment batch, and `/api/library/<p>/image/artist:<name>` redirects to
 `/api/coverart/artist/<b64>/image` rather than fetching it.
 
-Data crosses the other way instead: the metadata side subscribes to the
-daemon's events, reads its library, posts results back, and asks it for a
-Spotify token at `GET /api/spotify/access_token` — see
+Data crosses the other way instead: the metadata daemon subscribes to the
+player daemon's events, reads its library, posts results back, and asks it for
+a Spotify token at `GET /api/spotify/access_token` — see
 [Spotify Routes](#spotify-routes) below.
 
 Calling these routes from outside the daemon is entirely supported, and for
@@ -2391,19 +2411,25 @@ metadata side's own copy answers under the second mount below instead.
 
 #### The `/api/metadata/` mount
 
-Every metadata route is mounted a second time under `/api/metadata/`, and the
-two mounts mean different things.
+The metadata daemon mounts every one of its routes twice — at its historical
+path and again under `/api/metadata/` — and the two mounts mean different
+things.
 
 - **`/api/...`** — the historical paths. Both shipped clients reach them
   through nginx's `/api/audiocontrol/` prefix, and `/api/coverart/artist/` in
   particular is where every artist thumbnail and every redirected artist image
-  request goes. They are not going to move, and nothing in this process calls
-  them: `services.metadata` no longer exists.
-- **`/api/metadata/...`** — the same routes under the prefix a client will use
-  once the metadata side answers on a port of its own. In a later phase nginx
-  routes `/api/metadata/` to that process; today it reaches the same code in
-  the same process, so a client can be written against it now and keep
-  working across the split.
+  request goes. They are not going to move. nginx forwards exactly seven
+  sub-prefixes of `/api/audiocontrol/` to the metadata daemon —
+  `coverart/`, `lastfm/`, `favourites/`, `audiodb/`, `artist/`, `resolve/` and
+  `imagecache/external/` — and everything else under that prefix to the player
+  daemon. The auth manifest for them is
+  `/etc/hifiberry/auth.d/audiocontrol-auth.json`, unchanged.
+- **`/api/metadata/...`** — the same routes under the prefix that belongs to
+  the metadata daemon as a whole. nginx proxies `/api/metadata/` to
+  `127.0.0.1:1084` with `X-Forwarded-Prefix: /api/metadata`, and
+  `/etc/hifiberry/auth.d/audiocontrol-metadata-auth.json` is its auth manifest,
+  so the reads that are permissive on the historical paths are permissive here
+  too. Both mounts are shipped and routed; a client may use either.
 
 What is mounted under `/api/metadata/`:
 
@@ -2420,10 +2446,13 @@ What is mounted under `/api/metadata/`:
 | `/api/metadata/capabilities` | the metadata side's own capabilities report |
 
 `GET /api/metadata/capabilities` is the one path that exists *only* under this
-mount, for the reason given above. It reports the metadata side's image size
-ladder in the same shape as the player daemon's own capabilities response.
-Today both halves read one `images.sizes` list, because they are one process;
-once they are two, the list is configured in each and the two must agree.
+mount, for the reason given above. It reports the metadata daemon's image size
+ladder in the same shape as the player daemon's own capabilities response. Each
+daemon reads its own `images.sizes` list, from its own configuration file, and
+**the two must agree**: a daemon that disagreed would miss the other's cached
+variants and regenerate them under a second name. Nothing checks this at run
+time. `GET /api/metadata/capabilities` is also the closest thing to a health
+check for the metadata daemon, since it serves no `/api/version` of its own.
 
 Everything else in this table answers identically under either prefix, and a
 response's own image paths are written with whatever prefix the request
@@ -2431,8 +2460,8 @@ carried, exactly as described in [Image and Lyrics Paths](#image-and-lyrics-path
 
 The player daemon's own routes — players, library, volume, lyrics, settings,
 cache, background jobs, genres, **Spotify** and the WebSocket — are *not* under
-`/api/metadata/`. They stay where they are and will stay on this process after
-the split.
+`/api/metadata/` and are not served by the metadata daemon. They stay where
+they are.
 
 `/api/metadata/spotify/...` is gone. It never reached a release: it was added
 by the mount that put every metadata route under a second prefix, in this same

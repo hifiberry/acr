@@ -38,62 +38,82 @@ Rocket API layer serves REST, WebSocket, and the static WebUI on port 1080;
 `acr-webmcp` calls that same REST API to expose MCP tools on port 13180; nginx proxies
 both on port 80.
 
+The diagram shows the player daemon. The metadata half runs beside it as a
+second daemon on port 1084 and does not appear there — see
+[The two halves talk over loopback, one way](#the-two-halves-talk-over-loopback-one-way)
+below.
+
 The eighth player module, `players::generic`, is different from the other seven: it has
 no daemon of its own. It is a two-way bridge that any external player can drive over
 plain REST — see [Generic backend interface](#generic-backend-interface) below.
 
 ### The two halves talk over loopback, one way
 
-The process is internally divided into a *player* half (`src/`) and
-a *metadata* half (`crates/audiocontrol-metadata`), and everything that crosses
-between them is an HTTP request to `127.0.0.1:1080` — the port this same process
-is listening on.
+**AudioControl is two daemons.** The *player* half (`src/`) is `audiocontrol`,
+on port 1080: player backends, the library, the event bus, the REST and
+WebSocket API, and the WebUI. The *metadata* half
+(`crates/audiocontrol-metadata`) is `audiocontrol-metadata`, on port 1084:
+MusicBrainz, TheAudioDB, FanArt.tv, Last.fm, cover art and the artist store.
+Everything that crosses between them is an HTTP request to `127.0.0.1:1080`,
+the port the player daemon listens on.
 
-**Every connection is opened by the metadata half.** The player half holds no
-address for it, no client for it and no configuration section naming it: there
-is no `services.metadata`, and `scripts/check-crate-deps.sh` fails the build if
-one reappears or an address is hard-coded. Data still travels both ways; what is
-one-way is who calls whom, and that is what will let the metadata half move into
-a process of its own without the player half learning where it went.
+**Every connection is opened by the metadata daemon.** The player daemon holds
+no address for it, no client for it and no configuration section naming it:
+there is no `services.metadata`, and `scripts/check-crate-deps.sh` fails the
+build if one reappears or an address is hard-coded. Data still travels both
+ways; what is one-way is who calls whom, and that is what let the metadata half
+move into a process of its own without the player half learning where it went.
+It is also why only one of the two has to be listening for the other, and why
+the player daemon needs no configuration change at all to run beside it.
 
 | Connection | Carries | How it travels |
 |---|---|---|
-| The event subscription | song, state and library changes, downward | the metadata side subscribes to the daemon's own WebSocket at `ws://127.0.0.1:1080/api/events` |
+| The event subscription | song, state and library changes, downward | the metadata daemon subscribes to the player daemon's WebSocket at `ws://127.0.0.1:1080/api/events` |
 | The library reads | lists to enrich | `GET /api/library`, `/library/<p>`, `/artists`, `/albums`. What tells it to look is the `library_changed` event above, plus a slow backstop sweep |
 | The result writes | lookups, upward | `POST /api/player/<name>/song-information`, `POST /api/library/<p>/enrichment` |
 | The Spotify token | a bearer token for Spotify search | `GET /api/spotify/access_token` — the player daemon owns the account, so playback control needs no HTTP at all |
 
 `CoreClient` (`crates/audiocontrol-metadata/src/core_client.rs`) is the one
-client left, pointed at `services.core.url` and defaulting to loopback on the
-port the daemon binds. The player side's `MetadataClient` is deleted: its last
-two calls answered the player half's own artist routes, and both are gone — the
-biography and banner travel in the enrichment batch, and
-`/api/library/<p>/image/artist:<name>` answers 302 to
-`/api/coverart/artist/<b64>/image` rather than fetching it. Playback control,
-and every other player route, therefore works with the metadata half absent.
+client, pointed at `services.core.url` in `metadata.json` — which must be
+written out explicitly, because a value derived from the top-level `webserver`
+section would give the metadata daemon its own port. The player side's
+`MetadataClient` is deleted: its last two calls answered the player half's own
+artist routes, and both are gone — the biography and banner travel in the
+enrichment batch, and `/api/library/<p>/image/artist:<name>` answers 302 to
+`/api/coverart/artist/<b64>/image` rather than fetching it. **Playback control,
+and every other player route, therefore works with the metadata daemon
+stopped** — verified on hardware, and asserted by the integration suite.
 
-**This split is internal, and not a deployment choice a device makes.** There is
-one binary, one systemd unit and one configuration file, and from the phase that
-introduces the second process there will still be one package. Nothing here is
-separately installable, separately versioned, or optional: an installation
-cannot run "just the player half". What the split buys is that the seams are
-already written, exercised and documented as HTTP, so moving the metadata half
-into its own process is a packaging change rather than a redesign.
+**The two daemons are still not a deployment choice a device makes.** They ship
+in one package, as two binaries and two units, both enabled; they install,
+upgrade and roll back together. Nothing here is separately installable,
+separately versioned or optional, and no device runs one half at a different
+version from the other. What a user sees of the split is a second name in
+`systemctl` and nothing else.
+
+The player daemon in the package is built `--no-default-features --features
+alsa`, so it carries no metadata code at all rather than merely not calling it.
+Built with the default features it brings up a whole metadata instance of its
+own — a second artist store, a second settings database, a second enricher and
+a second scrobbler on the same events.
 
 [**How the parts communicate**](communications.md) is the detail behind this
 section: every seam with its routes, payloads, timeouts and failure behaviour,
 sequence diagrams for each, the two library tokens and how they differ, a
-failure matrix, and what Phase 2 changes. Read it before changing anything that
-crosses the seam.
+failure matrix, and the measured cost of the seam. Read it before changing
+anything that crosses it.
 
 Two consequences worth knowing when reading the code. First, a failure across a
 seam is a *network* failure with a timeout, not a `None` return — every caller
-has a documented fallback, listed in the module docs of the two clients above.
-Second, start-up has two stages on the metadata side:
-`audiocontrol_metadata::initialize_in_process` brings up the providers early,
-while `audiocontrol_metadata::startup::start_after_core_is_listening` starts the
-WebSocket subscriber and the library puller only after the API server has bound
-its port, since both are clients of it.
+has a documented fallback, listed in the module docs of the client above.
+Second, start-up has two stages in the metadata daemon:
+`audiocontrol_metadata::initialize_in_process` brings up the providers and
+opens the stores, while
+`audiocontrol_metadata::startup::start_after_core_is_listening` starts the
+WebSocket subscriber and the library puller only after probing
+`GET /api/version` on the player daemon — for up to 30 s, and then starting
+them anyway. The unit has `After=audiocontrol.service` but deliberately no
+`Requires=`: neither daemon can stop the other.
 
 ## Core abstractions
 
@@ -235,19 +255,37 @@ the local network.
 
 ## Deployment
 
+One package, `hifiberry-audiocontrol`, installs both daemons. Both units are
+enabled; they are upgraded and rolled back together.
+
 | Component | Process | Address | Config / unit |
 |---|---|---|---|
-| ACR core | `/usr/bin/audiocontrol` | `0.0.0.0:1080` | `audiocontrol.service` · `/etc/audiocontrol/audiocontrol.json` · runs as user `audiocontrol` |
+| Player daemon | `/usr/bin/audiocontrol` | `0.0.0.0:1080` | `audiocontrol.service` · `/etc/audiocontrol/audiocontrol.json` · runs as user `audiocontrol` |
+| Metadata daemon | `/usr/bin/audiocontrol-metadata` | `127.0.0.1:1084` | `audiocontrol-metadata.service` · `/etc/audiocontrol/metadata.json` · same user · `After=audiocontrol.service`, no `Requires=` · logs to the journal, level from `RUST_LOG` or `--debug` |
 | acr-webmcp | `/usr/bin/acr-webmcp` | `127.0.0.1:13180` | `acr-webmcp.service` (user unit) · `ACR_API_BASE_URL` env var |
-| Reverse proxy | nginx | `:80` | `/api/audiocontrol/*` → :1080, `/api/acr-webmcp/*` → :13180 |
+| Reverse proxy | nginx | `:80` | `/api/audiocontrol/*` → :1080, with `coverart/`, `lastfm/`, `favourites/`, `audiodb/`, `artist/`, `resolve/` and `imagecache/external/` → :1084; `/api/metadata/*` → :1084; `/api/acr-webmcp/*` → :13180 |
 
-| Path | Contents |
-|---|---|
-| `/etc/audiocontrol/audiocontrol.json` | Main config: `services`, `players`, `action_plugins`, `inputs`. |
-| `/var/lib/audiocontrol/cache/attributes/cache.db` | SQLite attribute cache — metadata and lookups, in-memory-accelerated. |
-| `/var/lib/audiocontrol/cache/images` | Cached cover art and images. |
-| `/var/lib/audiocontrol/db/settings.db` | SQLite settings database — user configuration. |
-| `auth.d/audiocontrol-auth.json` | AES-GCM encrypted secrets, managed by `SecurityStore`. |
+Each daemon owns its own state, and nothing is shared by two writers.
+
+| Path | Owner | Contents |
+|---|---|---|
+| `/etc/audiocontrol/audiocontrol.json` | player | Main config: `services`, `players`, `action_plugins`, `inputs`. |
+| `/etc/audiocontrol/metadata.json` | metadata | Providers, its own stores, and `services.core.url` — the one address either daemon holds. |
+| `/var/lib/audiocontrol/cache/attributes.db` | player | SQLite attribute cache. |
+| `/var/lib/audiocontrol/cache/images` | player | Cached cover art and images. |
+| `/var/lib/audiocontrol/db/settings.db` | player | SQLite settings database. |
+| `/var/lib/audiocontrol/security_store.json` | player | AES-GCM credential store, managed by `SecurityStore`. Holds the Spotify tokens. |
+| `/var/lib/audiocontrol/metadata/` | metadata | Its own `attributes.db`, `images/` and settings database. |
+| `/var/lib/audiocontrol/metadata/security_store.json` | metadata | Its own credential store, holding `lastfm_session_key` and `lastfm_username`. |
+| `/var/lib/audiocontrol/user/images` and `cache/artists` | both | Artist images, deliberately left at their old paths: the URLs clients already hold point into them. |
+| `/etc/hifiberry/auth.d/audiocontrol-auth.json`, `…-metadata-auth.json` | nginx | The auth manifests that tell `hifiberry-auth` which routes are permissive. Not secrets. |
+
+**The two credential stores are separate because two processes cannot share
+one.** `SecurityStore` writes its whole in-memory map over the file, truncating,
+so two daemons that each loaded a copy would overwrite each other's keys.
+`postinst` *copies* the existing store to the metadata daemon's path on
+upgrade — it never moves it — so a rollback finds the player daemon's file
+intact. Each store keeps the other's keys after the copy; they are inert.
 
 ## See also
 

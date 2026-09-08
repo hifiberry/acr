@@ -320,10 +320,18 @@ fn apply_splits(
         return result;
     }
 
-    // Locked in the order `create_artists` takes them -- albums, artists,
-    // album_artists -- so a load running against this merge cannot deadlock
-    // with it.
-    let albums = albums.write();
+    // Locked in the order `create_artists` takes them, and with the same
+    // strengths: albums *read*, then artists and the mapping for writing.
+    //
+    // The read on the album map is not an oversight. Nothing here inserts or
+    // removes an album; what is rewritten is the `Arc<Mutex<Vec<String>>>`
+    // inside one, which the map's own lock does not guard. Taking the map for
+    // writing instead would invert the order against
+    // `get_albums_by_artist_id`, which holds the mapping for reading while it
+    // takes the album map -- a writer here and that reader there would each
+    // hold what the other waits for. A shared read cannot make that cycle,
+    // which is why the load path gets away with the same pair.
+    let albums = albums.read();
     let mut artists = artists.write();
     let mut mapping = album_artists.write();
 
@@ -426,6 +434,11 @@ fn apply_splits(
 /// ordering is what lets a rejoin pick up its own metadata in the same batch:
 /// the split creates the artist "Emerson, Lake & Palmer", and the merge that
 /// follows finds it and stores the MBID and genres the same summary carried.
+///
+/// The counts a split contributes to `Applied` are its own: an album whose
+/// artist list was rewritten counts in `albums`, and an artist created or
+/// removed counts in `artists`. They are a report of how much was applied, not
+/// a count of genre merges, and a caller reads them as such.
 pub fn apply_batch(
     albums: &RwLock<HashMap<String, Album>>,
     artists: &RwLock<HashMap<String, Artist>>,

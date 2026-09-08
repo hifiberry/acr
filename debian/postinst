@@ -31,6 +31,119 @@ copy_verified() {
     return 1
 }
 
+# Make nginx read the API snippet this package just installed.
+#
+# Why this exists at all, and why it is new: /etc/nginx/hifiberry-api.d holds
+# our snippet, nginx reads that directory only at start or reload, and before
+# 0.23.0 every prefix in the snippet proxied to port 1080 either way -- so a
+# config loaded months ago and the one just installed behaved identically, and
+# the missing reload cost nothing. The split changed that. Seven metadata
+# sub-prefixes and /api/metadata/ now go to 1084, the shipped player daemon is
+# built without the metadata code and does not serve them at all, and a device
+# still running the old config sends them to 1080 and gets 404 -- favourites,
+# cover art and Last.fm all reported as broken providers by the web interface,
+# with nothing in any log to say why.
+#
+# **Called from two places, and it has to be both.** The obvious mechanism is
+# the dpkg trigger on /etc/nginx/hifiberry-api.d, which this package now also
+# carries -- but dpkg does not activate a package's own file triggers for files
+# that package itself installs. That was measured, not assumed: a test package
+# carrying this exact interest and shipping a file into that directory was
+# installed fresh and then upgraded twice with the file's content changing each
+# time, and `postinst triggered` was never called once; its status never left
+# "install ok installed". A neighbouring package dropping a snippet there, or
+# removing one, activated it every time. So the trigger alone would have fixed
+# the bug for everybody except the package that has it.
+#
+# The two callers therefore cover disjoint cases and cannot reload twice for
+# one dpkg run:
+#
+#   configure  -- our own snippet changed. The only path that reaches this one.
+#   triggered  -- somebody else's snippet in the directory changed.
+#
+# The configure call is at the very bottom of this script, after #DEBHELPER#,
+# on purpose: dh_installsystemd's snippet there starts or restarts the two
+# daemons, and reloading before it would point nginx at port 1084 while the
+# process listening on it is still the pre-upgrade one. Reloading after it
+# means the routing goes live once the daemon it routes to is up.
+#
+# Every branch below returns 0. This script runs under set -e, and a package
+# that fails to configure because nginx is unhappy is worse than one that
+# warns -- the same trade the migration steps in configure make.
+reload_nginx() {
+    # A cross-install: DPKG_ROOT is somebody else's filesystem, and the nginx
+    # running here is not the one whose configuration changed. Never poke it.
+    if [ -n "${DPKG_ROOT:-}" ]; then
+        return 0
+    fi
+
+    # No systemd running -- a chroot, an image build -- so there is no service
+    # to reload. The same guard the daemon stop in configure uses.
+    if [ ! -d /run/systemd/system ]; then
+        return 0
+    fi
+
+    # nginx not installed. A device that runs only the daemons is entitled to
+    # have no proxy at all, and that is not a failure to configure.
+    if ! command -v nginx >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Installed but not running: stopped, masked, or never enabled. Whatever
+    # starts it next reads the new snippet, so there is nothing to do and
+    # nothing to warn about. Tested before reloading rather than letting the
+    # reload fail, because `systemctl reload` on a stopped unit is an error and
+    # this case is not one.
+    if ! systemctl is-active --quiet nginx.service 2>/dev/null; then
+        return 0
+    fi
+
+    # Validate first, and it is worth it for a reason that is not the obvious
+    # one. A reload over a bad configuration does not kill nginx: the master
+    # logs the error and carries on with the configuration it already has. That
+    # is precisely the failure being fixed here -- the reload "succeeds", this
+    # script says nothing, and the device goes on serving the old routing.
+    # `nginx -t` is the only thing that separates that case from a real
+    # success, so it turns a silent 404 into the warning below.
+    #
+    # It validates the whole configuration, snippets belonging to other
+    # packages included, so a neighbour's syntax error stops our reload. That
+    # is the right outcome -- reloading would not have applied our file either
+    # -- but it is why the message names the configuration and not this
+    # package.
+    if ! nginx -t >/dev/null 2>&1; then
+        echo "WARNING: the nginx configuration does not validate, so it was not reloaded (run 'nginx -t' for the reason); until it is, the metadata API prefixes still point at the old daemon and answer 404" >&2
+        return 0
+    fi
+
+    # Reload, never restart. A restart drops every connection through the
+    # proxy, and the player daemon's event WebSocket is one of them: every
+    # connected client would have to notice and reconnect over a configuration
+    # change it does not care about. A reload keeps them.
+    #
+    # deb-systemd-invoke rather than systemctl, matching the stop in configure:
+    # it honours a policy-rc.d that forbids service actions, which is how a
+    # build chroot says "install, but touch nothing".
+    deb-systemd-invoke reload nginx.service >/dev/null 2>&1 || \
+        echo "WARNING: could not reload nginx; the metadata API prefixes still point at the old daemon and answer 404 until 'systemctl reload nginx' succeeds" >&2
+
+    return 0
+}
+
+# A package added, changed or removed a player definition in
+# /etc/audiocontrol/players.d. merge_player_includes() only reads that
+# directory at startup, so without this the new player never shows up.
+# try-restart is a no-op while the service is not running yet, and the
+# DPKG_ROOT guard keeps a cross-install from restarting the build host's
+# daemon.
+restart_player_daemon() {
+    if [ -n "${DPKG_ROOT:-}" ] || [ ! -d /run/systemd/system ]; then
+        return 0
+    fi
+    systemctl try-restart audiocontrol.service || true
+    return 0
+}
+
 # Function to create user, group and directory
 setup_user_and_dirs() {
     # Create audiocontrol group if it doesn't exist
@@ -320,16 +433,61 @@ case "$1" in
         ;;
 
     triggered)
-        # A package added, changed or removed a player definition in
-        # /etc/audiocontrol/players.d. merge_player_includes() only reads that
-        # directory at startup, so without this the new player never shows up.
-        # try-restart is a no-op while the service is not running yet.
-        if [ -d /run/systemd/system ]; then
-            systemctl try-restart audiocontrol.service || true
+        # $2 is the space-separated list of triggers dpkg has coalesced into
+        # this one call. The two interests want opposite things -- a changed
+        # player definition must restart the player daemon, a changed nginx
+        # snippet must not -- so this dispatches on the name instead of doing
+        # both. Doing both would mean every neighbouring package that drops an
+        # API snippet also drops playback, which is a worse bug than the one
+        # this trigger fixes.
+        #
+        # Unquoted on purpose: the list is one argument and has to be split.
+        # Trigger names are absolute paths from our own triggers file, so there
+        # is nothing here to glob.
+        for _trigger in $2; do
+            case "$_trigger" in
+                /etc/audiocontrol/players.d)
+                    restart_player_daemon
+                    ;;
+                /etc/nginx/hifiberry-api.d)
+                    reload_nginx
+                    ;;
+            esac
+        done
+
+        # dpkg has passed the trigger list since 1.14.17 and every supported
+        # release is far past that, so an empty $2 should not happen. If it
+        # ever does, fall back to what this arm did when players.d was its only
+        # interest, plus the reload -- a spurious restart and a spurious reload
+        # are both cheap, and silently doing nothing would put the 404s back.
+        if [ -z "${2:-}" ]; then
+            restart_player_daemon
+            reload_nginx
         fi
         ;;
 esac
 
 #DEBHELPER#
+
+# nginx last, deliberately below #DEBHELPER# rather than inside the configure
+# arm above. The debhelper snippet is what starts audiocontrol.service and
+# audiocontrol-metadata.service, and this snippet's metadata prefixes point at
+# the port the second one listens on -- reload before that and nginx routes to
+# a daemon that is not up yet; reload after it and the new routing goes live
+# together with the daemon that answers it.
+#
+# Only for "configure": an abort-upgrade or abort-remove has not installed a
+# new snippet, so there is nothing for nginx to pick up. See reload_nginx()
+# above for why the trigger cannot cover this case.
+#
+# Not gated on "$2", unlike the once-only migrations in the configure arm. A
+# reload is idempotent and cheap, the snippet is a conffile that a local edit
+# can change on any upgrade, and dpkg does not tell postinst whether this
+# particular upgrade rewrote it. Reloading every configure is therefore both
+# correct and the only version that cannot miss a change; gating it on a
+# version comparison would buy nothing and could reinstate the 404s.
+if [ "$1" = "configure" ]; then
+    reload_nginx
+fi
 
 exit 0

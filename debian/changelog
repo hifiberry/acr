@@ -31,6 +31,22 @@ hifiberry-audiocontrol (0.23.1) trixie; urgency=medium
     not retried until the next pass, so the genres, images and artist detail
     it would have filled in simply stayed missing.
 
+  * Installing the package now reloads nginx, which is what 0.23.0 was
+    missing. The metadata prefixes moved to the second daemon's port in that
+    release, but nothing told nginx to read the new routing, so it went on
+    proxying with the configuration it had loaded when it last started - on a
+    device that had been up a while, a configuration weeks older than the
+    upgrade itself. The result was an installation that looked clean and was
+    not: /api/audiocontrol/favourites/providers,
+    /api/audiocontrol/coverart/methods and /api/audiocontrol/lastfm/status
+    answered 404 through nginx, and the web interface's system information page
+    reported favourites and cover art as errored providers, with nothing in any
+    log to explain it. Reloading nginx by hand fixed it completely; the package
+    now does it as part of the install. Any package dropping a snippet into
+    /etc/nginx/hifiberry-api.d is picked up the same way, once per install run
+    rather than once per package, and the configuration is checked before the
+    reload so a mistake elsewhere in it is reported rather than applied.
+
   * audiocontrol_dump_cache now defaults to the cache it can read. Its
     shortcut flags select prefixes only the metadata daemon writes, while its
     default directory was the player daemon's, so an invocation without

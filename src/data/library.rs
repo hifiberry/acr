@@ -202,7 +202,23 @@ impl LibraryVersion {
 // - **Nothing holds `album_artists` while it acquires `albums`.** The album
 //   lookups by artist take the mapping, copy the ids they need, drop it, and
 //   only then read the album map -- so the inversion in the table above is
-//   removed rather than worked around.
+//   removed rather than worked around. That costs nothing: the mapping already
+//   returned an owned set, so this only shortens a guard's lifetime.
+//
+// **This cycle predates enrichment.** `create_artists` has always held `albums`
+// read across both writes, so the same three roles close it with no batch
+// involved -- but the thread waiting for `albums` write has to be a *second
+// reload*, since `refresh_library` holds the only write. That is reachable:
+// `POST /api/library/<p>/refresh` runs the reload inline on the request thread,
+// MPD's database-update handling spawns further reload threads, and nothing
+// serialises them -- `library_loaded` and `loading_progress` are set, never
+// held. So two overlapping refreshes plus one artist-page request were enough,
+// before any of this existed. Removing the inversion closes that one too, and
+// it is worth recording against the older code rather than against enrichment.
+//
+// What is *not* fixed here is that reloads are unserialised in the first place.
+// Nothing in this file can fix that, and it is a separate hazard: two reloads
+// racing each other rebuild the same maps concurrently.
 //
 // This is stated here rather than beside one lock because it is a property of
 // the set. `helpers::global_volume` states the same kind of rule for the pair
@@ -387,9 +403,26 @@ fn normalise_claim(name: &str, parts: &[String]) -> Option<Vec<String>> {
 ///
 /// Carries the album's `artists` handle rather than a key into the album map,
 /// which is what lets the map's lock be released before anything is written --
-/// see the lock-order note above. The `Arc` keeps the album's list alive even if
-/// a reload drops the album from the map in between, so the write lands on a
-/// vector nothing reads any more rather than on the wrong album.
+/// see the lock-order note above.
+///
+/// A reload landing between the two phases is possible and is not refused: the
+/// generation check runs once at the top of `apply`, before any of this, so it
+/// rejects a batch computed against an older generation but cannot reject a
+/// rebuild that starts afterwards. What that costs is smaller than it looks,
+/// and it is worth being exact rather than calling it harmless. The `Arc` keeps
+/// the album's list alive, so that write lands on a vector nothing reads any
+/// more. The other two writes are *not* orphaned: `reset_albums_for_reload`
+/// clears the album map alone, the artist map and the artist-album mapping are
+/// never cleared, and album ids are deterministic, so those edits reach the
+/// rebuilt library. The visible result is a divergence -- an artist listed with
+/// an album whose own `artists` field still reads the unsplit name.
+///
+/// Two things bound it. The library already tolerates exactly this staleness,
+/// since neither of those two structures is ever cleared on a reload, so
+/// orphaned entries survive every rebuild regardless. And it converges: the
+/// unsplit name is back in the artist map after the reload, so it rides the
+/// next sweep as an ordinary summary carrying the same claim, and the next
+/// batch applies it to the live handle.
 struct PlannedSplit {
     album_id: Identifier,
     artists: Arc<parking_lot::Mutex<Vec<String>>>,
@@ -1951,6 +1984,13 @@ mod tests {
                  plus one get_albums_by_artist_id would close it for good"
             );
 
+            // Moves the guard into the closure, so a failed assertion above
+            // releases it while unwinding. `thread::scope` joins the spawned
+            // thread before the unwind resumes, and in the one-phase shape that
+            // thread is blocked on this very mutex -- so taking `blocking` by
+            // reference here instead would turn this test from one that fails
+            // into one that hangs `cargo test`. That is the difference between
+            // a guard someone fixes and a guard someone deletes.
             drop(blocking);
         });
 

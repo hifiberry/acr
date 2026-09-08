@@ -32,6 +32,27 @@ use log::{debug, error, info, warn};
 /// it no longer links this crate.
 pub use acr_types::now_playing::{LastfmWorkerConfig, LASTFM_WORKER_NAME as WORKER_NAME};
 
+/// How many one-second ticks between reconciling against the player's real
+/// playback state -- five minutes.
+///
+/// This is a backstop, not the mechanism. The subscription carries
+/// `state_changed`, and a reconnect re-seeds, so a missed transition is
+/// already recovered by the socket. It was thirty seconds when the
+/// subscription carried only `song_changed` and this was the *only* way a
+/// pause could be noticed.
+///
+/// It is lengthened rather than removed on purpose. The case for deleting it
+/// is that events are not lost on an intact connection -- which is reasoning
+/// about TCP, not a measurement, and the cost of being wrong is silent:
+/// a scrobble timer left measuring a paused player reports listening time
+/// that never happened. Five minutes bounds that while making the call rare.
+/// Remove it once a release has shipped without a scrobbling regression.
+///
+/// Each tick is one loop iteration of `thread::sleep(Duration::from_secs(1))`,
+/// so this is a count and not a `Duration`.
+const STATE_RECONCILE_TICKS: u32 = 300;
+
+
 pub struct Lastfm {
     config: LastfmWorkerConfig,
     worker_thread: Option<thread::JoinHandle<()>>,
@@ -187,8 +208,8 @@ fn lastfm_worker(
             }
         }
 
-        // Periodic state check (e.g., every 30 seconds)
-        if loop_count % 30 == 0 {
+        // Reconcile against the player's real state, as a backstop.
+        if loop_count % STATE_RECONCILE_TICKS == 0 {
             debug!("LastFMWorker: Performing periodic state check.");
             // Asked rather than awaited: a StateChanged that never arrived
             // would otherwise leave the timer measuring a paused player.
@@ -725,6 +746,23 @@ fn calculate_updates(
 
 #[cfg(test)]
 mod tests {
+
+    /// The reconcile interval is a tick count over a one-second loop, so the
+    /// only thing that can silently go wrong is someone reading it as seconds
+    /// or as milliseconds. Pins the unit and the value together: a revert to
+    /// the old thirty, or a change to `Duration`-shaped units, fails here.
+    ///
+    /// Not a test of the loop -- reconciliation runs inside a thread that
+    /// sleeps, and there is no seam to drive it without one. That gap is why
+    /// this interval is being lengthened and observed rather than deleted.
+    #[test]
+    fn the_state_reconcile_interval_is_five_minutes_of_one_second_ticks() {
+        assert_eq!(
+            std::time::Duration::from_secs(u64::from(super::STATE_RECONCILE_TICKS)),
+            std::time::Duration::from_secs(5 * 60)
+        );
+    }
+
     use super::*;
     use acr_types::song::{
         COVER_ART_SOURCE, COVER_ART_SOURCE_LASTFM, COVER_ART_SOURCE_STATION_LOGO,

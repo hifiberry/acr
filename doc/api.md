@@ -2208,6 +2208,13 @@ Retrieves an image (such as album art) from a player's library.
 > receives a `302` where it received an image before. Earlier daemons answered
 > `200` with the bytes.
 >
+> **The redirect crosses to the other daemon.** nginx sends
+> `/api/audiocontrol/coverart/` to the metadata daemon on 1084, so the `302`
+> is answered there while the route issuing it is on 1080. Against port 1080
+> directly the target does not exist at all. It also means artist images stop
+> serving while the metadata daemon is stopped, including ones already on disk
+> — the player daemon can name the route but cannot serve it.
+>
 > `?size=` works on the redirect target, which is a change in its favour: it
 > was accepted and silently ignored here.
 
@@ -2463,12 +2470,13 @@ cache, background jobs, genres, **Spotify** and the WebSocket — are *not* unde
 `/api/metadata/` and are not served by the metadata daemon. They stay where
 they are.
 
-`/api/metadata/spotify/...` is gone. It never reached a release: it was added
-by the mount that put every metadata route under a second prefix, in this same
-unreleased version, so no shipped client can have used it. The Spotify account moved to the player daemon, so `/api/spotify/...` —
-the historical path every shipped client already uses — is the only one. No
-client-facing URL changed; a client that had adopted the `/api/metadata/`
-prefix for Spotify specifically must use `/api/spotify/` instead.
+`/api/metadata/spotify/...` is gone, and never reached a released package: it
+was added by the mount that put every metadata route under a second prefix and
+removed again within 0.22.0, so no shipped client can have used it. The Spotify
+account moved to the player daemon, so `/api/spotify/...` — the historical path
+every shipped client already uses — is the only one. No client-facing URL
+changed; a client that had adopted the `/api/metadata/` prefix for Spotify
+specifically must use `/api/spotify/` instead.
 
 ### Spotify Routes
 

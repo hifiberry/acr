@@ -234,10 +234,12 @@ the local network.
 5. `EventBus` publishes `PlayerEvent::SongChanged` to every subscriber.
 6. `ActiveMonitor` makes librespot the active player; WebSocket clients get the new
    track.
-7. One of those WebSocket clients is the metadata half of this same process. Its
-   subscriber turns the frame back into a `SongChanged` and hands it to the
-   enrichment workers and the Last.fm scrobbler; anything they find comes back
-   through `POST /api/player/librespot/song-information`.
+7. One of those WebSocket clients is the metadata daemon, connected from the
+   other process. Its subscriber turns the frame back into a `SongChanged` and
+   hands it to the enrichment workers and the Last.fm scrobbler; anything they
+   find comes back through `POST /api/player/librespot/song-information`. If
+   that daemon is not running, steps 1 to 6 happen exactly as above and only
+   this step is lost.
 
 ### "Pause the music" via Claude (command flowing inward)
 
@@ -277,7 +279,7 @@ Each daemon owns its own state, and nothing is shared by two writers.
 | `/var/lib/audiocontrol/security_store.json` | player | AES-GCM credential store, managed by `SecurityStore`. Holds the Spotify tokens. |
 | `/var/lib/audiocontrol/metadata/` | metadata | Its own `attributes.db`, `images/` and settings database. |
 | `/var/lib/audiocontrol/metadata/security_store.json` | metadata | Its own credential store, holding `lastfm_session_key` and `lastfm_username`. |
-| `/var/lib/audiocontrol/user/images` and `cache/artists` | both | Artist images, deliberately left at their old paths: the URLs clients already hold point into them. |
+| `/var/lib/audiocontrol/user/images` and `cache/artists` | metadata | Artist images. Deliberately left at their old paths rather than moved under `metadata/`, because the URLs clients already hold point into them — but only the artist store writes here, and that lives in the metadata daemon. |
 | `/etc/hifiberry/auth.d/audiocontrol-auth.json`, `…-metadata-auth.json` | nginx | The auth manifests that tell `hifiberry-auth` which routes are permissive. Not secrets. |
 
 **The two credential stores are separate because two processes cannot share

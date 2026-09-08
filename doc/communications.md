@@ -871,7 +871,7 @@ restart or a package upgrade. **Reconnect on every close.**
 
 | Situation | What happens | What a user sees | What a log shows |
 |---|---|---|---|
-| Metadata daemon down or not yet started | **playback works**, and so does every player route: nothing in the player daemon waits on it. Verified on hardware by stopping the unit and playing | no enrichment, no scrobbling — and **artist images stop serving too**, including ones already on disk: the redirect target `/api/coverart/artist/<b64>/image` is the metadata daemon's route, so nginx has no upstream for it. This is worse than it was in one process, where the same store was served by the daemon that was still running | nothing on the player side — it has nothing to fail |
+| Metadata daemon down or not yet started | **playback works**, and so does every player route: nothing in the player daemon waits on it. Verified on hardware by stopping the unit and playing | no enrichment, no scrobbling — and **artist images stop serving too**, including ones already on disk: the redirect target `/api/coverart/artist/<b64>/image` is the metadata daemon's route, so nginx has no upstream for it. This is a new failure mode rather than a worsened one: in one process there was no such state, because a metadata failure took playback with it. The split buys playback that survives, and pays for it with artist images that do not | nothing on the player side — it has nothing to fail |
 | `services.metadata` present in a config file | **ignored.** Nothing reads it, and no client is built from it | nothing | nothing |
 | `core.url` absent or misspelled in `metadata.json` | **the metadata daemon refuses to start**, before it opens a cache or binds a port | metadata stops working; playback does not | one error naming the key, and the same on stderr |
 | Player daemon unreachable, from the metadata daemon | the subscriber and puller retry with backoff to 30 s; results in flight are dropped | enrichment and scrobbling go stale; playback unaffected | one warning naming the URL, then a reminder every 5 min |
@@ -1051,9 +1051,11 @@ Written down because a document that only describes what works is not a map.
   be about ninety megabytes on a device that may have one gigabyte and is
   holding the library too. `summarise` applies `sanitize::safe_truncate` at the
   one point every provider's text crosses, which brings the estimate to about
-  six kilobytes an artist, or around sixty megabytes for ten thousand. The full
-  text is unaffected on the metadata side. What a user sees is a long biography
-  cut mid-sentence in the artist detail field.
+  six kilobytes an artist, or around sixty megabytes for ten thousand — set
+  against **255 MB**, which is what the whole daemon then measured, in one
+  process, holding a 200,000-song library. The full text is unaffected on the
+  metadata side. What a user sees is a long biography cut mid-sentence in the
+  artist detail field.
 
   **That estimate has still not been tested at the scale it worries about.**
   The device the phase was measured on loads 1,919 artists on the player side,
@@ -1061,8 +1063,8 @@ Written down because a document that only describes what works is not a map.
   settles at about 130 MB. A library with ten thousand *player-side* artists
   would be the test, and there has not been one.
 - **Two memory figures appear in this document, and they measure different
-  things.** The 255 MB quoted above for a 200,000-song library was the whole
-  daemon's resident size when both halves ran in one process. The figures under
+  things.** The 255 MB in the bullet above is one number for one process
+  holding both halves. The figures under
   [what the seam actually costs](#what-the-seam-actually-costs) are per daemon
   and were taken after the split, on a 211,475-song library: the player daemon
   peaks at 313 MB during the load and settles to about 130 MB, and the metadata

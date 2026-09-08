@@ -134,6 +134,7 @@ mod tests {
     struct TestLibrary {
         albums: Arc<RwLock<HashMap<String, Album>>>,
         artists: Arc<RwLock<HashMap<String, Artist>>>,
+        album_artists: Arc<RwLock<acr_types::AlbumArtists>>,
         version: LibraryVersion,
     }
 
@@ -146,6 +147,7 @@ mod tests {
                 artists: Arc::new(RwLock::new(
                     artists.into_iter().map(|a| (a.name.clone(), a)).collect(),
                 )),
+                album_artists: Arc::new(RwLock::new(acr_types::AlbumArtists::new())),
                 version: LibraryVersion::new(),
             }
         }
@@ -157,7 +159,13 @@ mod tests {
             batch: acr_types::enrichment::EnrichmentBatch,
         ) -> Result<Applied, EnrichmentError> {
             check_generation(&batch, self.library_generation())?;
-            let (mut applied, changed) = apply_batch(&self.albums, &self.artists, &batch);
+            let (mut applied, changed) = apply_batch(
+                &self.albums,
+                &self.artists,
+                &self.album_artists,
+                crate::data::library::NewArtist::WithEmptyMetadata,
+                &batch,
+            );
             if changed {
                 self.version.bump();
             }

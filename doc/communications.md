@@ -195,7 +195,6 @@ graph LR
     M -->|"1c. GET player — playback state"| P
     M -->|"2a. GET library, artists, albums"| P
     M -->|"2b. POST library enrichment"| P
-    P -->|"3. GET resolve/*"| M
     M -->|"4. GET spotify/access_token"| P
     P -->|"detail: GET artist, coverart image"| M
 ```
@@ -207,7 +206,6 @@ graph LR
 | 1c | Playback state | metadata → player | `GET /api/player` | 5 s | the Last.fm worker skips one 30 s reconciliation |
 | 2a | Library contents | metadata → player | `GET /api/library`, `/library/<p>`, `/artists`, `/albums` | 5 s | the sweep does not start; the next event or backstop sweep retries |
 | 2b | Enrichment batches | metadata → player | `POST /api/library/<p>/enrichment` | 5 s | 409 ends the sweep and the next poll re-pulls; 404 ends it |
-| 3 | Title order, artist split | player → metadata | `GET /api/resolve/…` | 5 s | `unknown` order; plain separator split |
 | 4 | Spotify access token | metadata → player | `GET /api/spotify/access_token` | 5 s | `None`; 60 s cache bounds re-asking |
 | — | Artist detail | player → metadata | `GET /api/artist/<b64>` | 1 s | `None` — the field is simply absent |
 | — | Artist image | player → metadata | `GET /api/coverart/artist/<b64>/image` | 5 s | `None` — the route 404s to its caller |
@@ -215,9 +213,10 @@ graph LR
 The two clients:
 
 - **`MetadataClient`** — `src/audiocontrol/metadata_client.rs`, player half,
-  pointed at `services.metadata.url`. Carries `Resolver` and
-  `LibraryEnricher` -- whose `enrich` is now a no-op, since the route it called
-  is gone.
+  pointed at `services.metadata.url`. **Nothing in the player half calls it any
+  more**: its `enrich` became a no-op when the nudge route went, and its
+  `Resolver` lost its last caller when the artist split moved into the
+  enrichment batch. It still carries both traits, and it and they go together.
 - **`CoreClient`** — `crates/audiocontrol-metadata/src/core_client.rs`,
   metadata half, pointed at `services.core.url`. Carries
   `SongInformationSink`, `PlaybackStateSource` and `AccessTokenSource`, and
@@ -394,9 +393,28 @@ a time would invalidate every cached list once per artist.
 
 ---
 
-## Seam 3: the resolvers
+## Seam 3: the resolvers — gone
 
-Two pure questions the player half asks about a stream title.
+**There is no seam 3 any more.** The player half asked the metadata half two
+pure questions about names, and both are now decided locally and corrected
+afterwards.
+
+- **Which half of a split stream title is the artist.** `SongTitleSplitter`
+  decides from `forced_order`, then a learned `default_order`, then a fixed
+  heuristic. A wrong guess is corrected by `POST song-information`, which is
+  seam 1b and already had a merge policy.
+- **Whether an album-artist string names one artist or several.** Both library
+  loaders split on separators alone — once per album, no network — and the
+  correction arrives in the enrichment batch as `split_into`, which is seam 2b.
+  The visible cost is that the first load meeting a new album artist shows the
+  plain split until the sweep runs; the visible gain is a load that no longer
+  makes a MusicBrainz round trip per album.
+
+The routes themselves still exist on the metadata daemon for clients that ask
+directly. What is gone is the player half calling them, and with it the last
+connection across this seam that the player half opened.
+
+The exchange it used to be, kept because the encoding rule below outlived it:
 
 ```mermaid
 sequenceDiagram
@@ -429,11 +447,14 @@ album artists stopped splitting, while a configured `", "` arrived as `" "` and
 split every two-word artist name in the library in two. A separator cannot
 share a delimiter with the list that carries it.
 
-**`null` means one artist**, and is a real answer rather than a failure.
+**`null` meant one artist**, and was a real answer rather than a failure. That
+is the answer `split_into` now carries as a one-element list, for exactly the
+same reason: it has to be distinguishable from "no answer".
 
-**Both fall back rather than fail.** An unreachable metadata side gives
+**Both fell back rather than failing.** An unreachable metadata side gave
 `unknown` for the order and a plain separator split for the name — the same
-answers a MusicBrainz-disabled build produces.
+answers a MusicBrainz-disabled build produces, and the same answers both callers
+now start from.
 
 ---
 
@@ -755,7 +776,15 @@ Written down because a document that only describes what works is not a map.
 - **The artist-split cache is keyed on the artist name alone.** The separators
   are not part of the key and entries never expire, so changing
   `artist_separators` in configuration does not invalidate what is already
-  cached.
+  cached. It now only affects the metadata half's own answer, which is offered
+  as a claim the loader may already have got right — but a wrong cached entry is
+  still a wrong claim, applied to every album under that name.
+- **A configured `artist_separator` does not cross the seam.** The loader splits
+  with it; the metadata half's `split_observation` only ever sees the defaults.
+  It refuses to make a claim about a name that holds no default separator, which
+  is what keeps it from rejoining a correct custom split — but it cannot
+  *confirm* one either, so a custom-separator install gets the split it made at
+  load and no correction.
 - **`request_enrichment` builds a payload that is discarded.** It clones every
   artist and album reference and the HTTP form now sends nothing at all — it
   used to at least send the nudge. On a large library that is tens of thousands
@@ -765,12 +794,11 @@ Written down because a document that only describes what works is not a map.
   dropped request is reported as "the library is gone" and abandons the sweep.
   Harmless on loopback; in Phase 2 one dropped request costs a whole sweep
   until the next poll.
-- **The initial library load races the port bind.** Splits attempted before
-  Rocket binds fall back to the plain separator split. Nothing is cached wrongly,
-  but it is per-boot nondeterminism.
-- **Two routes do synchronous, rate-limited provider work on request threads** —
-  `resolve/title-order`, and artist detail with `?lookup=true`. Concurrent
-  uncached requests can occupy every Rocket worker.
+- **Three routes do synchronous, rate-limited provider work on request
+  threads** — `resolve/title-order`, `resolve/artist-split`, and artist detail
+  with `?lookup=true`. Concurrent uncached requests can occupy every Rocket
+  worker. The player half no longer calls any of them, so what is exposed is a
+  client's own request.
 - **`?lookup=true` has no test** distinguishing "lookup skipped" from "lookup
   ran and found nothing", because no provider is registered in the unit test
   environment.

@@ -5,7 +5,7 @@ use std::time::Instant;
 use log::{debug, info, warn, error};
 use chrono::Datelike;
 use crate::data::{Album, Artist, AlbumArtists, LibraryInterface, LibraryError};
-use crate::data::library::{apply_batch, check_generation, LibraryVersion};
+use crate::data::library::{apply_batch, check_generation, split_questions, LibraryVersion, NewArtist};
 use acr_types::enrichment::{
     AlbumRef, Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink,
 };
@@ -230,15 +230,21 @@ impl MPDLibrary {
             return;
         };
 
-        let artists: Vec<ArtistRef> = self
+        let mut artists: Vec<ArtistRef> = self
             .artists
             .read()
             .values()
-            .map(|a| ArtistRef {
-                id: a.id.to_string(),
-                name: a.name.clone(),
-            })
+            .map(|a| ArtistRef::named(a.id.to_string(), a.name.clone()))
             .collect();
+
+        // Plus the album-artist strings the loader split, which are not artists
+        // here -- the parts are -- and which nothing else could offer: a split
+        // drops the separators, so the parts cannot be turned back into the name
+        // they came from. Offered `split_only`, so the sweep asks what each
+        // splits into and looks up nothing else. Names the library does hold as
+        // an artist are left out: their own summary carries the same claim, and
+        // two summaries for one name in one batch would fight.
+        artists.extend(split_questions(&self.artists, &self.albums));
 
         // Only albums with no genres at all: an album that carries genre tags
         // needs no lookup, and this is the same filter the album updater
@@ -1648,7 +1654,17 @@ impl EnrichmentSink for MPDLibrary {
         // backends can disagree about when a batch is refused.
         check_generation(&batch, self.library_generation())?;
 
-        let (mut applied, changed) = apply_batch(&self.albums, &self.artists, &batch);
+        // `WithEmptyMetadata`: an album artist this library holds always
+        // carries an `ArtistMeta`, empty if nothing is known, which is what
+        // `create_artists` does and what the artist routes serve. An artist a
+        // split creates has to look the same as one a load creates.
+        let (mut applied, changed) = apply_batch(
+            &self.albums,
+            &self.artists,
+            &self.album_artists,
+            NewArtist::WithEmptyMetadata,
+            &batch,
+        );
         if changed {
             self.library_version.bump();
         }
@@ -2106,6 +2122,7 @@ mod tests {
                 is_multi: true,
                 genres: vec!["folk".into()],
                 thumb_url: vec!["/api/coverart/artist/YWJj/image".into()],
+                split_into: None,
             }],
             albums: vec![],
         })

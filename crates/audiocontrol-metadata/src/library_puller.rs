@@ -57,7 +57,8 @@
 use crate::core_client::{CoreClient, EnrichmentPostError};
 use crate::library_enricher::InProcessEnricher;
 use acr_types::enrichment::{
-    AlbumRef, Applied, EnrichmentBatch, EnrichmentError, EnrichmentSink, LibraryEnricher,
+    AlbumRef, Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink,
+    LibraryEnricher,
 };
 use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use log::{debug, info, warn};
@@ -432,27 +433,60 @@ fn pull(
         return;
     }
 
-    let artists = match core.artists(player) {
+    let mut artists = match core.artists(player) {
         Ok(artists) => artists,
         Err(e) => {
             debug!("artists for '{}' are not readable: {}", player, e);
             return;
         }
     };
-    // Only albums with nothing already recorded are worth a lookup. An album
-    // that carries genres has either been enriched or came tagged, and either
-    // way an empty answer would not replace them.
-    let albums: Vec<AlbumRef> = match core.albums(player) {
-        Ok(albums) => albums
-            .into_iter()
-            .filter(|a| a.genres.is_empty())
-            .map(|a| a.album)
-            .collect(),
+    let listed = match core.albums(player) {
+        Ok(albums) => albums,
         Err(e) => {
             debug!("albums for '{}' are not readable: {}", player, e);
             return;
         }
     };
+
+    // The album-artist strings the library split, added to the artist list so
+    // the split can be corrected. Two filters, and each is load-bearing:
+    //
+    // - A name the library *does* hold as an artist is already in `artists`, and
+    //   its own summary carries the split claim. Adding it again would put two
+    //   summaries for one name in one batch, and the second would overwrite the
+    //   first's metadata with nothing.
+    // - Everything else is offered `split_only`, so the sweep asks what it
+    //   splits into and nothing else. There is no artist over there under that
+    //   name to hold a thumbnail or a biography, so a full lookup would download
+    //   an image no route can serve.
+    //
+    // The albums list is read before the genre filter below: an album that came
+    // tagged with genres needs no lookup and still has an artist string that may
+    // have been split wrongly.
+    {
+        let held: std::collections::HashSet<&str> =
+            artists.iter().map(|a| a.name.as_str()).collect();
+        let mut questions: Vec<String> = Vec::new();
+        for album in &listed {
+            let Some(name) = album.album_artist.as_deref() else {
+                continue;
+            };
+            if name.is_empty() || held.contains(name) || questions.iter().any(|q| q == name) {
+                continue;
+            }
+            questions.push(name.to_string());
+        }
+        artists.extend(questions.into_iter().map(ArtistRef::split_question));
+    }
+
+    // Only albums with nothing already recorded are worth a lookup. An album
+    // that carries genres has either been enriched or came tagged, and either
+    // way an empty answer would not replace them.
+    let albums: Vec<AlbumRef> = listed
+        .into_iter()
+        .filter(|a| a.genres.is_empty())
+        .map(|a| a.album)
+        .collect();
 
     // Recorded before the sweeps start, not after. Two reasons, and the second
     // is the one that bites: a sweep runs for as long as its lookups take, and

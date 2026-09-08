@@ -183,7 +183,17 @@ impl LMSLibraryLoader {
         // Create empty tracks list to be populated later
         let tracks = Arc::new(Mutex::new(Vec::<Track>::new()));
         
-        // Create artists list by splitting the album artist string through the resolver
+        // Split the album-artist string on separators alone, and keep the
+        // string itself in `artists_flat` below.
+        //
+        // A separator split is wrong in both directions for a name that
+        // contains one: "Emerson, Lake & Palmer" becomes three artists and
+        // "Alpha and Beta" stays one. It used to be right immediately, at the
+        // cost of a MusicBrainz round trip per album; the correction now
+        // arrives with the enrichment sweep instead
+        // (`data::library::apply_splits`), and `artists_flat` is what it finds
+        // the album by -- splitting drops the separators, so the list alone
+        // cannot be turned back into the name it came from.
         let artists = match crate::audiocontrol::resolver::split_album_artist(album_artist, custom_separators) {
             Some(split_artists) => Arc::new(Mutex::new(split_artists)),
             None => Arc::new(Mutex::new(vec![album_artist.to_string()]))
@@ -206,7 +216,7 @@ impl LMSLibraryLoader {
             id: Identifier::Numeric(album_id),
             name: title.to_string(),
             artists,
-            artists_flat: None,
+            artists_flat: Some(album_artist.to_string()),
             release_date,
             tracks,
             cover_art: None,

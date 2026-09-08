@@ -258,7 +258,7 @@ fn artist_to_update(reference: &ArtistRef) -> Artist {
 /// the thumbnail URLs among them, because the artist list route serves them.
 /// The biography and the source it came from stay on this side, served from
 /// here by the artist detail route.
-fn summarise(artist: &Artist) -> ArtistSummary {
+fn summarise(artist: &Artist, split_into: Option<Vec<String>>) -> ArtistSummary {
     let (mbid, genres, thumb_url) = artist
         .metadata
         .as_ref()
@@ -274,6 +274,11 @@ fn summarise(artist: &Artist) -> ArtistSummary {
         mbid,
         genres,
         thumb_url,
+        // Passed in rather than derived here: this is the answer the player
+        // daemon used to block on once per album, and it is the sweep's `Sweep`
+        // that decides whether asking is worth it -- see
+        // `artistsplitter::split_observation`.
+        split_into,
     }
 }
 
@@ -285,6 +290,9 @@ fn summarise(artist: &Artist) -> ArtistSummary {
 trait Sweep {
     /// Look everything up for one artist and return what is now known.
     fn update(&self, reference: &ArtistRef) -> Artist;
+    /// What this side is willing to assert about how the name splits, or `None`
+    /// to leave the loader's own separator split standing.
+    fn split(&self, name: &str) -> Option<Vec<String>>;
     /// Announce the artist about to be looked up.
     fn starting(&self, artist_name: &str, index: usize, total: usize);
     /// A progress milestone.
@@ -306,7 +314,21 @@ fn sweep_artists(artists: Vec<ArtistRef>, io: &dyn Sweep, sender: &mut BatchSend
         debug!("Updating metadata for artist: {}", reference.name);
         io.starting(&reference.name, index, total);
 
-        batch.push(summarise(&io.update(&reference)));
+        // A `split_only` reference is not an artist the library holds -- it is
+        // an album-artist string the loader split, offered so this side can say
+        // whether the split was right. Nothing over there keeps a thumbnail, a
+        // biography or genres under that name, so a full lookup would download
+        // an image no route serves; only the split question is asked.
+        let summary = if reference.split_only {
+            ArtistSummary {
+                name: reference.name.clone(),
+                split_into: io.split(&reference.name),
+                ..Default::default()
+            }
+        } else {
+            summarise(&io.update(&reference), io.split(&reference.name))
+        };
+        batch.push(summary);
         if batch.len() >= BATCH_SIZE && !sender.send(std::mem::take(&mut batch), Vec::new()) {
             return Swept {
                 reported: index + 1,
@@ -356,6 +378,10 @@ impl Sweep for LiveSweep {
         }
 
         updated
+    }
+
+    fn split(&self, name: &str) -> Option<Vec<String>> {
+        crate::artistsplitter::split_observation(name)
     }
 
     fn starting(&self, artist_name: &str, index: usize, total: usize) {
@@ -499,7 +525,7 @@ mod tests {
         meta.add_thumb_url("https://example.com/artist.png".to_string());
 
         assert_eq!(
-            summarise(&artist("Radiohead", Some(meta), false)),
+            summarise(&artist("Radiohead", Some(meta), false), None),
             ArtistSummary {
                 name: "Radiohead".to_string(),
                 mbid: vec!["mbid-1".to_string()],
@@ -509,6 +535,7 @@ mod tests {
                     "/api/coverart/artist/YWJj/image".to_string(),
                     "https://example.com/artist.png".to_string(),
                 ],
+                split_into: None,
             }
         );
     }
@@ -518,7 +545,7 @@ mod tests {
     /// so. Recomputing it from the metadata that is gone would lose it.
     #[test]
     fn a_multi_artist_stays_multi_even_with_its_metadata_cleared() {
-        let summary = summarise(&artist("Simon & Garfunkel", None, true));
+        let summary = summarise(&artist("Simon & Garfunkel", None, true), None);
 
         assert!(summary.is_multi);
         assert!(summary.mbid.is_empty());
@@ -536,6 +563,8 @@ mod tests {
         started: Vec<String>,
         milestones: Vec<(usize, usize)>,
         paced: usize,
+        looked_up: Vec<String>,
+        split_asked: Vec<String>,
     }
 
     impl FakeSweep {
@@ -546,9 +575,20 @@ mod tests {
 
     impl Sweep for FakeSweep {
         fn update(&self, reference: &ArtistRef) -> Artist {
+            self.seen.lock().looked_up.push(reference.name.clone());
             let mut meta = ArtistMeta::new();
             meta.add_mbid(format!("mbid-{}", reference.id));
             artist(&reference.name, Some(meta), false)
+        }
+        fn split(&self, name: &str) -> Option<Vec<String>> {
+            self.seen.lock().split_asked.push(name.to_string());
+            // "Alpha and Beta" is the one name this world knows to be two
+            // artists; everything else it makes no claim about.
+            if name == "Alpha and Beta" {
+                Some(vec!["Alpha".to_string(), "Beta".to_string()])
+            } else {
+                None
+            }
         }
         fn starting(&self, artist_name: &str, _index: usize, _total: usize) {
             self.seen.lock().started.push(artist_name.to_string());
@@ -573,7 +613,7 @@ mod tests {
 
     fn refs(count: usize) -> Vec<ArtistRef> {
         (0..count)
-            .map(|i| ArtistRef { id: i.to_string(), name: format!("Artist {}", i) })
+            .map(|i| ArtistRef::named(i.to_string(), format!("Artist {}", i)))
             .collect()
     }
 

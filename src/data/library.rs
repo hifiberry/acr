@@ -3,8 +3,10 @@ use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use parking_lot::RwLock;
-use acr_types::enrichment::{merge_genres, Applied, EnrichmentBatch, EnrichmentError, EnrichmentSink};
-use acr_types::ArtistMeta;
+use acr_types::enrichment::{
+    merge_genres, Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink,
+};
+use acr_types::{AlbumArtists, ArtistMeta};
 use crate::data::album::Album;
 use crate::data::artist::Artist;
 use crate::data::Identifier;
@@ -194,6 +196,215 @@ pub fn check_generation(
     Ok(())
 }
 
+/// The album-artist strings this library split, as split-only artist
+/// references for the enrichment sweep.
+///
+/// A loader splits on separators and records the string it was given in
+/// [`Album::artists_flat`]. The parts become artists; the string itself becomes
+/// nothing, and cannot be recovered from the parts -- splitting drops the
+/// separators. So it is offered separately, as the one question the sweep can
+/// answer that the loader could not: is this one artist or several?
+///
+/// Names the library *does* hold as an artist are left out. Such a name is
+/// already in the artist list, its own summary carries the same claim, and two
+/// summaries for one name in one batch would have the second overwrite the
+/// first's metadata with nothing.
+pub fn split_questions(
+    artists: &RwLock<HashMap<String, Artist>>,
+    albums: &RwLock<HashMap<String, Album>>,
+) -> Vec<ArtistRef> {
+    // Albums first, then artists: the order `create_artists` takes them, and
+    // the read guard is dropped before the second is taken either way.
+    let mut recorded: std::collections::HashSet<String> = std::collections::HashSet::new();
+    {
+        let albums = albums.read();
+        for album in albums.values() {
+            if let Some(name) = album.artists_flat.as_deref() {
+                if !name.is_empty() {
+                    recorded.insert(name.to_string());
+                }
+            }
+        }
+    }
+    let held = artists.read();
+    recorded
+        .into_iter()
+        .filter(|name| !held.contains_key(name))
+        .map(ArtistRef::split_question)
+        .collect()
+}
+
+/// What a backend gives an artist it has only just learned about.
+///
+/// [`apply_batch`] creates artists: a split names artists the library does not
+/// hold yet. The two backends have never agreed on what an artist nothing is
+/// known about looks like — MPD gives every album artist an `ArtistMeta`, empty
+/// if need be, because that is what its artist routes have always served, while
+/// LMS leaves such an artist with none at all — so the convention is passed in
+/// rather than chosen here, where choosing would silently change one backend's
+/// output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewArtist {
+    /// MPD's convention: `"metadata": {}` rather than `"metadata": null`.
+    WithEmptyMetadata,
+    /// LMS's convention: no metadata until a lookup has something to say.
+    WithoutMetadata,
+}
+
+/// The id `create_artists` would give an artist of this name, so an artist
+/// created by a split is indistinguishable from one created by a load.
+///
+/// Both backends hash the name with `DefaultHasher` and store the result as
+/// `Identifier::Numeric`. That has to be reproduced rather than invented: the
+/// album-artist mapping is keyed by artist id, and a reload rebuilds the same
+/// artist from the same name — an id that did not match would make the
+/// mapping's entries unreachable from the artist the next load creates.
+fn artist_id_for(name: &str) -> Identifier {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    Identifier::Numeric(hasher.finish())
+}
+
+/// What [`apply_splits`] changed.
+#[derive(Default)]
+struct SplitsApplied {
+    /// Albums whose artist list was rewritten.
+    albums: usize,
+    /// Artists created, plus artists removed for having no album left.
+    artists: usize,
+}
+
+/// Rewrite album artist lists the enrichment batch says were split wrongly.
+///
+/// A loader splits an album-artist string on separators alone. That is right
+/// for "Simon & Garfunkel" and wrong for "Emerson, Lake & Palmer", and no
+/// amount of separator configuration can tell the two apart — so the loader
+/// guesses, records the string it was given in [`Album::artists_flat`], and the
+/// enrichment sweep corrects it here.
+///
+/// **The album is found by that recorded string and not by its artist list.**
+/// The list is what has to be corrected, and it has already lost the
+/// information needed to find it: three artists "Emerson", "Lake" and "Palmer"
+/// cannot be turned back into the name they came from, because splitting drops
+/// the separators. The recorded string is the only thing both directions have
+/// in common, which is what lets one rule serve both — a name wrongly kept
+/// whole and a name wrongly divided are the same operation against it.
+///
+/// An album whose `artists_flat` is `None` is left alone. Nothing claims a
+/// split for a string that was never recorded, and a library built by some
+/// other path than the two loaders keeps whatever it has.
+fn apply_splits(
+    albums: &RwLock<HashMap<String, Album>>,
+    artists: &RwLock<HashMap<String, Artist>>,
+    album_artists: &RwLock<AlbumArtists>,
+    new_artist: NewArtist,
+    batch: &EnrichmentBatch,
+) -> SplitsApplied {
+    let mut result = SplitsApplied::default();
+
+    // Only names with a positive claim. `None` makes none, and an empty list
+    // is not a claim either -- it would name an album with no artists at all,
+    // which is not something a split can produce.
+    let claims: HashMap<&str, &Vec<String>> = batch
+        .artists
+        .iter()
+        .filter_map(|a| {
+            let parts = a.split_into.as_ref()?;
+            if parts.is_empty() {
+                return None;
+            }
+            Some((a.name.as_str(), parts))
+        })
+        .collect();
+    if claims.is_empty() {
+        return result;
+    }
+
+    // Locked in the order `create_artists` takes them -- albums, artists,
+    // album_artists -- so a load running against this merge cannot deadlock
+    // with it.
+    let albums = albums.write();
+    let mut artists = artists.write();
+    let mut mapping = album_artists.write();
+
+    // Names this pass took off an album. Only these are considered for
+    // removal afterwards: an artist with no albums that this pass did not
+    // touch is somebody else's business.
+    let mut dropped: Vec<String> = Vec::new();
+
+    for album in albums.values() {
+        let Some(recorded) = album.artists_flat.as_deref() else {
+            continue;
+        };
+        let Some(&parts) = claims.get(recorded) else {
+            continue;
+        };
+
+        let mut current = album.artists.lock();
+        if *current == *parts {
+            continue;
+        }
+
+        for name in current.iter() {
+            if !parts.contains(name) {
+                let id = artists
+                    .get(name)
+                    .map(|a| a.id.clone())
+                    .unwrap_or_else(|| artist_id_for(name));
+                mapping.remove_mapping(&album.id, &id);
+                dropped.push(name.clone());
+            }
+        }
+        for name in parts.iter() {
+            if current.contains(name) {
+                continue;
+            }
+            let id = match artists.get(name).map(|existing| existing.id.clone()) {
+                Some(existing) => existing,
+                None => {
+                    let id = artist_id_for(name);
+                    artists.insert(
+                        name.clone(),
+                        Artist {
+                            id: id.clone(),
+                            name: name.clone(),
+                            is_multi: false,
+                            metadata: match new_artist {
+                                NewArtist::WithEmptyMetadata => Some(ArtistMeta::new()),
+                                NewArtist::WithoutMetadata => None,
+                            },
+                        },
+                    );
+                    result.artists += 1;
+                    id
+                }
+            };
+            mapping.add_mapping(album.id.clone(), id);
+        }
+
+        *current = parts.clone();
+        result.albums += 1;
+    }
+
+    // An artist the split took off its last album is a name no album refers to
+    // any more. Leaving it would show it in the artist list with no albums,
+    // which is exactly the phantom "Emerson" that a wrong split produced.
+    for name in dropped {
+        let Some(artist) = artists.get(&name) else {
+            continue;
+        };
+        if mapping.count_albums_for_artist(&artist.id) == 0 {
+            artists.remove(&name);
+            result.artists += 1;
+        }
+    }
+
+    result
+}
+
 /// Merge one enrichment batch into a library's album and artist maps.
 ///
 /// Every backend that implements `EnrichmentSink` calls this. The rules a
@@ -213,13 +424,25 @@ pub fn check_generation(
 /// Merging happens in place, under one write lock per map, which is what makes
 /// a batch idempotent within itself: a repeated entry is compared against what
 /// the earlier one already wrote, so it merges once and is counted once.
+///
+/// Artist splits are applied first, before the per-artist metadata merge. That
+/// ordering is what lets a rejoin pick up its own metadata in the same batch:
+/// the split creates the artist "Emerson, Lake & Palmer", and the merge that
+/// follows finds it and stores the MBID and genres the same summary carried.
 pub fn apply_batch(
     albums: &RwLock<HashMap<String, Album>>,
     artists: &RwLock<HashMap<String, Artist>>,
+    album_artists: &RwLock<AlbumArtists>,
+    new_artist: NewArtist,
     batch: &EnrichmentBatch,
 ) -> (Applied, bool) {
     let mut applied = Applied::default();
     let mut changed = false;
+
+    let split = apply_splits(albums, artists, album_artists, new_artist, batch);
+    applied.albums += split.albums;
+    applied.artists += split.artists;
+    changed |= split.albums > 0 || split.artists > 0;
 
     if !batch.albums.is_empty() {
         let mut albums = albums.write();
@@ -737,13 +960,30 @@ mod tests {
         assert_eq!(library.album_count_for_artist(&Identifier::Numeric(7)), 0);
     }
 
+    /// The three maps a merge touches, indexed the way a load leaves them.
     fn maps(
         albums: Vec<Album>,
         artists: Vec<Artist>,
-    ) -> (RwLock<HashMap<String, Album>>, RwLock<HashMap<String, Artist>>) {
+    ) -> (
+        RwLock<HashMap<String, Album>>,
+        RwLock<HashMap<String, Artist>>,
+        RwLock<AlbumArtists>,
+    ) {
+        let mut mapping = AlbumArtists::new();
+        for album in &albums {
+            for name in album.artists.lock().iter() {
+                let id = artists
+                    .iter()
+                    .find(|a| &a.name == name)
+                    .map(|a| a.id.clone())
+                    .unwrap_or_else(|| artist_id_for(name));
+                mapping.add_mapping(album.id.clone(), id);
+            }
+        }
         (
             RwLock::new(albums.into_iter().map(|a| (a.name.clone(), a)).collect()),
             RwLock::new(artists.into_iter().map(|a| (a.name.clone(), a)).collect()),
+            RwLock::new(mapping),
         )
     }
 
@@ -761,7 +1001,7 @@ mod tests {
     /// second copy is compared against what the first one wrote.
     #[test]
     fn a_repeated_entry_in_one_batch_is_applied_once() {
-        let (albums, artists) = maps(vec![album(1)], vec![]);
+        let (albums, artists, mapping) = maps(vec![album(1)], vec![]);
         let genres = acr_types::enrichment::AlbumGenres {
             id: "1".to_string(),
             genres: vec!["rock".to_string()],
@@ -772,7 +1012,7 @@ mod tests {
             albums: vec![genres.clone(), genres],
         };
 
-        let (applied, changed) = apply_batch(&albums, &artists, &batch);
+        let (applied, changed) = apply_batch(&albums, &artists, &mapping, NewArtist::WithEmptyMetadata, &batch);
 
         assert_eq!(applied.albums, 1, "the same genres twice is one change");
         assert!(changed);
@@ -785,11 +1025,13 @@ mod tests {
     fn a_batch_that_changes_nothing_reports_no_change() {
         let mut existing = album(1);
         existing.genres = vec!["rock".to_string()];
-        let (albums, artists) = maps(vec![existing], vec![]);
+        let (albums, artists, mapping) = maps(vec![existing], vec![]);
 
         let (applied, changed) = apply_batch(
             &albums,
             &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
             &EnrichmentBatch {
                 library_generation: None,
                 artists: vec![],
@@ -808,11 +1050,13 @@ mod tests {
     /// batch was computed against a list this library may since have reloaded.
     #[test]
     fn an_entry_for_something_the_library_does_not_have_is_ignored() {
-        let (albums, artists) = maps(vec![album(1)], vec![artist("Bowie")]);
+        let (albums, artists, mapping) = maps(vec![album(1)], vec![artist("Bowie")]);
 
         let (applied, changed) = apply_batch(
             &albums,
             &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
             &EnrichmentBatch {
                 library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
@@ -836,11 +1080,13 @@ mod tests {
     /// reads, so it counts as a change even when every field in it is empty.
     #[test]
     fn giving_an_artist_its_first_metadata_is_a_change() {
-        let (albums, artists) = maps(vec![], vec![artist("Bowie")]);
+        let (albums, artists, mapping) = maps(vec![], vec![artist("Bowie")]);
 
         let (applied, changed) = apply_batch(
             &albums,
             &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
             &EnrichmentBatch {
                 library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
@@ -864,11 +1110,13 @@ mod tests {
     fn a_cleared_multi_artist_keeps_no_metadata() {
         let mut existing = artist("Simon & Garfunkel");
         existing.metadata = Some(ArtistMeta::new());
-        let (albums, artists) = maps(vec![], vec![existing]);
+        let (albums, artists, mapping) = maps(vec![], vec![existing]);
 
         let (applied, changed) = apply_batch(
             &albums,
             &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
             &EnrichmentBatch {
                 library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
@@ -897,11 +1145,13 @@ mod tests {
     fn clearing_an_already_cleared_multi_artist_is_not_a_change() {
         let mut existing = artist("Simon & Garfunkel");
         existing.is_multi = true;
-        let (albums, artists) = maps(vec![], vec![existing]);
+        let (albums, artists, mapping) = maps(vec![], vec![existing]);
 
         let (applied, changed) = apply_batch(
             &albums,
             &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
             &EnrichmentBatch {
                 library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
@@ -921,11 +1171,13 @@ mod tests {
     /// only the empty case means "cleared".
     #[test]
     fn a_multi_artist_with_something_to_say_keeps_its_metadata() {
-        let (albums, artists) = maps(vec![], vec![artist("Simon & Garfunkel")]);
+        let (albums, artists, mapping) = maps(vec![], vec![artist("Simon & Garfunkel")]);
 
         apply_batch(
             &albums,
             &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
             &EnrichmentBatch {
                 library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
@@ -948,11 +1200,13 @@ mod tests {
     /// daemon's to rewrite, and the artist list route serves it verbatim.
     #[test]
     fn an_external_thumbnail_url_is_carried_unchanged() {
-        let (albums, artists) = maps(vec![], vec![artist("Bowie")]);
+        let (albums, artists, mapping) = maps(vec![], vec![artist("Bowie")]);
 
         apply_batch(
             &albums,
             &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
             &EnrichmentBatch {
                 library_generation: None,
                 artists: vec![acr_types::enrichment::ArtistSummary {
@@ -983,11 +1237,13 @@ mod tests {
     fn an_empty_genre_list_does_not_clear_existing_genres() {
         let mut existing = album(1);
         existing.genres = vec!["jazz".to_string()];
-        let (albums, artists) = maps(vec![existing], vec![]);
+        let (albums, artists, mapping) = maps(vec![existing], vec![]);
 
         let (_, changed) = apply_batch(
             &albums,
             &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
             &EnrichmentBatch {
                 library_generation: None,
                 artists: vec![],
@@ -1035,7 +1291,7 @@ mod tests {
         const SWEEPS: u64 = 50;
 
         let all_albums: Vec<Album> = (0..ALBUM_COUNT).map(album).collect();
-        let (albums, artists) = maps(all_albums, vec![]);
+        let (albums, artists, mapping) = maps(all_albums, vec![]);
 
         let start = std::time::Instant::now();
         for sweep in 0..SWEEPS {
@@ -1055,7 +1311,7 @@ mod tests {
                     })
                     .collect(),
             };
-            apply_batch(&albums, &artists, &batch);
+            apply_batch(&albums, &artists, &mapping, NewArtist::WithEmptyMetadata, &batch);
         }
         let elapsed = start.elapsed();
 
@@ -1175,6 +1431,356 @@ mod tests {
         assert!(
             lib.as_enrichment_sink().is_none(),
             "and accepts no enrichment"
+        );
+    }
+
+    //
+    // Artist splits corrected by the batch
+    //
+
+    /// One album, indexed exactly as a load leaves it: its artist list is the
+    /// plain separator split of `album_artist`, an `Artist` exists for each
+    /// part, the album-artist mapping names them, and `artists_flat` holds the
+    /// string that was split.
+    ///
+    /// The split comes from `audiocontrol::resolver::split_album_artist` rather
+    /// than being written out by hand: these tests are about correcting what
+    /// that function produces, so a fixture that guessed differently would
+    /// stop testing the case it names.
+    fn library_with_album_artist(
+        album_artist: &str,
+    ) -> (
+        RwLock<HashMap<String, Album>>,
+        RwLock<HashMap<String, Artist>>,
+        RwLock<AlbumArtists>,
+    ) {
+        let parts = crate::audiocontrol::resolver::split_album_artist(album_artist, None)
+            .unwrap_or_else(|| vec![album_artist.to_string()]);
+        let mut first = album(1);
+        first.artists = Arc::new(parking_lot::Mutex::new(parts.clone()));
+        first.artists_flat = Some(album_artist.to_string());
+        maps(vec![first], parts.iter().map(|p| artist(p)).collect())
+    }
+
+    fn artists_of_album(albums: &RwLock<HashMap<String, Album>>) -> Vec<String> {
+        albums.read()["Album 1"].artists.lock().clone()
+    }
+
+    /// A batch whose only content is a claim about how one name splits.
+    fn split_claim(name: &str, into: &[&str]) -> EnrichmentBatch {
+        EnrichmentBatch {
+            library_generation: None,
+            artists: vec![acr_types::enrichment::ArtistSummary {
+                name: name.to_string(),
+                split_into: Some(into.iter().map(|s| s.to_string()).collect()),
+                ..Default::default()
+            }],
+            albums: vec![],
+        }
+    }
+
+    fn merge(
+        albums: &RwLock<HashMap<String, Album>>,
+        artists: &RwLock<HashMap<String, Artist>>,
+        mapping: &RwLock<AlbumArtists>,
+        batch: &EnrichmentBatch,
+    ) -> (Applied, bool) {
+        apply_batch(albums, artists, mapping, NewArtist::WithEmptyMetadata, batch)
+    }
+
+    /// The easy direction: the loader kept a name whole because it holds no
+    /// separator, and the batch says it is two artists.
+    #[test]
+    fn a_batch_can_split_a_name_the_loader_kept_whole() {
+        let (albums, artists, mapping) = library_with_album_artist("Alpha and Beta");
+        assert_eq!(
+            artists_of_album(&albums),
+            vec!["Alpha and Beta"],
+            "' and ' is not a separator, so the load leaves this whole"
+        );
+
+        let (applied, changed) = merge(
+            &albums,
+            &artists,
+            &mapping,
+            &split_claim("Alpha and Beta", &["Alpha", "Beta"]),
+        );
+
+        assert_eq!(artists_of_album(&albums), vec!["Alpha", "Beta"]);
+        assert!(changed, "a rewritten artist list is a change a client sees");
+        assert_eq!(applied.albums, 1);
+
+        let held = artists.read();
+        assert!(held.contains_key("Alpha") && held.contains_key("Beta"));
+        assert!(
+            !held.contains_key("Alpha and Beta"),
+            "the name no album refers to any more must not stay in the artist list"
+        );
+
+        let mapping = mapping.read();
+        assert_eq!(mapping.count_albums_for_artist(&held["Alpha"].id), 1);
+        assert_eq!(mapping.count_albums_for_artist(&held["Beta"].id), 1);
+        assert_eq!(
+            mapping.count_albums_for_artist(&Identifier::String("Alpha and Beta".to_string())),
+            0,
+            "and the mapping must not still attribute the album to it"
+        );
+    }
+
+    /// The harder direction, and the one a separator-only split gets wrong by
+    /// construction: "Emerson, Lake & Palmer" is one artist and the plain split
+    /// makes three. `Some` of one element is what says so, and it is why that is
+    /// not the same answer as `None`.
+    #[test]
+    fn a_batch_can_rejoin_a_name_the_loader_split() {
+        let (albums, artists, mapping) = library_with_album_artist("Emerson, Lake & Palmer");
+        assert_eq!(
+            artists_of_album(&albums),
+            vec!["Emerson", "Lake", "Palmer"],
+            "the plain split makes three artists out of one"
+        );
+
+        let (applied, changed) = merge(
+            &albums,
+            &artists,
+            &mapping,
+            &split_claim("Emerson, Lake & Palmer", &["Emerson, Lake & Palmer"]),
+        );
+
+        assert_eq!(artists_of_album(&albums), vec!["Emerson, Lake & Palmer"]);
+        assert!(changed);
+        assert_eq!(applied.albums, 1);
+
+        let held = artists.read();
+        assert_eq!(
+            held.keys().collect::<Vec<_>>(),
+            vec!["Emerson, Lake & Palmer"],
+            "the three the split invented are gone and the real one is there"
+        );
+
+        let mapping = mapping.read();
+        assert_eq!(
+            mapping.count_albums_for_artist(&held["Emerson, Lake & Palmer"].id),
+            1
+        );
+        for phantom in ["Emerson", "Lake", "Palmer"] {
+            assert_eq!(
+                mapping.count_albums_for_artist(&Identifier::String(phantom.to_string())),
+                0,
+                "{} must no longer be attributed the album",
+                phantom
+            );
+        }
+    }
+
+    /// The rejoin's own metadata lands in the same batch. This is the ordering
+    /// inside `apply_batch` -- splits before the per-artist merge -- and without
+    /// it the artist the rejoin creates would wait a whole sweep for the MBID
+    /// and genres the very same summary already carried.
+    #[test]
+    fn a_rejoined_artist_keeps_the_metadata_its_own_summary_carried() {
+        let (albums, artists, mapping) = library_with_album_artist("Emerson, Lake & Palmer");
+
+        merge(
+            &albums,
+            &artists,
+            &mapping,
+            &EnrichmentBatch {
+                library_generation: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Emerson, Lake & Palmer".to_string(),
+                    mbid: vec!["elp-mbid".to_string()],
+                    genres: vec!["progressive rock".to_string()],
+                    split_into: Some(vec!["Emerson, Lake & Palmer".to_string()]),
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        let artists = artists.read();
+        let meta = artists["Emerson, Lake & Palmer"]
+            .metadata
+            .as_ref()
+            .expect("the rejoined artist carries metadata");
+        assert_eq!(meta.mbid, vec!["elp-mbid"]);
+        assert_eq!(meta.genres, vec!["progressive rock"]);
+    }
+
+    /// `None` makes no claim, and a summary full of metadata is still no claim.
+    /// This is what keeps a metadata sweep from rewriting artist lists it was
+    /// never asked about -- and what a peer that predates the field sends.
+    #[test]
+    fn a_summary_making_no_split_claim_leaves_the_artist_list_alone() {
+        let (albums, artists, mapping) = library_with_album_artist("Emerson, Lake & Palmer");
+
+        let (applied, changed) = merge(
+            &albums,
+            &artists,
+            &mapping,
+            &EnrichmentBatch {
+                library_generation: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Emerson, Lake & Palmer".to_string(),
+                    mbid: vec!["elp-mbid".to_string()],
+                    split_into: None,
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        assert_eq!(
+            artists_of_album(&albums),
+            vec!["Emerson", "Lake", "Palmer"],
+            "the loader's answer stands where the batch makes no claim"
+        );
+        assert_eq!(applied.albums, 0);
+        assert!(
+            !changed,
+            "and a summary naming an artist this library does not hold changes nothing"
+        );
+    }
+
+    /// A claim the library already satisfies is not a change. A backend bumps
+    /// its version on this bool, so a claim that arrives on every sweep -- and
+    /// it does, because the album keeps the string it was split from -- must not
+    /// invalidate every client's cached list once per sweep, for ever.
+    #[test]
+    fn a_split_already_applied_is_not_a_change() {
+        let (albums, artists, mapping) = library_with_album_artist("Alpha and Beta");
+        let claim = split_claim("Alpha and Beta", &["Alpha", "Beta"]);
+
+        let (_, first) = merge(&albums, &artists, &mapping, &claim);
+        let (applied, second) = merge(&albums, &artists, &mapping, &claim);
+
+        assert!(first, "the first application changes the list");
+        assert!(!second, "the second finds nothing left to do");
+        assert_eq!((applied.albums, applied.artists), (0, 0));
+        assert_eq!(artists_of_album(&albums), vec!["Alpha", "Beta"]);
+    }
+
+    /// A claim names an album-artist *string*, and only albums recorded under
+    /// that string are rewritten. An album that happens to share one of the
+    /// artists is not one of them.
+    #[test]
+    fn a_split_claim_only_reaches_the_albums_recorded_under_that_name() {
+        let mut other = album(2);
+        other.artists = Arc::new(parking_lot::Mutex::new(vec!["Alpha and Beta".to_string()]));
+        other.artists_flat = Some("Alpha and Beta, Gamma".to_string());
+        let mut named = album(1);
+        named.artists = Arc::new(parking_lot::Mutex::new(vec!["Alpha and Beta".to_string()]));
+        named.artists_flat = Some("Alpha and Beta".to_string());
+        let (albums, artists, mapping) =
+            maps(vec![named, other], vec![artist("Alpha and Beta")]);
+
+        merge(
+            &albums,
+            &artists,
+            &mapping,
+            &split_claim("Alpha and Beta", &["Alpha", "Beta"]),
+        );
+
+        assert_eq!(artists_of_album(&albums), vec!["Alpha", "Beta"]);
+        assert_eq!(
+            albums.read()["Album 2"].artists.lock().clone(),
+            vec!["Alpha and Beta"],
+            "an album recorded under a different string keeps what the loader gave it"
+        );
+        assert!(
+            artists.read().contains_key("Alpha and Beta"),
+            "and the name is still an artist, because album 2 still refers to it"
+        );
+    }
+
+    /// An album that recorded no album-artist string is not something a claim
+    /// can name, whatever the batch says. Nothing but the two loaders records
+    /// one, and a library built some other way keeps what it has.
+    #[test]
+    fn an_album_with_no_recorded_album_artist_is_never_rewritten() {
+        let mut bare = album(1);
+        bare.artists = Arc::new(parking_lot::Mutex::new(vec!["Alpha and Beta".to_string()]));
+        bare.artists_flat = None;
+        // Carrying metadata already, so that the per-artist merge below has
+        // nothing to report either: `changed` then says only what the split did.
+        let mut held = artist("Alpha and Beta");
+        held.metadata = Some(ArtistMeta::new());
+        let (albums, artists, mapping) = maps(vec![bare], vec![held]);
+
+        let (applied, changed) = merge(
+            &albums,
+            &artists,
+            &mapping,
+            &split_claim("Alpha and Beta", &["Alpha", "Beta"]),
+        );
+
+        assert_eq!(artists_of_album(&albums), vec!["Alpha and Beta"]);
+        assert_eq!(applied.albums, 0);
+        assert!(!changed);
+    }
+
+    /// The one thing the two backends have never agreed on. An artist a split
+    /// creates has to look like one the same backend's load creates: MPD serves
+    /// `"metadata": {}` for an album artist nothing is known about, LMS serves
+    /// `"metadata": null`. Getting this wrong changes a route's output for every
+    /// artist a split ever produces.
+    #[test]
+    fn a_created_artist_follows_the_backends_own_convention() {
+        for (policy, expected_metadata) in [
+            (NewArtist::WithEmptyMetadata, true),
+            (NewArtist::WithoutMetadata, false),
+        ] {
+            let (albums, artists, mapping) = library_with_album_artist("Alpha and Beta");
+            apply_batch(
+                &albums,
+                &artists,
+                &mapping,
+                policy,
+                &split_claim("Alpha and Beta", &["Alpha", "Beta"]),
+            );
+            assert_eq!(
+                artists.read()["Alpha"].metadata.is_some(),
+                expected_metadata,
+                "{:?} decides whether a created artist carries an empty ArtistMeta",
+                policy
+            );
+        }
+    }
+
+    /// An album-artist string the loader split is offered to the sweep, because
+    /// nothing else can: the parts cannot be turned back into it. One it kept
+    /// whole is not, because that name is already an artist and its own summary
+    /// carries the same claim -- two summaries for one name in one batch would
+    /// have the second overwrite the first's metadata with nothing.
+    #[test]
+    fn only_the_album_artist_strings_that_were_split_are_offered_as_questions() {
+        let mut split = album(1);
+        split.artists = Arc::new(parking_lot::Mutex::new(vec![
+            "Emerson".to_string(),
+            "Lake".to_string(),
+            "Palmer".to_string(),
+        ]));
+        split.artists_flat = Some("Emerson, Lake & Palmer".to_string());
+        let mut whole = album(2);
+        whole.artists = Arc::new(parking_lot::Mutex::new(vec!["Alpha and Beta".to_string()]));
+        whole.artists_flat = Some("Alpha and Beta".to_string());
+        let (albums, artists, _) = maps(
+            vec![split, whole],
+            vec![
+                artist("Emerson"),
+                artist("Lake"),
+                artist("Palmer"),
+                artist("Alpha and Beta"),
+            ],
+        );
+
+        let questions = split_questions(&artists, &albums);
+
+        assert_eq!(questions.len(), 1, "got {:?}", questions);
+        assert_eq!(questions[0].name, "Emerson, Lake & Palmer");
+        assert!(
+            questions[0].split_only,
+            "and it is asked the split question only: there is no artist here to enrich"
         );
     }
 }

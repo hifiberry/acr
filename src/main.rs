@@ -525,28 +525,32 @@ fn main() {
     #[cfg(feature = "metadata")]
     audiocontrol_metadata::coverart_providers::register_all_providers();
 
-    // Library enrichment and the resolvers -- the two player-side seams the
-    // metadata side answers over HTTP.
+    // Library enrichment -- the one player-side seam the metadata side still
+    // answers over HTTP.
+    //
+    // **The resolvers are gone.** `set_resolver` was installed here too, so
+    // that `split_album_artist` could ask the metadata daemon what an
+    // album-artist string splits into -- once per album, blocking, and the last
+    // call this daemon made into that one. The split is decided locally now and
+    // corrected by the enrichment batch; see `audiocontrol::resolver`.
+    //
     // `MetadataClient` lives in this package and names nothing from
     // `audiocontrol-metadata`, so building and installing it does not need
     // the `metadata` feature: even a `--no-default-features` daemon reaches
     // the metadata side over loopback once `services.metadata` is
     // configured, which is the phase working as intended. With no
     // `services.metadata` section, nothing is installed and every caller
-    // keeps the offline fallback it already has (see `resolver` and
-    // `enrichment` in this crate).
+    // keeps the offline fallback it already has (see `enrichment` in this
+    // crate).
     //
-    // Installed before any player starts, so no library or title splitter
-    // finds either of the two missing -- the same lifetime rule the old
-    // in-process setters kept.
+    // Installed before any player starts, so no library finds it missing --
+    // the same lifetime rule the old in-process setter kept.
     match MetadataClient::from_config(&controllers_config) {
         Some(client) => {
-            let client = Arc::new(client);
-            audiocontrol::audiocontrol::enrichment::set_enricher(client.clone());
-            audiocontrol::audiocontrol::resolver::set_resolver(client);
+            audiocontrol::audiocontrol::enrichment::set_enricher(Arc::new(client));
         }
         None => {
-            info!("services.metadata is not configured: no resolver or library enricher installed");
+            info!("services.metadata is not configured: no library enricher installed");
         }
     }
 

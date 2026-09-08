@@ -1707,7 +1707,8 @@ and artist thumbnails after it has looked them up.
         "mbid": ["b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"],
         "is_multi": false,
         "genres": ["rock"],
-        "thumb_url": ["/api/coverart/artist/YWJj/image"]
+        "thumb_url": ["/api/coverart/artist/YWJj/image"],
+        "split_into": ["The Beatles"]
       }
     ],
     "albums": [
@@ -1752,6 +1753,11 @@ and artist thumbnails after it has looked them up.
 - `thumb_url` is stored verbatim, a provider's own URL included. An empty list
   means no image was found, which is what a client reads to tell "no picture"
   from "not looked up yet".
+- `split_into` names the artists an album-artist *string* really splits into.
+  It rewrites the `artists` list of every album whose `album_artist` equals the
+  summary's `name`, creating and removing artists as that requires, and
+  reindexing them against their albums. Absent means "no claim", and the
+  library's own split stands. See **Artist splits arrive late** below.
 - One batch bumps `library_version` at most once, and not at all when nothing
   changed — a bump invalidates every client's cached list.
 
@@ -1777,11 +1783,49 @@ A backend that reports no `library_generation` (LMS) refuses any batch that
 names one, because it cannot honour the claim: it has no way to tell whether it
 has reloaded. Such a caller names no generation.
 
+**Artist splits arrive late**
+
+An album-artist tag may name one artist or several, and the daemon cannot tell
+which from the text alone. It splits on separators — `,`, `&`, ` feat `, and
+whatever `artist_separator` the player is configured with — which is right for
+"Simon & Garfunkel" and wrong for "Emerson, Lake & Palmer". The correction
+arrives here, in `split_into`.
+
+**So the first load that meets a new album artist shows the plain separator
+split, and the enrichment sweep corrects it.** An album may briefly list three
+artists where there is one, or one where there are two. This is the same
+eventual consistency genres, images and biographies already have on that
+screen: the load itself makes no network call for it any more, which is what
+took a per-album MusicBrainz round trip out of a load that can cover 200,000
+songs. A client that renders an artist list should expect it to change under it
+when the library version moves, exactly as it already does for cover art.
+
+`split_into` has three states and the middle one is easy to miss:
+
+| Value | Meaning |
+|---|---|
+| absent | No claim. Whatever the library split stays. |
+| one element | **The name is a single artist.** This is what undoes a wrong split — it is not the same as absent. |
+| several elements | The name is those artists. |
+
+The name a claim is made about is the *unsplit* album-artist string, which is
+why `GET /api/library/<player-name>/albums` serves it as `album_artist`: once a
+name has been split, the parts cannot be turned back into it, so a caller has no
+other way to name it. Such a string appears in
+`GET /api/library/<player-name>/artists` only where the library kept it whole.
+
 #### Example
 ```bash
 curl -X POST http://<device-ip>:1080/api/library/mpd/enrichment \
   -H 'Content-Type: application/json' \
   -d '{"library_generation":"5e2b91c0-a3f9c1d2-g3","albums":[{"id":"1","genres":["rock"]}]}'
+```
+
+Correcting a wrongly split album artist, and nothing else:
+```bash
+curl -X POST http://<device-ip>:1080/api/library/mpd/enrichment \
+  -H 'Content-Type: application/json' \
+  -d '{"artists":[{"name":"Emerson, Lake & Palmer","split_into":["Emerson, Lake & Palmer"]}]}'
 ```
 
 ### Get Player Albums
@@ -2419,8 +2463,15 @@ MusicBrainz-backed guess the stream title splitter makes for MPD stations.
 
 #### Resolve Artist Split
 
-Decides whether a combined artist string names more than one artist, the same
-check both library loaders run at load time on every album's artist field.
+Decides whether a combined artist string names more than one artist.
+
+**The player daemon no longer calls this.** It was the last route on the
+metadata daemon that it did call — once per album, blocking, on a load that can
+cover 200,000 songs. Both library loaders now split on separators alone and are
+corrected afterwards, through `split_into` in
+[Apply Enrichment](#apply-enrichment); see **Artist splits arrive late** there
+for what a user sees. The route stays for clients that ask the question
+directly, and answers exactly as it did.
 
 - **Endpoint**: `/api/resolve/artist-split`
 - **Method**: GET
@@ -4467,6 +4518,7 @@ An Album represents a collection of tracks/songs by one or more artists.
   "id": "12345678",
   "name": "Album Name",
   "artists": ["Artist 1", "Artist 2"],
+  "album_artist": "Artist 1 & Artist 2",
   "release_date": "2023-01-01",
   "tracks_count": 12,
   "tracks": [
@@ -4482,6 +4534,7 @@ An Album represents a collection of tracks/songs by one or more artists.
 | id | string | Unique identifier for the album (string representation of a 64-bit hash) |
 | name | string | Album name |
 | artists | array | List of artist names for this album |
+| album_artist | string | The album-artist tag as the backend reported it, before `artists` was split out of it. **Omitted** where the library recorded none. It is here because the split is lossy — "Emerson" plus "Lake" plus "Palmer" cannot be turned back into the name they came from — and it is the name an enrichment batch makes a `split_into` claim about; see [Apply Enrichment](#apply-enrichment). |
 | release_date | string | ISO 8601 formatted date of album release (YYYY-MM-DD), may be null |
 | tracks_count | number | Number of tracks on the album |
 | tracks | array | Array of Track objects (only included when requested) |

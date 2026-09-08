@@ -176,10 +176,20 @@ impl MPDLibraryLoader {
         // Create an empty track list - typically you'd populate this later
         let tracks = Arc::new(Mutex::new(Vec::<Track>::new()));
         
-        // Create artists list by splitting the album artist string through the resolver, with custom separators
+        // Split the album-artist string on separators alone, and keep the
+        // string itself.
+        //
+        // A separator split is wrong in both directions for a name that
+        // contains one: "Emerson, Lake & Palmer" becomes three artists and
+        // "Alpha and Beta" stays one. It used to be right immediately, at the
+        // cost of a MusicBrainz round trip per album on a load that can cover
+        // 200,000 songs; the correction now arrives with the enrichment sweep
+        // instead (`data::library::apply_splits`), and `artists_flat` is what
+        // it finds the album by -- splitting drops the separators, so the list
+        // alone cannot be turned back into the name it came from.
         let artists = match crate::audiocontrol::resolver::split_album_artist(&album_artist, custom_separators) {
             Some(split_artists) => Arc::new(Mutex::new(split_artists)),
-            None => Arc::new(Mutex::new(vec![album_artist]))
+            None => Arc::new(Mutex::new(vec![album_artist.clone()]))
         };
 
         debug!("Album ID: {}, Name: {}, Artists: {:?}", album_id, album_name, artists.lock());
@@ -195,7 +205,7 @@ impl MPDLibraryLoader {
             id: Identifier::Numeric(album_id),
             name: album_name.to_string(),
             artists,
-            artists_flat: None,
+            artists_flat: Some(album_artist),
             release_date,
             tracks,
             cover_art: None,

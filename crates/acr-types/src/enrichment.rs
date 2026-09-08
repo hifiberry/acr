@@ -2,10 +2,46 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// One artist as the player daemon knows it: enough to look it up.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtistRef {
     pub id: String,
     pub name: String,
+    /// True when this is an album-artist string the loader *split*, offered
+    /// only so the metadata side can say whether that split was right.
+    ///
+    /// Such a name is not an artist in the library — the library holds the
+    /// parts it was split into — so nothing on this side has a thumbnail, a
+    /// biography or genres to keep for it, and a full lookup would download an
+    /// image no route serves. The sweep answers it with
+    /// [`ArtistSummary::split_into`] and nothing else.
+    ///
+    /// It exists because a split is lossy in one direction: a library that
+    /// divided "Emerson, Lake & Palmer" into three holds three artists and no
+    /// record of the name as a whole among them, so the whole name has to be
+    /// offered separately or the wrong split can never be corrected.
+    #[serde(default)]
+    pub split_only: bool,
+}
+
+impl ArtistRef {
+    /// An artist the library actually holds.
+    pub fn named(id: String, name: String) -> Self {
+        ArtistRef {
+            id,
+            name,
+            split_only: false,
+        }
+    }
+
+    /// An album-artist string the loader split, offered for the split question
+    /// alone. See [`Self::split_only`].
+    pub fn split_question(name: String) -> Self {
+        ArtistRef {
+            id: String::new(),
+            name,
+            split_only: true,
+        }
+    }
 }
 
 /// One album as the player daemon knows it.
@@ -44,6 +80,22 @@ pub struct ArtistSummary {
     /// predates the field must not be read as clearing what a library holds.
     #[serde(default)]
     pub thumb_url: Vec<String>,
+    /// The artists this name splits into, or `None` to make no claim.
+    ///
+    /// `Some` of one element asserts the name is a single artist and is **not**
+    /// the same as `None`: it is what corrects a plain separator split that
+    /// wrongly divided a name like "Emerson, Lake & Palmer". A loader splits on
+    /// separators alone and cannot know the difference; this is how it finds
+    /// out.
+    ///
+    /// `None` is the answer whenever the metadata side has nothing positive to
+    /// say — MusicBrainz disabled, a lookup that found nothing, a name it was
+    /// never asked about. That matters because the loader may have split on
+    /// *configured* separators this side has never seen, and a claim built from
+    /// the default list alone would undo a correct split. Only a positive
+    /// answer travels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_into: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,6 +362,60 @@ mod tests {
         let round_tripped: ArtistSummary =
             serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
         assert_eq!(round_tripped, with);
+    }
+
+    /// The three states of the split claim have to survive the wire, and the
+    /// two that are easy to confuse are the ones that matter: absent means
+    /// "no claim", and a one-element list means "this is one artist". A peer
+    /// that predates the field sends neither, and must be read as making no
+    /// claim rather than as asserting an empty split.
+    #[test]
+    fn the_three_states_of_a_split_claim_survive_the_wire() {
+        let absent: ArtistSummary = serde_json::from_str(r#"{"name":"Bowie"}"#).unwrap();
+        assert_eq!(absent.split_into, None, "a peer that predates the field");
+
+        let one: ArtistSummary = serde_json::from_str(
+            r#"{"name":"Emerson, Lake & Palmer","split_into":["Emerson, Lake & Palmer"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            one.split_into,
+            Some(vec!["Emerson, Lake & Palmer".to_string()]),
+            "one element is an assertion, not an absence"
+        );
+
+        let several: ArtistSummary =
+            serde_json::from_str(r#"{"name":"Alpha and Beta","split_into":["Alpha","Beta"]}"#)
+                .unwrap();
+        assert_eq!(
+            several.split_into,
+            Some(vec!["Alpha".to_string(), "Beta".to_string()])
+        );
+
+        for summary in [absent.clone(), one, several] {
+            let round_tripped: ArtistSummary =
+                serde_json::from_str(&serde_json::to_string(&summary).unwrap()).unwrap();
+            assert_eq!(round_tripped, summary);
+        }
+
+        assert!(
+            !serde_json::to_string(&absent).unwrap().contains("split_into"),
+            "and no claim is not serialised at all, so an older peer sees nothing new"
+        );
+    }
+
+    /// A reference built for the split question alone is distinguishable from
+    /// one naming an artist the library holds. The sweep branches on it: a
+    /// `split_only` name has no artist behind it, so a full lookup would
+    /// download an image no route serves.
+    #[test]
+    fn a_split_question_is_distinguishable_from_an_artist_the_library_holds() {
+        let held = ArtistRef::named("7".to_string(), "Pink Floyd".to_string());
+        assert!(!held.split_only);
+
+        let question = ArtistRef::split_question("Emerson, Lake & Palmer".to_string());
+        assert!(question.split_only);
+        assert_eq!(question.name, "Emerson, Lake & Palmer");
     }
 
     #[test]

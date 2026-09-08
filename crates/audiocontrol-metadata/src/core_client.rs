@@ -77,6 +77,16 @@ pub struct LibraryDetail {
 pub struct LibraryAlbum {
     pub album: AlbumRef,
     pub genres: Vec<String>,
+    /// The album-artist string before the loader split it, where the route
+    /// serves one.
+    ///
+    /// The only place the *unsplit* name survives. `album.artist` is one entry
+    /// of the split list, and a split drops the separators, so three artists
+    /// "Emerson", "Lake" and "Palmer" cannot be turned back into the name they
+    /// came from -- which is the name MusicBrainz has to be asked about for the
+    /// split to be corrected. Absent from a player daemon that predates the
+    /// field.
+    pub album_artist: Option<String>,
 }
 
 /// Why a batch did not merge.
@@ -348,10 +358,10 @@ impl CoreClient {
         Ok(artists
             .iter()
             .filter_map(|a| {
-                Some(ArtistRef {
-                    id: a.get("id")?.as_str()?.to_string(),
-                    name: a.get("name")?.as_str()?.to_string(),
-                })
+                Some(ArtistRef::named(
+                    a.get("id")?.as_str()?.to_string(),
+                    a.get("name")?.as_str()?.to_string(),
+                ))
             })
             .collect())
     }
@@ -382,6 +392,10 @@ impl CoreClient {
                             .unwrap_or_default()
                             .to_string(),
                     },
+                    album_artist: a
+                        .get("album_artist")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
                     // Absent when empty, which is exactly the case the caller
                     // is looking for.
                     genres: a

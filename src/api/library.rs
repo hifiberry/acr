@@ -275,6 +275,15 @@ struct AlbumDTO {
     genres: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     categories: Vec<String>,
+    /// The album-artist string as the backend reported it, before it was split.
+    ///
+    /// `artists` above is the result of splitting this on separators, and the
+    /// split is lossy: "Emerson" plus "Lake" plus "Palmer" cannot be turned back
+    /// into the name they came from. The metadata daemon needs that name to ask
+    /// MusicBrainz whether the split was right at all, so it is served here.
+    /// Additive, and absent for a library that recorded none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    album_artist: Option<String>,
 }
 
 /// Creates an AlbumDTO from an Album with optional track inclusion.
@@ -325,6 +334,7 @@ fn create_album_dto(
         uri: album.uri,
         genres: album.genres,
         categories,
+        album_artist: album.artists_flat,
     }
 }
 
@@ -2123,6 +2133,8 @@ mod tests {
             crate::data::library::apply_batch(
                 &RwLock::new(HashMap::new()),
                 &artists,
+                &RwLock::new(acr_types::AlbumArtists::new()),
+                crate::data::library::NewArtist::WithEmptyMetadata,
                 &EnrichmentBatch {
                     library_generation: None,
                     artists: vec![

@@ -61,6 +61,14 @@ impl LibraryEnricher for InProcessEnricher {
             // it holds a URL only for an artist an image was actually found
             // for, so an empty list is meaningful rather than missing.
             thumb_url: meta.thumb_url,
+            // No claim, and there could not be one. This is the load-time
+            // question -- "what is already known about this artist?", asked
+            // once per artist while a library loads and forbidden from doing
+            // network I/O -- and by the time it is asked the loader has already
+            // split, so the name here is one part of a split rather than the
+            // string that was split. The split correction is the sweep's, in
+            // `artistupdater::summarise`.
+            split_into: None,
         })
     }
 
@@ -394,10 +402,7 @@ mod tests {
         start_sweeps(
             "mpd",
             generation.clone(),
-            vec![ArtistRef {
-                id: "7".to_string(),
-                name: "Pink Floyd".to_string(),
-            }],
+            vec![ArtistRef::named("7".to_string(), "Pink Floyd".to_string())],
             vec![AlbumRef {
                 id: "1".to_string(),
                 name: "Animals".to_string(),

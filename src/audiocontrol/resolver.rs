@@ -1,63 +1,42 @@
-//! Whether an album-artist string names one artist or several -- the one
-//! synchronous question the player side still asks about names. `main`
-//! installs a resolver — in Phase 0 the in-process one from
-//! `audiocontrol-metadata`, in Phase 1 an HTTP client for the metadata
-//! daemon — and `split_album_artist` asks here instead of reaching for
-//! MusicBrainz directly. With no resolver installed, the answer is the one a
-//! MusicBrainz-disabled install gives today: a plain separator split.
+//! Whether an album-artist string names one artist or several -- decided
+//! locally, and corrected afterwards.
 //!
-//! **The other question this module used to answer, gone with the one-way
-//! seam:** which half of a split stream title is the artist. That used to be
-//! `title_order`, a call to `GET /resolve/title-order` on the metadata
-//! daemon on every stream title change. `SongTitleSplitter`
-//! (`crate::helpers::songtitlesplitter`) now decides that locally --
+//! This used to be a question, asked once per album while a library loaded:
+//! `GET /resolve/artist-split` on the metadata daemon, a blocking round trip
+//! with a 5 s bound, on a load that can cover 200,000 songs. **It was the last
+//! call the main daemon made into the metadata daemon**, and with it gone every
+//! connection across that seam is opened by the metadata side.
+//!
+//! What is left is the answer a MusicBrainz-disabled install has always given:
+//! a plain separator split. That answer is wrong in both directions for a name
+//! containing a separator -- "Emerson, Lake & Palmer" becomes three artists,
+//! "Alpha and Beta" stays one -- and it is wrong only until the enrichment
+//! sweep says otherwise. The correction travels in the batch that already
+//! carries `is_multi`, `mbid` and genres for the same names
+//! (`ArtistSummary::split_into`, applied by `data::library::apply_splits`), so
+//! the first load meeting a new album artist shows the plain split and the
+//! sweep fixes it -- the same eventual consistency genres, images and
+//! biographies already have on that screen.
+//!
+//! **The other question this module used to answer**, gone the same way: which
+//! half of a split stream title is the artist. `SongTitleSplitter`
+//! (`crate::helpers::songtitlesplitter`) decides that locally --
 //! `forced_order`, then a learned `default_order`, then a fixed heuristic --
 //! and the metadata daemon corrects a wrong guess afterwards through
-//! `POST song-information` rather than being asked first. The `Resolver`
-//! trait still declares `title_order` (`MetadataClient` still implements it,
-//! and the metadata daemon's own in-process resolver still answers it for
-//! its own use), but nothing on this side calls it through this module any
-//! more.
+//! `POST song-information`.
 //!
-//! There is deliberately no memo here in front of the resolver.
-//! `split_artist_names_with_mbid_lookup` already caches its answer in the
-//! attribute cache, keyed on the artist name, with the same expiry and
-//! invalidation (`clear`, `remove_by_prefix`) as every other entry there. A
-//! second, process-lifetime memo on top would keep answering from that cache
-//! entry after it had been invalidated elsewhere, which is a change in
-//! today's behaviour, not a preserved one — so it is left out.
+//! Nothing is installed here any more, so there is no resolver, no setter and
+//! no memo in front of either. The `Resolver` trait and `MetadataClient`'s
+//! implementation of it survive only until the client itself goes.
 
 use acr_types::artist_split::{split_artist_with_separators, DEFAULT_ARTIST_SEPARATORS};
-use acr_types::resolver::Resolver;
-use std::sync::{Arc, OnceLock};
 
-static RESOLVER: OnceLock<Arc<dyn Resolver>> = OnceLock::new();
-
-/// Install the resolver. The first call wins; later ones are ignored.
+/// Split an album-artist string on separators alone. `None` means one artist.
 ///
-/// Set once, before any player starts, and never replaced, for the same
-/// reason as the library enricher: callers that already have an answer from
-/// one resolver must not silently start getting answers from another.
-pub fn set_resolver(r: Arc<dyn Resolver>) {
-    let _ = RESOLVER.set(r);
-}
-
-/// The installed resolver, or `None` when this build installed none.
-pub fn resolver() -> Option<Arc<dyn Resolver>> {
-    // See `enrichment::enricher` for why this is a thread-local override in
-    // tests rather than reading straight from the `OnceLock`: the global can
-    // be set only once per process, so two tests that each want a different
-    // resolver installed cannot both use it without one depending on the
-    // other having not run yet.
-    #[cfg(test)]
-    if let Some(r) = testing::current() {
-        return Some(r);
-    }
-    RESOLVER.get().cloned()
-}
-
-/// `None` means one artist. Names without a separator never reach the
-/// resolver — there is nothing for it to decide.
+/// The separators are the player's configured `artist_separator` list where it
+/// has one, and `DEFAULT_ARTIST_SEPARATORS` otherwise. The name is checked for
+/// a separator first: without one there is nothing to split and the answer is
+/// `None` whatever the list contains.
 pub fn split_album_artist(name: &str, separators: Option<&[String]>) -> Option<Vec<String>> {
     let seps: Vec<String> = separators.map(|s| s.to_vec()).unwrap_or_else(|| {
         DEFAULT_ARTIST_SEPARATORS
@@ -65,79 +44,23 @@ pub fn split_album_artist(name: &str, separators: Option<&[String]>) -> Option<V
             .map(|s| s.to_string())
             .collect()
     });
-    // Deliberately checked before the resolver is asked, even though
-    // `split_artist_names_with_mbid_lookup` reads the `artist::split::<name>`
-    // attribute-cache entry first and only checks separators after: keeping
-    // the check here is what lets a future HTTP resolver skip a round trip
-    // for a name that is obviously a single artist. Two consequences follow:
-    //
-    // - `artist::split::<name>` is no longer written for names with no
-    //   separator. The answer is the same (`None`) either way, but the cache
-    //   stops growing a row per single-artist name, so `audiocontrol_dump_cache`
-    //   shows fewer of them than it did.
-    // - A cached `Some([...])` for a name that has no separator under the
-    //   *current* `artist_separators` is now ignored, where the old order
-    //   (cache read, then separator check) would have returned it. Reachable
-    //   only if `artist_separators` is narrowed between runs, or an older
-    //   release with a wider default list wrote the entry.
     if !seps.iter().any(|s| name.contains(s.as_str())) {
         return None;
     }
-    match resolver() {
-        Some(r) => r.artist_split(name, &seps),
-        None => {
-            let parts = split_artist_with_separators(name, &seps);
-            if parts.len() > 1 {
-                Some(parts)
-            } else {
-                None
-            }
-        }
-    }
-}
-
-/// Installing a resolver for the duration of one test.
-#[cfg(test)]
-pub mod testing {
-    use super::*;
-    use std::cell::RefCell;
-
-    thread_local! {
-        static OVERRIDE: RefCell<Option<Arc<dyn Resolver>>> = const { RefCell::new(None) };
-    }
-
-    pub(super) fn current() -> Option<Arc<dyn Resolver>> {
-        OVERRIDE.with(|slot| slot.borrow().clone())
-    }
-
-    /// Removes the override when dropped, so a test cannot leak its resolver
-    /// into whatever the harness runs next on the same thread.
-    pub struct Installed;
-
-    impl Drop for Installed {
-        fn drop(&mut self) {
-            OVERRIDE.with(|slot| *slot.borrow_mut() = None);
-        }
-    }
-
-    /// Install `r` for the current thread until the returned guard is dropped.
-    #[must_use]
-    pub fn install(r: Arc<dyn Resolver>) -> Installed {
-        OVERRIDE.with(|slot| *slot.borrow_mut() = Some(r));
-        Installed
+    let parts = split_artist_with_separators(name, &seps);
+    if parts.len() > 1 {
+        Some(parts)
+    } else {
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `Resolver` still declares `title_order`, so `Fixed` below still has to
-    // implement it even though this module no longer calls it -- see the
-    // module doc comment.
-    use acr_types::OrderResult;
 
     #[test]
-    fn without_a_resolver_a_separator_split_is_plain() {
+    fn a_separator_split_is_plain() {
         assert_eq!(
             split_album_artist("A & B", None),
             Some(vec!["A".to_string(), "B".to_string()])
@@ -145,55 +68,38 @@ mod tests {
         assert_eq!(split_album_artist("Solo", None), None);
     }
 
-    struct Fixed(OrderResult, Option<Vec<String>>);
-
-    impl Resolver for Fixed {
-        fn title_order(&self, _part1: &str, _part2: &str) -> OrderResult {
-            self.0.clone()
-        }
-        fn artist_split(&self, _name: &str, _separators: &[String]) -> Option<Vec<String>> {
-            self.1.clone()
-        }
-    }
-
+    /// The two names the whole correction path exists for. Neither answer here
+    /// is right, and both are what the loader stores until a batch says
+    /// otherwise -- see `data::library`'s split tests, which is where the
+    /// correction itself is exercised.
     #[test]
-    fn an_installed_resolver_is_the_one_asked() {
-        let _guard = testing::install(Arc::new(Fixed(OrderResult::SongArtist, None)));
-        // A name with a separator reaches the resolver, whatever it answers.
-        assert_eq!(split_album_artist("A & B", None), None);
-    }
-
-    /// The second half of the reason for the thread-local: a `OnceLock` would
-    /// have kept the first test's resolver, and this one would read it.
-    #[test]
-    fn a_second_test_installs_its_own() {
-        let _guard = testing::install(Arc::new(Fixed(
-            OrderResult::ArtistSong,
-            Some(vec!["A".to_string(), "B".to_string()]),
-        )));
+    fn the_plain_split_is_wrong_in_both_directions() {
         assert_eq!(
-            split_album_artist("A & B", None),
-            Some(vec!["A".to_string(), "B".to_string()])
+            split_album_artist("Emerson, Lake & Palmer", None),
+            Some(vec![
+                "Emerson".to_string(),
+                "Lake".to_string(),
+                "Palmer".to_string()
+            ]),
+            "one artist, divided into three"
+        );
+        assert_eq!(
+            split_album_artist("Alpha and Beta", None),
+            None,
+            "two artists, kept whole: ' and ' is not a default separator"
         );
     }
 
+    /// A configured list is used instead of the defaults, and only it: a name
+    /// that splits on a default separator but not on a configured one stays
+    /// whole.
     #[test]
-    fn dropping_the_guard_uninstalls_it() {
-        {
-            let _guard = testing::install(Arc::new(Fixed(OrderResult::Undecided, None)));
-            assert!(resolver().is_some());
-        }
-        assert!(testing::current().is_none());
-    }
-
-    /// A name without a separator never reaches the resolver: even one
-    /// answering `Some` for everything must not be asked.
-    #[test]
-    fn a_name_without_a_separator_never_reaches_the_resolver() {
-        let _guard = testing::install(Arc::new(Fixed(
-            OrderResult::Unknown,
-            Some(vec!["should not".to_string(), "be seen".to_string()]),
-        )));
-        assert_eq!(split_album_artist("Solo", None), None);
+    fn a_configured_separator_list_replaces_the_defaults() {
+        let pipe = vec!["|".to_string()];
+        assert_eq!(
+            split_album_artist("Alpha|Beta", Some(&pipe)),
+            Some(vec!["Alpha".to_string(), "Beta".to_string()])
+        );
+        assert_eq!(split_album_artist("Alpha & Beta", Some(&pipe)), None);
     }
 }

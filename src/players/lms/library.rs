@@ -4,7 +4,7 @@ use parking_lot::{Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
 use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface, PlayerEvent, PlayerSource};
-use crate::data::library::{apply_batch, check_generation};
+use crate::data::library::{apply_batch, check_generation, split_questions, NewArtist};
 use acr_types::enrichment::{Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink};
 use crate::helpers::http_client;
 use crate::players::lms::jsonrps::LmsRpcClient;
@@ -125,15 +125,16 @@ impl LMSLibrary {
             return;
         };
 
-        let artists: Vec<ArtistRef> = self
+        let mut artists: Vec<ArtistRef> = self
             .artists
             .read()
             .values()
-            .map(|a| ArtistRef {
-                id: a.id.to_string(),
-                name: a.name.clone(),
-            })
+            .map(|a| ArtistRef::named(a.id.to_string(), a.name.clone()))
             .collect();
+
+        // Plus the album-artist strings the loader split -- see MPD's
+        // `request_enrichment` for why they cannot be derived from the parts.
+        artists.extend(split_questions(&self.artists, &self.albums));
 
         // LMS tracks no generation, so there is none to name and none for a
         // returning batch to be stale against: it cannot tell whether it has
@@ -728,7 +729,16 @@ impl EnrichmentSink for LMSLibrary {
     fn apply(&self, batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
         check_generation(&batch, self.library_generation())?;
 
-        let (applied, _changed) = apply_batch(&self.albums, &self.artists, &batch);
+        // `WithoutMetadata`: unlike MPD, an artist this library knows nothing
+        // about carries no metadata at all -- see `create_artists` -- so an
+        // artist a split creates must not carry one either.
+        let (applied, _changed) = apply_batch(
+            &self.albums,
+            &self.artists,
+            &self.album_artists,
+            NewArtist::WithoutMetadata,
+            &batch,
+        );
         Ok(applied)
     }
 }
@@ -847,6 +857,7 @@ mod tests {
                     is_multi: true,
                     genres: vec!["folk".into()],
                     thumb_url: vec![],
+                    split_into: None,
                 }],
                 albums: vec![],
             })

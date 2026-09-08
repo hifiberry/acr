@@ -18,9 +18,9 @@ pub mod theaudiodb;
 /// nothing on this daemon may be called by the player daemon after the one-way
 /// seam. The `library_changed` event replaced it, travelling the other way over
 /// the socket this side already holds open; see `crate::library_puller`. The
-/// route is deleted rather than deprecated because it was introduced in the
-/// unreleased 0.22.0 and its only caller ships in the same release, so there is
-/// no stale caller a deprecation window could protect.
+/// route is deleted rather than deprecated because it was both introduced and
+/// removed within 0.22.0, and its only caller shipped in that same release, so
+/// there is no stale caller a deprecation window could protect.
 ///
 /// **There is no `/spotify` group any more.** The account moved to the player
 /// daemon with the one-way seam, and all thirteen of its routes went with it

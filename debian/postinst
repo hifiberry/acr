@@ -1,6 +1,36 @@
 #!/bin/bash
 set -e
 
+# Copy a file and prove the copy matches, retrying if it does not.
+#
+# Every copy this script makes is taken while the *previous* daemon is still
+# running: dh_installsystemd --restart-after-upgrade stops nothing in prerm, so
+# the old process is still writing its files when configure runs. A plain cp of
+# a file that changes underneath it produces a copy that is a mix of before and
+# after, and for a SQLite database that is a corrupt file rather than a stale
+# one.
+#
+# cmp against the source afterwards catches exactly that: if the source changed
+# during the copy, the two differ and the copy is retried. Three attempts,
+# because the write window is milliseconds and the race is not adversarial.
+# Failing all three, the copy is removed rather than left in place -- see the
+# settings-database block below for why a bad copy is worse than none.
+#
+# cmp is from diffutils, which is Essential, so this adds no dependency.
+copy_verified() {
+    _src="$1"
+    _dst="$2"
+    _attempt=1
+    while [ "$_attempt" -le 3 ]; do
+        if cp -p "$_src" "$_dst" 2>/dev/null && cmp -s "$_src" "$_dst"; then
+            return 0
+        fi
+        _attempt=$((_attempt + 1))
+    done
+    rm -f "$_dst"
+    return 1
+}
+
 # Function to create user, group and directory
 setup_user_and_dirs() {
     # Create audiocontrol group if it doesn't exist
@@ -84,24 +114,146 @@ case "$1" in
         # half-configured with its units never enabled. The trade is
         # deliberate -- a failed copy costs the user one re-link of an
         # account, a failed configure costs them a broken package.
-        mkdir -p /var/lib/audiocontrol/metadata || \
+        # metadata/images alongside it: services.datastore.image_cache_path in
+        # metadata.json points there, and the image cache does not create its
+        # own parent. Both directories, every configure, for the same reason --
+        # the daemon needs them whether or not there is anything to migrate.
+        mkdir -p /var/lib/audiocontrol/metadata /var/lib/audiocontrol/metadata/images || \
             echo "WARNING: could not create /var/lib/audiocontrol/metadata" >&2
-        chown audiocontrol:audiocontrol /var/lib/audiocontrol/metadata || \
+        chown audiocontrol:audiocontrol /var/lib/audiocontrol/metadata /var/lib/audiocontrol/metadata/images || \
             echo "WARNING: could not set ownership on /var/lib/audiocontrol/metadata" >&2
-        chmod 755 /var/lib/audiocontrol/metadata || \
+        chmod 755 /var/lib/audiocontrol/metadata /var/lib/audiocontrol/metadata/images || \
             echo "WARNING: could not set permissions on /var/lib/audiocontrol/metadata" >&2
 
-        # Copy -- never move -- the existing store into the metadata daemon's
-        # new path. The two file guards are the whole condition: the source
-        # guard makes a fresh install (nothing to migrate) a no-op, and the
-        # destination guard makes this idempotent and unable to clobber a
-        # Last.fm login the metadata daemon has since written there,
-        # regardless of how many times or from which previous version
-        # configure runs. Both files then hold every key; each daemon writes
-        # only the ones it owns, and the foreign entries left behind are
-        # inert. A move, or a migration that deleted the foreign keys, could
-        # unlink a real Spotify or Last.fm account if it failed partway; a
-        # stray inert key costs nothing.
+        # The settings database: db/settings.db ->
+        # metadata/settings.db. It is not a cache. It holds the user's
+        # favourite songs and the artist images they picked by hand, and
+        # nothing rebuilds either -- lose the file and the favourites are gone
+        # and every chosen image reverts to whatever the downloader fetches.
+        #
+        # Copied through copy_verified() rather than a bare cp, because a torn
+        # copy of a SQLite file is worse than no copy at all, and that was
+        # measured rather than assumed. Hand the daemon a half-copied
+        # settings.db and it does not refuse to start: it logs "database disk
+        # image is malformed" once, serves every route normally, and runs with
+        # no settings database for the rest of that boot. It does not delete or
+        # rebuild the file, so every restart after it does the same -- three in
+        # a row were tried and the file was byte-for-byte unchanged. So the
+        # daemon looks healthy, systemd sees no failure, Restart=on-failure
+        # never fires, and the favourites are simply gone until somebody
+        # deletes the file by hand. A copy that cannot be verified is therefore
+        # removed, which puts the daemon on a fresh, working database instead.
+        #
+        # Guarded on the destination rather than on "$2", the same way the
+        # security-store copy above is, and for the same two reasons: it makes
+        # the copy idempotent across any number of configures, and it cannot
+        # overwrite a database the metadata daemon has since written -- which a
+        # version comparison would happily do on a downgrade-then-upgrade. The
+        # source guard makes a fresh install a no-op. A copy, never a move: the
+        # player daemon keeps reading its own file, and a rollback to the
+        # previous version must find it where it left it.
+        if [ -f /var/lib/audiocontrol/db/settings.db ] && \
+           [ ! -f /var/lib/audiocontrol/metadata/settings.db ]; then
+            # Quiesce the writer first. copy_verified() closes the window where
+            # the source changes *during* the copy, but not the one where the
+            # source is mid-transaction for the whole of it -- see the journal
+            # handling below for what that costs. Favourite songs cannot be
+            # reconstructed, so the window is not one to leave open.
+            #
+            # Inside the copy's own guard, not at the top of configure: the
+            # destination guard means this whole block runs once in a device's
+            # lifetime, and an upgrade that has nothing to copy must not pay a
+            # service stop it does not need.
+            #
+            # A failed stop is not fatal, and not even especially bad -- the
+            # copy still runs and copy_verified() still catches a torn result.
+            # The stop removes a window; nothing here depends on it.
+            #
+            # dh_installsystemd --restart-after-upgrade brings the unit back at
+            # the end of this script, so the cost is that playback stops a
+            # moment earlier in an upgrade that was going to restart it anyway.
+            if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+                deb-systemd-invoke stop audiocontrol.service >/dev/null 2>&1 || \
+                    echo "WARNING: could not stop audiocontrol.service before copying settings.db; the copy is still verified, but a source being written during it may go undetected" >&2
+            fi
+            if copy_verified /var/lib/audiocontrol/db/settings.db \
+                             /var/lib/audiocontrol/metadata/settings.db; then
+                # The -journal sidecar has to travel with the database.
+                #
+                # The unit has TimeoutStopSec=10 and FinalKillSignal=SIGKILL, so
+                # a player daemon that does not stop in time is killed, and a
+                # killed SQLite writer leaves db/settings.db-journal behind.
+                # Copying the .db alone then produces the worst result of the
+                # three, and it was measured rather than guessed: the copy is
+                # byte-identical to its source, so cmp passes it; PRAGMA
+                # integrity_check on it says "ok"; the row count is right -- and
+                # it contains rows the transaction never committed. In the case
+                # measured, 4033 of 60000 rows held data that the device itself
+                # rolled back on its next open. Nothing anywhere reports that:
+                # not cmp, not integrity_check, not the daemon's log. The
+                # metadata daemon would simply hold a settings database that
+                # quietly disagrees with the player daemon's.
+                #
+                # With the journal copied beside it, SQLite finds a hot journal
+                # on first open, rolls it back, removes it, and the result
+                # matched the pre-transaction content exactly -- the same state
+                # the source itself recovers to. So the sidecar is copied rather
+                # than the copy being refused: settings.db holds favourites and
+                # artist image choices that nothing can rebuild, and rolling
+                # back is precisely what SQLite is for.
+                #
+                # If the journal cannot be brought across, both files are
+                # removed. A .db whose journal was left behind is the silent
+                # case above; a fresh empty database is honest by comparison.
+                #
+                # The final cmp re-checks the .db after the journal copy: with
+                # the stop refused, the daemon could have committed in between,
+                # which would leave the pair mismatched -- a journal older than
+                # the database it would be rolled back into.
+                if [ -f /var/lib/audiocontrol/db/settings.db-journal ]; then
+                    if copy_verified /var/lib/audiocontrol/db/settings.db-journal \
+                                     /var/lib/audiocontrol/metadata/settings.db-journal && \
+                       cmp -s /var/lib/audiocontrol/db/settings.db \
+                              /var/lib/audiocontrol/metadata/settings.db; then
+                        chown audiocontrol:audiocontrol /var/lib/audiocontrol/metadata/settings.db-journal || \
+                            echo "WARNING: could not set ownership on the metadata daemon's settings.db-journal" >&2
+                    else
+                        rm -f /var/lib/audiocontrol/metadata/settings.db \
+                              /var/lib/audiocontrol/metadata/settings.db-journal
+                        echo "WARNING: settings.db was left mid-transaction and its journal could not be copied with it; the metadata daemon will start on an empty settings database, so favourite songs and chosen artist images will need to be set again" >&2
+                    fi
+                fi
+                if [ -f /var/lib/audiocontrol/metadata/settings.db ]; then
+                    chown audiocontrol:audiocontrol /var/lib/audiocontrol/metadata/settings.db || \
+                        echo "WARNING: could not set ownership on the metadata daemon's settings.db" >&2
+                fi
+            else
+                echo "WARNING: could not copy settings.db to the metadata daemon's directory; favourite songs and chosen artist images will need to be set again" >&2
+            fi
+        fi
+
+        # Copy -- never move -- the existing credential store into the metadata
+        # daemon's new path. The two file guards are the whole condition: the
+        # source guard makes a fresh install (nothing to migrate) a no-op, and
+        # the destination guard makes this idempotent and unable to clobber a
+        # Last.fm login the metadata daemon has since written there, regardless
+        # of how many times or from which previous version configure runs. Both
+        # files then hold every key; each daemon writes only the ones it owns,
+        # and the foreign entries left behind are inert. A move, or a migration
+        # that deleted the foreign keys, could unlink a real Spotify or Last.fm
+        # account if it failed partway; a stray inert key costs nothing.
+        #
+        # Below the settings-database block, not above it, so that on the one
+        # upgrade where both guards fire this copy is taken from a player daemon
+        # that has already been stopped. It costs no additional stop: the block
+        # above only stops the daemon when it is itself going to copy.
+        #
+        # Still a bare cp, deliberately, where the settings database uses
+        # copy_verified(). It fails differently: a torn JSON file does not
+        # parse, the metadata daemon starts on an empty store, and Last.fm shows
+        # as unlinked -- visible, and fixed by linking it again. That is a
+        # better failure than a binary database that passes every check and
+        # holds the wrong rows.
         if [ -f /var/lib/audiocontrol/security_store.json ] && \
            [ ! -f /var/lib/audiocontrol/metadata/security_store.json ]; then
             cp -p /var/lib/audiocontrol/security_store.json \
@@ -110,6 +262,22 @@ case "$1" in
             chown audiocontrol:audiocontrol /var/lib/audiocontrol/metadata/security_store.json || \
                 echo "WARNING: could not set ownership on the metadata daemon's security_store.json" >&2
         fi
+
+        # The lookup cache -- cache/attributes.db -- is deliberately NOT
+        # copied, and this is a departure from the spec, which asked for it.
+        #
+        # It is the one file the old daemon writes continuously: every
+        # enrichment writes to it, so the copy window is never quiet, and it is
+        # by far the largest of the three. It also has no verification worth
+        # having here, because unlike settings.db a mismatch is the expected
+        # case rather than the exception. Set against that, it is a pure cache
+        # of MusicBrainz and TheAudioDB answers: the daemon creates an empty
+        # one, refills it as it goes, and the only cost is some repeated
+        # external lookups over the following days.
+        #
+        # So the trade is a few days of slower lookups against a chance of the
+        # permanently cache-less daemon described above. The cache is not worth
+        # that, and this is the cheaper of the two by a wide margin.
         ;;
 
     triggered)

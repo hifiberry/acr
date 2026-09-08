@@ -1,3 +1,42 @@
+hifiberry-audiocontrol (0.23.0) trixie; urgency=medium
+
+  * The metadata half now runs as its own process. External lookups, cover
+    art, favourites and Last.fm scrobbling move out of the player daemon into
+    audiocontrol-metadata, which listens on loopback port 1084 and reaches the
+    player daemon over HTTP; nginx forwards the metadata prefixes there, so
+    client URLs are unchanged. Both daemons ship in this one package and are
+    enabled, upgraded and rolled back together, so no device runs one half
+    against another version of the other.
+
+  * The player daemon is now built without its metadata code rather than
+    merely not using it. Left in, it would have brought up a second metadata
+    instance of its own on port 1080 - a second set of caches, a second
+    enricher and a second scrobbler on the same events, which would have
+    scrobbled every track to Last.fm twice.
+
+  * Metadata state moves with it. /var/lib/audiocontrol/metadata now holds the
+    metadata daemon's settings database, its image cache and its own
+    credential store. The credential store and the settings database - which
+    carry the linked accounts, the favourite songs and the chosen artist
+    images - are copied from their previous paths on upgrade, so nothing a
+    user set up is lost. The player daemon keeps its own files where they
+    were, so a rollback to the previous version finds them intact.
+
+    The lookup cache is deliberately not copied. It is rewritten constantly by
+    the running daemon, so a copy taken during an upgrade can be torn, and a
+    torn SQLite file does not announce itself: the daemon opens it, logs one
+    error and then runs with no cache at all, for that boot and every boot
+    after it. Starting from an empty cache costs some repeated MusicBrainz and
+    TheAudioDB lookups over the following days and nothing else, so that is
+    what it does.
+
+  * The metadata daemon logs to the journal rather than to a file. It does not
+    read logging.json, so RUST_LOG or --debug is how its level is set; the
+    per-subsystem levels the player daemon supports are not available for it
+    yet.
+
+ -- HiFiBerry <support@hifiberry.com>  Tue, 08 Sep 2026 12:00:00 +0200
+
 hifiberry-audiocontrol (0.22.0) trixie; urgency=medium
 
   * The player daemon and its external-metadata code now talk to each other

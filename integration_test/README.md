@@ -19,13 +19,75 @@ The tests start AudioControl server instances and make HTTP API requests to test
   song-information update being refused, the `/api/metadata/capabilities`
   mount, artist-split resolution with MusicBrainz disabled, and `GET
   /api/player` reporting playback state. Uses `test_config_metadata.json`,
-  which points `services.metadata` and `services.core` back at the daemon's
-  own port -- in this phase both halves share one process, so the seams are
-  loopback calls to itself.
+  which points `services.core` back at the daemon's own port and deliberately
+  has **no** `services.metadata` -- one process serving both halves, so the
+  seams are loopback calls to itself.
+- `test_two_daemons.py` - The same split as **two processes**: a player daemon
+  and a metadata daemon, each on its own port. See *The two-daemon suite*
+  below; it needs more than a line, and reading a green run as more than it is
+  would be easy.
+
+## The two-daemon suite
+
+`test_two_daemons.py` is the only suite here that runs **two** daemons: the
+player daemon (`audiocontrol`) on 18080 and the metadata daemon
+(`audiocontrol-metadata`) on 18084, mirroring the shipped 1080/1084. The
+`two_daemons` fixture in `conftest.py` starts both, each with its own
+configuration file, its own caches, its own settings database and its own
+credential store. It asserts the three properties
+`doc/specs/2026-09-08-two-processes.md` names for this phase: playback working
+with the metadata daemon stopped, a credential-store write on one side leaving
+the other's file untouched, and a `metadata.json` with no `core.url` refusing
+to start with a message naming the key.
+
+Four things about it are worth knowing before changing it.
+
+**Build with `--workspace`.** The metadata daemon is a `[[bin]]` of
+`crates/audiocontrol-metadata`, not of the root package, so a plain `cargo
+build` does not produce it and the fixture fails with a missing-binary error
+naming the flag.
+
+**The fixture runs the default build, and the shipped player daemon is not
+that build.** The package builds the player daemon `--no-default-features
+--features alsa`, which serves no metadata routes at all; a default build
+carries an in-process metadata shadow that answers `/api/coverart/methods`,
+`/api/favourites/providers`, `/api/lastfm/status`,
+`/api/metadata/capabilities` and `/api/resolve/title-order` out of its own
+state. The default build is what the fixture uses, because it is what
+`run_tests.py`, every other suite here and any ordinary checkout produce, and
+because both feature sets write the same `target/debug/audiocontrol` and
+cannot coexist. The cost is real: **this suite does not test the shipped
+feature set of the player daemon.** What keeps that from making the tests
+misleading is that none of them asks the player daemon for a metadata route.
+The metadata-daemon-stopped case asserts only player-owned routes -- the play
+command, now-playing, volume, the library, `/api/events` -- and it first
+requires the metadata daemon's *own* port to refuse a connection, which
+nothing in the other process can fake. A test that started asking port 18080
+for `/api/metadata/...` would be testing the shadow, and would pass on a
+daemon that had lost the seam entirely.
+
+**Readiness is per-daemon.** The metadata daemon is ready when *its* port
+answers `/api/metadata/capabilities`, not when the player daemon answers
+anything. The seam is one-way: the metadata daemon opens every connection, and
+it does not wait for the player daemon to be up -- it binds its own port,
+probes `GET /api/version` there for up to 30 s and then starts its subscriber
+and library puller regardless. So a fixture that waited on the player daemon's
+port would be waiting on the wrong thing, and every wait in the suite is
+bounded and says what it was waiting for when it expires.
+
+**What it does not cover.** No credentials are involved anywhere in it. The
+credential-store case seeds both stores with placeholder values that are not
+credentials and are never decrypted, and asserts on key names and file
+digests; the writes it triggers (`POST /api/spotify/tokens` and `POST
+/api/lastfm/disconnect`) reach no provider. It therefore covers the file
+boundary that makes the two-writer hazard impossible, and not a real OAuth
+refresh racing a real Last.fm authentication. The spec's fourth test -- a
+store written by 0.22.0 opening in both daemons after an upgrade -- is a device
+test and is not here.
 
 ### Known Issues
 
-- **WebSocket Tests**: The WebSocket tests currently skip with "Event processing is disabled on the generic player". Even though the player is configured with `"supports_api_events": True` in `conftest.py`, API events are not processed. This issue is documented in `test_websocket.py`. See also `test_player_api_event_support` in `test_generic_integration.py` for diagnosis.
+- **WebSocket Tests**: The WebSocket tests currently skip with "Event processing is disabled on the generic player". Even though the player is configured with `"supports_api_events": True` in `conftest.py`, API events are not processed. This issue is documented in `test_websocket.py`. See also `test_player_api_event_support` in `test_generic_integration.py` for diagnosis. Note that `test_websocket.py` is no longer in this directory, and that the WebSocket case in `test_two_daemons.py` does receive a `state_changed` frame on `/api/events` after posting to `/api/player/test/update` on a generic player configured this way -- so whatever this item described, it is not "the generic player never reaches the event stream".
 
 - **Generic Integration Tests**: Some tests in `test_generic_integration.py` need to be updated to match the current API response structure. The API now returns player information in an array under the `players` key, rather than as direct keys.
 
@@ -51,8 +113,18 @@ pip install -r tests/requirements.txt
 
 2. Build AudioControl:
 ```bash
-cargo build
+cargo build --workspace
 ```
+
+`--workspace` is not optional. The metadata daemon `test_two_daemons.py` starts
+is a `[[bin]]` of `crates/audiocontrol-metadata`; a plain `cargo build` builds
+the root package only and does not produce it.
+
+Do not run this straight after `scripts/check-crate-deps.sh`: its last step
+builds `--no-default-features` into the same target directory, leaving a
+`target/debug/audiocontrol` with no metadata routes. Around forty routes then
+answer 404, which looks exactly like a regression in route mounting and is not.
+Rebuild with default features first.
 
 3. Run specific test files:
 ```bash

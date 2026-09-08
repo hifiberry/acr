@@ -1,0 +1,57 @@
+{
+    "_comment": "The METADATA daemon's configuration for the two-daemon suite, the test-scale copy of configs/metadata.json. Every path here is relative, and the daemon is started with its working directory set to the test's own temporary directory, so a run leaves nothing behind and two runs cannot share a file. The fixture rewrites webserver.port and core.url from TEST_PORTS so that the ports have one source of truth; everything else is read as written.",
+    "_comment_no_action_plugins": "There is deliberately no action_plugins array. The Last.fm entry that belongs there runs the scrobbler and the now-playing update, both of which reach the network; services.lastfm below brings up the client without them, which is all these tests need.",
+    "services": {
+        "webserver": {
+            "enable": true,
+            "host": "127.0.0.1",
+            "port": 18084
+        },
+        "core": {
+            "_comment": "The player daemon's API root, rewritten by the fixture. It must name the OTHER daemon's port: absent, the metadata daemon refuses to start, and that refusal is itself a test (test_the_metadata_daemon_refuses_to_start_without_core_url), which builds its config by deleting this url rather than by writing a second file.",
+            "url": "http://127.0.0.1:18080/api"
+        },
+        "datastore": {
+            "attribute_cache": {
+                "dbfile": "attributes.db",
+                "memory_cache_records": 100
+            },
+            "image_cache_path": "images",
+            "user_image_path": "user-images",
+            "artist_store": {
+                "cache_dir": "artists",
+                "enable_custom_images": true,
+                "auto_download": false
+            }
+        },
+        "settingsdb": {
+            "_comment": "A directory, not a file: SettingsDb appends settings.db to it.",
+            "path": "."
+        },
+        "security_store": {
+            "_comment": "This daemon's own credential store. The fixture overrides it with an absolute path under the test's temporary directory and seeds it with placeholder values for lastfm_session_key and lastfm_username -- placeholders, not credentials, and never decrypted. It must never be the player daemon's file.",
+            "path": "security_store.json"
+        },
+        "musicbrainz": {
+            "enable": false
+        },
+        "theaudiodb": {
+            "enable": false,
+            "api_key": ""
+        },
+        "fanarttv": {
+            "enable": false,
+            "api_key": ""
+        },
+        "external_coverart": {
+            "enable": false
+        },
+        "lastfm": {
+            "_comment": "enable:true brings up the client only. It carries no configured key -- LastfmClient::initialize_with_defaults reads what was compiled in, and a checkout with no secrets.txt gets placeholders -- so nothing here can reach Last.fm. What it buys is a live client behind POST /api/lastfm/disconnect, which is a real write to this daemon's own store and needs no account.",
+            "enable": true,
+            "now_playing_enabled": false,
+            "scrobble": false
+        },
+        "_comment_no_spotify": "No services.spotify, as in the shipped file: the Spotify account lives in the player daemon."
+    }
+}

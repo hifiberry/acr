@@ -1,3 +1,44 @@
+hifiberry-audiocontrol (0.23.1) trixie; urgency=medium
+
+  * Enrichment progress is now reported by the daemon that does the work.
+    GET /api/metadata/background/jobs lists the artist and album metadata
+    jobs; /api/audiocontrol/background/jobs goes on listing the player
+    daemon's own library and thumbnail jobs. The two registries are separate
+    and neither answers for the other, so a client that polled the second for
+    enrichment progress finds it there no longer.
+
+  * Rate limiting now bounds how many requests are open at a provider, not
+    just how often a new one starts. The limiter waited out the minimum
+    spacing and then let go, so the request itself was unaccounted for: when a
+    provider answered slowly the next request went out on schedule anyway and
+    the outstanding ones piled up until the provider started refusing them.
+    Measured over an enrichment sweep of an 11,858-album library, 110 of 114
+    MusicBrainz responses were HTTP 503 - 96% of the lookups in that sweep
+    returned nothing, while the same queries made one at a time still answered
+    normally. A request now holds a permit for as long as it is in flight, so
+    the configured rate is the rate the provider actually sees.
+
+    The wait also no longer blocks other providers. It used to sleep holding
+    one global lock, so a slow MusicBrainz held up Last.fm scrobbling too;
+    each provider now waits on its own.
+
+    Separately, fanart.tv had a rate limit registered and logged but applied
+    to nothing - every fanart.tv request went out unspaced and unbounded while
+    the log reported a limit it was not using. It is applied now.
+
+    The visible effect of all three is that enrichment of a large library gets
+    further per sweep. A lookup that comes back 503 contributes nothing and is
+    not retried until the next pass, so the genres, images and artist detail
+    it would have filled in simply stayed missing.
+
+  * audiocontrol_dump_cache now defaults to the cache it can read. Its
+    shortcut flags select prefixes only the metadata daemon writes, while its
+    default directory was the player daemon's, so an invocation without
+    --cache-dir reported an empty cache rather than saying it was looking in
+    the wrong place.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 08 Sep 2026 20:30:00 +0200
+
 hifiberry-audiocontrol (0.23.0) trixie; urgency=medium
 
   * The metadata half now runs as its own process. External lookups, cover
@@ -62,37 +103,6 @@ hifiberry-audiocontrol (0.23.0) trixie; urgency=medium
     linked, and nothing in the log says why. Copy api_key and api_secret from
     action_plugins.lastfm in audiocontrol.json into the same entry in
     metadata.json, restart audiocontrol-metadata, and scrobbling resumes.
-
-  * Enrichment progress is now reported by the daemon that does the work.
-    GET /api/metadata/background/jobs lists the artist and album metadata
-    jobs; /api/audiocontrol/background/jobs goes on listing the player
-    daemon's own library and thumbnail jobs. The two registries are separate
-    and neither answers for the other, so a client that polled the second for
-    enrichment progress finds it there no longer.
-
-  * Rate limiting now bounds how many requests are open at a provider, not
-    just how often a new one starts. The limiter waited out the minimum
-    spacing and then let go, so the request itself was unaccounted for: when a
-    provider answered slowly the next request went out on schedule anyway and
-    the outstanding ones piled up until the provider started refusing them.
-    Measured over an enrichment sweep of an 11,858-album library, 110 of 114
-    MusicBrainz responses were HTTP 503 - 96% of the lookups in that sweep
-    returned nothing, while the same queries made one at a time still answered
-    normally. A request now holds a permit for as long as it is in flight, so
-    the configured rate is the rate the provider actually sees.
-
-    The wait also no longer blocks other providers. It used to sleep holding
-    one global lock, so a slow MusicBrainz held up Last.fm scrobbling too;
-    each provider now waits on its own.
-
-    Separately, fanart.tv had a rate limit registered and logged but applied
-    to nothing - every fanart.tv request went out unspaced and unbounded while
-    the log reported a limit it was not using. It is applied now.
-
-    The visible effect of all three is that enrichment of a large library gets
-    further per sweep. A lookup that comes back 503 contributes nothing and is
-    not retried until the next pass, so the genres, images and artist detail
-    it would have filled in simply stayed missing.
 
   * The metadata daemon logs to the journal rather than to a file. It does not
     read logging.json, so RUST_LOG or --debug is how its level is set; the

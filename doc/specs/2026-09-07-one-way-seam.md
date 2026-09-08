@@ -190,6 +190,26 @@ it the `PlaybackStateSource` trait.
 
 ### `GET /resolve/title-order` → decide locally, correct afterwards
 
+**This section was implemented differently from what follows, and what follows
+is left in place because the reasoning against it is the substance of the
+change.** The correction does *not* travel through `POST song-information`.
+That route identifies a song by its title and artist and refuses a partial
+disagreeing with either -- which an order swap does by construction, since it
+carries the artist as the title and the title as the artist. The merge policy
+exists to reject information for a song that is no longer playing, and a swap
+is indistinguishable from that.
+
+What was built instead: the correction is a per-station observation, posted to
+`POST /player/<name>/splitter/<station>/observation`, feeding the learned
+statistics and never the forced order. Two consequences follow, and neither is
+what the paragraph below implies. **The currently playing track keeps the split
+it was given**, right or wrong -- correcting it would need the merge policy
+changed, which is an explicit non-goal. And learning is not immediate:
+`check_and_set_default_order` needs twenty decided observations at ninety-five
+per cent agreement, so a station announcing "Title - Artist" reads the wrong
+way round for roughly an hour of continuous listening. Setting the order
+outright for that station takes effect at once and beats anything learned.
+
 `SongTitleSplitter` already prefers a locally held answer: an explicitly
 configured order (`forced_order`), then an order learned from statistics
 (`default_order`), and only then a lookup. Removing the lookup leaves the first
@@ -284,7 +304,7 @@ silence.
 | Metadata daemon down later | as above | as above |
 | Main daemon down | metadata retries; results dropped | unchanged |
 | Library loads while metadata is down | nudge fails, poll catches it within 30 s | event missed, backstop poll catches it within 10 min |
-| Stream title changes | 5 s network call, then a decision | decision immediately, corrected within a second |
+| Stream title changes | 5 s network call, then a decision | decision immediately; a wrong one stands for that track, and the station is learned after ~20 observations |
 | Library load, new album artist | correct split, 5 s per album | plain split, corrected by the sweep |
 | No Spotify account linked | playback commands fail; no Spotify cover art | unchanged |
 

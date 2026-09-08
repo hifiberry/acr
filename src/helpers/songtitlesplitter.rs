@@ -306,9 +306,10 @@ impl SongTitleSplitter {
     /// -- so it never reaches `order_stats`. A correction is not a guess:
     /// something has determined the true order for `song_title` and is
     /// reporting it back, the way a resolver lookup used to. This is the new
-    /// entry point for that report, meant to be called when the metadata
-    /// daemon's correction (delivered through `song-information`) disagrees
-    /// with the split this station was given.
+    /// entry point for that report, called from the per-station observation
+    /// route. Deliberately not `song-information`: that route identifies a song
+    /// by its title and artist, and an order swap disagrees with both, so the
+    /// merge policy refuses it.
     ///
     /// `song_title` is cached against `order` so a repeat of the exact same
     /// combined title reads the confirmed order rather than the heuristic,

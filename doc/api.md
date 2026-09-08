@@ -1122,11 +1122,13 @@ This is how a companion metadata process feeds what it has separately
 determined about a station — typically a MusicBrainz-backed correction of
 this daemon's own guess — back into `learned_order`. **It never touches
 `order`**: a value set through *Set a Splitter* keeps winning regardless of
-how many observations disagree with it, and the intended caller only ever
-reports an observation when its own answer disagrees with what this daemon
-assumed, so a station whose guess already happens to be right accumulates no
-observations and needs none. Repeated agreeing observations are what
-establish `learned_order`, the same threshold `learned_order` has always
+how many observations disagree with it. The intended caller reports **both**
+decided verdicts, agreements included — not only the disagreements. That looks
+like waste and is not: the threshold below is a *ratio*, so if only
+disagreements were ever reported then every observation would name the same
+order and the ratio would always be a hundred per cent, and a station that is
+mostly the other way round would flip after twenty exceptions. Repeated
+agreeing observations are what establish `learned_order`, the same threshold it has always
 used.
 
 This is also the only route on this daemon that a companion metadata
@@ -2226,9 +2228,12 @@ change under a given album id, so those responses get
 `public, max-age=31536000, immutable` and clients can hold them
 indefinitely. Bare track URLs get `public, max-age=86400` instead, so clients
 revalidate daily rather than being stuck with a stale image for a year.
-`artist:` identifiers are redirected and carry no cache headers of their own;
-the route they point at sets the same daily revalidation, because a user can
-replace artist art with a new upload.
+`artist:` identifiers are redirected, and the redirect carries the same daily
+revalidation as the image it points at. Both are cacheable for the same reason
+and for the same day: a user can replace artist art with a new upload, and the
+redirect's destination is a pure function of the name and the size, so caching
+it saves a round trip per request without being able to go stale in a way a
+client could detect.
 
 - **Response**: Binary image data with appropriate Content-Type header
 - **Error Response** (404 Not Found): String error message

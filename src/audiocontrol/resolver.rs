@@ -22,8 +22,10 @@
 //! half of a split stream title is the artist. `SongTitleSplitter`
 //! (`crate::helpers::songtitlesplitter`) decides that locally --
 //! `forced_order`, then a learned `default_order`, then a fixed heuristic --
-//! and the metadata daemon corrects a wrong guess afterwards through
-//! `POST song-information`.
+//! and the metadata daemon reports what it finds afterwards as a per-station
+//! observation, which feeds the learned order for later tracks. It does not
+//! reach `POST song-information`: that route identifies a song by title and
+//! artist, and an order swap disagrees with both by construction.
 //!
 //! Nothing is installed here any more, so there is no resolver, no setter and
 //! no memo in front of either. The `Resolver` trait and `MetadataClient`'s

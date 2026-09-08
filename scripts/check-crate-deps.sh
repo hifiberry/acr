@@ -109,11 +109,27 @@ done
 # daemon that wanted to call the metadata daemon would have to invent an
 # address; what follows looks for the three ways it could.
 #
-# What this cannot see is a call assembled across several lines -- a base URL
-# built in one place and a path appended in another. Nothing catches that but
-# review, which is why the address is gone rather than merely unused: a
-# reviewer meeting `get_service_config(config, "metadata")` in a diff has
-# something to object to.
+# Three things it cannot see, named so the check is not mistaken for a proof.
+#
+# A call assembled across several lines -- a base URL built in one place and a
+# path appended in another. Nothing catches that but review.
+#
+# A host and port that are not adjacent in one literal: the port-matching arm
+# needs them together, and `format!("http://127.0.0.1:{}/v1", port)` already
+# appears in the tree in exactly the shape that passes it.
+#
+# And **anything under `crates/`**. Every arm below greps `src/` only, while
+# `acr-http` -- the crate providing the very client constructor the metadata
+# side uses -- is in the player library's dependency graph, as are `acr-web`,
+# `acr-store`, `acr-images` and `acr-types`. A client built in a shared crate
+# and called from `src/` passes all of this and the no-default-features build
+# too. Widening the greps to `crates/` would catch the metadata side's own
+# legitimate clients, so the honest position is that this is a tripwire and not
+# a boundary.
+#
+# What makes the rule hold is that the address is gone rather than merely
+# unused: a reviewer meeting `get_service_config(config, "metadata")` in a diff
+# has something to object to.
 
 # (a) Reading a metadata service section back into existence. `services.core`
 #     is the metadata side's own configuration and is not this; only a *read*

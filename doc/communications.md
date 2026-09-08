@@ -433,8 +433,11 @@ afterwards.
 
 - **Which half of a split stream title is the artist.** `SongTitleSplitter`
   decides from `forced_order`, then a learned `default_order`, then a fixed
-  heuristic. A wrong guess is corrected by `POST song-information`, which is
-  seam 1b and already had a merge policy.
+  heuristic. A wrong guess is **not** corrected on the track playing: it is
+  reported as a per-station observation to `POST /player/<n>/splitter/
+  <station>/observation`, which feeds the learned order for later tracks.
+  `song-information` cannot carry it -- that route identifies a song by title
+  and artist, and a swap disagrees with both.
 - **Whether an album-artist string names one artist or several.** Both library
   loaders split on separators alone — once per album, no network — and the
   correction arrives in the enrichment batch as `split_into`, which is seam 2b.
@@ -932,11 +935,18 @@ Written down because a document that only describes what works is not a map.
   redirect sends every client that asks the player half for artist art straight
   at it. That was already true of `thumb_url`, so the redirect widens an
   existing path rather than opening one.
-- **A biography is held per artist on the player side now.** It is the largest
-  thing in an `ArtistMeta` and the only one no list shows, carried because the
-  artist detail routes serve it and may no longer fetch it. On a library with
-  thousands of artists this is megabytes that Phase 1 did not spend, and nothing
-  bounds it — `sanitize::safe_truncate` exists and is not applied to this
+- **A biography is held per artist on the player side now**, bounded at 2000
+  bytes. It is the largest thing in an `ArtistMeta` and the only one no list
+  shows, carried because the artist detail routes serve it and may no longer
+  fetch it. Unbounded it was the largest new cost in the phase: roughly three
+  times the stored text once allocation is counted, so ten thousand artists at
+  three kilobytes would be about ninety megabytes on a device that may have one
+  gigabyte and is holding the library too. `summarise` applies
+  `sanitize::safe_truncate` at the one point every provider's text crosses,
+  which brings the steady state to about six kilobytes an artist — around sixty
+  megabytes for ten thousand, against a measured 255 MB for a 200,000-song
+  library. The full text is unaffected on the metadata side. What a user sees
+  is a long biography cut mid-sentence; that is
   field.
 - **`?lookup=true` has no test** distinguishing "lookup skipped" from "lookup
   ran and found nothing", because no provider is registered in the unit test

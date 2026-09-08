@@ -73,9 +73,35 @@ hifiberry-audiocontrol (0.22.0) trixie; urgency=medium
   * An artist's biography, its source and its banner URL now reach the library
     with the rest of the enrichment sweep, rather than being fetched per
     request. GET /api/library/<player>/artist/by-name/... serves the same
-    fields in the same shape; what changes is that they appear once the sweep
-    has reported on that artist, like the genres and thumbnails beside them,
-    rather than immediately after a lookup that ran during the request.
+    fields, and they appear once the sweep has reported on that artist, like
+    the genres and thumbnails beside them, rather than immediately after a
+    lookup that ran during the request.
+
+  * **A biography served from the library is now capped at 2000 bytes**, so a
+    long one is cut mid-sentence where it used to be whole. It is not a
+    cosmetic limit: the library keeps every biography it is sent for as long as
+    it holds the library, at roughly three times the stored text once
+    allocation is counted, and a large collection has eight to fifteen thousand
+    distinct artists. Unbounded, that is around ninety megabytes of memory on a
+    device that may have one gigabyte and is holding the library too. The full
+    text is unaffected and still available from GET /api/artist/<name>.
+
+  * **The order of "Artist - Title" in a radio stream is now decided locally,
+    and a wrong guess is corrected later rather than before it is shown.** The
+    daemon used to ask MusicBrainz which half was the artist before displaying
+    anything, which was right the first time and cost a network round trip on
+    every track change. It now applies the station's configured order, or the
+    one it has learned, or the "Artist - Title" convention -- and reports what
+    MusicBrainz says afterwards, as an observation against that station.
+
+    **You may see this**, and on one kind of station you will see it for a
+    while. A station that announces "Title - Artist" displays every track the
+    wrong way round until it has been learned, and learning needs twenty
+    decided observations at ninety-five per cent agreement -- roughly an hour
+    of continuous listening. The track playing when a correction arrives keeps
+    the split it was given; only later tracks benefit. Setting the order
+    outright for that station, through POST /api/player/<player>/splitter/
+    <station>, takes effect immediately and beats anything learned.
 
  -- HiFiBerry <support@hifiberry.com>  Mon, 07 Sep 2026 16:00:00 +0200
 

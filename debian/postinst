@@ -68,6 +68,48 @@ case "$1" in
             /usr/bin/audiocontrol_migrate_players /etc/audiocontrol/audiocontrol.json || \
                 echo "WARNING: could not migrate audiocontrol.json; check it for duplicate players" >&2
         fi
+
+        # The metadata daemon gets its own security store now, at
+        # /var/lib/audiocontrol/metadata/security_store.json, instead of
+        # sharing /var/lib/audiocontrol/security_store.json with the player
+        # daemon. SecurityStore::save_to_file serialises the whole in-memory
+        # map with a truncating write, so two daemons writing one file would
+        # have the second writer erase whatever the first had just written --
+        # a real credential lost silently. The directory is created
+        # unconditionally, every configure, because the metadata daemon needs
+        # it regardless of whether there is anything to migrate into it.
+        #
+        # Every step below is allowed to fail without aborting postinst: this
+        # runs under set -e, and a failure here must not leave the package
+        # half-configured with its units never enabled. The trade is
+        # deliberate -- a failed copy costs the user one re-link of an
+        # account, a failed configure costs them a broken package.
+        mkdir -p /var/lib/audiocontrol/metadata || \
+            echo "WARNING: could not create /var/lib/audiocontrol/metadata" >&2
+        chown audiocontrol:audiocontrol /var/lib/audiocontrol/metadata || \
+            echo "WARNING: could not set ownership on /var/lib/audiocontrol/metadata" >&2
+        chmod 755 /var/lib/audiocontrol/metadata || \
+            echo "WARNING: could not set permissions on /var/lib/audiocontrol/metadata" >&2
+
+        # Copy -- never move -- the existing store into the metadata daemon's
+        # new path. The two file guards are the whole condition: the source
+        # guard makes a fresh install (nothing to migrate) a no-op, and the
+        # destination guard makes this idempotent and unable to clobber a
+        # Last.fm login the metadata daemon has since written there,
+        # regardless of how many times or from which previous version
+        # configure runs. Both files then hold every key; each daemon writes
+        # only the ones it owns, and the foreign entries left behind are
+        # inert. A move, or a migration that deleted the foreign keys, could
+        # unlink a real Spotify or Last.fm account if it failed partway; a
+        # stray inert key costs nothing.
+        if [ -f /var/lib/audiocontrol/security_store.json ] && \
+           [ ! -f /var/lib/audiocontrol/metadata/security_store.json ]; then
+            cp -p /var/lib/audiocontrol/security_store.json \
+                  /var/lib/audiocontrol/metadata/security_store.json || \
+                echo "WARNING: could not copy security_store.json to the metadata daemon's path; Last.fm and Spotify accounts may need to be re-linked" >&2
+            chown audiocontrol:audiocontrol /var/lib/audiocontrol/metadata/security_store.json || \
+                echo "WARNING: could not set ownership on the metadata daemon's security_store.json" >&2
+        fi
         ;;
 
     triggered)

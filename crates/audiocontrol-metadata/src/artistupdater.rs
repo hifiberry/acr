@@ -617,6 +617,78 @@ mod tests {
             .collect()
     }
 
+    /// A `split_only` reference is the split question and nothing else. It names
+    /// no artist on the player side, so a full lookup would search MusicBrainz
+    /// and download an image for a name no route serves — once per sweep, for
+    /// every album artist the loader split.
+    #[test]
+    fn a_split_only_reference_costs_no_artist_lookup() {
+        let io = FakeSweep::new();
+        let sink = Arc::new(Recording::default());
+        let mut sender = BatchSender::new(sink.clone(), None);
+
+        sweep_artists(
+            vec![
+                ArtistRef::named("1".to_string(), "Radiohead".to_string()),
+                ArtistRef::split_question("Alpha and Beta".to_string()),
+            ],
+            &io,
+            &mut sender,
+        );
+
+        {
+            let seen = io.seen.lock();
+            assert_eq!(
+                seen.looked_up,
+                vec!["Radiohead"],
+                "only the artist the library holds is looked up"
+            );
+            assert_eq!(
+                seen.split_asked,
+                vec!["Radiohead", "Alpha and Beta"],
+                "and both are asked the split question"
+            );
+        }
+
+        let batches = sink.0.lock();
+        let summaries = &batches[0].artists;
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(
+            summaries[1].split_into,
+            Some(vec!["Alpha".to_string(), "Beta".to_string()]),
+            "the claim is what the batch carries for it"
+        );
+        assert!(
+            summaries[1].mbid.is_empty() && summaries[1].thumb_url.is_empty(),
+            "and nothing that would overwrite what the library holds under that name"
+        );
+    }
+
+    /// An artist the library *does* hold carries the split claim on its own
+    /// summary, beside its metadata. Without that, a name the loader kept whole
+    /// -- "Alpha and Beta", which holds no separator -- could never be split,
+    /// because nothing else offers it.
+    #[test]
+    fn an_artist_the_library_holds_carries_the_claim_with_its_metadata() {
+        let io = FakeSweep::new();
+        let sink = Arc::new(Recording::default());
+        let mut sender = BatchSender::new(sink.clone(), None);
+
+        sweep_artists(
+            vec![ArtistRef::named("9".to_string(), "Alpha and Beta".to_string())],
+            &io,
+            &mut sender,
+        );
+
+        let batches = sink.0.lock();
+        let summary = &batches[0].artists[0];
+        assert_eq!(
+            summary.split_into,
+            Some(vec!["Alpha".to_string(), "Beta".to_string()])
+        );
+        assert_eq!(summary.mbid, vec!["mbid-9"], "and its lookup still happened");
+    }
+
     /// Results accumulate and flush at the batch boundary, not one per artist:
     /// a library bumps its version once per batch, so flushing per artist
     /// would invalidate every client's cached list once per artist.

@@ -1809,6 +1809,33 @@ mod tests {
         }
     }
 
+    /// The metadata daemon reads this field to learn the name it may make a
+    /// split claim about. It is the only place the unsplit album-artist string
+    /// is served, and it is omitted rather than empty where the library
+    /// recorded none, so an older library is not read as having reported "".
+    #[test]
+    fn an_album_dto_serves_the_recorded_album_artist_only_when_there_is_one() {
+        let mut split = album_with_cover(None);
+        split.artists = Arc::new(Mutex::new(vec![
+            "Emerson".to_string(),
+            "Lake".to_string(),
+            "Palmer".to_string(),
+        ]));
+        split.artists_flat = Some("Emerson, Lake & Palmer".to_string());
+
+        let dto = create_album_dto(split, false, None);
+        assert_eq!(dto.album_artist.as_deref(), Some("Emerson, Lake & Palmer"));
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["album_artist"], "Emerson, Lake & Palmer");
+
+        let bare = create_album_dto(album_with_cover(None), false, None);
+        assert_eq!(bare.album_artist, None);
+        assert!(
+            serde_json::to_value(&bare).unwrap().get("album_artist").is_none(),
+            "absent, not null: nothing was recorded"
+        );
+    }
+
     #[test]
     fn an_album_dto_gains_the_prefix_on_its_cover_art() {
         let dto = create_album_dto(

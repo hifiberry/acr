@@ -740,6 +740,78 @@ mod tests {
 
     // --- one pass over a library ----------------------------------------
 
+    /// An album-artist string the player daemon split is offered to the sweep as
+    /// its own question, and it is the only thing that can be: the artist list
+    /// holds "Emerson", "Lake" and "Palmer", and those cannot be turned back
+    /// into the name they came from. Without this the rejoin half of the
+    /// correction has no way of ever being asked about.
+    ///
+    /// The album here also carries genres, so it is dropped from the *album*
+    /// list -- which is why the strings are collected before that filter.
+    #[test]
+    fn a_split_album_artist_becomes_a_question_of_its_own() {
+        let body = r#"{"players":[{"player_name":"mpd","player_id":"mpd","has_library":true,"is_loaded":true,"supports_delete":false}],
+             "player_name":"mpd","has_library":true,"is_loaded":true,
+             "library_version":"v1","library_generation":"g1",
+             "count":1,
+             "artists":[{"name":"Emerson","id":"1","is_multi":false,"album_count":1,"thumb_url":[]},
+                        {"name":"Lake","id":"2","is_multi":false,"album_count":1,"thumb_url":[]},
+                        {"name":"Palmer","id":"3","is_multi":false,"album_count":1,"thumb_url":[]}],
+             "albums":[{"id":"12","name":"Trilogy","artists":["Emerson","Lake","Palmer"],
+                        "album_artist":"Emerson, Lake & Palmer","genres":["progressive rock"],
+                        "tracks_count":0,"cover_art":null,"uri":null}]}"#;
+        let server = StubServer::serving(200, body);
+        let seen = Arc::new(Mutex::new(SeenVersions::default()));
+        let enricher = RecordingEnricher::new(false);
+
+        sweep_all(&client(&server), &seen, enricher.as_ref());
+
+        let calls = enricher.calls.lock();
+        assert_eq!(calls.len(), 1);
+        let questions: Vec<&ArtistRef> =
+            calls[0].artists.iter().filter(|a| a.split_only).collect();
+        assert_eq!(
+            questions.len(),
+            1,
+            "one split string to ask about, got {:?}",
+            calls[0].artists
+        );
+        assert_eq!(questions[0].name, "Emerson, Lake & Palmer");
+        assert!(
+            calls[0].albums.is_empty(),
+            "and the album itself needs no genre lookup"
+        );
+    }
+
+    /// An album whose artist list is the whole recorded string was never split,
+    /// so the string is already in the artist list and asking again would put
+    /// two summaries for one name in one batch.
+    #[test]
+    fn an_unsplit_album_artist_is_not_asked_about_twice() {
+        let body = r#"{"players":[{"player_name":"mpd","player_id":"mpd","has_library":true,"is_loaded":true,"supports_delete":false}],
+             "player_name":"mpd","has_library":true,"is_loaded":true,
+             "library_version":"v1","library_generation":"g1",
+             "count":1,
+             "artists":[{"name":"Alpha and Beta","id":"1","is_multi":false,"album_count":1,"thumb_url":[]}],
+             "albums":[{"id":"12","name":"Together","artists":["Alpha and Beta"],
+                        "album_artist":"Alpha and Beta",
+                        "tracks_count":0,"cover_art":null,"uri":null}]}"#;
+        let server = StubServer::serving(200, body);
+        let seen = Arc::new(Mutex::new(SeenVersions::default()));
+        let enricher = RecordingEnricher::new(false);
+
+        sweep_all(&client(&server), &seen, enricher.as_ref());
+
+        let calls = enricher.calls.lock();
+        assert_eq!(
+            calls[0].artists.len(),
+            1,
+            "the name is asked about once, as the artist it is: {:?}",
+            calls[0].artists
+        );
+        assert!(!calls[0].artists[0].split_only);
+    }
+
     /// Both halves of a sweep are handed the *generation*, not the version,
     /// and one generation covers both. A sweep given the version would refuse
     /// its own second batch the moment the first one merged.

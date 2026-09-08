@@ -1,8 +1,19 @@
+//! The background-job listing, served by whichever daemon runs the jobs.
+//!
+//! `acr_store::backgroundjobs` is a per-*process* registry, so each daemon can
+//! only ever report its own: the player daemon's library scans and image
+//! pre-warming, the metadata daemon's artist and album enrichment. That is why
+//! these handlers live here rather than in either daemon -- both mount them,
+//! over their own registry, and neither can answer for the other.
+//!
+//! See `doc/api.md`, "Background Jobs API", for the two paths and which jobs
+//! appear at each.
+
 use rocket::serde::json::Json;
 use rocket::get;
 use serde::{Deserialize, Serialize};
 use log::{debug, error};
-use crate::helpers::backgroundjobs::{get_all_jobs, BackgroundJob};
+use acr_store::backgroundjobs::{get_all_jobs, BackgroundJob};
 
 /// Response structure for background jobs listing
 #[derive(Serialize, Deserialize)]
@@ -106,7 +117,7 @@ pub fn get_background_jobs() -> Json<BackgroundJobsResponse> {
 pub fn get_background_job(job_id: String) -> Json<BackgroundJobsResponse> {
     debug!("API request: get background job with ID: {}", job_id);
 
-    match crate::helpers::backgroundjobs::get_job(&job_id) {
+    match acr_store::backgroundjobs::get_job(&job_id) {
         Ok(Some(job)) => {
             debug!("Successfully retrieved background job: {}", job_id);
             
@@ -135,4 +146,9 @@ pub fn get_background_job(job_id: String) -> Json<BackgroundJobsResponse> {
             })
         }
     }
+}
+
+/// The two routes, in the order both daemons have always mounted them.
+pub fn routes() -> Vec<rocket::Route> {
+    rocket::routes![get_background_jobs, get_background_job]
 }

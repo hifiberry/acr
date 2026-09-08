@@ -2451,6 +2451,7 @@ What is mounted under `/api/metadata/`:
 | `/api/metadata/lastfm/...` | [Last.fm Integration](#lastfm-integration) |
 | `/api/metadata/favourites/...` | [Favourites API](#favourites-api) |
 | `/api/metadata/capabilities` | the metadata side's own capabilities report |
+| `/api/metadata/background/jobs` | the metadata daemon's [background jobs](#background-jobs-api) |
 
 `GET /api/metadata/capabilities` is the one path that exists *only* under this
 mount, for the reason given above. It reports the metadata daemon's image size
@@ -2466,9 +2467,14 @@ response's own image paths are written with whatever prefix the request
 carried, exactly as described in [Image and Lyrics Paths](#image-and-lyrics-paths).
 
 The player daemon's own routes — players, library, volume, lyrics, settings,
-cache, background jobs, genres, **Spotify** and the WebSocket — are *not* under
+cache, genres, **Spotify** and the WebSocket — are *not* under
 `/api/metadata/` and are not served by the metadata daemon. They stay where
 they are.
+
+Background jobs are the exception, and the only path in the table above that is
+not simply a second address for a route the compatibility prefixes already
+reach. Both daemons serve the listing, over separate registries: see
+[Background Jobs API](#background-jobs-api).
 
 `/api/metadata/spotify/...` is gone, and never reached a released package: it
 was added by the mount that put every metadata route under a second prefix and
@@ -4232,9 +4238,20 @@ much a purge would reclaim, and to confirm what it reclaimed.
 
 ## Background Jobs API
 
-The Background Jobs API provides endpoints to monitor long-running background operations within the audio control service. This includes metadata updates, library scans, and other asynchronous tasks.
+The Background Jobs API provides endpoints to monitor long-running background operations. This includes metadata updates, library scans, and other asynchronous tasks.
 
 Jobs remain in the system after completion and are marked with `finished: true`. This allows clients to track both active and completed jobs. When a new job is created with the same ID as an existing job, it will overwrite the previous job data.
+
+**There are two of these listings, one per daemon, and neither can answer for the other.** The job registry is held in memory by the process that runs the jobs, so each daemon reports only its own:
+
+| Path | Daemon | Jobs it reports |
+|---|---|---|
+| `/api/audiocontrol/background/jobs` | player | library scans, image pre-warming, image cache maintenance |
+| `/api/metadata/background/jobs` | metadata | artist and album metadata enrichment |
+
+A client showing enrichment progress must poll the `/api/metadata/` path. Polling the player daemon's for it does not fail — it answers `200` with the jobs it does have, and simply never mentions enrichment. Before 0.23.0 there was one daemon and one registry, so a single poll of `/api/audiocontrol/background/jobs` saw everything; a client that still does only that sees enrichment stop being reported, with no error to say why.
+
+Both daemons take the same parameters and return the same shape. The endpoints below are written the way each daemon serves them, without the proxy prefix, so `GET /api/background/jobs` is whichever of the two the request reached.
 
 ### List Background Jobs
 
@@ -4380,7 +4397,8 @@ Retrieves detailed information about a specific background job by its unique ide
 
 **Example Request**:
 ```bash
-curl -X GET "http://localhost:8080/api/background/jobs/artist_metadata_update_1640995200"
+# Artist enrichment is the metadata daemon's job, so ask the metadata daemon.
+curl -X GET "http://localhost/api/metadata/background/jobs/artist_metadata_update"
 ```
 
 **Example Response (Job Found)**:
@@ -4456,11 +4474,16 @@ curl -X GET "http://localhost:8080/api/background/jobs/artist_metadata_update_16
 - New jobs with the same ID will overwrite existing job data
 
 **Background Job Types**:
-Common background jobs include:
-- `Artist Metadata Update`: Updates metadata for library artists
-- `Library Scan`: Scans and indexes music library files
-- `Cover Art Download`: Downloads cover art for albums/artists
-- `Database Maintenance`: Performs database cleanup and optimization
+
+Reported by the metadata daemon, under `/api/metadata/background/jobs`:
+- `Artist Metadata Update` (id `artist_metadata_update`): looks up metadata for the library's artists
+- `Album Genre Update` (id `album_genre_update`): fetches and cleans album genres
+
+Reported by the player daemon, under `/api/audiocontrol/background/jobs`:
+- `MPD Load Data` and `MPD Process Songs`: an MPD library scan, in its two phases
+- `Cover Art Thumbnail Generation` (id `imagecache_prewarm`): pre-generates the configured thumbnail sizes
+
+`Image Variant Purge` (id `imagecache_purge`) can appear under either: both daemons keep an image cache, and each purges its own when its size ladder changes.
 
 ## Generic Player Controller
 

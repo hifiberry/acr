@@ -387,6 +387,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossbeam",
+ "ctrlc",
  "deunicode",
  "env_logger",
  "image",

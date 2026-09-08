@@ -46,12 +46,25 @@ url.workspace = true
 # For the command line tools in src/bin/
 clap.workspace = true
 env_logger.workspace = true
+# The metadata daemon's signal handling. Its composition root switches
+# Rocket's own off and owns SIGINT, SIGTERM and SIGHUP itself, the way the
+# player daemon's does.
+ctrlc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 serial_test.workspace = true
 # Only #[tokio::test] uses this; nothing under src/ or src/bin/ is async.
 tokio.workspace = true
+
+# The metadata daemon itself. Its own composition root, in this crate rather
+# than in the root package, because a binary of the root package would link the
+# player library -- ALSA, D-Bus, MPD, evdev -- into a daemon that needs none of
+# it, and the whole point of the split is that either daemon can be built
+# without the other.
+[[bin]]
+name = "audiocontrol-metadata"
+path = "src/bin/audiocontrol-metadata.rs"
 
 # The metadata command line tools. Named explicitly so the installed binaries
 # keep the names they had when these were targets of the root package.

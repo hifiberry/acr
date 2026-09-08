@@ -126,13 +126,14 @@ code; the five `crates/acr-*` crates (`acr-types`, `acr-http`, `acr-images`,
 **`cargo build` and `cargo test` on their own operate on the root package
 only.** The workspace declares no `default-members`, so without `--workspace`
 a plain build produces the `audiocontrol` binary and the ten tools that are
-still `[[bin]]` targets of the root package — not the four that moved to
-`crates/audiocontrol-metadata/src/bin/`, and not the shared crates' own test
-suites. Always pass `--workspace` for a build or test run that is meant to
-cover everything:
+still `[[bin]]` targets of the root package — **not the `audiocontrol-metadata`
+daemon**, which is a `[[bin]]` of `crates/audiocontrol-metadata` and not of the
+root package, not the four tools that moved there with it, and not the shared
+crates' own test suites. Always pass `--workspace` for a build or test run that
+is meant to cover everything:
 
 ```sh
-cargo build --release --workspace   # all fifteen audiocontrol* binaries
+cargo build --release --workspace   # all sixteen audiocontrol* binaries
 cargo test --workspace              # every crate's tests, not just the root package's
 ```
 

@@ -50,8 +50,24 @@ is dropped immediately and restores the old, unbounded behaviour. The type is
 
 Two permits for the same service held on one thread would otherwise wait on the
 thread itself. The limiter detects that, logs a warning and lets the nested call
-through -- spacing still applies -- but the call site should scope its permits
-instead, as `search_release_group_genres` does for its two-step lookup.
+through -- spacing still applies -- but a call site should scope its permits so
+it never arises.
+
+The surest way to arrange that is to take the permit inside the one function
+that makes the request, rather than in each of its callers. MusicBrainz and
+fanart.tv are built that way: `musicbrainz_api_get` and `fanarttv_api_get` are
+the only places in their modules that reach the network, and each takes its own
+permit, so a new caller cannot forget one and a two-step lookup becomes two
+sequential acquisitions rather than something to scope by hand. This works
+only where the request function is a leaf; check that before moving a permit
+into one, because a caller still holding a permit would deadlock against
+itself under a bound of one.
+
+The permit is also `!Send`, so it cannot be moved to another thread and
+dropped there. The re-entrancy marker it clears on drop is thread-local;
+releasing a permit on the wrong thread would leave the taking thread marked
+for the rest of the process, and every later acquisition on that thread would
+be treated as nested and take no slot.
 
 ## Supported Services
 

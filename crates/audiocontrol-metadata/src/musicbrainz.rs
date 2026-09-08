@@ -339,6 +339,15 @@ fn artist_names_match(query_name: &str, response_name: &str, response_aliases: O
 /// * `Result<String, String>` - API response or error message
 fn musicbrainz_api_get(url: &str) -> Result<String, String> {
     debug!("Making MusicBrainz API request: {}", url);
+
+    // The permit is taken here rather than by each caller, so it cannot be
+    // forgotten by a new one: this is the only function in the module that
+    // reaches the network. It is held until the request finishes, bounding
+    // concurrent requests as well as spacing their starts.
+    //
+    // Safe against self-deadlock because this function is a leaf -- it calls
+    // nothing that takes a MusicBrainz permit -- and no caller holds one.
+    let _permit = ratelimit::rate_limit("musicbrainz");
     
     // Add proper User-Agent header and timeout using ureq's raw API.
     // MusicBrainz was measured answering searches in 13-15 s during a library
@@ -431,9 +440,6 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         debug!("Artist '{}' not found in cache and cache_only=true", artist_name);
         return MusicBrainzSearchResult::NotFound;
     }
-      // Apply rate limiting before making the API request
-    let _permit = ratelimit::rate_limit("musicbrainz");
-    
     // Sanitize artist name for the API query
     let sanitized_artist_name = sanitize_artist_name_for_search(artist_name);
     debug!("Searching MusicBrainz for artist: '{}' (sanitized from '{}')", sanitized_artist_name, artist_name);
@@ -751,9 +757,6 @@ pub fn search_recording(artist: &str, title: &str) -> Result<MusicBrainzRecordin
         });
     }
     
-    // Apply rate limiting before making the API request
-    let _permit = ratelimit::rate_limit("musicbrainz");
-    
     // Build query for exact match
     let query = format!("artist:\"{}\" AND recording:\"{}\"", artist, title);
     let url = format!("{}/recording/?query={}&fmt=json&limit=5", MUSICBRAINZ_API_BASE, urlencoding::encode(&query));
@@ -829,16 +832,11 @@ pub fn search_release_group_genres(artist: &str, album: &str) -> Vec<String> {
 
     let search_url = format!("{}/release-group?query={}&limit=1&fmt=json", MUSICBRAINZ_API_BASE, encoded);
 
-    // Each request holds its own permit, released before the next is taken:
-    // two permits held at once on this thread would be a nested acquisition.
-    let body = {
-        let _permit = ratelimit::rate_limit("musicbrainz");
-        match musicbrainz_api_get(&search_url) {
-            Ok(b) => b,
-            Err(e) => {
-                debug!("MusicBrainz release-group search failed for '{}' / '{}': {}", artist, album, e);
-                return Vec::new();
-            }
+    let body = match musicbrainz_api_get(&search_url) {
+        Ok(b) => b,
+        Err(e) => {
+            debug!("MusicBrainz release-group search failed for '{}' / '{}': {}", artist, album, e);
+            return Vec::new();
         }
     };
 
@@ -861,14 +859,11 @@ pub fn search_release_group_genres(artist: &str, album: &str) -> Vec<String> {
     // Step 2: fetch genres for this release group
     let detail_url = format!("{}/release-group/{}?inc=genres&fmt=json", MUSICBRAINZ_API_BASE, mbid);
 
-    let body2 = {
-        let _permit = ratelimit::rate_limit("musicbrainz");
-        match musicbrainz_api_get(&detail_url) {
-            Ok(b) => b,
-            Err(e) => {
-                debug!("MusicBrainz release-group genre fetch failed for {}: {}", mbid, e);
-                return Vec::new();
-            }
+    let body2 = match musicbrainz_api_get(&detail_url) {
+        Ok(b) => b,
+        Err(e) => {
+            debug!("MusicBrainz release-group genre fetch failed for {}: {}", mbid, e);
+            return Vec::new();
         }
     };
 

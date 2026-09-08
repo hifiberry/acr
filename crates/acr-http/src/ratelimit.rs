@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 use parking_lot::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 use once_cell::sync::Lazy;
@@ -156,11 +157,23 @@ pub fn register_service_with_concurrency(
 /// is exactly the defect this type was introduced to fix: against a provider
 /// answering in 15 s, one start per second put a dozen requests in flight and
 /// the surplus came back 503.
-#[must_use = "the permit must stay in scope for the whole request; dropping it               immediately spaces the starts but leaves concurrency unbounded"]
+#[must_use = "bind the permit for the whole request; dropping it immediately spaces the starts but leaves concurrency unbounded"]
 pub struct Permit {
     service: String,
     /// False for a nested acquisition, which occupies no slot of its own.
     holds_slot: bool,
+    /// Makes the permit `!Send`, so it cannot be dropped on a thread other
+    /// than the one that took it.
+    ///
+    /// The re-entrancy marker cleared on drop lives in a thread-local. A
+    /// permit released on a different thread would clear that thread's marker
+    /// instead and leave the originating thread's set forever, so every later
+    /// acquisition on it would be treated as nested and take no slot -- the
+    /// concurrency bound silently gone for that thread and service, which is
+    /// the original defect wearing a different hat. No call site does this
+    /// today; the point is that none can, including by holding a permit
+    /// across an `.await` if this ever meets async code.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl Drop for Permit {
@@ -192,6 +205,16 @@ impl Drop for Permit {
 /// A service that has not been registered gets the defaults: one request per
 /// second, one at a time.
 ///
+/// The permit is `!Send` on purpose. Moving one to another thread and dropping
+/// it there would leak the taking thread's re-entrancy marker and quietly
+/// disable its concurrency bound, so the compiler refuses:
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>(_: T) {}
+/// let permit = acr_http::ratelimit::rate_limit("doctest.not.send");
+/// assert_send(permit);
+/// ```
+///
 /// # Arguments
 /// * `service_name` - Name of the service to rate limit
 pub fn rate_limit(service_name: &str) -> Permit {
@@ -202,7 +225,7 @@ pub fn rate_limit(service_name: &str) -> Permit {
     let nested = HELD_BY_THIS_THREAD.with(|held| held.borrow().contains(service_name));
     if nested {
         warn!(
-            "Nested rate-limit permit for service '{}' on one thread; the outer              permit should be scoped to its own request",
+            "Nested rate-limit permit for service '{}'; the outer permit should be scoped to its own request",
             service_name
         );
     }
@@ -249,6 +272,7 @@ pub fn rate_limit(service_name: &str) -> Permit {
     Permit {
         service: service_name.to_string(),
         holds_slot: !nested,
+        _not_send: PhantomData,
     }
 }
 

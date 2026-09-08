@@ -130,14 +130,21 @@ fn http_client() -> Box<dyn http_client::HttpClient> {
 
 /// Fetch a fanart.tv URL under the service's rate limit.
 ///
-/// Both entry points go through here, which is the point: the module used to
-/// register a rate limit for "fanarttv" -- and log that it had one -- without
-/// any call site ever applying it, so fanart.tv was the one provider being hit
-/// with no spacing and no bound at all.
+/// Every request in this module goes through here, which is the point: it used
+/// to register a rate limit for "fanarttv" -- and log that it had one --
+/// without any call site ever applying it, so fanart.tv was the one provider
+/// being hit with no spacing and no bound at all. Reaching the network any
+/// other way should be harder than reaching it through this.
+fn fanarttv_api_get(url: &str) -> Result<String, http_client::HttpClientError> {
+    fanarttv_api_get_with(http_client().as_ref(), url)
+}
+
+/// The body of [`fanarttv_api_get`], with the transport supplied by the caller
+/// so the request path can be exercised without a network.
 ///
 /// The permit is held across the request, so concurrent callers queue instead
 /// of opening parallel connections.
-fn fanarttv_api_get(
+fn fanarttv_api_get_with(
     client: &dyn http_client::HttpClient,
     url: &str,
 ) -> Result<String, http_client::HttpClientError> {
@@ -184,8 +191,7 @@ pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Ve
 
     let mut thumbnail_urls = Vec::new();
     
-    let client = http_client();
-    match fanarttv_api_get(client.as_ref(), &url) {
+    match fanarttv_api_get(&url) {
         Ok(response_text) => {
             // Parse the JSON response
             match serde_json::from_str::<Value>(&response_text) {
@@ -268,8 +274,7 @@ pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
 
     let mut banner_urls = Vec::new();
     
-    let client = http_client();
-    match fanarttv_api_get(client.as_ref(), &url) {
+    match fanarttv_api_get(&url) {
         Ok(response_text) => {
             // Parse the JSON response
             match serde_json::from_str::<Value>(&response_text) {
@@ -482,6 +487,10 @@ mod tests {
     /// unbounded while the other providers were being serialised.
     #[test]
     fn fanarttv_requests_go_out_one_at_a_time() {
+        // This registers the production service name in the global rate
+        // limiter, which outlives the test. Spacing is set to 1 ms so it does
+        // not slow anything else down; the assertion below is about the
+        // concurrency bound, which holds whatever the spacing is.
         ratelimit::register_service("fanarttv", 1);
 
         let client = Arc::new(ConcurrencyWitnessClient::default());
@@ -489,7 +498,7 @@ mod tests {
             .map(|_| {
                 let client = Arc::clone(&client);
                 thread::spawn(move || {
-                    let _ = fanarttv_api_get(client.as_ref(), "http://example.invalid/");
+                    let _ = fanarttv_api_get_with(client.as_ref(), "http://example.invalid/");
                 })
             })
             .collect();

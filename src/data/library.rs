@@ -3,6 +3,7 @@ use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use parking_lot::RwLock;
+use log::warn;
 use acr_types::enrichment::{
     merge_genres, Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink,
 };
@@ -171,6 +172,43 @@ impl LibraryVersion {
 // Enrichment merge
 //
 
+// **The lock order for a library's three maps, and the one rule that keeps it
+// honest.**
+//
+// A backend holds three: `albums`, `artists` and `album_artists`. Where two are
+// needed at once the order is **`albums`, then `artists`, then
+// `album_artists`** -- the order both backends take them in `create_artists`.
+//
+// **`parking_lot`'s `RwLock` is task-fair: a queued writer blocks new
+// readers.** So a *read* guard is not a free pass, and reasoning that says
+// "these are only reads, they cannot deadlock" is wrong -- an earlier version
+// of this file said exactly that. Three threads close a cycle that two cannot:
+//
+// | thread | holds | waits for |
+// |---|---|---|
+// | a merge holding the album map | `albums` read | `album_artists` write |
+// | a library reload | -- | `albums` write, queued behind that read |
+// | `get_albums_by_artist_id` | `album_artists` read | `albums` read, queued behind the writer |
+//
+// `parking_lot` has no timeout, so that is permanent, and the window is as long
+// as the merge's loop -- it grows with the library. Two consequences are
+// designed in rather than commented on:
+//
+// - **`apply_splits` holds no two of the three at once.** It plans under
+//   `albums` alone, releases it, and applies under `artists` and
+//   `album_artists`. `a_merge_does_not_hold_the_album_map_while_it_writes`
+//   fails if the two phases are put back together, which a comment could not
+//   make happen.
+// - **Nothing holds `album_artists` while it acquires `albums`.** The album
+//   lookups by artist take the mapping, copy the ids they need, drop it, and
+//   only then read the album map -- so the inversion in the table above is
+//   removed rather than worked around.
+//
+// This is stated here rather than beside one lock because it is a property of
+// the set. `helpers::global_volume` states the same kind of rule for the pair
+// it owns.
+
+
 /// The check every backend makes before merging an enrichment batch.
 ///
 /// Lives here for the same reason [`apply_batch`] does: two backends must not
@@ -277,11 +315,92 @@ struct SplitsApplied {
     artists: usize,
 }
 
+/// The most artists one album-artist string may be said to split into.
+///
+/// A claim naming more than this is not a split, it is a malformed batch, and
+/// applying part of one is worse than applying none: the batch is a route a
+/// client can call, and each name it carries becomes an entry in the library's
+/// artist list. Generous on purpose -- the longest real credits run to a
+/// handful.
+const MAX_SPLIT_PARTS: usize = 32;
+
+/// The longest artist name a split may introduce, in bytes.
+///
+/// Long enough for the longest real band name plus room to spare, short enough
+/// that a claim cannot fill the artist list with megabyte keys.
+const MAX_SPLIT_NAME_BYTES: usize = 256;
+
+/// Check one `split_into` claim and normalise it, or reject it whole.
+///
+/// **A malformed claim is refused entirely rather than partly applied**, which
+/// is the whole point. `["", "  ", "Simon"]` half-applied leaves two blank-named
+/// artists in the library and drops the artist that was there; refused, the
+/// loader's own split stands, which is the answer this field's `None` already
+/// means. The batch arrives on a route a client can call, so this is where the
+/// library stops trusting it.
+///
+/// Names are trimmed, because a metadata daemon's own splitter trims and one
+/// that did not would otherwise create " Simon" beside "Simon". Repeats are
+/// dropped silently: naming an artist twice is not information, and an album
+/// cannot list one twice.
+fn normalise_claim(name: &str, parts: &[String]) -> Option<Vec<String>> {
+    if parts.len() > MAX_SPLIT_PARTS {
+        warn!(
+            "ignoring a split claim for '{}': {} parts is more than a name can split into",
+            name,
+            parts.len()
+        );
+        return None;
+    }
+    let mut normalised: Vec<String> = Vec::with_capacity(parts.len());
+    for part in parts {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            warn!(
+                "ignoring a split claim for '{}': it names an empty artist",
+                name
+            );
+            return None;
+        }
+        if trimmed.len() > MAX_SPLIT_NAME_BYTES {
+            warn!(
+                "ignoring a split claim for '{}': one part is {} bytes long",
+                name,
+                trimmed.len()
+            );
+            return None;
+        }
+        if !normalised.iter().any(|kept| kept == trimmed) {
+            normalised.push(trimmed.to_string());
+        }
+    }
+    // Unreachable while `apply_splits` filters empty lists out first, and kept
+    // so that this function alone is safe to call: an empty artist list is not
+    // something a split can produce.
+    if normalised.is_empty() {
+        return None;
+    }
+    Some(normalised)
+}
+
+/// One album the batch claims a different artist list for.
+///
+/// Carries the album's `artists` handle rather than a key into the album map,
+/// which is what lets the map's lock be released before anything is written --
+/// see the lock-order note above. The `Arc` keeps the album's list alive even if
+/// a reload drops the album from the map in between, so the write lands on a
+/// vector nothing reads any more rather than on the wrong album.
+struct PlannedSplit {
+    album_id: Identifier,
+    artists: Arc<parking_lot::Mutex<Vec<String>>>,
+    parts: Vec<String>,
+}
+
 /// Rewrite album artist lists the enrichment batch says were split wrongly.
 ///
 /// A loader splits an album-artist string on separators alone. That is right
 /// for "Simon & Garfunkel" and wrong for "Emerson, Lake & Palmer", and no
-/// amount of separator configuration can tell the two apart — so the loader
+/// amount of separator configuration can tell the two apart -- so the loader
 /// guesses, records the string it was given in [`Album::artists_flat`], and the
 /// enrichment sweep corrects it here.
 ///
@@ -290,12 +409,19 @@ struct SplitsApplied {
 /// information needed to find it: three artists "Emerson", "Lake" and "Palmer"
 /// cannot be turned back into the name they came from, because splitting drops
 /// the separators. The recorded string is the only thing both directions have
-/// in common, which is what lets one rule serve both — a name wrongly kept
+/// in common, which is what lets one rule serve both -- a name wrongly kept
 /// whole and a name wrongly divided are the same operation against it.
 ///
 /// An album whose `artists_flat` is `None` is left alone. Nothing claims a
 /// split for a string that was never recorded, and a library built by some
 /// other path than the two loaders keeps whatever it has.
+///
+/// **Two phases, and the split between them is a lock-order requirement rather
+/// than tidiness.** The plan is collected under the album map alone; the map is
+/// then released, and only then are the artist map and the album-artist mapping
+/// taken. Holding the album map across the write closes a three-thread deadlock
+/// with a library reload and `get_albums_by_artist_id` -- see the lock-order
+/// note above, and the test named there.
 fn apply_splits(
     albums: &RwLock<HashMap<String, Album>>,
     artists: &RwLock<HashMap<String, Artist>>,
@@ -307,12 +433,15 @@ fn apply_splits(
 
     // Only names with a positive claim. `None` makes none, and an empty list
     // is not a claim either -- it would name an album with no artists at all,
-    // which is not something a split can produce.
-    let claims: HashMap<&str, &[String]> = batch
+    // which is not something a split can produce. What survives is also
+    // normalised, and a claim that cannot be is dropped whole.
+    let claims: HashMap<&str, Vec<String>> = batch
         .artists
         .iter()
         .filter_map(|a| match a.split_into.as_deref() {
-            Some(parts) if !parts.is_empty() => Some((a.name.as_str(), parts)),
+            Some(parts) if !parts.is_empty() => {
+                normalise_claim(&a.name, parts).map(|parts| (a.name.as_str(), parts))
+            }
             _ => None,
         })
         .collect();
@@ -320,18 +449,31 @@ fn apply_splits(
         return result;
     }
 
-    // Locked in the order `create_artists` takes them, and with the same
-    // strengths: albums *read*, then artists and the mapping for writing.
+    // Phase one: plan, under the album map and nothing else.
     //
-    // The read on the album map is not an oversight. Nothing here inserts or
-    // removes an album; what is rewritten is the `Arc<Mutex<Vec<String>>>`
-    // inside one, which the map's own lock does not guard. Taking the map for
-    // writing instead would invert the order against
-    // `get_albums_by_artist_id`, which holds the mapping for reading while it
-    // takes the album map -- a writer here and that reader there would each
-    // hold what the other waits for. A shared read cannot make that cycle,
-    // which is why the load path gets away with the same pair.
-    let albums = albums.read();
+    // The album's own `artists` mutex is deliberately *not* taken here. It is
+    // what phase two blocks on when something else holds it, and taking it in
+    // both phases would put the album map back in that wait.
+    let plan: Vec<PlannedSplit> = {
+        let albums = albums.read();
+        albums
+            .values()
+            .filter_map(|album| {
+                let recorded = album.artists_flat.as_deref()?;
+                let parts = claims.get(recorded)?;
+                Some(PlannedSplit {
+                    album_id: album.id.clone(),
+                    artists: album.artists.clone(),
+                    parts: parts.clone(),
+                })
+            })
+            .collect()
+    };
+    if plan.is_empty() {
+        return result;
+    }
+
+    // Phase two: apply, with the album map released.
     let mut artists = artists.write();
     let mut mapping = album_artists.write();
 
@@ -340,30 +482,23 @@ fn apply_splits(
     // touch is somebody else's business.
     let mut dropped: Vec<String> = Vec::new();
 
-    for album in albums.values() {
-        let Some(recorded) = album.artists_flat.as_deref() else {
-            continue;
-        };
-        let Some(&parts) = claims.get(recorded) else {
-            continue;
-        };
-
-        let mut current = album.artists.lock();
-        if current.as_slice() == parts {
+    for planned in &plan {
+        let mut current = planned.artists.lock();
+        if current.as_slice() == planned.parts.as_slice() {
             continue;
         }
 
         for name in current.iter() {
-            if !parts.contains(name) {
+            if !planned.parts.contains(name) {
                 let id = artists
                     .get(name)
                     .map(|a| a.id.clone())
                     .unwrap_or_else(|| artist_id_for(name));
-                mapping.remove_mapping(&album.id, &id);
+                mapping.remove_mapping(&planned.album_id, &id);
                 dropped.push(name.clone());
             }
         }
-        for name in parts.iter() {
+        for name in planned.parts.iter() {
             if current.contains(name) {
                 continue;
             }
@@ -387,10 +522,10 @@ fn apply_splits(
                     id
                 }
             };
-            mapping.add_mapping(album.id.clone(), id);
+            mapping.add_mapping(planned.album_id.clone(), id);
         }
 
-        *current = parts.to_vec();
+        *current = planned.parts.clone();
         result.albums += 1;
     }
 
@@ -1755,6 +1890,131 @@ mod tests {
                 policy
             );
         }
+    }
+
+    /// **The two-phase apply, proved rather than asserted in a comment.**
+    ///
+    /// `apply_splits` must not hold the album map while it writes the artist map
+    /// and the album-artist mapping. With `parking_lot`'s task-fair `RwLock` a
+    /// queued album-map writer blocks new readers, so a merge holding
+    /// `albums` read and waiting for `album_artists` write, a reload waiting for
+    /// `albums` write, and `get_albums_by_artist_id` holding `album_artists`
+    /// read and waiting for `albums` read close a permanent cycle. `parking_lot`
+    /// has no timeout.
+    ///
+    /// The probe stops the merge exactly where phase two writes -- by holding the
+    /// album's own artist-list mutex, which is the one lock phase two takes that
+    /// is not one of the three maps -- and then asks whether the album map is
+    /// free. It is, with two phases. It is not, with one. No wall-clock is
+    /// involved and nothing hangs: the wait is a bounded spin on an observable
+    /// (`artists` being held by somebody else), and exhausting it is a failure
+    /// with its own message.
+    #[test]
+    fn a_merge_does_not_hold_the_album_map_while_it_writes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (albums, artists, mapping) = library_with_album_artist("Alpha and Beta");
+        let claim = split_claim("Alpha and Beta", &["Alpha", "Beta"]);
+
+        // The album's own list, taken out from under the map's lock so that
+        // holding it does not hold the map.
+        let target = albums.read()["Album 1"].artists.clone();
+        let blocking = target.lock();
+
+        let finished = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                merge(&albums, &artists, &mapping, &claim);
+                finished.store(true, Ordering::SeqCst);
+            });
+
+            // Wait until the merge has taken the artist map. It cannot reach
+            // the album list mutex above without it, in either the two-phase or
+            // the one-phase shape, so this is the rendezvous both share.
+            let mut reached = false;
+            for _ in 0..2_000_000 {
+                if artists.try_write().is_none() {
+                    reached = true;
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            assert!(
+                reached,
+                "the merge never took the artist map; the probe cannot say anything"
+            );
+
+            assert!(
+                albums.try_write().is_some(),
+                "the merge is writing while still holding the album map: that is the \
+                 three-thread deadlock in the lock-order note, and a library reload \
+                 plus one get_albums_by_artist_id would close it for good"
+            );
+
+            drop(blocking);
+        });
+
+        assert!(finished.load(Ordering::SeqCst));
+        assert_eq!(
+            artists_of_album(&albums),
+            vec!["Alpha", "Beta"],
+            "and the split still happened"
+        );
+    }
+
+    /// A malformed claim is refused whole, not applied in part. The batch is a
+    /// route a client can call, and each name in a claim becomes an entry in the
+    /// artist list: half-applying `["", "  ", "Simon"]` leaves two blank-named
+    /// artists behind and drops the artist that was there.
+    #[test]
+    fn a_claim_naming_an_empty_artist_is_refused_whole() {
+        let (albums, artists, mapping) = library_with_album_artist("Emerson, Lake & Palmer");
+
+        let (applied, changed) = merge(
+            &albums,
+            &artists,
+            &mapping,
+            &split_claim("Emerson, Lake & Palmer", &["", "  ", "Simon"]),
+        );
+
+        assert_eq!(
+            artists_of_album(&albums),
+            vec!["Emerson", "Lake", "Palmer"],
+            "the loader's own split stands, which is what no claim already means"
+        );
+        assert_eq!((applied.albums, applied.artists), (0, 0));
+        assert!(!changed);
+        let held = artists.read();
+        assert!(
+            !held.contains_key("") && !held.contains_key("  ") && !held.contains_key("Simon"),
+            "and nothing from the claim reached the artist list: {:?}",
+            held.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// The other two refusals, and the one normalisation that is silent.
+    #[test]
+    fn a_claim_is_bounded_in_length_and_count_and_deduplicated() {
+        assert_eq!(
+            normalise_claim("x", &["Simon".to_string(), " Simon ".to_string()]),
+            Some(vec!["Simon".to_string()]),
+            "trimmed, and a name repeated is not information: an album cannot list one twice"
+        );
+        assert_eq!(
+            normalise_claim("x", &["A".repeat(MAX_SPLIT_NAME_BYTES + 1)]),
+            None,
+            "a name longer than any real one is a malformed batch, not a long artist"
+        );
+        assert_eq!(
+            normalise_claim("x", &vec!["A".to_string(); MAX_SPLIT_PARTS + 1]),
+            None,
+            "and so is a claim naming more artists than a name can split into"
+        );
+        assert_eq!(
+            normalise_claim("x", &vec!["A".to_string(); MAX_SPLIT_PARTS]),
+            Some(vec!["A".to_string()]),
+            "the bound itself is allowed"
+        );
     }
 
     /// An album-artist string the loader split is offered to the sweep, because

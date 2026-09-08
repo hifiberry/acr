@@ -732,12 +732,15 @@ impl MPDLibrary {
     pub fn get_albums_by_artist_id(&self, artist_id: &crate::data::Identifier) -> Vec<Album> {
         let mut result = Vec::new();
         
-        // Get albums associated with this artist ID from album_artists mapping
+        // The mapping is taken, copied and *released* before the album map.
+        // Holding both -- mapping then albums -- is the inversion of the order
+        // stated in `data::library`, and with `parking_lot`'s task-fair
+        // `RwLock` a queued album-map writer turns it into a permanent
+        // three-thread deadlock. The ids are a small set; the copy is cheaper
+        // than the hazard.
         {
-            let album_artists_mapping = self.album_artists.read();
-            let album_ids = album_artists_mapping.get_albums_for_artist(artist_id);
+            let album_ids = self.album_artists.read().get_albums_for_artist(artist_id);
 
-            // Get all albums and fetch the ones with matching IDs
             let albums = self.albums.read();
             for album in albums.values() {
                 if album_ids.contains(&album.id) {
@@ -769,12 +772,11 @@ impl MPDLibrary {
         if let Some(artist) = self.get_artist_by_name(artist_name) {
             let artist_id = artist.id;
             
-            // Get albums associated with this artist from album_artists mapping
+            // Released before the album map, for the reason given in
+            // `get_albums_by_artist_id` above.
             {
-                let album_artists_mapping = self.album_artists.read();
-                let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id);
+                let album_ids = self.album_artists.read().get_albums_for_artist(&artist_id);
 
-                // Get all albums and fetch the ones with matching IDs
                 let albums = self.albums.read();
                 for album in albums.values() {
                     if album_ids.contains(&album.id) {

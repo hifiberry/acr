@@ -94,6 +94,17 @@ pub struct ArtistSummary {
     /// *configured* separators this side has never seen, and a claim built from
     /// the default list alone would undo a correct split. Only a positive
     /// answer travels.
+    ///
+    /// That is a partial defence rather than a complete one: the configured
+    /// separator list does not cross the seam, so a name holding both a
+    /// configured separator and a built-in one can still be claimed about and
+    /// have the operator's split overridden. See
+    /// `audiocontrol_metadata::artistsplitter::split_observation`.
+    ///
+    /// A claim is validated where it is applied, not where it is made:
+    /// `data::library`'s merge refuses one whole rather than applying part of a
+    /// malformed list, because a partly applied claim leaves the library worse
+    /// than no claim at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split_into: Option<Vec<String>>,
 }

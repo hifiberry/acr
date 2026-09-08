@@ -37,6 +37,20 @@ hifiberry-audiocontrol (0.22.0) trixie; urgency=medium
     enrichment batch computed against a library that has since reloaded is
     refused rather than merged into the wrong contents.
 
+  * An album artist whose tag names several artists is now split on separators
+    while the library loads, and corrected afterwards by the metadata sweep
+    instead of being looked up during the load. **You may see this.** The
+    first load that meets a new album artist shows the plain split -- so an
+    album may briefly list three artists where there is one ("Emerson, Lake &
+    Palmer"), or one where there are two -- and the sweep fixes it, the same
+    way genres, images and biographies already arrive late on that screen.
+    What it buys is a load that no longer makes a MusicBrainz request per
+    album, on a library that can hold 200,000 songs.
+
+  * GET /api/library/<player>/albums gains album_artist: the album-artist tag
+    as the backend reported it, before it was split into artists. Additive,
+    and absent where the library recorded none.
+
  -- HiFiBerry <support@hifiberry.com>  Mon, 07 Sep 2026 16:00:00 +0200
 
 hifiberry-audiocontrol (0.21.0) trixie; urgency=medium

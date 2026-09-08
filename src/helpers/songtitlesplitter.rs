@@ -1,8 +1,16 @@
 /// Song title splitter module
 ///
 /// This module provides functionality to split combined artist/title strings
-/// into separate parts using common separators and determine their order
-/// by asking the resolver installed for this build.
+/// into separate parts using common separators and determine their order.
+///
+/// The order comes from, in preference: an explicitly configured
+/// `forced_order`; an order this station has learned (`default_order`); and,
+/// for a title neither answers, a fixed heuristic (`FALLBACK_ORDER`). There is
+/// no network lookup in that list any more -- the metadata daemon used to
+/// answer this over HTTP on every stream title change, and that call is gone
+/// with the one-way seam. When the metadata half decides an unseen title's
+/// split was wrong, it corrects it, and [`SongTitleSplitter::record_correction`]
+/// is what feeds that correction into the same statistics a lookup used to.
 use std::collections::HashMap;
 use log::{debug, info};
 use serde::{Serialize, Deserialize};
@@ -116,12 +124,15 @@ pub fn split_song_with_separator(input: &str, preferred_separator: Option<char>)
 }
 
 /// A smart song title splitter that can detect artist/song order
-/// 
+///
 /// This struct provides intelligent splitting of combined artist/title strings
-/// and can determine the correct order using MusicBrainz lookups. It maintains
-/// statistics about how many songs have been found in each order. After 20 songs,
-/// if one order type represents >95% of successful detections, it becomes the default.
-/// It also caches lookup results to avoid affecting counters for repeated lookups.
+/// and determines the correct order from what has been learned about this
+/// station -- an explicit setting, or a pattern established from corrections
+/// (see [`SongTitleSplitter::record_correction`]) -- falling back to a fixed
+/// heuristic for a title neither answers. It maintains statistics about how
+/// many songs have been read in each order. After 20 corrections, if one
+/// order type represents >95% of them, it becomes the default. It also caches
+/// the answer given for a title, so repeated titles read the same way.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SongTitleSplitter {
     /// An identifier string (not the song title itself)
@@ -244,8 +255,8 @@ impl SongTitleSplitter {
             debug!("Using established default order {:?} for '{}'", default, song_title);
             default.clone()
         } else {
-            // Check cache first, then detect if not cached
-            self.get_order_with_cache(song_title, &parts)
+            // Check cache first, then fall back to the heuristic
+            self.get_order_with_cache(song_title)
         };
         
         // If we successfully determined the order and have a separator, track separator usage
@@ -287,7 +298,35 @@ impl SongTitleSplitter {
         
         result
     }
-    
+
+    /// Feed a correction into this station's learning.
+    ///
+    /// The heuristic guess `split_song` falls back to when neither
+    /// `forced_order` nor `default_order` applies is exactly that -- a guess
+    /// -- so it never reaches `order_stats`. A correction is not a guess:
+    /// something has determined the true order for `song_title` and is
+    /// reporting it back, the way a resolver lookup used to. This is the new
+    /// entry point for that report, called from the per-station observation
+    /// route. Deliberately not `song-information`: that route identifies a song
+    /// by its title and artist, and an order swap disagrees with both, so the
+    /// merge policy refuses it.
+    ///
+    /// `song_title` is cached against `order` so a repeat of the exact same
+    /// combined title reads the confirmed order rather than the heuristic,
+    /// even before 20 corrections accumulate into a `default_order`.
+    ///
+    /// # Arguments
+    /// * `song_title` - The combined title the correction is about
+    /// * `order` - The order the correction established
+    pub fn record_correction(&mut self, song_title: &str, order: OrderResult) {
+        info!(
+            "Recording a correction for '{}' on station '{}': {:?}",
+            song_title, self.id, order
+        );
+        self.lookup_cache.insert(song_title.to_string(), order.clone());
+        self.update_stats(order);
+    }
+
     /// Internal method to update order statistics
     fn update_stats(&mut self, order: OrderResult) {
         let count = self.order_stats.entry(order.clone()).or_insert(0);
@@ -358,22 +397,37 @@ impl SongTitleSplitter {
         }
     }
     
-    /// Get order with cache lookup, only updating stats for new lookups
-    fn get_order_with_cache(&mut self, song_title: &str, parts: &(String, String)) -> OrderResult {
+    /// Get the order for a title neither `forced_order` nor `default_order`
+    /// answers for.
+    ///
+    /// This used to ask the resolver installed for this build -- in practice
+    /// a network round trip to the metadata daemon's `GET /resolve/title-order`,
+    /// bounded at 5 s, on every stream title change. That call is gone: the
+    /// answer here is the same fixed heuristic every unseen title gets
+    /// (`FALLBACK_ORDER`), not a lookup, so it is **not** fed to
+    /// `update_stats`. A guess is not an observation; recording it as one
+    /// would let the heuristic teach itself into becoming the learned
+    /// default regardless of whether it was ever right. Real learning now
+    /// comes only from [`Self::record_correction`], the way the doc comment
+    /// on this struct describes.
+    ///
+    /// The cache still exists to keep the answer for one title stable across
+    /// repeated calls (and to hold whatever [`Self::record_correction`] has
+    /// most recently confirmed for that exact title), not to avoid a network
+    /// call that no longer happens.
+    fn get_order_with_cache(&mut self, song_title: &str) -> OrderResult {
         // Check if we already have the result cached
         if let Some(cached_order) = self.lookup_cache.get(song_title) {
             debug!("Cache hit for '{}': {:?}", song_title, cached_order);
             return cached_order.clone();
         }
-        
-        debug!("Cache miss for '{}', performing MusicBrainz lookup for '{}' vs '{}'", 
-               song_title, parts.0, parts.1);
-        
-        // Detect the order using whatever resolver this build installed
-        let order = crate::audiocontrol::resolver::title_order(&parts.0, &parts.1);
-        
-        debug!("MusicBrainz lookup result for '{}': {:?}", song_title, order);
-        
+
+        debug!(
+            "No confirmed order for '{}', falling back to {:?}",
+            song_title, FALLBACK_ORDER
+        );
+        let order = FALLBACK_ORDER;
+
         // Cache the result (with size limit)
         if self.lookup_cache.len() >= self.cache_size_limit {
             // Remove a random entry to make space (in a real implementation, you might use LRU)
@@ -383,15 +437,9 @@ impl SongTitleSplitter {
             }
         }
         self.lookup_cache.insert(song_title.to_string(), order.clone());
-        debug!("Cached result for '{}': {:?} (cache size: {})", 
+        debug!("Cached result for '{}': {:?} (cache size: {})",
                song_title, order, self.lookup_cache.len());
-        
-        // Update statistics only for new lookups
-        self.update_stats(order.clone());
-        
-        // Check if we should establish a default order
-        self.check_and_set_default_order();
-        
+
         order
     }
     
@@ -415,24 +463,21 @@ impl SongTitleSplitter {
     /// }
     /// ```
     pub fn get_order(&mut self, song_title: &str) -> OrderResult {
-        if let Some((part1, part2)) = split_song(song_title) {
+        if split_song(song_title).is_some() {
             // Use default order if established
             if let Some(default) = &self.default_order {
                 debug!("Using default order {:?} for '{}'", default, song_title);
                 return default.clone();
             }
-            
-            // Otherwise use cache or detect using MusicBrainz
-            self.get_order_with_cache(song_title, &(part1, part2))
+
+            // Otherwise use the cache, or fall back to the heuristic
+            self.get_order_with_cache(song_title)
         } else {
             debug!("Could not split '{}' - no separator found", song_title);
-            let order = OrderResult::Unknown;
-            // Only update stats if not cached
-            if !self.lookup_cache.contains_key(song_title) {
-                self.update_stats(order.clone());
-                self.lookup_cache.insert(song_title.to_string(), order.clone());
-            }
-            order
+            // Nothing to guess and nothing to learn from: there are no two
+            // parts to put in either order, so this is not fed to
+            // `update_stats` any more than the heuristic guess above is.
+            OrderResult::Unknown
         }
     }
     
@@ -869,6 +914,126 @@ mod tests {
         );
     }
 
+    /// A forced order must beat a learned one. Learning the order the
+    /// heuristic would *not* have picked (`SongArtist`, not the fallback's
+    /// own `ArtistSong`) before forcing the opposite means this cannot pass
+    /// by coincidence of what either guard defaults to.
+    #[test]
+    fn a_forced_order_beats_a_learned_order() {
+        let mut splitter = SongTitleSplitter::new("station");
+
+        for _ in 0..20 {
+            splitter.record_correction("X - Y", OrderResult::SongArtist);
+        }
+        assert_eq!(splitter.get_default_order(), Some(OrderResult::SongArtist));
+
+        splitter.set_forced_order(Some(OrderResult::ArtistSong));
+
+        assert_eq!(
+            splitter.split_song("A - B"),
+            Some(("A".to_string(), "B".to_string())),
+            "the forced order (ArtistSong) must beat the learned one (SongArtist)"
+        );
+    }
+
+    /// A learned order must beat the heuristic. Proven by first pinning the
+    /// heuristic's own answer on a fresh splitter, then teaching the
+    /// *opposite* order with real corrections and checking a different,
+    /// never-corrected title reads the learned way -- so this cannot pass on
+    /// the strength of the heuristic's own default.
+    #[test]
+    fn a_learned_order_beats_the_heuristic() {
+        let mut splitter = SongTitleSplitter::new("station");
+
+        assert_eq!(
+            splitter.split_song("Fresh - Title"),
+            Some(("Fresh".to_string(), "Title".to_string())),
+            "with nothing forced or learned, the heuristic reads this as artist-song"
+        );
+
+        for _ in 0..20 {
+            splitter.record_correction("X - Y", OrderResult::SongArtist);
+        }
+        assert_eq!(splitter.get_default_order(), Some(OrderResult::SongArtist));
+
+        assert_eq!(
+            splitter.split_song("Another - Title"),
+            Some(("Title".to_string(), "Another".to_string())),
+            "the learned order (SongArtist) must beat the heuristic (ArtistSong)"
+        );
+    }
+
+    /// The corrected shape of the learning story: corrections, not lookups,
+    /// establish a default order now. Twenty agreeing corrections is
+    /// `check_and_set_default_order`'s actual threshold (95% of at least 20)
+    /// -- not an illustrative smaller number -- so this is falsified by
+    /// stopping one short of it.
+    #[test]
+    fn enough_agreeing_corrections_establish_a_default_order() {
+        let mut splitter = SongTitleSplitter::new("station");
+
+        for _ in 0..19 {
+            splitter.record_correction("X - Y", OrderResult::SongArtist);
+        }
+        assert!(
+            !splitter.has_default_order(),
+            "19 agreeing corrections is one short of the threshold"
+        );
+
+        splitter.record_correction("X - Y", OrderResult::SongArtist);
+
+        assert_eq!(splitter.get_default_order(), Some(OrderResult::SongArtist));
+        assert_eq!(
+            splitter.split_song("A - B"),
+            Some(("B".to_string(), "A".to_string())),
+            "a fresh, never-corrected title should now read the learned way"
+        );
+    }
+
+    /// A station that is *mostly* one way round is never taught the order of
+    /// its exceptions.
+    ///
+    /// This is the failure that reporting only disagreements causes. The
+    /// threshold is a ratio -- 95% of at least 20 -- so twenty `SongArtist`
+    /// observations with no `ArtistSong` ones alongside them read as a hundred
+    /// per cent confidence and lock in the *minority* order. A learned default
+    /// beats the heuristic, so every later title from that station is then split
+    /// the wrong way, and `check_and_set_default_order` only ever sets a
+    /// default, never clears one, so it stays wrong.
+    ///
+    /// With the agreements recorded too, the same twenty exceptions sit against
+    /// a hundred and eighty confirmations. Ninety per cent is below the bar, so
+    /// **nothing** is locked in -- which is the right answer for a station that
+    /// is genuinely inconsistent: the heuristic keeps deciding, and it already
+    /// answers the majority order. The assertion is therefore that the minority
+    /// was not learned, not that something particular was.
+    #[test]
+    fn a_mostly_consistent_station_is_never_taught_its_exceptions() {
+        let mut splitter = SongTitleSplitter::new("station");
+
+        for i in 0..200 {
+            if i % 10 == 0 {
+                splitter.record_correction("P - Q", OrderResult::SongArtist);
+            } else {
+                splitter.record_correction("X - Y", OrderResult::ArtistSong);
+            }
+        }
+
+        assert_ne!(
+            splitter.get_default_order(),
+            Some(OrderResult::SongArtist),
+            "the minority order must never be learned: a learned default beats \
+             the heuristic and is never cleared, so this would split every later \
+             title from this station the wrong way"
+        );
+
+        // And the station still reads the way it mostly is, via the heuristic.
+        assert_eq!(
+            splitter.split_song("A - B"),
+            Some(("A".to_string(), "B".to_string()))
+        );
+    }
+
     /// A title with no separator has nothing to split; the fallback must not
     /// invent an artist out of the whole title.
     #[test]
@@ -997,25 +1162,6 @@ mod tests {
     }
     
     
-    #[test] 
-    fn test_detect_order_mock_scenarios() {
-        // These are conceptual tests showing what results should be expected
-        // In a real implementation, you would mock the MusicBrainz responses
-        
-        // Example of what we expect for well-known songs:
-        // detect_order("The Beatles", "Hey Jude") -> OrderResult::ArtistSong
-        // detect_order("Hey Jude", "The Beatles") -> OrderResult::SongArtist  
-        // detect_order("Queen", "Bohemian Rhapsody") -> OrderResult::ArtistSong
-        // detect_order("Bohemian Rhapsody", "Queen") -> OrderResult::SongArtist
-        // detect_order("Led Zeppelin", "Stairway to Heaven") -> OrderResult::ArtistSong
-        // detect_order("Stairway to Heaven", "Led Zeppelin") -> OrderResult::SongArtist
-        // detect_order("Unknown Artist", "Unknown Song") -> OrderResult::Unknown
-        
-        // For now, just test that the function exists and can be called
-        // Real tests would require mocking the musicbrainz module
-        assert!(true); // Placeholder assertion
-    }
-    
     #[test]
     fn test_song_title_splitter_new() {
         let splitter = SongTitleSplitter::new("track_123");
@@ -1046,46 +1192,38 @@ mod tests {
     #[test]
     fn test_song_title_splitter_order_detection() {
         let mut splitter = SongTitleSplitter::new("track_abc");
+        // Nothing forced and nothing learned yet, so this is the heuristic's
+        // fixed answer -- deterministic now that there is no lookup.
         let order = splitter.get_order("The Beatles - Hey Jude");
-        // Since we can't predict MusicBrainz results, just verify the function runs
-        assert!(matches!(order, OrderResult::ArtistSong | OrderResult::SongArtist | OrderResult::Unknown | OrderResult::Undecided));
+        assert_eq!(order, OrderResult::ArtistSong);
     }
-    
+
     #[test]
     fn test_song_title_splitter_split_song() {
         let mut splitter = SongTitleSplitter::new("track_def");
-        
-        // Test with a song that has separators
+
+        // With no forced or learned order, the heuristic decides -- and
+        // decides the same way every time, since there is nothing left to
+        // look up.
         let result = splitter.split_song("Artist - Song Title");
-        // The result depends on MusicBrainz lookup, so we just verify it handles the call
-        match result {
-            Some((artist, song)) => {
-                assert!(!artist.is_empty());
-                assert!(!song.is_empty());
-                println!("Split result: Artist='{}', Song='{}'", artist, song);
-            }
-            None => {
-                // This is also valid - it means order couldn't be determined
-                println!("Could not determine artist/song order");
-            }
-        }
-        
+        assert_eq!(result, Some(("Artist".to_string(), "Song Title".to_string())));
+
         // Test with a song that has no separators
         let result2 = splitter.split_song("NoSeparatorHere");
         assert_eq!(result2, None);
     }
-    
+
     #[test]
     fn test_song_title_splitter_multiple_calls() {
         let mut splitter = SongTitleSplitter::new("track_ghi");
-        
+
         // Test that multiple calls with different songs work
         let _parts1 = splitter.get_raw_parts("The Beatles - Hey Jude");
         let _parts2 = splitter.get_raw_parts("Queen / Bohemian Rhapsody");
         let _order1 = splitter.get_order("Led Zeppelin - Stairway to Heaven");
         let _order2 = splitter.get_order("Pink Floyd / Wish You Were Here");
-        
-        // All calls should work independently since no state is cached
+
+        // All calls should work independently
         assert!(true); // If we get here, all calls succeeded
     }
     
@@ -1116,52 +1254,63 @@ mod tests {
     #[test]
     fn test_song_title_splitter_statistics_tracking() {
         let mut splitter = SongTitleSplitter::new("track_multi");
-        
-        // Process multiple songs to test statistics
-        let _order1 = splitter.get_order("The Beatles - Hey Jude");
-        let _order2 = splitter.get_order("Queen / Bohemian Rhapsody");
-        let _order3 = splitter.get_order("Led Zeppelin - Stairway to Heaven");
-        
-        // Should have processed 3 songs
+
+        // Corrections are what feed the statistics now; a heuristic guess
+        // (exercised in `test_song_title_splitter_cache`) does not.
+        splitter.record_correction("The Beatles - Hey Jude", OrderResult::ArtistSong);
+        splitter.record_correction("Queen / Bohemian Rhapsody", OrderResult::ArtistSong);
+        splitter.record_correction("Bohemian Rhapsody - Queen", OrderResult::SongArtist);
+
+        // Should have processed 3 corrections
         assert_eq!(splitter.get_total_count(), 3);
-        
+
         // Test that clear_stats works
         splitter.clear_stats();
         assert_eq!(splitter.get_total_count(), 0);
         assert_eq!(splitter.get_artist_song_count(), 0);
         assert_eq!(splitter.get_song_artist_count(), 0);
-        
+
         // Test that reset clears both stats and default order
         splitter.reset();
         assert!(!splitter.has_default_order());
         assert_eq!(splitter.get_total_count(), 0);
     }
-    
+
+    /// A guess is not an observation: asking for a title neither forced nor
+    /// learned still caches the answer (so a repeat reads the same way), but
+    /// must not move `order_stats` -- otherwise the heuristic would teach
+    /// itself into becoming the learned default regardless of whether it was
+    /// ever right.
     #[test]
     fn test_song_title_splitter_cache() {
         let mut splitter = SongTitleSplitter::new("track_cache");
-        
+
         // Initially cache should be empty
         assert_eq!(splitter.get_cache_size(), 0);
         assert!(!splitter.is_cached("The Beatles - Hey Jude"));
-        
-        // Get order for first time - should cache result and update stats
+
+        // Get order for first time - should cache the heuristic's answer
+        // without touching the statistics.
         let order1 = splitter.get_order("The Beatles - Hey Jude");
         assert_eq!(splitter.get_cache_size(), 1);
         assert!(splitter.is_cached("The Beatles - Hey Jude"));
-        let initial_count = splitter.get_total_count();
-        assert!(initial_count > 0);
-        
-        // Get order for same song again - should use cache and NOT update stats
+        assert_eq!(
+            splitter.get_total_count(),
+            0,
+            "a heuristic guess must not be recorded as an observation"
+        );
+
+        // Get order for same song again - should use the cache and answer
+        // the same way, still without touching the statistics.
         let order2 = splitter.get_order("The Beatles - Hey Jude");
         assert_eq!(order1, order2);
         assert_eq!(splitter.get_cache_size(), 1); // Cache size shouldn't increase
-        assert_eq!(splitter.get_total_count(), initial_count); // Stats shouldn't change
-        
+        assert_eq!(splitter.get_total_count(), 0);
+
         // Test with custom cache size
         let splitter2 = SongTitleSplitter::with_cache_size("track_custom", 2);
         assert_eq!(splitter2.get_cache_size_limit(), 2);
-        
+
         // Clear cache
         splitter.clear_cache();
         assert_eq!(splitter.get_cache_size(), 0);

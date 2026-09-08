@@ -2,6 +2,16 @@
 # This file should be included in the main nginx server block
 
 # Proxy API requests to the backend service
+#
+# One location, one backend: today the player daemon and the metadata code
+# share a process on 1080, so every path under /api/audiocontrol/ reaches the
+# same Rocket and no path needs naming here.
+#
+# When that changes and this splits into per-daemon locations, /spotify/ goes
+# to the **player** daemon, all of it -- /search included. The Spotify account
+# belongs to the half that plays: the librespot backend turns every playback
+# command into a Spotify Web API call, so the account and every route that
+# manages it live there. Client URLs are unchanged either way.
 location /api/audiocontrol/ {
     # Strip /api/audiocontrol prefix and proxy to backend
     proxy_pass http://127.0.0.1:1080/api/;

@@ -19,8 +19,6 @@ pub mod library_puller;
 pub mod musicbrainz;
 pub mod now_playing;
 pub mod now_playing_ws;
-pub mod resolver;
-pub mod security_store;
 pub mod spotify;
 pub mod startup;
 pub mod theaudiodb;
@@ -54,10 +52,11 @@ pub trait ArtistUpdater {
 /// calls the same function from the metadata daemon's own `main`, against the
 /// same configuration keys.
 ///
-/// The order is the order `main` used, and it is load-bearing in one place
-/// worth naming: `Spotify::set_global_config` has to run before
-/// `initialize_spotify`, because the client reads the stored document while it
-/// initialises.
+/// The order is the order `main` used. Spotify is no longer among them: the
+/// account moved to the player daemon with the one-way seam, and `main` brings
+/// it up there (`spotify_account::initialize_from_config`). What is left of
+/// Spotify on this side takes a token as an argument and has nothing to
+/// initialise.
 ///
 /// Three other pieces of metadata start-up deliberately stay at their own call
 /// sites in `main` rather than joining this function, because moving them
@@ -78,10 +77,6 @@ pub fn initialize_in_process(config: &serde_json::Value) {
     initialize_fanarttv(config);
     initialize_external_coverart(config);
     initialize_lastfm(config);
-    if let Some(spotify_config) = get_service_config(config, "spotify") {
-        spotify::Spotify::set_global_config(spotify_config);
-    }
-    initialize_spotify(config);
 }
 
 // Helper function to initialize MusicBrainz
@@ -152,90 +147,6 @@ fn initialize_lastfm(config: &serde_json::Value) {
         }
     } else {
         debug!("No Last.fm configuration found, Last.fm features will be unavailable.");
-    }
-}
-
-// Helper function to initialize Spotify
-fn initialize_spotify(config: &serde_json::Value) {
-    info!("Starting Spotify initialization");
-
-    if let Some(spotify_config) = get_service_config(config, "spotify") {
-        // Check if enabled flag exists and is set to true
-        let enabled = spotify_config
-            .get("enable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false); // Default to disabled if not specified
-
-        info!("Spotify enabled in config: {}", enabled);
-
-        if enabled {
-            // Get custom OAuth URL and proxy secret if specified in config
-            let oauth_url = spotify_config
-                .get("oauth_url")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            let proxy_secret = spotify_config
-                .get("proxy_secret")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            info!(
-                "Config values - OAuth URL present: {}, proxy secret present: {}",
-                oauth_url.is_some(),
-                proxy_secret.is_some()
-            );
-
-            // Initialize with values from config or fall back to defaults
-            let init_result = match (oauth_url, proxy_secret) {
-                (Some(url), Some(secret)) if !url.is_empty() && !secret.is_empty() => {
-                    info!(
-                        "Initializing Spotify with configuration from audiocontrol.json, URL: '{}'",
-                        url
-                    );
-                    spotify::Spotify::initialize(url, secret)
-                }
-                _ => {
-                    info!(
-                        "No valid Spotify config in audiocontrol.json, falling back to secrets.txt"
-                    );
-                    spotify::Spotify::initialize_with_defaults()
-                }
-            };
-            if let Err(e) = init_result {
-                warn!("Failed to initialize Spotify client: {}", e);
-
-                // Additional logging to help diagnose the issue
-                info!(
-                    "Checking default OAuth URL directly: '{}'",
-                    spotify::default_spotify_oauth_url()
-                );
-
-                return;
-            }
-
-            // Log Spotify connection status
-            match spotify::Spotify::get_instance() {
-                Ok(client) => {
-                    if client.has_valid_tokens() {
-                        info!("Spotify is connected with valid tokens");
-                    } else {
-                        info!("Spotify is not connected. User needs to authenticate.");
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        "Could not get Spotify client instance to check status: {}",
-                        e
-                    );
-                }
-            }
-            info!("Spotify initialized successfully");
-        } else {
-            info!("Spotify integration is disabled");
-        }
-    } else {
-        debug!("No Spotify configuration found, Spotify features will be unavailable.");
     }
 }
 

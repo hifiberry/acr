@@ -31,7 +31,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use acr_types::config::get_service_config;
-use acr_types::now_playing::{LastfmWorkerConfig, PlaybackStateSource, SongInformationSink};
+use acr_types::now_playing::{
+    LastfmWorkerConfig, PlaybackStateSource, SongInformationSink, SplitterObservationSink,
+};
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
@@ -46,9 +48,15 @@ use crate::{library_puller, now_playing, now_playing_ws};
 pub const DEFAULT_CORE_PORT: u64 = 1080;
 
 /// How long the library sweep waits between passes when `services.core` names
-/// no `library_poll_seconds`. The spec's value, and the same number
-/// [`library_puller::LIBRARY_POLL_INTERVAL`] carries.
-pub const DEFAULT_LIBRARY_POLL_SECONDS: u64 = 30;
+/// no `library_poll_seconds`.
+///
+/// Read from [`library_puller::LIBRARY_POLL_INTERVAL`] rather than written out
+/// again. These were two independent literals that happened to agree, which
+/// meant the constant with all the reasoning attached to it was not the one any
+/// deployment actually used: `start_after_core_is_listening` passes this value,
+/// and the other was reachable only from a test. Demoting the poll by editing
+/// the documented constant alone would have changed nothing.
+pub const DEFAULT_LIBRARY_POLL_SECONDS: u64 = library_puller::LIBRARY_POLL_INTERVAL.as_secs();
 
 /// How long [`start_after_core_is_listening`] waits for the player daemon's
 /// API before starting anyway.
@@ -182,11 +190,15 @@ pub fn lastfm_worker_config(config: &serde_json::Value) -> Option<LastfmWorkerCo
 
 /// Where [`stop`] finds the running subscriber.
 ///
-/// A process-wide handle for the same reason `library_puller::nudges` is one:
-/// the caller is the daemon's signal handler, which is registered long before
-/// this module starts anything and cannot be handed a channel that does not
-/// exist yet. There is exactly one subscriber per process, so there is nothing
-/// to disambiguate.
+/// A process-wide handle because the caller is the daemon's signal handler,
+/// which is registered long before this module starts anything and cannot be
+/// handed a channel that does not exist yet. There is exactly one subscriber per
+/// process, so there is nothing to disambiguate.
+///
+/// The library puller's wake channel used to be a static for a similar reason --
+/// a Rocket route needed to reach it -- and is a plain value now that the route
+/// is gone. This one stays static because a signal handler cannot be given
+/// anything.
 fn stop_channel() -> &'static Mutex<Option<Sender<()>>> {
     static STOP: OnceLock<Mutex<Option<Sender<()>>>> = OnceLock::new();
     STOP.get_or_init(|| Mutex::new(None))
@@ -203,6 +215,16 @@ fn stop_channel() -> &'static Mutex<Option<Sender<()>>> {
 fn stop_flag() -> &'static AtomicBool {
     static REQUESTED: OnceLock<AtomicBool> = OnceLock::new();
     REQUESTED.get_or_init(|| AtomicBool::new(false))
+}
+
+/// Whether a stop has been asked for.
+///
+/// For code that has to tell an expected shutdown from a fault. The library
+/// puller uses it to decide whether its wake channel closing is worth a
+/// `warn!`: during shutdown it always closes, and a warning on every restart is
+/// noise that trains an operator to ignore the line that matters.
+pub(crate) fn stop_was_requested() -> bool {
+    stop_flag().load(Ordering::SeqCst)
 }
 
 /// Arm [`stop`], and hand back the receiver the subscriber waits on.
@@ -338,6 +360,22 @@ pub fn start_after_core_is_listening(config: &serde_json::Value) {
         }
     }
 
+    // The Spotify token, connection 4 of the seam. Installed here rather than
+    // at provider registration because it needs the `CoreClient` this
+    // function builds, and the providers only ask for a token when a lookup
+    // actually happens -- long after this. Before the account moved this ran
+    // in the opposite direction, with the player daemon calling this side.
+    crate::spotify::set_token_source(core.clone());
+
+    // Before the subscriber, because the subscriber is what wakes it: the handle
+    // `start` returns is the puller's only trigger other than its slow
+    // backstop, so it has to exist before there is a socket to receive a
+    // `library_changed` on. This also puts the puller's opening full sweep in
+    // parallel with the connect, which is what covers a library that finished
+    // loading before this daemon started and will therefore never announce
+    // itself.
+    let wakes = library_puller::start(Arc::clone(&core), settings.poll);
+
     // Interface 1, both directions, in one object: the subscriber reads the
     // event socket, and the same `CoreClient` is what the workers push
     // results back through and what the Last.fm worker asks for the playback
@@ -346,6 +384,7 @@ pub fn start_after_core_is_listening(config: &serde_json::Value) {
     let events = now_playing_ws::start(
         &events_url(&settings.url),
         Arc::clone(&core),
+        wakes,
         Some(register_stop()),
     );
     // `core.clone()`, not `Arc::clone(&core)`: the expected type drives
@@ -354,23 +393,42 @@ pub fn start_after_core_is_listening(config: &serde_json::Value) {
     // afterwards, which is what is wanted.
     let sink: Arc<dyn SongInformationSink> = core.clone();
     let state: Arc<dyn PlaybackStateSource> = core.clone();
-    if !now_playing::start(events, sink, state, lastfm_worker_config(config)) {
-        info!("No now-playing enrichment is configured");
+    let observations: Arc<dyn SplitterObservationSink> = core.clone();
+    if !now_playing::start(events, sink, state, observations, lastfm_worker_config(config)) {
+        info!(
+            "No now-playing enrichment is configured; the event socket stays up for \
+             library changes"
+        );
     }
-
-    library_puller::start(core, settings.poll);
 }
 
+/// Read and discard now-playing events nothing is configured to consume.
+///
+/// **The alternative is not "do nothing", it is "close the socket".** The
+/// subscriber ends its loop at the first event it cannot deliver, and dropping
+/// this receiver is exactly that -- which was the right answer while the socket
+/// carried only now-playing events. It now also carries `library_changed`, the
+/// only thing that tells the library puller a library has finished loading, so
+/// an installation with no cover-art endpoint and no Last.fm entry would lose
+/// event-driven enrichment altogether and fall back to the slow backstop sweep.
+///
+/// **It would not fail at start, which is what makes it worth a comment.** The
+/// subscriber only notices at the first event it actually has to deliver -- a
+/// song change, or the connect seed when something is already playing -- so a
+/// daemon that is idle when it starts looks healthy for as long as it stays
+/// idle and then goes permanently deaf on the first track. The chain is pinned
+/// by `now_playing_ws`'s `dropping_the_receiver_ends_the_subscriber`, which
+/// asserts that the wake channel dies with the socket.
+///
+/// Draining rather than holding the receiver idle: an unbounded channel nobody
+/// reads grows by one event per song change for the life of the daemon, which is
+/// the same reason `now_playing::start` refuses to pretend it consumes them.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::external_coverart::stub_server::StubServer;
     use serial_test::serial;
 
-    /// The asymmetry with `services.metadata`: an absent section is the
-    /// defaults, not "make no calls". Checked for all three ways it can be
-    /// absent, because the third -- no `services` key at all -- is what an
-    /// existing installed configuration file looks like.
     #[test]
     fn an_absent_core_section_means_the_defaults() {
         for config in [

@@ -530,6 +530,20 @@ fn convert_to_websocket_message(
                 "player_id": source.player_id()
             })
         },
+        PlayerEvent::LibraryChanged { source, library_version, library_generation } => {
+            // Both tokens travel raw here, unprefixed, because this one
+            // message reaches every subscriber at once and cannot be folded
+            // for any one caller's forwarded prefix. A client must not
+            // compare either field against `GET /api/library/<p>`'s prefixed
+            // version — see doc/websocket.md.
+            serde_json::json!({
+                "type": "library_changed",
+                "player_name": source.player_name(),
+                "player_id": source.player_id(),
+                "library_version": library_version,
+                "library_generation": library_generation
+            })
+        },
         PlayerEvent::SongInformationUpdate { source , song} => {
             // As above: no prefix, no clone.
             let rewritten;
@@ -585,6 +599,7 @@ fn event_type_name(event: &PlayerEvent) -> &'static str {
         PlayerEvent::PositionChanged { .. } => "position_changed",
         PlayerEvent::DatabaseUpdating { .. } => "database_updating",
         PlayerEvent::QueueChanged { .. } => "queue_changed",
+        PlayerEvent::LibraryChanged { .. } => "library_changed",
         PlayerEvent::SongInformationUpdate { .. } => "song_information_update",
         PlayerEvent::ActivePlayerChanged { .. } => "active_player_changed",
         PlayerEvent::VolumeChanged { .. } => "volume_changed",
@@ -1007,6 +1022,40 @@ mod tests {
         let event = PlayerEvent::SongChanged { source: source(), song: None };
         let message = convert_to_websocket_message(&event, Some("/api/audiocontrol"));
         assert_eq!(message.event_data.get("song"), Some(&serde_json::Value::Null));
+    }
+
+    /// The ruling this event exists under: it is a doorbell, not a payload.
+    /// `library_version` and `library_generation` reach every subscriber at
+    /// once, so — unlike a song's cover art URL, rewritten above for the
+    /// caller's forwarded prefix — they must travel exactly as the emitting
+    /// player reported them, with or without a prefix in play. Folding either
+    /// field for one caller's prefix here would reintroduce the mismatch
+    /// against `GET /api/library/<p>`'s prefixed version that made the
+    /// previous phase's puller re-enrich every library every 30 seconds,
+    /// forever.
+    #[test]
+    fn a_library_changed_events_tokens_are_carried_verbatim_regardless_of_prefix() {
+        let event = PlayerEvent::LibraryChanged {
+            source: source(),
+            library_version: Some("v1".to_string()),
+            library_generation: Some("g1".to_string()),
+        };
+
+        let with_prefix = convert_to_websocket_message(&event, Some("/api/audiocontrol"));
+        let without_prefix = convert_to_websocket_message(&event, None);
+
+        for message in [&with_prefix, &without_prefix] {
+            assert_eq!(
+                message.event_data.get("library_version").and_then(|v| v.as_str()),
+                Some("v1"),
+                "the version must not be folded for a forwarded prefix"
+            );
+            assert_eq!(
+                message.event_data.get("library_generation").and_then(|v| v.as_str()),
+                Some("g1"),
+                "the generation must not be folded for a forwarded prefix"
+            );
+        }
     }
 
     // The tests below drive the clock rather than waiting on it: activity is

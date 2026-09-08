@@ -141,6 +141,79 @@ pub fn split_if_multiple(artist_name: &str, custom_separators: Option<&[String]>
     result
 }
 
+/// What this side is willing to *assert* about how a name splits, for
+/// `ArtistSummary::split_into`.
+///
+/// The player daemon no longer asks this question before creating an album --
+/// that was `GET /resolve/artist-split`, one blocking round trip per album. It
+/// splits on separators alone and is told afterwards, in the enrichment batch.
+/// So this answer is not "how would I split it", it is "what do I know that the
+/// loader could not", and everything else must come back `None`, because `None`
+/// leaves the loader's own answer standing while `Some` overwrites it.
+///
+/// Two things are therefore refused outright:
+///
+/// - **MusicBrainz disabled.** Then the only thing available here is a
+///   separator split, which is what the loader already did -- with the
+///   separators *it* is configured with, not the defaults this side would guess
+///   at. Repeating it and calling it an answer could only undo a correct split.
+/// - **A name with no default separator in it.** The loader may have split it on
+///   a configured separator (`artist_separator`) that never crosses the seam, so
+///   "no separator here, therefore one artist" would rejoin a correct split.
+///
+/// What is left reproduces exactly what the removed route answered, which is
+/// the point: a `Some` of several is the MBID-backed split, and a `Some` of one
+/// element is the same lookup concluding the name is a single artist -- the
+/// answer that used to make the loader keep the name whole, and the only thing
+/// that can undo a separator split of "Emerson, Lake & Palmer".
+///
+/// **The second refusal is a partial defence and should not be read as more.**
+/// It is shaped around the *name*, because that is all this side has: nothing
+/// tells it whether an `artist_separator` list is configured at all. A name
+/// holding a configured separator *and* a default one passes the gate, and the
+/// claim then rewrites a split the operator's configuration asked for --
+/// observed on a device with `artist_separator: ["|"]`. The fix is for the
+/// separators to cross the seam again, as they did on the removed route; the
+/// gate is what is possible without that channel. Recorded in
+/// `doc/communications.md` under *Where this map is thin*.
+pub fn split_observation(artist_name: &str) -> Option<Vec<String>> {
+    observe_split(artist_name, musicbrainz::is_enabled(), || {
+        split_artist_names_with_mbid_lookup(artist_name, false, None)
+    })
+}
+
+/// [`split_observation`]'s rule, with the two things it depends on passed in.
+///
+/// Split out so the rule can be tested for all four of its outcomes without
+/// touching the `MUSICBRAINZ_ENABLED` global -- which is process-wide, so a
+/// test that flipped it would reach into whatever else the harness runs beside
+/// it -- and without a MusicBrainz request. `lookup` is called only where the
+/// rule says an answer is worth having.
+fn observe_split(
+    artist_name: &str,
+    musicbrainz_enabled: bool,
+    lookup: impl FnOnce() -> Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    if !musicbrainz_enabled {
+        debug!(
+            "MusicBrainz lookups are disabled; making no split claim for '{}'",
+            artist_name
+        );
+        return None;
+    }
+    if !contains_multiple_artists(artist_name, None) {
+        debug!(
+            "'{}' holds no default separator; making no split claim",
+            artist_name
+        );
+        return None;
+    }
+    match lookup() {
+        Some(parts) => Some(parts),
+        None => Some(vec![artist_name.to_string()]),
+    }
+}
+
 /// Check if an artist name contains multiple artists by using MusicBrainz MBID lookups
 /// and split the name if multiple MBIDs are found
 ///
@@ -383,6 +456,38 @@ mod tests {
         // Should return None if separator exists but doesn't actually split
         let result = split_if_multiple("Artist & ", None);
         assert_eq!(result, None);
+    }
+
+    /// The rule that decides what travels in `ArtistSummary::split_into`, in
+    /// all four of its outcomes. The two `None`s are the interesting ones: each
+    /// leaves the loader's own separator split standing, and each exists
+    /// because overwriting it would make a correct split wrong.
+    #[test]
+    fn a_split_observation_is_only_ever_a_positive_answer() {
+        let never = || panic!("the lookup must not run when the rule already refuses");
+
+        assert_eq!(
+            observe_split("Emerson, Lake & Palmer", false, never),
+            None,
+            "with MusicBrainz disabled there is nothing here the loader did not already do"
+        );
+        assert_eq!(
+            observe_split("Artist A x Artist B", true, never),
+            None,
+            "no default separator: the loader may have split this on a configured one"
+        );
+        assert_eq!(
+            observe_split("Emerson, Lake & Palmer", true, || None),
+            Some(vec!["Emerson, Lake & Palmer".to_string()]),
+            "a lookup that concludes one artist is the assertion that undoes a wrong split"
+        );
+        assert_eq!(
+            observe_split("Simon & Garfunkel", true, || Some(vec![
+                "Simon".to_string(),
+                "Garfunkel".to_string()
+            ])),
+            Some(vec!["Simon".to_string(), "Garfunkel".to_string()])
+        );
     }
 
     #[test]

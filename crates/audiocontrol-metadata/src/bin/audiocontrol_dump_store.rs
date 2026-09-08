@@ -1,4 +1,4 @@
-use audiocontrol_metadata::security_store::SecurityStore;
+use acr_secrets::security_store::SecurityStore;
 use clap::Parser;
 use log::{error, info};
 use serde_json::Value;

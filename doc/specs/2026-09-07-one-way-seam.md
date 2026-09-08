@@ -1,7 +1,9 @@
 # The one-way seam: making the metadata daemon a pure client
 
 **Date:** 2026-09-07
-**Status:** Proposed
+**Status:** Implemented. Two sections were decided differently from what is
+written below, and both are marked where they appear; see *Where this document
+was wrong*.
 **Affects:** `src/api/spotify.rs` (new), `src/players/librespot/*`,
 `src/helpers/songtitlesplitter.rs`, `src/players/mpd/libraryloader.rs`,
 `src/players/lms/libraryloader.rs`, `src/data/player_event.rs`,
@@ -79,7 +81,7 @@ Everything below follows from it. The rule is worth stating as a rule rather
 than as a list of calls, because the list will change and the rule should not.
 
 After this change the seam has four connections, all opened by the metadata
-daemon:
+daemon, and **no exceptions**:
 
 | | Connection | Carries | Kind |
 |---|---|---|---|
@@ -188,6 +190,26 @@ it the `PlaybackStateSource` trait.
 
 ### `GET /resolve/title-order` → decide locally, correct afterwards
 
+**This section was implemented differently from what follows, and what follows
+is left in place because the reasoning against it is the substance of the
+change.** The correction does *not* travel through `POST song-information`.
+That route identifies a song by its title and artist and refuses a partial
+disagreeing with either -- which an order swap does by construction, since it
+carries the artist as the title and the title as the artist. The merge policy
+exists to reject information for a song that is no longer playing, and a swap
+is indistinguishable from that.
+
+What was built instead: the correction is a per-station observation, posted to
+`POST /player/<name>/splitter/<station>/observation`, feeding the learned
+statistics and never the forced order. Two consequences follow, and neither is
+what the paragraph below implies. **The currently playing track keeps the split
+it was given**, right or wrong -- correcting it would need the merge policy
+changed, which is an explicit non-goal. And learning is not immediate:
+`check_and_set_default_order` needs twenty decided observations at ninety-five
+per cent agreement, so a station announcing "Title - Artist" reads the wrong
+way round for roughly an hour of continuous listening. Setting the order
+outright for that station takes effect at once and beats anything learned.
+
 `SongTitleSplitter` already prefers a locally held answer: an explicitly
 configured order (`forced_order`), then an order learned from statistics
 (`default_order`), and only then a lookup. Removing the lookup leaves the first
@@ -223,15 +245,44 @@ have on that screen, and it buys the removal of a per-album network call from a
 load that can cover 200,000 songs. It is stated here rather than discovered
 later.
 
-### `GET /artist/<b64>`, `GET /coverart/artist/<b64>/image` → nginx
+### `GET /artist/<b64>` → the enrichment batch; `GET /coverart/artist/<b64>/image` → a redirect
 
-These are the main daemon proxying for its own clients, not seam calls. Once
-nginx routes `/api/metadata/` — which Phase 1 already mounts — clients reach
-them directly and the main daemon stops proxying.
+**This section was implemented differently from what follows, and what follows
+is left in place because the reasoning against it is the substance of the
+change.** These two were the last live calls, and they are not proxying: the
+main daemon does not return the metadata daemon's answer, it merges each into a
+differently shaped answer of its own. `artist_detail` supplies the biography,
+its source and the banner to `GET /api/library/<p>/artist/by-*`, and
+`artist_image` supplies bytes to `GET /api/library/<p>/image/artist:<name>`.
 
-**Gated on clients migrating.** Until the WebUI and `hbos-ios` use the new
-prefix, the proxying stays and the rule has two documented exceptions. Removing
-them is a later, client-driven change and not part of this one.
+What was built instead:
+
+- **Artist detail travels in the enrichment batch.** `ArtistSummary` gains
+  `biography`, `biography_source` and `banner_url` beside the `thumb_url` it
+  already carried, and the library's merge writes them. The route serves what
+  it holds. A client sees the same fields in the same shape, arriving once the
+  sweep has reported rather than immediately — the eventual consistency the
+  genres and thumbnails in that same response already had. The cost is memory:
+  a biography is the largest thing held per artist, and it is now held on the
+  player side.
+- **The artist image route names its destination.** Bytes cannot travel in a
+  batch and the player half has nothing local to answer from, so the route
+  answers `302` to `/coverart/artist/<b64>/image` — prefix-rewritten, with
+  `size` carried across. That path is the one the artist lists have always put
+  in `thumb_url`, so a client following the redirect lands where the list would
+  have sent it. A client that follows no redirects sees a 302 where it saw
+  bytes; that is the one client-visible change in this document beyond the
+  additive event, and it is in the changelog.
+
+The original plan — route `/api/metadata/` in nginx, let clients fetch both
+themselves, and keep the two calls as documented exceptions until the WebUI and
+`hbos-ios` migrate — was rejected for two reasons. It does not remove the calls,
+so `services.metadata` has to stay, and with it the address that makes every
+other violation cheap; the rule would then hold by convention on exactly the
+path that most invites breaking it. And it is a *larger* change for a client
+than either of the above, not a smaller one: a client would have to make a
+second request per artist and merge two responses, where the redirect costs it
+nothing and the batch costs it nothing at all.
 
 ## Configuration
 
@@ -253,7 +304,7 @@ silence.
 | Metadata daemon down later | as above | as above |
 | Main daemon down | metadata retries; results dropped | unchanged |
 | Library loads while metadata is down | nudge fails, poll catches it within 30 s | event missed, backstop poll catches it within 10 min |
-| Stream title changes | 5 s network call, then a decision | decision immediately, corrected within a second |
+| Stream title changes | 5 s network call, then a decision | decision immediately; a wrong one stands for that track, and the station is learned after ~20 observations |
 | Library load, new album artist | correct split, 5 s per album | plain split, corrected by the sweep |
 | No Spotify account linked | playback commands fail; no Spotify cover art | unchanged |
 
@@ -263,8 +314,13 @@ The first row is the reason for the change.
 
 One additive event, `library_changed`, documented in `doc/websocket.md` with
 the version it appears in and the note that a client which does not subscribe
-to it sees no difference. No existing event changes shape, no route changes its
-response, and no path moves.
+to it sees no difference. No existing event changes shape and no path moves.
+
+One route changes its response, which this section originally said would not
+happen: `GET /api/library/<p>/image/artist:<name>` answers `302` to a path the
+artist lists already hand out, instead of the bytes. Every client that follows
+redirects is unaffected; one that follows none is not. It is in the changelog,
+with "follow redirects" said plainly.
 
 The Spotify routes move between *processes*, not between *paths*: nginx routes
 `/api/audiocontrol/spotify/…` to the main daemon after this change rather than
@@ -319,3 +375,22 @@ test above is what covers it.
 **The dependency-rule edit could be over-broad.** Permitting `aes-gcm` for the
 main daemon is correct; permitting it by weakening the check to silence a
 failure would not be. The edit names the crate and the reason.
+
+## Where this document was wrong
+
+Recorded rather than quietly corrected, because both mistakes are the kind that
+would recur.
+
+**It contradicted itself about the two artist calls.** *What replaces each
+removed call* deferred them to client migration and said "the rule has two
+documented exceptions", while *Configuration* said `services.metadata`
+disappears because "nothing in the main daemon addresses the metadata daemon".
+Both cannot hold: the exceptions are calls, and a call needs an address. The
+contradiction was resolved in favour of the rule, and the section above says
+how.
+
+**It called the two calls proxying, and they are not.** A proxy returns the
+other side's answer; these merge it into a differently shaped one. That
+mischaracterisation is what made "route it in nginx" look like a complete
+answer, when in fact it moves work onto every client. Naming what a call
+actually does, rather than what it resembles, is what changed the decision.

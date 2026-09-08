@@ -286,6 +286,69 @@ clients must re-fetch `/api/player/<player-name>/queue`.
 }
 ```
 
+### `library_changed`
+
+**From 0.22.0.** Sent when a player's library is loaded or reloaded — on a
+fresh scan, and on a rescan of an existing library.
+
+**A reload sends it twice, and the two mean different things.** The first goes
+out as the rebuild *starts*, so a client showing library contents can invalidate
+what it holds instead of displaying a library that is being emptied and refilled
+underneath it. `GET /api/library/<p>` reports `is_loaded: false` from then until
+the rebuild ends. The second goes out when the load has finished and that field
+is true again, which is the one a client that wants to *read* the library should
+act on — on a large library the two can be minutes apart. Neither carries a
+field distinguishing them: `is_loaded` from the `GET` a client makes anyway is
+what says which state it is in, and a client is expected to be idempotent about
+the event in any case.
+
+```json
+{
+  "type": "library_changed",
+  "library_version": "3f9a2b10-4-7",
+  "library_generation": "3f9a2b10-4-g2"
+}
+```
+
+Both fields are opaque strings, or `null` for a backend that tracks neither —
+LMS always sends `null` for both, because it has no version machinery to
+report. Compare either field for equality only; neither is ordered and neither
+carries arithmetic meaning.
+
+**This event is a doorbell, not a payload, and `library_version` here must
+never be compared against `GET /api/library/<p>`'s.** That REST route folds
+`library_version` into a hash of the caller's own forwarded prefix, so its
+answer differs by caller even for the same library at the same instant. This
+event has no one caller — it is broadcast to every subscriber at once, so its
+`library_version` is the player's raw, unfolded counter and cannot be
+anything else. The two are never equal, not even with no proxy anywhere in
+the path, because `GET`'s prefixing hashes the empty string rather than
+skipping it when there is no prefix to fold. (`library_generation` is not
+folded on either side — see [Get Library Information](api.md#get-library-information)
+— so this particular mismatch does not apply to it, but it is still a
+snapshot taken when the reload happened, not a value worth holding onto: a
+second reload before a client acts on it makes the comparison stale in the
+ordinary way any cached value can be.)
+
+A client that subscribes to this event should treat it as nothing more than
+"library X may have changed" and then issue its own `GET` to learn the
+current version, exactly as a fresh connection already re-reads state instead
+of trusting a cached copy. Comparing this event's version against a value read
+from `GET` is the mistake that made an earlier version of the metadata daemon's
+library puller believe every library had changed on every check, forever,
+because the two were built to never match. A client that does not subscribe to
+`library_changed` sees no difference at all: nothing else about the API
+changes.
+
+The metadata daemon is one such client, and it is worth knowing what it does
+with the event, because it is the shape any client should copy: it reacts by
+issuing `GET /api/library/<p>`, does nothing at all when that reports
+`is_loaded: false` or a `library_version` it has already enriched, and sweeps a
+whole library only when the version has actually moved. It also asks once for
+every library on **every** connect, because nothing replays an event missed
+while a socket was down, and keeps a slow periodic sweep as a backstop for an
+event that was neither delivered nor covered by a connect.
+
 ### `active_player_changed`
 
 Sent when the active player changes. `new_player_id` is the player becoming active;

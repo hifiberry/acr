@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use log::{debug, info, warn};
 use crate::coverart::{CoverartProvider, CoverartMethod};
 use crate::fanarttv::FanarttvCoverartProvider;
-use crate::spotify::{Spotify, SpotifyError};
+use crate::spotify;
 use crate::theaudiodb::TheAudioDbCoverartProvider;
 use crate::lastfm::{LastfmClient, LastfmError, LastfmTrackInfoDetails};
 use std::sync::Arc;
@@ -51,20 +51,13 @@ impl CoverartProvider for SpotifyCoverartProvider {
     fn get_artist_coverart_impl(&self, artist: &str) -> Vec<String> {
         debug!("Spotify: Searching for artist cover art: {}", artist);
         
-        let spotify_client = match Spotify::get_instance() {
-            Ok(client) => client,
-            Err(e) => {
-                warn!("Spotify: Failed to get client for artist search: {}", e);
-                return Vec::new();
-            }
+        let Some(token) = spotify::access_token() else {
+            debug!("Spotify: no access token for artist search");
+            return Vec::new();
         };
         
-        let search_result = match spotify_client.search(artist, &["artist"], None) {
+        let search_result = match spotify::search(&token, artist, &["artist"], None) {
             Ok(result) => result,
-            Err(SpotifyError::TokenNotFound) => {
-                debug!("Spotify: No valid token available for artist search");
-                return Vec::new();
-            }
             Err(e) => {
                 warn!("Spotify: Failed to search for artist '{}': {}", artist, e);
                 return Vec::new();
@@ -97,12 +90,9 @@ impl CoverartProvider for SpotifyCoverartProvider {
     fn get_album_coverart_impl(&self, title: &str, artist: &str, _year: Option<i32>) -> Vec<String> {
         debug!("Spotify: Searching for album cover art: '{}' by '{}'", title, artist);
         
-        let spotify_client = match Spotify::get_instance() {
-            Ok(client) => client,
-            Err(e) => {
-                warn!("Spotify: Failed to get client for album search: {}", e);
-                return Vec::new();
-            }
+        let Some(token) = spotify::access_token() else {
+            debug!("Spotify: no access token for album search");
+            return Vec::new();
         };
         
         // Create search query with artist and album filters
@@ -111,12 +101,8 @@ impl CoverartProvider for SpotifyCoverartProvider {
             "album": title
         });
         
-        let search_result = match spotify_client.search(title, &["album"], Some(&filters)) {
+        let search_result = match spotify::search(&token, title, &["album"], Some(&filters)) {
             Ok(result) => result,
-            Err(SpotifyError::TokenNotFound) => {
-                debug!("Spotify: No valid token available for album search");
-                return Vec::new();
-            }
             Err(e) => {
                 warn!("Spotify: Failed to search for album '{}' by '{}': {}", title, artist, e);
                 return Vec::new();
@@ -149,12 +135,9 @@ impl CoverartProvider for SpotifyCoverartProvider {
     fn get_song_coverart_impl(&self, title: &str, artist: &str) -> Vec<String> {
         debug!("Spotify: Searching for song cover art: '{}' by '{}'", title, artist);
         
-        let spotify_client = match Spotify::get_instance() {
-            Ok(client) => client,
-            Err(e) => {
-                warn!("Spotify: Failed to get client for song search: {}", e);
-                return Vec::new();
-            }
+        let Some(token) = spotify::access_token() else {
+            debug!("Spotify: no access token for song search");
+            return Vec::new();
         };
         
         // Create search query with artist and track filters
@@ -163,12 +146,8 @@ impl CoverartProvider for SpotifyCoverartProvider {
             "track": title
         });
         
-        let search_result = match spotify_client.search(title, &["track"], Some(&filters)) {
+        let search_result = match spotify::search(&token, title, &["track"], Some(&filters)) {
             Ok(result) => result,
-            Err(SpotifyError::TokenNotFound) => {
-                debug!("Spotify: No valid token available for song search");
-                return Vec::new();
-            }
             Err(e) => {
                 warn!("Spotify: Failed to search for song '{}' by '{}': {}", title, artist, e);
                 return Vec::new();

@@ -51,16 +51,10 @@
                 }
             ]
         },
-        "metadata": {
-            "url": "http://127.0.0.1:1080/api",
-            "detail_timeout_ms": 1000,
-            "resolve_timeout_ms": 5000,
-            "_comment": "Where the player side reaches the metadata side. The same port the webserver above binds, because both halves run in this one process; a different port once they are separate daemons. Omitting this section disables enrichment, the resolvers and the Spotify token source rather than defaulting them."
-        },
+        "_metadata_removed": "There is no services.metadata section any more, and adding one back does nothing. The player daemon holds no address for the metadata daemon: every connection across that seam is opened by the metadata side, which finds this daemon through services.core in its own configuration. See doc/communications.md.",
         "core": {
             "url": "http://127.0.0.1:1080/api",
-            "library_poll_seconds": 30,
-            "_comment": "Where the metadata side reaches the player side: the now-playing WebSocket, the song-information push and the library sweep. Unlike 'metadata' above, omitting this section means these defaults and not 'make no calls' - the metadata side always has a player daemon to talk to. With no url given the port is taken from services.webserver above, since that is the API this process is about to serve."
+            "_comment": "Where the metadata side reaches the player side: the now-playing WebSocket, the song-information push and the library sweep. Omitting this section means these defaults and not 'make no calls' - the metadata side always has a player daemon to talk to, which is why it is not symmetrical with the metadata section that used to sit above and no longer exists. With no url given the port is taken from services.webserver above, since that is the API this process is about to serve. 'library_poll_seconds' is accepted here and deliberately not set: libraries are discovered from the library_changed event, and the interval is only a backstop for one that was missed, so the built-in default (600) is the value to have. It used to be pinned at 30 here, which meant the shipped file overrode the interval rather than following it."
         },
         "datastore": {
             "attribute_cache": {

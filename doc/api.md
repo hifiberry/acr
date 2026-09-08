@@ -1015,17 +1015,18 @@ curl http://<device-ip>:1080/api/player/active/meta/volume
 
 Radio streams announce a single combined title such as `Nightwish - Nemo`. The
 server splits it into artist and song. The order is not fixed — some stations
-announce `Title - Artist` — so it is guessed per station with a MusicBrainz
-lookup, and the result is learned over time.
+announce `Title - Artist` — so a station this daemon has neither been told
+about nor learned falls back to reading it as `Artist - Title`, which is what
+streams overwhelmingly announce. That fallback is a fixed guess, not a lookup:
+this daemon does not ask anyone before deciding.
 
-Guessing has two limits: it can be wrong, and on a device with no internet
-access it cannot happen at all. These endpoints report what a station's
-splitter has learned and let the order and separator be **set** outright. A set
-value wins over anything guessed or learned, and is used without any lookup.
-
-When neither a set nor a learned order is available and the lookup cannot
-decide, the split falls back to reading the title as `Artist - Title`, which is
-what streams overwhelmingly announce.
+The guess can be wrong. Two things correct it over time: these endpoints let
+the order and separator be **set** outright, and a companion metadata process
+can report what it has separately worked out for a station — typically with a
+MusicBrainz lookup this daemon no longer makes itself — as an **observation**.
+A set value always wins, over both the guess and any observation; an
+observation only ever moves what the station has **learned**, which is what a
+client reads back as `learned_order`/`learned_separator`.
 
 Splitting is MPD-only; other players return 400.
 
@@ -1057,8 +1058,10 @@ same encoding used elsewhere in this API.
   }
   ```
   `order` and `separator` are what was set explicitly; `learned_order` and
-  `learned_separator` are what the station taught the server. Either may be
-  `null`. The counts are lookup outcomes, not play counts.
+  `learned_separator` are what the station taught the server, through
+  observations (below). Either may be `null`. The counts are observation
+  outcomes, not play counts, and do not include the fallback guess: a guess
+  is not fed back as an observation of itself.
 
 Only stations played since the last restart are listed.
 
@@ -1098,6 +1101,49 @@ Unlike the list, this also finds stations persisted by an earlier run.
 
 The setting is saved, so it survives a restart.
 
+#### Report an Observation
+
+- **Endpoint**: `/api/player/<player-name>/splitter/<station>/observation`
+- **Method**: POST
+- **Request Body**:
+  ```json
+  { "order": "song_artist" }
+  ```
+  - `order`: `artist_song` or `song_artist`, required. `unknown` and
+    `undecided` are outcomes of a lookup, not readings of a title, so they
+    are never a valid observation.
+- **Response**: the resulting splitter object, as above.
+- **Errors**: 400 for an unrecognised order or `<station>`, 404 if the
+  player has no splitter for that station and the manager is not otherwise
+  able to create one, 500 if the observation was recorded but could not be
+  persisted.
+
+This is how a companion metadata process feeds what it has separately
+determined about a station — typically a MusicBrainz-backed correction of
+this daemon's own guess — back into `learned_order`. **It never touches
+`order`**: a value set through *Set a Splitter* keeps winning regardless of
+how many observations disagree with it. The intended caller reports **both**
+decided verdicts, agreements included — not only the disagreements. That looks
+like waste and is not: the threshold below is a *ratio*, so if only
+disagreements were ever reported then every observation would name the same
+order and the ratio would always be a hundred per cent, and a station that is
+mostly the other way round would flip after twenty exceptions. Repeated
+agreeing observations are what establish `learned_order`, the same threshold it has always
+used.
+
+This is also the only route on this daemon that a companion metadata
+process calls — every other exchange between the two travels the other way,
+initiated by the metadata side. A title-order correction cannot be relayed
+through [Song Information Update](#song-information-update): that route
+identifies a song by its current title and artist and refuses a partial
+that disagrees with either, and a swapped order disagrees with both by
+construction. The **currently playing** song therefore keeps whatever split
+it was first given, right or wrong; only the *next* title from that station
+benefits from an observation recorded against it.
+
+Recorded observations are saved along with everything else this splitter
+holds, so they survive a restart.
+
 #### Delete a Splitter
 
 - **Endpoint**: `/api/player/<player-name>/splitter/<station>`
@@ -1123,6 +1169,12 @@ curl http://<device-ip>:1080/api/player/mpd/splitter/$STATION
 # Back to guessing
 curl -X POST http://<device-ip>:1080/api/player/mpd/splitter/$STATION \
   -H "Content-Type: application/json" -d '{}'
+
+# A companion metadata process reports what it separately determined --
+# this feeds learned_order, and does nothing if the station's order was
+# set explicitly (as just above)
+curl -X POST http://<device-ip>:1080/api/player/mpd/splitter/$STATION/observation \
+  -H "Content-Type: application/json" -d '{"order": "song_artist"}'
 ```
 
 ### Player Capabilities and Support Matrix
@@ -1685,7 +1737,7 @@ and artist thumbnails after it has looked them up.
 
   | Condition | Status | Body |
   |---|---|---|
-  | Merged | 200 OK | `{"artists": 1, "albums": 1, "library_version": "..."}` — how many entries changed something, and the library's version after the merge, folded with this request's prefix |
+  | Merged | 200 OK | `{"artists": 1, "albums": 1, "library_version": "..."}` — how much was applied, and the library's version after the merge, folded with this request's prefix |
   | The library was reloaded since `library_generation` | 409 Conflict | `{"library_generation": "...", "library_version": "..."}` — the current values of both; the version folded with this request's prefix, the generation not |
   | `<player-name>` does not name a known player, or that player has no library | 404 Not Found | `{"error": "..."}` |
 
@@ -1702,8 +1754,21 @@ and artist thumbnails after it has looked them up.
 - `thumb_url` is stored verbatim, a provider's own URL included. An empty list
   means no image was found, which is what a client reads to tell "no picture"
   from "not looked up yet".
+- `split_into` names the artists an album-artist *string* really splits into.
+  It rewrites the `artists` list of every album whose `album_artist` equals the
+  summary's `name`, creating and removing artists as that requires, and
+  reindexing them against their albums. Absent means "no claim", and the
+  library's own split stands. See **Artist splits arrive late** below.
 - One batch bumps `library_version` at most once, and not at all when nothing
   changed — a bump invalidates every client's cached list.
+
+The two counts in the 200 say **how much was applied, not how many entries were
+understood**, and they are not bounded by the number of entries sent. An artist
+summary carrying a `split_into` claim can create several artists and remove
+several more, each of which counts in `artists`, and can rewrite an album's
+artist list, which counts in `albums`. Three artist entries and no album entries
+can therefore answer `{"artists": 8, "albums": 2}`. Read them as a measure of
+work done; the only value to compare against anything is `library_version`.
 
 The `library_version` in a 200 is the value the caller should record as seen: it
 already accounts for this batch, so polling `GET /api/library/<player-name>` will
@@ -1727,11 +1792,67 @@ A backend that reports no `library_generation` (LMS) refuses any batch that
 names one, because it cannot honour the claim: it has no way to tell whether it
 has reloaded. Such a caller names no generation.
 
+**Artist splits arrive late**
+
+An album-artist tag may name one artist or several, and the daemon cannot tell
+which from the text alone. It splits on separators — the built-in `,`, `&`,
+` feat `, ` feat.`, ` featuring `, ` with `, or the player's `artist_separator`
+list where it has one, which **replaces** the built-in list rather than adding to
+it. That is right for "Simon & Garfunkel" and wrong for "Emerson, Lake &
+Palmer". The correction arrives here, in `split_into`.
+
+**So the first load that meets a new album artist shows the plain separator
+split, and the enrichment sweep corrects it.** An album may briefly list three
+artists where there is one, or one where there are two. This is the same
+eventual consistency genres, images and biographies already have on that
+screen: the load itself makes no network call for it any more, which is what
+took a per-album MusicBrainz round trip out of a load that can cover 200,000
+songs. A client that renders an artist list should expect it to change under it
+when the library version moves, exactly as it already does for cover art.
+
+**The correction is not unconditional.** The metadata side only claims a split
+it can back, so two installs see less than the paragraph above promises:
+
+- **MusicBrainz lookups disabled.** No claim is made at all, because the only
+  thing available on that side is a separator split and the loader already did
+  one. Such an install sees *no change* from earlier releases: the removed route
+  answered with a plain split when MusicBrainz was off, so the answer was
+  already the plain split.
+- **A name holding none of the built-in separators**, which is what a configured
+  `artist_separator` list produces. No claim is made there either, because "no
+  separator here, therefore one artist" would rejoin a split the operator's own
+  configuration asked for. See the note under `album_artist` in
+  [Album](#album) for the case this does not cover.
+
+The shipped configuration enables MusicBrainz, so a default install does get the
+correction.
+
+`split_into` has three states and the middle one is easy to miss:
+
+| Value | Meaning |
+|---|---|
+| absent | No claim. Whatever the library split stays. |
+| one element | **The name is a single artist.** This is what undoes a wrong split — it is not the same as absent. |
+| several elements | The name is those artists. |
+
+The name a claim is made about is the *unsplit* album-artist string, which is
+why `GET /api/library/<player-name>/albums` serves it as `album_artist`: once a
+name has been split, the parts cannot be turned back into it, so a caller has no
+other way to name it. Such a string appears in
+`GET /api/library/<player-name>/artists` only where the library kept it whole.
+
 #### Example
 ```bash
 curl -X POST http://<device-ip>:1080/api/library/mpd/enrichment \
   -H 'Content-Type: application/json' \
   -d '{"library_generation":"5e2b91c0-a3f9c1d2-g3","albums":[{"id":"1","genres":["rock"]}]}'
+```
+
+Correcting a wrongly split album artist, and nothing else:
+```bash
+curl -X POST http://<device-ip>:1080/api/library/mpd/enrichment \
+  -H 'Content-Type: application/json' \
+  -d '{"artists":[{"name":"Emerson, Lake & Palmer","split_into":["Emerson, Lake & Palmer"]}]}'
 ```
 
 ### Get Player Albums
@@ -2058,6 +2179,20 @@ Retrieves an image (such as album art) from a player's library.
   - `player-name` (string): The name of the player
   - `identifier` (string): The identifier for the image (e.g., "album:12345")
 
+> **An `artist:` identifier answers `302`, not bytes** (from 0.22.0). The
+> `Location` is `/api/coverart/artist/<b64>/image`, carrying the request's
+> forwarded prefix and any `size`. Artist art belongs to the metadata half —
+> it is fetched from providers and kept in its artist store — and this daemon
+> no longer calls that half to answer its own routes, so it names the route
+> instead. That path is the one the artist lists have always put in
+> `thumb_url`, so a client following the redirect lands where it would have
+> gone from the list. **Follow redirects**; a client that does not now
+> receives a `302` where it received an image before. Earlier daemons answered
+> `200` with the bytes.
+>
+> `?size=` works on the redirect target, which is a change in its favour: it
+> was accepted and silently ignored here.
+
 **Query parameters**
 
 | Name | Type | Meaning |
@@ -2067,8 +2202,10 @@ Retrieves an image (such as album art) from a player's library.
 **When `size` does nothing.** Resizing works from acr's own image cache, so it
 applies only where two things are both true:
 
-- the identifier is an `album:` identifier. `artist:` identifiers, bare track
-  URLs and URL-safe-base64 identifiers are all served at full size.
+- the identifier is an `album:` identifier. Bare track URLs and
+  URL-safe-base64 identifiers that do not decode to `artist:` are served at
+  full size. An `artist:` identifier is redirected, and `size` is honoured
+  there.
 - the player keeps its cover art in acr's image cache. **MPD does; LMS does
   not** — an LMS library fetches album art over HTTP from the LMS server on
   every request and never populates the cache, so `?size=` on an LMS player is
@@ -2089,10 +2226,14 @@ Responses carry an `ETag` and honour `If-None-Match` with a `304`. The
 `Cache-Control` header depends on the identifier: `album:` art does not
 change under a given album id, so those responses get
 `public, max-age=31536000, immutable` and clients can hold them
-indefinitely. Every other identifier — `artist:` art (which a user can
-replace with a new upload) and bare track URLs — gets
-`public, max-age=86400` instead, so clients revalidate daily rather than
-being stuck with a stale image for a year.
+indefinitely. Bare track URLs get `public, max-age=86400` instead, so clients
+revalidate daily rather than being stuck with a stale image for a year.
+`artist:` identifiers are redirected, and the redirect carries the same daily
+revalidation as the image it points at. Both are cacheable for the same reason
+and for the same day: a user can replace artist art with a new upload, and the
+redirect's destination is a pure function of the name and the size, so caching
+it saves a round trip per request without being able to go stale in a way a
+client could detect.
 
 - **Response**: Binary image data with appropriate Content-Type header
 - **Error Response** (404 Not Found): String error message
@@ -2215,22 +2356,35 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 
 ### Metadata Service Routes
 
-These four routes are served by the metadata side of the daemon (the code that
-will become a separate `audiocontrol-metadata` process in a later phase) but
-answer at `/api` alongside everything else in this document, because both
-halves currently share one Rocket. They exist so the player daemon can ask
-over HTTP for what it used to compute in-process, and it now does:
-enrichment, the two resolvers and the Spotify access token all cross loopback
-rather than a function call, even though both halves are in one process. See
-[architecture](architecture.md) for what that means and does not mean.
+These routes are served by the metadata side of the daemon (the code that will
+become a separate `audiocontrol-metadata` process in a later phase) but answer
+at `/api` alongside everything else in this document, because both halves
+currently share one Rocket. See [architecture](architecture.md) for what that
+means and does not mean.
 
-Nothing about calling them from outside the daemon is unsupported, but the
-player-facing routes earlier in this document (`Get Artist by Name`, `Get
-Artist by ID`, `Get Artist by MusicBrainz ID`, `Stream Title Splitting`) are
-almost always the better fit for a client, since they merge this data with
-what the player daemon already knows.
+**They exist for clients, and no longer for the player daemon.** They used to
+be how it asked over HTTP for what it once computed in-process: artist detail,
+artist images and the two resolvers. Every one of those calls is gone, and
+nothing in the player daemon calls anything here — it holds no address for this
+side at all. What replaced each is in
+[the one-way seam spec](specs/2026-09-07-one-way-seam.md) and in
+[communications](communications.md); in short, the biography and banner travel
+in the enrichment batch, and `/api/library/<p>/image/artist:<name>` redirects to
+`/api/coverart/artist/<b64>/image` rather than fetching it.
 
-*`GET /capabilities` is not one of the four.* The player daemon already
+Data crosses the other way instead: the metadata side subscribes to the
+daemon's events, reads its library, posts results back, and asks it for a
+Spotify token at `GET /api/spotify/access_token` — see
+[Spotify Routes](#spotify-routes) below.
+
+Calling these routes from outside the daemon is entirely supported, and for
+artist detail it is now the only way to get a *fresh* answer: the player-facing
+routes (`Get Artist by Name`, `Get Artist by ID`, `Get Artist by MusicBrainz
+ID`) serve the biography their library was last given by an enrichment sweep,
+which is what a client should normally want, while `GET /api/artist/<b64>` with
+`?lookup=true` will run a lookup on demand.
+
+*`GET /capabilities` is not one of them.* The player daemon already
 serves `GET /api/capabilities` (see above), and two identical routes at the
 same path and rank make Rocket refuse to start rather than pick one. The
 metadata side's own copy answers under the second mount below instead.
@@ -2240,11 +2394,11 @@ metadata side's own copy answers under the second mount below instead.
 Every metadata route is mounted a second time under `/api/metadata/`, and the
 two mounts mean different things.
 
-- **`/api/...`** — the historical paths, and the ones this process calls
-  itself. `services.metadata.url` in `audiocontrol.json` names this base
-  (`http://127.0.0.1:1080/api` by default), and both shipped clients reach
-  these paths through nginx's `/api/audiocontrol/` prefix. They are not going
-  to move.
+- **`/api/...`** — the historical paths. Both shipped clients reach them
+  through nginx's `/api/audiocontrol/` prefix, and `/api/coverart/artist/` in
+  particular is where every artist thumbnail and every redirected artist image
+  request goes. They are not going to move, and nothing in this process calls
+  them: `services.metadata` no longer exists.
 - **`/api/metadata/...`** — the same routes under the prefix a client will use
   once the metadata side answers on a port of its own. In a later phase nginx
   routes `/api/metadata/` to that process; today it reaches the same code in
@@ -2258,12 +2412,10 @@ What is mounted under `/api/metadata/`:
 | `/api/metadata/artist/<artist_b64>` | [Get Artist Detail](#get-artist-detail) |
 | `/api/metadata/resolve/title-order` | [Resolve Title Order](#resolve-title-order) |
 | `/api/metadata/resolve/artist-split` | [Resolve Artist Split](#resolve-artist-split) |
-| `/api/metadata/enrich/nudge` | [Nudge Enrichment](#nudge-enrichment) |
 | `/api/metadata/audiodb/mbid/<mbid>` | [TheAudioDB Integration](#theaudiodb-integration) |
 | `/api/metadata/coverart/...` | [Cover Art API](#cover-art-api) |
 | `/api/metadata/imagecache/...` | the image cache paths |
 | `/api/metadata/lastfm/...` | [Last.fm Integration](#lastfm-integration) |
-| `/api/metadata/spotify/...` | the Spotify account and playback routes |
 | `/api/metadata/favourites/...` | [Favourites API](#favourites-api) |
 | `/api/metadata/capabilities` | the metadata side's own capabilities report |
 
@@ -2278,9 +2430,44 @@ response's own image paths are written with whatever prefix the request
 carried, exactly as described in [Image and Lyrics Paths](#image-and-lyrics-paths).
 
 The player daemon's own routes — players, library, volume, lyrics, settings,
-cache, background jobs, genres and the WebSocket — are *not* under
+cache, background jobs, genres, **Spotify** and the WebSocket — are *not* under
 `/api/metadata/`. They stay where they are and will stay on this process after
 the split.
+
+`/api/metadata/spotify/...` is gone. It never reached a release: it was added
+by the mount that put every metadata route under a second prefix, in this same
+unreleased version, so no shipped client can have used it. The Spotify account moved to the player daemon, so `/api/spotify/...` —
+the historical path every shipped client already uses — is the only one. No
+client-facing URL changed; a client that had adopted the `/api/metadata/`
+prefix for Spotify specifically must use `/api/spotify/` instead.
+
+### Spotify Routes
+
+Served by the player daemon at `/api/spotify/`, which through nginx is
+`/api/audiocontrol/spotify/`. These paths have not changed and are not going
+to.
+
+| Path | Method | Purpose |
+| --- | --- | --- |
+| `/api/spotify/tokens` | POST | store the tokens an OAuth flow produced |
+| `/api/spotify/status` | GET | whether an account is linked, and when its token expires |
+| `/api/spotify/logout` | POST | forget the account |
+| `/api/spotify/oauth_config` | GET | the OAuth proxy URL and redirect URI |
+| `/api/spotify/create_session` | GET | begin a browser-mediated login |
+| `/api/spotify/login/<session_id>` | GET | the Spotify authorize URL for that session |
+| `/api/spotify/poll/<session_id>` | GET | poll for the tokens that login produced |
+| `/api/spotify/check_server` | GET | whether the OAuth proxy is reachable |
+| `/api/spotify/access_token` | GET | the current bearer token as `text/plain`; 404 when no account is linked |
+| `/api/spotify/playback` | GET | the Spotify playback state |
+| `/api/spotify/command/<command>` | POST | play, pause, next, previous, seek, repeat, shuffle |
+| `/api/spotify/currently_playing` | GET | the currently playing track |
+| `/api/spotify/search` | POST | search Spotify for artists, albums or tracks |
+
+The last four are served only when `services.spotify.api_enabled` is `true` in
+`audiocontrol.json`; the rest are served whether it is set or not. That
+includes `access_token`, which the metadata side reads for its cover-art and
+favourites providers — gating it on a flag meant for client-facing playback
+routes would turn off Spotify cover art on every device that has not set it.
 
 #### Get Artist Detail
 
@@ -2331,8 +2518,15 @@ MusicBrainz-backed guess the stream title splitter makes for MPD stations.
 
 #### Resolve Artist Split
 
-Decides whether a combined artist string names more than one artist, the same
-check both library loaders run at load time on every album's artist field.
+Decides whether a combined artist string names more than one artist.
+
+**The player daemon no longer calls this.** It was the last route on the
+metadata daemon that it did call — once per album, blocking, on a load that can
+cover 200,000 songs. Both library loaders now split on separators alone and are
+corrected afterwards, through `split_into` in
+[Apply Enrichment](#apply-enrichment); see **Artist splits arrive late** there
+for what a user sees. The route stays for clients that ask the question
+directly, and answers exactly as it did.
 
 - **Endpoint**: `/api/resolve/artist-split`
 - **Method**: GET
@@ -2363,33 +2557,22 @@ check both library loaders run at load time on every album's artist field.
   The answer is cached without expiry once computed, keyed on the exact input
   string.
 
-#### Nudge Enrichment
+#### Enrichment is not requested over a route
 
-Advisory hint that the metadata side should pull one player's library sooner
-than its next periodic poll, e.g. right after a library load.
+There was a `POST /api/enrich/nudge?player=` here, an advisory hint that the
+metadata side should look at one player's library sooner than its next periodic
+poll. **It is gone, and nothing replaced it as a route.** No route on the
+metadata side is called by the player daemon any more, so the announcement
+travels the other way instead: a library load emits
+[`library_changed`](websocket.md#library_changed) on `/api/events`, and the
+metadata side reacts to that.
 
-- **Endpoint**: `/api/enrich/nudge`
-- **Method**: POST
-- **Query Parameters**:
-  - `player` (string, required): the player name whose library changed
-- **Response** (202 Accepted): always, whether or not anything acts on the
-  nudge before this call returns. A nudge that is dropped or ignored is
-  harmless: the periodic poll covers it regardless.
-
-The name is handed to the library puller, which pulls that player's library at
-once instead of waiting for its next poll: `GET /api/library/<p>` for the two
-tokens, and — if the `library_version` differs from the one last enriched — the
-artist and album lists, followed by enrichment batches posted back to
-`POST /api/library/<p>/enrichment`. A player whose library reports no version
-is pulled again every 30 minutes regardless.
-
-The 202 still promises nothing. It is the answer when no puller is running at
-all, when the named player has no library, and when the library turns out to be
-at a version already enriched.
-
-```bash
-curl -X POST "http://<device-ip>:1080/api/enrich/nudge?player=mpd"
-```
+It is recorded here rather than dropped silently because the route did exist in
+this repository, though never in a released package — it was added and removed
+within 0.22.0, so no shipped client can have called it. A caller that somehow
+does gets a 404. Nothing else about enrichment changed: the metadata side still
+reads `GET /api/library/<p>`, `/artists` and `/albums`, and still posts results
+to [Apply Enrichment](#apply-enrichment).
 
 ### Favourites API
 
@@ -4390,6 +4573,7 @@ An Album represents a collection of tracks/songs by one or more artists.
   "id": "12345678",
   "name": "Album Name",
   "artists": ["Artist 1", "Artist 2"],
+  "album_artist": "Artist 1 & Artist 2",
   "release_date": "2023-01-01",
   "tracks_count": 12,
   "tracks": [
@@ -4405,6 +4589,7 @@ An Album represents a collection of tracks/songs by one or more artists.
 | id | string | Unique identifier for the album (string representation of a 64-bit hash) |
 | name | string | Album name |
 | artists | array | List of artist names for this album |
+| album_artist | string | The album-artist tag as the backend reported it, before `artists` was split out of it. **Omitted** where the library recorded none. It is here because the split is lossy — "Emerson" plus "Lake" plus "Palmer" cannot be turned back into the name they came from — and it is the name an enrichment batch makes a `split_into` claim about; see [Apply Enrichment](#apply-enrichment). Note that a player's configured `artist_separator` list does not reach the metadata side, so a claim about a name that *also* holds a built-in separator can override a split made with that list. |
 | release_date | string | ISO 8601 formatted date of album release (YYYY-MM-DD), may be null |
 | tracks_count | number | Number of tracks on the album |
 | tracks | array | Array of Track objects (only included when requested) |

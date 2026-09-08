@@ -1,11 +1,33 @@
 # Splitting AudioControl into a player daemon and a metadata daemon
 
 **Date:** 2026-09-04
-**Status:** Proposed
+**Status:** Phase 1 implemented; **partly superseded by
+[2026-09-07-one-way-seam.md](2026-09-07-one-way-seam.md)**
 **Affects:** the crate layout, `src/helpers/*`, `src/players/mpd/library.rs`,
 `src/players/lms/library.rs`, `src/data/library.rs`, `src/api/*`, `main.rs`,
 Debian packaging, the nginx snippet, `doc/api.md`, `doc/websocket.md`, and the
 `hifiberry-librespot` start script in HiFiBerry OS
+
+> **Superseded in part.** Phase 1.5 made the seam one-way: *no route on the
+> metadata daemon may be called by the main daemon*, and every connection
+> across the seam is now opened by the metadata side. Read
+> [2026-09-07-one-way-seam.md](2026-09-07-one-way-seam.md) and
+> [../communications.md](../communications.md) for what is current. Four things
+> in this document are no longer true, and each is flagged where it appears:
+>
+> - **`services.metadata` does not exist.** The player daemon holds no address
+>   for the metadata daemon, so interfaces 2, 3 and 4 have no outbound half to
+>   disable. Only `services.core`, in `metadata.json`, names an address.
+> - **The 30 s library poll is 10 minutes**, and is a backstop rather than the
+>   discovery mechanism. A library load announces itself with a
+>   `library_changed` event on `/api/events`, which the metadata daemon already
+>   subscribes to.
+> - **`POST /enrich/nudge` does not exist**, and could not: it was the player
+>   daemon calling the metadata daemon. The event above replaced it.
+> - **The security store is not in the metadata crate.** Both daemons hold
+>   credentials — the Spotify account moved to the player daemon with playback
+>   control, and Last.fm stayed with the scrobbler — so it lives in a shared
+>   `crates/acr-secrets`.
 
 ## Problem
 
@@ -238,7 +260,9 @@ of reading what enrichment stored, would silently turn such an entry into a
 daemon URL for an image the store may not actually hold, trading a working
 external link for a 404.
 
-**Discovery: the metadata daemon pulls.** It polls
+**Discovery: the metadata daemon pulls.** *(Superseded: the poll is 10 minutes
+and is a backstop; discovery is the `library_changed` event. The nudge route
+below is deleted.)* It polls
 `GET http://127.0.0.1:1080/api/library` every 30 s and, for each player with
 `has_library` and `is_loaded`, `GET /api/library/<p>` for `library_version`.
 When the version differs from the one it last enriched, it fetches
@@ -251,7 +275,8 @@ version (LMS) emits no validator at all. A player whose backend reports no
 daemon may shorten the wait after a load by calling
 `POST http://127.0.0.1:1084/api/enrich/nudge?player=<p>`, which answers 202
 and starts a pull at once; a nudge that fails is ignored, since the poll
-covers it.
+covers it. *(Superseded: that route is deleted. The load emits a
+`library_changed` event instead, which travels the allowed direction.)*
 
 **Delivery: the metadata daemon calls back.** Results are posted in batches
 of at most `BATCH_SIZE` items, which is 50 (`library_enricher.rs`). The trade
@@ -478,12 +503,17 @@ The player daemon keeps `/etc/audiocontrol/audiocontrol.json`. Its
 Omitting `services.metadata` disables every outbound call in interfaces 2, 3
 and 4.
 
+*(Superseded: there is no `services.metadata`. The player daemon makes no
+outbound call to the metadata daemon at all, so there is nothing for the
+section to configure and nothing for its absence to disable. A section left in
+a configuration file is ignored.)*
+
 The metadata daemon reads `/etc/audiocontrol/metadata.json`:
 
 ```json
 {
   "webserver": { "host": "127.0.0.1", "port": 1084 },
-  "core": { "url": "http://127.0.0.1:1080/api", "library_poll_seconds": 30 },
+  "core": { "url": "http://127.0.0.1:1080/api" },
   "datastore": { "attribute_cache": { "dbfile": "/var/lib/audiocontrol/metadata/attributes.db" },
                  "image_cache_path": "/var/lib/audiocontrol/metadata/images",
                  "user_image_path": "/var/lib/audiocontrol/user/images",
@@ -517,8 +547,15 @@ crates/acr-web/            ForwardedPrefix guard, imageresponse, validated, the 
 crates/acr-images/         imageresize, format sniffing, image_grader
 crates/acr-store/          attributecache, settingsdb, imagecache, imagepurge, backgroundjobs
 crates/acr-http/           http_client, retry, ratelimit
-crates/audiocontrol-metadata/   the metadata daemon: providers, coverart, artist_store, artist/album updaters, lastfm, spotify, favourites, image_meta, security_store, secrets, its own api/ and main.rs
+crates/acr-secrets/        the security store: both daemons hold credentials, so neither owns it
+crates/audiocontrol-metadata/   the metadata daemon: providers, coverart, artist_store, artist/album updaters, lastfm, spotify search, favourites, image_meta, secrets, its own api/ and main.rs
 ```
+
+*(Superseded: `crates/acr-secrets` was added and `security_store` moved out of
+the metadata crate, because the Spotify account moved to the player daemon with
+playback control while Last.fm stayed with the scrobbler. The dependency rule
+below changed with it: `aes-gcm` is permitted for `audiocontrol`, and `moka`
+and `regex` are not.)*
 
 Dependency rules, enforced by `Cargo.toml` and checked in CI with
 `cargo tree`:

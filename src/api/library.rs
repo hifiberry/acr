@@ -275,6 +275,15 @@ struct AlbumDTO {
     genres: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     categories: Vec<String>,
+    /// The album-artist string as the backend reported it, before it was split.
+    ///
+    /// `artists` above is the result of splitting this on separators, and the
+    /// split is lossy: "Emerson" plus "Lake" plus "Palmer" cannot be turned back
+    /// into the name they came from. The metadata daemon needs that name to ask
+    /// MusicBrainz whether the split was right at all, so it is served here.
+    /// Additive, and absent for a library that recorded none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    album_artist: Option<String>,
 }
 
 /// Creates an AlbumDTO from an Album with optional track inclusion.
@@ -325,6 +334,7 @@ fn create_album_dto(
         uri: album.uri,
         genres: album.genres,
         categories,
+        album_artist: album.artists_flat,
     }
 }
 
@@ -1337,43 +1347,35 @@ fn get_artist_internal(
                     }
                 };
                 
-                // The library keeps only what its lists are built from. The
-                // rest of what is known about an artist — the biography and
-                // the images — belongs to the metadata side, and is merged in
-                // here, on the one route that serves it.
-                let artist = artist.map(|mut artist| {
-                    if let Some(detail) = crate::audiocontrol::enrichment::enricher()
-                        .and_then(|e| e.artist_detail(&artist.name))
-                    {
-                        let meta = artist
-                            .metadata
-                            .get_or_insert_with(crate::data::ArtistMeta::new);
-                        meta.biography = detail.biography;
-                        meta.biography_source = detail.biography_source;
-                        // What the library already carries wins: an enricher
-                        // that knows no images must not blank the ones a
-                        // backend supplied itself.
-                        if meta.thumb_url.is_empty() {
-                            meta.thumb_url = detail.thumb_url;
-                        }
-                        if meta.banner_url.is_empty() {
-                            meta.banner_url = detail.banner_url;
-                        }
-                        // `is_partial_match` is deliberately not carried through
-                        // here. Nothing in this build ever writes it true: both
-                        // writers (the artist updater and the artist store) set
-                        // it inside `if let Some(meta) = &mut artist.metadata`
-                        // after `clear_metadata()` has already set that same
-                        // metadata to `None` on the same path, so it can only
-                        // ever be `false` or absent today. Only an
-                        // attribute-cache entry written by an older release
-                        // could carry `true`, and `#[serde(skip_serializing_if
-                        // = "Not::not")]` on the field means the only visible
-                        // effect either way is whether the key appears in the
-                        // payload at all.
-                    }
-                    artist
-                });
+                // The library holds the whole answer, and nothing is fetched
+                // here.
+                //
+                // It used to hold only what its *lists* are built from, and
+                // this route merged the biography, its source and the banner
+                // over the top by calling `GET /artist/<b64>` on the metadata
+                // daemon — one request per artist-detail request, and one of
+                // the last two live calls this daemon made across the seam. No
+                // route on the metadata daemon may be called by this one, so
+                // the merge moved to where a batch already lands:
+                // `ArtistSummary` carries those three fields alongside the
+                // thumbnails and `data::library`'s enrichment merge writes all
+                // of them.
+                //
+                // What a client sees keeps its shape and arrives later. Before,
+                // an artist whose sweep had not yet reported could still answer
+                // with a biography, because this route read the metadata side's
+                // own cache directly. Now it answers without one until the
+                // batch arrives — the same eventual consistency the genres and
+                // thumbnails in this very response have always had, and bounded
+                // by the same sweep.
+                //
+                // `is_partial_match` did not survive the old merge either, and
+                // nothing here regresses by leaving it out. Both of its writers
+                // — the artist updater and the artist store — set it inside
+                // `if let Some(meta) = &mut artist.metadata` after
+                // `clear_metadata()` has already set that same metadata to
+                // `None` on the same path, so it can only ever be `false` or
+                // absent today.
 
                 return Ok(Json(ArtistResponse::new(
                     player_name.to_string(),
@@ -1433,6 +1435,94 @@ fn resize_via_cache(
     }
 }
 
+/// What `get_image` answers with: the bytes, or somewhere else to get them.
+///
+/// Only artist art takes the second arm. See [`artist_image_location`].
+///
+/// The redirect carries a cache header of its own. The image it points at is
+/// already cached for a day, but without this the *redirect* is re-fetched on
+/// every request forever -- an extra round trip per artist image, permanently,
+/// for a destination that is a pure function of the name and the size and so
+/// cannot go stale for any reason the client could detect.
+#[derive(rocket::response::Responder)]
+pub enum ImageOrRedirect {
+    Image(crate::api::imageresponse::ImageReply),
+    Elsewhere(CacheableRedirect),
+}
+
+/// A redirect a client may remember for as long as it remembers the image.
+#[derive(rocket::response::Responder)]
+pub struct CacheableRedirect {
+    inner: rocket::response::Redirect,
+    cache_control: rocket::http::Header<'static>,
+}
+
+impl CacheableRedirect {
+    fn to(location: String) -> Self {
+        Self {
+            inner: rocket::response::Redirect::found(location),
+            cache_control: rocket::http::Header::new(
+                "Cache-Control",
+                crate::api::imageresponse::REVALIDATE_DAILY_CACHE,
+            ),
+        }
+    }
+}
+
+/// The artist name in an image identifier, or `None` when it names something
+/// else.
+///
+/// A base64url identifier is decoded first, exactly as the libraries' own
+/// `get_image` does, so `artist:` reaches this whether it was sent plainly or
+/// encoded. An identifier that decodes to something else is not consumed here:
+/// the caller passes the *original* string on, and the library decodes it
+/// again for itself.
+///
+/// An empty name is **not** an artist. `artist:` with nothing after it would
+/// otherwise build a redirect to `/api/coverart/artist//image`, whose empty
+/// segment Rocket collapses -- landing the request on the artist *search*
+/// route, which answers `200 application/json` on a path a client asked for an
+/// image on. Returning `None` here lets it fall through to the 404 it has
+/// always had. A 302 to the wrong route is worse than the 404 it replaces.
+fn artist_in_identifier(identifier: &str) -> Option<String> {
+    let named = |name: &str| (!name.is_empty()).then(|| name.to_string());
+    if let Some(name) = identifier.strip_prefix("artist:") {
+        return named(name);
+    }
+    if crate::helpers::url_encoding::is_url_safe_base64(identifier) {
+        let decoded = crate::helpers::url_encoding::decode_url_safe(identifier)?;
+        return decoded.strip_prefix("artist:").and_then(named);
+    }
+    None
+}
+
+/// Where an artist's image actually lives, as a path this daemon can send a
+/// client to.
+///
+/// It is the metadata side's own route, and the same path the artist lists
+/// have always put in `thumb_url` — see `populate_calculated_artist_fields` in
+/// the MPD library, which builds this very string when an artist has no
+/// thumbnail of its own. `size` travels with it, because that route resizes
+/// artist art and this one never could: `resize_via_cache` answers only for
+/// `album:` identifiers, so a `size` asked for here has always been ignored.
+fn artist_image_location(
+    artist_name: &str,
+    size: Option<&str>,
+    forwarded_prefix: Option<&str>,
+) -> String {
+    let path = format!(
+        "{}/coverart/artist/{}/image",
+        crate::constants::API_PREFIX,
+        crate::helpers::url_encoding::encode_url_safe(artist_name)
+    );
+    let mut location = crate::api::urlprefix::rewrite_api_relative_url(&path, forwarded_prefix);
+    if let Some(size) = size {
+        location.push_str("?size=");
+        location.push_str(&urlencoding::encode(size));
+    }
+    location
+}
+
 /// Retrieve an image from the library based on an identifier
 ///
 /// This endpoint maps directly to the library's get_image function, allowing
@@ -1444,14 +1534,26 @@ fn resize_via_cache(
 /// to the next rung of 100/200/400/800 pixels on the longest edge. Omitting it,
 /// or requesting a size above the top rung or the original's own size, serves the
 /// original bytes unchanged.
+///
+/// **An `artist:` identifier answers 302 rather than bytes.** Artist art is the
+/// metadata side's: it is fetched from providers, stored in the artist store
+/// and downloaded on first use, and none of that is in this daemon. Serving it
+/// here meant `GET /coverart/artist/<b64>/image` against the metadata daemon,
+/// which the one-way seam forbids, so this names that route instead of calling
+/// it. The redirect target is the path the artist lists already hand clients,
+/// it resizes where this route silently would not, and every HTTP client that
+/// follows redirects — which is every browser, `URLSession`, `requests` and
+/// `curl -L` — sees the same image. A client that follows no redirects sees a
+/// 302 where it saw bytes.
 #[get("/library/<player_name>/image/<identifier>?<size>")]
 pub fn get_image(
     player_name: &str,
     identifier: &str,
     size: Option<&str>,
     if_none_match: crate::api::imageresponse::IfNoneMatch<'_>,
+    forwarded_prefix: crate::api::urlprefix::ForwardedPrefix,
     controller: &State<Arc<AudioController>>
-) -> Result<crate::api::imageresponse::ImageReply, Custom<String>> {
+) -> Result<ImageOrRedirect, Custom<String>> {
     use crate::api::imageresponse::{reply, IMMUTABLE_CACHE, REVALIDATE_DAILY_CACHE};
 
     let target = parse_size(size)
@@ -1475,6 +1577,21 @@ pub fn get_image(
         if ctrl.get_player_name() == player_name {
             // Check if the player has a library
             if let Some(library) = ctrl.get_library() {
+                // Artist art is not this daemon's to serve; name where it is.
+                // Placed inside the player loop rather than before it so that
+                // an unknown player and a player with no library still answer
+                // 404, as they always have, rather than being redirected to an
+                // image whose absence would be reported by a different route.
+                if let Some(artist_name) = artist_in_identifier(identifier) {
+                    return Ok(ImageOrRedirect::Elsewhere(CacheableRedirect::to(
+                        artist_image_location(
+                            &artist_name,
+                            size,
+                            forwarded_prefix.as_deref(),
+                        ),
+                    )));
+                }
+
                 // Try the variant first when one was asked for. The original is only
                 // fetched if that finds nothing, because fetching it unconditionally
                 // costs a ~243KB read per thumbnail on MPD and a full HTTP round trip
@@ -1498,7 +1615,12 @@ pub fn get_image(
                 };
 
                 if let Some((data, mime_type)) = image {
-                    return Ok(reply(data, &mime_type, cache_control, if_none_match.0));
+                    return Ok(ImageOrRedirect::Image(reply(
+                        data,
+                        &mime_type,
+                        cache_control,
+                        if_none_match.0,
+                    )));
                 } else {
                     // Image not found
                     return Err(Custom(
@@ -1745,6 +1867,25 @@ pub fn delete_library_track(
 
 #[cfg(test)]
 mod tests {
+
+    /// `artist:` with no name must not be redirected.
+    ///
+    /// It would build `/api/coverart/artist//image`, whose empty segment Rocket
+    /// collapses -- landing on the artist *search* route, which answers 200
+    /// with JSON on a path the client asked for an image on. The route answered
+    /// 404 before this redirect existed and must still.
+    #[test]
+    fn an_artist_identifier_with_no_name_is_not_an_artist() {
+        assert_eq!(super::artist_in_identifier("artist:Pink Floyd").as_deref(), Some("Pink Floyd"));
+        assert_eq!(super::artist_in_identifier("artist:"), None);
+
+        // And through the base64url form, which is how a client usually sends it.
+        let encoded = crate::helpers::url_encoding::encode_url_safe("artist:");
+        assert_eq!(super::artist_in_identifier(&encoded), None);
+        let encoded = crate::helpers::url_encoding::encode_url_safe("artist:Pink Floyd");
+        assert_eq!(super::artist_in_identifier(&encoded).as_deref(), Some("Pink Floyd"));
+    }
+
     use super::*;
     use serial_test::serial;
     // `Album`, `Artist`, `Identifier` and `Arc` all arrive via `super::*`
@@ -1797,6 +1938,33 @@ mod tests {
             uri: None,
             genres: Vec::new(),
         }
+    }
+
+    /// The metadata daemon reads this field to learn the name it may make a
+    /// split claim about. It is the only place the unsplit album-artist string
+    /// is served, and it is omitted rather than empty where the library
+    /// recorded none, so an older library is not read as having reported "".
+    #[test]
+    fn an_album_dto_serves_the_recorded_album_artist_only_when_there_is_one() {
+        let mut split = album_with_cover(None);
+        split.artists = Arc::new(Mutex::new(vec![
+            "Emerson".to_string(),
+            "Lake".to_string(),
+            "Palmer".to_string(),
+        ]));
+        split.artists_flat = Some("Emerson, Lake & Palmer".to_string());
+
+        let dto = create_album_dto(split, false, None);
+        assert_eq!(dto.album_artist.as_deref(), Some("Emerson, Lake & Palmer"));
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["album_artist"], "Emerson, Lake & Palmer");
+
+        let bare = create_album_dto(album_with_cover(None), false, None);
+        assert_eq!(bare.album_artist, None);
+        assert!(
+            serde_json::to_value(&bare).unwrap().get("album_artist").is_none(),
+            "absent, not null: nothing was recorded"
+        );
     }
 
     #[test]
@@ -1903,10 +2071,17 @@ mod tests {
         }
 
         fn artist() -> Artist {
-            artist_with_thumbs(vec![
+            let mut artist = artist_with_thumbs(vec![
                 "/api/coverart/artist/YWJj/image",
                 "https://example.com/artist.png",
-            ])
+            ]);
+            // The detail fields, held by the library because an enrichment
+            // batch delivered them. Nothing fetches these per request any more.
+            let meta = artist.metadata.as_mut().expect("the fixture has metadata");
+            meta.biography = Some("A stub biography.".to_string());
+            meta.biography_source = Some("TheAudioDB".to_string());
+            meta.banner_url = vec!["https://example.com/banner.png".to_string()];
+            artist
         }
     }
 
@@ -2017,6 +2192,7 @@ mod tests {
                     get_player_albums,
                     get_player_artists,
                     get_artist_by_name,
+                    get_image,
                 ],
             );
         Client::tracked(rocket).unwrap()
@@ -2063,6 +2239,107 @@ mod tests {
     fn the_artists_route_without_a_prefix_emits_the_internal_path() {
         let body = get_json("/api/library/stub/artists", None);
         assert_eq!(body["artists"][0]["thumb_url"][0], "/api/coverart/artist/YWJj/image");
+    }
+
+    /// The artist detail route serves the biography out of the library, with
+    /// nothing fetched while the request is being answered.
+    ///
+    /// This is what replaced `LibraryEnricher::artist_detail`, which was a
+    /// `GET /artist/<b64>` to the metadata daemon per request and one of the
+    /// last two calls this daemon made across the seam. The stub library holds
+    /// no enricher and could not reach one; if the route went back to merging
+    /// something fetched, this fixture would still have to carry the biography
+    /// for the assertion to pass, so what this pins is that the *library's* copy
+    /// is what reaches the client.
+    #[test]
+    fn the_artist_detail_route_serves_what_the_library_holds() {
+        let body = get_json("/api/library/stub/artist/by-name/Stub%20Artist", None);
+        let meta = &body["artist"]["metadata"];
+        assert_eq!(meta["biography"], "A stub biography.");
+        assert_eq!(meta["biography_source"], "TheAudioDB");
+        assert_eq!(meta["banner_url"][0], "https://example.com/banner.png");
+    }
+
+    /// An `artist:` image identifier is answered by naming the metadata side's
+    /// own route, not by fetching from it.
+    ///
+    /// The `Location` is the same path the artist list puts in `thumb_url`, so
+    /// a client following it lands where it would have gone anyway. Asserting
+    /// the status *and* the header: a 302 to the wrong place is a 404 the
+    /// client sees one hop later, and a 200 here would mean the fetch came
+    /// back.
+    #[test]
+    fn an_artist_image_is_redirected_to_the_metadata_side() {
+        let client = stub_client();
+        let response = client
+            .get("/api/library/stub/image/artist:Stub%20Artist")
+            .dispatch();
+        assert_eq!(response.status(), Status::Found);
+        assert_eq!(
+            response.headers().get_one("Location"),
+            Some("/api/coverart/artist/U3R1YiBBcnRpc3Q/image")
+        );
+    }
+
+    /// The redirect carries the request's prefix and the size that was asked
+    /// for.
+    ///
+    /// Both matter and neither is cosmetic. An unprefixed `Location` behind
+    /// nginx falls through to the SPA, which answers 200 with index.html — a
+    /// broken image with a successful status. And `size` has to travel because
+    /// the route it points at is the only one that ever resized artist art:
+    /// `resize_via_cache` here answers for `album:` identifiers alone, so a
+    /// `size` asked of this route was silently ignored before.
+    #[test]
+    fn the_artist_image_redirect_carries_the_prefix_and_the_size() {
+        let client = stub_client();
+        let response = client
+            .get("/api/library/stub/image/artist:Stub%20Artist?size=200")
+            .header(Header::new("X-Forwarded-Prefix", "/api/audiocontrol"))
+            .dispatch();
+        assert_eq!(response.status(), Status::Found);
+        assert_eq!(
+            response.headers().get_one("Location"),
+            Some("/api/audiocontrol/coverart/artist/U3R1YiBBcnRpc3Q/image?size=200")
+        );
+    }
+
+    /// A base64url identifier is decoded before the `artist:` prefix is looked
+    /// for, because both libraries' own `get_image` decode one and a client may
+    /// have sent either form.
+    #[test]
+    fn a_base64_artist_identifier_is_redirected_too() {
+        let client = stub_client();
+        let encoded = crate::helpers::url_encoding::encode_url_safe("artist:Stub Artist");
+        let response = client
+            .get(format!("/api/library/stub/image/{}", encoded))
+            .dispatch();
+        assert_eq!(response.status(), Status::Found);
+        assert_eq!(
+            response.headers().get_one("Location"),
+            Some("/api/coverart/artist/U3R1YiBBcnRpc3Q/image")
+        );
+    }
+
+    /// Only artist art is redirected. An `album:` identifier the stub library
+    /// has no image for must still 404 rather than being sent somewhere.
+    #[test]
+    fn an_album_image_is_not_redirected() {
+        let client = stub_client();
+        let response = client.get("/api/library/stub/image/album:7").dispatch();
+        assert_eq!(response.status(), Status::NotFound);
+    }
+
+    /// And an unknown player still 404s rather than being redirected to an
+    /// image that has nothing to do with it. The redirect sits inside the
+    /// player lookup for exactly this.
+    #[test]
+    fn an_artist_image_for_an_unknown_player_is_not_found() {
+        let client = stub_client();
+        let response = client
+            .get("/api/library/nosuch/image/artist:Stub%20Artist")
+            .dispatch();
+        assert_eq!(response.status(), Status::NotFound);
     }
 
     #[test]
@@ -2123,6 +2400,8 @@ mod tests {
             crate::data::library::apply_batch(
                 &RwLock::new(HashMap::new()),
                 &artists,
+                &RwLock::new(acr_types::AlbumArtists::new()),
+                crate::data::library::NewArtist::WithEmptyMetadata,
                 &EnrichmentBatch {
                     library_generation: None,
                     artists: vec![

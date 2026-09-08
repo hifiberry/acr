@@ -3,11 +3,21 @@ Integration tests for the player/metadata HTTP seams (Phase 1 of the
 player/metadata split).
 
 These exercise the daemon started from `test_config_metadata.json`, in which
-`services.metadata` and `services.core` both point back at the daemon's own
-port -- in this phase the two halves share one process, so the seams are
-loopback calls to itself. See `doc/architecture.md` and
-`doc/specs/2026-09-04-player-metadata-split.md` for the full picture; each
-test below is pinned to one seam from that spec, named in its docstring.
+`services.core` points back at the daemon's own port -- in this phase the two
+halves share one process, so what the metadata side calls is a loopback call to
+itself. **There is no `services.metadata`**, and that is the point of this
+suite as much as anything it asserts: the daemon ignites without one, because
+nothing in it addresses the metadata daemon. See `doc/communications.md`,
+`doc/architecture.md` and `doc/specs/2026-09-07-one-way-seam.md`; each test
+below is pinned to one seam, named in its docstring.
+
+**Library enrichment is not observable here at all.** The configured player is
+`generic`, which has no library, so nothing sweeps and nothing is enriched. The
+config therefore leaves `library_poll_seconds` unset, at the production
+backstop of 600s, rather than the 30s it used to pin: a 30s backstop in a suite
+this length could carry a test past a broken event path, and there is no test
+here for it to carry. The event path end to end is exercised by running a real
+daemon against a real MPD.
 
 What this suite does **not** cover, so that nobody reads a green run as more
 than it is. The test config enables no metadata provider -- no MusicBrainz, no
@@ -147,3 +157,45 @@ def test_current_player_reports_a_state(metadata_server):
     body = requests.get(f"{base}/player").json()
     assert body["state"] == "playing"
     assert body["name"] == "test"
+
+
+def test_the_daemon_runs_with_no_metadata_service_configured(metadata_server):
+    """The one-way seam's whole claim, asserted where a config file can break
+    it: this daemon holds no address for the metadata daemon.
+
+    Every other test here runs against the same daemon, so all of them depend
+    on it having started; this one says so out loud and adds the half that
+    ignition alone does not prove -- that the metadata routes still answer.
+    Before the seam went one way, removing `services.metadata` cost artist
+    detail and artist images; now it costs nothing, because nothing reads it.
+    """
+    with open(__file__.rsplit("/", 1)[0] + "/test_config_metadata.json") as f:
+        config = f.read()
+    assert '"metadata": {' not in config, (
+        "this suite is only evidence while the config has no services.metadata"
+    )
+
+    r = requests.get(metadata_server.server_url + "/api/metadata/capabilities")
+    assert r.status_code == 200
+
+
+def test_the_artist_image_redirect_target_is_a_real_route(metadata_server):
+    """`/api/library/<p>/image/artist:<name>` answers 302 to
+    `/api/coverart/artist/<b64>/image` rather than fetching from it.
+
+    A redirect is only as good as what it points at, and the failure mode is
+    quiet: a `Location` naming a route that does not exist gives the client a
+    404 one hop later, which looks like a missing image rather than a broken
+    daemon. So this asserts the target route is *mounted* -- an unknown artist
+    is refused by the handler, with the handler's own message, not by Rocket
+    having no such route.
+    """
+    # "bm9ib2R5" is "nobody" base64url-encoded.
+    r = requests.get(
+        metadata_server.server_url + "/api/coverart/artist/bm9ib2R5/image"
+    )
+    assert r.status_code == 404
+    assert "No image found for artist" in r.text, (
+        "the route must answer this itself; Rocket's own 404 for an unmounted "
+        f"path would not say it. Got: {r.text!r}"
+    )

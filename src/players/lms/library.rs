@@ -3,9 +3,9 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
-use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface};
-use crate::data::library::{apply_batch, check_generation};
-use acr_types::enrichment::{Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink};
+use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface, PlayerEvent, PlayerSource};
+use crate::data::library::{apply_batch, check_generation, NewArtist};
+use acr_types::enrichment::{Applied, EnrichmentBatch, EnrichmentError, EnrichmentSink};
 use crate::helpers::http_client;
 use crate::players::lms::jsonrps::LmsRpcClient;
 use crate::players::lms::lmsaudio::lms_image_url;
@@ -58,39 +58,61 @@ impl LMSLibrary {
         }
     }
 
-    /// Ask the enricher for everything this library is missing.
+    /// Empty the album map for a reload and announce it over the event
+    /// stream.
     ///
-    /// Returns at once; results arrive later through this library's own
-    /// `EnrichmentSink`.
+    /// LMS carries no `LibraryVersion` — see `library_version` and
+    /// `library_generation`, both always `None` — so there is no bump to
+    /// pair with the clear the way MPD's `reset_albums_for_reload` does. The
+    /// event still fires, with both tokens `None`: this backend has nothing
+    /// meaningful to put in them and does not need to, because a subscriber
+    /// treats the event as a doorbell rather than a value to compare. Before
+    /// this event existed, nothing told the metadata daemon a reload had
+    /// happened at all; it waited for the next 30-minute poll to notice.
     ///
-    /// Only artists are offered. LMS has never looked up album genres — its
-    /// albums carry whatever the server reports and nothing else — and
-    /// offering them here would start a MusicBrainz request per album on a
-    /// backend that has never made one.
-    pub fn request_enrichment(&self) {
-        if !self.enhance_metadata {
-            return;
-        }
-        let Some(enricher) = crate::audiocontrol::enrichment::enricher() else {
-            debug!("No enricher installed, LMS library stays as loaded");
-            return;
-        };
-
-        let artists: Vec<ArtistRef> = self
-            .artists
-            .read()
-            .values()
-            .map(|a| ArtistRef {
-                id: a.id.to_string(),
-                name: a.name.clone(),
-            })
-            .collect();
-
-        // LMS tracks no generation, so there is none to name and none for a
-        // returning batch to be stale against: it cannot tell whether it has
-        // reloaded, so it does not claim it has not.
-        enricher.enrich("lms", None, artists, Vec::new(), Arc::new(self.clone()));
+    /// This announcement says a rebuild has *started*, and `library_loaded` is
+    /// false for the whole of it — see [`Self::mark_loaded_and_announce`], which
+    /// makes the one a consumer can act on.
+    fn reset_albums_for_reload(&self, albums: &mut HashMap<String, Album>) {
+        albums.clear();
+        self.announce_library_changed();
     }
+
+    /// Mark the library loaded and announce the finished load — one step.
+    ///
+    /// **This is the announcement a consumer of `library_changed` acts on.** The
+    /// reset's is made with `library_loaded` false and it stays false until the
+    /// rebuild ends, so anything reacting to that event alone would ask
+    /// `GET /api/library/lms`, correctly decline to enrich a library reporting
+    /// `is_loaded: false`, and never hear that it had become readable. The
+    /// metadata daemon's library puller is exactly such a consumer.
+    ///
+    /// The flag and the event are one call so that moving either alone cannot
+    /// silently reopen that gap. MPD pairs the same two for the same reason,
+    /// with tokens it actually has.
+    fn mark_loaded_and_announce(&self) {
+        *self.library_loaded.lock() = true;
+        self.announce_library_changed();
+    }
+
+    /// The event both announcements send. Identical either way: LMS has no
+    /// version machinery, so there is nothing to distinguish them by, and
+    /// nothing that needs to be — a doorbell that rings twice is still a
+    /// doorbell.
+    fn announce_library_changed(&self) {
+        crate::audiocontrol::eventbus::EventBus::instance().publish(PlayerEvent::LibraryChanged {
+            source: PlayerSource::new("lms".to_string(), "lms".to_string()),
+            library_version: None,
+            library_generation: None,
+        });
+    }
+
+    // `request_enrichment` stood here, and it is gone rather than emptied --
+    // see MPD's library for the whole reason. In short: the enricher it handed
+    // its artist list to was `MetadataClient`, whose `enrich` became a no-op
+    // when the nudge route went, and the metadata side builds the same list for
+    // itself from `GET /api/library/lms/artists` when the `library_changed`
+    // event tells it to look.
 
     /// Populate calculated fields in album objects
     /// 
@@ -187,30 +209,12 @@ impl LMSLibrary {
                 metadata: None,
             };
 
-            // What is already known about this artist comes from the enricher,
-            // not from a cache this side reads. Unlike MPD, an artist nothing
-            // is known about is left with no metadata at all rather than an
-            // empty one: that is what this backend has always served.
-            let mut artist_with_metadata = artist;
-            match crate::audiocontrol::enrichment::enricher()
-                .and_then(|e| e.artist_summary(&artist_name))
-            {
-                Some(summary) => {
-                    debug!("Loaded summary for artist {} from the enricher", artist_name);
-                    let mut metadata = crate::data::ArtistMeta::new();
-                    metadata.mbid = summary.mbid;
-                    metadata.genres = summary.genres;
-                    metadata.thumb_url = summary.thumb_url;
-                    artist_with_metadata.is_multi = summary.is_multi;
-                    artist_with_metadata.metadata = Some(metadata);
-                },
-                None => {
-                    debug!("Nothing known yet about artist {}", artist_name);
-                }
-            }
-
-            // Insert the artist with potentially loaded metadata
-            artists.insert(artist_name.clone(), artist_with_metadata);
+            // An artist loads unenriched, always -- see MPD's `create_artists`
+            // for why the question this used to ask has been dead in every
+            // deployed build and was a call across the seam besides. Unlike
+            // MPD, an artist here keeps no metadata at all rather than an empty
+            // one: that is what this backend has always served.
+            artists.insert(artist_name.clone(), artist);
             created_count += 1;
         }
         
@@ -253,10 +257,14 @@ impl LMSLibrary {
         let mut result = Vec::new();
 
         // Get albums associated with this artist ID from album_artists mapping
-        let album_artists_mapping = self.album_artists.read();
-        let album_ids = album_artists_mapping.get_albums_for_artist(artist_id);
+        // The mapping is taken, copied and *released* before the album map.
+        // Holding both -- mapping then albums -- is the inversion of the order
+        // stated in `data::library`, and with `parking_lot`'s task-fair
+        // `RwLock` a queued album-map writer turns it into a permanent
+        // three-thread deadlock. The ids are a small set; the copy is cheaper
+        // than the hazard.
+        let album_ids = self.album_artists.read().get_albums_for_artist(artist_id);
 
-        // Get all albums and fetch the ones with matching IDs
         let albums = self.albums.read();
         for album in albums.values() {
             if album_ids.contains(&album.id) {
@@ -278,10 +286,10 @@ impl LMSLibrary {
             let artist_id = artist.id;
 
             // Get albums associated with this artist from album_artists mapping
-            let album_artists_mapping = self.album_artists.read();
-            let album_ids = album_artists_mapping.get_albums_for_artist(&artist_id);
+            // Released before the album map, for the reason given in
+            // `get_albums_by_artist_id` above.
+            let album_ids = self.album_artists.read().get_albums_for_artist(&artist_id);
 
-            // Get all albums and fetch the ones with matching IDs
             let albums = self.albums.read();
             for album in albums.values() {
                 if album_ids.contains(&album.id) {
@@ -395,7 +403,7 @@ impl LibraryInterface for LMSLibrary {
                 // Update albums collection
                 {
                     let mut self_albums = self.albums.write();
-                    self_albums.clear();
+                    self.reset_albums_for_reload(&mut self_albums);
 
                     // Add each album to the collection with name as key
                     for mut album in albums {
@@ -410,21 +418,16 @@ impl LibraryInterface for LMSLibrary {
                 if let Err(e) = self.create_artists() {
                     error!("Error creating artists: {}", e);
                 }
-                // Mark as loaded and update progress
-                {
-                    let mut loaded = self.library_loaded.lock();
-                    *loaded = true;
-                    info!("Setting library_loaded flag to true");
-                }
+                // Mark as loaded, announce it, and update progress. The flag and
+                // the event are one call - see `mark_loaded_and_announce`.
+                info!("Setting library_loaded flag to true");
+                self.mark_loaded_and_announce();
 
                 { let mut progress = self.loading_progress.lock(); *progress = 1.0; }
                 
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
                 
-                // Ask for enrichment now that the library is fully loaded
-                self.request_enrichment();
-
                 Ok(())
             },
             Err(e) => {
@@ -681,7 +684,16 @@ impl EnrichmentSink for LMSLibrary {
     fn apply(&self, batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
         check_generation(&batch, self.library_generation())?;
 
-        let (applied, _changed) = apply_batch(&self.albums, &self.artists, &batch);
+        // `WithoutMetadata`: unlike MPD, an artist this library knows nothing
+        // about carries no metadata at all -- see `create_artists` -- so an
+        // artist a split creates must not carry one either.
+        let (applied, _changed) = apply_batch(
+            &self.albums,
+            &self.artists,
+            &self.album_artists,
+            NewArtist::WithoutMetadata,
+            &batch,
+        );
         Ok(applied)
     }
 }
@@ -689,7 +701,7 @@ impl EnrichmentSink for LMSLibrary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acr_types::enrichment::{AlbumRef, ArtistSummary, LibraryEnricher};
+    use acr_types::enrichment::ArtistSummary;
     use crate::data::Identifier;
 
     fn empty_library() -> LMSLibrary {
@@ -703,6 +715,84 @@ mod tests {
             is_multi: false,
             metadata: None,
         }
+    }
+
+    /// LMS has no version or generation to report, but a reload still rings
+    /// the doorbell: without this event, nothing told the metadata daemon a
+    /// reload had happened until the 30-minute backstop poll caught it. Both
+    /// tokens go out `None` rather than the event being skipped.
+    ///
+    /// The bus is a process-wide singleton, so this filters for events from
+    /// this test's own source rather than trusting the first `LibraryChanged`
+    /// to arrive.
+    #[test]
+    fn a_reload_announces_itself_even_with_no_version_machinery() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+
+        let lib = empty_library();
+        let bus = EventBus::instance();
+        let (id, receiver) = bus.subscribe(vec![EventSubscription::LibraryChanged]);
+
+        {
+            let mut albums = lib.albums.write();
+            lib.reset_albums_for_reload(&mut albums);
+        }
+
+        let event = receiver.try_iter().find(|event| {
+            matches!(event, PlayerEvent::LibraryChanged { source, .. } if source.player_name() == "lms")
+        });
+        bus.unsubscribe(id);
+
+        match event.expect("a library_changed event from the lms source") {
+            PlayerEvent::LibraryChanged { library_version, library_generation, .. } => {
+                assert_eq!(library_version, None, "LMS has no version to report");
+                assert_eq!(library_generation, None, "LMS has no generation to report");
+            }
+            other => panic!("expected LibraryChanged, got {other:?}"),
+        }
+    }
+
+    /// The announcement a consumer acts on, and why there are two.
+    ///
+    /// The reset's is made while `library_loaded` is false — asserted here,
+    /// because that is the whole reason the second one exists: a consumer that
+    /// pulled on the reset's event alone would find `is_loaded: false`, correctly
+    /// decline to enrich a library mid-rebuild, and never hear that it had
+    /// finished. The flag and the announcement are one call, so this asserts
+    /// both moved together.
+    #[test]
+    fn a_finished_load_marks_the_library_loaded_and_announces_it() {
+        use crate::audiocontrol::eventbus::{EventBus, EventSubscription};
+
+        let lib = empty_library();
+        {
+            let mut albums = lib.albums.write();
+            lib.reset_albums_for_reload(&mut albums);
+        }
+        assert!(
+            !lib.is_loaded(),
+            "the reset's announcement is made with the library unloaded"
+        );
+
+        let bus = EventBus::instance();
+        let (id, receiver) = bus.subscribe(vec![EventSubscription::LibraryChanged]);
+
+        lib.mark_loaded_and_announce();
+
+        let event = receiver.try_iter().find(|event| {
+            matches!(event, PlayerEvent::LibraryChanged { source, .. } if source.player_name() == "lms")
+        });
+        bus.unsubscribe(id);
+
+        assert!(
+            event.is_some(),
+            "a finished load must announce itself over the event bus"
+        );
+        assert!(
+            lib.is_loaded(),
+            "and must have marked the library loaded first, or the consumer that \
+             reacts to the event finds nothing to do"
+        );
     }
 
     /// The same merge MPD gets, reached through this backend's own sink.
@@ -722,6 +812,8 @@ mod tests {
                     is_multi: true,
                     genres: vec!["folk".into()],
                     thumb_url: vec![],
+                    split_into: None,
+                    ..Default::default()
                 }],
                 albums: vec![],
             })
@@ -764,55 +856,10 @@ mod tests {
         );
     }
 
-    struct RecordingEnricher(Mutex<Vec<(String, Option<String>, Vec<ArtistRef>, Vec<AlbumRef>)>>);
-
-    impl LibraryEnricher for RecordingEnricher {
-        fn artist_summary(&self, _name: &str) -> Option<ArtistSummary> {
-            None
-        }
-        fn artist_detail(&self, _name: &str) -> Option<crate::data::ArtistMeta> {
-            None
-        }
-        fn artist_image(&self, _name: &str) -> Option<(Vec<u8>, String)> {
-            None
-        }
-        fn album_genres(&self, _album_id: &str) -> Option<Vec<String>> {
-            None
-        }
-        fn enrich(
-            &self,
-            player: &str,
-            generation: Option<String>,
-            artists: Vec<ArtistRef>,
-            albums: Vec<AlbumRef>,
-            _sink: Arc<dyn EnrichmentSink>,
-        ) {
-            self.0.lock().push((player.to_string(), generation, artists, albums));
-        }
-    }
-
-    /// LMS asks about artists only. Album genres would be a MusicBrainz
-    /// request per album on a backend that has never made one.
-    #[test]
-    fn requesting_enrichment_asks_about_artists_and_no_albums() {
-        let lib = empty_library();
-        lib.artists
-            .write()
-            .insert("The Beatles".into(), test_artist("The Beatles"));
-
-        let recorder = Arc::new(RecordingEnricher(Mutex::new(Vec::new())));
-        let _guard = crate::audiocontrol::enrichment::testing::install(recorder.clone());
-        lib.request_enrichment();
-
-        let calls = recorder.0.lock();
-        assert_eq!(calls.len(), 1);
-        let (player, generation, artists, albums) = &calls[0];
-        assert_eq!(player, "lms");
-        assert_eq!(
-            *generation, None,
-            "a backend that cannot tell whether it reloaded names no generation"
-        );
-        assert_eq!(artists.len(), 1);
-        assert!(albums.is_empty(), "LMS must not ask for album genres");
-    }
+    // A test that `request_enrichment` asked about artists and no albums stood
+    // here, and went with the method. It asserted a property LMS no longer
+    // has: the metadata side discovers work for itself now, and its puller
+    // offers every player's albums that carry no genres. See
+    // doc/communications.md, which records that as a live gap rather than
+    // leaving a test to imply otherwise.
 }

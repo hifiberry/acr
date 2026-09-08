@@ -1,7 +1,8 @@
 use crate::AudioController;
 use crate::api::{
     players, plugins, library, imagecache, events, volume, lyrics, m3u, settings, cache,
-    backgroundjobs, genres, inputs, splitters, capabilities, song_information, enrichment
+    backgroundjobs, genres, inputs, splitters, capabilities, song_information, enrichment,
+    spotify
 };
 use crate::api::events::WebSocketManager;
 use crate::config::get_service_config;
@@ -178,6 +179,7 @@ pub fn api_routes() -> Vec<rocket::Route> {
         splitters::list_splitters,
         splitters::get_splitter,
         splitters::set_splitter,
+        splitters::record_observation,
         splitters::delete_splitter,
 
         // Library routes
@@ -213,6 +215,78 @@ pub fn api_routes() -> Vec<rocket::Route> {
         // Generic player API endpoints
         player_event_update,
         song_information::song_information,
+    ]
+}
+
+/// The daemon's own route groups that mount *below* `API_PREFIX`, and where
+/// each one goes.
+///
+/// Extracted from [`start_rocket_server`] for the same reason [`api_routes`]
+/// was: a collision between one of these and a group the metadata crate
+/// mounts is a daemon that refuses to ignite, and the test that guards
+/// against it needs the list without standing a server up. Until the Spotify
+/// account moved there was nothing below the prefix to collide *with* --
+/// `/volume`, `/genres` and the rest are names the metadata crate does not
+/// use. `/spotify` is, which is what makes this list worth having rather than
+/// a run of `.mount` calls.
+///
+/// `config_json` is read for one thing only: `spotify.api_enabled`, which
+/// selects between the two Spotify route lists. It is read here rather than
+/// passed in because this is already the function that reads the daemon's
+/// configuration.
+pub fn daemon_route_groups(config_json: &serde_json::Value) -> Vec<(String, Vec<rocket::Route>)> {
+    let spotify_api_enabled = get_service_config(config_json, "spotify")
+        .and_then(|s| s.get("api_enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    vec![
+        ("/imagecache".to_string(), imagecache::routes()),
+        (
+            "/lyrics".to_string(),
+            routes![lyrics::get_lyrics_by_id, lyrics::get_lyrics_by_metadata],
+        ),
+        ("/m3u".to_string(), routes![m3u::parse_m3u_playlist]),
+        (
+            "/settings".to_string(),
+            routes![settings::get_setting, settings::set_setting],
+        ),
+        ("/cache".to_string(), routes![cache::get_cache_statistics]),
+        (
+            "/background".to_string(),
+            routes![
+                backgroundjobs::get_background_jobs,
+                backgroundjobs::get_background_job,
+            ],
+        ),
+        (
+            "/genres".to_string(),
+            routes![
+                genres::get_config,
+                genres::get_user_config_endpoint,
+                genres::put_user_config,
+                genres::post_mapping,
+                genres::delete_mapping,
+                genres::post_ignore,
+                genres::delete_ignore,
+            ],
+        ),
+        (
+            "/volume".to_string(),
+            routes![
+                volume::get_volume_info,
+                volume::get_volume_state,
+                volume::set_volume,
+                volume::increase_volume,
+                volume::decrease_volume,
+                volume::toggle_mute,
+            ],
+        ),
+        ("/inputs".to_string(), routes![inputs::get_inputs_status]),
+        // The Spotify account. Moved here from the metadata crate so that
+        // playback control needs nothing from the metadata half; the
+        // client-visible paths under `/api/spotify` are unchanged.
+        ("/spotify".to_string(), spotify::routes(spotify_api_enabled)),
     ]
 }
 
@@ -263,77 +337,14 @@ pub async fn start_rocket_server(
     let ws_manager = Arc::new(WebSocketManager::new());
     events::start_prune_task(ws_manager.clone());
     
-    let api_routes = api_routes();
-
-    // Define volume routes
-    let volume_routes = routes![
-        volume::get_volume_info,
-        volume::get_volume_state,
-        volume::set_volume,
-        volume::increase_volume,
-        volume::decrease_volume,
-        volume::toggle_mute,
-    ];
-
-    // Define inputs routes
-    let inputs_routes = routes![
-        inputs::get_inputs_status,
-    ];
-
-    // ImageCache routes
-    let imagecache_routes = imagecache::routes();
-    
-    // Lyrics routes
-    let lyrics_routes = routes![
-        lyrics::get_lyrics_by_id,
-        lyrics::get_lyrics_by_metadata,
-    ];
-    
-    // M3U routes
-    let m3u_routes = routes![
-        m3u::parse_m3u_playlist,
-    ];
-    
-    // Settings routes
-    let settings_routes = routes![
-        settings::get_setting,
-        settings::set_setting,
-    ];
-    
-    // Cache routes
-    let cache_routes = routes![
-        cache::get_cache_statistics,
-    ];
-    
-    // Background jobs routes
-    let backgroundjobs_routes = routes![
-        backgroundjobs::get_background_jobs,
-        backgroundjobs::get_background_job,
-    ];
-
-    // Genre config routes
-    let genres_routes = routes![
-        genres::get_config,
-        genres::get_user_config_endpoint,
-        genres::put_user_config,
-        genres::post_mapping,
-        genres::delete_mapping,
-        genres::post_ignore,
-        genres::delete_ignore,
-    ];
-      let mut rocket_builder = rocket::custom(config)
-        .mount(API_PREFIX, api_routes) // Use API_PREFIX here when mounting general api routes
-        .mount(format!("{}/imagecache", API_PREFIX), imagecache_routes) // Mount imagecache routes
-        .mount(format!("{}/lyrics", API_PREFIX), lyrics_routes) // Mount lyrics routes
-        .mount(format!("{}/m3u", API_PREFIX), m3u_routes) // Mount M3U routes
-        .mount(format!("{}/settings", API_PREFIX), settings_routes) // Mount settings routes
-        .mount(format!("{}/cache", API_PREFIX), cache_routes) // Mount cache routes
-        .mount(format!("{}/background", API_PREFIX), backgroundjobs_routes) // Mount background jobs routes
-        .mount(format!("{}/genres", API_PREFIX), genres_routes) // Mount genre config routes
-        .mount(format!("{}/volume", API_PREFIX), volume_routes) // Mount volume routes
-        .mount(format!("{}/inputs", API_PREFIX), inputs_routes) // Mount inputs status routes
+    let mut rocket_builder = rocket::custom(config)
+        .mount(API_PREFIX, api_routes()) // Use API_PREFIX here when mounting general api routes
         .manage(controller)
         .manage(ws_manager); // Add WebSocket manager as managed state
+
+    for (mount, routes) in daemon_route_groups(config_json) {
+        rocket_builder = rocket_builder.mount(format!("{}{}", API_PREFIX, mount), routes);
+    }
 
     // The route groups this function does not own. `src/main.rs` assembles
     // them (`metadata_route_groups`), and they are not one set but three:

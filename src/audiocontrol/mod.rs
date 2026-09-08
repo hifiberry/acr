@@ -3,17 +3,19 @@ pub mod audiocontrol;
 // EventBus for distributing PlayerEvents to subscribers
 pub mod eventbus;
 // The in-process forwarder that used to be the seam to metadata enrichment.
-// The daemon no longer calls it: that seam is HTTP now (see metadata_client
-// below, and audiocontrol_metadata::now_playing_ws for the other direction).
+// The daemon no longer calls it: the metadata side subscribes to /api/events
+// instead (audiocontrol_metadata::now_playing_ws).
 pub mod now_playing_bridge;
-// Where the player side finds the library enricher, if one was injected
-pub mod enrichment;
-// The player side's HTTP client for the three seams the metadata side answers
-pub mod metadata_client;
-// Where the player side finds the resolver, if one was injected
+// Splitting an album-artist string on separators alone. Still named for the
+// seam it replaced: this used to be where an injected client asked the metadata
+// daemon what a name split into.
+//
+// **There is no client here any more, and nowhere left to put one.** No route
+// on the metadata daemon may be called by this one, so `metadata_client` and
+// the `enrichment` injection point it was installed through are both gone, and
+// with them the last thing in this daemon that held the metadata daemon's
+// address. See doc/communications.md.
 pub mod resolver;
-// Where the player side finds a Spotify access token source, if one was injected
-pub mod token;
 
 // Re-export the AudioController
 pub use audiocontrol::AudioController;

@@ -1,11 +1,46 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// One artist as the player daemon knows it: enough to look it up.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtistRef {
     pub id: String,
     pub name: String,
+    /// True when this is an album-artist string the loader *split*, offered
+    /// only so the metadata side can say whether that split was right.
+    ///
+    /// Such a name is not an artist in the library — the library holds the
+    /// parts it was split into — so nothing on this side has a thumbnail, a
+    /// biography or genres to keep for it, and a full lookup would download an
+    /// image no route serves. The sweep answers it with
+    /// [`ArtistSummary::split_into`] and nothing else.
+    ///
+    /// It exists because a split is lossy in one direction: a library that
+    /// divided "Emerson, Lake & Palmer" into three holds three artists and no
+    /// record of the name as a whole among them, so the whole name has to be
+    /// offered separately or the wrong split can never be corrected.
+    #[serde(default)]
+    pub split_only: bool,
+}
+
+impl ArtistRef {
+    /// An artist the library actually holds.
+    pub fn named(id: String, name: String) -> Self {
+        ArtistRef {
+            id,
+            name,
+            split_only: false,
+        }
+    }
+
+    /// An album-artist string the loader split, offered for the split question
+    /// alone. See [`Self::split_only`].
+    pub fn split_question(name: String) -> Self {
+        ArtistRef {
+            id: String::new(),
+            name,
+            split_only: true,
+        }
+    }
 }
 
 /// One album as the player daemon knows it.
@@ -16,8 +51,15 @@ pub struct AlbumRef {
     pub artist: String,
 }
 
-/// What a lookup learned about an artist, at the summary level the library
-/// lists carry. The biography stays with the metadata side.
+/// What a lookup learned about an artist.
+///
+/// This used to stop at the summary level a library's *lists* carry, with the
+/// biography and the banner left behind on the metadata side for the player
+/// daemon to fetch per request. It cannot stop there any more: fetching them
+/// per request meant `GET /artist/<b64>` against the metadata daemon, and no
+/// route on the metadata daemon may be called by the main daemon. Everything
+/// the artist routes serve therefore travels in this batch, which already goes
+/// the one direction that is allowed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtistSummary {
     pub name: String,
@@ -44,6 +86,55 @@ pub struct ArtistSummary {
     /// predates the field must not be read as clearing what a library holds.
     #[serde(default)]
     pub thumb_url: Vec<String>,
+    /// The artist's banner URLs, exactly as the metadata side stored them.
+    ///
+    /// Carried for the same reason as [`Self::thumb_url`] and read the same
+    /// way: the stored value is a provider's own URL today, so reconstructing
+    /// it here is not possible at all.
+    #[serde(default)]
+    pub banner_url: Vec<String>,
+    /// The artist's biography, and where it came from.
+    ///
+    /// The one field here that no *list* shows. It is carried because the
+    /// artist detail routes serve it and the player daemon has no other way to
+    /// get it: it used to be fetched per request from the metadata daemon, and
+    /// that call is exactly what the one-way seam forbids.
+    ///
+    /// The two travel together and are applied together. A biography with no
+    /// source is a legitimate state — a provider that supplies no attribution —
+    /// but a source with no biography attributes nothing, and splitting them
+    /// across two sweeps would produce one.
+    #[serde(default)]
+    pub biography: Option<String>,
+    #[serde(default)]
+    pub biography_source: Option<String>,
+    /// The artists this name splits into, or `None` to make no claim.
+    ///
+    /// `Some` of one element asserts the name is a single artist and is **not**
+    /// the same as `None`: it is what corrects a plain separator split that
+    /// wrongly divided a name like "Emerson, Lake & Palmer". A loader splits on
+    /// separators alone and cannot know the difference; this is how it finds
+    /// out.
+    ///
+    /// `None` is the answer whenever the metadata side has nothing positive to
+    /// say — MusicBrainz disabled, a lookup that found nothing, a name it was
+    /// never asked about. That matters because the loader may have split on
+    /// *configured* separators this side has never seen, and a claim built from
+    /// the default list alone would undo a correct split. Only a positive
+    /// answer travels.
+    ///
+    /// That is a partial defence rather than a complete one: the configured
+    /// separator list does not cross the seam, so a name holding both a
+    /// configured separator and a built-in one can still be claimed about and
+    /// have the operator's split overridden. See
+    /// `audiocontrol_metadata::artistsplitter::split_observation`.
+    ///
+    /// A claim is validated where it is applied, not where it is made:
+    /// `data::library`'s merge refuses one whole rather than applying part of a
+    /// malformed list, because a partly applied claim leaves the library worse
+    /// than no claim at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_into: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,45 +200,18 @@ pub trait EnrichmentSink: Send + Sync {
     fn apply(&self, batch: EnrichmentBatch) -> Result<Applied, EnrichmentError>;
 }
 
-/// Implemented on the metadata side: what a library asks for.
-pub trait LibraryEnricher: Send + Sync {
-    /// The summary a library shows in its lists, if one is already known.
-    /// Called while a library loads, once per artist. Must not do network I/O.
-    fn artist_summary(&self, name: &str) -> Option<ArtistSummary>;
-    /// Everything known about an artist, for the detail routes.
-    /// May take up to the caller's timeout; must not block longer.
-    fn artist_detail(&self, name: &str) -> Option<crate::ArtistMeta>;
-    /// An artist's image and the MIME type it should be served as.
-    ///
-    /// This is what `/library/<p>/image/artist:<name>` answers with, and the
-    /// pair is served verbatim — the caller does not re-derive the type from
-    /// the bytes. Unlike [`Self::artist_summary`] this may reach the network:
-    /// the in-process implementation downloads an image the first time one is
-    /// asked for. It is therefore only called from a request, never while a
-    /// library loads.
-    fn artist_image(&self, name: &str) -> Option<(Vec<u8>, String)>;
-    /// Genres already known for an album, or `None` when nothing is stored.
-    ///
-    /// `Some(vec![])` is a real answer and not the same as `None`: it records
-    /// a lookup that ran and found no genres, which is what keeps the lookup
-    /// from being repeated. Called once per album while a library loads, so
-    /// like [`Self::artist_summary`] it must not do network I/O.
-    fn album_genres(&self, album_id: &str) -> Option<Vec<String>>;
-    /// Start enriching a library. Returns at once; results arrive through the sink.
-    ///
-    /// `generation` is the library generation every batch of this sweep will
-    /// name. It is fixed for the life of the sweep: a library that is rebuilt
-    /// meanwhile refuses the next batch, which ends the sweep, and the rebuild
-    /// asks again for whatever it now needs.
-    fn enrich(
-        &self,
-        player: &str,
-        generation: Option<String>,
-        artists: Vec<ArtistRef>,
-        albums: Vec<AlbumRef>,
-        sink: Arc<dyn EnrichmentSink>,
-    );
-}
+// `LibraryEnricher` used to live here, next to the sink, because both halves
+// named it: the metadata side implemented it and the player side called it
+// through an injected `Arc<dyn LibraryEnricher>`. The one-way seam ended that.
+// A trait the player half calls is, by construction, the player half calling
+// the metadata daemon, so the injection point and every call site went with
+// the client that answered them, and what is left — starting a sweep — is the
+// metadata daemon talking to itself. It lives in
+// `audiocontrol_metadata::library_enricher` now.
+//
+// `EnrichmentSink` stays. It is the seam that runs the allowed way round: the
+// metadata side calls it, over `POST /api/library/<p>/enrichment`, and the
+// player half's library implements it.
 
 /// Merge one album's genres the way the in-library updater does: an empty
 /// list never clears, a list holding the same genres is not a change.
@@ -186,48 +250,28 @@ fn same_genres(stored: &[String], incoming: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    /// An enricher that knows nothing, present only so the trait is exercised
+    /// A sink that accepts everything, present only so the trait is exercised
     /// as a trait object.
-    struct Nothing;
+    struct Accepts;
 
-    impl LibraryEnricher for Nothing {
-        fn artist_summary(&self, _name: &str) -> Option<ArtistSummary> {
-            None
-        }
-        fn artist_detail(&self, _name: &str) -> Option<crate::ArtistMeta> {
-            None
-        }
-        fn artist_image(&self, _name: &str) -> Option<(Vec<u8>, String)> {
-            None
-        }
-        fn album_genres(&self, _album_id: &str) -> Option<Vec<String>> {
-            None
-        }
-        fn enrich(
-            &self,
-            _player: &str,
-            _generation: Option<String>,
-            _artists: Vec<ArtistRef>,
-            _albums: Vec<AlbumRef>,
-            _sink: Arc<dyn EnrichmentSink>,
-        ) {
+    impl EnrichmentSink for Accepts {
+        fn apply(&self, _batch: EnrichmentBatch) -> Result<Applied, EnrichmentError> {
+            Ok(Applied::default())
         }
     }
 
-    /// The enricher is only ever held as `Arc<dyn LibraryEnricher>`, so the
-    /// trait has to stay object-safe. A method that broke that — a generic
+    /// The sink is only ever held as `Arc<dyn EnrichmentSink>`, so the trait
+    /// has to stay object-safe. A method that broke that — a generic
     /// parameter, `self` by value, a return type mentioning `Self` — would
-    /// still compile here and fail at every injection site instead, with an
+    /// still compile here and fail at every hand-out site instead, with an
     /// error naming the caller rather than the trait. This coercion puts the
     /// failure next to the definition.
     #[test]
-    fn the_trait_is_object_safe() {
-        let e: Arc<dyn LibraryEnricher> = Arc::new(Nothing);
-        assert!(e.artist_summary("x").is_none());
-        assert!(e.artist_detail("x").is_none());
-        assert!(e.artist_image("x").is_none());
-        assert!(e.album_genres("1").is_none());
+    fn the_sink_trait_is_object_safe() {
+        let s: Arc<dyn EnrichmentSink> = Arc::new(Accepts);
+        assert!(s.apply(EnrichmentBatch::default()).is_ok());
     }
 
     #[test]
@@ -310,6 +354,92 @@ mod tests {
         let round_tripped: ArtistSummary =
             serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
         assert_eq!(round_tripped, with);
+    }
+
+    /// The detail fields survive the wire, and an absent one is `None` rather
+    /// than a parse failure.
+    ///
+    /// These carry what the artist detail routes used to fetch per request
+    /// from the metadata daemon. If they did not cross, the routes would serve
+    /// an artist with no biography at all and every test of those routes that
+    /// builds its own `ArtistMeta` would still pass — the failure would be
+    /// visible only on a device.
+    #[test]
+    fn the_artist_detail_fields_cross_the_wire() {
+        let bare: ArtistSummary = serde_json::from_str(r#"{"name":"Bowie"}"#).unwrap();
+        assert_eq!(bare.biography, None);
+        assert_eq!(bare.biography_source, None);
+        assert!(bare.banner_url.is_empty());
+
+        let full: ArtistSummary = serde_json::from_str(
+            r#"{"name":"Bowie","biography":"Born in Brixton.",
+                "biography_source":"LastFM",
+                "banner_url":["https://example/banner.jpg"]}"#,
+        )
+        .unwrap();
+        assert_eq!(full.biography.as_deref(), Some("Born in Brixton."));
+        assert_eq!(full.biography_source.as_deref(), Some("LastFM"));
+        assert_eq!(full.banner_url, vec!["https://example/banner.jpg"]);
+
+        for summary in [bare, full] {
+            let round_tripped: ArtistSummary =
+                serde_json::from_str(&serde_json::to_string(&summary).unwrap()).unwrap();
+            assert_eq!(round_tripped, summary);
+        }
+    }
+
+    /// The three states of the split claim have to survive the wire, and the
+    /// two that are easy to confuse are the ones that matter: absent means
+    /// "no claim", and a one-element list means "this is one artist". A peer
+    /// that predates the field sends neither, and must be read as making no
+    /// claim rather than as asserting an empty split.
+    #[test]
+    fn the_three_states_of_a_split_claim_survive_the_wire() {
+        let absent: ArtistSummary = serde_json::from_str(r#"{"name":"Bowie"}"#).unwrap();
+        assert_eq!(absent.split_into, None, "a peer that predates the field");
+
+        let one: ArtistSummary = serde_json::from_str(
+            r#"{"name":"Emerson, Lake & Palmer","split_into":["Emerson, Lake & Palmer"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            one.split_into,
+            Some(vec!["Emerson, Lake & Palmer".to_string()]),
+            "one element is an assertion, not an absence"
+        );
+
+        let several: ArtistSummary =
+            serde_json::from_str(r#"{"name":"Alpha and Beta","split_into":["Alpha","Beta"]}"#)
+                .unwrap();
+        assert_eq!(
+            several.split_into,
+            Some(vec!["Alpha".to_string(), "Beta".to_string()])
+        );
+
+        for summary in [absent.clone(), one, several] {
+            let round_tripped: ArtistSummary =
+                serde_json::from_str(&serde_json::to_string(&summary).unwrap()).unwrap();
+            assert_eq!(round_tripped, summary);
+        }
+
+        assert!(
+            !serde_json::to_string(&absent).unwrap().contains("split_into"),
+            "and no claim is not serialised at all, so an older peer sees nothing new"
+        );
+    }
+
+    /// A reference built for the split question alone is distinguishable from
+    /// one naming an artist the library holds. The sweep branches on it: a
+    /// `split_only` name has no artist behind it, so a full lookup would
+    /// download an image no route serves.
+    #[test]
+    fn a_split_question_is_distinguishable_from_an_artist_the_library_holds() {
+        let held = ArtistRef::named("7".to_string(), "Pink Floyd".to_string());
+        assert!(!held.split_only);
+
+        let question = ArtistRef::split_question("Emerson, Lake & Palmer".to_string());
+        assert!(question.split_only);
+        assert_eq!(question.name, "Emerson, Lake & Palmer");
     }
 
     #[test]

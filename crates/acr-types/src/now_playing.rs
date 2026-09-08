@@ -1,4 +1,4 @@
-use crate::{PlaybackState, PlayerSource, Song};
+use crate::{OrderResult, PlaybackState, PlayerSource, Song};
 use serde::Deserialize;
 
 /// The name the Last.fm worker logs under, and the name the player daemon's
@@ -51,6 +51,31 @@ pub enum NowPlayingEvent {
 pub trait SongInformationSink: Send + Sync {
     /// Returns whether the stored song changed.
     fn apply(&self, source: &PlayerSource, partial: &Song) -> bool;
+}
+
+/// Where a title-order observation goes: `POST
+/// /player/<name>/splitter/<station>/observation`.
+///
+/// This is *not* `SongInformationSink`. That route identifies a song by its
+/// current title and artist and refuses a partial that disagrees with
+/// either — the correct behaviour for "this enrichment may no longer
+/// describe the song playing" — which makes it structurally unable to carry
+/// an order correction: a correction is, by construction, a title and artist
+/// that disagree with what is currently stored (they are swapped). An order
+/// observation is per-station splitter state, not information about one
+/// song, so it travels to the splitter route instead — the same one a user
+/// sets a station's order through by hand.
+pub trait SplitterObservationSink: Send + Sync {
+    /// Report an order this station's splitter has been observed to have —
+    /// e.g. a MusicBrainz-backed correction of a guess the player made
+    /// locally. `station` is the un-encoded stream URL; the implementation
+    /// applies whatever encoding its transport needs.
+    ///
+    /// Returns whether the report reached the player daemon and was
+    /// accepted. This only ever feeds what the station has *learned*: the
+    /// route it calls never touches an order a user set explicitly, which
+    /// keeps winning regardless of how many observations disagree with it.
+    fn record_order_observation(&self, player_name: &str, station: &str, order: OrderResult) -> bool;
 }
 
 /// What the active player is doing right now, asked rather than awaited.

@@ -1,11 +1,9 @@
 pub mod artist;
 pub mod capabilities;
 pub mod coverart;
-pub mod enrich;
 pub mod favourites;
 pub mod lastfm;
 pub mod resolve;
-pub mod spotify;
 pub mod theaudiodb;
 
 /// The metadata routes and where each set mounts, relative to `/api`.
@@ -14,45 +12,27 @@ pub mod theaudiodb;
 /// `src/api/server.rs` mounted them in before they moved out: Rocket resolves
 /// a collision by rank and then by declaration order, so both have to be
 /// carried across unchanged.
-pub fn routes(spotify_api_enabled: bool) -> Vec<(String, Vec<rocket::Route>)> {
-    // Spotify serves the authentication routes always and the playback and
-    // search routes only when `spotify.api_enabled` is set. The two lists
-    // share their first eight entries and `get_access_token`; the difference
-    // is the four in the middle.
-    let spotify_routes = if spotify_api_enabled {
-        rocket::routes![
-            spotify::store_tokens,
-            spotify::token_status,
-            spotify::logout,
-            spotify::get_oauth_config,
-            spotify::create_session,
-            spotify::login,
-            spotify::poll_session,
-            spotify::check_server,
-            spotify::spotify_command,
-            spotify::get_playback,
-            spotify::spotify_currently_playing,
-            spotify::spotify_search,
-            spotify::get_access_token
-        ]
-    } else {
-        rocket::routes![
-            spotify::store_tokens,
-            spotify::token_status,
-            spotify::logout,
-            spotify::get_oauth_config,
-            spotify::create_session,
-            spotify::login,
-            spotify::poll_session,
-            spotify::check_server,
-            spotify::get_access_token
-        ]
-    };
-
+///
+/// **There is no `/enrich` route any more.** `POST /enrich/nudge` was how the
+/// player daemon asked this side to look at a library it had just loaded, and
+/// nothing on this daemon may be called by the player daemon after the one-way
+/// seam. The `library_changed` event replaced it, travelling the other way over
+/// the socket this side already holds open; see `crate::library_puller`. The
+/// route is deleted rather than deprecated because it was introduced in the
+/// unreleased 0.22.0 and its only caller ships in the same release, so there is
+/// no stale caller a deprecation window could protect.
+///
+/// **There is no `/spotify` group any more.** The account moved to the player
+/// daemon with the one-way seam, and all thirteen of its routes went with it
+/// (`src/api/spotify.rs` there). The client-visible paths are unchanged; what
+/// changed is which process serves them, and this side must not serve any of
+/// them a second time -- the daemon mounts both sets at `/api`, and two
+/// identical routes at one mount make Rocket refuse to ignite.
+pub fn routes() -> Vec<(String, Vec<rocket::Route>)> {
     vec![
         // Mounted at the bare API prefix, as it was when it sat inline in the
         // daemon's own `api_routes` list. `theaudiodb::lookup_artist_by_mbid`
-        // came first; the four routes after it are new in this phase and are
+        // came first; the three routes after it are new in this phase and are
         // appended rather than interleaved so its declaration position is
         // unchanged.
         (
@@ -62,7 +42,6 @@ pub fn routes(spotify_api_enabled: bool) -> Vec<(String, Vec<rocket::Route>)> {
                 artist::get_artist,
                 resolve::title_order,
                 resolve::artist_split,
-                enrich::nudge,
             ],
         ),
         (
@@ -75,7 +54,6 @@ pub fn routes(spotify_api_enabled: bool) -> Vec<(String, Vec<rocket::Route>)> {
                 lastfm::disconnect_handler,
             ],
         ),
-        ("/spotify".to_string(), spotify_routes),
         ("/favourites".to_string(), favourites::routes()),
         (
             "/coverart".to_string(),
@@ -139,12 +117,12 @@ mod tests {
         assert_eq!(response.status(), Status::Ok);
     }
 
-    /// `routes(..)` never gains `capabilities::get_capabilities` back: that
+    /// `routes()` never gains `capabilities::get_capabilities` back: that
     /// route mounting at the same rank the player daemon already serves it
     /// at is exactly the collision this split exists to avoid.
     #[test]
     fn routes_never_reclaims_the_capabilities_path() {
-        for (_, group) in routes(false) {
+        for (_, group) in routes() {
             for route in group {
                 assert_ne!(
                     (route.method, route.uri.path()),

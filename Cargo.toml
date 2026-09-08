@@ -18,6 +18,12 @@ acr-http = { path = "crates/acr-http" }
 acr-images = { path = "crates/acr-images" }
 acr-store = { path = "crates/acr-store" }
 acr-web = { path = "crates/acr-web" }
+# The encrypted key-value store. Reached today only from the
+# `#[cfg(feature = "metadata")]` block in src/main.rs that starts it, but
+# unconditional here rather than behind that feature: the main daemon will
+# hold its own credentials through it once the Spotify account moves,
+# independent of whether the metadata crate is linked in at all.
+acr-secrets = { path = "crates/acr-secrets" }
 # Optional, and only ever reached from src/main.rs. Cargo has no per-binary
 # dependencies, so the honest way to let the composition root link the metadata
 # crate while this package's library does not is a feature: `metadata` is in

@@ -23,12 +23,85 @@ hifiberry-audiocontrol (0.22.0) trixie; urgency=medium
     every close instead -- see doc/websocket.md.
 
   * New routes for the metadata side, mounted both at their existing paths
-    and under /api/metadata/: artist detail, the two resolvers, an enrichment
-    nudge and a capabilities report. Existing paths are unchanged.
+    and under /api/metadata/: artist detail, the two resolvers and a
+    capabilities report. Existing paths are unchanged.
+
+  * New WebSocket event, library_changed, sent when a player's library is
+    loaded or reloaded. A client that does not subscribe to it sees no
+    difference; one that displays library contents can use it to refresh
+    instead of polling. A reload sends it twice -- once as the rebuild starts
+    and once when the finished library is readable -- and it is a signal to
+    re-read rather than a value to compare: see doc/websocket.md.
 
   * The library gains a generation token, distinct from its version, so an
     enrichment batch computed against a library that has since reloaded is
     refused rather than merged into the wrong contents.
+
+  * An album artist whose tag names several artists is now split on separators
+    while the library loads, and corrected afterwards by the metadata sweep
+    instead of being looked up during the load. **You may see this.** The
+    first load that meets a new album artist shows the plain split -- so an
+    album may briefly list three artists where there is one ("Emerson, Lake &
+    Palmer"), or one where there are two -- and the sweep fixes it, the same
+    way genres, images and biographies already arrive late on that screen.
+    What it buys is a load that no longer makes a MusicBrainz request per
+    album, on a library that can hold 200,000 songs. The correction needs
+    MusicBrainz lookups enabled, which the shipped configuration has; an
+    install with them off sees no change at all, since the old path already
+    did a plain split when they were off.
+
+  * GET /api/library/<player>/albums gains album_artist: the album-artist tag
+    as the backend reported it, before it was split into artists. Additive,
+    and absent where the library recorded none.
+
+  * The player daemon no longer calls the metadata side at all. Every
+    connection between the two is now opened by the metadata side, which is
+    what lets playback and every player route keep working when it is absent
+    or has crashed. The services.metadata section is gone from
+    audiocontrol.json; one left in a local configuration file is ignored.
+
+  * GET /api/library/<player>/image/artist:<name> now answers 302 with a
+    Location of /api/coverart/artist/<base64>/image, instead of serving the
+    image bytes itself. **Follow redirects.** Every browser and every normal
+    HTTP client already does, and the destination is the same path the artist
+    lists have always given in thumb_url, so a client that follows one sees
+    the same picture. Artist art is fetched from providers and stored by the
+    metadata side, and the player daemon no longer asks it for anything. One
+    thing improves: ?size= now works on artist art, where it was previously
+    accepted and ignored.
+
+  * An artist's biography, its source and its banner URL now reach the library
+    with the rest of the enrichment sweep, rather than being fetched per
+    request. GET /api/library/<player>/artist/by-name/... serves the same
+    fields, and they appear once the sweep has reported on that artist, like
+    the genres and thumbnails beside them, rather than immediately after a
+    lookup that ran during the request.
+
+  * **A biography served from the library is now capped at 2000 bytes**, so a
+    long one is cut mid-sentence where it used to be whole. It is not a
+    cosmetic limit: the library keeps every biography it is sent for as long as
+    it holds the library, at roughly three times the stored text once
+    allocation is counted, and a large collection has eight to fifteen thousand
+    distinct artists. Unbounded, that is around ninety megabytes of memory on a
+    device that may have one gigabyte and is holding the library too. The full
+    text is unaffected and still available from GET /api/artist/<name>.
+
+  * **The order of "Artist - Title" in a radio stream is now decided locally,
+    and a wrong guess is corrected later rather than before it is shown.** The
+    daemon used to ask MusicBrainz which half was the artist before displaying
+    anything, which was right the first time and cost a network round trip on
+    every track change. It now applies the station's configured order, or the
+    one it has learned, or the "Artist - Title" convention -- and reports what
+    MusicBrainz says afterwards, as an observation against that station.
+
+    **You may see this**, and on one kind of station you will see it for a
+    while. A station that announces "Title - Artist" displays every track the
+    wrong way round until it has been learned, and learning needs twenty
+    decided observations at ninety-five per cent agreement -- roughly an hour
+    of continuous listening. The track playing when a correction arrives keeps
+    the split it was given; only later tracks benefit. Setting the order
+    outright for that station, through POST /api/player/<player>/splitter/
+    <station>, takes effect immediately and beats anything learned.
 
  -- HiFiBerry <support@hifiberry.com>  Mon, 07 Sep 2026 16:00:00 +0200
 

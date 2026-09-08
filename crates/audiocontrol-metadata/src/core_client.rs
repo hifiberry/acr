@@ -16,9 +16,22 @@ use acr_http::http_client;
 use acr_types::enrichment::{
     AlbumRef, Applied, ArtistRef, EnrichmentBatch, EnrichmentError,
 };
-use acr_types::now_playing::{PlaybackStateSource, SongInformationSink};
-use acr_types::{PlaybackState, PlayerSource, Song};
+use acr_types::now_playing::{PlaybackStateSource, SongInformationSink, SplitterObservationSink};
+use acr_types::token::AccessTokenSource;
+use acr_types::url_encoding::encode_url_safe;
+use acr_types::{OrderResult, PlaybackState, PlayerSource, Song};
+use parking_lot::Mutex;
 use serde::Deserialize;
+use std::time::{Duration, Instant};
+
+/// How long a fetched Spotify access token is reused before asking again.
+///
+/// Not the token's own expiry -- the player daemon refreshes before handing
+/// one out -- but a bound on two things: how often this side asks, and how
+/// long a stale answer survives an account being unlinked in between. A token
+/// that outlived that fails at Spotify with its own 401 regardless, so the TTL
+/// is about traffic, not correctness.
+const SPOTIFY_TOKEN_TTL: Duration = Duration::from_secs(60);
 
 /// One player as `GET /library` lists it.
 ///
@@ -64,6 +77,16 @@ pub struct LibraryDetail {
 pub struct LibraryAlbum {
     pub album: AlbumRef,
     pub genres: Vec<String>,
+    /// The album-artist string before the loader split it, where the route
+    /// serves one.
+    ///
+    /// The only place the *unsplit* name survives. `album.artist` is one entry
+    /// of the split list, and a split drops the separators, so three artists
+    /// "Emerson", "Lake" and "Palmer" cannot be turned back into the name they
+    /// came from -- which is the name MusicBrainz has to be asked about for the
+    /// split to be corrected. Absent from a player daemon that predates the
+    /// field.
+    pub album_artist: Option<String>,
 }
 
 /// Why a batch did not merge.
@@ -108,6 +131,8 @@ impl std::fmt::Display for EnrichmentPostError {
 pub struct CoreClient {
     base: String,
     timeout_secs: u64,
+    /// The last Spotify access token read from the player daemon, and when.
+    spotify_token: Mutex<Option<(Option<String>, Instant)>>,
 }
 
 impl CoreClient {
@@ -115,6 +140,7 @@ impl CoreClient {
         Self {
             base: base_url.trim_end_matches('/').to_string(),
             timeout_secs: 5,
+            spotify_token: Mutex::new(None),
         }
     }
 
@@ -153,6 +179,34 @@ impl CoreClient {
             .get("applied")
             .and_then(|v| v.as_bool())
             .unwrap_or(false))
+    }
+
+    /// Report an observed title order to a station's splitter, through
+    /// `POST /player/<name>/splitter/<station>/observation`.
+    ///
+    /// `station` is the un-encoded stream URL; this method applies the same
+    /// URL-safe base64 encoding `<station>` uses everywhere else in that
+    /// API, and the player daemon's route reverses it. The route feeds only
+    /// what the station has *learned* — an order a user set explicitly is
+    /// never touched by this call, whatever it reports.
+    pub fn splitter_observation(
+        &self,
+        player_name: &str,
+        station: &str,
+        order: OrderResult,
+    ) -> Result<(), String> {
+        let url = format!(
+            "{}/player/{}/splitter/{}/observation",
+            self.base,
+            urlencoding::encode(player_name),
+            encode_url_safe(station)
+        );
+        let payload = serde_json::json!({ "order": crate::api::resolve::order_name(order) });
+        let client = http_client::new_http_client(self.timeout_secs);
+        client
+            .post_json_value(&url, payload)
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// The player daemon's version string, read from `GET /version`.
@@ -196,6 +250,67 @@ impl CoreClient {
         let name = v["player"]["name"].as_str().unwrap_or_default().to_string();
         let id = v["player"]["id"].as_str().unwrap_or_default().to_string();
         Ok(Some((PlayerSource::new(name, id), song)))
+    }
+
+    /// The Spotify bearer token, from the player daemon that owns the account.
+    ///
+    /// Cached for 60 s: this bounds both how often it is fetched and how long
+    /// a token survives an account being unlinked. A stale token fails at
+    /// Spotify with its own 401, so the TTL is about traffic, not correctness.
+    ///
+    /// This is connection ④ of the one-way seam, and the direction is the
+    /// whole point. Before the account moved, the player daemon called the
+    /// metadata daemon for this token on every playback command, so a metadata
+    /// half that was down stopped playback. Now the account is in the player
+    /// daemon and this side asks *it* -- and getting no answer costs only
+    /// cover art and favourites, which is what the metadata half is allowed to
+    /// cost.
+    ///
+    /// `GET /spotify/access_token` answers 404 specifically when no account is
+    /// linked, but `get_text` collapses every non-2xx status into the same
+    /// error with the code discarded, so a 404 is indistinguishable here from
+    /// the player daemon being unreachable. Sniffing `"404"` out of an error
+    /// string would work today and break the moment its wording changed, so
+    /// every failure is treated identically: answer `None` and leave whatever
+    /// is cached untouched. The 60 s TTL already bounds how long an unlink
+    /// takes to be noticed.
+    pub fn spotify_access_token(&self) -> Option<String> {
+        let mut guard = self.spotify_token.lock();
+        if let Some((answer, fetched_at)) = guard.as_ref() {
+            if fetched_at.elapsed() < SPOTIFY_TOKEN_TTL {
+                // Including a cached `None`: "there is no account linked" is
+                // an answer worth remembering for the TTL, not a reason to ask
+                // again on the next call.
+                return answer.clone();
+            }
+        }
+
+        let client = http_client::new_http_client(self.timeout_secs);
+        match client.get_text(&format!("{}/spotify/access_token", self.base)) {
+            Ok(token) => {
+                // A blank body is not a token. The route cannot send one --
+                // it answers 404 with no account linked -- but a proxy in
+                // between could, and an empty bearer would be cached for a
+                // minute and rejected by Spotify for every call in it.
+                let token = token.trim().to_string();
+                if token.is_empty() {
+                    return None;
+                }
+                *guard = Some((Some(token.clone()), Instant::now()));
+                Some(token)
+            }
+            Err(_) => {
+                // Cache the absence for the same TTL. A device with no
+                // Spotify account linked is the common case, and every
+                // favourites operation and every cover art lookup asks --
+                // `is_enabled()` is `access_token().is_some()`. Without this
+                // each of those is a fresh HTTP GET with a fresh client, and
+                // once the halves are two processes each one waits out the
+                // full timeout when the player daemon is slow.
+                *guard = Some((None, Instant::now()));
+                None
+            }
+        }
     }
 
     fn get(&self, path: &str) -> Result<serde_json::Value, String> {
@@ -243,10 +358,10 @@ impl CoreClient {
         Ok(artists
             .iter()
             .filter_map(|a| {
-                Some(ArtistRef {
-                    id: a.get("id")?.as_str()?.to_string(),
-                    name: a.get("name")?.as_str()?.to_string(),
-                })
+                Some(ArtistRef::named(
+                    a.get("id")?.as_str()?.to_string(),
+                    a.get("name")?.as_str()?.to_string(),
+                ))
             })
             .collect())
     }
@@ -277,6 +392,10 @@ impl CoreClient {
                             .unwrap_or_default()
                             .to_string(),
                     },
+                    album_artist: a
+                        .get("album_artist")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
                     // Absent when empty, which is exactly the case the caller
                     // is looking for.
                     genres: a
@@ -347,6 +466,18 @@ impl CoreClient {
     }
 }
 
+impl AccessTokenSource for CoreClient {
+    /// The same token [`CoreClient::spotify_access_token`] returns.
+    ///
+    /// The trait is what `crate::spotify` holds this client behind, so the
+    /// providers need not know where the token comes from -- and it is the
+    /// same trait the player side used for the seam in the other direction,
+    /// now with its only implementor on this side.
+    fn access_token(&self) -> Option<String> {
+        self.spotify_access_token()
+    }
+}
+
 impl SongInformationSink for CoreClient {
     /// `false` on any error -- unreachable player, a malformed response, or
     /// one that reports itself unsuccessful -- logged at warn level.
@@ -362,6 +493,24 @@ impl SongInformationSink for CoreClient {
             Err(e) => {
                 log::warn!(
                     "song information not delivered to the player daemon: {}",
+                    e
+                );
+                false
+            }
+        }
+    }
+}
+
+impl SplitterObservationSink for CoreClient {
+    /// `false` on any error, logged at warn level — same rate reasoning as
+    /// `SongInformationSink::apply` above: this changes at most once per
+    /// disagreeing track, not once a second.
+    fn record_order_observation(&self, player_name: &str, station: &str, order: OrderResult) -> bool {
+        match self.splitter_observation(player_name, station, order) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!(
+                    "title-order observation not delivered to the player daemon: {}",
                     e
                 );
                 false
@@ -398,6 +547,62 @@ impl PlaybackStateSource for CoreClient {
 mod tests {
     use super::*;
     use crate::external_coverart::stub_server::StubServer;
+
+    /// The token is fetched once and reused for the TTL. Two calls, one
+    /// request: without the cache every provider lookup would ask the player
+    /// daemon again.
+    #[test]
+    fn the_spotify_token_is_cached() {
+        use crate::external_coverart::stub_server::Canned;
+        let server = StubServer::queued(vec![Canned::bytes(
+            200,
+            "text/plain",
+            b"placeholder-token".to_vec(),
+        )]);
+        let client = CoreClient::new(&server.base_url());
+
+        assert_eq!(
+            client.spotify_access_token().as_deref(),
+            Some("placeholder-token")
+        );
+        assert_eq!(
+            client.spotify_access_token().as_deref(),
+            Some("placeholder-token")
+        );
+
+        assert_eq!(
+            server.requests().len(),
+            1,
+            "the second read should come from the cache"
+        );
+        assert!(
+            server.requests()[0].starts_with("GET /spotify/access_token HTTP/1.1"),
+            "unexpected request line: {}",
+            server.requests()[0]
+        );
+    }
+
+    /// No account linked is a 404, and an unreachable player daemon is a
+    /// transport failure. Both answer `None`, which every caller reads as
+    /// "contribute nothing".
+    #[test]
+    fn no_account_and_no_daemon_both_answer_no_token() {
+        let no_account = StubServer::serving(404, "");
+        assert_eq!(CoreClient::new(&no_account.base_url()).spotify_access_token(), None);
+
+        let dead = CoreClient::new("http://127.0.0.1:1/api");
+        assert_eq!(dead.spotify_access_token(), None);
+    }
+
+    /// A blank body is not a token: caching one would hand an empty bearer to
+    /// every Spotify call for the next minute.
+    #[test]
+    fn a_blank_body_is_not_a_token() {
+        let blank = StubServer::queued(vec![
+            crate::external_coverart::stub_server::Canned::bytes(200, "text/plain", b"  \n".to_vec()),
+        ]);
+        assert_eq!(CoreClient::new(&blank.base_url()).spotify_access_token(), None);
+    }
 
     /// `StubServer` now records the body along with the headers (see its
     /// own test in `stub_server.rs`), so the partial is checked directly:
@@ -470,6 +675,49 @@ mod tests {
             .song_information(&source, &Song::default())
             .expect_err("success: false must not read as Ok");
         assert_eq!(err, "player not found");
+    }
+
+    #[test]
+    fn a_splitter_observation_posts_the_order_to_the_encoded_station() {
+        let server = StubServer::serving(200, r#"{"station":"http://stream.example/radio"}"#);
+        let client = CoreClient::new(&server.base_url());
+
+        assert_eq!(
+            client.splitter_observation("mpd", "http://stream.example/radio", OrderResult::SongArtist),
+            Ok(())
+        );
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1, "exactly one request should be sent");
+        let expected_path = format!(
+            "POST /player/mpd/splitter/{}/observation HTTP/1.1",
+            encode_url_safe("http://stream.example/radio")
+        );
+        assert!(
+            requests[0].starts_with(&expected_path),
+            "unexpected request line: {} (expected to start with {})",
+            requests[0],
+            expected_path
+        );
+        let body = requests[0]
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("a body after the headers");
+        assert_eq!(body, r#"{"order":"song_artist"}"#);
+    }
+
+    /// `SplitterObservationSink::record_order_observation` is the trait
+    /// method the correction worker actually calls; it must collapse a
+    /// transport error into `false` rather than panicking or propagating.
+    #[test]
+    fn an_unreachable_player_daemon_answers_false_for_an_observation() {
+        let dead = CoreClient::new("http://127.0.0.1:1/api");
+        assert!(!SplitterObservationSink::record_order_observation(
+            &dead,
+            "mpd",
+            "http://stream.example/radio",
+            OrderResult::SongArtist
+        ));
     }
 
     /// The pull half: what the Last.fm worker reconciles against.

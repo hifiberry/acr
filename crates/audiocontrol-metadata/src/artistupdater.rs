@@ -254,15 +254,50 @@ fn artist_to_update(reference: &ArtistRef) -> Artist {
 
 /// What a library keeps from an updated artist.
 ///
-/// The summary is exactly the fields a library's own lists are built from --
-/// the thumbnail URLs among them, because the artist list route serves them.
-/// The biography and the source it came from stay on this side, served from
-/// here by the artist detail route.
-fn summarise(artist: &Artist) -> ArtistSummary {
-    let (mbid, genres, thumb_url) = artist
+/// The summary is everything the player daemon's artist routes serve. It used
+/// to stop at the fields a library's own *lists* are built from, and the
+/// biography, its source and the banner stayed on this side for the detail
+/// route to be asked for per request. That request was
+/// `GET /artist/<b64>` against this daemon, which the one-way seam forbids, so
+/// they travel here instead — read from the same `ArtistMeta` as the rest, at
+/// the cost of a clone rather than a lookup.
+/// The most biography a summary will carry, in bytes.
+///
+/// The batch is the only route a biography now takes to the player half, and
+/// the player half keeps every one it is sent for the life of the library. That
+/// cost is roughly three times the stored text once allocation is counted, and
+/// a large library is eight to fifteen thousand distinct artists: at three
+/// kilobytes each that is around ninety megabytes of resident memory on a
+/// device that may have one gigabyte in total, holding the library as well.
+/// Nothing upstream truncates -- neither Last.fm's cleanup nor TheAudioDB's
+/// reader -- so the bound belongs here, at the one place every provider's text
+/// passes through on its way across.
+///
+/// Two thousand bytes is about three hundred words, which is more than an
+/// artist page shows before a "read more" and is where every provider's own
+/// summary paragraph ends anyway. The full text stays in the metadata store on
+/// this side; what is bounded is what crosses and is then held.
+const MAX_BIOGRAPHY_BYTES: usize = 2000;
+
+/// Bound a biography for the wire, on a character boundary.
+fn bounded_biography(biography: &str) -> String {
+    acr_types::sanitize::safe_truncate(biography, MAX_BIOGRAPHY_BYTES).to_string()
+}
+
+fn summarise(artist: &Artist, split_into: Option<Vec<String>>) -> ArtistSummary {
+    let (mbid, genres, thumb_url, banner_url, biography, biography_source) = artist
         .metadata
         .as_ref()
-        .map(|m| (m.mbid.clone(), m.genres.clone(), m.thumb_url.clone()))
+        .map(|m| {
+            (
+                m.mbid.clone(),
+                m.genres.clone(),
+                m.thumb_url.clone(),
+                m.banner_url.clone(),
+                m.biography.as_deref().map(bounded_biography),
+                m.biography_source.clone(),
+            )
+        })
         .unwrap_or_default();
 
     ArtistSummary {
@@ -274,6 +309,14 @@ fn summarise(artist: &Artist) -> ArtistSummary {
         mbid,
         genres,
         thumb_url,
+        banner_url,
+        biography,
+        biography_source,
+        // Passed in rather than derived here: this is the answer the player
+        // daemon used to block on once per album, and it is the sweep's `Sweep`
+        // that decides whether asking is worth it -- see
+        // `artistsplitter::split_observation`.
+        split_into,
     }
 }
 
@@ -285,6 +328,9 @@ fn summarise(artist: &Artist) -> ArtistSummary {
 trait Sweep {
     /// Look everything up for one artist and return what is now known.
     fn update(&self, reference: &ArtistRef) -> Artist;
+    /// What this side is willing to assert about how the name splits, or `None`
+    /// to leave the loader's own separator split standing.
+    fn split(&self, name: &str) -> Option<Vec<String>>;
     /// Announce the artist about to be looked up.
     fn starting(&self, artist_name: &str, index: usize, total: usize);
     /// A progress milestone.
@@ -306,7 +352,21 @@ fn sweep_artists(artists: Vec<ArtistRef>, io: &dyn Sweep, sender: &mut BatchSend
         debug!("Updating metadata for artist: {}", reference.name);
         io.starting(&reference.name, index, total);
 
-        batch.push(summarise(&io.update(&reference)));
+        // A `split_only` reference is not an artist the library holds -- it is
+        // an album-artist string the loader split, offered so this side can say
+        // whether the split was right. Nothing over there keeps a thumbnail, a
+        // biography or genres under that name, so a full lookup would download
+        // an image no route serves; only the split question is asked.
+        let summary = if reference.split_only {
+            ArtistSummary {
+                name: reference.name.clone(),
+                split_into: io.split(&reference.name),
+                ..Default::default()
+            }
+        } else {
+            summarise(&io.update(&reference), io.split(&reference.name))
+        };
+        batch.push(summary);
         if batch.len() >= BATCH_SIZE && !sender.send(std::mem::take(&mut batch), Vec::new()) {
             return Swept {
                 reported: index + 1,
@@ -356,6 +416,10 @@ impl Sweep for LiveSweep {
         }
 
         updated
+    }
+
+    fn split(&self, name: &str) -> Option<Vec<String>> {
+        crate::artistsplitter::split_observation(name)
     }
 
     fn starting(&self, artist_name: &str, index: usize, total: usize) {
@@ -466,6 +530,46 @@ pub fn enrich_artists_in_background(
 
 #[cfg(test)]
 mod tests {
+
+    /// A biography is bounded **by `summarise`**, because the player half keeps
+    /// every one it is sent for the life of the library.
+    ///
+    /// Measured at roughly three times the stored text once allocation is
+    /// counted: ten thousand artists at three kilobytes is about ninety
+    /// megabytes of resident memory, on a device that may have one gigabyte and
+    /// be holding the library too. Nothing upstream truncates, so an unbounded
+    /// provider text would arrive whole.
+    ///
+    /// Asserted through `summarise` rather than by calling the helper, because
+    /// the helper is not the thing that can be forgotten -- the call to it is.
+    /// The first version of this test called `bounded_biography` directly and
+    /// stayed green when the call was removed from `summarise`: the same shape
+    /// as testing a drain by calling the drain.
+    #[test]
+    fn summarise_bounds_a_biography_before_it_crosses() {
+        let mut meta = ArtistMeta::new();
+        meta.biography = Some("x".repeat(MAX_BIOGRAPHY_BYTES * 3));
+
+        assert_eq!(
+            summarise(&artist("Verbose", Some(meta), false), None)
+                .biography
+                .as_deref()
+                .map(str::len),
+            Some(MAX_BIOGRAPHY_BYTES),
+            "a long biography must be cut before it is put on the wire"
+        );
+
+        let mut meta = ArtistMeta::new();
+        meta.biography = Some("A short life.".to_string());
+        assert_eq!(
+            summarise(&artist("Terse", Some(meta), false), None)
+                .biography
+                .as_deref(),
+            Some("A short life."),
+            "and a short one is untouched"
+        );
+    }
+
     use super::*;
     use acr_types::enrichment::{Applied, EnrichmentBatch, EnrichmentError};
     use acr_types::metadata::ArtistMeta;
@@ -480,26 +584,35 @@ mod tests {
         }
     }
 
-    /// A summary carries exactly the fields a library's lists are built from,
+    /// A summary carries everything the player daemon's artist routes serve,
     /// and this asserts the whole of it rather than the fields it remembers to
     /// name: a field silently dropped here is a field silently missing from
-    /// every artist list, which is how the thumbnails were lost once already.
-    /// The biography is set on the fixture and has nowhere to go — the type
-    /// has no such field, which is the guarantee that it stays on this side.
+    /// every artist response over there, which is how the thumbnails were lost
+    /// once already.
+    ///
+    /// **The biography, its source and the banner are the reason this
+    /// assertion matters now.** They used to be deliberately absent: the type
+    /// had no such fields and the player daemon fetched them per request from
+    /// `GET /artist/<b64>` on this daemon. That call is what the one-way seam
+    /// forbids, so they travel here instead, and if `summarise` stops copying
+    /// them the artist detail routes serve an artist with no biography at all
+    /// — with every test of those routes still green, because they build their
+    /// own `ArtistMeta`.
     #[test]
-    fn a_summary_carries_the_fields_the_library_lists_are_built_from() {
+    fn a_summary_carries_everything_the_artist_routes_serve() {
         let mut meta = ArtistMeta::new();
         meta.add_mbid("mbid-1".to_string());
         meta.add_genre("rock".to_string());
         meta.biography = Some("A long story".to_string());
         meta.biography_source = Some("TheAudioDB".to_string());
+        meta.banner_url = vec!["https://example.com/banner.png".to_string()];
         // Both shapes this field takes: the daemon's own cover art URL, and a
         // provider's, which is never rewritten and so must survive verbatim.
         meta.add_thumb_url("/api/coverart/artist/YWJj/image".to_string());
         meta.add_thumb_url("https://example.com/artist.png".to_string());
 
         assert_eq!(
-            summarise(&artist("Radiohead", Some(meta), false)),
+            summarise(&artist("Radiohead", Some(meta), false), None),
             ArtistSummary {
                 name: "Radiohead".to_string(),
                 mbid: vec!["mbid-1".to_string()],
@@ -509,6 +622,10 @@ mod tests {
                     "/api/coverart/artist/YWJj/image".to_string(),
                     "https://example.com/artist.png".to_string(),
                 ],
+                banner_url: vec!["https://example.com/banner.png".to_string()],
+                biography: Some("A long story".to_string()),
+                biography_source: Some("TheAudioDB".to_string()),
+                split_into: None,
             }
         );
     }
@@ -518,7 +635,7 @@ mod tests {
     /// so. Recomputing it from the metadata that is gone would lose it.
     #[test]
     fn a_multi_artist_stays_multi_even_with_its_metadata_cleared() {
-        let summary = summarise(&artist("Simon & Garfunkel", None, true));
+        let summary = summarise(&artist("Simon & Garfunkel", None, true), None);
 
         assert!(summary.is_multi);
         assert!(summary.mbid.is_empty());
@@ -536,6 +653,8 @@ mod tests {
         started: Vec<String>,
         milestones: Vec<(usize, usize)>,
         paced: usize,
+        looked_up: Vec<String>,
+        split_asked: Vec<String>,
     }
 
     impl FakeSweep {
@@ -546,9 +665,20 @@ mod tests {
 
     impl Sweep for FakeSweep {
         fn update(&self, reference: &ArtistRef) -> Artist {
+            self.seen.lock().looked_up.push(reference.name.clone());
             let mut meta = ArtistMeta::new();
             meta.add_mbid(format!("mbid-{}", reference.id));
             artist(&reference.name, Some(meta), false)
+        }
+        fn split(&self, name: &str) -> Option<Vec<String>> {
+            self.seen.lock().split_asked.push(name.to_string());
+            // "Alpha and Beta" is the one name this world knows to be two
+            // artists; everything else it makes no claim about.
+            if name == "Alpha and Beta" {
+                Some(vec!["Alpha".to_string(), "Beta".to_string()])
+            } else {
+                None
+            }
         }
         fn starting(&self, artist_name: &str, _index: usize, _total: usize) {
             self.seen.lock().started.push(artist_name.to_string());
@@ -573,8 +703,80 @@ mod tests {
 
     fn refs(count: usize) -> Vec<ArtistRef> {
         (0..count)
-            .map(|i| ArtistRef { id: i.to_string(), name: format!("Artist {}", i) })
+            .map(|i| ArtistRef::named(i.to_string(), format!("Artist {}", i)))
             .collect()
+    }
+
+    /// A `split_only` reference is the split question and nothing else. It names
+    /// no artist on the player side, so a full lookup would search MusicBrainz
+    /// and download an image for a name no route serves — once per sweep, for
+    /// every album artist the loader split.
+    #[test]
+    fn a_split_only_reference_costs_no_artist_lookup() {
+        let io = FakeSweep::new();
+        let sink = Arc::new(Recording::default());
+        let mut sender = BatchSender::new(sink.clone(), None);
+
+        sweep_artists(
+            vec![
+                ArtistRef::named("1".to_string(), "Radiohead".to_string()),
+                ArtistRef::split_question("Alpha and Beta".to_string()),
+            ],
+            &io,
+            &mut sender,
+        );
+
+        {
+            let seen = io.seen.lock();
+            assert_eq!(
+                seen.looked_up,
+                vec!["Radiohead"],
+                "only the artist the library holds is looked up"
+            );
+            assert_eq!(
+                seen.split_asked,
+                vec!["Radiohead", "Alpha and Beta"],
+                "and both are asked the split question"
+            );
+        }
+
+        let batches = sink.0.lock();
+        let summaries = &batches[0].artists;
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(
+            summaries[1].split_into,
+            Some(vec!["Alpha".to_string(), "Beta".to_string()]),
+            "the claim is what the batch carries for it"
+        );
+        assert!(
+            summaries[1].mbid.is_empty() && summaries[1].thumb_url.is_empty(),
+            "and nothing that would overwrite what the library holds under that name"
+        );
+    }
+
+    /// An artist the library *does* hold carries the split claim on its own
+    /// summary, beside its metadata. Without that, a name the loader kept whole
+    /// -- "Alpha and Beta", which holds no separator -- could never be split,
+    /// because nothing else offers it.
+    #[test]
+    fn an_artist_the_library_holds_carries_the_claim_with_its_metadata() {
+        let io = FakeSweep::new();
+        let sink = Arc::new(Recording::default());
+        let mut sender = BatchSender::new(sink.clone(), None);
+
+        sweep_artists(
+            vec![ArtistRef::named("9".to_string(), "Alpha and Beta".to_string())],
+            &io,
+            &mut sender,
+        );
+
+        let batches = sink.0.lock();
+        let summary = &batches[0].artists[0];
+        assert_eq!(
+            summary.split_into,
+            Some(vec!["Alpha".to_string(), "Beta".to_string()])
+        );
+        assert_eq!(summary.mbid, vec!["mbid-9"], "and its lookup still happened");
     }
 
     /// Results accumulate and flush at the batch boundary, not one per artist:

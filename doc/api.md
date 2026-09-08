@@ -2379,7 +2379,7 @@ ID`) serve the biography their library was last given by an enrichment sweep,
 which is what a client should normally want, while `GET /api/artist/<b64>` with
 `?lookup=true` will run a lookup on demand.
 
-*`GET /capabilities` is not one of the four.* The player daemon already
+*`GET /capabilities` is not one of them.* The player daemon already
 serves `GET /api/capabilities` (see above), and two identical routes at the
 same path and rank make Rocket refuse to start rather than pick one. The
 metadata side's own copy answers under the second mount below instead.

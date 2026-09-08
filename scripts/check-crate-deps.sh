@@ -141,6 +141,18 @@ not this daemon's to call" >&2
   fail=1
 fi
 
+# The arm above excludes src/tools/ because those files are CLI binaries the
+# daemon does not link: src/lib.rs declares no `mod tools`, and src/tools/
+# supplies ten of the eleven [[bin]] targets. A violation written there cannot
+# make the daemon call anything. That is true today; this makes it checked,
+# because the exclusion is a PATH filter and not a target one -- the day
+# someone adds `pub mod tools;` to src/lib.rs it would silently start covering
+# daemon code and nothing would notice.
+if grep -qE '^\s*(pub )?mod tools;' src/lib.rs; then
+  echo "src/lib.rs now declares mod tools, so check-crate-deps.sh's src/tools/ exclusion covers daemon code" >&2
+  fail=1
+fi
+
 # (c) The routes that exist only to be called across this seam. Comment lines
 #     are stripped first: these paths are named in several doc comments that
 #     explain why the calls are gone, and a check that could not tell an

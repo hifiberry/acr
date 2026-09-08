@@ -261,6 +261,29 @@ fn artist_to_update(reference: &ArtistRef) -> Artist {
 /// `GET /artist/<b64>` against this daemon, which the one-way seam forbids, so
 /// they travel here instead — read from the same `ArtistMeta` as the rest, at
 /// the cost of a clone rather than a lookup.
+/// The most biography a summary will carry, in bytes.
+///
+/// The batch is the only route a biography now takes to the player half, and
+/// the player half keeps every one it is sent for the life of the library. That
+/// cost is roughly three times the stored text once allocation is counted, and
+/// a large library is eight to fifteen thousand distinct artists: at three
+/// kilobytes each that is around ninety megabytes of resident memory on a
+/// device that may have one gigabyte in total, holding the library as well.
+/// Nothing upstream truncates -- neither Last.fm's cleanup nor TheAudioDB's
+/// reader -- so the bound belongs here, at the one place every provider's text
+/// passes through on its way across.
+///
+/// Two thousand bytes is about three hundred words, which is more than an
+/// artist page shows before a "read more" and is where every provider's own
+/// summary paragraph ends anyway. The full text stays in the metadata store on
+/// this side; what is bounded is what crosses and is then held.
+const MAX_BIOGRAPHY_BYTES: usize = 2000;
+
+/// Bound a biography for the wire, on a character boundary.
+fn bounded_biography(biography: &str) -> String {
+    acr_types::sanitize::safe_truncate(biography, MAX_BIOGRAPHY_BYTES).to_string()
+}
+
 fn summarise(artist: &Artist, split_into: Option<Vec<String>>) -> ArtistSummary {
     let (mbid, genres, thumb_url, banner_url, biography, biography_source) = artist
         .metadata
@@ -271,7 +294,7 @@ fn summarise(artist: &Artist, split_into: Option<Vec<String>>) -> ArtistSummary 
                 m.genres.clone(),
                 m.thumb_url.clone(),
                 m.banner_url.clone(),
-                m.biography.clone(),
+                m.biography.as_deref().map(bounded_biography),
                 m.biography_source.clone(),
             )
         })
@@ -507,6 +530,46 @@ pub fn enrich_artists_in_background(
 
 #[cfg(test)]
 mod tests {
+
+    /// A biography is bounded **by `summarise`**, because the player half keeps
+    /// every one it is sent for the life of the library.
+    ///
+    /// Measured at roughly three times the stored text once allocation is
+    /// counted: ten thousand artists at three kilobytes is about ninety
+    /// megabytes of resident memory, on a device that may have one gigabyte and
+    /// be holding the library too. Nothing upstream truncates, so an unbounded
+    /// provider text would arrive whole.
+    ///
+    /// Asserted through `summarise` rather than by calling the helper, because
+    /// the helper is not the thing that can be forgotten -- the call to it is.
+    /// The first version of this test called `bounded_biography` directly and
+    /// stayed green when the call was removed from `summarise`: the same shape
+    /// as testing a drain by calling the drain.
+    #[test]
+    fn summarise_bounds_a_biography_before_it_crosses() {
+        let mut meta = ArtistMeta::new();
+        meta.biography = Some("x".repeat(MAX_BIOGRAPHY_BYTES * 3));
+
+        assert_eq!(
+            summarise(&artist("Verbose", Some(meta), false), None)
+                .biography
+                .as_deref()
+                .map(str::len),
+            Some(MAX_BIOGRAPHY_BYTES),
+            "a long biography must be cut before it is put on the wire"
+        );
+
+        let mut meta = ArtistMeta::new();
+        meta.biography = Some("A short life.".to_string());
+        assert_eq!(
+            summarise(&artist("Terse", Some(meta), false), None)
+                .biography
+                .as_deref(),
+            Some("A short life."),
+            "and a short one is untouched"
+        );
+    }
+
     use super::*;
     use acr_types::enrichment::{Applied, EnrichmentBatch, EnrichmentError};
     use acr_types::metadata::ArtistMeta;

@@ -1438,10 +1438,35 @@ fn resize_via_cache(
 /// What `get_image` answers with: the bytes, or somewhere else to get them.
 ///
 /// Only artist art takes the second arm. See [`artist_image_location`].
+///
+/// The redirect carries a cache header of its own. The image it points at is
+/// already cached for a day, but without this the *redirect* is re-fetched on
+/// every request forever -- an extra round trip per artist image, permanently,
+/// for a destination that is a pure function of the name and the size and so
+/// cannot go stale for any reason the client could detect.
 #[derive(rocket::response::Responder)]
 pub enum ImageOrRedirect {
     Image(crate::api::imageresponse::ImageReply),
-    Elsewhere(rocket::response::Redirect),
+    Elsewhere(CacheableRedirect),
+}
+
+/// A redirect a client may remember for as long as it remembers the image.
+#[derive(rocket::response::Responder)]
+pub struct CacheableRedirect {
+    inner: rocket::response::Redirect,
+    cache_control: rocket::http::Header<'static>,
+}
+
+impl CacheableRedirect {
+    fn to(location: String) -> Self {
+        Self {
+            inner: rocket::response::Redirect::found(location),
+            cache_control: rocket::http::Header::new(
+                "Cache-Control",
+                crate::api::imageresponse::REVALIDATE_DAILY_CACHE,
+            ),
+        }
+    }
 }
 
 /// The artist name in an image identifier, or `None` when it names something
@@ -1452,13 +1477,21 @@ pub enum ImageOrRedirect {
 /// encoded. An identifier that decodes to something else is not consumed here:
 /// the caller passes the *original* string on, and the library decodes it
 /// again for itself.
+///
+/// An empty name is **not** an artist. `artist:` with nothing after it would
+/// otherwise build a redirect to `/api/coverart/artist//image`, whose empty
+/// segment Rocket collapses -- landing the request on the artist *search*
+/// route, which answers `200 application/json` on a path a client asked for an
+/// image on. Returning `None` here lets it fall through to the 404 it has
+/// always had. A 302 to the wrong route is worse than the 404 it replaces.
 fn artist_in_identifier(identifier: &str) -> Option<String> {
+    let named = |name: &str| (!name.is_empty()).then(|| name.to_string());
     if let Some(name) = identifier.strip_prefix("artist:") {
-        return Some(name.to_string());
+        return named(name);
     }
     if crate::helpers::url_encoding::is_url_safe_base64(identifier) {
         let decoded = crate::helpers::url_encoding::decode_url_safe(identifier)?;
-        return decoded.strip_prefix("artist:").map(str::to_string);
+        return decoded.strip_prefix("artist:").and_then(named);
     }
     None
 }
@@ -1550,13 +1583,13 @@ pub fn get_image(
                 // 404, as they always have, rather than being redirected to an
                 // image whose absence would be reported by a different route.
                 if let Some(artist_name) = artist_in_identifier(identifier) {
-                    return Ok(ImageOrRedirect::Elsewhere(
-                        rocket::response::Redirect::found(artist_image_location(
+                    return Ok(ImageOrRedirect::Elsewhere(CacheableRedirect::to(
+                        artist_image_location(
                             &artist_name,
                             size,
                             forwarded_prefix.as_deref(),
-                        )),
-                    ));
+                        ),
+                    )));
                 }
 
                 // Try the variant first when one was asked for. The original is only
@@ -1834,6 +1867,25 @@ pub fn delete_library_track(
 
 #[cfg(test)]
 mod tests {
+
+    /// `artist:` with no name must not be redirected.
+    ///
+    /// It would build `/api/coverart/artist//image`, whose empty segment Rocket
+    /// collapses -- landing on the artist *search* route, which answers 200
+    /// with JSON on a path the client asked for an image on. The route answered
+    /// 404 before this redirect existed and must still.
+    #[test]
+    fn an_artist_identifier_with_no_name_is_not_an_artist() {
+        assert_eq!(super::artist_in_identifier("artist:Pink Floyd").as_deref(), Some("Pink Floyd"));
+        assert_eq!(super::artist_in_identifier("artist:"), None);
+
+        // And through the base64url form, which is how a client usually sends it.
+        let encoded = crate::helpers::url_encoding::encode_url_safe("artist:");
+        assert_eq!(super::artist_in_identifier(&encoded), None);
+        let encoded = crate::helpers::url_encoding::encode_url_safe("artist:Pink Floyd");
+        assert_eq!(super::artist_in_identifier(&encoded).as_deref(), Some("Pink Floyd"));
+    }
+
     use super::*;
     use serial_test::serial;
     // `Album`, `Artist`, `Identifier` and `Arc` all arrive via `super::*`

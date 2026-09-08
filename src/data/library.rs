@@ -308,15 +308,12 @@ fn apply_splits(
     // Only names with a positive claim. `None` makes none, and an empty list
     // is not a claim either -- it would name an album with no artists at all,
     // which is not something a split can produce.
-    let claims: HashMap<&str, &Vec<String>> = batch
+    let claims: HashMap<&str, &[String]> = batch
         .artists
         .iter()
-        .filter_map(|a| {
-            let parts = a.split_into.as_ref()?;
-            if parts.is_empty() {
-                return None;
-            }
-            Some((a.name.as_str(), parts))
+        .filter_map(|a| match a.split_into.as_deref() {
+            Some(parts) if !parts.is_empty() => Some((a.name.as_str(), parts)),
+            _ => None,
         })
         .collect();
     if claims.is_empty() {
@@ -344,7 +341,7 @@ fn apply_splits(
         };
 
         let mut current = album.artists.lock();
-        if *current == *parts {
+        if current.as_slice() == parts {
             continue;
         }
 
@@ -385,7 +382,7 @@ fn apply_splits(
             mapping.add_mapping(album.id.clone(), id);
         }
 
-        *current = parts.clone();
+        *current = parts.to_vec();
         result.albums += 1;
     }
 

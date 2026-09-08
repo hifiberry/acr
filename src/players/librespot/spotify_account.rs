@@ -346,6 +346,31 @@ pub fn access_token() -> Option<String> {
     SpotifyAccount::new().ensure_valid_token().ok()
 }
 
+/// How much of a foreign HTTP body reaches the log.
+const LOG_EXCERPT_BYTES: usize = 100;
+
+/// Cut `text` to at most `max` **bytes**, on a character boundary.
+///
+/// A byte slice is what this replaced, and it panicked: the text is whatever
+/// the configured OAuth proxy served -- a localized login page, or an error
+/// page with an accented word in it -- so the cut can land inside a multi-byte
+/// character. `check_oauth_server` runs on a Rocket worker answering
+/// `GET /api/spotify/check_server`, which puts the panic in the daemon that
+/// has to stay up for the device to play anything.
+///
+/// A function rather than an expression at the call site so a test can drive
+/// the same code the caller runs. What that still does not cover is the
+/// *call*: nothing fails if `check_oauth_server` stops using this. Driving
+/// that needs a live HTTP server, which this module has no harness for.
+fn truncate_for_log(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let end = (0..=max).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+    format!("{}... (truncated)", &text[..end])
+}
+
+
 impl SpotifyAccount {
     /// An account reading whatever configuration [`initialize_from_config`]
     /// stored.
@@ -586,11 +611,7 @@ impl SpotifyAccount {
 
                 info!("OAuth server is reachable. Response looks valid: {}", is_valid);
 
-                let truncated = if text.len() > 100 {
-                    format!("{}... (truncated)", &text[0..100])
-                } else {
-                    text.clone()
-                };
+                let truncated = truncate_for_log(&text, LOG_EXCERPT_BYTES);
                 info!("OAuth server response: {}", truncated);
 
                 Ok(is_valid)
@@ -679,7 +700,12 @@ impl SpotifyAccount {
             .unwrap_or_default()
             .as_secs();
 
-        let expires_at = now + token_response.expires_in;
+        // Saturating: `expires_in` is parsed straight from the OAuth proxy's
+        // JSON and is not ours to trust. An absurd value overflows this in a
+        // debug build and wraps in a release one -- and wrapping is the worse
+        // half, because the token then looks permanently expired and every
+        // play command refreshes again, forever.
+        let expires_at = now.saturating_add(token_response.expires_in);
 
         let new_tokens = SpotifyTokens {
             access_token: token_response.access_token,
@@ -939,6 +965,43 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+
+    /// `truncate_for_log` cuts on a character boundary, not a byte offset.
+    ///
+    /// The byte slice this replaced panicked whenever the cut landed inside a
+    /// multi-byte character, which a localized OAuth login page makes ordinary
+    /// rather than exotic.
+    #[test]
+    fn a_long_non_ascii_response_is_truncated_without_panicking() {
+        // Two bytes each, so the limit lands on a boundary.
+        let even = "\u{e9}".repeat(200);
+        assert!(truncate_for_log(&even, 100).ends_with("... (truncated)"));
+
+        // Four bytes each, shifted by one so the limit lands mid-character --
+        // the input the old code panicked on.
+        let odd = format!("a{}", "\u{1f600}".repeat(40));
+        assert!(!odd.is_char_boundary(100), "the fixture must straddle the cut");
+        let cut = truncate_for_log(&odd, 100);
+        assert!(cut.ends_with("... (truncated)"));
+        assert!(cut.len() < odd.len());
+
+        // Short enough to keep whole, and not marked as cut.
+        assert_eq!(truncate_for_log("short", 100), "short");
+    }
+
+    /// An absurd `expires_in` from the OAuth proxy must not overflow the
+    /// expiry. Wrapping is the worse half of the old behaviour: the token then
+    /// looks permanently expired, so every play command refreshes again.
+    #[test]
+    fn an_absurd_expires_in_saturates_rather_than_wrapping() {
+        let now: u64 = 1_757_000_000;
+        assert_eq!(now.saturating_add(u64::MAX), u64::MAX);
+        assert!(
+            now.saturating_add(u64::MAX) > now,
+            "a saturated expiry is still in the future, which is what stops the refresh loop"
+        );
+    }
+
     use super::*;
 
     /// With nothing linked and no security store initialised, there is no

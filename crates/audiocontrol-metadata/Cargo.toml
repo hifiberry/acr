@@ -58,10 +58,12 @@ serial_test.workspace = true
 tokio.workspace = true
 
 # The metadata daemon itself. Its own composition root, in this crate rather
-# than in the root package, because a binary of the root package would link the
-# player library -- ALSA, D-Bus, MPD, evdev -- into a daemon that needs none of
-# it, and the whole point of the split is that either daemon can be built
-# without the other.
+# than in the root package -- not because the binary would be fatter there
+# (rustc links no rlib the source does not name, and both variants produce
+# identical `ldd` output), but because Cargo would have to compile the player
+# library and its native dependencies -- ALSA, D-Bus, MPD, evdev -- before it
+# could build it. The whole point of the split is that either daemon can be
+# built without the other.
 [[bin]]
 name = "audiocontrol-metadata"
 path = "src/bin/audiocontrol-metadata.rs"

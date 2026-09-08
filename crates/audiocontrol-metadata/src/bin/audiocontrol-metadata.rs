@@ -5,12 +5,19 @@
 //! crate needs, serves this crate's routes on its own port, and then starts the
 //! two parts of it that are *clients* of the player daemon.
 //!
-//! It lives in this crate rather than as a `[[bin]]` of the root package
-//! because a binary there would link the player library, and with it ALSA,
-//! D-Bus, MPD and evdev, into a daemon that needs none of them. The rule
-//! `scripts/check-crate-deps.sh` enforces -- neither daemon crate depends on
-//! the other -- would still hold, but the goal behind it, that either daemon
-//! can be built without the other, would not.
+//! It lives in this crate rather than as a `[[bin]]` of the root package, and
+//! the reason is a build-time one rather than a link-time one. **The binary
+//! would not be any fatter there**: rustc links no rlib a crate does not name,
+//! this file names nothing from `audiocontrol`, and both variants were built
+//! and produce identical `ldd` output. What a root-package binary would need is
+//! for Cargo to *compile* the player library first, and with it ALSA, D-Bus,
+//! MPD and evdev -- so the metadata daemon could not be built on a machine, or
+//! in a container, that cannot build the player half. That is what "either
+//! daemon can be built without the other" means, and it is the goal behind the
+//! rule `scripts/check-crate-deps.sh` enforces.
+//!
+//! It would also trip that script: rule (b) forbids a `127.0.0.1:1080` literal
+//! anywhere in the root `src/` tree, and this file has one in `print_help`.
 //!
 //! ## Where this differs from the player daemon's `main`
 //!
@@ -168,23 +175,30 @@ fn main() {
     // for up to 30 s, and then starts them anyway so their own reconnect and
     // retry logic takes over. A signal arriving during the probe cuts it short
     // -- `startup::stop` shares the flag it watches, which is why the handler
-    // above calls it.
+    // above calls it. So does a server that fails to bind, for the same reason
+    // and through the same flag: without it a daemon that cannot have port
+    // 1084 would sit here for the full 30 s before saying so.
     startup::start_after_core_is_listening(&config);
 
     match server {
-        Some(server) => {
+        Server::Running(server) => {
             // The server owns the lifetime of the process from here: it returns
             // when Rocket has finished its graceful shutdown, which is the
-            // event to exit on.
-            if server.join().is_err() {
-                error!("The API server thread panicked");
-                exit(1);
+            // event to exit on -- or when it never served at all, which is the
+            // event to exit *non-zero* on.
+            match server.join() {
+                Ok(ServerEnded::ShutDown) => {}
+                Ok(ServerEnded::Failed) => exit(1),
+                Err(_) => {
+                    error!("The API server thread panicked");
+                    exit(1);
+                }
             }
         }
         // No server to wait on, so wait for the signal handler instead. The
         // subscriber and the puller are still running and are the whole of what
         // this daemon does in this configuration.
-        None => {
+        Server::Disabled => {
             while !stop_requested().load(Ordering::SeqCst) {
                 thread::sleep(std::time::Duration::from_millis(100));
             }
@@ -483,13 +497,40 @@ fn route_groups() -> Vec<(String, Vec<rocket::Route>)> {
     groups
 }
 
+/// How the API server ended.
+///
+/// The distinction is the daemon's exit status, and therefore whether systemd's
+/// `Restart=on-failure` does anything. A server that served and then shut down
+/// is a normal stop; a server that never served is a failure, and a daemon that
+/// exited 0 on it would be left dead by systemd looking, to whoever is using
+/// the device, like metadata that has simply stopped working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerEnded {
+    /// Rocket launched, served, and has finished shutting down. Also a shutdown
+    /// that overran its own grace and mercy windows: Rocket reports that as an
+    /// error, but the server did serve, and the daemon is stopping because it
+    /// was asked to.
+    ShutDown,
+    /// It never served: ignite failed (a route collision, a bad figment) or
+    /// launch failed (the port is taken, or not ours to bind).
+    Failed,
+}
+
+/// What [`start_webserver`] found to wait on.
+enum Server {
+    Running(thread::JoinHandle<ServerEnded>),
+    /// `webserver.enable` is false. Deliberate, so not a failure -- but there
+    /// is nothing to join, and the daemon has to wait for a signal instead.
+    Disabled,
+}
+
 /// Bring up the API server on its own thread, or nothing if it is disabled.
 ///
 /// Its own thread, and not the main one, because the main thread has to go on
 /// to wait for the *player* daemon's API: doing that first would delay this
 /// daemon's own routes by the whole probe, and doing it after `launch()`
 /// returned would mean never.
-fn start_webserver(config: &serde_json::Value) -> Option<thread::JoinHandle<()>> {
+fn start_webserver(config: &serde_json::Value) -> Server {
     let webserver = get_service_config(config, "webserver");
 
     let enabled = webserver
@@ -502,7 +543,7 @@ fn start_webserver(config: &serde_json::Value) -> Option<thread::JoinHandle<()>>
              run, but nothing serves cover art, the artist store, favourites, the Last.fm \
              routes or /api/metadata/capabilities."
         );
-        return None;
+        return Server::Disabled;
     }
 
     let host = webserver
@@ -527,7 +568,7 @@ fn start_webserver(config: &serde_json::Value) -> Option<thread::JoinHandle<()>>
                 Ok(runtime) => runtime,
                 Err(e) => {
                     error!("Could not build the async runtime for the API server: {}", e);
-                    return;
+                    return server_failed();
                 }
             };
 
@@ -545,8 +586,11 @@ fn start_webserver(config: &serde_json::Value) -> Option<thread::JoinHandle<()>>
                 let ignited = match builder.ignite().await {
                     Ok(ignited) => ignited,
                     Err(e) => {
-                        error!("The API server failed to start: {}", e);
-                        return;
+                        error!(
+                            "The API server could not start on {}:{}: {}",
+                            host, port, e
+                        );
+                        return server_failed();
                     }
                 };
 
@@ -567,19 +611,61 @@ fn start_webserver(config: &serde_json::Value) -> Option<thread::JoinHandle<()>>
                 *shutdown_slot().lock() = None;
 
                 match outcome {
-                    Ok(_) => info!("API server stopped"),
-                    Err(e) => warn!("API server shutdown did not complete cleanly: {}", e),
+                    Ok(_) => {
+                        info!("API server stopped");
+                        ServerEnded::ShutDown
+                    }
+                    // A shutdown that overran its grace and mercy windows.
+                    // Rocket reports it as an error, and long-lived WebSocket
+                    // connections produce it routinely, but the server *did*
+                    // serve and is stopping because it was asked to -- so this
+                    // is a normal stop and not a start-up failure.
+                    Err(e) if matches!(e.kind(), rocket::error::ErrorKind::Shutdown(..)) => {
+                        warn!("API server shutdown did not complete cleanly: {}", e);
+                        ServerEnded::ShutDown
+                    }
+                    // Everything else means it never served. The ordinary cause
+                    // is a port that is taken -- a second copy of this daemon,
+                    // or something else on 1084 -- and it is reported at ERROR
+                    // naming the port, because a WARN that reads "shutdown did
+                    // not complete cleanly" describes the wrong event entirely.
+                    Err(e) => {
+                        error!(
+                            "The API server could not serve on {}:{}: {}. Nothing will \
+                             answer the cover art, artist, favourites or Last.fm routes.",
+                            host, port, e
+                        );
+                        server_failed()
+                    }
                 }
-            });
+            })
         });
 
     match handle {
-        Ok(handle) => Some(handle),
+        Ok(handle) => Server::Running(handle),
+        // Not recoverable, and not something to park on: with no server thread
+        // there is nothing to wait for, and the previous shape of this returned
+        // "disabled" here -- a daemon that could not start its own API and then
+        // waited forever for a signal, reporting success to systemd all the
+        // while.
         Err(e) => {
             error!("Could not start the API server thread: {}", e);
-            None
+            exit(1);
         }
     }
+}
+
+/// Report a server that never served, and stop waiting on the player daemon.
+///
+/// The second half is what keeps the failure prompt. `main` is inside
+/// `start_after_core_is_listening` while this runs, which probes the player
+/// daemon for up to 30 s before returning -- so without the stop, a daemon that
+/// cannot bind its port announces it half a minute later, and a `systemctl
+/// start` that has already failed looks like one that is still starting.
+fn server_failed() -> ServerEnded {
+    stop_requested().store(true, Ordering::SeqCst);
+    startup::stop();
+    ServerEnded::Failed
 }
 
 fn print_help() {

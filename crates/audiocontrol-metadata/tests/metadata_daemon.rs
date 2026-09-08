@@ -138,9 +138,11 @@ fn the_shipped_configuration_points_the_settings_database_at_a_directory() {
 ///
 /// `services.lastfm.enable` brings up the *client* (`initialize_in_process`);
 /// the `action_plugins` entry is what `now_playing::start` needs to run the
-/// scrobbler and the now-playing update. With the entry absent that function
-/// returns false, logs "No now-playing enrichment is configured", and the
-/// daemon runs on looking healthy with scrobbling switched off.
+/// scrobbler and the now-playing update. With the entry absent it starts the
+/// other workers and says so -- `musicbrainz.enable` alone supplies one, so the
+/// log reads "Now-playing enrichment started with 1 worker(s)" either way. So
+/// there is nothing in the log to notice: enrichment continues, the daemon
+/// reports itself healthy, and scrobbling is simply absent.
 #[test]
 fn the_shipped_configuration_configures_the_lastfm_worker() {
     let lastfm = startup::lastfm_worker_config(&shipped_config())
@@ -275,6 +277,71 @@ fn a_configuration_without_a_core_url_refuses_to_start() {
         said.contains("core.url"),
         "the daemon must say which key is missing, not just fail. It said:\n{said}"
     );
+}
+
+/// A port it cannot have must be a non-zero exit, and a prompt one.
+///
+/// This is what `Restart=on-failure` in the systemd unit turns on. Exit 0 and
+/// systemd leaves the daemon dead, which to whoever is using the device looks
+/// like metadata that has stopped working rather than like a service that
+/// failed to start. The ordinary cause is a second copy of the daemon, or
+/// something else already on 1084.
+///
+/// **Not a racy test.** The listener is bound before the daemon starts and held
+/// until after it has exited, so the port is occupied for the whole of the
+/// window that matters -- rather than bound, released, and hoped to be still
+/// free at the moment it counts.
+///
+/// The 15 s bound is doing two jobs. It fails a daemon that never exits, and it
+/// fails one that exits only after `start_after_core_is_listening` has probed
+/// the player daemon for its full 30 s: a failure announced half a minute late
+/// is a `systemctl start` that has already failed while still looking like one
+/// that is starting.
+#[test]
+fn a_port_it_cannot_bind_is_a_failure_and_not_a_clean_exit() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let occupied = TcpListener::bind("127.0.0.1:0").expect("a spare port to sit on");
+    let port = occupied
+        .local_addr()
+        .expect("a bound listener has an address")
+        .port();
+
+    let mut config = sandbox_config(dir.path(), port);
+    config["services"]["core"] = serde_json::json!({ "url": "http://127.0.0.1:1/api" });
+    let path = write_config(dir.path(), &config);
+
+    let mut child = spawn_daemon(&path);
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        match child.try_wait().expect("waiting on the child") {
+            Some(status) => break Some(status),
+            None if Instant::now() >= deadline => break None,
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let said = read_output(&mut child);
+
+    let status = status.unwrap_or_else(|| {
+        panic!("the daemon was still running 15 s after failing to bind {port}. It said:\n{said}")
+    });
+    assert!(
+        !status.success(),
+        "the daemon exited 0 having never bound {port}, so Restart=on-failure will not \
+         restart it and systemd will leave it dead. It said:\n{said}"
+    );
+    assert!(
+        said.contains(&port.to_string()),
+        "the failure must name the port it could not have. It said:\n{said}"
+    );
+
+    // Held until here on purpose: released earlier and the daemon might have
+    // bound the port after all, which is the race this test is written to avoid.
+    drop(occupied);
 }
 
 /// Everything the child has written so far, both streams.

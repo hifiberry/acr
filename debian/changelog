@@ -47,6 +47,25 @@ hifiberry-audiocontrol (0.23.1) trixie; urgency=medium
     rather than once per package, and the configuration is checked before the
     reload so a mistake elsewhere in it is reported rather than applied.
 
+  * A failed genre lookup is no longer recorded as a fact about the album.
+    Album genres from MusicBrainz are cached, empty answers included, so an
+    album the service holds no genres for is not asked about on every library
+    load. But the lookup reported a failure and a genuinely empty answer as the
+    same empty list, and the empty list was written to the attribute cache with
+    no expiry - so a sweep that ran while MusicBrainz was refusing requests
+    marked the albums it touched as permanently genre-less, and never asked
+    again on any later sweep or restart. In one sweep against an unhealthy
+    provider three quarters of the albums touched ended up recorded that way.
+    A lookup now says whether it got an answer: an answer is cached as before,
+    a failure - a request error, an unreadable response, or lookups being
+    disabled - is not cached at all, so the next sweep asks again, and the
+    sweep's completion log says how many lookups went unanswered instead of
+    reporting a quiet zero.
+
+    Caches written by earlier versions may still hold these entries. Removing
+    the empty album::genres:: rows lets those albums be looked up again;
+    entries that hold genres are correct and worth keeping.
+
   * audiocontrol_dump_cache now defaults to the cache it can read. Its
     shortcut flags select prefixes only the metadata daemon writes, while its
     default directory was the player daemon's, so an invocation without

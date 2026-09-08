@@ -133,9 +133,25 @@ The attribute cache uses specific key formats for various types of data. All cac
 | `artist::fanart::<mbid>` | URLs to artist images from FanartTV | Permanent | fanarttv |
 | `artist::metadata::<artist>` | Full artist metadata from multiple sources | Permanent | metadata |
 | `album::mbid::<album>::<artist>` | MusicBrainz ID for album | Permanent | musicbrainz |
+| `album::genres::<album id>` | Genres MusicBrainz holds for an album, an empty answer included | Permanent | albumupdater |
 | `theaudiodb::mbid::<mbid>` | Artist data from TheAudioDB API | Permanent | theaudiodb |
 | `theaudiodb::not_found::<mbid>` | TheAudioDB negative cache | Permanent | theaudiodb |
 | `theaudiodb::no_thumbnail::<mbid>` | No thumbnail available in TheAudioDB | Permanent | theaudiodb |
+
+### An answer is cached, an unanswered lookup is not
+
+`album::genres::` holds what MusicBrainz answered about an album, and an empty
+list is one of the answers it can give: plenty of albums carry no genre tags
+there, and remembering that is the only thing keeping every library load from
+asking about all of them again at one request per second.
+
+A lookup that got no answer at all is a different thing and is not written down.
+A request that failed, a response that could not be read, and lookups being
+disabled all leave the album unknown, so the next sweep asks again. Recording
+them instead is how one afternoon of a provider refusing requests used to become
+a permanent record that an album has no genres. An empty `album::genres::` row
+left behind by a version that did that can be removed, and the album will be
+looked up again.
 
 ### Extended Timeout Strategy
 

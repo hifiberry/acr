@@ -45,7 +45,10 @@ hifiberry-audiocontrol (0.22.0) trixie; urgency=medium
     Palmer"), or one where there are two -- and the sweep fixes it, the same
     way genres, images and biographies already arrive late on that screen.
     What it buys is a load that no longer makes a MusicBrainz request per
-    album, on a library that can hold 200,000 songs.
+    album, on a library that can hold 200,000 songs. The correction needs
+    MusicBrainz lookups enabled, which the shipped configuration has; an
+    install with them off sees no change at all, since the old path already
+    did a plain split when they were off.
 
   * GET /api/library/<player>/albums gains album_artist: the album-artist tag
     as the backend reported it, before it was split into artists. Additive,

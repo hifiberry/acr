@@ -1707,8 +1707,7 @@ and artist thumbnails after it has looked them up.
         "mbid": ["b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"],
         "is_multi": false,
         "genres": ["rock"],
-        "thumb_url": ["/api/coverart/artist/YWJj/image"],
-        "split_into": ["The Beatles"]
+        "thumb_url": ["/api/coverart/artist/YWJj/image"]
       }
     ],
     "albums": [
@@ -1736,7 +1735,7 @@ and artist thumbnails after it has looked them up.
 
   | Condition | Status | Body |
   |---|---|---|
-  | Merged | 200 OK | `{"artists": 1, "albums": 1, "library_version": "..."}` — how many entries changed something, and the library's version after the merge, folded with this request's prefix |
+  | Merged | 200 OK | `{"artists": 1, "albums": 1, "library_version": "..."}` — how much was applied, and the library's version after the merge, folded with this request's prefix |
   | The library was reloaded since `library_generation` | 409 Conflict | `{"library_generation": "...", "library_version": "..."}` — the current values of both; the version folded with this request's prefix, the generation not |
   | `<player-name>` does not name a known player, or that player has no library | 404 Not Found | `{"error": "..."}` |
 
@@ -1760,6 +1759,14 @@ and artist thumbnails after it has looked them up.
   library's own split stands. See **Artist splits arrive late** below.
 - One batch bumps `library_version` at most once, and not at all when nothing
   changed — a bump invalidates every client's cached list.
+
+The two counts in the 200 say **how much was applied, not how many entries were
+understood**, and they are not bounded by the number of entries sent. An artist
+summary carrying a `split_into` claim can create several artists and remove
+several more, each of which counts in `artists`, and can rewrite an album's
+artist list, which counts in `albums`. Three artist entries and no album entries
+can therefore answer `{"artists": 8, "albums": 2}`. Read them as a measure of
+work done; the only value to compare against anything is `library_version`.
 
 The `library_version` in a 200 is the value the caller should record as seen: it
 already accounts for this batch, so polling `GET /api/library/<player-name>` will
@@ -1786,10 +1793,11 @@ has reloaded. Such a caller names no generation.
 **Artist splits arrive late**
 
 An album-artist tag may name one artist or several, and the daemon cannot tell
-which from the text alone. It splits on separators — `,`, `&`, ` feat `, and
-whatever `artist_separator` the player is configured with — which is right for
-"Simon & Garfunkel" and wrong for "Emerson, Lake & Palmer". The correction
-arrives here, in `split_into`.
+which from the text alone. It splits on separators — the built-in `,`, `&`,
+` feat `, ` feat.`, ` featuring `, ` with `, or the player's `artist_separator`
+list where it has one, which **replaces** the built-in list rather than adding to
+it. That is right for "Simon & Garfunkel" and wrong for "Emerson, Lake &
+Palmer". The correction arrives here, in `split_into`.
 
 **So the first load that meets a new album artist shows the plain separator
 split, and the enrichment sweep corrects it.** An album may briefly list three
@@ -1799,6 +1807,23 @@ screen: the load itself makes no network call for it any more, which is what
 took a per-album MusicBrainz round trip out of a load that can cover 200,000
 songs. A client that renders an artist list should expect it to change under it
 when the library version moves, exactly as it already does for cover art.
+
+**The correction is not unconditional.** The metadata side only claims a split
+it can back, so two installs see less than the paragraph above promises:
+
+- **MusicBrainz lookups disabled.** No claim is made at all, because the only
+  thing available on that side is a separator split and the loader already did
+  one. Such an install sees *no change* from earlier releases: the removed route
+  answered with a plain split when MusicBrainz was off, so the answer was
+  already the plain split.
+- **A name holding none of the built-in separators**, which is what a configured
+  `artist_separator` list produces. No claim is made there either, because "no
+  separator here, therefore one artist" would rejoin a split the operator's own
+  configuration asked for. See the note under `album_artist` in
+  [Album](#album) for the case this does not cover.
+
+The shipped configuration enables MusicBrainz, so a default install does get the
+correction.
 
 `split_into` has three states and the middle one is easy to miss:
 
@@ -4534,7 +4559,7 @@ An Album represents a collection of tracks/songs by one or more artists.
 | id | string | Unique identifier for the album (string representation of a 64-bit hash) |
 | name | string | Album name |
 | artists | array | List of artist names for this album |
-| album_artist | string | The album-artist tag as the backend reported it, before `artists` was split out of it. **Omitted** where the library recorded none. It is here because the split is lossy — "Emerson" plus "Lake" plus "Palmer" cannot be turned back into the name they came from — and it is the name an enrichment batch makes a `split_into` claim about; see [Apply Enrichment](#apply-enrichment). |
+| album_artist | string | The album-artist tag as the backend reported it, before `artists` was split out of it. **Omitted** where the library recorded none. It is here because the split is lossy — "Emerson" plus "Lake" plus "Palmer" cannot be turned back into the name they came from — and it is the name an enrichment batch makes a `split_into` claim about; see [Apply Enrichment](#apply-enrichment). Note that a player's configured `artist_separator` list does not reach the metadata side, so a claim about a name that *also* holds a built-in separator can override a split made with that list. |
 | release_date | string | ISO 8601 formatted date of album release (YYYY-MM-DD), may be null |
 | tracks_count | number | Number of tracks on the album |
 | tracks | array | Array of Track objects (only included when requested) |

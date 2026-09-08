@@ -779,12 +779,20 @@ Written down because a document that only describes what works is not a map.
   cached. It now only affects the metadata half's own answer, which is offered
   as a claim the loader may already have got right — but a wrong cached entry is
   still a wrong claim, applied to every album under that name.
-- **A configured `artist_separator` does not cross the seam.** The loader splits
-  with it; the metadata half's `split_observation` only ever sees the defaults.
-  It refuses to make a claim about a name that holds no default separator, which
-  is what keeps it from rejoining a correct custom split — but it cannot
-  *confirm* one either, so a custom-separator install gets the split it made at
-  load and no correction.
+- **A configured `artist_separator` does not cross the seam, and a batch can
+  override it.** The removed route took the list as repeated `separator=`
+  parameters; nothing replaces that channel, so `split_observation` only ever
+  sees the built-in list. It refuses to claim anything about a name holding none
+  of those, which keeps it from rejoining a custom split of a name like
+  `Alpha|Beta` — but that gate is shaped around the *name*, not around whether a
+  custom list is configured, so it does not hold in the other direction.
+  Confirmed on a device with `artist_separator: ["|"]`: a batch claiming
+  `split_into: ["Alpha", "Beta"]` for a name that also holds a built-in
+  separator rewrote the album's artist list, overriding the operator's list.
+  **The separators should cross the seam again.** `GET /api/library/<p>` already
+  reports per-player detail and is the obvious place to carry the configured
+  list; until it does, the gate is a partial defence and this is a regression
+  against the removed route rather than a neutral simplification.
 - **`request_enrichment` builds a payload that is discarded.** It clones every
   artist and album reference and the HTTP form now sends nothing at all — it
   used to at least send the nudge. On a large library that is tens of thousands

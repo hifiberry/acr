@@ -166,6 +166,16 @@ pub fn split_if_multiple(artist_name: &str, custom_separators: Option<&[String]>
 /// element is the same lookup concluding the name is a single artist -- the
 /// answer that used to make the loader keep the name whole, and the only thing
 /// that can undo a separator split of "Emerson, Lake & Palmer".
+///
+/// **The second refusal is a partial defence and should not be read as more.**
+/// It is shaped around the *name*, because that is all this side has: nothing
+/// tells it whether an `artist_separator` list is configured at all. A name
+/// holding a configured separator *and* a default one passes the gate, and the
+/// claim then rewrites a split the operator's configuration asked for --
+/// observed on a device with `artist_separator: ["|"]`. The fix is for the
+/// separators to cross the seam again, as they did on the removed route; the
+/// gate is what is possible without that channel. Recorded in
+/// `doc/communications.md` under *Where this map is thin*.
 pub fn split_observation(artist_name: &str) -> Option<Vec<String>> {
     observe_split(artist_name, musicbrainz::is_enabled(), || {
         split_artist_names_with_mbid_lookup(artist_name, false, None)

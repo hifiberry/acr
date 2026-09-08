@@ -86,9 +86,11 @@ When Audiocontrol starts, no library is loaded initially. The system will show t
 
 #### Initial Loading
 
-Audiocontrol then retrieves all artists, albums, and tracks from MPD. A key challenge is that MPD lists multiple artists as a single comma-separated string. Simple string splitting would fail with artist names like "Crosby, Stills & Nash". Therefore, when available, Audiocontrol uses the MusicBrainz database to properly identify artists.
+Audiocontrol then retrieves all artists, albums, and tracks from MPD. A key challenge is that MPD lists multiple artists as a single comma-separated string, and simple string splitting fails on artist names like "Crosby, Stills & Nash".
 
-> **Note:** The initial loading process can be slow. However, as results are cached locally, subsequent startups will be significantly faster.
+**The load splits on separators anyway, and the split is corrected afterwards.** It used to ask MusicBrainz about every album artist while loading, which was correct immediately and cost a network round trip per album. It no longer does: the album artist is split on separators, the album keeps the string it was split from, and the metadata sweep sends the right answer back in the enrichment batch — see *Artist splits arrive late* in [the API reference](api.md#apply-enrichment). So an album may briefly show "Crosby", "Stills" and "Nash" as three artists, and the sweep merges them back.
+
+> **Note:** The initial loading process can be slow, though no longer because of artist identification. As results are cached locally, subsequent startups will be significantly faster.
 
 During this phase, the MPD backend sends database update notifications with progress information.
 
@@ -197,10 +199,9 @@ If artists or albums are missing images or metadata:
 The initial loading can be slow due to:
 
 1. Large music library size
-2. MusicBrainz lookups for artist identification
-3. Metadata enrichment from external services
+2. Metadata enrichment from external services, which runs after the load rather than during it
 
-Subsequent loads will be faster as Audiocontrol caches the results.
+Artist identification is no longer one of them: MusicBrainz is not consulted while the library loads. Subsequent loads will be faster as Audiocontrol caches the results.
 
 ### Logging
 

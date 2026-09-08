@@ -2345,7 +2345,7 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 }
 ```
 
-**Rate Limiting**: Requests to this endpoint are rate-limited according to the configured `rate_limit_ms` value (default: 500ms between requests).
+**Rate Limiting**: Requests to this endpoint are rate-limited according to the configured `rate_limit_ms` value (default: 500ms between request starts), and are issued to TheAudioDB one at a time -- concurrent callers queue rather than opening parallel connections.
 
 **Use Cases**:
 

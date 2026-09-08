@@ -21,7 +21,37 @@ The rate limiting system is centralized and service-agnostic, allowing each serv
 
 3. **Rate Limit Application**
    - Services call `ratelimit::rate_limit("service_name")` before making API requests
-   - The rate limiter ensures minimum time intervals between requests
+   - The call returns a **permit**, which must stay in scope for the whole request
+   - The rate limiter enforces both a minimum interval between request *starts*
+     and a maximum number of requests *in flight* at once
+
+### Why a permit, and not just a delay
+
+Spacing request starts bounds nothing on its own. Against a provider that is
+answering slowly, one start per second with fifteen-second responses leaves
+roughly a dozen requests open at the same time; providers that cap concurrent
+connections per client answer the surplus with HTTP 503. A sweep of an
+11,858-album library was measured returning 503 for 110 of 114 MusicBrainz
+requests while single manual requests from the same host still returned 200 --
+the host was not blocked, it was simply asking for too much at once.
+
+So `rate_limit` returns a `Permit` that occupies one of the service's slots
+until it drops. Bind it to a named variable covering the request:
+
+```rust
+let _permit = ratelimit::rate_limit("musicbrainz");
+let body = musicbrainz_api_get(&url)?;   // permit still held here
+```
+
+A permit bound to the wildcard pattern -- `let _ = ratelimit::rate_limit(..)` --
+is dropped immediately and restores the old, unbounded behaviour. The type is
+`#[must_use]`, so discarding it outright is at least a compiler warning, but
+`let _ =` is silent. Bind a real name.
+
+Two permits for the same service held on one thread would otherwise wait on the
+thread itself. The limiter detects that, logs a warning and lets the nested call
+through -- spacing still applies -- but the call site should scope its permits
+instead, as `search_release_group_genres` does for its two-step lookup.
 
 ## Supported Services
 
@@ -33,8 +63,8 @@ The rate limiting system is centralized and service-agnostic, allowing each serv
 // Registration during initialization
 ratelimit::register_service("lastfm", 1000);
 
-// Application before API calls
-ratelimit::rate_limit("lastfm");
+// Application before API calls -- the permit is held for the request
+let _permit = ratelimit::rate_limit("lastfm");
 ```
 
 **Configuration:**
@@ -57,8 +87,8 @@ ratelimit::rate_limit("lastfm");
 // Registration during initialization
 ratelimit::register_service("theaudiodb", 500);
 
-// Application before API calls
-ratelimit::rate_limit("theaudiodb");
+// Application before API calls -- the permit is held for the request
+let _permit = ratelimit::rate_limit("theaudiodb");
 ```
 
 **Configuration:**
@@ -76,14 +106,19 @@ ratelimit::rate_limit("theaudiodb");
 
 ### MusicBrainz
 
-**Default Rate Limit:** 1000ms (1 second) between requests
+**Default Rate Limit:** 1000ms (1 second) between requests, one in flight
+
+MusicBrainz searches were measured taking 13-15 seconds during a full-library
+sweep, so the client allows 30 seconds for a response. A shorter timeout
+abandons requests the server is still working on and immediately replaces them,
+which is how a polite client turns into an impolite one.
 
 ```rust
 // Registration during initialization
 ratelimit::register_service("musicbrainz", 1000);
 
-// Application before API calls
-ratelimit::rate_limit("musicbrainz");
+// Application before API calls -- the permit is held for the request
+let _permit = ratelimit::rate_limit("musicbrainz");
 ```
 
 **Configuration:**
@@ -106,8 +141,8 @@ ratelimit::rate_limit("musicbrainz");
 // Registration during initialization
 ratelimit::register_service("fanarttv", 500);
 
-// Application before API calls
-ratelimit::rate_limit("fanarttv");
+// Application before API calls -- the permit is held for the request
+let _permit = ratelimit::rate_limit("fanarttv");
 ```
 
 **Configuration:**
@@ -145,8 +180,9 @@ Each service follows a consistent pattern for rate limiting integration:
 2. **Apply Rate Limiting**
    ```rust
    pub fn api_call(&self) -> Result<Response, Error> {
-       // Apply rate limiting before making the request
-       ratelimit::rate_limit("service_name");
+       // Apply rate limiting before making the request; the permit is held
+       // until the end of this scope, bounding concurrency as well as spacing
+       let _permit = ratelimit::rate_limit("service_name");
        
        // Make the actual API request
        // ...
@@ -159,10 +195,13 @@ The rate limiting system is fully thread-safe and can handle concurrent requests
 
 ### Error Handling
 
-Rate limiting failures are handled gracefully:
-- If rate limit registration fails, the service continues with best-effort behavior
-- Rate limit enforcement is non-blocking and doesn't throw errors
-- Services can function normally even if rate limiting is disabled
+Rate limiting does not report errors; it delays:
+- An unregistered service gets the defaults rather than failing: 1000ms between
+  starts, one request in flight
+- Enforcement **blocks the calling thread** until the service has both a free
+  slot and enough elapsed time. These are blocking call sites by design
+- Waiting happens off the shared lock, so a service waiting on a slow provider
+  does not delay a different service
 
 ## Configuration
 
@@ -235,8 +274,8 @@ The rate limiting system can be extended to provide metrics:
 
 2. **Apply Rate Limiting Before API Calls**
    ```rust
-   // Apply before every external API request
-   ratelimit::rate_limit("myservice");
+   // Apply before every external API request, and keep the permit in scope
+   let _permit = ratelimit::rate_limit("myservice");
    let response = make_api_request();
    ```
 
@@ -360,7 +399,7 @@ The TheArtistDB module demonstrates how to use the rate limiter:
 2. **Apply rate limiting before making API calls**:
    ```rust
    // In lookup_artistdb_by_mbid()
-   ratelimit::rate_limit("theartistdb");
+   let _permit = ratelimit::rate_limit("theartistdb");
    
    // Now make the API request
    let response_text = client.get_text(&url);
@@ -375,11 +414,22 @@ The TheArtistDB module demonstrates how to use the rate limiter:
 
 ## Implementation Details
 
-The `RateLimiter` maintains a map of service names to their last access time and minimum delay. When `rate_limit()` is called, it:
+The `RateLimiter` maps service names to the start time of the most recent
+request, the minimum delay, the maximum number of concurrent requests, and how
+many are currently in flight. When `rate_limit()` is called, it:
 
-1. Retrieves the last access time and minimum delay for the service
-2. Calculates how much time has elapsed since the last access
-3. If less than the minimum delay has passed, sleeps for the remaining time
-4. Updates the last access time to the current time
+1. Waits until the service has fewer requests in flight than its maximum
+2. Waits until the minimum delay has elapsed since the last request *started*
+3. Records the new start time, counts one more request in flight, and returns a
+   permit
+4. Gives the slot back when the permit drops, waking whoever is waiting
 
-This ensures that consecutive calls to the same service are spaced at least by the minimum delay.
+Consecutive calls to a service are therefore spaced by at least the minimum
+delay *and* never exceed its concurrency limit. Both waits are done on a
+condition variable, which releases the shared lock, so services wait
+independently of one another.
+
+A consequence worth stating: with one request in flight and a provider taking
+fifteen seconds to answer, a full sweep of a large library is a many-hour job.
+That is the provider's published rate and the provider's latency, not a
+regression.

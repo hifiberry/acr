@@ -55,10 +55,9 @@
 //!   other stale.
 
 use crate::core_client::{CoreClient, EnrichmentPostError};
-use crate::library_enricher::InProcessEnricher;
+use crate::library_enricher::{InProcessEnricher, LibraryEnricher};
 use acr_types::enrichment::{
     AlbumRef, Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink,
-    LibraryEnricher,
 };
 use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use log::{debug, info, warn};
@@ -589,7 +588,6 @@ mod tests {
     use crate::external_coverart::stub_server::{Canned, StubServer};
     use crate::library_enricher::BatchSender;
     use acr_types::enrichment::{AlbumGenres, ArtistRef, ArtistSummary};
-    use acr_types::ArtistMeta;
 
     /// A library that has one player, one artist and one album, and reports
     /// version `v1` at generation `g1`.
@@ -645,18 +643,6 @@ mod tests {
     }
 
     impl LibraryEnricher for RecordingEnricher {
-        fn artist_summary(&self, _name: &str) -> Option<ArtistSummary> {
-            None
-        }
-        fn artist_detail(&self, _name: &str) -> Option<ArtistMeta> {
-            None
-        }
-        fn artist_image(&self, _name: &str) -> Option<(Vec<u8>, String)> {
-            None
-        }
-        fn album_genres(&self, _album_id: &str) -> Option<Vec<String>> {
-            None
-        }
         fn enrich(
             &self,
             player: &str,

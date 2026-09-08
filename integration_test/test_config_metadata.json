@@ -51,14 +51,10 @@
         "spotify": {
             "enable": false
         },
-        "metadata": {
-            "url": "http://127.0.0.1:18080/api",
-            "detail_timeout_ms": 1000,
-            "resolve_timeout_ms": 5000
-        },
+        "_comment_no_metadata_section": "There is deliberately no services.metadata here, and adding one would do nothing: the daemon holds no client for the metadata daemon. Every test in test_metadata_seams.py runs against a daemon started without it, which is what proves it ignites and still serves the metadata routes.",
         "core": {
             "url": "http://127.0.0.1:18080/api",
-            "library_poll_seconds": 30
+            "_comment_poll": "library_poll_seconds is deliberately unset, so this suite runs the production backstop of 600s. It used to be 30s here, which meant a test observing enrichment could pass through the poll while the event path was entirely broken -- the poll would have to outlive the whole suite to say anything now."
         }
     },
     "players": [

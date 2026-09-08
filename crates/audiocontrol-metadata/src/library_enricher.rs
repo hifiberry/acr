@@ -1,34 +1,28 @@
 //! The metadata side of library enrichment.
 //!
-//! A library hands over a list of what it has and a sink to answer through;
-//! everything between the two — which services are asked, in what order, how
-//! often, what is cached — is here and invisible to the player side. Phase 1
-//! replaces `InProcessEnricher` with an HTTP client and this module's other
-//! half, the batching in `BatchSender`, with the same batches over the wire.
-//! The updaters themselves do not change again.
+//! This side reads a library's lists over HTTP, looks everything up, and posts
+//! the results back in batches; everything between the two — which services are
+//! asked, in what order, how often, what is cached — is here and invisible to
+//! the player side. The player side never calls in.
+//!
+//! **What used to be here and is not.** Four questions the player half asked
+//! through `LibraryEnricher`: the summary already known for an artist, the
+//! genres already known for an album, an artist's full metadata, and an
+//! artist's image bytes. Each was the main daemon calling the metadata daemon,
+//! and the one-way seam forbids that. The first two were already answered
+//! `None` over HTTP by contract — they run while a library loads and may not do
+//! network I/O — so deleting them cost nothing. The other two were live, and
+//! what replaced them is this module's own output: [`ArtistSummary`] now
+//! carries the biography, its source and the banner alongside the thumbnails,
+//! so the artist detail routes serve what a batch delivered rather than
+//! fetching it per request, and the artist image route redirects to
+//! `/coverart/artist/<b64>/image`, which is this side's own route and the one
+//! the artist lists have always pointed at.
 
 use acr_types::enrichment::*;
 use acr_types::ArtistMeta;
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::sync::Arc;
-
-/// What an artist image cached under `path` is served as.
-///
-/// Inferred from the extension, exactly as the MPD library did before this
-/// moved: an unrecognised extension is served as JPEG rather than refused,
-/// because the store only ever writes files it fetched as images and a client
-/// that got a 404 here would show a broken artist instead of a picture.
-fn mime_type_for(path: &str) -> String {
-    if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-        "image/jpeg".to_string()
-    } else if path.ends_with(".png") {
-        "image/png".to_string()
-    } else if path.ends_with(".webp") {
-        "image/webp".to_string()
-    } else {
-        "image/jpeg".to_string() // Default to JPEG
-    }
-}
 
 /// The cache key an artist's metadata is stored under. One spelling, because a
 /// reader that disagrees with the writer silently finds nothing.
@@ -43,92 +37,37 @@ pub(crate) fn cached_artist_metadata(name: &str) -> Option<ArtistMeta> {
         .flatten()
 }
 
+/// Starting a sweep over one library.
+///
+/// This trait used to live in `acr_types::enrichment` and carry four more
+/// methods, because the player half held an `Arc<dyn LibraryEnricher>` and
+/// asked it what was already known about an artist or an album. Those
+/// questions were the main daemon calling the metadata daemon, which the
+/// one-way seam forbids, and the answers travel in the batch now. What is left
+/// is one side of this crate talking to another, kept as a trait only so that
+/// [`library_puller`](crate::library_puller) can be tested without starting a
+/// sweep that reaches MusicBrainz.
+pub trait LibraryEnricher: Send + Sync {
+    /// Start enriching a library. Returns at once; results arrive through the sink.
+    ///
+    /// `generation` is the library generation every batch of this sweep will
+    /// name. It is fixed for the life of the sweep: a library that is rebuilt
+    /// meanwhile refuses the next batch, which ends the sweep, and the rebuild
+    /// asks again for whatever it now needs.
+    fn enrich(
+        &self,
+        player: &str,
+        generation: Option<String>,
+        artists: Vec<ArtistRef>,
+        albums: Vec<AlbumRef>,
+        sink: Arc<dyn EnrichmentSink>,
+    );
+}
+
 /// Enrichment through the in-process updaters.
 pub struct InProcessEnricher;
 
 impl LibraryEnricher for InProcessEnricher {
-    fn artist_summary(&self, name: &str) -> Option<ArtistSummary> {
-        let meta = cached_artist_metadata(name)?;
-        Some(ArtistSummary {
-            name: name.to_string(),
-            // More than one MusicBrainz ID, or a lookup that matched only part
-            // of the name, means the name covers several artists. The libraries
-            // used to derive this themselves from the same cached metadata.
-            is_multi: meta.mbid.len() > 1 || meta.is_partial_match,
-            mbid: meta.mbid,
-            genres: meta.genres,
-            // Carried as stored. The artist list route serves this field, and
-            // it holds a URL only for an artist an image was actually found
-            // for, so an empty list is meaningful rather than missing.
-            thumb_url: meta.thumb_url,
-            // No claim, and there could not be one. This is the load-time
-            // question -- "what is already known about this artist?", asked
-            // once per artist while a library loads and forbidden from doing
-            // network I/O -- and by the time it is asked the loader has already
-            // split, so the name here is one part of a split rather than the
-            // string that was split. The split correction is the sweep's, in
-            // `artistupdater::summarise`.
-            split_into: None,
-        })
-    }
-
-    fn artist_detail(&self, name: &str) -> Option<ArtistMeta> {
-        cached_artist_metadata(name)
-    }
-
-    /// Moved here verbatim from the MPD library's `get_artist_cover`: the same
-    /// two store calls in the same order, the same "download only if nothing
-    /// was cached", and the same MIME inference. A cached file that cannot be
-    /// read is still followed by the download attempt, as it was.
-    fn artist_image(&self, name: &str) -> Option<(Vec<u8>, String)> {
-        debug!("Getting artist cover for: {}", name);
-
-        // Use the artist store to get the cached image path
-        if let Some(cache_path) = crate::artist_store::get_artist_cached_image(name) {
-            debug!("Found cached artist image at: {}", cache_path);
-
-            // Read the image data from the cache file
-            if let Ok(image_data) = std::fs::read(&cache_path) {
-                let mime_type = mime_type_for(&cache_path);
-                debug!(
-                    "Successfully loaded artist image for {}: {} bytes, MIME: {}",
-                    name,
-                    image_data.len(),
-                    mime_type
-                );
-                return Some((image_data, mime_type));
-            } else {
-                warn!("Failed to read cached artist image from: {}", cache_path);
-            }
-        }
-
-        // If no cached image found, try to download one
-        if let Some(cache_path) = crate::artist_store::get_or_download_artist_image(name) {
-            debug!("Downloaded new artist image at: {}", cache_path);
-
-            // Read the newly downloaded image
-            if let Ok(image_data) = std::fs::read(&cache_path) {
-                let mime_type = mime_type_for(&cache_path);
-                debug!(
-                    "Successfully loaded downloaded artist image for {}: {} bytes, MIME: {}",
-                    name,
-                    image_data.len(),
-                    mime_type
-                );
-                return Some((image_data, mime_type));
-            } else {
-                warn!("Failed to read downloaded artist image from: {}", cache_path);
-            }
-        }
-
-        debug!("No artist cover found for: {}", name);
-        None
-    }
-
-    fn album_genres(&self, album_id: &str) -> Option<Vec<String>> {
-        crate::albumupdater::load_cached_genres(album_id)
-    }
-
     fn enrich(
         &self,
         player: &str,
@@ -301,18 +240,10 @@ mod tests {
         }
     }
 
-    /// The artist image route serves whatever this returns, so the mapping is
-    /// pinned: it is the one the MPD library did inline before `artist_image`
-    /// existed, extension by extension, including the JPEG it falls back to.
-    #[test]
-    fn the_artist_image_mime_type_comes_from_the_extension() {
-        assert_eq!(mime_type_for("/cache/a.jpg"), "image/jpeg");
-        assert_eq!(mime_type_for("/cache/a.jpeg"), "image/jpeg");
-        assert_eq!(mime_type_for("/cache/a.png"), "image/png");
-        assert_eq!(mime_type_for("/cache/a.webp"), "image/webp");
-        assert_eq!(mime_type_for("/cache/a.gif"), "image/jpeg");
-        assert_eq!(mime_type_for("/cache/no-extension"), "image/jpeg");
-    }
+    // The MIME mapping this module used to hold went with `artist_image`. The
+    // one that survives is `api::coverart::serve_artist_image_file`'s, which
+    // has always answered the client-facing route and now answers the
+    // redirected one too.
 
     #[test]
     fn an_empty_batch_is_not_sent() {

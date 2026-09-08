@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use log::warn;
 use acr_types::enrichment::{
-    merge_genres, Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink,
+    merge_genres, Applied, EnrichmentBatch, EnrichmentError, EnrichmentSink,
 };
 use acr_types::{AlbumArtists, ArtistMeta};
 use crate::data::album::Album;
@@ -250,43 +250,18 @@ pub fn check_generation(
     Ok(())
 }
 
-/// The album-artist strings this library split, as split-only artist
-/// references for the enrichment sweep.
-///
-/// A loader splits on separators and records the string it was given in
-/// [`Album::artists_flat`]. The parts become artists; the string itself becomes
-/// nothing, and cannot be recovered from the parts -- splitting drops the
-/// separators. So it is offered separately, as the one question the sweep can
-/// answer that the loader could not: is this one artist or several?
-///
-/// Names the library *does* hold as an artist are left out. Such a name is
-/// already in the artist list, its own summary carries the same claim, and two
-/// summaries for one name in one batch would have the second overwrite the
-/// first's metadata with nothing.
-pub fn split_questions(
-    artists: &RwLock<HashMap<String, Artist>>,
-    albums: &RwLock<HashMap<String, Album>>,
-) -> Vec<ArtistRef> {
-    // Albums first, then artists: the order `create_artists` takes them, and
-    // the read guard is dropped before the second is taken either way.
-    let mut recorded: std::collections::HashSet<String> = std::collections::HashSet::new();
-    {
-        let albums = albums.read();
-        for album in albums.values() {
-            if let Some(name) = album.artists_flat.as_deref() {
-                if !name.is_empty() {
-                    recorded.insert(name.to_string());
-                }
-            }
-        }
-    }
-    let held = artists.read();
-    recorded
-        .into_iter()
-        .filter(|name| !held.contains_key(name))
-        .map(ArtistRef::split_question)
-        .collect()
-}
+// `split_questions` stood here: it read a library's albums for the
+// album-artist strings the loader had split and offered each as a
+// `split_only` reference, so a sweep could say whether the split was right.
+//
+// Its only caller was `request_enrichment` on the two backends, which handed
+// the list to an injected enricher -- the main daemon calling the metadata
+// daemon. The metadata side builds the same list for itself now, from the
+// `album_artist` field each album carries in `GET /api/library/<p>/albums`,
+// including the same two filters: an empty name is skipped, and a name the
+// library already holds as an artist is not asked about twice because its own
+// summary already carries the claim. Both are tested in
+// `audiocontrol_metadata::library_puller`.
 
 /// What a backend gives an artist it has only just learned about.
 ///
@@ -664,10 +639,19 @@ pub fn apply_batch(
             // about one. Such an entry keeps no metadata at all rather than an
             // empty one, which is the `"metadata": null` the artist routes
             // have always served for it.
+            //
+            // "Carries nothing else" has to name every field a summary can
+            // carry, or the clause stops meaning what it says: a summary
+            // holding only a biography would be read as empty and have the
+            // biography dropped along with the metadata it was the only member
+            // of.
             if incoming.is_multi
                 && incoming.mbid.is_empty()
                 && incoming.genres.is_empty()
                 && incoming.thumb_url.is_empty()
+                && incoming.banner_url.is_empty()
+                && incoming.biography.is_none()
+                && incoming.biography_source.is_none()
             {
                 if artist.metadata.is_some() || !artist.is_multi {
                     applied.artists += 1;
@@ -688,6 +672,9 @@ pub fn apply_batch(
             let mbid_changed = meta.mbid != incoming.mbid;
             let genres_changed = meta.genres != incoming.genres;
             let thumbs_changed = meta.thumb_url != incoming.thumb_url;
+            let banners_changed = meta.banner_url != incoming.banner_url;
+            let biography_changed = meta.biography != incoming.biography
+                || meta.biography_source != incoming.biography_source;
             meta.mbid = incoming.mbid.clone();
             meta.genres = incoming.genres.clone();
             // Stored as given, empty included: the metadata side writes a
@@ -695,12 +682,23 @@ pub fn apply_batch(
             // list is the answer "there is none" and the artist list route
             // serves it as such.
             meta.thumb_url = incoming.thumb_url.clone();
+            // The three fields the artist *detail* routes serve, applied the
+            // same way and for the same reason. They used to be fetched per
+            // request from the metadata daemon and merged over what the library
+            // held; the fetch is gone, so what the library holds is now the
+            // whole answer and a sweep's `None` is "there is none" rather than
+            // "ask again".
+            meta.banner_url = incoming.banner_url.clone();
+            meta.biography = incoming.biography.clone();
+            meta.biography_source = incoming.biography_source.clone();
             artist.is_multi = incoming.is_multi;
 
             if !had_metadata
                 || mbid_changed
                 || genres_changed
                 || thumbs_changed
+                || banners_changed
+                || biography_changed
                 || was_multi != incoming.is_multi
             {
                 applied.artists += 1;
@@ -1409,6 +1407,105 @@ mod tests {
         );
     }
 
+    /// The detail fields a batch carries are merged, and their arrival counts
+    /// as a change.
+    ///
+    /// This is the whole replacement for `LibraryEnricher::artist_detail`: the
+    /// artist routes serve what is merged here, so a batch that carried these
+    /// and a merge that dropped them would leave those routes permanently
+    /// without a biography — with every route test still green, because those
+    /// build their own fixtures. And it has to *count*: an unnoticed change
+    /// does not bump `library_version`, so every client's cached list stays
+    /// valid and nobody ever refetches the artist.
+    #[test]
+    fn the_artist_detail_fields_a_batch_carries_are_merged_and_counted() {
+        let (albums, artists, mapping) = maps(vec![], vec![artist("Bowie")]);
+
+        let batch = |bio: Option<&str>| EnrichmentBatch {
+            library_generation: None,
+            artists: vec![acr_types::enrichment::ArtistSummary {
+                name: "Bowie".to_string(),
+                biography: bio.map(ToOwned::to_owned),
+                biography_source: bio.map(|_| "LastFM".to_string()),
+                banner_url: vec!["https://example.com/banner.png".to_string()],
+                ..Default::default()
+            }],
+            albums: vec![],
+        };
+
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
+            &batch(Some("Born in Brixton.")),
+        );
+        assert_eq!(applied.artists, 1);
+        assert!(changed);
+        {
+            let held = artists.read();
+            let meta = held["Bowie"].metadata.as_ref().unwrap();
+            assert_eq!(meta.biography.as_deref(), Some("Born in Brixton."));
+            assert_eq!(meta.biography_source.as_deref(), Some("LastFM"));
+            assert_eq!(meta.banner_url, vec!["https://example.com/banner.png"]);
+        }
+
+        // The same batch again is not news, and must not bump the version.
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
+            &batch(Some("Born in Brixton.")),
+        );
+        assert_eq!(applied.artists, 0);
+        assert!(!changed, "an identical batch says nothing new");
+
+        // A different biography is.
+        let (applied, changed) = apply_batch(
+            &albums,
+            &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
+            &batch(Some("Born in Brixton, 1947.")),
+        );
+        assert_eq!(applied.artists, 1);
+        assert!(changed);
+    }
+
+    /// A summary that is genuinely empty apart from `is_multi` still clears the
+    /// artist's metadata, and the detail fields have to be part of what "empty"
+    /// means or a summary carrying only a biography is read as empty and has it
+    /// dropped.
+    #[test]
+    fn a_multi_artist_summary_carrying_only_a_biography_is_not_treated_as_empty() {
+        let (albums, artists, mapping) = maps(vec![], vec![artist("Bowie")]);
+
+        apply_batch(
+            &albums,
+            &artists,
+            &mapping,
+            NewArtist::WithEmptyMetadata,
+            &EnrichmentBatch {
+                library_generation: None,
+                artists: vec![acr_types::enrichment::ArtistSummary {
+                    name: "Bowie".to_string(),
+                    is_multi: true,
+                    biography: Some("Two people, as it turns out.".to_string()),
+                    ..Default::default()
+                }],
+                albums: vec![],
+            },
+        );
+
+        let held = artists.read();
+        let meta = held["Bowie"]
+            .metadata
+            .as_ref()
+            .expect("a summary that says something keeps its metadata");
+        assert_eq!(meta.biography.as_deref(), Some("Two people, as it turns out."));
+    }
+
     /// An empty genre list never clears what a library already read from tags:
     /// the tags are better data than a lookup that found nothing.
     #[test]
@@ -2054,43 +2151,6 @@ mod tests {
             normalise_claim("x", &vec!["A".to_string(); MAX_SPLIT_PARTS]),
             Some(vec!["A".to_string()]),
             "the bound itself is allowed"
-        );
-    }
-
-    /// An album-artist string the loader split is offered to the sweep, because
-    /// nothing else can: the parts cannot be turned back into it. One it kept
-    /// whole is not, because that name is already an artist and its own summary
-    /// carries the same claim -- two summaries for one name in one batch would
-    /// have the second overwrite the first's metadata with nothing.
-    #[test]
-    fn only_the_album_artist_strings_that_were_split_are_offered_as_questions() {
-        let mut split = album(1);
-        split.artists = Arc::new(parking_lot::Mutex::new(vec![
-            "Emerson".to_string(),
-            "Lake".to_string(),
-            "Palmer".to_string(),
-        ]));
-        split.artists_flat = Some("Emerson, Lake & Palmer".to_string());
-        let mut whole = album(2);
-        whole.artists = Arc::new(parking_lot::Mutex::new(vec!["Alpha and Beta".to_string()]));
-        whole.artists_flat = Some("Alpha and Beta".to_string());
-        let (albums, artists, _) = maps(
-            vec![split, whole],
-            vec![
-                artist("Emerson"),
-                artist("Lake"),
-                artist("Palmer"),
-                artist("Alpha and Beta"),
-            ],
-        );
-
-        let questions = split_questions(&artists, &albums);
-
-        assert_eq!(questions.len(), 1, "got {:?}", questions);
-        assert_eq!(questions[0].name, "Emerson, Lake & Palmer");
-        assert!(
-            questions[0].split_only,
-            "and it is asked the split question only: there is no artist here to enrich"
         );
     }
 }

@@ -3,9 +3,16 @@
 AudioControl is one process with a seam down the middle. On one side is the
 *player* half: player backends, the library, the event bus, the REST and
 WebSocket API. On the other is the *metadata* half: MusicBrainz, TheAudioDB,
-FanArt.tv, Last.fm, Spotify accounts, cover art and the artist store. Neither
-calls the other directly. Everything that crosses between them is an HTTP
-request to `127.0.0.1`, on the port this same process is listening on.
+FanArt.tv, Last.fm, cover art and the artist store. Neither calls the other
+directly. Everything that crosses between them is an HTTP request to
+`127.0.0.1`, on the port this same process is listening on.
+
+**The seam runs one way.** Every connection across it is opened by the metadata
+half. The player half holds no address for the metadata half and no client for
+it: there is no `services.metadata` section, and a violation would have to
+hard-code an address, which `scripts/check-crate-deps.sh` looks for. Data still
+travels both ways -- what is one-way is *who calls whom*, and that is the
+property that means only one of the two needs to be listening for the other.
 
 This document is the map of that seam: what the parts are, what each owns, and
 exactly how each pair talks. It is written from the code. Where the design
@@ -27,9 +34,10 @@ This file is the detail behind it.
 - [The seams at a glance](#the-seams-at-a-glance)
 - [Seam 1: now-playing enrichment](#seam-1-now-playing-enrichment)
 - [Seam 2: library enrichment](#seam-2-library-enrichment)
-- [Seam 3: the resolvers](#seam-3-the-resolvers)
+- [Seam 3: the resolvers](#seam-3-the-resolvers--gone)
 - [Seam 4: the Spotify access token](#seam-4-the-spotify-access-token)
 - [Seam 5: favourites](#seam-5-favourites)
+- [What the player half serves without asking](#what-the-player-half-serves-without-asking)
 - [The two library tokens](#the-two-library-tokens)
 - [Start-up and shutdown](#start-up-and-shutdown)
 - [What clients see](#what-clients-see)
@@ -75,7 +83,6 @@ graph TB
             PC["players/<br/>MPD · MPRIS · Spotify<br/>RAAT · Shairport · Bluetooth"]
             LIB["data/<br/>library, songs, albums<br/>library_version + generation"]
             BUS["audiocontrol/eventbus<br/>typed event bus"]
-            MC["audiocontrol/metadata_client<br/><b>MetadataClient</b>"]
         end
         subgraph meta["metadata half — crates/audiocontrol-metadata/"]
             PROV["providers<br/>MusicBrainz · TheAudioDB<br/>FanArt.tv · Last.fm · Spotify"]
@@ -95,13 +102,11 @@ graph TB
         I["acr-images<br/>resize, sniff, grade"]
     end
 
-    MC -.->|"HTTP → 127.0.0.1:1080"| MAPI
     CC -.->|"HTTP → 127.0.0.1:1080"| API
     WS -.->|"WebSocket ← 127.0.0.1:1080"| API
 
     LIB --> T
     API --> W
-    MC --> H
     LIB --> S
     API --> I
     PROV --> T
@@ -116,14 +121,16 @@ graph TB
     style shared fill:none,stroke:#888
 ```
 
-The dotted arrows are the only paths between the halves. There are no others.
+The dotted arrows are the only paths between the halves, and both start on the
+metadata side. There is no arrow the other way and no box to draw one from:
+`MetadataClient` used to sit in `src/audiocontrol/` and is gone.
 
 | Part | Owns |
 |---|---|
 | `src/api/` | Every client-facing route and the WebSocket. Rocket, bound to port 1080. |
 | `src/players/` | One module per backend. Each turns its source's notion of "what is playing" into the shared `Song` and `PlaybackState`. |
 | `src/data/` | The in-memory library, and both library tokens. |
-| `src/audiocontrol/` | The event bus, the composition root's seam wiring, and `MetadataClient`. |
+| `src/audiocontrol/` | The event bus, and the local decisions that replaced the seam calls the player half used to make. |
 | `crates/audiocontrol-metadata/` | Every third-party provider, the artist store, the cover-art pipeline, the account credentials, and `CoreClient`. |
 | `crates/acr-types/` | The data types both halves exchange, and the **traits that define the seams**. No I/O. |
 | `crates/acr-http/` | The blocking HTTP client both halves use, with retry and per-host rate limiting. |
@@ -140,19 +147,26 @@ type.
 |---|---|---|
 | `SongInformationSink` | `CoreClient` | metadata half |
 | `PlaybackStateSource` | `CoreClient` | metadata half |
-| `EnrichmentSink` | `HttpEnrichmentSink` | metadata half |
 | `AccessTokenSource` | `CoreClient` | metadata half |
-| `Resolver` | `MetadataClient` | player half |
-| `LibraryEnricher` | `MetadataClient` | player half |
+| `EnrichmentSink` | `HttpEnrichmentSink` | metadata half |
 
-Note the direction: a trait *implemented* on the metadata side is one the
-player side calls, and vice versa. Both clients carry several traits each,
-deliberately — a wrapper per trait would invite one being pointed at the wrong
-daemon.
+**Every one of them is implemented on the metadata side**, which is the same
+statement as the rule: a trait implemented there is one that side calls out
+through. There is no longer a trait the player half calls, and
+`acr-types::enrichment` no longer defines one — `Resolver` is deleted and
+`LibraryEnricher` has moved into the metadata crate, where it now describes one
+part of that crate starting a sweep in another.
+
+The three `CoreClient` traits are deliberately carried by one type. A wrapper
+per trait would invite one being pointed at the wrong daemon, which is a
+mistake that could still be made in this direction.
 
 ---
 
 ## The dependency rule, and how it is enforced
+
+Two rules share one script, because a change that breaks either usually
+touches the same files.
 
 **The `audiocontrol` library must not depend on `audiocontrol-metadata`.** Not
 in either direction, in fact: neither crate may depend on the other. They meet
@@ -169,6 +183,21 @@ feature-gated blocks still compile with the metadata half absent.
 That last build is the one that catches real mistakes. Every
 `#[cfg(feature = "metadata")]` block in `main.rs` needs a counterpart that
 compiles without it, and it is easy to add the first and forget the second.
+
+**No route on the metadata daemon may be called by the main daemon.** The same
+script checks this, in three greps over `src/`: a read of a `metadata` service
+section, a literal `127.0.0.1:1080` or `:1084` outside `src/tools/` (which holds
+separate binaries that are clients *of* this daemon), and any of
+`/resolve/title-order`, `/resolve/artist-split` or `/enrich/nudge` outside a
+comment. Each fails the build on its own, and each was confirmed to fail by
+writing the violation.
+
+The greps are the smaller half of the enforcement. The larger half is that
+there is no address to build a client from: `services.metadata` does not exist
+and nothing reads it, so a violation has to *invent* an address, which is what
+the first two greps look for and what a reviewer meeting it in a diff has
+something to object to. What none of this can see is a call assembled across
+several lines — a base URL built in one place, a path appended in another.
 
 Run it before every push:
 
@@ -190,43 +219,46 @@ graph LR
     P["player half"]
     M["metadata half"]
 
-    P -->|"1a. events over WebSocket<br/>song, state, library"| M
-    M -->|"1b. POST song-information"| P
-    M -->|"1c. GET player — playback state"| P
-    M -->|"2a. GET library, artists, albums"| P
-    M -->|"2b. POST library enrichment"| P
-    M -->|"4. GET spotify/access_token"| P
-    P -->|"detail: GET artist, coverart image"| M
+    P -->|"① events over WebSocket<br/>song, state, library"| M
+    M -->|"② GET library, artists, albums"| P
+    M -->|"③ POST song-information<br/>POST library enrichment"| P
+    M -->|"④ GET spotify/access_token"| P
 ```
 
-| # | Seam | Direction | Transport | Timeout | On failure |
-|---|---|---|---|---|---|
-| 1a | Song, state and library changes | player → metadata | WebSocket, `ws://…/api/events` | reconnect backoff capped at 30 s | nothing is enriched during a gap; a per-connect seed recovers the current song and asks the puller to sweep every library |
-| 1b | Enrichment results | metadata → player | `POST /api/player/<name>/song-information` | 5 s | result is dropped; the next lookup re-sends |
-| 1c | Playback state | metadata → player | `GET /api/player` | 5 s | the Last.fm worker skips one 30 s reconciliation |
-| 2a | Library contents | metadata → player | `GET /api/library`, `/library/<p>`, `/artists`, `/albums` | 5 s | the sweep does not start; the next event or backstop sweep retries |
-| 2b | Enrichment batches | metadata → player | `POST /api/library/<p>/enrichment` | 5 s | 409 ends the sweep and the next poll re-pulls; 404 ends it |
-| 4 | Spotify access token | metadata → player | `GET /api/spotify/access_token` | 5 s | `None`; 60 s cache bounds re-asking |
-| — | Artist detail | player → metadata | `GET /api/artist/<b64>` | 1 s | `None` — the field is simply absent |
-| — | Artist image | player → metadata | `GET /api/coverart/artist/<b64>/image` | 5 s | `None` — the route 404s to its caller |
+Four connections, and the metadata half opens all four.
 
-The two clients:
+| # | Connection | Transport | Timeout | On failure |
+|---|---|---|---|---|
+| ① | Song, state and library changes | WebSocket, `ws://…/api/events` | reconnect backoff capped at 30 s | nothing is enriched during a gap; a per-connect seed recovers the current song and asks the puller to sweep every library |
+| ② | Library contents | `GET /api/library`, `/library/<p>`, `/artists`, `/albums` | 5 s | the sweep does not start; the next event or backstop sweep retries |
+| ③ | Results, upward | `POST /api/player/<n>/song-information`, `POST /api/library/<p>/enrichment` | 5 s | a song result is dropped and the next lookup re-sends; a batch's 409 ends the sweep and the next pull retries; 404 ends it |
+| ④ | Spotify access token | `GET /api/spotify/access_token` | 5 s | `None`; 60 s cache bounds re-asking |
 
-- **`MetadataClient`** — `src/audiocontrol/metadata_client.rs`, player half,
-  pointed at `services.metadata.url`. **Nothing in the player half calls it any
-  more**: its `enrich` became a no-op when the nudge route went, and its
-  `Resolver` lost its last caller when the artist split moved into the
-  enrichment batch. It still carries both traits, and it and they go together.
-- **`CoreClient`** — `crates/audiocontrol-metadata/src/core_client.rs`,
-  metadata half, pointed at `services.core.url`. Carries
-  `SongInformationSink`, `PlaybackStateSource` and `AccessTokenSource`, and
-  the library reads.
+Connection ① also carries the playback state poll, `GET /api/player`, which is
+a fifth *route* on the same client rather than a fifth connection: the Last.fm
+worker reconciles against it every five minutes as a backstop to the
+subscription.
 
-Both default to loopback on the port the daemon binds. `CoreClient` uses one
-5 s timeout for every call; `MetadataClient` holds three clients, because
-`acr-http` fixes a timeout when the client is constructed and this seam needs
-three different ones. Those timeouts are whole seconds — a millisecond setting
-from configuration is rounded up, with a floor of one second.
+**There is one client left, not two.**
+
+- **`CoreClient`** — `crates/audiocontrol-metadata/src/core_client.rs`, metadata
+  half, pointed at `services.core.url`. Carries `SongInformationSink`,
+  `PlaybackStateSource` and `AccessTokenSource`, and the library reads, on one
+  5 s timeout for every call.
+- **`MetadataClient`** — deleted. It was the player half's client for the
+  metadata half, and its last two calls were `GET /artist/<b64>` and
+  `GET /coverart/artist/<b64>/image`, made to answer a client's request on the
+  player half's own artist routes. Both are gone: [what the player half serves
+  without asking](#what-the-player-half-serves-without-asking) says what
+  replaced them.
+
+`services.metadata` is gone with it. That is not tidying — it is what makes the
+rule hold by construction, because there is now nothing to build a client
+*from*. What is left for a check to catch is a hard-coded address, and
+`scripts/check-crate-deps.sh` greps for three shapes of one: a read of a
+`metadata` service section, a literal `127.0.0.1:1080` or `:1084` outside
+`src/tools/`, and any of `/resolve/title-order`, `/resolve/artist-split` or
+`/enrich/nudge` outside a comment.
 
 ---
 
@@ -264,7 +296,7 @@ sequenceDiagram
 
     Note over CTRL: on applied: true — publish<br/>song_information_update to clients
 
-    loop every 30 s, Last.fm worker
+    loop every 5 min, Last.fm worker
         W->>CC: GET /api/player
         CC-->>W: {name, state, …}
     end
@@ -411,8 +443,9 @@ afterwards.
   makes a MusicBrainz round trip per album.
 
 The routes themselves still exist on the metadata daemon for clients that ask
-directly. What is gone is the player half calling them, and with it the last
-connection across this seam that the player half opened.
+directly, and `scripts/check-crate-deps.sh` fails the build if their paths
+reappear in the player sources outside a comment. What is gone is the player
+half calling them.
 
 The exchange it used to be, kept because the encoding rule below outlived it:
 
@@ -525,6 +558,78 @@ There is no seam. The favourites routes live entirely in the metadata crate and
 are served from it; `liked` state reaches the player half as an ordinary field
 on seam 1. This is listed for completeness because the design document numbers
 it as an interface.
+
+---
+
+## What the player half serves without asking
+
+Two of its own routes used to be answered by calling the metadata half, once
+per request. They were the last two calls in that direction and they were not
+proxying: neither returns the metadata daemon's answer, they merge it into a
+differently shaped one. Both are gone, and each went a different way, because
+what they needed is different.
+
+### Artist detail: the answer travels in the batch
+
+`GET /api/library/<p>/artist/by-name|by-id|by-mbid/…` serves an artist's
+biography, its source and its banner. Those used to be fetched from
+`GET /artist/<b64>` on the metadata half and merged over what the library held.
+
+They now travel in the enrichment batch, as three more fields on
+`ArtistSummary` beside the thumbnails that were already there, and
+`data::library`'s merge writes them like the rest. Nothing is fetched while a
+request is being answered.
+
+**What a client sees:** the same fields in the same shape, and later. Before, an
+artist whose sweep had not yet reported could still answer with a biography,
+because the route read the metadata side's own cache directly. Now it answers
+without one until the batch arrives — the same eventual consistency the genres
+and thumbnails in that response have always had, bounded by the same sweep.
+
+The cost is memory: a biography is the largest thing a library holds per artist,
+and it is now held on the player side for every artist a sweep has reported.
+That is the trade the rule forces, and it is stated here rather than discovered.
+
+### Artist images: the route names where they are
+
+`GET /api/library/<p>/image/artist:<name>` used to fetch
+`GET /coverart/artist/<b64>/image` from the metadata half and serve the bytes.
+Bytes cannot travel in the batch, and the player half has nothing local to
+answer from: artist art is fetched from providers, downloaded on first use and
+kept in the metadata half's artist store.
+
+So the route names the destination instead of calling it — **302 to
+`/coverart/artist/<b64>/image`**, rewritten for the request's forwarded prefix,
+with `size` carried across.
+
+That path is not a new address for a client to learn: it is the same one the
+artist lists have always put in `thumb_url`, so a client following the redirect
+lands where it would have gone from the list.
+
+**What a client sees:** a 302 where it saw a 200. Every client that follows
+redirects — browsers, `URLSession`, `requests`, `curl -L` — sees the same image.
+One that follows none sees a 302 body instead of bytes. Two things improve:
+`?size=` now works, because the route it points at resizes and this one never
+did (`resize_via_cache` answers for `album:` identifiers only), and an unknown
+player or a player without a library still answers 404, because the redirect
+sits inside the player lookup rather than before it.
+
+### Why not defer both to nginx
+
+The spec's first answer was to route `/api/metadata/` in nginx and let clients
+fetch the biography and the image themselves, with the two calls kept as
+documented exceptions until the WebUI and `hbos-ios` migrated. That is a real
+option and it is why the spec calls them "the main daemon proxying for its own
+clients". It was not taken, for two reasons.
+
+It does not remove the calls, so `services.metadata` has to stay, and with it
+the address that makes every other violation easy. The rule would hold by
+convention on the one path that most invites breaking it.
+
+And it is a larger change for a client than either of these, not a smaller one:
+a client would have to make a second request per artist and merge the two
+responses itself, where the redirect costs it nothing and the batch costs it
+nothing at all.
 
 ---
 
@@ -706,11 +811,11 @@ restart or a package upgrade. **Reconnect on every close.**
 
 | Situation | What happens | What a user sees | What a log shows |
 |---|---|---|---|
-| `services.metadata` absent | no resolver, token source or enricher installed | stream titles split on separators only; no artist images from providers | one info line at start-up |
+| Metadata half down, at boot or later | **playback works**, and so does every player route: nothing in this daemon waits on it | no enrichment, no new artist images, no scrobbling; artist images already stored still serve, because the redirect target is the metadata half's route and its store is on disk | nothing on the player side — it has nothing to fail |
+| `services.metadata` present in a config file | **ignored.** Nothing reads it, and no client is built from it | nothing | nothing |
 | `services.core` absent | **the defaults apply**, not silence — the metadata half runs inside the player daemon, so there is always a core | nothing | nothing |
-| Metadata side unreachable | every player-side call falls back; the subscriber retries with backoff to 30 s | enrichment stops; playback unaffected | one warning naming the URL, then a reminder every 5 min |
-| Metadata side slow | each call bounded by its own timeout: 1 s detail, 5 s resolve | a brief delay, then the fallback answer | debug |
-| Player side unreachable *(Phase 2 only)* | the subscriber and puller retry; results are dropped | metadata and scrobbling go stale | warning, then 5-minute reminders |
+| Player side unreachable, from the metadata side | the subscriber and puller retry with backoff to 30 s | enrichment stops; playback unaffected | one warning naming the URL, then a reminder every 5 min |
+| Player side unreachable *(Phase 2 only)* | results are dropped | metadata and scrobbling go stale | warning, then 5-minute reminders |
 | Socket dropped | reconnect with backoff; a seed recovers the current song | a track starting *and* ending inside the gap is never enriched or scrobbled | debug per attempt |
 | Batch computed against a reloaded library | 409 ends the sweep; the next poll re-pulls | a short delay before enrichment reappears | debug |
 | Batch names a library that is gone | 404 ends the sweep | nothing | one line |
@@ -719,10 +824,13 @@ restart or a package upgrade. **Reconnect on every close.**
 | No secrets compiled in | providers needing a key are disabled at start-up | those providers contribute nothing | one line per absent secret |
 | Unknown field in a batch | 422 — the batch is refused rather than silently applied unchecked | nothing | one line |
 
-The asymmetry between `services.metadata` and `services.core` is deliberate and
-worth restating: absent `services.metadata` is a deployment saying "there is no
-metadata side, do not call it". Absent `services.core` is only a file that has
-not been updated, and the defaults are correct.
+The first row is the whole point of the phase, and the second is what it cost.
+`services.metadata` used to mean "there is a metadata side, here is where":
+absent, the daemon quietly lost enrichment, the resolvers, artist detail and
+artist images. There is nothing to say now, because the player half does not
+call and cannot. `services.core` is unchanged and is not symmetrical with it:
+an absent section is a file that has not been updated, and the defaults are
+correct, because the metadata side always has a player daemon to talk to.
 
 ---
 
@@ -738,15 +846,22 @@ shape.
 | systemd units | one | two |
 | Configuration | one file | plus `metadata.json` |
 | Ports | 1080 | 1080 and 1084 |
-| `services.metadata.url` | `http://127.0.0.1:1080/api` | `http://127.0.0.1:1084/api` — **only the port changes** |
-| `services.core.url` | `http://127.0.0.1:1080/api` | unchanged |
+| `services.core.url` | `http://127.0.0.1:1080/api` | unchanged — **the only address either daemon holds** |
 | Client paths | unchanged | unchanged; nginx routes `/api/metadata/` and a few sub-prefixes to 1084 |
 | Caches | shared | the metadata daemon gets its own image cache and settings database |
 
-That the two URLs differ only by a port is the property the whole phase exists
-to produce, and it is why the loopback address is the bare `/api` mount rather
-than `/api/metadata` — the latter is the *client-facing* prefix nginx routes,
-not how one daemon addresses the other.
+There is no row for `services.metadata`: it is gone, and that is what makes the
+split a packaging change. Only one daemon has to be told where the other is, so
+only one configuration file names an address, and the failure that used to
+worry this section — a `metadata.json` whose `core.url` was absent and derived
+the metadata daemon's own port — is now the only such failure there is.
+
+**One sub-prefix nginx must route, and it is load-bearing rather than
+cosmetic.** `/api/coverart/` has to reach the metadata daemon after the split,
+because it is where `/api/library/<p>/image/artist:<name>` sends clients and
+where the artist lists' `thumb_url` points. A deployment that routes
+`/api/metadata/` and forgets `/api/coverart/` loses every artist image on the
+device, with the player daemon answering a 302 into its own SPA fallback.
 
 **One hazard to check when writing `metadata.json`.** Service configuration
 falls back to the top level, and `metadata.json` puts `webserver` there with
@@ -762,12 +877,13 @@ Phase 2 needs a start-up check that `core.url` is set, not a comment.
 
 Written down because a document that only describes what works is not a map.
 
-- **`enhance_metadata: false` no longer disables library enrichment.** It now
-  suppresses nothing at all: it guards `request_enrichment`, whose HTTP form is
-  a no-op since the nudge route went, while the puller sweeps every loaded
-  library regardless. The design document said this flag becomes a no-op and is
-  removed from the docs — it is now the first and still not the second, so it
-  looks live and is dead.
+- **`enhance_metadata: false` no longer disables library enrichment.** The thing
+  it guarded — `request_enrichment` — is deleted, so on LMS the flag now
+  suppresses nothing whatever and is only *reported* by the library's metadata
+  map; on MPD it still gates image pre-warming and nothing else. The puller
+  sweeps every loaded library regardless, and it has no way to be told not to.
+  The design document said this flag becomes a no-op and is removed from the
+  docs; it is now thoroughly the first and still not the second.
 - **The auth manifest was not extended to `/api/audiocontrol/metadata/…`.**
   Reads that are permissive on the historical path fall into the authenticated
   catch-all there. Fail-closed, so nothing is less safe, but a client written
@@ -793,11 +909,16 @@ Written down because a document that only describes what works is not a map.
   reports per-player detail and is the obvious place to carry the configured
   list; until it does, the gate is a partial defence and this is a regression
   against the removed route rather than a neutral simplification.
-- **`request_enrichment` builds a payload that is discarded.** It clones every
-  artist and album reference and the HTTP form now sends nothing at all — it
-  used to at least send the nudge. On a large library that is tens of thousands
-  of allocations per load for nothing, and the call site should go when
-  `MetadataClient` does.
+- **LMS albums are now offered for genre lookup, and never used to be.**
+  `request_enrichment` on that backend deliberately offered artists only, on the
+  grounds that LMS albums carry whatever the server reports and a MusicBrainz
+  request per album would be new cost on a backend that had never made one. The
+  puller does not know that: it offers every player's albums that carry no
+  genres. This is not new here — the puller has been the only live discovery
+  path since the nudge went — but the test that documented the intent went with
+  `request_enrichment`, so it is recorded here instead. The fix, if it is wanted,
+  is a per-player flag in `GET /api/library/<p>` rather than a rule in the
+  puller.
 - **`EnrichmentSink`'s error type cannot express a transport failure**, so a
   dropped request is reported as "the library is gone" and abandons the sweep.
   Harmless on loopback; in Phase 2 one dropped request costs a whole sweep
@@ -806,7 +927,17 @@ Written down because a document that only describes what works is not a map.
   threads** — `resolve/title-order`, `resolve/artist-split`, and artist detail
   with `?lookup=true`. Concurrent uncached requests can occupy every Rocket
   worker. The player half no longer calls any of them, so what is exposed is a
-  client's own request.
+  client's own request. A fourth is now reachable the same way:
+  `/coverart/artist/<b64>/image` *downloads* on a miss, and the artist image
+  redirect sends every client that asks the player half for artist art straight
+  at it. That was already true of `thumb_url`, so the redirect widens an
+  existing path rather than opening one.
+- **A biography is held per artist on the player side now.** It is the largest
+  thing in an `ArtistMeta` and the only one no list shows, carried because the
+  artist detail routes serve it and may no longer fetch it. On a library with
+  thousands of artists this is megabytes that Phase 1 did not spend, and nothing
+  bounds it — `sanitize::safe_truncate` exists and is not applied to this
+  field.
 - **`?lookup=true` has no test** distinguishing "lookup skipped" from "lookup
   ran and found nothing", because no provider is registered in the unit test
   environment.
@@ -818,5 +949,6 @@ Written down because a document that only describes what works is not a map.
 - [architecture.md](architecture.md) — the whole system, of which this is one seam
 - [api.md](api.md) — every route, with request and response shapes
 - [websocket.md](websocket.md) — the event contract and its compatibility rules
-- [specs/2026-09-04-player-metadata-split.md](specs/2026-09-04-player-metadata-split.md) — the design this implements
+- [specs/2026-09-07-one-way-seam.md](specs/2026-09-07-one-way-seam.md) — why the seam runs one way, and what each removed call was replaced with
+- [specs/2026-09-04-player-metadata-split.md](specs/2026-09-04-player-metadata-split.md) — the split this sits inside, partly superseded by the above
 - [tooling.md](tooling.md) — building and testing in a container

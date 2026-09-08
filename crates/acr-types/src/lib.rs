@@ -14,7 +14,6 @@ pub mod now_playing;
 pub mod order_result;
 pub mod playback_state;
 pub mod player_source;
-pub mod resolver;
 pub mod sanitize;
 pub mod serializable;
 pub mod song;

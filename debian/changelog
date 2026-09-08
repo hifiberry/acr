@@ -54,6 +54,29 @@ hifiberry-audiocontrol (0.22.0) trixie; urgency=medium
     as the backend reported it, before it was split into artists. Additive,
     and absent where the library recorded none.
 
+  * The player daemon no longer calls the metadata side at all. Every
+    connection between the two is now opened by the metadata side, which is
+    what lets playback and every player route keep working when it is absent
+    or has crashed. The services.metadata section is gone from
+    audiocontrol.json; one left in a local configuration file is ignored.
+
+  * GET /api/library/<player>/image/artist:<name> now answers 302 with a
+    Location of /api/coverart/artist/<base64>/image, instead of serving the
+    image bytes itself. **Follow redirects.** Every browser and every normal
+    HTTP client already does, and the destination is the same path the artist
+    lists have always given in thumb_url, so a client that follows one sees
+    the same picture. Artist art is fetched from providers and stored by the
+    metadata side, and the player daemon no longer asks it for anything. One
+    thing improves: ?size= now works on artist art, where it was previously
+    accepted and ignored.
+
+  * An artist's biography, its source and its banner URL now reach the library
+    with the rest of the enrichment sweep, rather than being fetched per
+    request. GET /api/library/<player>/artist/by-name/... serves the same
+    fields in the same shape; what changes is that they appear once the sweep
+    has reported on that artist, like the genres and thumbnails beside them,
+    rather than immediately after a lookup that ran during the request.
+
  -- HiFiBerry <support@hifiberry.com>  Mon, 07 Sep 2026 16:00:00 +0200
 
 hifiberry-audiocontrol (0.21.0) trixie; urgency=medium

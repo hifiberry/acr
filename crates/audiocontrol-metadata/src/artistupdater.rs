@@ -254,15 +254,27 @@ fn artist_to_update(reference: &ArtistRef) -> Artist {
 
 /// What a library keeps from an updated artist.
 ///
-/// The summary is exactly the fields a library's own lists are built from --
-/// the thumbnail URLs among them, because the artist list route serves them.
-/// The biography and the source it came from stay on this side, served from
-/// here by the artist detail route.
+/// The summary is everything the player daemon's artist routes serve. It used
+/// to stop at the fields a library's own *lists* are built from, and the
+/// biography, its source and the banner stayed on this side for the detail
+/// route to be asked for per request. That request was
+/// `GET /artist/<b64>` against this daemon, which the one-way seam forbids, so
+/// they travel here instead — read from the same `ArtistMeta` as the rest, at
+/// the cost of a clone rather than a lookup.
 fn summarise(artist: &Artist, split_into: Option<Vec<String>>) -> ArtistSummary {
-    let (mbid, genres, thumb_url) = artist
+    let (mbid, genres, thumb_url, banner_url, biography, biography_source) = artist
         .metadata
         .as_ref()
-        .map(|m| (m.mbid.clone(), m.genres.clone(), m.thumb_url.clone()))
+        .map(|m| {
+            (
+                m.mbid.clone(),
+                m.genres.clone(),
+                m.thumb_url.clone(),
+                m.banner_url.clone(),
+                m.biography.clone(),
+                m.biography_source.clone(),
+            )
+        })
         .unwrap_or_default();
 
     ArtistSummary {
@@ -274,6 +286,9 @@ fn summarise(artist: &Artist, split_into: Option<Vec<String>>) -> ArtistSummary 
         mbid,
         genres,
         thumb_url,
+        banner_url,
+        biography,
+        biography_source,
         // Passed in rather than derived here: this is the answer the player
         // daemon used to block on once per album, and it is the sweep's `Sweep`
         // that decides whether asking is worth it -- see
@@ -506,19 +521,28 @@ mod tests {
         }
     }
 
-    /// A summary carries exactly the fields a library's lists are built from,
+    /// A summary carries everything the player daemon's artist routes serve,
     /// and this asserts the whole of it rather than the fields it remembers to
     /// name: a field silently dropped here is a field silently missing from
-    /// every artist list, which is how the thumbnails were lost once already.
-    /// The biography is set on the fixture and has nowhere to go — the type
-    /// has no such field, which is the guarantee that it stays on this side.
+    /// every artist response over there, which is how the thumbnails were lost
+    /// once already.
+    ///
+    /// **The biography, its source and the banner are the reason this
+    /// assertion matters now.** They used to be deliberately absent: the type
+    /// had no such fields and the player daemon fetched them per request from
+    /// `GET /artist/<b64>` on this daemon. That call is what the one-way seam
+    /// forbids, so they travel here instead, and if `summarise` stops copying
+    /// them the artist detail routes serve an artist with no biography at all
+    /// — with every test of those routes still green, because they build their
+    /// own `ArtistMeta`.
     #[test]
-    fn a_summary_carries_the_fields_the_library_lists_are_built_from() {
+    fn a_summary_carries_everything_the_artist_routes_serve() {
         let mut meta = ArtistMeta::new();
         meta.add_mbid("mbid-1".to_string());
         meta.add_genre("rock".to_string());
         meta.biography = Some("A long story".to_string());
         meta.biography_source = Some("TheAudioDB".to_string());
+        meta.banner_url = vec!["https://example.com/banner.png".to_string()];
         // Both shapes this field takes: the daemon's own cover art URL, and a
         // provider's, which is never rewritten and so must survive verbatim.
         meta.add_thumb_url("/api/coverart/artist/YWJj/image".to_string());
@@ -535,6 +559,9 @@ mod tests {
                     "/api/coverart/artist/YWJj/image".to_string(),
                     "https://example.com/artist.png".to_string(),
                 ],
+                banner_url: vec!["https://example.com/banner.png".to_string()],
+                biography: Some("A long story".to_string()),
+                biography_source: Some("TheAudioDB".to_string()),
                 split_into: None,
             }
         );

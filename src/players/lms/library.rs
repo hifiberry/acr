@@ -4,8 +4,8 @@ use parking_lot::{Mutex, RwLock};
 use std::time::Instant;
 use log::{debug, info, warn, error};
 use crate::data::{Album, AlbumArtists, Artist, LibraryError, LibraryInterface, PlayerEvent, PlayerSource};
-use crate::data::library::{apply_batch, check_generation, split_questions, NewArtist};
-use acr_types::enrichment::{Applied, ArtistRef, EnrichmentBatch, EnrichmentError, EnrichmentSink};
+use crate::data::library::{apply_batch, check_generation, NewArtist};
+use acr_types::enrichment::{Applied, EnrichmentBatch, EnrichmentError, EnrichmentSink};
 use crate::helpers::http_client;
 use crate::players::lms::jsonrps::LmsRpcClient;
 use crate::players::lms::lmsaudio::lms_image_url;
@@ -107,40 +107,12 @@ impl LMSLibrary {
         });
     }
 
-    /// Ask the enricher for everything this library is missing.
-    ///
-    /// Returns at once; results arrive later through this library's own
-    /// `EnrichmentSink`.
-    ///
-    /// Only artists are offered. LMS has never looked up album genres — its
-    /// albums carry whatever the server reports and nothing else — and
-    /// offering them here would start a MusicBrainz request per album on a
-    /// backend that has never made one.
-    pub fn request_enrichment(&self) {
-        if !self.enhance_metadata {
-            return;
-        }
-        let Some(enricher) = crate::audiocontrol::enrichment::enricher() else {
-            debug!("No enricher installed, LMS library stays as loaded");
-            return;
-        };
-
-        let mut artists: Vec<ArtistRef> = self
-            .artists
-            .read()
-            .values()
-            .map(|a| ArtistRef::named(a.id.to_string(), a.name.clone()))
-            .collect();
-
-        // Plus the album-artist strings the loader split -- see MPD's
-        // `request_enrichment` for why they cannot be derived from the parts.
-        artists.extend(split_questions(&self.artists, &self.albums));
-
-        // LMS tracks no generation, so there is none to name and none for a
-        // returning batch to be stale against: it cannot tell whether it has
-        // reloaded, so it does not claim it has not.
-        enricher.enrich("lms", None, artists, Vec::new(), Arc::new(self.clone()));
-    }
+    // `request_enrichment` stood here, and it is gone rather than emptied --
+    // see MPD's library for the whole reason. In short: the enricher it handed
+    // its artist list to was `MetadataClient`, whose `enrich` became a no-op
+    // when the nudge route went, and the metadata side builds the same list for
+    // itself from `GET /api/library/lms/artists` when the `library_changed`
+    // event tells it to look.
 
     /// Populate calculated fields in album objects
     /// 
@@ -237,30 +209,12 @@ impl LMSLibrary {
                 metadata: None,
             };
 
-            // What is already known about this artist comes from the enricher,
-            // not from a cache this side reads. Unlike MPD, an artist nothing
-            // is known about is left with no metadata at all rather than an
-            // empty one: that is what this backend has always served.
-            let mut artist_with_metadata = artist;
-            match crate::audiocontrol::enrichment::enricher()
-                .and_then(|e| e.artist_summary(&artist_name))
-            {
-                Some(summary) => {
-                    debug!("Loaded summary for artist {} from the enricher", artist_name);
-                    let mut metadata = crate::data::ArtistMeta::new();
-                    metadata.mbid = summary.mbid;
-                    metadata.genres = summary.genres;
-                    metadata.thumb_url = summary.thumb_url;
-                    artist_with_metadata.is_multi = summary.is_multi;
-                    artist_with_metadata.metadata = Some(metadata);
-                },
-                None => {
-                    debug!("Nothing known yet about artist {}", artist_name);
-                }
-            }
-
-            // Insert the artist with potentially loaded metadata
-            artists.insert(artist_name.clone(), artist_with_metadata);
+            // An artist loads unenriched, always -- see MPD's `create_artists`
+            // for why the question this used to ask has been dead in every
+            // deployed build and was a call across the seam besides. Unlike
+            // MPD, an artist here keeps no metadata at all rather than an empty
+            // one: that is what this backend has always served.
+            artists.insert(artist_name.clone(), artist);
             created_count += 1;
         }
         
@@ -474,9 +428,6 @@ impl LibraryInterface for LMSLibrary {
                 let total_time = start_time.elapsed();
                 info!("Library load complete in {:.2?}", total_time);
                 
-                // Ask for enrichment now that the library is fully loaded
-                self.request_enrichment();
-
                 Ok(())
             },
             Err(e) => {
@@ -750,7 +701,7 @@ impl EnrichmentSink for LMSLibrary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acr_types::enrichment::{AlbumRef, ArtistSummary, LibraryEnricher};
+    use acr_types::enrichment::ArtistSummary;
     use crate::data::Identifier;
 
     fn empty_library() -> LMSLibrary {
@@ -862,6 +813,7 @@ mod tests {
                     genres: vec!["folk".into()],
                     thumb_url: vec![],
                     split_into: None,
+                    ..Default::default()
                 }],
                 albums: vec![],
             })
@@ -904,55 +856,10 @@ mod tests {
         );
     }
 
-    struct RecordingEnricher(Mutex<Vec<(String, Option<String>, Vec<ArtistRef>, Vec<AlbumRef>)>>);
-
-    impl LibraryEnricher for RecordingEnricher {
-        fn artist_summary(&self, _name: &str) -> Option<ArtistSummary> {
-            None
-        }
-        fn artist_detail(&self, _name: &str) -> Option<crate::data::ArtistMeta> {
-            None
-        }
-        fn artist_image(&self, _name: &str) -> Option<(Vec<u8>, String)> {
-            None
-        }
-        fn album_genres(&self, _album_id: &str) -> Option<Vec<String>> {
-            None
-        }
-        fn enrich(
-            &self,
-            player: &str,
-            generation: Option<String>,
-            artists: Vec<ArtistRef>,
-            albums: Vec<AlbumRef>,
-            _sink: Arc<dyn EnrichmentSink>,
-        ) {
-            self.0.lock().push((player.to_string(), generation, artists, albums));
-        }
-    }
-
-    /// LMS asks about artists only. Album genres would be a MusicBrainz
-    /// request per album on a backend that has never made one.
-    #[test]
-    fn requesting_enrichment_asks_about_artists_and_no_albums() {
-        let lib = empty_library();
-        lib.artists
-            .write()
-            .insert("The Beatles".into(), test_artist("The Beatles"));
-
-        let recorder = Arc::new(RecordingEnricher(Mutex::new(Vec::new())));
-        let _guard = crate::audiocontrol::enrichment::testing::install(recorder.clone());
-        lib.request_enrichment();
-
-        let calls = recorder.0.lock();
-        assert_eq!(calls.len(), 1);
-        let (player, generation, artists, albums) = &calls[0];
-        assert_eq!(player, "lms");
-        assert_eq!(
-            *generation, None,
-            "a backend that cannot tell whether it reloaded names no generation"
-        );
-        assert_eq!(artists.len(), 1);
-        assert!(albums.is_empty(), "LMS must not ask for album genres");
-    }
+    // A test that `request_enrichment` asked about artists and no albums stood
+    // here, and went with the method. It asserted a property LMS no longer
+    // has: the metadata side discovers work for itself now, and its puller
+    // offers every player's albums that carry no genres. See
+    // doc/communications.md, which records that as a live gap rather than
+    // leaving a test to imply otherwise.
 }

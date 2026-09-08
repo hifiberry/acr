@@ -2177,6 +2177,20 @@ Retrieves an image (such as album art) from a player's library.
   - `player-name` (string): The name of the player
   - `identifier` (string): The identifier for the image (e.g., "album:12345")
 
+> **An `artist:` identifier answers `302`, not bytes** (from 0.22.0). The
+> `Location` is `/api/coverart/artist/<b64>/image`, carrying the request's
+> forwarded prefix and any `size`. Artist art belongs to the metadata half —
+> it is fetched from providers and kept in its artist store — and this daemon
+> no longer calls that half to answer its own routes, so it names the route
+> instead. That path is the one the artist lists have always put in
+> `thumb_url`, so a client following the redirect lands where it would have
+> gone from the list. **Follow redirects**; a client that does not now
+> receives a `302` where it received an image before. Earlier daemons answered
+> `200` with the bytes.
+>
+> `?size=` works on the redirect target, which is a change in its favour: it
+> was accepted and silently ignored here.
+
 **Query parameters**
 
 | Name | Type | Meaning |
@@ -2186,8 +2200,10 @@ Retrieves an image (such as album art) from a player's library.
 **When `size` does nothing.** Resizing works from acr's own image cache, so it
 applies only where two things are both true:
 
-- the identifier is an `album:` identifier. `artist:` identifiers, bare track
-  URLs and URL-safe-base64 identifiers are all served at full size.
+- the identifier is an `album:` identifier. Bare track URLs and
+  URL-safe-base64 identifiers that do not decode to `artist:` are served at
+  full size. An `artist:` identifier is redirected, and `size` is honoured
+  there.
 - the player keeps its cover art in acr's image cache. **MPD does; LMS does
   not** — an LMS library fetches album art over HTTP from the LMS server on
   every request and never populates the cache, so `?size=` on an LMS player is
@@ -2208,10 +2224,11 @@ Responses carry an `ETag` and honour `If-None-Match` with a `304`. The
 `Cache-Control` header depends on the identifier: `album:` art does not
 change under a given album id, so those responses get
 `public, max-age=31536000, immutable` and clients can hold them
-indefinitely. Every other identifier — `artist:` art (which a user can
-replace with a new upload) and bare track URLs — gets
-`public, max-age=86400` instead, so clients revalidate daily rather than
-being stuck with a stale image for a year.
+indefinitely. Bare track URLs get `public, max-age=86400` instead, so clients
+revalidate daily rather than being stuck with a stale image for a year.
+`artist:` identifiers are redirected and carry no cache headers of their own;
+the route they point at sets the same daily revalidation, because a user can
+replace artist art with a new upload.
 
 - **Response**: Binary image data with appropriate Content-Type header
 - **Error Response** (404 Not Found): String error message
@@ -2334,25 +2351,33 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 
 ### Metadata Service Routes
 
-These four routes are served by the metadata side of the daemon (the code that
-will become a separate `audiocontrol-metadata` process in a later phase) but
-answer at `/api` alongside everything else in this document, because both
-halves currently share one Rocket. They exist so the player daemon can ask
-over HTTP for what it used to compute in-process, and it now does: enrichment
-and the two resolvers cross loopback rather than a function call, even though
-both halves are in one process. See [architecture](architecture.md) for what
-that means and does not mean.
+These routes are served by the metadata side of the daemon (the code that will
+become a separate `audiocontrol-metadata` process in a later phase) but answer
+at `/api` alongside everything else in this document, because both halves
+currently share one Rocket. See [architecture](architecture.md) for what that
+means and does not mean.
 
-The Spotify access token used to be a fourth such call and now runs the other
-way. The account lives in the player daemon, which serves
-`GET /api/spotify/access_token` to the metadata side rather than asking it —
-see [Spotify Routes](#spotify-routes) below.
+**They exist for clients, and no longer for the player daemon.** They used to
+be how it asked over HTTP for what it once computed in-process: artist detail,
+artist images and the two resolvers. Every one of those calls is gone, and
+nothing in the player daemon calls anything here — it holds no address for this
+side at all. What replaced each is in
+[the one-way seam spec](specs/2026-09-07-one-way-seam.md) and in
+[communications](communications.md); in short, the biography and banner travel
+in the enrichment batch, and `/api/library/<p>/image/artist:<name>` redirects to
+`/api/coverart/artist/<b64>/image` rather than fetching it.
 
-Nothing about calling them from outside the daemon is unsupported, but the
-player-facing routes earlier in this document (`Get Artist by Name`, `Get
-Artist by ID`, `Get Artist by MusicBrainz ID`, `Stream Title Splitting`) are
-almost always the better fit for a client, since they merge this data with
-what the player daemon already knows.
+Data crosses the other way instead: the metadata side subscribes to the
+daemon's events, reads its library, posts results back, and asks it for a
+Spotify token at `GET /api/spotify/access_token` — see
+[Spotify Routes](#spotify-routes) below.
+
+Calling these routes from outside the daemon is entirely supported, and for
+artist detail it is now the only way to get a *fresh* answer: the player-facing
+routes (`Get Artist by Name`, `Get Artist by ID`, `Get Artist by MusicBrainz
+ID`) serve the biography their library was last given by an enrichment sweep,
+which is what a client should normally want, while `GET /api/artist/<b64>` with
+`?lookup=true` will run a lookup on demand.
 
 *`GET /capabilities` is not one of the four.* The player daemon already
 serves `GET /api/capabilities` (see above), and two identical routes at the
@@ -2364,11 +2389,11 @@ metadata side's own copy answers under the second mount below instead.
 Every metadata route is mounted a second time under `/api/metadata/`, and the
 two mounts mean different things.
 
-- **`/api/...`** — the historical paths, and the ones this process calls
-  itself. `services.metadata.url` in `audiocontrol.json` names this base
-  (`http://127.0.0.1:1080/api` by default), and both shipped clients reach
-  these paths through nginx's `/api/audiocontrol/` prefix. They are not going
-  to move.
+- **`/api/...`** — the historical paths. Both shipped clients reach them
+  through nginx's `/api/audiocontrol/` prefix, and `/api/coverart/artist/` in
+  particular is where every artist thumbnail and every redirected artist image
+  request goes. They are not going to move, and nothing in this process calls
+  them: `services.metadata` no longer exists.
 - **`/api/metadata/...`** — the same routes under the prefix a client will use
   once the metadata side answers on a port of its own. In a later phase nginx
   routes `/api/metadata/` to that process; today it reaches the same code in

@@ -19,7 +19,6 @@ pub mod library_puller;
 pub mod musicbrainz;
 pub mod now_playing;
 pub mod now_playing_ws;
-pub mod resolver;
 pub mod spotify;
 pub mod startup;
 pub mod theaudiodb;

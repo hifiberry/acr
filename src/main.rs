@@ -36,7 +36,6 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use audiocontrol::api::server::{self, ServerOutcome};
-use audiocontrol::audiocontrol::metadata_client::MetadataClient;
 use audiocontrol::config::{get_service_config, merge_player_includes};
 use audiocontrol::helpers::imagecache::ImageCache;
 use audiocontrol::helpers::settingsdb::SettingsDb;
@@ -525,34 +524,23 @@ fn main() {
     #[cfg(feature = "metadata")]
     audiocontrol_metadata::coverart_providers::register_all_providers();
 
-    // Library enrichment -- the one player-side seam the metadata side still
-    // answers over HTTP.
+    // **Nothing is installed here any more, and there is nothing left to
+    // install.**
     //
-    // **The resolvers are gone.** `set_resolver` was installed here too, so
-    // that `split_album_artist` could ask the metadata daemon what an
-    // album-artist string splits into -- once per album, blocking, and the last
-    // call this daemon made into that one. The split is decided locally now and
-    // corrected by the enrichment batch; see `audiocontrol::resolver`.
+    // This is where `MetadataClient` was built from `services.metadata` and
+    // handed to the player half as its resolver, its token source and its
+    // library enricher. Each of those went in turn: the token moved to this
+    // daemon and now travels the other way, the resolvers became local
+    // decisions corrected by the metadata side afterwards, and the enrichment
+    // nudge became a `library_changed` event. The last two -- artist detail and
+    // artist images -- were requests this daemon made to answer a client, and
+    // they are gone too: the detail travels in the enrichment batch, and the
+    // image route names the metadata side's own route rather than calling it.
     //
-    // `MetadataClient` lives in this package and names nothing from
-    // `audiocontrol-metadata`, so building and installing it does not need
-    // the `metadata` feature: even a `--no-default-features` daemon reaches
-    // the metadata side over loopback once `services.metadata` is
-    // configured, which is the phase working as intended. With no
-    // `services.metadata` section, nothing is installed and every caller
-    // keeps the offline fallback it already has (see `enrichment` in this
-    // crate).
-    //
-    // Installed before any player starts, so no library finds it missing --
-    // the same lifetime rule the old in-process setter kept.
-    match MetadataClient::from_config(&controllers_config) {
-        Some(client) => {
-            audiocontrol::audiocontrol::enrichment::set_enricher(Arc::new(client));
-        }
-        None => {
-            info!("services.metadata is not configured: no library enricher installed");
-        }
-    }
+    // So this daemon holds no address for the metadata daemon at all, which is
+    // what makes the rule mostly self-enforcing: a violation now has to
+    // hard-code an address, and `scripts/check-crate-deps.sh` looks for that.
+    // Every connection across the seam is opened by the metadata side.
 
     // Metadata enrichment -- slow cover art endpoints, Last.fm -- runs on
     // workers that know nothing about players, and no longer starts here.
@@ -759,11 +747,13 @@ fn initialize_configurator(config: &serde_json::Value) {
 /// There are two mounts, and they are not interchangeable.
 ///
 /// The **bare** mounts -- `""`, `/lastfm`, `/favourites`, `/coverart` -- are
-/// where these routes have always been served, and where
-/// `services.metadata.url` points: `http://127.0.0.1:1080/api`. The player
-/// side's own `MetadataClient` calls them over loopback, so moving or
-/// renaming them would break this process's conversation with itself as well
-/// as every shipped client.
+/// where these routes have always been served, and where every shipped client
+/// reaches them through nginx's `/api/audiocontrol/` prefix. Nothing in this
+/// daemon calls them -- there is no `services.metadata` and no client to build
+/// from one -- but `/library/<p>/image/artist:<name>` *redirects* to
+/// `/coverart/artist/<b64>/image` in this group, and the artist lists put the
+/// same path in `thumb_url`, so renaming them still breaks clients that
+/// followed a path this daemon handed them.
 ///
 /// The **`/metadata`** mounts are the client-facing address the spec gives
 /// this side, the one nginx routes to the separate daemon in Phase 2. It

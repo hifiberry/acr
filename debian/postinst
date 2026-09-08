@@ -278,6 +278,45 @@ case "$1" in
         # So the trade is a few days of slower lookups against a chance of the
         # permanently cache-less daemon described above. The cache is not worth
         # that, and this is the cheaper of the two by a wide margin.
+
+        # The provider API keys in /etc/audiocontrol/audiocontrol.json are
+        # deliberately NOT migrated either. That one is a close call, so here is
+        # the reasoning and not just the outcome.
+        #
+        # What moved: action_plugins.lastfm and the services.{lastfm,
+        # musicbrainz, theaudiodb, fanarttv, external_coverart} sections are
+        # read out of /etc/audiocontrol/metadata.json now. Nothing in the
+        # shipped player daemon reads them from audiocontrol.json any more --
+        # it is built without the metadata crate, so every consumer of them is
+        # gone from the binary. A user who set a key by hand keeps it in a file
+        # nothing reads, while the daemon that needs it starts on the built-in
+        # default. For Last.fm that is worse than a plain fallback: the session
+        # key copied across above was issued against the user's own API key, so
+        # it is refused while the account still shows as linked.
+        #
+        # Why this script does not fix it: migrating means writing to
+        # metadata.json, and metadata.json is a conffile. dpkg identifies a
+        # conffile by its checksum, so a postinst that edits it marks the file
+        # locally modified on every device it runs on, permanently. From then
+        # on any release that changes metadata.json either prompts -- and an
+        # unattended upgrade answers "keep the local file", silently, so the
+        # new defaults never arrive -- or has to be forced past that prompt.
+        # Every installation pays that, for good, to repair a file that is
+        # untouched wherever no key was ever set by hand.
+        #
+        # Doing it correctly would also need a JSON parser here. Both files
+        # carry comment keys and whatever formatting the user's editor left, so
+        # a line-oriented edit would eventually corrupt a working configuration
+        # -- a much worse failure than the one being fixed -- and jq is not
+        # Essential, so it would mean a new package dependency for an edit made
+        # once in a device's lifetime.
+        #
+        # The changelog carries it instead: it names the sections, says the
+        # values are not copied, and gives the one edit that fixes it. If this
+        # is revisited, the thing to weigh is the conffile and not the edit. A
+        # migration that wrote to a drop-in that is not a conffile, or a daemon
+        # that read the old file as a fallback and said so in its log, would
+        # carry none of the cost above.
         ;;
 
     triggered)

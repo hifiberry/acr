@@ -9,11 +9,12 @@ hifiberry-audiocontrol (0.23.0) trixie; urgency=medium
     against another version of the other.
 
     What a user sees of this is nothing, beyond a second unit in systemctl.
-    No setting moves, no URL changes, no account has to be linked again, and
-    nothing needs to be configured for the two to find each other. That is the
-    point of the release: the daemons were separated so that a metadata lookup
-    can no longer stall or crash playback, not so that anyone would have to
-    manage two of them. If audiocontrol-metadata is stopped, playback, volume,
+    No URL changes, no account has to be linked again, and nothing needs to be
+    configured for the two to find each other. One setting does move, and only
+    for an installation that set its own provider API keys; that is the entry
+    below. Otherwise this is the point of the release: the daemons were
+    separated so that a metadata lookup can no longer stall or crash playback,
+    not so that anyone would have to manage two of them. If audiocontrol-metadata is stopped, playback, volume,
     the library and the web interface all keep working; what stops is
     enrichment, artist images, favourites and scrobbling.
 
@@ -38,6 +39,36 @@ hifiberry-audiocontrol (0.23.0) trixie; urgency=medium
     after it. Starting from an empty cache costs some repeated MusicBrainz and
     TheAudioDB lookups over the following days and nothing else, so that is
     what it does.
+
+  * Provider API keys are configured in metadata.json now, and are not
+    migrated. The metadata daemon reads its own file,
+    /etc/audiocontrol/metadata.json, so the sections that configure external
+    providers belong there: action_plugins.lastfm, and services.lastfm,
+    services.musicbrainz, services.theaudiodb, services.fanarttv and
+    services.external_coverart. The same sections still exist in
+    audiocontrol.json and the player daemon no longer reads any of them.
+
+    This only matters where a key was set by hand. Both files ship with every
+    key empty, and empty means the built-in keys, which is what almost every
+    device runs. But an upgrade keeps an edited audiocontrol.json and installs
+    a fresh metadata.json, and nothing copies values between the two, so a
+    hand-set key has to be copied into metadata.json by hand. Left where it
+    is, it is simply not read.
+
+    Last.fm is the case that bites, because it fails without looking like a
+    failure. The session key the upgrade carries across was issued against the
+    user's own API key, so a daemon that falls back to the built-in one has a
+    session it cannot use: scrobbles are refused, the account still shows as
+    linked, and nothing in the log says why. Copy api_key and api_secret from
+    action_plugins.lastfm in audiocontrol.json into the same entry in
+    metadata.json, restart audiocontrol-metadata, and scrobbling resumes.
+
+  * Enrichment progress is now reported by the daemon that does the work.
+    GET /api/metadata/background/jobs lists the artist and album metadata
+    jobs; /api/audiocontrol/background/jobs goes on listing the player
+    daemon's own library and thumbnail jobs. The two registries are separate
+    and neither answers for the other, so a client that polled the second for
+    enrichment progress finds it there no longer.
 
   * Rate limiting now bounds how many requests are open at a provider, not
     just how often a new one starts. The limiter waited out the minimum

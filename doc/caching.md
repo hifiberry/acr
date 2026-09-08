@@ -13,17 +13,30 @@ By default, entries in the cache have no expiry date, though the attribute cache
 
 ## Cache Locations
 
-By default, the cache directories are:
-- Attribute cache: `/var/lib/audiocontrol/cache/attributes`
-- Image cache: `/var/lib/audiocontrol/cache/images`
+Since 0.23.0 there are two of each, one per daemon, and they are not shared:
+each daemon caches what it looks up itself.
 
-These paths can be customized in the configuration file.
+| | Player daemon (`audiocontrol.json`) | Metadata daemon (`metadata.json`) |
+|---|---|---|
+| Attribute cache | `/var/lib/audiocontrol/cache/attributes.db` | `/var/lib/audiocontrol/metadata/attributes.db` |
+| Image cache | `/var/lib/audiocontrol/cache/images` | `/var/lib/audiocontrol/metadata/images` |
+
+Both are set in `services.datastore` in the daemon's own configuration file,
+and both can be moved there. Everything external — MusicBrainz, TheAudioDB,
+fanart.tv, artist splitting, image metadata — is looked up by the metadata
+daemon and cached in its file.
 
 ## Cache Management Tools
 
 ### audiocontrol_dump_cache Tool
 
-Audiocontrol includes a dedicated cache management tool for inspecting and managing cache contents:
+Audiocontrol includes a dedicated cache management tool for inspecting and managing cache contents.
+
+**It reads the metadata daemon's cache unless told otherwise**, since that is
+where every prefix it knows about is written. Pass `--cache-dir DIR` for the
+player daemon's, or for a copy taken off a device. With neither the flag nor a
+cache at the default path it refuses rather than reporting an empty one.
+
 
 ```bash
 # List all cache entries with details

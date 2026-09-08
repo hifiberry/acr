@@ -23,12 +23,12 @@ const LASTFM_USERNAME_STORE: &str = "lastfm_username";
 // These are used as fallbacks if no credentials are provided
 #[cfg(not(test))]
 pub fn default_lastfm_api_key() -> String {
-    crate::secrets::lastfm_api_key()
+    acr_secrets::secrets::lastfm_api_key()
 }
 
 #[cfg(not(test))]
 pub fn default_lastfm_api_secret() -> String {
-    crate::secrets::lastfm_api_secret()
+    acr_secrets::secrets::lastfm_api_secret()
 }
 
 // Test credentials (placeholders for tests)

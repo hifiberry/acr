@@ -6,7 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "External metadata providers, cover art and accounts for AudioControl"
-build = "build.rs"
 
 [lib]
 name = "audiocontrol_metadata"
@@ -19,7 +18,10 @@ acr-images = { path = "../acr-images" }
 acr-store = { path = "../acr-store" }
 acr-web = { path = "../acr-web" }
 # The encrypted key-value store: this daemon's Last.fm session key and, until
-# it moves to the main daemon, its Spotify tokens.
+# it moves to the main daemon, its Spotify tokens. Also the obfuscated
+# build-time secrets -- the Last.fm and TheAudioDB keys this crate reads live
+# there now, because the player daemon needs the Spotify OAuth pair from the
+# same generator and cannot depend on this crate.
 acr-secrets = { path = "../acr-secrets" }
 serde.workspace = true
 serde_json.workspace = true
@@ -44,10 +46,6 @@ url.workspace = true
 # For the command line tools in src/bin/
 clap.workspace = true
 env_logger.workspace = true
-
-[build-dependencies]
-base64.workspace = true
-md5.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

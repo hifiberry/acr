@@ -5,23 +5,43 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+/// Where the generator looks for `secrets.txt`, in order.
+///
+/// build.rs runs with the current directory set to CARGO_MANIFEST_DIR, so
+/// these are relative to *this crate* and not to the workspace. The last entry
+/// is the repository root -- two levels up from `crates/acr-secrets` -- which
+/// is where the HiFiBerry OS build copies `$HOME/secrets.txt` to. Moving this
+/// crate to another depth would silently stop the generator finding it, so the
+/// list is emitted into the generated module and asserted by a test in
+/// src/secrets.rs rather than only being written down here.
+const SEARCH_PATHS: [&str; 4] = [
+    "secrets.txt",
+    "config/secrets.txt",
+    "../secrets.txt",
+    "../../secrets.txt",
+];
+
 fn main() {
-    println!("cargo:rerun-if-changed=secrets.txt");
-    println!("cargo:rerun-if-changed=config/secrets.txt");
-    println!("cargo:rerun-if-changed=../secrets.txt");
-    println!("cargo:rerun-if-changed=../../secrets.txt");
+    // Unconditional, and before anything can return early. This is tidiness
+    // and defence, not a fix: cargo re-runs a build script whose own source
+    // changed whatever it declared, because the script is recompiled and its
+    // fingerprint moves. It also re-runs one every time a declared path is
+    // missing, and three of the four below never exist from this crate. So
+    // neither omitting this line nor placing it after an early return could
+    // actually have stopped the generator re-running -- an earlier version of
+    // this comment claimed otherwise, and was wrong about cargo.
+    println!("cargo:rerun-if-changed=build.rs");
+    for path in SEARCH_PATHS {
+        println!("cargo:rerun-if-changed={}", path);
+    }
 
     // Log all secrets found during build
     println!("cargo:warning=SECRETS FOUND DURING BUILD:");
 
     let mut secrets = HashMap::new();
-    // Check for secrets in various possible locations
-    check_secrets_file("secrets.txt", &mut secrets);
-    check_secrets_file("config/secrets.txt", &mut secrets);
-    check_secrets_file("../secrets.txt", &mut secrets);
-    // The HiFiBerry OS build copies $HOME/secrets.txt to the repository root,
-    // which from this crate (crates/audiocontrol-metadata) is two levels up.
-    check_secrets_file("../../secrets.txt", &mut secrets);
+    for path in SEARCH_PATHS {
+        check_secrets_file(path, &mut secrets);
+    }
 
     // Look for environment variables with secret-like names
     check_environment_secrets(&mut secrets);
@@ -90,6 +110,12 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
     for (key, value) in sorted_secrets {
         secrets_string.push_str(&format!("{}={}\n", key, value));
     }
+    // The generator's own source goes into the hash alongside the secrets.
+    // Without it the cache below is keyed on the *input* only, so a change to
+    // what this script emits leaves the previously generated file in place and
+    // the crate compiles against constants the current generator never wrote --
+    // a stale build that looks entirely successful.
+    secrets_string.push_str(include_str!("build.rs"));
     let current_hash = format!("{:x}", md5::compute(&secrets_string));
     
     // Check if secrets have changed since last generation
@@ -181,6 +207,15 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
         "pub const SPOTIFY_PROXY_SECRET_OBF: &str = \"{}\";\n",
         spotify_proxy_secret_obf
     ));
+    content.push_str(&format!(
+        "\n/// Where build.rs looked for secrets.txt, relative to this crate.\npub const SECRETS_SEARCH_PATHS: [&str; {}] = [{}];\n",
+        SEARCH_PATHS.len(),
+        SEARCH_PATHS
+            .iter()
+            .map(|p| format!("\"{}\"", p))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
     content.push_str("\n#[allow(unused_mut)]\npub fn get_all_secrets_obfuscated() -> std::collections::HashMap<String, String> {\n");
     content.push_str("    let mut map = std::collections::HashMap::new();\n");
     for (key, value) in secrets {
@@ -202,6 +237,4 @@ fn generate_secrets_file(secrets: &HashMap<String, String>) {
     
     // Save the hash of current secrets for future comparison
     fs::write(&hash_path, current_hash).unwrap();
-    
-    println!("cargo:rerun-if-changed=build.rs");
 }

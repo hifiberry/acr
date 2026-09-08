@@ -28,7 +28,7 @@ struct TheAudioDBConfig {
 // Default API key from secrets.txt compiled at build time
 #[cfg(not(test))]
 pub fn default_theaudiodb_api_key() -> String {
-    crate::secrets::artistdb_api_key()
+    acr_secrets::secrets::artistdb_api_key()
 }
 
 #[cfg(test)]

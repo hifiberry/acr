@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+build = "build.rs"
 description = "Encrypted key-value store for the credentials both AudioControl daemons hold: Spotify tokens and the Last.fm session key"
 
 [dependencies]
@@ -17,6 +18,14 @@ thiserror.workspace = true
 aes-gcm.workspace = true
 base64.workspace = true
 rand.workspace = true
+
+# The obfuscating generator in build.rs. Build-only: neither appears in
+# `cargo tree --edges normal`, which is what scripts/check-crate-deps.sh reads.
+# base64 is also a normal dependency above, because the generated code decodes
+# with it at runtime; md5 is used only to hash the input and is build-only.
+[build-dependencies]
+base64.workspace = true
+md5.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

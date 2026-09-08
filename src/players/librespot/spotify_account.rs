@@ -22,12 +22,12 @@
 //! of this side.
 //!
 //! The **OAuth proxy URL and secret** are compiled from `secrets.txt` at
-//! build time, and this package has no build script — the generator lives in
-//! `audiocontrol-metadata`. So the composition root passes them into
-//! [`initialize_from_config`], exactly the way it already passes the security
-//! store its encryption key. That is a wart, not a design: the fix is to move
-//! the secrets build script to a crate both daemons can depend on, and it is
-//! deliberately not done here.
+//! build time by `acr-secrets`' build script — a crate both daemons depend
+//! on, so a player daemon built without the metadata crate has them. The
+//! composition root still passes them into [`initialize_from_config`] rather
+//! than this module reading them itself, exactly the way it passes the
+//! security store its encryption key: it keeps the values injectable, which is
+//! what lets the tests below drive the placeholder check.
 
 use acr_secrets::security_store::SecurityStore;
 use acr_types::sanitize;

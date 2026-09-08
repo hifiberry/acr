@@ -24,7 +24,6 @@ pub mod startup;
 pub mod theaudiodb;
 pub mod title_order;
 pub mod api;
-pub mod secrets;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -152,14 +151,16 @@ fn initialize_lastfm(config: &serde_json::Value) {
 
 /// Print the status of the secrets compiled into this binary.
 ///
-/// This is what `audiocontrol --check-secrets` prints. It reports on the
-/// metadata crate's own compiled-in credentials, so it lives with them.
+/// This is what `audiocontrol --check-secrets` prints. The constants
+/// themselves are generated into `acr_secrets::secrets`, which both daemons
+/// depend on; the report stays here because the keys it names are mostly this
+/// crate's, and only the composition root calls it.
 pub fn check_secrets_status() {
     println!("AudioControl - Compiled Secrets Status");
     println!("=====================================");
 
     // Get all compiled secrets
-    let secrets_map = secrets::get_all_secrets_obfuscated();
+    let secrets_map = acr_secrets::secrets::get_all_secrets_obfuscated();
 
     if secrets_map.is_empty() {
         println!("❌ No secrets compiled into binary");
@@ -210,11 +211,11 @@ pub fn check_secrets_status() {
     println!("------------------");
 
     // Test specific service functions
-    let lastfm_key = secrets::lastfm_api_key();
-    let audiodb_key = secrets::artistdb_api_key();
-    let encryption_key = secrets::secrets_encryption_key();
-    let spotify_oauth = secrets::spotify_oauth_url();
-    let spotify_secret = secrets::spotify_proxy_secret();
+    let lastfm_key = acr_secrets::secrets::lastfm_api_key();
+    let audiodb_key = acr_secrets::secrets::artistdb_api_key();
+    let encryption_key = acr_secrets::secrets::secrets_encryption_key();
+    let spotify_oauth = acr_secrets::secrets::spotify_oauth_url();
+    let spotify_secret = acr_secrets::secrets::spotify_proxy_secret();
 
     println!(
         "🔑 Last.fm API: {}",

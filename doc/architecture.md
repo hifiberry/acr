@@ -167,7 +167,7 @@ Full request/response shapes for both directions are in
 ## Module map (`crates/`)
 
 Shared code and the metadata daemon's library live in a Cargo workspace next to
-`src/`. Five crates are owned by neither daemon; a sixth, `audiocontrol-metadata`,
+`src/`. Six crates are owned by neither daemon; a seventh, `audiocontrol-metadata`,
 is the metadata code the `audiocontrol` binary links behind its default `metadata`
 feature. `scripts/check-crate-deps.sh` enforces that the `audiocontrol` *library*
 never depends on `audiocontrol-metadata` — `src/main.rs` is the one file that
@@ -180,6 +180,7 @@ links both.
 | `acr-images` | Image resizing and format handling shared by every cache that serves `?size=` variants: rung snapping, `@<size>` naming, format sniffing, grading. | `imageresize.rs`, `sniff.rs`, `image_grader.rs` |
 | `acr-store` | The persistent stores each daemon initialises over its own directory: the SQLite attribute cache and settings DB, the image cache and its retired-rung purge, background jobs, genre cleanup. | `attributecache.rs`, `settingsdb.rs`, `imagecache.rs`, `imagepurge.rs`, `backgroundjobs.rs` |
 | `acr-web` | The Rocket pieces both APIs share: the `ForwardedPrefix` guard, image responses with ETag/304, path validation, and the `/imagecache/<path..>` route factory each daemon mounts over its own cache. | `imageresponse.rs`, `validated.rs`, `imagecache.rs`, `urlprefix.rs` |
+| `acr-secrets` | Everything compiled-in or encrypted that neither daemon owns alone: the AES-GCM `SecurityStore` each daemon opens over its own file, and the `build.rs` that obfuscates `secrets.txt` into `secrets.rs`. The generator lives here because the player daemon needs the Spotify OAuth proxy URL and secret and cannot depend on `audiocontrol-metadata` to get them. | `security_store.rs`, `secrets.rs`, `build.rs` |
 | `audiocontrol-metadata` | The metadata code: MusicBrainz/TheAudioDB/fanart.tv/Last.fm clients, a token-taking Spotify search client (the Spotify *account* is the player daemon's), cover-art providers, the artist store, the library enricher, its own Rocket routes, its clients of the player daemon (`core_client.rs`, `now_playing_ws.rs`, `library_puller.rs`), the two-stage start-up in `startup.rs`, and the four CLI tools that only need this crate's code. | `musicbrainz.rs`, `lastfm.rs`, `spotify.rs`, `library_enricher.rs`, `core_client.rs`, `now_playing_ws.rs`, `library_puller.rs`, `startup.rs`, `api/`, `src/bin/*.rs` |
 
 ## The acr-webmcp bridge

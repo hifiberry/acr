@@ -61,14 +61,21 @@ use audiocontrol::{get_tokio_runtime, initialize_tokio_runtime};
 /// What a build without the `metadata` feature says for itself, once, where
 /// the metadata providers would have been brought up.
 ///
-/// `metadata` is in `default`, so the shipped daemon never reaches any of
-/// these branches. They exist so that dropping the feature produces a daemon
-/// that says what it cannot do rather than one that silently serves an
-/// unenriched library.
+/// The package ships this build -- `debian/rules` builds the daemon
+/// `--no-default-features --features alsa` -- so this is the line a device
+/// logs at every boot, and it is the first thing an operator reads when
+/// enrichment looks stopped. It therefore has to say where the work went
+/// rather than that there is none of it: on a device the metadata daemon is
+/// doing all of it in the other process.
+///
+/// One line. Written across two source lines without a `\` continuation it
+/// carried a literal newline and five spaces into the log, and `info!` emitted
+/// it as a two-line, oddly indented entry that no `grep` matched whole.
 #[cfg(not(feature = "metadata"))]
 const WITHOUT_METADATA: &str =
-    "built without the metadata crate; no enrichment and no resolver. The
-     Spotify transport is present: it belongs to the player half now.";
+    "built without the metadata crate: enrichment, cover art and the resolver \
+     are the metadata daemon's in this build, not this process's. The Spotify \
+     transport is present: it belongs to the player half now.";
 
 fn main() {
     // Initialize the Tokio runtime early

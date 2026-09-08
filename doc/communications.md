@@ -177,16 +177,20 @@ This is not a convention. `scripts/check-crate-deps.sh` runs
 `cargo tree --edges normal` in both directions and fails the build if either
 edge appears. It also fails if the player package declares a crate that belongs
 to the metadata side — `aes-gcm` and `moka` against the whole graph, `regex` at
-depth 1 — and it builds `--no-default-features --bin audiocontrol` to prove the
-feature-gated blocks still compile with the metadata half absent.
+depth 1 — and it builds the `audiocontrol` binary twice, once
+`--no-default-features` and once `--no-default-features --features alsa`, to
+prove the feature-gated blocks still compile with the metadata half absent.
 
-That last build is the one that catches real mistakes. Every
+Those two builds are the ones that catch real mistakes. Every
 `#[cfg(feature = "metadata")]` block in `main.rs` needs a counterpart that
 compiles without it, and it is easy to add the first and forget the second.
 
-**It is also the build that ships.** The player daemon in the package is built
-`--no-default-features --features alsa`, so what the check proves compiles is
-what runs on a device. Built with the default features instead, the player
+**The second of them is the build that ships.** The player daemon in the
+package is built `--no-default-features --features alsa`, so what the check
+proves compiles is what runs on a device — the bare `--no-default-features`
+build alone did not, since `alsa` gates real code of its own and a
+`not(metadata)` branch that compiles only because the alsa feature dragged
+something in would have gone unnoticed. Built with the default features instead, the player
 daemon carries a full in-process metadata half of its own — a second artist
 store, a second settings database, a second attribute cache, and its own
 answers on `/api/coverart/methods`, `/api/favourites/providers`,

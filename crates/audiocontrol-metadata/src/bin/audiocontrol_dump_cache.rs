@@ -7,6 +7,9 @@ use audiocontrol_metadata::image_meta::IMAGE_META_CACHE_PREFIX;
 use std::path::PathBuf;
 use chrono::DateTime;
 
+/// Where the attribute cache lives unless `--cache-dir` says otherwise.
+const DEFAULT_CACHE_DIR: &str = "/var/lib/audiocontrol/cache";
+
 #[derive(Parser)]
 #[command(name = "audiocontrol_dump_cache")]
 #[command(about = "A tool to manage AudioControl cache database")]
@@ -123,13 +126,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
-    // Initialize the cache with custom directory if provided
-    if let Some(cache_dir) = cli.cache_dir {
-        info!("Using cache directory: {}", cache_dir.display());
-        AttributeCache::initialize_global(&cache_dir)?;
-    } else {
-        info!("Using default cache directory");
-    }
+    // The cache has to be told where it lives before anything reads it: the
+    // library no longer carries a default path, so that neither daemon can
+    // open the other's database by accident. This tool keeps its own default,
+    // which is where the metadata daemon puts the cache.
+    let cache_dir = cli
+        .cache_dir
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR));
+    info!("Using cache directory: {}", cache_dir.display());
+    AttributeCache::initialize_global(&cache_dir)?;
 
     match &cli.command {
         Commands::List { prefix, detailed, limit, artistmbid, imagemeta, artistsplit, artistnotfound } => {

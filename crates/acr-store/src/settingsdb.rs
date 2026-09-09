@@ -28,11 +28,26 @@ impl Default for SettingsDb {
 }
 
 impl SettingsDb {
-    /// Create a new settings database with default settings
+    /// Create an unconfigured settings database.
+    ///
+    /// Nothing is opened and no directory is created: the store stays unusable
+    /// until [`SettingsDb::initialize_global`] says where its files belong, and
+    /// every read and write fails with "not configured" until then.
+    ///
+    /// There is deliberately no default path. The player daemon and the
+    /// metadata daemon share this crate and each owns its own databases, so a
+    /// hard-coded default is one daemon writing into the other's file — which
+    /// is exactly what happened: a metadata-side favourite landed in the player
+    /// daemon's `settings.db` after the metadata store failed to open. Both
+    /// daemons already resolve their own path from configuration before their
+    /// first access, and pass it in.
     pub fn new() -> Self {
-        // Using the default path
-        let db_dir = PathBuf::from("/var/lib/audiocontrol/db");
-        Self::with_directory(db_dir)
+        SettingsDb {
+            db_path: PathBuf::new(),
+            db: None,
+            enabled: true,
+            memory_cache: HashMap::new(),
+        }
     }
 
     /// Create a new settings database with a specific directory
@@ -102,7 +117,18 @@ impl SettingsDb {
     fn reconfigure_with_directory<P: AsRef<Path>>(&mut self, dir: P) -> Result<(), String> {
         let db_dir = dir.as_ref().to_path_buf();
         let db_path = db_dir.join("settings.db");
-        
+
+        // Give up the previous connection *before* anything below can fail.
+        //
+        // Callers log an error from `initialize_global` and carry on, so a
+        // failed reconfiguration used to leave the old connection live and
+        // every later write went silently to a database nobody asked for.
+        // Clearing first means a store that could not be configured is
+        // unusable, which is loud, instead of misdirected, which is not.
+        self.db = None;
+        self.db_path = PathBuf::new();
+        self.memory_cache.clear();
+
         // Try to ensure the directory exists
         if let Err(e) = std::fs::create_dir_all(&db_dir) {
             return Err(format!("Failed to create directory for settings database: {}", e));
@@ -135,8 +161,7 @@ impl SettingsDb {
         // Update the instance
         self.db_path = db_path;
         self.db = db;
-        self.memory_cache.clear(); // Clear memory cache as we have a new DB
-        
+
         Ok(())
     }
 
@@ -150,10 +175,26 @@ impl SettingsDb {
         self.enabled && self.db.is_some()
     }
 
+    /// Why the database cannot be used, if it cannot.
+    ///
+    /// "Not configured" and "disabled" are different faults and an operator
+    /// reading the log needs to tell them apart: the first means nobody has
+    /// said where the files belong (or saying so failed), the second means
+    /// somebody turned the store off on purpose.
+    fn unusable_reason(&self) -> Option<&'static str> {
+        if !self.enabled {
+            Some("Settings database is disabled")
+        } else if self.db.is_none() {
+            Some("Settings database is not configured")
+        } else {
+            None
+        }
+    }
+
     /// Store a serializable value in the settings database
     pub fn set<T: Serialize>(&mut self, key: &str, value: &T) -> Result<(), String> {
-        if !self.is_enabled() {
-            return Err("Settings database is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         let serialized = match serde_json::to_vec(value) {
@@ -197,8 +238,8 @@ impl SettingsDb {
 
     /// Get a value from the settings database and deserialize it
     pub fn get<T: for<'de> Deserialize<'de>>(&mut self, key: &str) -> Result<Option<T>, String> {
-        if !self.is_enabled() {
-            return Err("Settings database is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         // Try memory cache first
@@ -280,8 +321,8 @@ impl SettingsDb {
 
     /// Remove a setting from the database
     pub fn remove(&mut self, key: &str) -> Result<bool, String> {
-        if !self.is_enabled() {
-            return Err("Settings database is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         // Remove from memory cache
@@ -301,8 +342,8 @@ impl SettingsDb {
 
     /// Check if a key exists in the settings database
     pub fn contains_key(&mut self, key: &str) -> Result<bool, String> {
-        if !self.is_enabled() {
-            return Err("Settings database is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         // Check memory cache first
@@ -329,8 +370,8 @@ impl SettingsDb {
 
     /// Get all keys from the settings database
     pub fn get_all_keys(&mut self) -> Result<Vec<String>, String> {
-        if !self.is_enabled() {
-            return Err("Settings database is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         match &mut self.db {
@@ -362,8 +403,8 @@ impl SettingsDb {
 
     /// Clear all settings from the database
     pub fn clear(&mut self) -> Result<(), String> {
-        if !self.is_enabled() {
-            return Err("Settings database is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         // Clear memory cache
@@ -383,8 +424,8 @@ impl SettingsDb {
 
     /// Get the number of settings in the database
     pub fn len(&mut self) -> Result<usize, String> {
-        if !self.is_enabled() {
-            return Err("Settings database is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         match &mut self.db {
@@ -592,6 +633,154 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use serial_test::serial;
+
+    /// A store configured at `dir` with `key` = `value`, read back through a
+    /// *fresh* connection so the answer comes from the file rather than from
+    /// some other instance's memory cache.
+    fn value_on_disk(dir: &Path, key: &str) -> Option<String> {
+        SettingsDb::with_directory(dir).get_string(key).unwrap()
+    }
+
+    /// A store that was configured at `good_dir`, holds `settled_key`, and has
+    /// then failed to reconfigure onto `bad_dir`.
+    fn store_after_failed_reconfigure(
+        good_dir: &Path,
+        bad_dir: &Path,
+        expected_failure: &str,
+    ) -> SettingsDb {
+        let mut db = SettingsDb::with_directory(good_dir);
+        db.set_string("shared_key", "written_to_a").unwrap();
+
+        let err = db
+            .reconfigure_with_directory(bad_dir)
+            .expect_err("reconfiguring onto an unusable path should fail");
+        assert!(
+            err.contains(expected_failure),
+            "expected the {} failure, got: {}",
+            expected_failure,
+            err
+        );
+
+        db
+    }
+
+    /// The property the split into two daemons depends on: a store that could
+    /// not be reconfigured writes nowhere, and in particular not into the
+    /// database it was previously pointed at.
+    fn assert_write_lands_nowhere(mut db: SettingsDb, good_dir: &Path) {
+        let err = db
+            .set_string("shared_key", "written_after_failure")
+            .expect_err("a store that could not be configured must not accept writes");
+        assert!(!err.is_empty(), "the refusal should say something");
+
+        assert_eq!(
+            value_on_disk(good_dir, "shared_key"),
+            Some("written_to_a".to_string()),
+            "the write went into the previously configured database"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_reconfigure_failure_creating_directory_leaves_no_writable_database() {
+        let temp_dir = TempDir::new().unwrap();
+        let good_dir = temp_dir.path().join("a");
+        std::fs::create_dir(&good_dir).unwrap();
+
+        // A regular file where a directory would have to be created.
+        let blocker = temp_dir.path().join("not_a_directory");
+        std::fs::write(&blocker, b"x").unwrap();
+        let bad_dir = blocker.join("db");
+
+        let db = store_after_failed_reconfigure(&good_dir, &bad_dir, "Failed to create directory");
+        assert_write_lands_nowhere(db, &good_dir);
+    }
+
+    #[test]
+    #[serial]
+    fn test_reconfigure_failure_creating_table_leaves_no_writable_database() {
+        let temp_dir = TempDir::new().unwrap();
+        let good_dir = temp_dir.path().join("a");
+        std::fs::create_dir(&good_dir).unwrap();
+
+        // A corrupt settings.db: SQLite opens it, then refuses the schema.
+        // This is the shape seen on a device.
+        let bad_dir = temp_dir.path().join("corrupt");
+        std::fs::create_dir(&bad_dir).unwrap();
+        std::fs::write(bad_dir.join("settings.db"), b"this is not a SQLite database").unwrap();
+
+        let db = store_after_failed_reconfigure(&good_dir, &bad_dir, "Failed to create settings table");
+        assert_write_lands_nowhere(db, &good_dir);
+    }
+
+    #[test]
+    #[serial]
+    fn test_reconfigure_failure_opening_database_leaves_no_writable_database() {
+        let temp_dir = TempDir::new().unwrap();
+        let good_dir = temp_dir.path().join("a");
+        std::fs::create_dir(&good_dir).unwrap();
+
+        // settings.db is itself a directory, so the connection cannot open.
+        let bad_dir = temp_dir.path().join("occupied");
+        std::fs::create_dir_all(bad_dir.join("settings.db")).unwrap();
+
+        let db = store_after_failed_reconfigure(&good_dir, &bad_dir, "Failed to open SQLite database");
+        assert_write_lands_nowhere(db, &good_dir);
+    }
+
+    #[test]
+    #[serial]
+    fn test_successful_reconfigure_moves_writes_to_the_new_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_a = temp_dir.path().join("a");
+        let dir_b = temp_dir.path().join("b");
+
+        let mut db = SettingsDb::with_directory(&dir_a);
+        db.set_string("shared_key", "written_to_a").unwrap();
+
+        db.reconfigure_with_directory(&dir_b)
+            .expect("reconfiguring onto a usable directory should succeed");
+
+        db.set_string("shared_key", "written_to_b")
+            .expect("a reconfigured store must be writable");
+
+        assert_eq!(
+            value_on_disk(&dir_b, "shared_key"),
+            Some("written_to_b".to_string()),
+            "the write should land in the newly configured database"
+        );
+        assert_eq!(
+            value_on_disk(&dir_a, "shared_key"),
+            Some("written_to_a".to_string()),
+            "the previously configured database should be left alone"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_new_settings_db_opens_nothing_until_configured() {
+        // What `SETTINGS_DB` is built from. It must not open — or create — a
+        // database at a path nobody asked for: in the metadata daemon the old
+        // hard-coded default is the player daemon's file.
+        let mut db = SettingsDb::new();
+
+        assert_eq!(
+            db.db_path,
+            PathBuf::new(),
+            "an unconfigured store must not have adopted a path"
+        );
+        assert!(db.db.is_none(), "an unconfigured store must hold no connection");
+        assert!(!db.is_enabled());
+
+        let err = db
+            .set_string("shared_key", "value")
+            .expect_err("an unconfigured store must refuse writes");
+        assert!(
+            err.contains("not configured"),
+            "the error should name the cause, got: {}",
+            err
+        );
+    }
 
     #[test]
     #[serial]

@@ -16,7 +16,18 @@ The settings database path is configurable in the `audiocontrol.json` configurat
 }
 ```
 
-If no configuration is provided, the default path `/var/lib/audiocontrol/db` is used.
+If no configuration is provided, the daemon uses `/var/lib/audiocontrol/db`. That
+default belongs to the daemon, not to the store: the store itself opens nothing
+until it is told where its files belong. Two daemons share this code and each
+owns its own databases, so a library-level default would be one of them writing
+into the other's file.
+
+If the configured path cannot be opened — the directory cannot be created, or
+`settings.db` is not a readable SQLite database — the store stays unusable and
+every read and write fails with a "not configured" error. It does not fall back
+to a previous path or to a default: a settings write that silently lands in
+another database is worse than one that fails, so the API answers an error and
+the log names the path that could not be opened.
 
 ## Usage
 

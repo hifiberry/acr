@@ -210,9 +210,9 @@ Available configuration options:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `attribute_cache_path` | `"/var/lib/audiocontrol/cache/attributes"` | Path to the attribute cache directory |
+| `attribute_cache.dbfile` | `"/var/lib/audiocontrol/cache/attributes.db"` | The attribute cache database file. Nested under `datastore.attribute_cache`, not a top-level key, and a file rather than a directory. |
 | `image_cache_path` | `"/var/lib/audiocontrol/cache/images"` | Path to the image cache directory |
-| `max_age_days` | `30` | Maximum age of cached items in days (0 = no expiration) |
+| `max_age_days` | `30` | Documented but not read by any code in this repository; setting it has no effect. Left listed until somebody establishes whether it was planned or dropped. |
 | `enabled` | `true` | Whether caching is enabled |
 
 ## Recent Improvements

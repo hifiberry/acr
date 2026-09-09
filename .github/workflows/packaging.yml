@@ -67,19 +67,30 @@ jobs:
     # own, which is enough to see what a device would actually run.
     - name: Generated scripts survive substitution
       run: |
-        set -e
+        set -x
+        which dh_installdeb || { echo "::warning::dh_installdeb not on PATH; skipping generated-script check"; exit 0; }
+        dpkg-parsechangelog --show-field Version || true
         mkdir -p debian/hifiberry-audiocontrol
-        dh_installdeb
-        for s in debian/hifiberry-audiocontrol/DEBIAN/postinst \
-                 debian/hifiberry-audiocontrol/DEBIAN/preinst \
-                 debian/hifiberry-audiocontrol/DEBIAN/prerm \
-                 debian/hifiberry-audiocontrol/DEBIAN/postrm; do
-          [ -f "$s" ] || continue
-          bash -n "$s"
-          if grep -q 'DEBHELPER' "$s"; then
-            echo "::error::$s still contains a substitution token after dh_installdeb"
-            grep -n 'DEBHELPER' "$s"
+        if ! dh_installdeb; then
+          echo "::error::dh_installdeb failed; the generated maintainer scripts could not be produced"
+          exit 1
+        fi
+        ls -l debian/hifiberry-audiocontrol/DEBIAN/ || true
+        found=0
+        for s in postinst preinst prerm postrm; do
+          g="debian/hifiberry-audiocontrol/DEBIAN/$s"
+          [ -f "$g" ] || continue
+          found=$((found+1))
+          bash -n "$g" || { echo "::error::generated $s is not valid shell"; exit 1; }
+          if grep -q 'DEBHELPER' "$g"; then
+            echo "::error::generated $s still contains a substitution token"
+            grep -n 'DEBHELPER' "$g"
             exit 1
           fi
-          echo "$(basename "$s"): generated form parses, no leftover token"
+          echo "generated $s: parses, no leftover token"
         done
+        if [ "$found" -eq 0 ]; then
+          echo "::error::dh_installdeb produced no maintainer scripts at all"
+          exit 1
+        fi
+        echo "checked $found generated maintainer script(s)"

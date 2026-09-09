@@ -243,7 +243,7 @@ the local network.
 | Path | Contents |
 |---|---|
 | `/etc/audiocontrol/audiocontrol.json` | Main config: `services`, `players`, `action_plugins`, `inputs`. |
-| `/var/lib/audiocontrol/cache/attributes/cache.db` | SQLite attribute cache — metadata and lookups, in-memory-accelerated. |
+| `/var/lib/audiocontrol/cache/attributes.db` | SQLite attribute cache — metadata and lookups, in-memory-accelerated. |
 | `/var/lib/audiocontrol/cache/images` | Cached cover art and images. |
 | `/var/lib/audiocontrol/db/settings.db` | SQLite settings database — user configuration. |
 | `auth.d/audiocontrol-auth.json` | AES-GCM encrypted secrets, managed by `SecurityStore`. |

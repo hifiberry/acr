@@ -14,7 +14,7 @@ By default, entries in the cache have no expiry date, though the attribute cache
 ## Cache Locations
 
 By default, the cache directories are:
-- Attribute cache: `/var/lib/audiocontrol/cache/attributes`
+- Attribute cache: `/var/lib/audiocontrol/cache/attributes.db`
 - Image cache: `/var/lib/audiocontrol/cache/images`
 
 These paths can be customized in the configuration file.
@@ -58,16 +58,16 @@ You can also use standard SQLite tools to inspect the cache:
 
 ```bash
 # View all cached entries
-sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT key, value FROM cache;"
+sqlite3 /var/lib/audiocontrol/cache/attributes.db "SELECT key, value FROM cache;"
 
 # View cache schema
-sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db ".schema"
+sqlite3 /var/lib/audiocontrol/cache/attributes.db ".schema"
 
 # Count total entries
-sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT COUNT(*) FROM cache;"
+sqlite3 /var/lib/audiocontrol/cache/attributes.db "SELECT COUNT(*) FROM cache;"
 
 # Search for specific entries
-sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT * FROM cache WHERE key LIKE '%artist::mbid%';"
+sqlite3 /var/lib/audiocontrol/cache/attributes.db "SELECT * FROM cache WHERE key LIKE '%artist::mbid%';"
 ```
 
 ## Managing the Cache

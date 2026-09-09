@@ -101,12 +101,6 @@ pub struct AttributeCache {
     current_memory_bytes: usize,
 }
 
-impl Default for AttributeCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl AttributeCache {
     /// Create an unconfigured attribute cache.
     ///
@@ -779,8 +773,9 @@ impl AttributeCache {
 
     /// List all cache keys, optionally filtered by prefix
     pub fn list_keys(&self, prefix_filter: Option<&str>) -> Result<Vec<String>, String> {
+        let reason = self.unusable_reason();
         let db = self.db.as_ref()
-            .ok_or_else(|| "Database connection is not available".to_string())?;
+            .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
         let mut keys = Vec::new();
         
         match prefix_filter {
@@ -822,8 +817,9 @@ impl AttributeCache {
             return Ok(Vec::new());
         }
 
+        let reason = self.unusable_reason();
         let db = self.db.as_ref()
-            .ok_or_else(|| "Database connection is not available".to_string())?;
+            .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
         let mut entries = Vec::new();
 
         match prefix_filter {
@@ -877,8 +873,9 @@ impl AttributeCache {
             return Ok(0);
         }
 
+        let reason = self.unusable_reason();
         let db = self.db.as_ref()
-            .ok_or_else(|| "Database connection is not available".to_string())?;
+            .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
 
         let pattern = format!("{}%", prefix);
 
@@ -925,8 +922,9 @@ impl AttributeCache {
             return Ok(0);
         }
 
+        let reason = self.unusable_reason();
         let db = self.db.as_ref()
-            .ok_or_else(|| "Database connection is not available".to_string())?;
+            .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
 
         let pattern = format!("{}%", prefix);
 
@@ -1249,6 +1247,46 @@ mod tests {
             Some("written_to_a".to_string()),
             "the previously configured database should be left alone"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_unconfigured_cache_says_so_from_every_accessor() {
+        // The listing and prefix calls are what `audiocontrol_dump_cache`
+        // uses, so they are the worst place to report a different state than
+        // the rest of the type.
+        let mut cache = AttributeCache::new();
+
+        let mut errors = vec![
+            cache
+                .list_keys(None)
+                .expect_err("list_keys on an unconfigured cache must fail"),
+        ];
+        errors.push(
+            cache
+                .list_entries(None)
+                .expect_err("list_entries on an unconfigured cache must fail"),
+        );
+        errors.push(
+            cache
+                .remove_by_prefix("anything")
+                .expect_err("remove_by_prefix on an unconfigured cache must fail")
+                .to_string(),
+        );
+        errors.push(
+            cache
+                .preload_prefix("anything")
+                .expect_err("preload_prefix on an unconfigured cache must fail")
+                .to_string(),
+        );
+
+        for err in errors {
+            assert!(
+                err.contains("not configured"),
+                "every accessor should name the same cause, got: {}",
+                err
+            );
+        }
     }
 
     #[test]

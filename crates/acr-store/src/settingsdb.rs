@@ -21,12 +21,6 @@ pub struct SettingsDb {
     memory_cache: HashMap<String, Arc<Vec<u8>>>,
 }
 
-impl Default for SettingsDb {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SettingsDb {
     /// Create an unconfigured settings database.
     ///

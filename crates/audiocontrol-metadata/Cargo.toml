@@ -6,7 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "External metadata providers, cover art and accounts for AudioControl"
-build = "build.rs"
 
 [lib]
 name = "audiocontrol_metadata"
@@ -19,7 +18,10 @@ acr-images = { path = "../acr-images" }
 acr-store = { path = "../acr-store" }
 acr-web = { path = "../acr-web" }
 # The encrypted key-value store: this daemon's Last.fm session key and, until
-# it moves to the main daemon, its Spotify tokens.
+# it moves to the main daemon, its Spotify tokens. Also the obfuscated
+# build-time secrets -- the Last.fm and TheAudioDB keys this crate reads live
+# there now, because the player daemon needs the Spotify OAuth pair from the
+# same generator and cannot depend on this crate.
 acr-secrets = { path = "../acr-secrets" }
 serde.workspace = true
 serde_json.workspace = true
@@ -44,16 +46,27 @@ url.workspace = true
 # For the command line tools in src/bin/
 clap.workspace = true
 env_logger.workspace = true
-
-[build-dependencies]
-base64.workspace = true
-md5.workspace = true
+# The metadata daemon's signal handling. Its composition root switches
+# Rocket's own off and owns SIGINT, SIGTERM and SIGHUP itself, the way the
+# player daemon's does.
+ctrlc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 serial_test.workspace = true
 # Only #[tokio::test] uses this; nothing under src/ or src/bin/ is async.
 tokio.workspace = true
+
+# The metadata daemon itself. Its own composition root, in this crate rather
+# than in the root package -- not because the binary would be fatter there
+# (rustc links no rlib the source does not name, and both variants produce
+# identical `ldd` output), but because Cargo would have to compile the player
+# library and its native dependencies -- ALSA, D-Bus, MPD, evdev -- before it
+# could build it. The whole point of the split is that either daemon can be
+# built without the other.
+[[bin]]
+name = "audiocontrol-metadata"
+path = "src/bin/audiocontrol-metadata.rs"
 
 # The metadata command line tools. Named explicitly so the installed binaries
 # keep the names they had when these were targets of the root package.

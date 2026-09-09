@@ -1,0 +1,101 @@
+.TH AUDIOCONTROL\-METADATA 1 "September 2026" "AudioControl Manual" "User Commands"
+.SH NAME
+audiocontrol\-metadata \- HiFiBerry audio control metadata daemon
+.SH SYNOPSIS
+.B audiocontrol\-metadata
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B audiocontrol\-metadata
+is the second of the two daemons in this package. It owns everything that
+reaches outside the device: MusicBrainz, TheAudioDB and fanart.tv lookups,
+cover art, artist images, favourites and Last.fm now\-playing and scrobbling.
+.PP
+It listens on loopback port 1084 and is not reachable from the network; nginx
+forwards the metadata prefixes to it. Every connection between the two daemons
+is opened by this one, so it needs the player daemon's API root in its
+configuration and the player daemon holds no address for it.
+.PP
+It does not need the player daemon to be running in order to start. On
+start\-up it polls the player daemon's
+.I /api/version
+for up to 30 seconds and then starts regardless, leaving its subscriber to
+reconnect. While the player daemon is unavailable, enrichment results are
+dropped and playback is unaffected; while this daemon is unavailable, playback,
+volume, the library and the WebSocket all keep working, and there is no
+enrichment, no cover art and no scrobbling.
+.SH OPTIONS
+.TP
+.BR \-c " " \fIFILE\fR
+Use the specified configuration file instead of the default
+.IR metadata.json .
+The packaged unit passes
+.IR /etc/audiocontrol/metadata.json .
+.TP
+.BR \-d ", " \-\-debug
+Log everything at debug level.
+.TP
+.B \-\-check\-secrets
+Report which API credentials are compiled into this binary, without printing
+their values, and exit.
+.TP
+.BR \-h ", " \-\-help
+Display help information and exit.
+.SH LOGGING
+This daemon logs to standard error, which
+.BR systemd (1)
+records in the journal; see
+.BR journalctl (1)
+.RB "with " "\-u audiocontrol\-metadata" .
+The level defaults to
+.I info
+and is set with the
+.B RUST_LOG
+environment variable, or with
+.B \-\-debug
+for everything at debug level.
+.PP
+It does
+.B not
+read
+.IR /etc/audiocontrol/logging.json .
+That file configures the player daemon only, and its per\-subsystem levels and
+file logging have no equivalent here yet. Passing
+.B \-\-log\-config
+is reported as ignored rather than silently accepted.
+.SH CONFIGURATION
+The configuration file must name the player daemon's API root:
+.PP
+.RS
+"core": { "url": "http://127.0.0.1:1080/api" }
+.RE
+.PP
+The daemon refuses to start without it, deliberately. It is not derived from
+.IR services.webserver.port ,
+which is this daemon's own port: a derived value would make the daemon
+subscribe to its own event stream and poll its own library, neither of which it
+serves, and it would fail silently rather than at start\-up.
+.SH FILES
+.TP
+.I /etc/audiocontrol/metadata.json
+Default configuration file. Distinct from
+.IR audiocontrol.json ,
+which configures the player daemon; the two share several section names and are
+not interchangeable.
+.TP
+.I /var/lib/audiocontrol/metadata/
+This daemon's own state: its lookup cache, its settings database, its image
+cache and its credential store. Separate from the player daemon's, because two
+processes writing one SQLite file or one credential store would lose data.
+.TP
+.I /etc/hifiberry/auth.d/audiocontrol\-metadata\-auth.json
+Which of its routes the API gateway treats as ordinary and which as privileged.
+.SH SEE ALSO
+.BR audiocontrol (1),
+.BR audiocontrol_dump_cache (1),
+.BR audiocontrol_dump_store (1),
+.BR audiocontrol_favourites (1),
+.BR audiocontrol_musicbrainz_client (1)
+.SH AUTHOR
+HiFiBerry <info@hifiberry.com>
+.SH COPYRIGHT
+Copyright \(co 2026 HiFiBerry. All rights reserved.

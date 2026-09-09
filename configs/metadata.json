@@ -1,0 +1,85 @@
+{
+    "_comment": "The metadata daemon's configuration, installed as /etc/audiocontrol/metadata.json. Keys starting with _ are commented out. The player daemon reads audiocontrol.json beside this file and never reads this one; the two files share several section names and are not interchangeable. Every path here is the metadata daemon's own: two daemons writing one SQLite file or one credential store would lose data, so nothing is shared on disk.",
+    "action_plugins": [
+        {
+            "lastfm": {
+                "_comment": "This entry, not services.lastfm below, is what runs the scrobbler and the now-playing update: services.lastfm brings up the client and this configures the worker that uses it. Both are needed. Remove this entry and the daemon starts, enriches as usual, and scrobbles nothing - with no error and no warning anywhere in the log. The log is in fact reassuring: enrichment start-up counts the workers that did start, and musicbrainz.enable below supplies one on its own, so the line reads 'Now-playing enrichment started with 1 worker(s)' whether or not the scrobbler is among them. Nothing but a missing scrobble tells you. The key is the same one the player daemon's action plugin used, so an existing installation's credentials can be copied across unchanged - by hand, though: upgrading does not copy them, and a key left only in audiocontrol.json is read by nothing.",
+                "enabled": true,
+                "api_key": "",
+                "api_secret": "",
+                "scrobble": true
+            }
+        }
+    ],
+    "services": {
+        "webserver": {
+            "_comment": "Loopback only, deliberately. nginx is the only public entry: it forwards /api/audiocontrol/coverart/, /lastfm/, /favourites/, /audiodb/ and /imagecache/external/ here, and mounts /api/metadata/ for newer clients. Nothing outside this machine may reach this port.",
+            "enable": true,
+            "host": "127.0.0.1",
+            "port": 1084
+        },
+        "core": {
+            "url": "http://127.0.0.1:1080/api",
+            "_comment": "The player daemon's API root: the now-playing WebSocket, the song-information push, the Spotify access token and the library sweep. Every connection across the seam is opened from this side, so this is the only address either daemon holds for the other. It MUST be written out here and the daemon refuses to start without it - unlike in the player daemon's own file, where an absent url falls back to the port that process is about to bind. Here that fallback would derive port 1084, this daemon's own, and it would subscribe to its own event stream and poll its own library, neither of which it serves, failing silently forever. 'library_poll_seconds' is accepted and deliberately not set: libraries are discovered from the library_changed event and the interval is only a backstop, so the built-in default (600) is the value to have."
+        },
+        "datastore": {
+            "_comment": "Separate from the player daemon's cache and settings database, which live under /var/lib/audiocontrol/cache and /var/lib/audiocontrol/db. The artist image directories are the exception and keep their paths, because the URLs clients already hold point into them.",
+            "attribute_cache": {
+                "dbfile": "/var/lib/audiocontrol/metadata/attributes.db",
+                "memory_cache_records": 20000,
+                "preload_prefixes": [
+                    "artist::mbid"
+                ]
+            },
+            "image_cache_path": "/var/lib/audiocontrol/metadata/images",
+            "user_image_path": "/var/lib/audiocontrol/user/images",
+            "artist_store": {
+                "cache_dir": "/var/lib/audiocontrol/cache/artists",
+                "enable_custom_images": true,
+                "auto_download": true
+            }
+        },
+        "settingsdb": {
+            "path": "/var/lib/audiocontrol/metadata"
+        },
+        "security_store": {
+            "path": "/var/lib/audiocontrol/metadata/security_store.json",
+            "_comment": "This daemon's own credential store, holding the Last.fm session key and username. The player daemon keeps /var/lib/audiocontrol/security_store.json with the Spotify tokens. One file with two writers would lose credentials: the store is serialised whole from memory and written with a truncating create, so whichever daemon saved last would discard what the other had learned. debian/postinst copies the existing store to exactly this path on upgrade, so this string and that one have to stay in step - a mismatch is silent, and leaves the daemon reading an empty store."
+        },
+        "images": {
+            "sizes": [100, 140, 200, 280, 400, 800],
+            "prewarm_sizes": [140, 200, 280],
+            "_comment": "Must agree with the same section in audiocontrol.json: both daemons serve images with ?size= and both name the cached variants from this ladder, so a daemon that disagreed would miss the other's variants and re-generate them under a second name. GET /api/capabilities reports the player daemon's list and /api/metadata/capabilities this one's."
+        },
+        "genre_cleanup": {
+            "config_path": "/etc/audiocontrol/genre.json",
+            "_comment": "Read here as well as in audiocontrol.json: the album genres this daemon fetches from TheAudioDB are cleaned through the same mapping before they reach the library. Uninitialised it does not fail, it just stops mapping, so an absent section is a quiet behaviour change rather than an error."
+        },
+        "musicbrainz": {
+            "enable": true,
+            "rate_limit_ms": 1000
+        },
+        "theaudiodb": {
+            "enable": true,
+            "api_key": "",
+            "rate_limit_ms": 500
+        },
+        "fanarttv": {
+            "enable": true,
+            "api_key": "",
+            "rate_limit_ms": 500
+        },
+        "external_coverart": {
+            "enable": false,
+            "_comment": "Arbitrary cover-art endpoints. See the same section in audiocontrol.json for the full set of per-provider keys; this daemon is the one that serves them, so configure them here."
+        },
+        "lastfm": {
+            "enable": true,
+            "api_key": "",
+            "api_secret": "",
+            "now_playing_enabled": true,
+            "scrobble": true
+        },
+        "_spotify_removed": "There is no services.spotify section here. The Spotify account - the OAuth flow, the token lifecycle, playback control and search routes - belongs to the player daemon, and is configured in audiocontrol.json. What is left on this side is a cover-art and search provider that asks the player daemon for an access token over the seam and has nothing of its own to configure."
+    }
+}

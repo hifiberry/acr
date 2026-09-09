@@ -128,6 +128,30 @@ fn http_client() -> Box<dyn http_client::HttpClient> {
     http_client::new_http_client(10)
 }
 
+/// Fetch a fanart.tv URL under the service's rate limit.
+///
+/// Every request in this module goes through here, which is the point: it used
+/// to register a rate limit for "fanarttv" -- and log that it had one --
+/// without any call site ever applying it, so fanart.tv was the one provider
+/// being hit with no spacing and no bound at all. Reaching the network any
+/// other way should be harder than reaching it through this.
+fn fanarttv_api_get(url: &str) -> Result<String, http_client::HttpClientError> {
+    fanarttv_api_get_with(http_client().as_ref(), url)
+}
+
+/// The body of [`fanarttv_api_get`], with the transport supplied by the caller
+/// so the request path can be exercised without a network.
+///
+/// The permit is held across the request, so concurrent callers queue instead
+/// of opening parallel connections.
+fn fanarttv_api_get_with(
+    client: &dyn http_client::HttpClient,
+    url: &str,
+) -> Result<String, http_client::HttpClientError> {
+    let _permit = ratelimit::rate_limit("fanarttv");
+    client.get_text(url)
+}
+
 /// Get artist thumbnail URLs from FanArt.tv
 /// 
 /// # Arguments
@@ -167,8 +191,7 @@ pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Ve
 
     let mut thumbnail_urls = Vec::new();
     
-    let client = http_client();
-    match client.get_text(&url) {
+    match fanarttv_api_get(&url) {
         Ok(response_text) => {
             // Parse the JSON response
             match serde_json::from_str::<Value>(&response_text) {
@@ -251,8 +274,7 @@ pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
 
     let mut banner_urls = Vec::new();
     
-    let client = http_client();
-    match client.get_text(&url) {
+    match fanarttv_api_get(&url) {
         Ok(response_text) => {
             // Parse the JSON response
             match serde_json::from_str::<Value>(&response_text) {
@@ -403,6 +425,95 @@ impl CoverartProvider for FanarttvCoverartProvider {
 mod tests {
     use super::*;
     use crate::coverart::CoverartProvider;
+    use serde_json::Value as JsonValue;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    /// A transport that answers instantly but records how many requests were
+    /// in flight at the same time, so the test observes the request path
+    /// rather than the rate limiter it is built on.
+    #[derive(Debug, Default)]
+    struct ConcurrencyWitnessClient {
+        current: AtomicUsize,
+        peak: AtomicUsize,
+    }
+
+    impl ConcurrencyWitnessClient {
+        fn peak(&self) -> usize {
+            self.peak.load(AtomicOrdering::SeqCst)
+        }
+    }
+
+    impl http_client::HttpClient for ConcurrencyWitnessClient {
+        fn get_text(&self, _url: &str) -> Result<String, http_client::HttpClientError> {
+            let now = self.current.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            self.peak.fetch_max(now, AtomicOrdering::SeqCst);
+            // Stand in for a slow fanart.tv response.
+            thread::sleep(Duration::from_millis(100));
+            self.current.fetch_sub(1, AtomicOrdering::SeqCst);
+            Ok("{}".to_string())
+        }
+
+        fn post_json_value(&self, _url: &str, _payload: JsonValue) -> Result<JsonValue, http_client::HttpClientError> {
+            unimplemented!("not used by fanart.tv")
+        }
+        fn post_json_status(&self, _url: &str, _payload: JsonValue) -> Result<(u16, JsonValue), http_client::HttpClientError> {
+            unimplemented!("not used by fanart.tv")
+        }
+        fn get_binary(&self, _url: &str) -> Result<(Vec<u8>, String), http_client::HttpClientError> {
+            unimplemented!("not used by fanart.tv")
+        }
+        fn get_binary_with_headers(&self, _url: &str, _headers: &[(&str, &str)], _max_bytes: u64) -> Result<(Vec<u8>, String), http_client::HttpClientError> {
+            unimplemented!("not used by fanart.tv")
+        }
+        fn get_json_with_headers(&self, _url: &str, _headers: &[(&str, &str)]) -> Result<JsonValue, http_client::HttpClientError> {
+            unimplemented!("not used by fanart.tv")
+        }
+        fn post_json_value_with_headers(&self, _url: &str, _payload: JsonValue, _headers: &[(&str, &str)]) -> Result<JsonValue, http_client::HttpClientError> {
+            unimplemented!("not used by fanart.tv")
+        }
+        fn put_json_value_with_headers(&self, _url: &str, _payload: JsonValue, _headers: &[(&str, &str)]) -> Result<JsonValue, http_client::HttpClientError> {
+            unimplemented!("not used by fanart.tv")
+        }
+        fn clone_box(&self) -> Box<dyn http_client::HttpClient> {
+            unimplemented!("not used by fanart.tv")
+        }
+    }
+
+    /// fanart.tv registered a rate limit and logged that it had one, but no
+    /// call site ever applied it, so its requests went out unthrottled and
+    /// unbounded while the other providers were being serialised.
+    #[test]
+    fn fanarttv_requests_go_out_one_at_a_time() {
+        // This registers the production service name in the global rate
+        // limiter, which outlives the test. Spacing is set to 1 ms so it does
+        // not slow anything else down; the assertion below is about the
+        // concurrency bound, which holds whatever the spacing is.
+        ratelimit::register_service("fanarttv", 1);
+
+        let client = Arc::new(ConcurrencyWitnessClient::default());
+        let handles: Vec<_> = (0..6)
+            .map(|_| {
+                let client = Arc::clone(&client);
+                thread::spawn(move || {
+                    let _ = fanarttv_api_get_with(client.as_ref(), "http://example.invalid/");
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("worker thread panicked");
+        }
+
+        assert_eq!(
+            client.peak(),
+            1,
+            "expected one fanart.tv request in flight at a time, saw {}",
+            client.peak()
+        );
+    }
+
     
     #[test]
     fn test_fanarttv_coverart_provider_name() {

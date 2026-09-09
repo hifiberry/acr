@@ -18,9 +18,9 @@ pub mod theaudiodb;
 /// nothing on this daemon may be called by the player daemon after the one-way
 /// seam. The `library_changed` event replaced it, travelling the other way over
 /// the socket this side already holds open; see `crate::library_puller`. The
-/// route is deleted rather than deprecated because it was introduced in the
-/// unreleased 0.22.0 and its only caller ships in the same release, so there is
-/// no stale caller a deprecation window could protect.
+/// route is deleted rather than deprecated because it was both introduced and
+/// removed within 0.22.0, and its only caller shipped in that same release, so
+/// there is no stale caller a deprecation window could protect.
 ///
 /// **There is no `/spotify` group any more.** The account moved to the player
 /// daemon with the one-way seam, and all thirteen of its routes went with it
@@ -89,11 +89,21 @@ pub fn routes() -> Vec<(String, Vec<rocket::Route>)> {
 /// answers at `GET /api/metadata/capabilities` — the path the spec gives it,
 /// and the one it keeps when this crate serves a Rocket of its own.
 ///
-/// Shaped the same as [`routes`] (mount point, routes) rather than a bare
-/// `Vec<Route>`, so a later addition to this list — this phase has exactly
-/// one entry — needs no change to how a caller mounts it.
+/// `/background` is here for the same reason, and it is the reason this list
+/// is shaped as (mount point, routes) rather than a bare `Vec<Route>`.
+/// `acr_store::backgroundjobs` is a per-*process* registry: `artistupdater`
+/// and `albumupdater` register enrichment progress in this daemon's, and the
+/// player daemon's `GET /api/background/jobs` answers from its own and cannot
+/// see them. Mounting the same handlers here puts enrichment progress back on
+/// the network at `GET /api/metadata/background/jobs`, which nginx already
+/// forwards. It may not join [`routes`]: that set mounts at the bare `/api`,
+/// where the player daemon serves `/background/jobs` itself, and two identical
+/// routes at one mount stop Rocket igniting.
 pub fn standalone_routes() -> Vec<(String, Vec<rocket::Route>)> {
-    vec![("".to_string(), rocket::routes![capabilities::get_capabilities])]
+    vec![
+        ("".to_string(), rocket::routes![capabilities::get_capabilities]),
+        ("/background".to_string(), acr_web::backgroundjobs::routes()),
+    ]
 }
 
 #[cfg(test)]
@@ -128,6 +138,56 @@ mod tests {
                     (route.method, route.uri.path()),
                     (rocket::http::Method::Get, "/capabilities"),
                     "api::routes must not mount /capabilities -- it collides with the player daemon's own"
+                );
+            }
+        }
+    }
+
+    /// A job registered with the process-wide background registry is visible
+    /// over `standalone_routes`.
+    ///
+    /// `artistupdater` and `albumupdater` register their progress with
+    /// `acr_store::backgroundjobs`, and that registry is per *process*. Before
+    /// this group existed, the only `/background` mount in the system was the
+    /// player daemon's, so on a split installation enrichment reported into a
+    /// registry with no HTTP surface at all: a client polling the player
+    /// daemon got a successful, permanently empty answer.
+    #[test]
+    fn standalone_routes_report_a_registered_background_job() {
+        let id = "test_metadata_standalone_background_job";
+        acr_store::backgroundjobs::register_job(id.to_string(), "Test Job".to_string())
+            .expect("could not register the job");
+
+        let mut rocket = rocket::build();
+        for (mount, routes) in standalone_routes() {
+            rocket = rocket.mount(format!("/api{}", mount), routes);
+        }
+        let client = Client::tracked(rocket).unwrap();
+        let response = client.get("/api/background/jobs").dispatch();
+
+        assert_eq!(response.status(), Status::Ok);
+        assert!(
+            response.into_string().unwrap_or_default().contains(id),
+            "the registered job is missing from the listing"
+        );
+    }
+
+    /// The background group belongs to `standalone_routes` and must never move
+    /// into `routes()`.
+    ///
+    /// Same collision as `/capabilities`, and worse in one way: the player
+    /// daemon mounts `routes()` at the bare `/api`, where it already serves
+    /// `GET /api/background/jobs` itself. Two identical routes at one mount
+    /// make Rocket refuse to ignite, so the daemon would not start at all.
+    #[test]
+    fn routes_never_claims_the_background_paths() {
+        for (mount, group) in routes() {
+            for route in group {
+                let path = format!("{}{}", mount, route.uri.path());
+                assert!(
+                    !path.starts_with("/background"),
+                    "api::routes must not mount {} -- it collides with the player daemon's own",
+                    path
                 );
             }
         }

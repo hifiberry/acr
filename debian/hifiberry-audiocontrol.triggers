@@ -4,3 +4,51 @@
 # noawait: the activating package need not wait for us, and dpkg coalesces all
 # activations in a run into a single restart at the end.
 interest-noawait /etc/audiocontrol/players.d
+
+# nginx serves the client-visible API prefixes from a snippet in this
+# directory, and it reads that directory only when it starts or is reloaded.
+# Since 0.23.0 the metadata prefixes in our snippet point at a second daemon on
+# a different port, so a config nginx loaded before the upgrade is no longer
+# merely stale - it routes live requests to a daemon that no longer serves
+# them, and they answer 404. Nothing warns: dpkg installs the new file, nginx
+# keeps serving what it loaded at its last start, and on a device that has been
+# up for weeks that is a configuration weeks old.
+#
+# **This interest does not fix that case, and cannot.** dpkg does not activate
+# a package's own file triggers for files that package itself installs. A test
+# package carrying exactly this interest and shipping a file into this
+# directory was installed fresh and then upgraded twice with the file's content
+# changing each time: `postinst triggered` was never called, and its status
+# never left "install ok installed". A neighbouring package dropping a snippet
+# here, or removing one, activated it every time. So the reload for our own
+# snippet is called from postinst directly - see reload_nginx() and the call
+# below #DEBHELPER# there - and this interest covers the case that call cannot
+# reach.
+#
+# Why carry it at all, then:
+#
+#  - The directory is shared and nothing else reloads for it. Every package
+#    dropping a snippet here has the same bug and none of them carries this
+#    interest. Taking responsibility for the directory rather than only for our
+#    own file fixes it once for all of them, and the daemons behind those
+#    prefixes are ours to serve.
+#  - It fills the hole in the other direction too. Where a neighbour changes a
+#    snippet in a run that also upgrades us, dpkg drops that activation - the
+#    same rule as above, measured the same way - and the configure-arm reload
+#    is what covers it. Neither mechanism alone covers both, and because the
+#    cases are disjoint they never reload twice for one dpkg run.
+#  - Coalescing. noawait lets dpkg fold every activation in a run into a
+#    single call, so an image build installing several snippet-dropping
+#    packages reloads once, not once per package.
+#
+# The price is that a broken snippet belonging to another package is reported
+# by *our* postinst. That is why reload_nginx() runs `nginx -t` first and words
+# its warning as being about the configuration rather than about this package.
+#
+# Deliberately not covered: removing this package activates the trigger for
+# anyone else interested, but our own interest goes away with the package and
+# postinst is no longer there to answer it, so nginx keeps proxying prefixes
+# whose daemon has gone. A dead prefix answering 502 is a far smaller problem
+# than a live one answering 404, and fixing it would mean a reload from postrm
+# with no snippet of ours left to validate against. Left alone.
+interest-noawait /etc/nginx/hifiberry-api.d

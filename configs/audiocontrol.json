@@ -24,6 +24,7 @@
         },
         {
             "lastfm": {
+                "_comment": "Kept for a build that still links the metadata crate; the shipped player daemon is built without it and reads none of this. Scrobbling is configured in the identical entry in metadata.json, and a key set here by hand has to be copied there - nothing copies it on upgrade. Set here and not there, the metadata daemon falls back to the built-in key while holding a session issued against yours, and every scrobble is refused with the account still showing as linked.",
                 "enabled": true,
                 "api_key": "",
                 "api_secret": "",
@@ -99,6 +100,7 @@
         "security_store": {
             "path": "/var/lib/audiocontrol/security_store.json"
         },
+        "_provider_sections_moved": "musicbrainz, theaudiodb, fanarttv, external_coverart and lastfm below are the metadata daemon's now and are configured in metadata.json. They are kept here because a build that links the metadata crate still reads them, and because the per-provider keys are documented here; the shipped player daemon reads none of them. An API key set here by hand is not migrated - copy it into metadata.json.",
         "musicbrainz": {
             "enable": true,
             "rate_limit_ms": 1000

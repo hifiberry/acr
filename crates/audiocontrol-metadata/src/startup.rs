@@ -25,6 +25,12 @@
 //! an absent section is a configuration file that never mentioned a seam that
 //! did not exist when it was written, not an operator asking for a metadata
 //! side that talks to nobody. So an absent section means the defaults below.
+//!
+//! **That is true of the in-process half only.** The separate metadata daemon
+//! reads the same section through [`required_core_settings`] and refuses to
+//! start without an explicit `url`: there the default would derive its own
+//! port rather than the player daemon's, and it serves neither the event
+//! stream nor the library it would then be reading. See that function.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -73,6 +79,26 @@ const CORE_WAIT_LIMIT: Duration = Duration::from_secs(30);
 /// that times out takes its own timeout instead and this is added to it.
 const CORE_WAIT_TICK: Duration = Duration::from_millis(250);
 
+/// Why a configuration document cannot be read as a separate daemon's
+/// `services.core`.
+///
+/// One variant, and it is deliberately not a `String`: the metadata daemon's
+/// composition root reports this and exits, and a caller that wants to say
+/// something else about it should match on the cause rather than on the
+/// wording.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CoreConfigError {
+    /// No `core.url`, in a file where one cannot be derived.
+    #[error(
+        "no core.url in the configuration. The metadata daemon needs the player \
+         daemon's API root written out, as \"core\": {{ \"url\": \
+         \"http://127.0.0.1:1080/api\" }} -- it is not derived from \
+         webserver.port, which is this daemon's own port and serves neither the \
+         event stream nor the library this daemon reads."
+    )]
+    NoCoreUrl,
+}
+
 /// What `services.core` says, with the defaults filled in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreSettings {
@@ -99,38 +125,79 @@ pub struct CoreSettings {
 /// is serving -- which is exactly what the integration suite, which runs the
 /// daemon on 18080, would do.
 ///
-/// This holds only while both halves share a process. Once the metadata
-/// daemon has a `webserver.port` of *its own*, that port is emphatically not
-/// the player daemon's, and its configuration must name `core.url` -- as the
-/// spec's `metadata.json` does.
+/// **This holds only while both halves share a process**, which is what
+/// `src/main.rs` does and nothing else. The metadata daemon has a
+/// `webserver.port` of its own, and that port is emphatically not the player
+/// daemon's, so its composition root reads [`required_core_settings`] instead
+/// and refuses to start on a file that leaves the URL to be derived. Do not
+/// reach for this function from there.
 pub fn core_settings(config: &serde_json::Value) -> CoreSettings {
-    let section = get_service_config(config, "core");
+    CoreSettings {
+        url: explicit_core_url(config).unwrap_or_else(|| {
+            format!(
+                "http://127.0.0.1:{}/api",
+                get_service_config(config, "webserver")
+                    .and_then(|ws| ws.get("port"))
+                    .and_then(|p| p.as_u64())
+                    .unwrap_or(DEFAULT_CORE_PORT)
+            )
+        }),
+        poll: core_poll(config),
+    }
+}
 
-    let url = match section
+/// Read `services.core` for a daemon that is *not* the player daemon, refusing
+/// to derive a URL.
+///
+/// This is [`core_settings`] with its fallback taken away, and the difference
+/// is the whole of why it exists. `get_service_config` falls back to the top
+/// level, and the metadata daemon's own `metadata.json` puts `webserver` there
+/// with port 1084 -- so a file that omits or misspells `core.url` derives
+/// `http://127.0.0.1:1084/api`, which is *this daemon's own port*. It would
+/// then subscribe to its own event stream and poll its own library, neither of
+/// which it serves, and fail silently forever with a reminder every five
+/// minutes.
+///
+/// So the composition root of the metadata daemon calls this and refuses to
+/// start on an error, while `src/main.rs`'s in-process metadata half keeps
+/// [`core_settings`]: there the derived port is the port the very same process
+/// is about to bind, which is why the integration suite can run a daemon on
+/// 18080 without configuring anything. The deriving default is right in one
+/// process and wrong in two.
+///
+/// Everything except the URL is read exactly as [`core_settings`] reads it,
+/// through the same helpers, so the two agree by construction whenever
+/// `core.url` is given -- pinned by
+/// `an_explicit_core_url_reads_the_same_either_way`.
+pub fn required_core_settings(config: &serde_json::Value) -> Result<CoreSettings, CoreConfigError> {
+    Ok(CoreSettings {
+        url: explicit_core_url(config).ok_or(CoreConfigError::NoCoreUrl)?,
+        poll: core_poll(config),
+    })
+}
+
+/// The URL `services.core` names, if it names a usable one.
+///
+/// An empty string is treated as absent rather than as a URL: it is what a
+/// half-edited configuration file looks like, and a client built on `""`
+/// fails on every call with nothing to point at.
+fn explicit_core_url(config: &serde_json::Value) -> Option<String> {
+    get_service_config(config, "core")
         .and_then(|c| c.get("url"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-    {
-        Some(url) => url.to_string(),
-        None => format!(
-            "http://127.0.0.1:{}/api",
-            get_service_config(config, "webserver")
-                .and_then(|ws| ws.get("port"))
-                .and_then(|p| p.as_u64())
-                .unwrap_or(DEFAULT_CORE_PORT)
-        ),
-    };
+        .map(|s| s.to_string())
+}
 
-    let seconds = section
+/// How often the library puller sweeps, per `services.core`.
+fn core_poll(config: &serde_json::Value) -> Duration {
+    let seconds = get_service_config(config, "core")
         .and_then(|c| c.get("library_poll_seconds"))
         .and_then(|v| v.as_u64())
         .filter(|s| *s > 0)
         .unwrap_or(DEFAULT_LIBRARY_POLL_SECONDS);
 
-    CoreSettings {
-        url,
-        poll: Duration::from_secs(seconds),
-    }
+    Duration::from_secs(seconds)
 }
 
 /// The player daemon's event socket, given its API root.
@@ -457,6 +524,61 @@ mod tests {
             "services": { "webserver": { "host": "0.0.0.0", "port": 18080 } }
         }));
         assert_eq!(settings.url, "http://127.0.0.1:18080/api");
+    }
+
+    /// `core.url` must be given, not derived.
+    ///
+    /// `get_service_config` falls back to the top level, and `metadata.json`
+    /// puts `webserver` there with port 1084 -- so an absent or misspelled
+    /// `core.url` derives the metadata daemon's *own* port. It then subscribes
+    /// to its own event stream and polls its own library, neither of which it
+    /// serves, and fails silently forever. Right in one process, wrong in two.
+    #[test]
+    fn a_metadata_config_without_a_core_url_is_refused() {
+        let err = required_core_settings(&serde_json::json!({
+            "services": { "webserver": { "port": 1084 } }
+        }))
+        .expect_err("no core.url means no player daemon to talk to");
+        assert!(
+            err.to_string().contains("core.url"),
+            "the message must name the key: {err}"
+        );
+    }
+
+    /// The half-edited file, which is the same failure wearing a different
+    /// hat: a `url` that is present but empty must not fall back to the
+    /// derived port either.
+    #[test]
+    fn an_empty_core_url_is_refused_rather_than_derived() {
+        assert_eq!(
+            required_core_settings(&serde_json::json!({
+                "webserver": { "port": 1084 },
+                "core": { "url": "" }
+            })),
+            Err(CoreConfigError::NoCoreUrl)
+        );
+    }
+
+    /// With `core.url` written out, the strict reading and the deriving one
+    /// are the same reading -- poll interval included.
+    ///
+    /// This is what makes it safe for the metadata daemon to use
+    /// [`required_core_settings`] as a gate and then let
+    /// [`start_after_core_is_listening`] read the document again through
+    /// [`core_settings`]: the two cannot disagree about a file that passes the
+    /// gate. Without this, a later change to one of them would split the
+    /// daemon's idea of where the player daemon is from the one it validated.
+    #[test]
+    fn an_explicit_core_url_reads_the_same_either_way() {
+        let config = serde_json::json!({
+            "webserver": { "port": 1084 },
+            "core": { "url": "http://127.0.0.1:1080/api", "library_poll_seconds": 45 }
+        });
+
+        assert_eq!(
+            required_core_settings(&config).expect("an explicit url is enough"),
+            core_settings(&config)
+        );
     }
 
     /// An explicit `core.url` is never second-guessed by the web server's

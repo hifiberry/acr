@@ -1,0 +1,32 @@
+[Unit]
+Description=HiFiBerry AudioControl metadata service
+# After=, and deliberately no Requires=. The metadata daemon opens every
+# connection across the seam, so it needs the player daemon's API eventually --
+# but not at start-up: it polls GET /api/version for up to 30 s and then starts
+# anyway, letting the subscriber's reconnect logic take over. Requires= would
+# buy nothing for that and cost two things: the player daemon failing would
+# stop the metadata daemon retrying, and stopping the metadata unit would be a
+# reason to stop playback. Neither is wanted. `After` is ordering only.
+After=network-online.target audiocontrol.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# No --log-config. The logging.json reader lives in the player daemon's own
+# crate, which this one must not depend on; the daemon says so if the argument
+# is passed. It logs to stderr at info (RUST_LOG overrides, --debug forces
+# debug) and journald captures it. What is given up is file logging and
+# per-subsystem levels.
+ExecStart=/usr/bin/audiocontrol-metadata -c /etc/audiocontrol/metadata.json
+Restart=on-failure
+RestartSec=5
+User=audiocontrol
+Group=audiocontrol
+TimeoutStopSec=10
+# No ConditionPathExists=/proc/asound/cards, no audio or input groups and no
+# RuntimeDirectory: this daemon touches no sound device, no input device and no
+# runtime socket. It talks HTTP on loopback and writes under
+# /var/lib/audiocontrol/metadata.
+
+[Install]
+WantedBy=multi-user.target

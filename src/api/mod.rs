@@ -7,7 +7,7 @@ pub use crate::constants::API_PREFIX;
 // receives them through `start_rocket_server`'s `extra_routes`. The Spotify
 // routes went the other way and came back: the account belongs to the daemon
 // that plays, so `spotify` below is this package's own again.
-pub use acr_web::{imagecache, imageresponse, urlprefix, validated};
+pub use acr_web::{backgroundjobs, imagecache, imageresponse, urlprefix, validated};
 
 // Export the players module
 pub mod players;
@@ -44,9 +44,6 @@ pub mod settings;
 
 // Export the cache module
 pub mod cache;
-
-// Export the backgroundjobs module
-pub mod backgroundjobs;
 
 // Export the genres module
 pub mod genres;

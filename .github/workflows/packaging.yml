@@ -1,0 +1,97 @@
+name: Packaging
+
+# The Debian maintainer scripts are what run on a user's device, and a fault in
+# one leaves a package half-configured there rather than failing a test here.
+# None of this needs the Rust build, so it is cheap enough to run on every push.
+on:
+  push:
+  pull_request:
+
+jobs:
+  maintainer-scripts:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install packaging tools
+      run: sudo apt-get update && sudo apt-get install -y debhelper shellcheck fakeroot
+
+    # The check that matters most, and the one a syntax check cannot make.
+    #
+    # dh substitutes #DEBHELPER# wherever the token appears -- comments are not
+    # exempt. A comment that merely named the token once had the rest of its
+    # line left behind as a command, so postinst exited 127 and dpkg stopped
+    # with the package half-configured on a device.
+    #
+    # `bash -n` does NOT catch that: a stray word or comma alone on a line is
+    # valid shell, and only fails at run time with "command not found". So the
+    # invariant has to be checked at the source: the token appears alone on its
+    # own line, or not at all.
+    - name: Substitution token appears only on its own line
+      run: |
+        set -e
+        fail=0
+        for s in debian/postinst debian/preinst debian/prerm debian/postrm; do
+          [ -f "$s" ] || continue
+          bad=$(grep -n 'DEBHELPER' "$s" | grep -vE ':#DEBHELPER#$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error file=$s::names the debhelper substitution token outside a line of its own"
+            echo "$bad"
+            fail=1
+          else
+            echo "$s: token placement ok"
+          fi
+        done
+        exit $fail
+
+    - name: Maintainer scripts are valid shell
+      run: |
+        set -e
+        for s in debian/postinst debian/preinst debian/prerm debian/postrm; do
+          [ -f "$s" ] || continue
+          bash -n "$s"
+          echo "$s: parses"
+        done
+
+    - name: shellcheck
+      run: |
+        set -e
+        for s in debian/postinst debian/preinst debian/prerm debian/postrm; do
+          [ -f "$s" ] || continue
+          shellcheck -S error "$s"
+          echo "$s: no shellcheck errors"
+        done
+
+    # Generate the scripts the way the package build does, and check the result.
+    # This needs no Rust build: dh_installdeb performs the substitution on its
+    # own, which is enough to see what a device would actually run.
+    # Check the generated form too, since that is what a device runs.
+    #
+    # This needs fakeroot. dh_installdeb chowns the scripts it writes to
+    # root:root, which an unprivileged runner cannot do -- it fails with
+    # "chown(0, 0, ...): Operation not permitted" and exit 25. Locally in a
+    # container the same commands pass because that container runs as root,
+    # which is exactly how this was missed the first time round. fakeroot is
+    # how Debian builds do it (dpkg-buildpackage -rfakeroot) and is the fix
+    # rather than a workaround.
+    #
+    # debian/rules performs the same check during a real package build; this
+    # runs it on every push, without needing the Rust build.
+    - name: Generated scripts survive substitution
+      run: |
+        set -ex
+        mkdir -p debian/hifiberry-audiocontrol
+        fakeroot dh_installdeb
+        found=0
+        for s in postinst preinst prerm postrm; do
+          g="debian/hifiberry-audiocontrol/DEBIAN/$s"
+          [ -f "$g" ] || continue
+          found=$((found+1))
+          bash -n "$g" || { echo "::error::generated $s is not valid shell"; exit 1; }
+          if grep -q 'DEBHELPER' "$g"; then
+            echo "::error::generated $s still contains a substitution token"
+            grep -n 'DEBHELPER' "$g"; exit 1
+          fi
+        done
+        [ "$found" -gt 0 ] || { echo "::error::dh_installdeb produced no maintainer scripts"; exit 1; }
+        echo "checked $found generated maintainer script(s)"

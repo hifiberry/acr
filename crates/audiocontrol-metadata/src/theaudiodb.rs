@@ -28,7 +28,7 @@ struct TheAudioDBConfig {
 // Default API key from secrets.txt compiled at build time
 #[cfg(not(test))]
 pub fn default_theaudiodb_api_key() -> String {
-    crate::secrets::artistdb_api_key()
+    acr_secrets::secrets::artistdb_api_key()
 }
 
 #[cfg(test)]
@@ -179,7 +179,7 @@ pub fn lookup_theaudiodb_by_mbid(mbid: &str) -> Result<serde_json::Value, String
     };    debug!("Looking up artist with MBID {}", mbid);
     
     // Apply rate limiting before making the request
-    ratelimit::rate_limit("theaudiodb");
+    let _permit = ratelimit::rate_limit("theaudiodb");
     
     // Construct the API URL
     let url = format!(
@@ -314,7 +314,7 @@ pub fn lookup_theaudiodb_by_artist_name(artist_name: &str) -> Result<serde_json:
     debug!("Looking up artist by name '{}'", artist_name);
     
     // Apply rate limiting before making the request
-    ratelimit::rate_limit("theaudiodb");
+    let _permit = ratelimit::rate_limit("theaudiodb");
     
     // Construct the API URL
     let url = format!(
@@ -439,7 +439,7 @@ pub fn lookup_theaudiodb_albums_by_artist(artist_name: &str) -> Result<serde_jso
     debug!("Looking up albums for artist '{}'", artist_name);
     
     // Apply rate limiting before making the request
-    ratelimit::rate_limit("theaudiodb");
+    let _permit = ratelimit::rate_limit("theaudiodb");
     
     // Construct the API URL
     let url = format!(
@@ -565,7 +565,7 @@ pub fn lookup_theaudiodb_album_by_name(artist_name: &str, album_name: &str) -> R
     debug!("Looking up album '{}' by artist '{}'", album_name, artist_name);
     
     // Apply rate limiting before making the request
-    ratelimit::rate_limit("theaudiodb");
+    let _permit = ratelimit::rate_limit("theaudiodb");
     
     // Construct the API URL
     let url = format!(
@@ -765,7 +765,7 @@ pub fn lookup_theaudiodb_track(artist_name: &str, title: &str) -> Result<Value, 
         None => return Err("No API key configured for TheAudioDB".to_string()),
     };
 
-    ratelimit::rate_limit("theaudiodb");
+    let _permit = ratelimit::rate_limit("theaudiodb");
 
     let url = format!(
         "https://www.theaudiodb.com/api/v1/json/{}/searchtrack.php?s={}&t={}",

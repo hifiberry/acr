@@ -119,6 +119,15 @@ This document describes the REST API endpoints available in the Audio Control RE
 > `auth_request`, so any endpoint below can return `401` with a
 > `WWW-Authenticate-Hint` header even though audiocontrol itself never produces
 > one.
+>
+> **Two daemons answer these routes, and nginx decides which.** The player
+> daemon on port 1080 serves the players, library, volume, Spotify and
+> WebSocket routes; the metadata daemon on port 1084 serves cover art, the
+> artist store, Last.fm, favourites, TheAudioDB and the resolvers, both at
+> their historical paths and under `/api/metadata/`. No client-facing URL
+> depends on which — see [The `/api/metadata/` mount](#the-apimetadata-mount).
+> Testing against port 1080 directly reaches the player daemon only, so the
+> metadata routes 404 there; reach them on 1084, or through nginx.
 
 ## Image and Lyrics Paths
 
@@ -212,6 +221,15 @@ Retrieves the current version of the API.
 ```bash
 curl http://<device-ip>:1080/api/version
 ```
+
+> **Only the player daemon serves this.** The metadata daemon on port 1084
+> mounts its metadata routes and nothing else, so there is no way to ask it its
+> version over HTTP. The two always ship in one package and are upgraded
+> together, so `/api/version` is the version of both — but a caller that wants
+> to know whether the *metadata* daemon is up has to ask it something it does
+> serve, such as `GET /api/metadata/capabilities`. The metadata daemon's own
+> start-up probe of `GET /api/version` runs in the other direction, against the
+> player daemon.
 
 ### GET /capabilities
 
@@ -2190,6 +2208,13 @@ Retrieves an image (such as album art) from a player's library.
 > receives a `302` where it received an image before. Earlier daemons answered
 > `200` with the bytes.
 >
+> **The redirect crosses to the other daemon.** nginx sends
+> `/api/audiocontrol/coverart/` to the metadata daemon on 1084, so the `302`
+> is answered there while the route issuing it is on 1080. Against port 1080
+> directly the target does not exist at all. It also means artist images stop
+> serving while the metadata daemon is stopped, including ones already on disk
+> — the player daemon can name the route but cannot serve it.
+>
 > `?size=` works on the redirect target, which is a change in its favour: it
 > was accepted and silently ignored here.
 
@@ -2345,7 +2370,7 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 }
 ```
 
-**Rate Limiting**: Requests to this endpoint are rate-limited according to the configured `rate_limit_ms` value (default: 500ms between requests).
+**Rate Limiting**: Requests to this endpoint are rate-limited according to the configured `rate_limit_ms` value (default: 500ms between request starts), and are issued to TheAudioDB one at a time -- concurrent callers queue rather than opening parallel connections.
 
 **Use Cases**:
 
@@ -2356,11 +2381,13 @@ curl http://<device-ip>:1080/api/audiodb/mbid/53b106e7-0cc6-42cc-ac95-ed8d30a3a9
 
 ### Metadata Service Routes
 
-These routes are served by the metadata side of the daemon (the code that will
-become a separate `audiocontrol-metadata` process in a later phase) but answer
-at `/api` alongside everything else in this document, because both halves
-currently share one Rocket. See [architecture](architecture.md) for what that
-means and does not mean.
+These routes are served by the `audiocontrol-metadata` daemon on port 1084, not
+by the player daemon on 1080. They are documented at `/api` alongside
+everything else here because that is the path a client uses: nginx forwards
+them, and no client-facing URL says which daemon answers. See
+[architecture](architecture.md) for what that means and does not mean, and
+[the `/api/metadata/` mount](#the-apimetadata-mount) for exactly which prefixes
+nginx sends where.
 
 **They exist for clients, and no longer for the player daemon.** They used to
 be how it asked over HTTP for what it once computed in-process: artist detail,
@@ -2372,9 +2399,9 @@ side at all. What replaced each is in
 in the enrichment batch, and `/api/library/<p>/image/artist:<name>` redirects to
 `/api/coverart/artist/<b64>/image` rather than fetching it.
 
-Data crosses the other way instead: the metadata side subscribes to the
-daemon's events, reads its library, posts results back, and asks it for a
-Spotify token at `GET /api/spotify/access_token` — see
+Data crosses the other way instead: the metadata daemon subscribes to the
+player daemon's events, reads its library, posts results back, and asks it for
+a Spotify token at `GET /api/spotify/access_token` — see
 [Spotify Routes](#spotify-routes) below.
 
 Calling these routes from outside the daemon is entirely supported, and for
@@ -2391,19 +2418,25 @@ metadata side's own copy answers under the second mount below instead.
 
 #### The `/api/metadata/` mount
 
-Every metadata route is mounted a second time under `/api/metadata/`, and the
-two mounts mean different things.
+The metadata daemon mounts every one of its routes twice — at its historical
+path and again under `/api/metadata/` — and the two mounts mean different
+things.
 
 - **`/api/...`** — the historical paths. Both shipped clients reach them
   through nginx's `/api/audiocontrol/` prefix, and `/api/coverart/artist/` in
   particular is where every artist thumbnail and every redirected artist image
-  request goes. They are not going to move, and nothing in this process calls
-  them: `services.metadata` no longer exists.
-- **`/api/metadata/...`** — the same routes under the prefix a client will use
-  once the metadata side answers on a port of its own. In a later phase nginx
-  routes `/api/metadata/` to that process; today it reaches the same code in
-  the same process, so a client can be written against it now and keep
-  working across the split.
+  request goes. They are not going to move. nginx forwards exactly seven
+  sub-prefixes of `/api/audiocontrol/` to the metadata daemon —
+  `coverart/`, `lastfm/`, `favourites/`, `audiodb/`, `artist/`, `resolve/` and
+  `imagecache/external/` — and everything else under that prefix to the player
+  daemon. The auth manifest for them is
+  `/etc/hifiberry/auth.d/audiocontrol-auth.json`, unchanged.
+- **`/api/metadata/...`** — the same routes under the prefix that belongs to
+  the metadata daemon as a whole. nginx proxies `/api/metadata/` to
+  `127.0.0.1:1084` with `X-Forwarded-Prefix: /api/metadata`, and
+  `/etc/hifiberry/auth.d/audiocontrol-metadata-auth.json` is its auth manifest,
+  so the reads that are permissive on the historical paths are permissive here
+  too. Both mounts are shipped and routed; a client may use either.
 
 What is mounted under `/api/metadata/`:
 
@@ -2418,28 +2451,38 @@ What is mounted under `/api/metadata/`:
 | `/api/metadata/lastfm/...` | [Last.fm Integration](#lastfm-integration) |
 | `/api/metadata/favourites/...` | [Favourites API](#favourites-api) |
 | `/api/metadata/capabilities` | the metadata side's own capabilities report |
+| `/api/metadata/background/jobs` | the metadata daemon's [background jobs](#background-jobs-api) |
 
 `GET /api/metadata/capabilities` is the one path that exists *only* under this
-mount, for the reason given above. It reports the metadata side's image size
-ladder in the same shape as the player daemon's own capabilities response.
-Today both halves read one `images.sizes` list, because they are one process;
-once they are two, the list is configured in each and the two must agree.
+mount, for the reason given above. It reports the metadata daemon's image size
+ladder in the same shape as the player daemon's own capabilities response. Each
+daemon reads its own `images.sizes` list, from its own configuration file, and
+**the two must agree**: a daemon that disagreed would miss the other's cached
+variants and regenerate them under a second name. Nothing checks this at run
+time. `GET /api/metadata/capabilities` is also the closest thing to a health
+check for the metadata daemon, since it serves no `/api/version` of its own.
 
 Everything else in this table answers identically under either prefix, and a
 response's own image paths are written with whatever prefix the request
 carried, exactly as described in [Image and Lyrics Paths](#image-and-lyrics-paths).
 
 The player daemon's own routes — players, library, volume, lyrics, settings,
-cache, background jobs, genres, **Spotify** and the WebSocket — are *not* under
-`/api/metadata/`. They stay where they are and will stay on this process after
-the split.
+cache, genres, **Spotify** and the WebSocket — are *not* under
+`/api/metadata/` and are not served by the metadata daemon. They stay where
+they are.
 
-`/api/metadata/spotify/...` is gone. It never reached a release: it was added
-by the mount that put every metadata route under a second prefix, in this same
-unreleased version, so no shipped client can have used it. The Spotify account moved to the player daemon, so `/api/spotify/...` —
-the historical path every shipped client already uses — is the only one. No
-client-facing URL changed; a client that had adopted the `/api/metadata/`
-prefix for Spotify specifically must use `/api/spotify/` instead.
+Background jobs are the exception, and the only path in the table above that is
+not simply a second address for a route the compatibility prefixes already
+reach. Both daemons serve the listing, over separate registries: see
+[Background Jobs API](#background-jobs-api).
+
+`/api/metadata/spotify/...` is gone, and never reached a released package: it
+was added by the mount that put every metadata route under a second prefix and
+removed again within 0.22.0, so no shipped client can have used it. The Spotify
+account moved to the player daemon, so `/api/spotify/...` — the historical path
+every shipped client already uses — is the only one. No client-facing URL
+changed; a client that had adopted the `/api/metadata/` prefix for Spotify
+specifically must use `/api/spotify/` instead.
 
 ### Spotify Routes
 
@@ -4195,9 +4238,20 @@ much a purge would reclaim, and to confirm what it reclaimed.
 
 ## Background Jobs API
 
-The Background Jobs API provides endpoints to monitor long-running background operations within the audio control service. This includes metadata updates, library scans, and other asynchronous tasks.
+The Background Jobs API provides endpoints to monitor long-running background operations. This includes metadata updates, library scans, and other asynchronous tasks.
 
 Jobs remain in the system after completion and are marked with `finished: true`. This allows clients to track both active and completed jobs. When a new job is created with the same ID as an existing job, it will overwrite the previous job data.
+
+**There are two of these listings, one per daemon, and neither can answer for the other.** The job registry is held in memory by the process that runs the jobs, so each daemon reports only its own:
+
+| Path | Daemon | Jobs it reports |
+|---|---|---|
+| `/api/audiocontrol/background/jobs` | player | library scans, image pre-warming, image cache maintenance |
+| `/api/metadata/background/jobs` | metadata | artist and album metadata enrichment |
+
+A client showing enrichment progress must poll the `/api/metadata/` path. Polling the player daemon's for it does not fail — it answers `200` with the jobs it does have, and simply never mentions enrichment. Before 0.23.0 there was one daemon and one registry, so a single poll of `/api/audiocontrol/background/jobs` saw everything; a client that still does only that sees enrichment stop being reported, with no error to say why.
+
+Both daemons take the same parameters and return the same shape. The endpoints below are written the way each daemon serves them, without the proxy prefix, so `GET /api/background/jobs` is whichever of the two the request reached.
 
 ### List Background Jobs
 
@@ -4343,7 +4397,8 @@ Retrieves detailed information about a specific background job by its unique ide
 
 **Example Request**:
 ```bash
-curl -X GET "http://localhost:8080/api/background/jobs/artist_metadata_update_1640995200"
+# Artist enrichment is the metadata daemon's job, so ask the metadata daemon.
+curl -X GET "http://localhost/api/metadata/background/jobs/artist_metadata_update"
 ```
 
 **Example Response (Job Found)**:
@@ -4419,11 +4474,16 @@ curl -X GET "http://localhost:8080/api/background/jobs/artist_metadata_update_16
 - New jobs with the same ID will overwrite existing job data
 
 **Background Job Types**:
-Common background jobs include:
-- `Artist Metadata Update`: Updates metadata for library artists
-- `Library Scan`: Scans and indexes music library files
-- `Cover Art Download`: Downloads cover art for albums/artists
-- `Database Maintenance`: Performs database cleanup and optimization
+
+Reported by the metadata daemon, under `/api/metadata/background/jobs`:
+- `Artist Metadata Update` (id `artist_metadata_update`): looks up metadata for the library's artists
+- `Album Genre Update` (id `album_genre_update`): fetches and cleans album genres
+
+Reported by the player daemon, under `/api/audiocontrol/background/jobs`:
+- `MPD Load Data` and `MPD Process Songs`: an MPD library scan, in its two phases
+- `Cover Art Thumbnail Generation` (id `imagecache_prewarm`): pre-generates the configured thumbnail sizes
+
+`Image Variant Purge` (id `imagecache_purge`) can appear under either: both daemons keep an image cache, and each purges its own when its size ladder changes.
 
 ## Generic Player Controller
 

@@ -203,6 +203,19 @@ override_dh_strip:
 # substituted form is what has to be checked, and this is the only place it
 # exists before the .deb is sealed.
 override_dh_installdeb:
+	@set -e; \
+	for s in debian/postinst debian/preinst debian/prerm debian/postrm; do \
+	  [ -f "$$s" ] || continue; \
+	  bad=$$(grep -n 'DEBHELPER' "$$s" | grep -vE ':\#DEBHELPER\#$$' || true); \
+	  if [ -n "$$bad" ]; then \
+	    echo "ERROR: $$s names the debhelper substitution token outside a line of" >&2; \
+	    echo "       its own. dh substitutes it wherever it appears, comments" >&2; \
+	    echo "       included, so the rest of that line is left behind as a" >&2; \
+	    echo "       command. This is what broke 0.23.2 on a device." >&2; \
+	    echo "$$bad" >&2; exit 1; \
+	  fi; \
+	  echo "$$s: substitution token only on its own line"; \
+	done
 	dh_installdeb
 	@set -e; \
 	for s in debian/hifiberry-audiocontrol/DEBIAN/postinst \

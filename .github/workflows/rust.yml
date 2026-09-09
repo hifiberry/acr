@@ -1,10 +1,11 @@
 name: Rust
 
+# Every branch, not just main. A feature branch that only gets CI once it is
+# already a pull request against main is a branch whose commits were never
+# checked, and this repository has had twenty land that way.
 on:
   push:
-    branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
 
 env:
   CARGO_TERM_COLOR: always

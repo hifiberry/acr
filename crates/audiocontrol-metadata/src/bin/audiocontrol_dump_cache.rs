@@ -161,6 +161,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
+    // The cache has to be told where it lives before anything reads it: the
+    // library no longer carries a default path, so that neither daemon can
+    // open the other's database by accident. This tool keeps its own default,
+    // which is where the metadata daemon puts the cache -- and refuses rather
+    // than reporting an empty cache when nothing is there to read.
     let cache_dir = resolve_cache_dir(cli.cache_dir, Path::new(DEFAULT_CACHE_DIR))?;
     info!("Using cache directory: {}", cache_dir.display());
     AttributeCache::initialize_global(&cache_dir)?;

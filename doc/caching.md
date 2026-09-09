@@ -71,16 +71,16 @@ You can also use standard SQLite tools to inspect the cache:
 
 ```bash
 # View all cached entries
-sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT key, value FROM cache;"
+sqlite3 /var/lib/audiocontrol/cache/attributes.db "SELECT key, value FROM cache;"
 
 # View cache schema
-sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db ".schema"
+sqlite3 /var/lib/audiocontrol/cache/attributes.db ".schema"
 
 # Count total entries
-sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT COUNT(*) FROM cache;"
+sqlite3 /var/lib/audiocontrol/cache/attributes.db "SELECT COUNT(*) FROM cache;"
 
 # Search for specific entries
-sqlite3 /var/lib/audiocontrol/cache/attributes/attributes.db "SELECT * FROM cache WHERE key LIKE '%artist::mbid%';"
+sqlite3 /var/lib/audiocontrol/cache/attributes.db "SELECT * FROM cache WHERE key LIKE '%artist::mbid%';"
 ```
 
 ## Managing the Cache
@@ -222,10 +222,13 @@ In the main configuration file, you can customize the cache behavior:
 
 ```json
 {
+  "datastore": {
+    "attribute_cache": {
+      "dbfile": "/var/lib/audiocontrol/cache/attributes.db"
+    }
+  },
   "cache": {
-    "attribute_cache_path": "custom/path/to/attributes",
-    "image_cache_path": "custom/path/to/images", 
-    "max_age_days": 30,
+    "image_cache_path": "custom/path/to/images",
     "enabled": true
   },
   "musicbrainz": {
@@ -239,9 +242,9 @@ Available configuration options:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `attribute_cache_path` | `"/var/lib/audiocontrol/cache/attributes"` | Path to the attribute cache directory |
+| `attribute_cache.dbfile` | `"/var/lib/audiocontrol/cache/attributes.db"` | The attribute cache database file. Nested under `datastore.attribute_cache`, not a top-level key, and a file rather than a directory. |
 | `image_cache_path` | `"/var/lib/audiocontrol/cache/images"` | Path to the image cache directory |
-| `max_age_days` | `30` | Maximum age of cached items in days (0 = no expiration) |
+| `max_age_days` | `30` | Documented but not read by any code in this repository; setting it has no effect. Left listed until somebody establishes whether it was planned or dropped. |
 | `enabled` | `true` | Whether caching is enabled |
 
 ## Recent Improvements

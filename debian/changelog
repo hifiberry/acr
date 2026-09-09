@@ -1,3 +1,25 @@
+hifiberry-audiocontrol (0.23.4) trixie; urgency=medium
+
+  * Marking a song as a favourite could write it into the wrong database. When
+    the settings database could not be opened at the path it was configured for
+    -- a corrupt file, a directory that cannot be created -- the store kept the
+    connection it had opened before, and POST /api/favourites/add answered 200
+    while the favourite landed in another database entirely. On a device this
+    merged the two halves' state: a favourite added through the metadata side
+    was found afterwards in the player daemon's own settings.db. A store that
+    cannot be configured is now unusable, so the call fails visibly instead of
+    succeeding against a file nobody asked for. The same fault, and the same
+    fix, applied to the attribute cache.
+
+  * The two errors about /var/lib/audiocontrol/cache/attributes.db logged at
+    every start are gone. Neither the settings database nor the attribute cache
+    now opens -- or creates -- anything before it has been told where its files
+    belong, so the first access no longer touches a hard-coded path and no
+    longer reports a permissions failure on a directory the daemon was never
+    configured to use.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 09 Sep 2026 09:20:00 +0200
+
 hifiberry-audiocontrol (0.23.3) trixie; urgency=medium
 
   * 0.23.2 could not be configured. A comment in the maintainer script

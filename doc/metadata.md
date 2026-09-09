@@ -585,8 +585,8 @@ The primary tool for inspecting the metadata cache is `audiocontrol_dump_cache`,
 # Dump all cache contents (uses default path)
 audiocontrol_dump_cache
 
-# Dump cache from specific path
-audiocontrol_dump_cache /custom/path/to/cache/attributes
+# Dump cache from a specific directory (the database inside it is attributes.db)
+audiocontrol_dump_cache --cache-dir /custom/path/to/cache
 
 # Show help
 audiocontrol_dump_cache --help
@@ -740,14 +740,14 @@ done
 
 ### Cache Location and Permissions
 
-The default cache location is `/var/lib/audiocontrol/cache/attributes`. Common issues:
+The default cache database is `/var/lib/audiocontrol/cache/attributes.db`. Common issues:
 
 ```bash
 # Check if cache directory exists and is accessible
 ls -la /var/lib/audiocontrol/cache/
 
-# Check cache directory permissions
-stat /var/lib/audiocontrol/cache/attributes
+# Check the cache database's permissions
+stat /var/lib/audiocontrol/cache/attributes.db
 
 # Check if running as correct user
 whoami

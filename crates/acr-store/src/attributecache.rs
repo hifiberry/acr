@@ -101,19 +101,31 @@ pub struct AttributeCache {
     current_memory_bytes: usize,
 }
 
-impl Default for AttributeCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl AttributeCache {
-    /// Create a new attribute cache with default settings
+    /// Create an unconfigured attribute cache.
+    ///
+    /// Nothing is opened and no directory is created: the cache stays unusable
+    /// until [`AttributeCache::initialize_from_config`] or one of the
+    /// `initialize_*` calls says where its database belongs, and every read and
+    /// write fails with "not configured" until then.
+    ///
+    /// There is deliberately no default path. The player daemon and the
+    /// metadata daemon share this crate and each owns its own databases, so a
+    /// hard-coded default is one daemon opening the other's file. It was also
+    /// visible noise: merely touching the global built this, so both daemons
+    /// logged two errors about `/var/lib/audiocontrol/cache/attributes.db` at
+    /// every start, before any configuration had been read, which reads to an
+    /// operator as a permissions failure on every boot.
     pub fn new() -> Self {
-        // Using the default path that matches our datastore.attribute_cache.dbfile setting
-        let cache_dir = PathBuf::from("/var/lib/audiocontrol/cache");
-        let db_file = cache_dir.join("attributes.db");
-        Self::with_database_file_and_memory_limit(db_file, 50 * 1024 * 1024) // 50MB default
+        AttributeCache {
+            db_path: PathBuf::new(),
+            db: None,
+            enabled: true,
+            max_age_days: 30,
+            memory_cache: LruCache::new(NonZeroUsize::new(1000000).unwrap()),
+            max_memory_bytes: 50 * 1024 * 1024,
+            current_memory_bytes: 0,
+        }
     }
 
     /// Create a new attribute cache with a specific database file
@@ -329,7 +341,9 @@ impl AttributeCache {
     fn reconfigure_with_directory<P: AsRef<Path>>(&mut self, dir: P) -> Result<(), String> {
         let cache_dir = dir.as_ref().to_path_buf();
         let db_file = cache_dir.join("attributes.db");
-        
+
+        self.give_up_current_database();
+
         // Try to ensure the directory exists
         if let Err(e) = std::fs::create_dir_all(&cache_dir) {
             return Err(format!("Failed to create directory for attribute cache: {}", e));
@@ -344,9 +358,7 @@ impl AttributeCache {
         // Update the instance
         self.db_path = db_file;
         self.db = db;
-        self.memory_cache.clear(); // Clear memory cache as we have a new DB
-        self.current_memory_bytes = 0;
-        
+
         Ok(())
     }
 
@@ -354,7 +366,9 @@ impl AttributeCache {
     /// This will close the existing database and open a new one with a new memory cache
     fn reconfigure_with_file_and_memory_limit<P: AsRef<Path>>(&mut self, db_file: P, max_memory_bytes: usize) -> Result<(), String> {
         let db_path = db_file.as_ref().to_path_buf();
-        
+
+        self.give_up_current_database();
+
         // Try to ensure the directory exists
         if let Some(parent) = db_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -378,13 +392,41 @@ impl AttributeCache {
         // Update the instance
         self.db_path = db_path;
         self.db = db;
-        self.memory_cache.clear();
-        self.current_memory_bytes = 0;
         self.max_memory_bytes = max_memory_bytes;
         
         info!("Attribute cache reconfigured with {}MB memory limit", max_memory_bytes / 1024 / 1024);
         
         Ok(())
+    }
+
+    /// Give up the current database before reconfiguring onto another one.
+    ///
+    /// Called first by both reconfigure paths, so that every failure below
+    /// them leaves the cache unusable rather than still pointed at whatever it
+    /// was opened against before. Callers log an error from the `initialize_*`
+    /// wrappers and carry on, so a cache left holding the previous connection
+    /// keeps answering writes — against a database nobody asked for.
+    fn give_up_current_database(&mut self) {
+        self.db = None;
+        self.db_path = PathBuf::new();
+        self.memory_cache.clear();
+        self.current_memory_bytes = 0;
+    }
+
+    /// Why the cache cannot be used, if it cannot.
+    ///
+    /// "Not configured" and "disabled" are different faults and an operator
+    /// reading the log needs to tell them apart: the first means nobody has
+    /// said where the database belongs (or saying so failed), the second means
+    /// somebody turned the cache off on purpose.
+    fn unusable_reason(&self) -> Option<&'static str> {
+        if !self.enabled {
+            Some("Cache is disabled")
+        } else if self.db.is_none() {
+            Some("Cache is not configured")
+        } else {
+            None
+        }
     }
 
     /// Set the maximum age for cached items in days
@@ -450,8 +492,8 @@ impl AttributeCache {
 
     /// Store a serializable value in the cache with an optional expiry time (Unix timestamp)
     pub fn set_with_expiry<T: Serialize + ?Sized>(&mut self, key: &str, value: &T, expires_at: Option<i64>) -> Result<(), String> {
-        if !self.is_enabled() {
-            return Err("Cache is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         let serialized = match serde_json::to_vec(value) {
@@ -500,8 +542,8 @@ impl AttributeCache {
     /// Get a value from the cache and deserialize it
     /// This method automatically removes expired entries when they are accessed
     pub fn get<T: for<'de> Deserialize<'de>>(&mut self, key: &str) -> Result<Option<T>, String> {
-        if !self.is_enabled() {
-            return Err("Cache is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         // Check database first to validate expiry before returning from memory cache
@@ -584,8 +626,8 @@ impl AttributeCache {
 
     /// Remove an item from the cache
     pub fn remove(&mut self, key: &str) -> Result<bool, String> {
-        if !self.is_enabled() {
-            return Err("Cache is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         // Remove from memory cache
@@ -614,8 +656,8 @@ impl AttributeCache {
 
     /// Clear the entire cache
     pub fn clear(&mut self) -> Result<(), String> {
-        if !self.is_enabled() {
-            return Err("Cache is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         // Clear memory cache
@@ -639,8 +681,8 @@ impl AttributeCache {
 
     /// Clean up old entries that exceed the maximum age
     pub fn cleanup(&mut self) -> Result<usize, String> {
-        if !self.is_enabled() {
-            return Err("Cache is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         match &mut self.db {
@@ -674,8 +716,8 @@ impl AttributeCache {
     /// Get the created_at and updated_at timestamps for a key
     /// Returns (created_at, updated_at) as Unix timestamps, or None if key doesn't exist
     pub fn get_timestamps(&mut self, key: &str) -> Result<Option<(i64, i64)>, String> {
-        if !self.is_enabled() {
-            return Err("Cache is disabled".to_string());
+        if let Some(reason) = self.unusable_reason() {
+            return Err(reason.to_string());
         }
 
         match &mut self.db {
@@ -731,8 +773,9 @@ impl AttributeCache {
 
     /// List all cache keys, optionally filtered by prefix
     pub fn list_keys(&self, prefix_filter: Option<&str>) -> Result<Vec<String>, String> {
+        let reason = self.unusable_reason();
         let db = self.db.as_ref()
-            .ok_or_else(|| "Database connection is not available".to_string())?;
+            .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
         let mut keys = Vec::new();
         
         match prefix_filter {
@@ -774,8 +817,9 @@ impl AttributeCache {
             return Ok(Vec::new());
         }
 
+        let reason = self.unusable_reason();
         let db = self.db.as_ref()
-            .ok_or_else(|| "Database connection is not available".to_string())?;
+            .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
         let mut entries = Vec::new();
 
         match prefix_filter {
@@ -829,8 +873,9 @@ impl AttributeCache {
             return Ok(0);
         }
 
+        let reason = self.unusable_reason();
         let db = self.db.as_ref()
-            .ok_or_else(|| "Database connection is not available".to_string())?;
+            .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
 
         let pattern = format!("{}%", prefix);
 
@@ -877,8 +922,9 @@ impl AttributeCache {
             return Ok(0);
         }
 
+        let reason = self.unusable_reason();
         let db = self.db.as_ref()
-            .ok_or_else(|| "Database connection is not available".to_string())?;
+            .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
 
         let pattern = format!("{}%", prefix);
 
@@ -1105,7 +1151,176 @@ mod tests {
         assert!(parse_size_string("").is_err());
     }
 
+    /// A cache configured at `db_file` with `key` read back through a *fresh*
+    /// connection, so the answer comes from the file rather than from another
+    /// instance's memory cache.
+    fn cached_value_on_disk(db_file: &Path, key: &str) -> Option<String> {
+        AttributeCache::with_database_file(db_file).get::<String>(key).unwrap()
+    }
+
+    /// A corrupt `attributes.db` inside a fresh directory: SQLite opens the
+    /// file and then refuses the schema. This is the shape seen on a device.
+    fn corrupt_cache_dir(parent: &Path, name: &str) -> PathBuf {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("attributes.db"), b"this is not a SQLite database").unwrap();
+        dir
+    }
+
+    /// The property the split into two daemons depends on: a cache that could
+    /// not be reconfigured writes nowhere, and in particular not into the
+    /// database it was previously pointed at.
+    fn assert_cache_write_lands_nowhere(mut cache: AttributeCache, good_file: &Path) {
+        let err = cache
+            .set("shared_key", &"written_after_failure".to_string())
+            .expect_err("a cache that could not be configured must not accept writes");
+        assert!(!err.is_empty(), "the refusal should say something");
+
+        assert_eq!(
+            cached_value_on_disk(good_file, "shared_key"),
+            Some("written_to_a".to_string()),
+            "the write went into the previously configured database"
+        );
+    }
+
     #[test]
+    #[serial]
+    fn test_failed_reconfigure_with_directory_leaves_no_writable_database() {
+        let temp_dir = TempDir::new().unwrap();
+        let good_file = temp_dir.path().join("a").join("attributes.db");
+
+        let mut cache = AttributeCache::with_database_file(&good_file);
+        cache.set("shared_key", &"written_to_a".to_string()).unwrap();
+
+        let bad_dir = corrupt_cache_dir(temp_dir.path(), "corrupt");
+        cache
+            .reconfigure_with_directory(&bad_dir)
+            .expect_err("reconfiguring onto a corrupt database should fail");
+
+        assert_cache_write_lands_nowhere(cache, &good_file);
+    }
+
+    #[test]
+    #[serial]
+    fn test_failed_reconfigure_from_config_leaves_no_writable_database() {
+        // The path the daemons actually take: `initialize_from_config` ->
+        // `reconfigure_with_file_and_memory_limit`.
+        let temp_dir = TempDir::new().unwrap();
+        let good_file = temp_dir.path().join("a").join("attributes.db");
+
+        let mut cache = AttributeCache::with_database_file(&good_file);
+        cache.set("shared_key", &"written_to_a".to_string()).unwrap();
+
+        let bad_file = corrupt_cache_dir(temp_dir.path(), "corrupt").join("attributes.db");
+        cache
+            .reconfigure_with_file_and_memory_limit(&bad_file, 1024 * 1024)
+            .expect_err("reconfiguring onto a corrupt database should fail");
+
+        assert_cache_write_lands_nowhere(cache, &good_file);
+    }
+
+    #[test]
+    #[serial]
+    fn test_successful_reconfigure_moves_writes_to_the_new_database() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_a = temp_dir.path().join("a").join("attributes.db");
+        let file_b = temp_dir.path().join("b").join("attributes.db");
+
+        let mut cache = AttributeCache::with_database_file(&file_a);
+        cache.set("shared_key", &"written_to_a".to_string()).unwrap();
+
+        cache
+            .reconfigure_with_file_and_memory_limit(&file_b, 1024 * 1024)
+            .expect("reconfiguring onto a usable path should succeed");
+
+        cache
+            .set("shared_key", &"written_to_b".to_string())
+            .expect("a reconfigured cache must be writable");
+
+        assert_eq!(
+            cached_value_on_disk(&file_b, "shared_key"),
+            Some("written_to_b".to_string()),
+            "the write should land in the newly configured database"
+        );
+        assert_eq!(
+            cached_value_on_disk(&file_a, "shared_key"),
+            Some("written_to_a".to_string()),
+            "the previously configured database should be left alone"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_unconfigured_cache_says_so_from_every_accessor() {
+        // The listing and prefix calls are what `audiocontrol_dump_cache`
+        // uses, so they are the worst place to report a different state than
+        // the rest of the type.
+        let mut cache = AttributeCache::new();
+
+        let mut errors = vec![
+            cache
+                .list_keys(None)
+                .expect_err("list_keys on an unconfigured cache must fail"),
+        ];
+        errors.push(
+            cache
+                .list_entries(None)
+                .expect_err("list_entries on an unconfigured cache must fail"),
+        );
+        errors.push(
+            cache
+                .remove_by_prefix("anything")
+                .expect_err("remove_by_prefix on an unconfigured cache must fail")
+                .to_string(),
+        );
+        errors.push(
+            cache
+                .preload_prefix("anything")
+                .expect_err("preload_prefix on an unconfigured cache must fail")
+                .to_string(),
+        );
+
+        for err in errors {
+            assert!(
+                err.contains("not configured"),
+                "every accessor should name the same cause, got: {}",
+                err
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_new_attribute_cache_opens_nothing_until_configured() {
+        // What `ATTRIBUTE_CACHE` is built from. Touching it used to create and
+        // open `/var/lib/audiocontrol/cache/attributes.db` before anyone had
+        // said where the cache belongs, which logged two errors at every start
+        // and, in the metadata daemon, is the player daemon's file.
+        let mut cache = AttributeCache::new();
+
+        assert_eq!(
+            cache.db_path,
+            PathBuf::new(),
+            "an unconfigured cache must not have adopted a path"
+        );
+        assert!(cache.db.is_none(), "an unconfigured cache must hold no connection");
+        assert!(!cache.is_enabled());
+
+        let err = cache
+            .set("shared_key", &"value".to_string())
+            .expect_err("an unconfigured cache must refuse writes");
+        assert!(
+            err.contains("not configured"),
+            "the error should name the cause, got: {}",
+            err
+        );
+    }
+
+    // Re-points the process-wide singleton, so it cannot run beside another
+    // test that uses it: without this it re-pointed the global out from under
+    // `test_global_expiry_functions`, whose read then found an empty database.
+    #[test]
+    #[serial]
     fn test_initialize_from_config() {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         

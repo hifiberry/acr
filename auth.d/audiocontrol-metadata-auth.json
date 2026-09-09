@@ -1,0 +1,10 @@
+{ "service":"audiocontrol-metadata", "match_prefix":"/api/metadata", "default_tier":"risky", "rules":[
+  { "tier":"ok","methods":["GET"],"paths":[
+    "/capabilities",
+    "/coverart/*","/coverart/*/*","/coverart/*/*/*","/coverart/artist/*/images","/coverart/artist/*/image/*",
+    "/imagecache/*","/audiodb/*/*",
+    "/favourites/is_favourite","/favourites/providers","/lastfm/status"] },
+  { "tier":"ok","methods":["POST"],"paths":[
+    "/favourites/add","/coverart/artist/*/update","/coverart/artist/*/upload"] },
+  { "tier":"ok","methods":["DELETE"],"paths":["/favourites/remove","/coverart/artist/*/image/*"] },
+  { "tier":"risky","methods":["*"],"paths":["/**"] } ]}

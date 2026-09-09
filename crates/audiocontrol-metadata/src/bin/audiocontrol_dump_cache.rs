@@ -4,11 +4,8 @@ use acr_store::attributecache::{self, AttributeCache};
 use audiocontrol_metadata::artistsplitter::ARTIST_SPLIT_CACHE_PREFIX;
 use audiocontrol_metadata::musicbrainz::{ARTIST_MBID_CACHE_PREFIX, ARTIST_NOT_FOUND_CACHE_PREFIX};
 use audiocontrol_metadata::image_meta::IMAGE_META_CACHE_PREFIX;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use chrono::DateTime;
-
-/// Where the attribute cache lives unless `--cache-dir` says otherwise.
-const DEFAULT_CACHE_DIR: &str = "/var/lib/audiocontrol/cache";
 
 #[derive(Parser)]
 #[command(name = "audiocontrol_dump_cache")]
@@ -121,6 +118,44 @@ fn determine_prefix(prefix: Option<&str>, artistmbid: bool, imagemeta: bool, art
     }
 }
 
+/// Where this tool looks when `--cache-dir` is not given.
+///
+/// The metadata daemon's directory, not the player daemon's. Every prefix the
+/// tool has a shortcut for -- `artist::mbid`, `image_meta:`, `artist::split`,
+/// `artist::not_found` -- is written by the metadata daemon and by nothing
+/// else, so `acr_store`'s own default (`/var/lib/audiocontrol/cache`, the
+/// player daemon's attribute cache) held none of them once the two processes
+/// split, and every invocation without the flag listed nothing at all and
+/// exited 0.
+///
+/// Must agree with `services.datastore.attribute_cache.dbfile` in
+/// `configs/metadata.json`; the test below reads that file and pins the two
+/// together rather than trusting this comment.
+const DEFAULT_CACHE_DIR: &str = "/var/lib/audiocontrol/metadata";
+
+/// The directory to open, or a message explaining why there is none.
+///
+/// An explicit `--cache-dir` is taken as given -- it is how a cache copied off
+/// a device gets inspected, and it may legitimately not exist yet. The default
+/// is checked instead of assumed, because `AttributeCache` *creates* the
+/// database it is pointed at: without this the tool would silently make an
+/// empty cache, report that it holds nothing, exit 0, and leave the file
+/// behind. An empty answer from a diagnostic tool is worse than a refusal.
+fn resolve_cache_dir(explicit: Option<PathBuf>, default_dir: &Path) -> Result<PathBuf, String> {
+    if let Some(dir) = explicit {
+        return Ok(dir);
+    }
+    if default_dir.join("attributes.db").is_file() {
+        return Ok(default_dir.to_path_buf());
+    }
+    Err(format!(
+        "no cache database at {}; pass --cache-dir DIR to name the directory to read \
+         (the metadata daemon's cache is configured as services.datastore.attribute_cache.dbfile \
+         in /etc/audiocontrol/metadata.json, the player daemon's in audiocontrol.json)",
+        default_dir.join("attributes.db").display()
+    ))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -129,10 +164,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The cache has to be told where it lives before anything reads it: the
     // library no longer carries a default path, so that neither daemon can
     // open the other's database by accident. This tool keeps its own default,
-    // which is where the metadata daemon puts the cache.
-    let cache_dir = cli
-        .cache_dir
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR));
+    // which is where the metadata daemon puts the cache -- and refuses rather
+    // than reporting an empty cache when nothing is there to read.
+    let cache_dir = resolve_cache_dir(cli.cache_dir, Path::new(DEFAULT_CACHE_DIR))?;
     info!("Using cache directory: {}", cache_dir.display());
     AttributeCache::initialize_global(&cache_dir)?;
 
@@ -371,5 +405,76 @@ fn truncate_key(key: &str, max_len: usize) -> String {
         key.to_string()
     } else {
         format!("{}...", &key[..max_len - 3])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `DEFAULT_CACHE_DIR` is the directory holding the *metadata* daemon's
+    /// attribute cache, read out of the shipped configuration rather than
+    /// restated here.
+    ///
+    /// Every prefix this tool knows a shortcut for -- `artist::mbid`,
+    /// `image_meta:`, `artist::split`, `artist::not_found` -- is written only
+    /// by the metadata daemon. Pointed at the player daemon's cache the tool
+    /// answers every question with an empty list and exit 0, which is the one
+    /// failure mode a diagnostic tool must not have.
+    #[test]
+    fn default_cache_dir_is_the_metadata_daemons() {
+        let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../configs/metadata.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).expect("configs/metadata.json"))
+                .expect("configs/metadata.json is not valid JSON");
+        let dbfile = json["services"]["datastore"]["attribute_cache"]["dbfile"]
+            .as_str()
+            .expect("services.datastore.attribute_cache.dbfile");
+
+        assert_eq!(
+            Path::new(dbfile).parent().unwrap(),
+            Path::new(DEFAULT_CACHE_DIR),
+            "the default cache directory must be the one configs/metadata.json puts attributes.db in"
+        );
+    }
+
+    /// `--cache-dir` is taken exactly as given, existing or not: the tool is
+    /// also used to inspect a copy of a cache pulled off a device.
+    #[test]
+    fn an_explicit_cache_dir_is_used_as_given() {
+        let explicit = PathBuf::from("/somewhere/else");
+        let resolved = resolve_cache_dir(Some(explicit.clone()), Path::new("/unused"))
+            .expect("an explicit directory is never refused");
+        assert_eq!(resolved, explicit);
+    }
+
+    /// With no `--cache-dir` and no database at the default path, the tool
+    /// refuses rather than opening an empty cache.
+    ///
+    /// `AttributeCache` creates the database it is pointed at, so without this
+    /// the tool would create an empty one and then report, successfully, that
+    /// it holds nothing -- indistinguishable from a cache that really is
+    /// empty, and it would leave a stray file behind as well.
+    #[test]
+    fn a_missing_default_cache_is_refused() {
+        let empty = tempfile::tempdir().unwrap();
+        let err = resolve_cache_dir(None, empty.path())
+            .expect_err("a default directory with no attributes.db must be refused");
+        assert!(err.contains("--cache-dir"), "the error must name the way out: {}", err);
+        assert!(
+            err.contains(&empty.path().display().to_string()),
+            "the error must name the directory it looked in: {}",
+            err
+        );
+    }
+
+    /// A default directory that does hold a cache is used without a flag.
+    #[test]
+    fn a_present_default_cache_needs_no_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("attributes.db"), b"").unwrap();
+        let resolved = resolve_cache_dir(None, dir.path()).expect("a populated default is used");
+        assert_eq!(resolved, dir.path());
     }
 }

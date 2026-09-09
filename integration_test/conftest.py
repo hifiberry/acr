@@ -4,6 +4,7 @@ Integration tests for AudioControl system
 These tests start the AudioControl server and test the API endpoints
 """
 
+import hashlib
 import json
 import os
 import signal
@@ -32,6 +33,13 @@ TEST_PORTS = {
     'coverart': 18080,
     'cache': 18080,
     'metadata': 18080,
+    # The two-daemon arrangement (test_two_daemons.py). Two ports, four apart,
+    # mirroring the shipped 1080/1084 so that a config copied from either
+    # direction is recognisable. The metadata daemon's readiness is 18084, its
+    # own port; it never learns the player daemon's, which reaches it only
+    # because `core.url` is written out.
+    'two_daemons': 18080,
+    'two_daemons_metadata': 18084,
 }
 
 # Path configurations for different test types
@@ -46,7 +54,25 @@ TEST_CONFIGS = {
     'coverart': Path(__file__).parent / "test_config_generic.json",
     'cache': Path(__file__).parent / "test_config_cache.json",
     'metadata': Path(__file__).parent / "test_config_metadata.json",
+    'two_daemons': Path(__file__).parent / "test_config_two_daemons_player.json",
 }
+
+# The metadata daemon reads a file of its own shape -- no players, no
+# action_plugins, and a `core` section it refuses to start without -- so it is
+# not in TEST_CONFIGS, which is indexed by player-daemon test name.
+METADATA_DAEMON_CONFIG = Path(__file__).parent / "test_config_two_daemons_metadata.json"
+
+# Which daemon owns which credential, per
+# doc/specs/2026-09-08-two-processes.md. Names only: no test here handles a
+# credential value.
+SPOTIFY_KEYS = [
+    "spotify_access_token",
+    "spotify_refresh_token",
+    "spotify_token_expiry",
+    "spotify_user_id",
+    "spotify_display_name",
+]
+LASTFM_KEYS = ["lastfm_session_key", "lastfm_username"]
 
 # Default path to static configuration file
 STATIC_CONFIG_PATH = Path(__file__).parent / "test_config_generic.json"
@@ -55,17 +81,39 @@ STATIC_CONFIG_PATH = Path(__file__).parent / "test_config_generic.json"
 _server_processes: Dict[str, subprocess.Popen] = {}
 _server_configs: Dict[str, Path] = {}
 
+def deep_merge(target: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge `overrides` into `target` in place, recursing into dicts.
+
+    A plain `dict.update` would replace a whole config section, which is the
+    wrong thing here: overriding `services.security_store.path` must not throw
+    away the rest of `services`.
+    """
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            deep_merge(target[key], value)
+        else:
+            target[key] = value
+    return target
+
+
 class AudioControlTestServer:
     """Helper class to manage AudioControl server instances for testing"""
     
-    def __init__(self, test_name: str, port: int):
+    def __init__(self, test_name: str, port: int,
+                 config_overrides: Optional[Dict[str, Any]] = None):
         self.test_name = test_name
         self.port = port
+        # Merged into the loaded configuration by create_config, so a fixture
+        # can give this daemon paths of its own without a second config file.
+        # The two-daemon fixture needs it for the credential store and the
+        # settings database: those are per-daemon files, and a test about two
+        # daemons not overwriting each other's is worthless if they share one.
+        self.config_overrides = config_overrides or {}
         self.process: Optional[subprocess.Popen] = None
         self.config_path: Optional[Path] = None
         self.cache_dir: Optional[Path] = None
         self.server_url = f"http://localhost:{port}"
-        
+
     def create_config(self) -> Path:
         """Create a test configuration file based on the static configuration"""
         # Create cache directory paths
@@ -124,6 +172,8 @@ class AudioControlTestServer:
             config["services"]["cache"]["attribute_cache_path"] = str(attributes_cache_dir.absolute())
             config["services"]["cache"]["image_cache_path"] = str(images_cache_dir.absolute())
         
+        deep_merge(config, self.config_overrides)
+
         # Create config file
         self.config_path = Path(f"test_config_{self.port}.json")
         with open(self.config_path, 'w') as f:
@@ -681,6 +731,255 @@ class AudioControlTestServer:
         
         time.sleep(0.5)  # Longer wait for reset to complete
 
+class MetadataDaemonTestServer:
+    """The metadata daemon (`audiocontrol-metadata`) as a process of its own.
+
+    Deliberately not a subclass of `AudioControlTestServer`. It shares almost
+    nothing with it: it has no players and no pipes, it reads a configuration
+    file of a different shape, and -- the point of the class -- **its readiness
+    is its own port**. Waiting for the player daemon's port would say nothing
+    about it: the seam is one-way, so this daemon opens every connection and
+    the player daemon holds no address for it. It probes `GET /api/version`
+    there for up to 30 s itself and then starts anyway, which means "the player
+    daemon answers" is neither necessary nor sufficient for this one to serve.
+
+    Every wait here is bounded and reports what it was waiting for. A hung
+    fixture in CI is worse than a failing one.
+    """
+
+    # Ignition brings up the caches, the providers and the settings database
+    # before Rocket binds, and a cold container is slower than a warm laptop.
+    READY_TIMEOUT = 40
+    STOP_TIMEOUT = 15
+
+    def __init__(self, port: int, core_port: int, work_dir: Path,
+                 config_overrides: Optional[Dict[str, Any]] = None,
+                 config_path: Optional[Path] = None):
+        self.port = port
+        self.core_port = core_port
+        self.work_dir = Path(work_dir)
+        self.config_overrides = config_overrides or {}
+        # A configuration file to use exactly as it is, for the tests that are
+        # *about* the file: they build one and the daemon must be given that
+        # one, not a regenerated version of it.
+        self.given_config_path = Path(config_path) if config_path else None
+        self.process: Optional[subprocess.Popen] = None
+        self.config_path = self.given_config_path or self.work_dir / "metadata.json"
+        self.server_url = f"http://127.0.0.1:{port}"
+
+    @staticmethod
+    def binary_path() -> Path:
+        """Where `cargo build --workspace` puts the metadata daemon.
+
+        `--workspace` matters: the binary is a `[[bin]]` of
+        `crates/audiocontrol-metadata`, not of the root package, so a plain
+        `cargo build` does not produce it at all.
+        """
+        project_root = Path(__file__).parent.parent
+        target_dir = os.environ.get('CARGO_TARGET_DIR', 'target')
+        binary_name = 'audiocontrol-metadata.exe' if os.name == 'nt' else 'audiocontrol-metadata'
+
+        release_path = project_root / target_dir / 'release' / binary_name
+        debug_path = project_root / target_dir / 'debug' / binary_name
+
+        if release_path.exists():
+            return release_path
+        return debug_path
+
+    def create_config(self) -> Path:
+        """Write this run's `metadata.json` into the working directory."""
+        if self.given_config_path:
+            return self.given_config_path
+
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(METADATA_DAEMON_CONFIG, 'r') as f:
+            config = json.load(f)
+
+        # The ports have one source of truth, TEST_PORTS, so that a test can
+        # move them without editing JSON in two places.
+        config["services"]["webserver"]["port"] = self.port
+        config["services"]["core"]["url"] = f"http://127.0.0.1:{self.core_port}/api"
+        deep_merge(config, self.config_overrides)
+
+        with open(self.config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        return self.config_path
+
+    def start(self) -> bool:
+        """Start the daemon and wait for *its own* port to answer."""
+        binary_path = self.binary_path()
+        if not binary_path.exists():
+            raise FileNotFoundError(
+                f"metadata daemon binary not found at {binary_path}. It is a "
+                "[[bin]] of crates/audiocontrol-metadata, so build with "
+                "`cargo build --workspace`"
+            )
+
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.create_config()
+
+        print(f"Starting the metadata daemon on port {self.port}")
+        # Relative paths in the configuration -- the caches, the settings
+        # database -- resolve against this directory, so a run writes nothing
+        # outside the test's own temporary tree.
+        self.process = subprocess.Popen(
+            [str(binary_path), '-c', str(self.config_path)],
+            cwd=str(self.work_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        if self.wait_for_server(timeout=self.READY_TIMEOUT):
+            print(f"The metadata daemon is serving on port {self.port}")
+            return True
+
+        print(f"The metadata daemon failed to start on port {self.port}")
+        self.stop()
+        return False
+
+    @property
+    def readiness_url(self) -> str:
+        """`/api/metadata/capabilities`, served only by this daemon.
+
+        `/api/version` would be the obvious choice and is the wrong one: it is
+        the *player* daemon's route, the one this daemon polls, and it is not
+        mounted here. `/api/metadata/capabilities` comes from
+        `api::standalone_routes()`, which only this daemon mounts.
+        """
+        return f"{self.server_url}/api/metadata/capabilities"
+
+    def wait_for_server(self, timeout: int = READY_TIMEOUT) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.process and self.process.poll() is not None:
+                print(f"The metadata daemon exited with code {self.process.returncode}")
+                return False
+            try:
+                if requests.get(self.readiness_url, timeout=5).status_code == 200:
+                    return True
+            except requests.exceptions.RequestException:
+                pass
+            time.sleep(0.5)
+        return False
+
+    def stop(self):
+        """Terminate the daemon, killing it if it will not go.
+
+        This waits for the *process*. A test that goes on to assert something
+        about the daemon being down wants `wait_until_unreachable` as well:
+        the process ending and the port refusing are not the same instant.
+        """
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=self.STOP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=self.STOP_TIMEOUT)
+            except Exception:
+                pass
+            finally:
+                self.process = None
+
+    def wait_until_unreachable(self, timeout: int = 15):
+        """Block until this daemon's port refuses connections.
+
+        The evidence a test needs before asserting anything about the daemon
+        being down: a graceful shutdown takes a moment, and a request that
+        arrived during it would be answered.
+        """
+        deadline = time.time() + timeout
+        last_status = None
+        while time.time() < deadline:
+            try:
+                last_status = requests.get(self.readiness_url, timeout=2).status_code
+            except requests.exceptions.RequestException:
+                return
+            time.sleep(0.25)
+
+        raise AssertionError(
+            f"the metadata daemon is still answering on port {self.port} "
+            f"{timeout}s after being stopped (last status {last_status})"
+        )
+
+
+def run_metadata_daemon_to_completion(config_path: Path, work_dir: Path,
+                                      timeout: int = 30):
+    """Run the metadata daemon until it exits, and report how.
+
+    For the configurations that must not start. Returns `(returncode,
+    stderr)`; `returncode` is `None` if the daemon was still running when
+    `timeout` expired, which is a *result* rather than a hang -- the caller
+    asserts on it, so "it started after all" fails a test instead of blocking
+    CI.
+    """
+    process = subprocess.Popen(
+        [str(MetadataDaemonTestServer.binary_path()), '-c', str(config_path)],
+        cwd=str(work_dir),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _, stderr = process.communicate(timeout=timeout)
+        return process.returncode, stderr
+    except subprocess.TimeoutExpired:
+        process.kill()
+        _, stderr = process.communicate(timeout=timeout)
+        return None, stderr
+
+
+def seed_security_store(path: Path, keys: List[str]):
+    """Write a security store holding `keys`, with placeholder values.
+
+    The store's on-disk shape is `{"values": {key: ciphertext}, "modified":
+    {...}}` -- the keys are plaintext, only the values are encrypted -- so a
+    test can seed and inspect which credentials a file holds without ever
+    handling one. The values below are not credentials and are not valid
+    ciphertext: the daemon logs a decryption failure when it reads them, which
+    is the point at which a test that needed a real credential would have to
+    stop. None of these tests needs one.
+    """
+    now = int(time.time())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump({
+            "values": {key: "placeholder-not-a-credential" for key in keys},
+            "modified": {key: now for key in keys},
+            "version": 1,
+            "last_updated": now,
+        }, f, indent=2)
+
+
+def security_store_keys(path: Path) -> List[str]:
+    """The names of the credentials a store file holds, never their values."""
+    with open(path, 'r') as f:
+        return sorted(json.load(f)["values"].keys())
+
+
+def digest(path: Path) -> str:
+    """A digest of a file, so a test can say "unchanged" without quoting it.
+
+    The credential stores hold encrypted values. Comparing digests keeps them
+    out of assertion messages and out of CI logs.
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class TwoDaemons:
+    """The pair, as one test sees them."""
+
+    def __init__(self, player: AudioControlTestServer,
+                 metadata: MetadataDaemonTestServer,
+                 player_store: Path, metadata_store: Path):
+        self.player = player
+        self.metadata = metadata
+        self.player_store = player_store
+        self.metadata_store = metadata_store
+
+
 # Global cleanup function
 def cleanup_all_servers():
     """Clean up all test servers and temporary files"""
@@ -803,6 +1102,58 @@ def metadata_server():
     assert server.start_server(), "Failed to start metadata test server"
     yield server
     server.stop_server()
+
+@pytest.fixture
+def two_daemons(tmp_path):
+    """Both daemons, each with its own port, its own stores and its own
+    credential file.
+
+    The player daemon starts first, and not because the metadata daemon needs
+    it to: the shipped unit has `After=audiocontrol.service` and no
+    `Requires=`, so this order is the ordinary case rather than a requirement,
+    and the metadata daemon would come up either way after its 30 s probe. It
+    is first here because starting it first is what `kill_existing_processes`
+    allows -- that call, inside `start_server`, kills every process whose name
+    contains "audiocontrol", the metadata daemon included.
+
+    Both credential stores are seeded before either daemon starts, because
+    each daemon loads its store once at start-up: a file written afterwards
+    would not be in the memory that a later write serialises back out, which
+    is the very hazard under test.
+    """
+    player_store = tmp_path / "player" / "security_store.json"
+    metadata_store = tmp_path / "metadata" / "security_store.json"
+
+    # The five keys the player daemon owns and the two the metadata daemon
+    # owns. Placeholders, not credentials.
+    seed_security_store(player_store, SPOTIFY_KEYS)
+    seed_security_store(metadata_store, LASTFM_KEYS)
+
+    player = AudioControlTestServer(
+        "two_daemons", TEST_PORTS['two_daemons'],
+        config_overrides={"services": {
+            "security_store": {"path": str(player_store)},
+            "settingsdb": {"path": str(tmp_path / "player")},
+        }},
+    )
+    assert player.start_server(), "Failed to start the player daemon"
+
+    metadata = MetadataDaemonTestServer(
+        port=TEST_PORTS['two_daemons_metadata'],
+        core_port=TEST_PORTS['two_daemons'],
+        work_dir=tmp_path / "metadata",
+        config_overrides={"services": {
+            "security_store": {"path": str(metadata_store)},
+        }},
+    )
+    assert metadata.start(), "Failed to start the metadata daemon"
+
+    try:
+        yield TwoDaemons(player, metadata, player_store, metadata_store)
+    finally:
+        metadata.stop()
+        player.stop_server()
+
 
 if __name__ == "__main__":
     # Run cleanup if executed directly

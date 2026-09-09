@@ -42,6 +42,29 @@ override_dh_auto_configure:
 		sh -s -- -y --no-modify-path; \
 	fi
 
+# Two cargo calls, not one, and the reason is what a one-call build ships.
+#
+# `metadata` is in the root package's default features, and it is what links the
+# metadata crate into the `audiocontrol` binary. With it on, that binary brings
+# up a second, in-process metadata instance of its own -- its own artist store,
+# settings database and attribute cache -- and serves the whole metadata surface
+# on port 1080: /api/coverart/methods, /api/favourites/providers,
+# /api/lastfm/status, /api/metadata/capabilities and /api/resolve/title-order all
+# answer there. That was right while both halves were one process. Now that this
+# package ships two units, a default build would put two subscribers, two
+# enrichers and two scrobblers on the same events over duplicated state -- every
+# track scrobbled to Last.fm twice. There is no runtime switch for it: the
+# feature is `#[cfg]`, so the build is the only lever.
+#
+# `--features alsa` is not optional. Bare `--no-default-features` would also
+# drop ALSA, and with it the volume control every device uses -- a silent
+# functional regression, not a smaller binary.
+#
+# The two calls are separate because `--no-default-features` applies to every
+# package a `--workspace` build selects, which would strip the metadata crate's
+# own defaults too. So: the workspace minus the root package first (the metadata
+# daemon and its four tools, at their own defaults), then the root package with
+# the feature set this package wants.
 override_dh_auto_build:
 	if [ "$$SKIP_BUILD" = "1" ]; then \
 		echo "Skipping cargo build as requested"; \
@@ -54,8 +77,11 @@ override_dh_auto_build:
 		mkdir -p $(CURDIR)/build_tmp $(CURDIR)/build_home; \
 		echo "Fetching dependencies..."; \
 		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo fetch || exit 1; \
-		echo "Building with Cargo..."; \
-		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release --workspace --jobs 1 || exit 1; \
+		echo "Building the metadata daemon and everything it shares..."; \
+		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release --workspace --exclude audiocontrol --jobs 1 || exit 1; \
+		echo "Building the player daemon without the metadata feature..."; \
+		PATH="$(CARGO_HOME)/bin:$(PATH)" cargo build --release -p audiocontrol \
+			--no-default-features --features alsa --jobs 1 || exit 1; \
 		echo "Build completed successfully"; \
 		find $(CURDIR)/target -name "*.rlib" -delete 2>/dev/null || true; \
 		find $(CURDIR)/target -name "*.rmeta" -delete 2>/dev/null || true; \
@@ -78,6 +104,19 @@ override_dh_auto_install:
 	else \
 		echo "Error: Main binary target/release/audiocontrol not found!"; \
 		echo "Build may have failed - check for cargo build errors above"; \
+		exit 1; \
+	fi
+	# Install the metadata daemon. Required, not best-effort: this package now
+	# ships a unit that starts it, and a package whose unit points at a missing
+	# binary fails at first boot instead of at build time.
+	if [ -f target/release/audiocontrol-metadata ]; then \
+		echo "Installing audiocontrol-metadata binary"; \
+		cp target/release/audiocontrol-metadata debian/hifiberry-audiocontrol/usr/bin/audiocontrol-metadata; \
+		chmod +x debian/hifiberry-audiocontrol/usr/bin/audiocontrol-metadata; \
+	else \
+		echo "Error: target/release/audiocontrol-metadata not found!"; \
+		echo "The metadata daemon is a [[bin]] of crates/audiocontrol-metadata;"; \
+		echo "check the workspace build above"; \
 		exit 1; \
 	fi
 	# Install CLI tools if they exist
@@ -103,6 +142,12 @@ override_dh_auto_install:
 	fi
 	if [ -f configs/logging.json ]; then \
 		cp configs/logging.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \
+	fi
+	# Install the metadata daemon's own configuration. It refuses to start
+	# without services.core.url, which only this file supplies, so an unshipped
+	# metadata.json is a unit that fails on every boot.
+	if [ -f configs/metadata.json ]; then \
+		cp configs/metadata.json debian/hifiberry-audiocontrol/etc/audiocontrol/; \
 	fi
 	# Install genres configuration
 	if [ -f configs/genres.json ]; then \
@@ -134,9 +179,55 @@ override_dh_auto_clean:
 	find . -name "*.rlib" -delete 2>/dev/null || true
 	find . -name "*.rmeta" -delete 2>/dev/null || true
 
+# One call per unit: dh_installsystemd's --name= selects exactly one unit file,
+# so a single call would install and enable only the player daemon's and leave
+# debian/audiocontrol-metadata.service out of the package entirely. Both are
+# enabled, and both restart after an upgrade rather than being stopped across
+# it. There is no ordering between the two calls -- the units order themselves
+# with After=, and neither Requires= the other.
 override_dh_installsystemd:
 	dh_installsystemd --name=audiocontrol --restart-after-upgrade
+	dh_installsystemd --name=audiocontrol-metadata --restart-after-upgrade
 
 override_dh_strip:
 	# Skip debug symbol extraction - don't create dbgsym package
 	dh_strip --no-automatic-dbgsym
+
+# Check the GENERATED maintainer scripts, not just the ones in debian/.
+#
+# dh substitutes #DEBHELPER# wherever the token appears -- comments included.
+# A comment that merely mentioned the token by name once had its trailing
+# comma left behind as a command, so postinst exited 127 and dpkg left the
+# package half-configured on a device. The source script passed `bash -n`,
+# because the source was valid; only the substituted form was broken. So the
+# substituted form is what has to be checked, and this is the only place it
+# exists before the .deb is sealed.
+override_dh_installdeb:
+	@set -e; \
+	for s in debian/postinst debian/preinst debian/prerm debian/postrm; do \
+	  [ -f "$$s" ] || continue; \
+	  bad=$$(grep -n 'DEBHELPER' "$$s" | grep -vE ':\#DEBHELPER\#$$' || true); \
+	  if [ -n "$$bad" ]; then \
+	    echo "ERROR: $$s names the debhelper substitution token outside a line of" >&2; \
+	    echo "       its own. dh substitutes it wherever it appears, comments" >&2; \
+	    echo "       included, so the rest of that line is left behind as a" >&2; \
+	    echo "       command. This is what broke 0.23.2 on a device." >&2; \
+	    echo "$$bad" >&2; exit 1; \
+	  fi; \
+	  echo "$$s: substitution token only on its own line"; \
+	done
+	dh_installdeb
+	@set -e; \
+	for s in debian/hifiberry-audiocontrol/DEBIAN/postinst \
+	         debian/hifiberry-audiocontrol/DEBIAN/preinst \
+	         debian/hifiberry-audiocontrol/DEBIAN/prerm \
+	         debian/hifiberry-audiocontrol/DEBIAN/postrm; do \
+	  [ -f "$$s" ] || continue; \
+	  bash -n "$$s" || { echo "ERROR: generated $$s is not valid shell" >&2; exit 1; }; \
+	  if grep -q 'DEBHELPER' "$$s"; then \
+	    echo "ERROR: $$s still contains a DEBHELPER token after substitution;" >&2; \
+	    echo "       a comment naming the token gets substituted too." >&2; \
+	    grep -n 'DEBHELPER' "$$s" >&2; exit 1; \
+	  fi; \
+	  echo "generated $$(basename $$s): valid shell, no leftover token"; \
+	done

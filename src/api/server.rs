@@ -252,13 +252,7 @@ pub fn daemon_route_groups(config_json: &serde_json::Value) -> Vec<(String, Vec<
             routes![settings::get_setting, settings::set_setting],
         ),
         ("/cache".to_string(), routes![cache::get_cache_statistics]),
-        (
-            "/background".to_string(),
-            routes![
-                backgroundjobs::get_background_jobs,
-                backgroundjobs::get_background_job,
-            ],
-        ),
+        ("/background".to_string(), backgroundjobs::routes()),
         (
             "/genres".to_string(),
             routes![

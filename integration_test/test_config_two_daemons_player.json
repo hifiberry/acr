@@ -1,0 +1,57 @@
+{
+    "_comment": "The PLAYER daemon's configuration for the two-daemon suite (test_two_daemons.py). Its companion is test_config_two_daemons_metadata.json, which the metadata daemon reads; the two files are not interchangeable, exactly as audiocontrol.json and metadata.json are not. The fixture rewrites the webserver port, the cache paths, the settings database and the security store path before starting the daemon, so the values below are defaults for reading, not the ones a run uses. Nothing here addresses the metadata daemon: there is no services.metadata and no port 18084 anywhere in it, which is the one-way seam. What turns that into evidence is test_playback_answers_with_the_metadata_daemon_stopped, which takes the other daemon away and asks this one to keep working.",
+    "services": {
+        "webserver": {
+            "enable": true,
+            "host": "127.0.0.1",
+            "port": 18080
+        },
+        "cache": {
+            "attribute_cache_path": "/tmp/test_cache/attributes",
+            "image_cache_path": "/tmp/test_cache/images"
+        },
+        "settingsdb": {
+            "path": "/tmp/test_db"
+        },
+        "security_store": {
+            "_comment": "Overridden by the fixture with a path of its own under the test's temporary directory. It must not be the metadata daemon's file: one store with two writers loses credentials, which is what test_a_store_write_on_one_side_leaves_the_other_intact is about.",
+            "path": "/tmp/test_two_daemons_player_store.json"
+        },
+        "musicbrainz": {
+            "enable": false
+        },
+        "theaudiodb": {
+            "enable": false,
+            "api_key": ""
+        },
+        "fanarttv": {
+            "enable": false,
+            "api_key": ""
+        },
+        "lastfm": {
+            "_comment": "Off on this side. Last.fm belongs to the metadata daemon, and enabling it here would give a second process a claim on a credential this one does not own.",
+            "enable": false
+        },
+        "spotify": {
+            "_comment": "The account routes are mounted whatever this says; what it turns off is the librespot/Spotify player itself, which would otherwise try to use the placeholder tokens the fixture seeds. POST /api/spotify/tokens still writes the store, which is all the credential test needs.",
+            "enable": false
+        },
+        "core": {
+            "_comment": "A default cargo build carries an in-process metadata shadow, and this is the address it uses -- this daemon's own port, which is right for one process and is why the deriving fallback exists. The shipped player daemon is built --no-default-features --features alsa and has no shadow and no use for this section. See integration_test/README.md for why the suite runs the default build anyway, and for what the tests do to stay honest about it.",
+            "url": "http://127.0.0.1:18080/api"
+        }
+    },
+    "players": [
+        {
+            "generic": {
+                "name": "test",
+                "enable": true,
+                "supports_api_events": true,
+                "capabilities": ["play", "pause", "stop", "next", "previous", "seek", "shuffle", "loop", "killable"],
+                "initial_state": "stopped",
+                "shuffle": false,
+                "loop_mode": "none"
+            }
+        }
+    ]
+}

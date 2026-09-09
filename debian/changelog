@@ -1,4 +1,4 @@
-hifiberry-audiocontrol (0.22.1) trixie; urgency=medium
+hifiberry-audiocontrol (0.23.4) trixie; urgency=medium
 
   * Marking a song as a favourite could write it into the wrong database. When
     the settings database could not be opened at the path it was configured for
@@ -18,7 +18,178 @@ hifiberry-audiocontrol (0.22.1) trixie; urgency=medium
     longer reports a permissions failure on a directory the daemon was never
     configured to use.
 
- -- HiFiBerry <support@hifiberry.com>  Wed, 09 Sep 2026 12:00:00 +0200
+ -- HiFiBerry <support@hifiberry.com>  Wed, 09 Sep 2026 09:20:00 +0200
+
+hifiberry-audiocontrol (0.23.3) trixie; urgency=medium
+
+  * 0.23.2 could not be configured. A comment in the maintainer script
+    mentioned the debhelper substitution token by name, and dh replaces that
+    token wherever it appears, comments included - so the rest of that comment
+    line was left behind as a command, postinst exited 127, and dpkg stopped
+    with the package half-configured. The daemons kept running, because the
+    section that starts them had already gone by, but nothing after that point
+    ran: on an upgrade that included new routing, nginx was never reloaded.
+
+    The comment no longer names the token. The package build now also checks
+    the generated maintainer scripts rather than only the ones in the source
+    tree: it refuses to build if a generated script is not valid shell, or if
+    it still contains a substitution token. The source script was valid the
+    whole time - only the generated one was broken - so checking the source is
+    not enough to catch this class of fault.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 08 Sep 2026 22:40:00 +0200
+
+hifiberry-audiocontrol (0.23.2) trixie; urgency=medium
+
+  * Installing the package now reloads nginx, which is what 0.23.0 was
+    missing. The metadata prefixes moved to the second daemon's port in that
+    release, but nothing told nginx to read the new routing, so it went on
+    proxying with the configuration it had loaded when it last started - on a
+    device that had been up a while, a configuration weeks older than the
+    upgrade itself. The result was an installation that looked clean and was
+    not: /api/audiocontrol/favourites/providers,
+    /api/audiocontrol/coverart/methods and /api/audiocontrol/lastfm/status
+    answered 404 through nginx, and the web interface's system information page
+    reported favourites and cover art as errored providers, with nothing in any
+    log to explain it. Reloading nginx by hand fixed it completely; the package
+    now does it as part of the install. Any package dropping a snippet into
+    /etc/nginx/hifiberry-api.d is picked up the same way, once per install run
+    rather than once per package, and the configuration is checked before the
+    reload so a mistake elsewhere in it is reported rather than applied.
+
+  * A failed genre lookup is no longer recorded as a fact about the album.
+    Album genres from MusicBrainz are cached, empty answers included, so an
+    album the service holds no genres for is not asked about on every library
+    load. But the lookup reported a failure and a genuinely empty answer as the
+    same empty list, and the empty list was written to the attribute cache with
+    no expiry - so a sweep that ran while MusicBrainz was refusing requests
+    marked the albums it touched as permanently genre-less, and never asked
+    again on any later sweep or restart. In one sweep against an unhealthy
+    provider three quarters of the albums touched ended up recorded that way.
+    A lookup now says whether it got an answer: an answer is cached as before,
+    a failure - a request error, an unreadable response, or lookups being
+    disabled - is not cached at all, so the next sweep asks again, and the
+    sweep's completion log says how many lookups went unanswered instead of
+    reporting a quiet zero.
+
+    Caches written by earlier versions may still hold these entries. Removing
+    the empty album::genres:: rows lets those albums be looked up again;
+    entries that hold genres are correct and worth keeping.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 08 Sep 2026 22:15:00 +0200
+
+hifiberry-audiocontrol (0.23.1) trixie; urgency=medium
+
+  * Enrichment progress is now reported by the daemon that does the work.
+    GET /api/metadata/background/jobs lists the artist and album metadata
+    jobs; /api/audiocontrol/background/jobs goes on listing the player
+    daemon's own library and thumbnail jobs. The two registries are separate
+    and neither answers for the other, so a client that polled the second for
+    enrichment progress finds it there no longer.
+
+  * Rate limiting now bounds how many requests are open at a provider, not
+    just how often a new one starts. The limiter waited out the minimum
+    spacing and then let go, so the request itself was unaccounted for: when a
+    provider answered slowly the next request went out on schedule anyway and
+    the outstanding ones piled up until the provider started refusing them.
+    Measured over an enrichment sweep of an 11,858-album library, 110 of 114
+    MusicBrainz responses were HTTP 503 - 96% of the lookups in that sweep
+    returned nothing, while the same queries made one at a time still answered
+    normally. A request now holds a permit for as long as it is in flight, so
+    the configured rate is the rate the provider actually sees.
+
+    The wait also no longer blocks other providers. It used to sleep holding
+    one global lock, so a slow MusicBrainz held up Last.fm scrobbling too;
+    each provider now waits on its own.
+
+    Separately, fanart.tv had a rate limit registered and logged but applied
+    to nothing - every fanart.tv request went out unspaced and unbounded while
+    the log reported a limit it was not using. It is applied now.
+
+    The visible effect of all three is that enrichment of a large library gets
+    further per sweep. A lookup that comes back 503 contributes nothing and is
+    not retried until the next pass, so the genres, images and artist detail
+    it would have filled in simply stayed missing.
+
+  * audiocontrol_dump_cache now defaults to the cache it can read. Its
+    shortcut flags select prefixes only the metadata daemon writes, while its
+    default directory was the player daemon's, so an invocation without
+    --cache-dir reported an empty cache rather than saying it was looking in
+    the wrong place.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 08 Sep 2026 20:30:00 +0200
+
+hifiberry-audiocontrol (0.23.0) trixie; urgency=medium
+
+  * The metadata half now runs as its own process. External lookups, cover
+    art, favourites and Last.fm scrobbling move out of the player daemon into
+    audiocontrol-metadata, which listens on loopback port 1084 and reaches the
+    player daemon over HTTP; nginx forwards the metadata prefixes there, so
+    client URLs are unchanged. Both daemons ship in this one package and are
+    enabled, upgraded and rolled back together, so no device runs one half
+    against another version of the other.
+
+    What a user sees of this is nothing, beyond a second unit in systemctl.
+    No URL changes, no account has to be linked again, and nothing needs to be
+    configured for the two to find each other. One setting does move, and only
+    for an installation that set its own provider API keys; that is the entry
+    below. Otherwise this is the point of the release: the daemons were
+    separated so that a metadata lookup can no longer stall or crash playback,
+    not so that anyone would have to manage two of them. If audiocontrol-metadata is stopped, playback, volume,
+    the library and the web interface all keep working; what stops is
+    enrichment, artist images, favourites and scrobbling.
+
+  * The player daemon is now built without its metadata code rather than
+    merely not using it. Left in, it would have brought up a second metadata
+    instance of its own on port 1080 - a second set of caches, a second
+    enricher and a second scrobbler on the same events, which would have
+    scrobbled every track to Last.fm twice.
+
+  * Metadata state moves with it. /var/lib/audiocontrol/metadata now holds the
+    metadata daemon's settings database, its image cache and its own
+    credential store. The credential store and the settings database - which
+    carry the linked accounts, the favourite songs and the chosen artist
+    images - are copied from their previous paths on upgrade, so nothing a
+    user set up is lost. The player daemon keeps its own files where they
+    were, so a rollback to the previous version finds them intact.
+
+    The lookup cache is deliberately not copied. It is rewritten constantly by
+    the running daemon, so a copy taken during an upgrade can be torn, and a
+    torn SQLite file does not announce itself: the daemon opens it, logs one
+    error and then runs with no cache at all, for that boot and every boot
+    after it. Starting from an empty cache costs some repeated MusicBrainz and
+    TheAudioDB lookups over the following days and nothing else, so that is
+    what it does.
+
+  * Provider API keys are configured in metadata.json now, and are not
+    migrated. The metadata daemon reads its own file,
+    /etc/audiocontrol/metadata.json, so the sections that configure external
+    providers belong there: action_plugins.lastfm, and services.lastfm,
+    services.musicbrainz, services.theaudiodb, services.fanarttv and
+    services.external_coverart. The same sections still exist in
+    audiocontrol.json and the player daemon no longer reads any of them.
+
+    This only matters where a key was set by hand. Both files ship with every
+    key empty, and empty means the built-in keys, which is what almost every
+    device runs. But an upgrade keeps an edited audiocontrol.json and installs
+    a fresh metadata.json, and nothing copies values between the two, so a
+    hand-set key has to be copied into metadata.json by hand. Left where it
+    is, it is simply not read.
+
+    Last.fm is the case that bites, because it fails without looking like a
+    failure. The session key the upgrade carries across was issued against the
+    user's own API key, so a daemon that falls back to the built-in one has a
+    session it cannot use: scrobbles are refused, the account still shows as
+    linked, and nothing in the log says why. Copy api_key and api_secret from
+    action_plugins.lastfm in audiocontrol.json into the same entry in
+    metadata.json, restart audiocontrol-metadata, and scrobbling resumes.
+
+  * The metadata daemon logs to the journal rather than to a file. It does not
+    read logging.json, so RUST_LOG or --debug is how its level is set; the
+    per-subsystem levels the player daemon supports are not available for it
+    yet.
+
+ -- HiFiBerry <support@hifiberry.com>  Tue, 08 Sep 2026 12:00:00 +0200
 
 hifiberry-audiocontrol (0.22.0) trixie; urgency=medium
 

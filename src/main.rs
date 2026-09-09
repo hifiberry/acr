@@ -12,9 +12,10 @@
 //! The account lives in this daemon now
 //! (`audiocontrol::players::librespot::spotify_account`), because the
 //! librespot backend's playback commands need it and must keep working with
-//! no metadata half at all. What `main` still has to supply is the OAuth
-//! proxy URL and secret: those are compiled from `secrets.txt` by the metadata
-//! crate's build script, and this package has none of its own.
+//! no metadata half at all. `main` still supplies its OAuth proxy URL and
+//! secret, but they no longer come from the metadata crate: the generator that
+//! obfuscates `secrets.txt` lives in `acr-secrets`, which both halves depend
+//! on, so a player daemon built without the metadata crate has them too.
 
 // The global allocator, on Linux, where this actually ships.
 //
@@ -60,14 +61,21 @@ use audiocontrol::{get_tokio_runtime, initialize_tokio_runtime};
 /// What a build without the `metadata` feature says for itself, once, where
 /// the metadata providers would have been brought up.
 ///
-/// `metadata` is in `default`, so the shipped daemon never reaches any of
-/// these branches. They exist so that dropping the feature produces a daemon
-/// that says what it cannot do rather than one that silently serves an
-/// unenriched library.
+/// The package ships this build -- `debian/rules` builds the daemon
+/// `--no-default-features --features alsa` -- so this is the line a device
+/// logs at every boot, and it is the first thing an operator reads when
+/// enrichment looks stopped. It therefore has to say where the work went
+/// rather than that there is none of it: on a device the metadata daemon is
+/// doing all of it in the other process.
+///
+/// One line. Written across two source lines without a `\` continuation it
+/// carried a literal newline and five spaces into the log, and `info!` emitted
+/// it as a two-line, oddly indented entry that no `grep` matched whole.
 #[cfg(not(feature = "metadata"))]
 const WITHOUT_METADATA: &str =
-    "built without the metadata crate; no enrichment and no resolver. The
-     Spotify transport is present: it belongs to the player half now.";
+    "built without the metadata crate: enrichment, cover art and the resolver \
+     are the metadata daemon's in this build, not this process's. The Spotify \
+     transport is present: it belongs to the player half now.";
 
 fn main() {
     // Initialize the Tokio runtime early
@@ -84,8 +92,10 @@ fn main() {
 
     // Check for --check-secrets option first (exit early if present)
     //
-    // The secrets it reports on are compiled into the metadata crate, so the
-    // report lives there too and this only decides whether to ask for it.
+    // The constants it reports on are generated into `acr_secrets::secrets`,
+    // but the report itself lives in the metadata crate, which owns most of
+    // the keys it names. So this build prints it and a --no-default-features
+    // one says why it cannot.
     if args.iter().any(|arg| arg == "--check-secrets") {
         #[cfg(feature = "metadata")]
         audiocontrol_metadata::check_secrets_status();
@@ -184,9 +194,15 @@ fn main() {
     // Stays here rather than joining `initialize_in_process` below: it has to
     // run before the attribute cache and the settings database, both of which
     // are set up between this point and there.
-    #[cfg(feature = "metadata")]
+    //
+    // Unconditional. It was gated on the `metadata` feature while the
+    // encryption key came from the metadata crate's build script, which left a
+    // --no-default-features build mounting the whole Spotify OAuth surface over
+    // a store that was never initialised: `POST /api/spotify/tokens` answered
+    // HTTP 200 carrying "Security store is not initialized". The key comes
+    // from acr-secrets now, which this package depends on either way.
     if let Err(e) = acr_secrets::security_store::SecurityStore::initialize_with_defaults(
-        &audiocontrol_metadata::secrets::secrets_encryption_key(),
+        &acr_secrets::secrets::secrets_encryption_key(),
         Some(security_store_path.clone()),
     ) {
         error!("Failed to initialize security store at {}: {}. Please check permissions and configuration.", security_store_path.display(), e);
@@ -199,8 +215,6 @@ fn main() {
             security_store_path.display()
         );
     }
-    #[cfg(not(feature = "metadata"))]
-    let _ = &security_store_path;
     // Get the attribute cache configuration from datastore
     let (_attribute_cache_path, _preload_prefixes, _cache_size) = if let Some(datastore_config) =
         get_service_config(&controllers_config, "datastore")
@@ -364,24 +378,15 @@ fn main() {
     // (above) and the favourite providers (below) is unchanged.
     //
     // The two arguments are the OAuth proxy URL and secret compiled from
-    // `secrets.txt`. The generator is the metadata crate's build script and
-    // this package has none, so the composition root reads them -- the same
-    // arrangement as the security store's encryption key just above. A build
-    // without the metadata crate has no secrets at all and passes the
-    // sentinel the generator itself uses for a missing value, which the
-    // account rejects: no OAuth proxy, so no account, which is what such a
-    // build could do anyway.
-    #[cfg(feature = "metadata")]
+    // `secrets.txt`. The generator is acr-secrets' build script, which both
+    // daemons depend on, so this reads the same values whether or not the
+    // metadata crate is linked -- and a build made with no `secrets.txt` gets
+    // the sentinel the generator uses for a missing value, which the account
+    // rejects: no OAuth proxy, so no account.
     audiocontrol::players::librespot::spotify_account::initialize_from_config(
         &controllers_config,
-        &audiocontrol_metadata::secrets::spotify_oauth_url(),
-        &audiocontrol_metadata::secrets::spotify_proxy_secret(),
-    );
-    #[cfg(not(feature = "metadata"))]
-    audiocontrol::players::librespot::spotify_account::initialize_from_config(
-        &controllers_config,
-        "unknown",
-        "unknown",
+        &acr_secrets::secrets::spotify_oauth_url(),
+        &acr_secrets::secrets::spotify_proxy_secret(),
     );
 
     // Initialize volume control with the configuration

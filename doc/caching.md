@@ -13,17 +13,30 @@ By default, entries in the cache have no expiry date, though the attribute cache
 
 ## Cache Locations
 
-By default, the cache directories are:
-- Attribute cache: `/var/lib/audiocontrol/cache/attributes.db`
-- Image cache: `/var/lib/audiocontrol/cache/images`
+Since 0.23.0 there are two of each, one per daemon, and they are not shared:
+each daemon caches what it looks up itself.
 
-These paths can be customized in the configuration file.
+| | Player daemon (`audiocontrol.json`) | Metadata daemon (`metadata.json`) |
+|---|---|---|
+| Attribute cache | `/var/lib/audiocontrol/cache/attributes.db` | `/var/lib/audiocontrol/metadata/attributes.db` |
+| Image cache | `/var/lib/audiocontrol/cache/images` | `/var/lib/audiocontrol/metadata/images` |
+
+Both are set in `services.datastore` in the daemon's own configuration file,
+and both can be moved there. Everything external — MusicBrainz, TheAudioDB,
+fanart.tv, artist splitting, image metadata — is looked up by the metadata
+daemon and cached in its file.
 
 ## Cache Management Tools
 
 ### audiocontrol_dump_cache Tool
 
-Audiocontrol includes a dedicated cache management tool for inspecting and managing cache contents:
+Audiocontrol includes a dedicated cache management tool for inspecting and managing cache contents.
+
+**It reads the metadata daemon's cache unless told otherwise**, since that is
+where every prefix it knows about is written. Pass `--cache-dir DIR` for the
+player daemon's, or for a copy taken off a device. With neither the flag nor a
+cache at the default path it refuses rather than reporting an empty one.
+
 
 ```bash
 # List all cache entries with details
@@ -120,9 +133,25 @@ The attribute cache uses specific key formats for various types of data. All cac
 | `artist::fanart::<mbid>` | URLs to artist images from FanartTV | Permanent | fanarttv |
 | `artist::metadata::<artist>` | Full artist metadata from multiple sources | Permanent | metadata |
 | `album::mbid::<album>::<artist>` | MusicBrainz ID for album | Permanent | musicbrainz |
+| `album::genres::<album id>` | Genres MusicBrainz holds for an album, an empty answer included | Permanent | albumupdater |
 | `theaudiodb::mbid::<mbid>` | Artist data from TheAudioDB API | Permanent | theaudiodb |
 | `theaudiodb::not_found::<mbid>` | TheAudioDB negative cache | Permanent | theaudiodb |
 | `theaudiodb::no_thumbnail::<mbid>` | No thumbnail available in TheAudioDB | Permanent | theaudiodb |
+
+### An answer is cached, an unanswered lookup is not
+
+`album::genres::` holds what MusicBrainz answered about an album, and an empty
+list is one of the answers it can give: plenty of albums carry no genre tags
+there, and remembering that is the only thing keeping every library load from
+asking about all of them again at one request per second.
+
+A lookup that got no answer at all is a different thing and is not written down.
+A request that failed, a response that could not be read, and lookups being
+disabled all leave the album unknown, so the next sweep asks again. Recording
+them instead is how one afternoon of a provider refusing requests used to become
+a permanent record that an album has no genres. An empty `album::genres::` row
+left behind by a version that did that can be removed, and the album will be
+looked up again.
 
 ### Extended Timeout Strategy
 
@@ -193,10 +222,13 @@ In the main configuration file, you can customize the cache behavior:
 
 ```json
 {
+  "datastore": {
+    "attribute_cache": {
+      "dbfile": "/var/lib/audiocontrol/cache/attributes.db"
+    }
+  },
   "cache": {
-    "attribute_cache_path": "custom/path/to/attributes",
-    "image_cache_path": "custom/path/to/images", 
-    "max_age_days": 30,
+    "image_cache_path": "custom/path/to/images",
     "enabled": true
   },
   "musicbrainz": {

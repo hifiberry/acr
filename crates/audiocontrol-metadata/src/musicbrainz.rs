@@ -25,6 +25,40 @@ const MUSICBRAINZ_API_BASE: &str = "https://musicbrainz.org/ws/2";
 const MUSICBRAINZ_USER_AGENT: &str = "HifiBerry-ACR/1.0 (https://www.hifiberry.com/)";
 const MUSICBRAINZ_SEARCH_LIMIT: u32 = 3; // Limit search results to save bandwidth
 
+/// What a MusicBrainz genre lookup came back with.
+///
+/// The two variants are the two different things a bare `Vec<String>` used to
+/// mean at once. `Answered(vec![])` is a fact about the album — MusicBrainz
+/// holds no genres for it — and is worth writing down so it is not asked again.
+/// `Unavailable` is a fact about the service for as long as it lasts, and is
+/// worth nothing about the album at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenreLookup {
+    /// MusicBrainz answered. The list is what it holds, which may be nothing.
+    Answered(Vec<String>),
+    /// No answer was obtained: lookups are disabled, the request failed, or the
+    /// response could not be read. The string says which, for the log.
+    Unavailable(String),
+}
+
+impl GenreLookup {
+    /// The genres found, and nothing when there was no answer.
+    pub fn genres(&self) -> &[String] {
+        match self {
+            GenreLookup::Answered(genres) => genres,
+            GenreLookup::Unavailable(_) => &[],
+        }
+    }
+}
+
+/// Minimum gap between MusicBrainz request starts. Their published policy is
+/// one request per second.
+const MUSICBRAINZ_RATE_LIMIT_MS: u64 = 1000;
+
+/// How long to wait for a MusicBrainz response. Measured latency during a
+/// full-library sweep was 13-15 s per search.
+const MUSICBRAINZ_TIMEOUT_SECS: u64 = 30;
+
 /// Structs for deserializing MusicBrainz API responses
 #[derive(Debug, Deserialize)]
 struct MusicBrainzArtistSearchResponse {
@@ -113,10 +147,12 @@ pub fn initialize_from_config(config: &serde_json::Value) {
             info!("MusicBrainz lookup {}", if enabled { "enabled" } else { "disabled" });
         }
         
-        // Register rate limit - default to 1000ms (2 requests per second)
+        // Register rate limit. MusicBrainz publishes one request per second,
+        // so that -- 1000 ms between request starts -- is the default when the
+        // config omits the key.
         let rate_limit_ms = mb_config.get("rate_limit_ms")
             .and_then(|v| v.as_u64())
-            .unwrap_or(500);
+            .unwrap_or(MUSICBRAINZ_RATE_LIMIT_MS);
             
         ratelimit::register_service("musicbrainz", rate_limit_ms);
         info!("MusicBrainz rate limit set to {} ms", rate_limit_ms);
@@ -126,7 +162,7 @@ pub fn initialize_from_config(config: &serde_json::Value) {
         debug!("MusicBrainz configuration not found, lookups disabled");
         
         // Register default rate limit even if disabled
-        ratelimit::register_service("musicbrainz", 500);
+        ratelimit::register_service("musicbrainz", MUSICBRAINZ_RATE_LIMIT_MS);
     }
 }
 
@@ -329,11 +365,22 @@ fn artist_names_match(query_name: &str, response_name: &str, response_aliases: O
 /// * `Result<String, String>` - API response or error message
 fn musicbrainz_api_get(url: &str) -> Result<String, String> {
     debug!("Making MusicBrainz API request: {}", url);
+
+    // The permit is taken here rather than by each caller, so it cannot be
+    // forgotten by a new one: this is the only function in the module that
+    // reaches the network. It is held until the request finishes, bounding
+    // concurrent requests as well as spacing their starts.
+    //
+    // Safe against self-deadlock because this function is a leaf -- it calls
+    // nothing that takes a MusicBrainz permit -- and no caller holds one.
+    let _permit = ratelimit::rate_limit("musicbrainz");
     
-    // Add proper User-Agent header and timeout using ureq's raw API
-    // Use a longer timeout (10s) for MusicBrainz API as it can be slow
+    // Add proper User-Agent header and timeout using ureq's raw API.
+    // MusicBrainz was measured answering searches in 13-15 s during a library
+    // sweep, so a 10 s timeout abandoned requests that were still being served
+    // and replaced them immediately. 30 s leaves headroom over that.
     let response = match ureq::get(url)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(MUSICBRAINZ_TIMEOUT_SECS))
         .set("User-Agent", MUSICBRAINZ_USER_AGENT)
         .set("Accept", "application/json")
         .call() {
@@ -419,9 +466,6 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         debug!("Artist '{}' not found in cache and cache_only=true", artist_name);
         return MusicBrainzSearchResult::NotFound;
     }
-      // Apply rate limiting before making the API request
-    ratelimit::rate_limit("musicbrainz");
-    
     // Sanitize artist name for the API query
     let sanitized_artist_name = sanitize_artist_name_for_search(artist_name);
     debug!("Searching MusicBrainz for artist: '{}' (sanitized from '{}')", sanitized_artist_name, artist_name);
@@ -739,9 +783,6 @@ pub fn search_recording(artist: &str, title: &str) -> Result<MusicBrainzRecordin
         });
     }
     
-    // Apply rate limiting before making the API request
-    ratelimit::rate_limit("musicbrainz");
-    
     // Build query for exact match
     let query = format!("artist:\"{}\" AND recording:\"{}\"", artist, title);
     let url = format!("{}/recording/?query={}&fmt=json&limit=5", MUSICBRAINZ_API_BASE, urlencoding::encode(&query));
@@ -793,13 +834,29 @@ pub fn is_mbid(input: &str) -> bool {
         && input.matches('-').count() == 4
 }
 
-/// Search MusicBrainz for a release group by artist and album name and return genres.
+/// Search MusicBrainz for a release group by artist and album name and return
+/// its genres.
 ///
-/// Searches the release-group endpoint, takes the top match's MBID, then fetches
-/// its genres via `?inc=genres`. Returns a sorted, deduplicated list of genre names.
-pub fn search_release_group_genres(artist: &str, album: &str) -> Vec<String> {
-    if !is_enabled() {
-        return Vec::new();
+/// Searches the release-group endpoint, takes the top match's MBID, then
+/// fetches its genres via `?inc=genres`. Genre names come back sorted,
+/// deduplicated and lowercased.
+pub fn search_release_group_genres(artist: &str, album: &str) -> GenreLookup {
+    search_release_group_genres_when(artist, album, is_enabled())
+}
+
+/// [`search_release_group_genres`] with the enabled flag passed in.
+///
+/// Split out so the disabled case can be tested without flipping the
+/// process-wide `MUSICBRAINZ_ENABLED`, which would reach into whatever else
+/// the test harness runs beside it — the same split
+/// `artistsplitter::observe_split` makes.
+fn search_release_group_genres_when(artist: &str, album: &str, enabled: bool) -> GenreLookup {
+    if !enabled {
+        debug!(
+            "MusicBrainz lookups are disabled; no genre answer for '{}' / '{}'",
+            album, artist
+        );
+        return GenreLookup::Unavailable("MusicBrainz lookups are disabled".to_string());
     }
 
     // Step 1: search for the release group
@@ -817,52 +874,64 @@ pub fn search_release_group_genres(artist: &str, album: &str) -> Vec<String> {
 
     let search_url = format!("{}/release-group?query={}&limit=1&fmt=json", MUSICBRAINZ_API_BASE, encoded);
 
-    ratelimit::rate_limit("musicbrainz");
     let body = match musicbrainz_api_get(&search_url) {
         Ok(b) => b,
         Err(e) => {
             debug!("MusicBrainz release-group search failed for '{}' / '{}': {}", artist, album, e);
-            return Vec::new();
+            return GenreLookup::Unavailable(format!("release-group search failed: {}", e));
         }
     };
 
-    let json: serde_json::Value = match serde_json::from_str(&body) {
-        Ok(v) => v,
+    let mbid = match release_group_mbid(&body) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            debug!("No release-group found for '{}' / '{}'", artist, album);
+            return GenreLookup::Answered(Vec::new());
+        }
         Err(e) => {
             debug!("Failed to parse MusicBrainz search response: {}", e);
-            return Vec::new();
-        }
-    };
-
-    let mbid = match json["release-groups"][0]["id"].as_str() {
-        Some(id) => id.to_string(),
-        None => {
-            debug!("No release-group found for '{}' / '{}'", artist, album);
-            return Vec::new();
+            return GenreLookup::Unavailable(e);
         }
     };
 
     // Step 2: fetch genres for this release group
     let detail_url = format!("{}/release-group/{}?inc=genres&fmt=json", MUSICBRAINZ_API_BASE, mbid);
 
-    ratelimit::rate_limit("musicbrainz");
     let body2 = match musicbrainz_api_get(&detail_url) {
         Ok(b) => b,
         Err(e) => {
             debug!("MusicBrainz release-group genre fetch failed for {}: {}", mbid, e);
-            return Vec::new();
+            return GenreLookup::Unavailable(format!("release-group genre fetch failed: {}", e));
         }
     };
 
-    let json2: serde_json::Value = match serde_json::from_str(&body2) {
+    genres_in_release_group(&body2)
+}
+
+/// The release group id in a search response.
+///
+/// `Ok(None)` is MusicBrainz answering that it knows no such release group.
+fn release_group_mbid(body: &str) -> Result<Option<String>, String> {
+    let json: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("search response could not be parsed: {}", e))?;
+    Ok(json["release-groups"][0]["id"].as_str().map(|s| s.to_string()))
+}
+
+/// The genres in a release-group detail response, lowercased, sorted and
+/// deduplicated.
+fn genres_in_release_group(body: &str) -> GenreLookup {
+    let json: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {
             debug!("Failed to parse MusicBrainz release-group detail: {}", e);
-            return Vec::new();
+            return GenreLookup::Unavailable(format!(
+                "release-group detail could not be parsed: {}",
+                e
+            ));
         }
     };
 
-    let mut genres: Vec<String> = json2["genres"]
+    let mut genres: Vec<String> = json["genres"]
         .as_array()
         .map(|arr| arr.iter()
             .filter_map(|g| g["name"].as_str().map(|s| s.to_lowercase()))
@@ -871,6 +940,76 @@ pub fn search_release_group_genres(artist: &str, album: &str) -> Vec<String> {
 
     genres.sort();
     genres.dedup();
-    genres
+    GenreLookup::Answered(genres)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lookups being disabled is not an answer about the album. An empty list
+    /// here was indistinguishable from "MusicBrainz holds no genres for this
+    /// album", and the caller wrote it down as exactly that.
+    #[test]
+    fn a_disabled_provider_gives_no_answer_rather_than_an_empty_one() {
+        assert_eq!(
+            search_release_group_genres_when("The Beatles", "Abbey Road", false),
+            GenreLookup::Unavailable("MusicBrainz lookups are disabled".to_string())
+        );
+    }
+
+    /// A body that is not the JSON we asked for -- a proxy error page, a
+    /// truncated response -- is the service failing, not the album having no
+    /// genres.
+    #[test]
+    fn a_detail_body_that_cannot_be_parsed_is_not_an_empty_answer() {
+        match genres_in_release_group("<html>503 Service Unavailable</html>") {
+            GenreLookup::Unavailable(_) => {}
+            other => panic!("a malformed body was read as an answer: {:?}", other),
+        }
+    }
+
+    /// A release group MusicBrainz holds no genres for is a real answer, and
+    /// the caller is entitled to remember it.
+    #[test]
+    fn a_release_group_with_no_genres_is_an_empty_answer() {
+        assert_eq!(
+            genres_in_release_group(r#"{"id":"abc","genres":[]}"#),
+            GenreLookup::Answered(Vec::new())
+        );
+    }
+
+    #[test]
+    fn genres_come_back_lowercased_sorted_and_deduplicated() {
+        assert_eq!(
+            genres_in_release_group(
+                r#"{"genres":[{"name":"Rock"},{"name":"pop"},{"name":"ROCK"}]}"#
+            ),
+            GenreLookup::Answered(vec!["pop".to_string(), "rock".to_string()])
+        );
+    }
+
+    /// A search that matched nothing is an answer: MusicBrainz knows no such
+    /// release group, so there are no genres to be had for it.
+    #[test]
+    fn a_search_that_matched_nothing_is_an_answer() {
+        assert_eq!(
+            release_group_mbid(r#"{"count":0,"offset":0,"release-groups":[]}"#),
+            Ok(None)
+        );
+    }
+
+    /// Whereas a search response that cannot be read says nothing at all.
+    #[test]
+    fn a_search_body_that_cannot_be_parsed_is_not_an_answer() {
+        assert!(release_group_mbid("<html>503 Service Unavailable</html>").is_err());
+    }
+
+    #[test]
+    fn the_top_search_match_is_the_release_group_used() {
+        assert_eq!(
+            release_group_mbid(r#"{"release-groups":[{"id":"abc"},{"id":"def"}]}"#),
+            Ok(Some("abc".to_string()))
+        );
+    }
+}

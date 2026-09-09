@@ -1,6 +1,28 @@
-// Security store for ACR
-// This module provides a secure key-value store for sensitive data
-// using the SECRETS_ENCRYPTION_KEY from secrets.txt for encryption
+//! Security store for ACR
+//!
+//! This module provides a secure key-value store for sensitive data using
+//! the SECRETS_ENCRYPTION_KEY from secrets.txt for encryption.
+//!
+//! **Ownership: one file per daemon, not one file for both.** The type is
+//! shared code -- both daemons link the same `SecurityStore` -- but each
+//! process must be pointed at its own file, and each must write only the
+//! keys it owns:
+//!
+//! - `/var/lib/audiocontrol/security_store.json` -- the player daemon:
+//!   `spotify_access_token`, `spotify_refresh_token`, `spotify_token_expiry`,
+//!   `spotify_user_id`, `spotify_display_name`.
+//! - `/var/lib/audiocontrol/metadata/security_store.json` -- the metadata
+//!   daemon: `lastfm_session_key`, `lastfm_username`.
+//!
+//! The reason is `save_to_file`: it serialises the *whole* in-memory
+//! map and writes it with a truncating `File::create`. A process that loads
+//! its copy at start-up and later writes a key it does not own will, on that
+//! write, silently erase any key the *owning* daemon had written to that file
+//! since -- there is no error, no lock, no merge. A Spotify refresh lost this
+//! way looks like an account that keeps re-authenticating, or one that
+//! unlinks itself if the refresh token was the casualty. This cannot happen
+//! within one file as long as only its owner ever writes to it, which is the
+//! entire rule: no locking, no read-before-write, just one writer per file.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -716,5 +738,74 @@ mod tests {
 
         SecurityStore::initialize("test-key", Some(path)).unwrap();
         assert_eq!(SecurityStore::get("fixture::probe").unwrap(), "kept");
+    }
+
+    /// Builds one daemon's own `SecurityStore`, independent of the
+    /// process-wide `SECURITY_STORE` singleton: a real daemon has its own
+    /// address space, and the singleton can only ever model one at a time.
+    /// Loads whatever is already at `path`, exactly once -- the way a real
+    /// process reads the file at start-up and then keeps what it read,
+    /// never rereading it out from under itself.
+    fn daemon_store(path: &Path) -> SecurityStore {
+        let store = SecurityStore::new(path.to_path_buf());
+        let key_bytes = store.derive_key_bytes("test-key");
+        let cipher_key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+        *store.cipher.lock() = Some(Aes256Gcm::new(cipher_key));
+        *store.encryption_key.write() = "test-key".to_string();
+        *store.initialized.lock() = true;
+        if path.exists() {
+            store.load_from_file().unwrap();
+        }
+        store
+    }
+
+    fn store_set(store: &SecurityStore, key: &str, value: &str) {
+        let encrypted = store.encrypt_value(value).unwrap();
+        store.data.lock().values.insert(key.to_string(), encrypted);
+        store.save_to_file().unwrap();
+    }
+
+    fn store_get(store: &SecurityStore, key: &str) -> Option<String> {
+        let data = store.data.lock();
+        data.values.get(key).map(|v| store.decrypt_value(v).unwrap())
+    }
+
+    /// Two daemons, two stores, one key name each side also holds a copy of.
+    ///
+    /// The player daemon refreshes a token; the metadata daemon then writes
+    /// its own key. Before the split those were one file and the second
+    /// write erased the first, because `save_to_file` serialises the whole
+    /// in-memory map and `File::create` truncates. Separate files is what
+    /// makes the second write unable to reach the first.
+    ///
+    /// This does not touch `SECURITY_STORE` or `TEST_MUTEX`: `player` and
+    /// `metadata` are independent instances built by `daemon_store`, so
+    /// nothing here can race the singleton-based tests above.
+    #[test]
+    fn one_daemons_write_cannot_erase_the_others() {
+        let dir = tempdir().unwrap();
+        let player_path = dir.path().join("security_store.json");
+        let metadata_path = dir.path().join("metadata/security_store.json");
+
+        // Each daemon loads once, up front, and keeps what it loaded --
+        // matching a real process's lifetime rather than the singleton's
+        // reset-and-reinitialize-per-call pattern used elsewhere in this file.
+        let player = daemon_store(&player_path);
+        let metadata = daemon_store(&metadata_path);
+
+        store_set(&player, "spotify_access_token", "first");
+        store_set(&metadata, "lastfm_session_key", "second");
+        store_set(&player, "spotify_access_token", "refreshed");
+
+        // Read back from disk, as a fresh process (or the daemon on its next
+        // start-up) would.
+        assert_eq!(
+            store_get(&daemon_store(&metadata_path), "lastfm_session_key").as_deref(),
+            Some("second")
+        );
+        assert_eq!(
+            store_get(&daemon_store(&player_path), "spotify_access_token").as_deref(),
+            Some("refreshed")
+        );
     }
 }

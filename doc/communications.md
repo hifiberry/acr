@@ -1,11 +1,12 @@
 # How the parts communicate
 
-AudioControl is one process with a seam down the middle. On one side is the
+AudioControl is two processes with a seam between them. On one side is the
 *player* half: player backends, the library, the event bus, the REST and
-WebSocket API. On the other is the *metadata* half: MusicBrainz, TheAudioDB,
-FanArt.tv, Last.fm, cover art and the artist store. Neither calls the other
-directly. Everything that crosses between them is an HTTP request to
-`127.0.0.1`, on the port this same process is listening on.
+WebSocket API — the `audiocontrol` daemon, on port 1080. On the other is the
+*metadata* half: MusicBrainz, TheAudioDB, FanArt.tv, Last.fm, cover art and the
+artist store — the `audiocontrol-metadata` daemon, on port 1084. Neither is
+linked into the other. Everything that crosses between them is an HTTP request
+to `127.0.0.1:1080`, the port the player daemon listens on.
 
 **The seam runs one way.** Every connection across it is opened by the metadata
 half. The player half holds no address for the metadata half and no client for
@@ -21,7 +22,7 @@ and the code differ, the code is described here and the difference is called
 out — that has happened five times, and each time the code had found the
 better answer.
 
-For the shorter version, see [architecture.md](architecture.md#the-two-halves-talk-over-loopback).
+For the shorter version, see [architecture.md](architecture.md#the-two-halves-talk-over-loopback-one-way).
 This file is the detail behind it.
 
 ---
@@ -42,7 +43,7 @@ This file is the detail behind it.
 - [Start-up and shutdown](#start-up-and-shutdown)
 - [What clients see](#what-clients-see)
 - [When something is missing or slow](#when-something-is-missing-or-slow)
-- [What changes when the process splits](#what-changes-when-the-process-splits)
+- [What the split changed, and what it cost](#what-the-split-changed-and-what-it-cost)
 - [Where this map is thin](#where-this-map-is-thin)
 
 ---
@@ -57,18 +58,21 @@ downloads, OAuth tokens. Running them in one address space meant one crash, one
 memory profile, one restart, and one set of credentials in a process that also
 holds a socket open to the local network.
 
-Splitting them into two processes is the goal. Doing it in one step would mean
-inventing every interface and moving every file at once, with no working state
-in between. So the seams were converted to HTTP *first*, while both halves still
-share a process. Every call already crosses a network boundary with a timeout, a
-serialised payload and a documented failure path — against the same routes a
-separate daemon will serve. Moving the metadata half into its own process
-becomes a packaging and configuration change rather than a redesign.
+They are two processes now. Doing it in one step would have meant inventing
+every interface and moving every file at once, with no working state in
+between. So the seams were converted to HTTP *first*, while both halves still
+shared a process. By the time the processes separated, every call already
+crossed a network boundary with a timeout, a serialised payload and a
+documented failure path — against the same routes the metadata daemon now calls
+for real. The move itself was a packaging and configuration change rather than a
+redesign, which is what the staging bought.
 
-**The split is internal, and not a deployment choice a device makes.** One
-binary today, two binaries in one package later; one systemd unit today, two
-later. There is no installation that runs "just the player half", and no device
-runs one half at a different version from the other.
+**The split is not a deployment choice a device makes.** Two binaries in one
+package, two systemd units, both enabled; they install, upgrade and roll back
+together. There is no installation that runs "just the player half", and no
+device runs one half at a different version from the other. That is what keeps
+the seam free of compatibility promises: it is an internal interface between two
+processes of the same build, not an API with versions on either side of it.
 
 ---
 
@@ -76,22 +80,19 @@ runs one half at a different version from the other.
 
 ```mermaid
 graph TB
-    subgraph bin["audiocontrol — one process, one binary"]
-        direction TB
-        subgraph player["player half — src/"]
-            API["api/<br/>REST + WebSocket<br/>Rocket, port 1080"]
-            PC["players/<br/>MPD · MPRIS · Spotify<br/>RAAT · Shairport · Bluetooth"]
-            LIB["data/<br/>library, songs, albums<br/>library_version + generation"]
-            BUS["audiocontrol/eventbus<br/>typed event bus"]
-        end
-        subgraph meta["metadata half — crates/audiocontrol-metadata/"]
-            PROV["providers<br/>MusicBrainz · TheAudioDB<br/>FanArt.tv · Last.fm · Spotify"]
-            STORE["artist_store<br/>cover art, images, bios"]
-            WS["now_playing_ws<br/>WebSocket subscriber"]
-            PULL["library_puller<br/>event-driven<br/>10 min backstop"]
-            CC["core_client<br/><b>CoreClient</b>"]
-            MAPI["api/<br/>artist · resolve<br/>capabilities"]
-        end
+    subgraph player["audiocontrol — the player daemon, port 1080 — src/"]
+        API["api/<br/>REST + WebSocket<br/>Rocket, port 1080"]
+        PC["players/<br/>MPD · MPRIS · Spotify<br/>RAAT · Shairport · Bluetooth"]
+        LIB["data/<br/>library, songs, albums<br/>library_version + generation"]
+        BUS["audiocontrol/eventbus<br/>typed event bus"]
+    end
+    subgraph meta["audiocontrol-metadata — the metadata daemon, port 1084 — crates/audiocontrol-metadata/"]
+        PROV["providers<br/>MusicBrainz · TheAudioDB<br/>FanArt.tv · Last.fm · Spotify"]
+        STORE["artist_store<br/>cover art, images, bios"]
+        WS["now_playing_ws<br/>WebSocket subscriber"]
+        PULL["library_puller<br/>event-driven<br/>10 min backstop"]
+        CC["core_client<br/><b>CoreClient</b>"]
+        MAPI["api/<br/>artist · resolve · coverart<br/>lastfm · favourites<br/>Rocket, port 1084"]
     end
 
     subgraph shared["shared crates — neither half owns them"]
@@ -115,7 +116,6 @@ graph TB
     MAPI --> W
     STORE --> I
 
-    style bin fill:none,stroke:#888
     style player fill:none,stroke:#4a7
     style meta fill:none,stroke:#a47
     style shared fill:none,stroke:#888
@@ -131,9 +131,9 @@ metadata side. There is no arrow the other way and no box to draw one from:
 | `src/players/` | One module per backend. Each turns its source's notion of "what is playing" into the shared `Song` and `PlaybackState`. |
 | `src/data/` | The in-memory library, and both library tokens. |
 | `src/audiocontrol/` | The event bus, and the local decisions that replaced the seam calls the player half used to make. |
-| `crates/audiocontrol-metadata/` | Every third-party provider, the artist store, the cover-art pipeline, the account credentials, and `CoreClient`. |
+| `crates/audiocontrol-metadata/` | Every third-party provider, the artist store, the cover-art pipeline, the Last.fm credentials, and `CoreClient`. Its `src/bin/audiocontrol-metadata.rs` is the second daemon: Rocket bound to port 1084, serving the metadata routes at their historical paths and again under `/api/metadata/`. |
 | `crates/acr-types/` | The data types both halves exchange, and the **traits that define the seams**. No I/O. |
-| `crates/acr-http/` | The blocking HTTP client both halves use, with retry and per-host rate limiting. |
+| `crates/acr-http/` | The blocking HTTP client both halves use, with retry and per-service rate limiting — which spaces request starts *and* bounds how many are in flight, since spacing alone let requests pile up at a slow provider. |
 | `crates/acr-store/` | SQLite attribute cache, settings database, image cache, background-job registry. |
 | `crates/acr-web/` | Rocket request guards and responders shared by both — the forwarded-prefix guard, the image responders, the image-cache routes. |
 | `crates/acr-images/` | Resizing, variant naming, format sniffing, image grading. |
@@ -177,12 +177,27 @@ This is not a convention. `scripts/check-crate-deps.sh` runs
 `cargo tree --edges normal` in both directions and fails the build if either
 edge appears. It also fails if the player package declares a crate that belongs
 to the metadata side — `aes-gcm` and `moka` against the whole graph, `regex` at
-depth 1 — and it builds `--no-default-features --bin audiocontrol` to prove the
-feature-gated blocks still compile with the metadata half absent.
+depth 1 — and it builds the `audiocontrol` binary twice, once
+`--no-default-features` and once `--no-default-features --features alsa`, to
+prove the feature-gated blocks still compile with the metadata half absent.
 
-That last build is the one that catches real mistakes. Every
+Those two builds are the ones that catch real mistakes. Every
 `#[cfg(feature = "metadata")]` block in `main.rs` needs a counterpart that
 compiles without it, and it is easy to add the first and forget the second.
+
+**The second of them is the build that ships.** The player daemon in the
+package is built `--no-default-features --features alsa`, so what the check
+proves compiles is what runs on a device — the bare `--no-default-features`
+build alone did not, since `alsa` gates real code of its own and a
+`not(metadata)` branch that compiles only because the alsa feature dragged
+something in would have gone unnoticed. Built with the default features instead, the player
+daemon carries a full in-process metadata half of its own — a second artist
+store, a second settings database, a second attribute cache, and its own
+answers on `/api/coverart/methods`, `/api/favourites/providers`,
+`/api/lastfm/status`, `/api/metadata/capabilities` and
+`/api/resolve/title-order`. Two of those instances on one device would mean two
+enrichers and two scrobblers on the same events. On the shipped build those
+paths 404 on 1080 and answer on 1084, which was confirmed on two devices.
 
 **No route on the metadata daemon may be called by the main daemon.** The same
 script checks this, in three greps over `src/`: a read of a `metadata` service
@@ -206,9 +221,12 @@ sh scripts/check-crate-deps.sh
 ```
 
 > **It leaves a `--no-default-features` binary in the target directory.** That
-> binary has no metadata routes. Rebuild with default features before running
-> the daemon or the Python suite, or roughly forty route lookups will 404 and
-> look exactly like a regression. This has cost three full test runs.
+> binary has no metadata routes, which is correct on a device — the metadata
+> daemon answers them — but wrong for anything that expects one process.
+> Rebuild with default features, or start a metadata daemon alongside it,
+> before running the daemon or the Python suite, or roughly forty route lookups
+> will 404 and look exactly like a regression. This has cost three full test
+> runs.
 
 ---
 
@@ -716,25 +734,29 @@ prevents.
 
 ## Start-up and shutdown
 
-The metadata half cannot start where the rest of it does, because two of its
-parts are clients of a socket this process has not yet bound.
+Two of the metadata daemon's parts — the subscriber and the puller — are
+clients of a socket it does not own, so it cannot start them where it starts
+everything else. The unit carries `After=audiocontrol.service`, but `After` is
+ordering and not readiness: the metadata daemon will often be up before the
+player daemon has bound. So it waits for the socket itself.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant M as main
+    participant M as audiocontrol-metadata (main)
     participant IP as initialize_in_process
-    participant RK as Rocket (API thread)
+    participant MRK as its own Rocket (port 1084)
     participant ST as start_after_core_is_listening
+    participant RK as audiocontrol (port 1080)
     participant WS as now_playing_ws
     participant PULL as library_puller
 
+    Note over M: refuse to start unless core.url is set —<br/>before a cache is opened or a port is bound
     M->>IP: register providers, read config
     Note over IP: no socket needed — runs early
-    M->>M: start player backends
-    M->>RK: spawn API thread
-    RK->>RK: bind 127.0.0.1:1080, mount routes
-    M->>ST: (after the purge, before the keep-alive loop)
+    M->>MRK: spawn API thread
+    MRK->>MRK: bind 127.0.0.1:1084, mount routes
+    M->>ST: (after the image purge starts)
 
     loop until answered, 30 s bound, or a stop signal
         ST->>RK: GET /api/version
@@ -743,6 +765,16 @@ sequenceDiagram
     ST->>WS: start subscriber
     ST->>PULL: start puller
 ```
+
+**There is deliberately no `Requires=` in either direction.** The player daemon
+failing must not stop the metadata daemon retrying, and the metadata daemon
+failing must not touch playback. The 30 s bound exists so that a player daemon
+that is slow, or absent, costs a delayed start rather than a daemon that never
+starts: after it expires the subscriber and the puller start anyway and their
+own reconnect and retry logic takes over. A stop signal arriving during the
+wait cuts it short, and so does the API server failing to bind — without that,
+a metadata daemon that could not have port 1084 would sit in the probe for the
+full 30 s before saying so.
 
 Shutdown matters more than it looks. An open WebSocket is pending I/O that
 Rocket waits out for its whole grace period, and then spends its mercy period
@@ -764,6 +796,13 @@ it shares the flag the start-up wait watches — which turns a signal arriving
 during start-up from the full eight-second force-exit into about a tenth of a
 second.
 
+**Stopping is now two units, and each pays its own shutdown.** The metadata
+daemon's is the cheaper of the two: it serves no browser sockets, only its own
+outbound subscription, and a `systemctl stop audiocontrol-metadata` on a test
+device with an 11,858-album library was **measured at 59 ms**. The player
+daemon's stop is unchanged, and is still the one that costs seconds when a
+browser is attached.
+
 ---
 
 ## What clients see
@@ -772,20 +811,42 @@ The web interface and `hbos-ios` ship separately from the daemon and meet both
 old and new versions. That constrains what may change.
 
 Everything reaches clients through `/api/audiocontrol/`, which nginx proxies to
-the daemon. The metadata routes are mounted **twice**: at their historical
-paths, and again under `/api/metadata/`.
+the player daemon, and through `/api/metadata/`, which it proxies to the
+metadata daemon. The metadata routes are mounted **twice** on that daemon: at
+their historical paths, and again under `/api/metadata/`. **Which daemon
+answers a client's request is nginx's business, not the client's** — no
+client-facing URL changed when the process split.
 
 | | Path | Who it is for |
 |---|---|---|
-| Historical | `/api/coverart/…`, `/api/lastfm/…`, `/api/spotify/…`, `/api/favourites/…`, `/api/audiodb/…` | existing clients — unchanged, and not going to move |
-| New mount | `/api/metadata/…` | the same routes, plus `capabilities`, at the prefix nginx will route to a separate daemon. **Not `/api/metadata/spotify/…`**: the account is the player half's, so `/api/spotify/…` is its only path. |
-| Loopback only | bare `/api/…` on 127.0.0.1 | the two clients above. Not a client-facing surface. |
+| Historical | `/api/coverart/…`, `/api/lastfm/…`, `/api/favourites/…`, `/api/audiodb/…`, `/api/artist/…`, `/api/resolve/…`, `/api/imagecache/external/…` | existing clients — unchanged, and not going to move. nginx forwards exactly these seven sub-prefixes of `/api/audiocontrol/` to 1084; everything else under that prefix goes to 1080 |
+| Historical, player daemon | `/api/spotify/…` and every player route | existing clients. Stays on 1080: the account is the player half's |
+| New mount | `/api/metadata/…` | the same metadata routes, plus `capabilities`, at the prefix nginx routes to 1084 as a whole. **Not `/api/metadata/spotify/…`** — that path never shipped |
+| Loopback only | bare `/api/…` on 127.0.0.1:1080 | the metadata daemon's own subscriber and puller. Not a client-facing surface |
+
+**One sub-prefix is load-bearing rather than cosmetic.** `/api/coverart/` has
+to reach the metadata daemon, because it is where
+`/api/library/<p>/image/artist:<name>` sends clients and where the artist
+lists' `thumb_url` points. A deployment that routes `/api/metadata/` and
+forgets `/api/coverart/` loses every artist image on the device, with the
+player daemon answering a 302 into its own SPA fallback.
 
 `GET /api/metadata/capabilities` is the one path that exists *only* under the
 new mount. The player half serves its own `/api/capabilities`, and two
 identical routes at one base make Rocket refuse to ignite — the daemon does not
-start at all. A test asserts the two route sets stay disjoint, so that mistake
-surfaces as a red test rather than as a device that will not boot.
+start at all. That collision is why the route was given the second mount and
+not the first; a test asserts the two route sets stay disjoint, so the mistake
+surfaces as a red test rather than as a device that will not boot. Now that the
+two are separate processes it could not collide in practice any more, but the
+player daemon still mounts both sets when built with default features, so the
+constraint is kept.
+
+**The two `images.sizes` ladders must agree.** Each daemon reads its own
+configuration file, `/api/capabilities` reports the player daemon's list and
+`/api/metadata/capabilities` the metadata daemon's. A daemon that disagreed
+would miss the other's cached variants and regenerate them under a second name.
+Nothing checks this at run time; the shipped `audiocontrol.json` and
+`metadata.json` both carry the same ladder and both say so in a comment.
 
 **Compatibility promises that this phase changed:**
 
@@ -814,11 +875,10 @@ restart or a package upgrade. **Reconnect on every close.**
 
 | Situation | What happens | What a user sees | What a log shows |
 |---|---|---|---|
-| Metadata half down, at boot or later | **playback works**, and so does every player route: nothing in this daemon waits on it | no enrichment, no new artist images, no scrobbling; artist images already stored still serve, because the redirect target is the metadata half's route and its store is on disk | nothing on the player side — it has nothing to fail |
+| Metadata daemon down or not yet started | **playback works**, and so does every player route: nothing in the player daemon waits on it. Verified on hardware by stopping the unit and playing | no enrichment, no scrobbling — and **artist images stop serving too**, including ones already on disk: the redirect target `/api/coverart/artist/<b64>/image` is the metadata daemon's route, so nginx has no upstream for it. This is a new failure mode rather than a worsened one: in one process there was no such state, because a metadata failure took playback with it. The split buys playback that survives, and pays for it with artist images that do not | nothing on the player side — it has nothing to fail |
 | `services.metadata` present in a config file | **ignored.** Nothing reads it, and no client is built from it | nothing | nothing |
-| `services.core` absent | **the defaults apply**, not silence — the metadata half runs inside the player daemon, so there is always a core | nothing | nothing |
-| Player side unreachable, from the metadata side | the subscriber and puller retry with backoff to 30 s | enrichment stops; playback unaffected | one warning naming the URL, then a reminder every 5 min |
-| Player side unreachable *(Phase 2 only)* | results are dropped | metadata and scrobbling go stale | warning, then 5-minute reminders |
+| `core.url` absent or misspelled in `metadata.json` | **the metadata daemon refuses to start**, before it opens a cache or binds a port | metadata stops working; playback does not | one error naming the key, and the same on stderr |
+| Player daemon unreachable, from the metadata daemon | the subscriber and puller retry with backoff to 30 s; results in flight are dropped | enrichment and scrobbling go stale; playback unaffected | one warning naming the URL, then a reminder every 5 min |
 | Socket dropped | reconnect with backoff; a seed recovers the current song | a track starting *and* ending inside the gap is never enriched or scrobbled | debug per attempt |
 | Batch computed against a reloaded library | 409 ends the sweep; the next poll re-pulls | a short delay before enrichment reappears | debug |
 | Batch names a library that is gone | 404 ends the sweep | nothing | one line |
@@ -827,52 +887,99 @@ restart or a package upgrade. **Reconnect on every close.**
 | No secrets compiled in | providers needing a key are disabled at start-up | those providers contribute nothing | one line per absent secret |
 | Unknown field in a batch | 422 — the batch is refused rather than silently applied unchecked | nothing | one line |
 
-The first row is the whole point of the phase, and the second is what it cost.
-`services.metadata` used to mean "there is a metadata side, here is where":
-absent, the daemon quietly lost enrichment, the resolvers, artist detail and
-artist images. There is nothing to say now, because the player half does not
-call and cannot. `services.core` is unchanged and is not symmetrical with it:
-an absent section is a file that has not been updated, and the defaults are
-correct, because the metadata side always has a player daemon to talk to.
+The first row is the whole point of the phase, and it is the one property here
+that is asserted against two real processes rather than argued for: the Python
+integration suite starts both daemons, stops the metadata unit and sends a play
+command. The second row is what the one-way seam cost. `services.metadata` used
+to mean "there is a metadata side, here is where": absent, the daemon quietly
+lost enrichment, the resolvers, artist detail and artist images. There is
+nothing to say now, because the player half does not call and cannot.
+
+The third row is not symmetrical with the second, and the asymmetry is
+deliberate. `get_service_config` falls back to the top level, and
+`metadata.json` puts `webserver` there with port 1084 — so a `metadata.json`
+that omits or misspells `core.url` would derive `http://127.0.0.1:1084/api`,
+the metadata daemon's *own* port. It would then subscribe to its own event
+stream and poll its own library, neither of which it serves, and fail silently
+forever with a reminder every five minutes. The deriving default is right in
+one process and wrong in two, so the metadata daemon refuses to start without
+an explicit `core.url` rather than running on talking to itself.
 
 ---
 
-## What changes when the process splits
+## What the split changed, and what it cost
 
-Phase 2 is packaging and configuration. Nothing in the seams above changes
-shape.
+It was packaging and configuration, as the spec said it would be. Nothing in
+the seams above changed shape.
 
-| | Now | After the split |
-|---|---|---|
-| Processes | one | two |
-| Binaries | one | two, **in one package** |
-| systemd units | one | two |
-| Configuration | one file | plus `metadata.json` |
-| Ports | 1080 | 1080 and 1084 |
-| `services.core.url` | `http://127.0.0.1:1080/api` | unchanged — **the only address either daemon holds** |
-| Client paths | unchanged | unchanged; nginx routes `/api/metadata/` and a few sub-prefixes to 1084 |
-| Caches | shared | the metadata daemon gets its own image cache and settings database |
+| | How it is |
+|---|---|
+| Processes | two |
+| Binaries | two, **in one package**, enabled, upgraded and rolled back together |
+| systemd units | two: `audiocontrol.service` and `audiocontrol-metadata.service` |
+| Configuration | two files: `audiocontrol.json` and `metadata.json` |
+| Ports | 1080 for the player daemon, 1084 for the metadata daemon |
+| `services.core.url` | `http://127.0.0.1:1080/api`, in `metadata.json` — **the only address either daemon holds**, and it must be written out rather than derived |
+| Client paths | unchanged; nginx routes `/api/metadata/` and seven sub-prefixes of `/api/audiocontrol/` to 1084 |
+| Caches | separate: the metadata daemon has its own image cache, settings database and lookup cache under `/var/lib/audiocontrol/metadata` |
+| Credentials | separate: the player daemon's `/var/lib/audiocontrol/security_store.json` holds the Spotify keys, the metadata daemon's `/var/lib/audiocontrol/metadata/security_store.json` holds `lastfm_session_key` and `lastfm_username`. `postinst` copies, never moves, so a rollback finds both files intact |
 
-There is no row for `services.metadata`: it is gone, and that is what makes the
+There is no row for `services.metadata`: it is gone, and that is what made the
 split a packaging change. Only one daemon has to be told where the other is, so
-only one configuration file names an address, and the failure that used to
-worry this section — a `metadata.json` whose `core.url` was absent and derived
-the metadata daemon's own port — is now the only such failure there is.
+only one configuration file names an address.
 
-**One sub-prefix nginx must route, and it is load-bearing rather than
-cosmetic.** `/api/coverart/` has to reach the metadata daemon after the split,
-because it is where `/api/library/<p>/image/artist:<name>` sends clients and
-where the artist lists' `thumb_url` points. A deployment that routes
-`/api/metadata/` and forgets `/api/coverart/` loses every artist image on the
-device, with the player daemon answering a 302 into its own SPA fallback.
+**The credential stores are split because two processes cannot share one.**
+`SecurityStore::save_to_file` serialises its whole in-memory map over the file
+with `File::create`, which truncates. Two daemons that each loaded a copy at
+start-up and each wrote it back would lose whatever the other had written since
+— a Spotify refresh overwritten by a Last.fm authentication, silently, with the
+symptom being an account that re-authenticates forever. Splitting the file
+removes the question instead of managing it. Each store keeps the other's keys
+after the migration copy; they are inert, and deleting them was deliberately
+not attempted, because a partial migration that removed a key and then failed
+would unlink an account.
 
-**One hazard to check when writing `metadata.json`.** Service configuration
-falls back to the top level, and `metadata.json` puts `webserver` there with
-port 1084. A `metadata.json` that omits or misspells `core.url` therefore
-derives `http://127.0.0.1:1084/api` — the metadata daemon's *own* port. It then
-subscribes to its own event stream and polls its own library, neither of which
-it serves, and fails silently forever with a reminder every five minutes.
-Phase 2 needs a start-up check that `core.url` is set, not a comment.
+### What the seam actually costs
+
+The spec was candid that this was unmeasured: "Everything above is reasoning
+about round trips that have never crossed a real socket boundary in this
+system." It has now crossed one. The figures below were **measured on a test
+device with an 11,858-album library — 211,475 songs, 10,927 artists as MPD
+reports them, loading to 11,858 albums and 1,919 artists on the player side.**
+Everything not marked as measured is an estimate, and says so.
+
+| What | Measured | On |
+|---|---|---|
+| Player-side library load | **463.24 s** for 211,475 songs | one MPD load, cold |
+| `GET /artists` across the seam | **0.27 MB**, **27 ms** | three runs, ±1 ms |
+| `GET /albums` across the seam | **2.65 MB**, **98 ms** | three runs, ±2 ms |
+| Metadata daemon RSS | **10.8 MB at rest → 31.4 MB peak** | while pulling the library |
+| Player daemon RSS | **313 MB peak**, settling to about **130 MB** | during and after the library load |
+| Metadata daemon shutdown | **59 ms** | `systemctl stop` |
+
+**The seam is not the expensive part, and it does not need streaming or
+paging.** That was the open question: the puller reads `/artists` and `/albums`
+whole and materialises the response string, then a `serde_json::Value`, then
+the parsed `Vec` — three copies of one body alive at once — and the spec asked
+whether a multi-megabyte spike per sweep meant the seam had to be redesigned.
+Measured, the larger of the two bodies is 2.65 MB, so the three copies are
+about **8 MB transient**, which is consistent with the daemon's observed rise
+from 10.8 MB to 31.4 MB while it pulls. On a 20,000-album library the same
+arithmetic gives roughly 4.5 MB a copy. Against a device that may have one
+gigabyte, and against the 463 s the library load itself takes, that is not
+where the money goes. Streaming or paging the lists would be work spent on the
+cheap end of the phase.
+
+What the numbers do *not* cover: this is one library, on one device, with MPD
+as the backend. Nothing here says how the seam behaves on a library several
+times larger, or on LMS, and nothing measures a sweep running concurrently with
+a reload.
+
+**Two smaller costs, as predicted and not separately measured.** A cover-art
+lookup asks for a Spotify token first if none is cached; the 60 s TTL bounds
+it, and a negative answer is cached too, so an unlinked account costs one call
+a minute rather than one per lookup. And shutdown is two units, each paying its
+own grace period — see [Start-up and shutdown](#start-up-and-shutdown).
 
 ---
 
@@ -887,11 +994,14 @@ Written down because a document that only describes what works is not a map.
   sweeps every loaded library regardless, and it has no way to be told not to.
   The design document said this flag becomes a no-op and is removed from the
   docs; it is now thoroughly the first and still not the second.
-- **The auth manifest was not extended to `/api/audiocontrol/metadata/…`.**
-  Reads that are permissive on the historical path fall into the authenticated
-  catch-all there. Fail-closed, so nothing is less safe, but a client written
-  against the new mount today does not get the treatment the historical path
-  gives it.
+- **The metadata daemon does not serve `/api/version`.** Its `route_groups`
+  mounts the metadata routes and nothing else, so there is no way to ask it
+  which release it is over HTTP; `/api/version` on 1080 answers for the player
+  daemon only. The two always ship as one package, so the question has one
+  answer — but a health check that wants to confirm the metadata daemon is
+  running has to ask something else, such as `GET /api/metadata/capabilities`.
+  The daemon's own start-up probe of `GET /api/version` goes the other way,
+  to 1080.
 - **The artist-split cache is keyed on the artist name alone.** The separators
   are not part of the key and entries never expire, so changing
   `artist_separators` in configuration does not invalidate what is already
@@ -924,8 +1034,9 @@ Written down because a document that only describes what works is not a map.
   puller.
 - **`EnrichmentSink`'s error type cannot express a transport failure**, so a
   dropped request is reported as "the library is gone" and abandons the sweep.
-  Harmless on loopback; in Phase 2 one dropped request costs a whole sweep
-  until the next poll.
+  It was harmless while both halves shared a process. Now that a request can
+  fail because the other daemon restarted, one dropped request costs a whole
+  sweep until the next poll — up to ten minutes on the backstop.
 - **Three routes do synchronous, rate-limited provider work on request
   threads** — `resolve/title-order`, `resolve/artist-split`, and artist detail
   with `?lookup=true`. Concurrent uncached requests can occupy every Rocket
@@ -938,16 +1049,37 @@ Written down because a document that only describes what works is not a map.
 - **A biography is held per artist on the player side now**, bounded at 2000
   bytes. It is the largest thing in an `ArtistMeta` and the only one no list
   shows, carried because the artist detail routes serve it and may no longer
-  fetch it. Unbounded it was the largest new cost in the phase: roughly three
-  times the stored text once allocation is counted, so ten thousand artists at
-  three kilobytes would be about ninety megabytes on a device that may have one
-  gigabyte and is holding the library too. `summarise` applies
-  `sanitize::safe_truncate` at the one point every provider's text crosses,
-  which brings the steady state to about six kilobytes an artist — around sixty
-  megabytes for ten thousand, against a measured 255 MB for a 200,000-song
-  library. The full text is unaffected on the metadata side. What a user sees
-  is a long biography cut mid-sentence; that is
-  field.
+  fetch it. Unbounded it looked like the largest new cost in the phase, on an
+  *estimate* from per-artist byte counts: roughly three times the stored text
+  once allocation is counted, so ten thousand artists at three kilobytes would
+  be about ninety megabytes on a device that may have one gigabyte and is
+  holding the library too. `summarise` applies `sanitize::safe_truncate` at the
+  one point every provider's text crosses, which brings the estimate to about
+  six kilobytes an artist, or around sixty megabytes for ten thousand — set
+  against **255 MB**, which is what the whole daemon then measured, in one
+  process, holding a 200,000-song library. The full text is unaffected on the
+  metadata side. What a user sees is a long biography cut mid-sentence in the
+  artist detail field.
+
+  **That estimate has still not been tested at the scale it worries about.**
+  The device the phase was measured on loads 1,919 artists on the player side,
+  a fifth of the ten thousand the arithmetic assumes, and its player daemon
+  settles at about 130 MB. A library with ten thousand *player-side* artists
+  would be the test, and there has not been one.
+- **Two memory figures appear in this document, and they measure different
+  things.** The 255 MB in the bullet above is one number for one process
+  holding both halves. The figures under
+  [what the seam actually costs](#what-the-seam-actually-costs) are per daemon
+  and were taken after the split, on a 211,475-song library: the player daemon
+  peaks at 313 MB during the load and settles to about 130 MB, and the metadata
+  daemon sits at 10.8 MB, rising to 31.4 MB while it pulls. So the newer pair
+  supersedes the older single number rather than contradicting it — the same
+  work now has two resident sets, and the larger one is the library, which was
+  always the bulk of it. They are not a controlled comparison: different
+  libraries, different sample points, and the older figure was a steady state
+  where 313 MB is a load-time peak. What can be said is that the player daemon
+  alone, after the split, is well under what one process holding both halves
+  was.
 - **`?lookup=true` has no test** distinguishing "lookup skipped" from "lookup
   ran and found nothing", because no provider is registered in the unit test
   environment.
@@ -959,6 +1091,7 @@ Written down because a document that only describes what works is not a map.
 - [architecture.md](architecture.md) — the whole system, of which this is one seam
 - [api.md](api.md) — every route, with request and response shapes
 - [websocket.md](websocket.md) — the event contract and its compatibility rules
+- [specs/2026-09-08-two-processes.md](specs/2026-09-08-two-processes.md) — the phase that made them two processes: the credential hazard, the packaging, and the measurement it asked for
 - [specs/2026-09-07-one-way-seam.md](specs/2026-09-07-one-way-seam.md) — why the seam runs one way, and what each removed call was replaced with
-- [specs/2026-09-04-player-metadata-split.md](specs/2026-09-04-player-metadata-split.md) — the split this sits inside, partly superseded by the above
+- [specs/2026-09-04-player-metadata-split.md](specs/2026-09-04-player-metadata-split.md) — the split this sits inside, partly superseded by the two above
 - [tooling.md](tooling.md) — building and testing in a container

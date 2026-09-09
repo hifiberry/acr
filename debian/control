@@ -21,8 +21,14 @@ Description: HiFiBerry AudioControl/Rust application
  This package provides tools for managing audio playback
  and control across different audio systems.
  .
+ Two daemons ship in this one package and are upgraded together:
+ audiocontrol, which owns playback, volume and the library, and
+ audiocontrol-metadata, which owns external lookups, cover art and
+ scrobbling. They talk to each other over HTTP on loopback.
+ .
  Includes command-line tools:
   * audiocontrol - Main audio control daemon
+  * audiocontrol-metadata - Metadata, cover art and scrobbling daemon
   * audiocontrol_dump_store - Security store inspection utility
   * audiocontrol_lms_client - Logitech Media Server client
   * audiocontrol_send_update - Player state update utility

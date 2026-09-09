@@ -1,17 +1,276 @@
 # HiFiBerry API proxy configuration
 # This file should be included in the main nginx server block
 
-# Proxy API requests to the backend service
+# Two daemons, one client-visible prefix.
 #
-# One location, one backend: today the player daemon and the metadata code
-# share a process on 1080, so every path under /api/audiocontrol/ reaches the
-# same Rocket and no path needs naming here.
+# The player daemon (127.0.0.1:1080) serves playback, the library, volume,
+# lyrics, settings, the WebSocket -- and the whole Spotify account. The
+# metadata daemon (127.0.0.1:1084) serves cover art, the artist store, the
+# external image cache, Last.fm, TheAudioDB, favourites, artist detail and
+# the two resolver routes. That list is the whole of what it mounts below
+# /api, checked against the route table it prints at start-up, so no route it
+# serves is left addressing the player daemon.
 #
-# When that changes and this splits into per-daemon locations, /spotify/ goes
-# to the **player** daemon, all of it -- /search included. The Spotify account
-# belongs to the half that plays: the librespot backend turns every playback
-# command into a Spotify Web API call, so the account and every route that
-# manages it live there. Client URLs are unchanged either way.
+# Clients did not change: everything they already fetch is still under
+# /api/audiocontrol/. The locations below split that prefix by first segment,
+# and nginx picks the longest matching prefix, so each named sub-prefix wins
+# over the catch-all while everything unnamed stays on the player daemon.
+#
+# **/api/audiocontrol/spotify/ is not one of them, deliberately.** The
+# account -- the OAuth flow, the token lifecycle, playback control and search
+# -- belongs to the half that plays: the librespot backend turns every
+# playback command into a Spotify Web API call. Only the two providers that
+# *consume* a token stayed on the metadata side, and they are not routes.
+# Sending this prefix to 1084 would answer 404 to every login.
+#
+# X-Forwarded-Prefix tells a daemon which prefix the client actually saw, so
+# an API-relative URL in a response body can be written back under it:
+# /api/audiocontrol for the compatibility locations below, /api/metadata for
+# the new mount. Get it wrong and the links in a body 404 for the client
+# while every server-side log looks healthy.
+#
+# Today the player daemon is the half that rewrites: song.cover_art_url and
+# the artist thumb_url values it holds -- which the metadata daemon produced
+# and pushed across the seam -- are rewritten as it serves them. The metadata
+# daemon's own handlers do not rewrite yet, so a gallery listing fetched
+# straight from it still answers /api/coverart/... under either mount. That
+# is a daemon-side gap, not a proxy one; the header is set correctly here so
+# fixing it needs no change to this file.
+
+# Cover art: artist, album, song and URL lookups, the artist image gallery
+# and its uploads. Load-bearing beyond its own routes --
+# /api/audiocontrol/library/<player>/image/artist:<name> redirects here, and
+# every artist thumb_url in a library listing points here.
+location /api/audiocontrol/coverart/ {
+    proxy_pass http://127.0.0.1:1084/api/coverart/;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /api/audiocontrol;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_redirect off;
+
+    proxy_buffer_size 4k;
+    proxy_buffers 8 4k;
+    proxy_busy_buffers_size 8k;
+    # Artist image uploads arrive base64-encoded in a JSON body.
+    client_max_body_size 10M;
+
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+}
+
+# The external image cache only. /api/audiocontrol/imagecache/shairportsync/
+# and every other subtree stay on the player daemon, which owns the images it
+# produces itself -- which is why this location names the subtree rather than
+# the whole /imagecache/ prefix.
+location /api/audiocontrol/imagecache/external/ {
+    proxy_pass http://127.0.0.1:1084/api/imagecache/external/;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /api/audiocontrol;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_redirect off;
+
+    proxy_buffer_size 4k;
+    proxy_buffers 8 4k;
+    proxy_busy_buffers_size 8k;
+    client_max_body_size 10M;
+
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+}
+
+# Last.fm: status, and the authentication flow that writes the session key
+# into the metadata daemon's own credential store.
+location /api/audiocontrol/lastfm/ {
+    proxy_pass http://127.0.0.1:1084/api/lastfm/;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /api/audiocontrol;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_redirect off;
+
+    proxy_buffer_size 4k;
+    proxy_buffers 8 4k;
+    proxy_busy_buffers_size 8k;
+    client_max_body_size 10M;
+
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+}
+
+# TheAudioDB artist lookups by MusicBrainz id.
+location /api/audiocontrol/audiodb/ {
+    proxy_pass http://127.0.0.1:1084/api/audiodb/;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /api/audiocontrol;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_redirect off;
+
+    proxy_buffer_size 4k;
+    proxy_buffers 8 4k;
+    proxy_busy_buffers_size 8k;
+    client_max_body_size 10M;
+
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+}
+
+# Favourites: all three providers moved with the routes.
+location /api/audiocontrol/favourites/ {
+    proxy_pass http://127.0.0.1:1084/api/favourites/;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /api/audiocontrol;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_redirect off;
+
+    proxy_buffer_size 4k;
+    proxy_buffers 8 4k;
+    proxy_busy_buffers_size 8k;
+    client_max_body_size 10M;
+
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+}
+
+# Artist detail. Not the library's artist routes -- those are
+# /api/audiocontrol/library/<player>/artist/... and stay on the player daemon
+# -- but GET /api/audiocontrol/artist/<b64>, which is the only way to force a
+# fresh lookup (?lookup=true) rather than read back whatever the last
+# enrichment sweep left in the library.
+location /api/audiocontrol/artist/ {
+    proxy_pass http://127.0.0.1:1084/api/artist/;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /api/audiocontrol;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_redirect off;
+
+    proxy_buffer_size 4k;
+    proxy_buffers 8 4k;
+    proxy_busy_buffers_size 8k;
+    client_max_body_size 10M;
+
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+}
+
+# The two resolver routes, title-order and artist-split: what a radio title or
+# a joined artist name should be split into.
+location /api/audiocontrol/resolve/ {
+    proxy_pass http://127.0.0.1:1084/api/resolve/;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /api/audiocontrol;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_redirect off;
+
+    proxy_buffer_size 4k;
+    proxy_buffers 8 4k;
+    proxy_busy_buffers_size 8k;
+    client_max_body_size 10M;
+
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+}
+
+# The metadata daemon's own prefix, for clients written against it rather
+# than against the compatibility sub-prefixes above. It carries every
+# metadata route a second time, plus GET /api/metadata/capabilities, which
+# exists only here -- /api/audiocontrol/capabilities is the player daemon's
+# own answer and stays that way.
+#
+# The forwarded prefix is /api/metadata rather than /api/audiocontrol: a
+# response served under this mount should write its image URLs back under
+# the prefix the client used, or a client following them lands on the player
+# daemon's half of the tree.
+location /api/metadata/ {
+    proxy_pass http://127.0.0.1:1084/api/metadata/;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /api/metadata;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_redirect off;
+
+    proxy_buffer_size 4k;
+    proxy_buffers 8 4k;
+    proxy_busy_buffers_size 8k;
+    client_max_body_size 10M;
+
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+}
+
+# Everything else: the player daemon. Playback, players, the library, volume,
+# lyrics, settings, genres, background jobs, the cache routes, the WebSocket,
+# /api/audiocontrol/imagecache/ outside external/, and the whole Spotify
+# account.
+#
+# POST /api/audiocontrol/imagecache/variants/purge lands here too, and that is
+# a decision rather than an oversight: both daemons mount that route over
+# their own image tree, and one path cannot address two caches. Sending it to
+# 1084 would take away the player daemon's purge to gain the metadata
+# daemon's. So it keeps purging the player daemon's variants, and the
+# metadata daemon's external thumbnails have no purge of their own until
+# something daemon-side gives them one.
 location /api/audiocontrol/ {
     # Strip /api/audiocontrol prefix and proxy to backend
     proxy_pass http://127.0.0.1:1080/api/;

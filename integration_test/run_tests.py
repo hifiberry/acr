@@ -25,14 +25,20 @@ def ensure_dependencies():
     return True
 
 def build_audiocontrol():
-    """Build the AudioControl binary"""
-    print("Building AudioControl binary...")
-    
+    """Build the AudioControl binaries
+
+    `--workspace` is required rather than tidy: the metadata daemon that
+    test_two_daemons.py starts is a [[bin]] of crates/audiocontrol-metadata,
+    and a plain `cargo build` operates on the root package only, so it would
+    not be built at all.
+    """
+    print("Building AudioControl binaries...")
+
     # Change to project root directory (one level up from tests)
     project_root = Path(__file__).parent.parent
-    
+
     result = subprocess.run([
-        "cargo", "build"
+        "cargo", "build", "--workspace"
     ], cwd=str(project_root), capture_output=True, text=True)
     
     if result.returncode != 0:

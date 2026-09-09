@@ -25,3 +25,41 @@ jobs:
       run: cargo test --workspace --verbose
     - name: Crate dependency direction
       run: sh scripts/check-crate-deps.sh
+
+  # The two-daemon integration tests, and only those.
+  #
+  # The rest of integration_test/ is deliberately not here: it carries eleven
+  # pre-existing failures and much of it reaches TheAudioDB, fanart.tv,
+  # MusicBrainz and Last.fm, so it would either arrive red or make third-party
+  # requests on every push. test_two_daemons.py is self-contained -- it talks
+  # only to the two daemons it starts on 18080 and 18084 -- and it covers the
+  # properties the process split exists to deliver:
+  #
+  #   * a play command still answers with the metadata daemon stopped
+  #   * one daemon's credential store cannot erase the other's
+  #   * a metadata.json with no core.url refuses to start, naming the key
+  #
+  # Note this builds with default features, so the player daemon here carries
+  # the in-process metadata routes that the shipped --no-default-features
+  # --features alsa build does not. The tests never ask it for one, and require
+  # 18084 to refuse before believing the metadata daemon is down, so a pass
+  # cannot come from the shadow answering. See integration_test/README.md.
+  two-daemons:
+    runs-on: ubuntu-latest
+    # The tests bound their own waits (~40 s worst case); this is a backstop so
+    # a hung daemon cannot occupy a runner. pytest-timeout is deliberately not
+    # used -- it is not in requirements.txt, and passing --timeout to a pytest
+    # without it fails the run on an unrecognised argument.
+    timeout-minutes: 20
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libasound2-dev pkg-config
+    - name: Build both daemons
+      run: cargo build --workspace --verbose
+    - name: Install Python dependencies
+      run: pip install -r integration_test/requirements.txt
+    - name: Two-daemon integration tests
+      working-directory: integration_test
+      run: python -m pytest test_two_daemons.py -v

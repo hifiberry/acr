@@ -240,8 +240,12 @@ fn lastfm_worker(
         }
 
 
-        if let (Some(name), Some(artists), Some(length_val), Some(actual_started_time)) =
-            (&track_data.name, &track_data.artists, &track_data.length, &track_data.started_timestamp) {
+        // No length is required here. A turntable, a web radio and an AirPlay
+        // stream all report none, and demanding one meant this block -- and
+        // with it the four-minute rule below, which needs no length at all --
+        // was unreachable for them: nothing from those sources ever scrobbled.
+        if let (Some(name), Some(artists), Some(actual_started_time)) =
+            (&track_data.name, &track_data.artists, &track_data.started_timestamp) {
             
             let artists_str = artists.join(", ");
 
@@ -259,7 +263,7 @@ fn lastfm_worker(
                 name,
                 artists_str,
                 track_data.current_playback_state,
-                length_val, // This is &u32, displays fine
+                track_data.length.map_or_else(|| "unknown".to_string(), |l| l.to_string()),
                 effective_elapsed_seconds,
                 track_data.accumulated_play_duration_ms,
                 current_segment_ms,
@@ -269,11 +273,7 @@ fn lastfm_worker(
             // Only attempt to scrobble if the player is currently playing this song
             if track_data.current_playback_state == PlaybackState::Playing
                 && !track_data.scrobbled_song && scrobble_enabled { // Added scrobble_enabled check
-                    // let scrobble_point_duration_secs = *length_val / 2; // length_val is &u32
-                    let scrobble_point_time_secs = 240; // 4 minutes in seconds, Last.fm recommendation
-                    
-
-                    if effective_elapsed_seconds >= u64::from(*length_val).saturating_mul(50) / 100 || effective_elapsed_seconds >= scrobble_point_time_secs {
+                    if scrobble_point_reached(track_data.length, effective_elapsed_seconds) {
                         
                         if client.is_authenticated() { // Check if client is authenticated before scrobbling
                             if let Some(primary_artist) = artists.first() {
@@ -303,7 +303,7 @@ fn lastfm_worker(
                                     None,               // Album artist not tracked yet
                                     scrobble_timestamp,
                                     None,               // Track number not tracked
-                                    Some(*length_val),  // length_val is &u32
+                                    track_data.length, // None when the source does not know it
                                 ) {
                                     Ok(_) => {
                                         info!(
@@ -462,6 +462,52 @@ impl Lastfm {
     }
 
     /// Handle a song changed event
+    /// Send the scrobble a track earns by ending, if it earns one.
+    ///
+    /// The periodic check can only judge a track while it plays, and for a
+    /// source with no length the only rule available there is four minutes --
+    /// which most tracks never reach. Ending is the other moment worth
+    /// judging, and for those sources it is the only one that ever fires.
+    fn scrobble_ended_track(&self, track_data: &mut CurrentScrobbleTrack) {
+        if !self.config.scrobble {
+            return;
+        }
+        let Some(client) = &self.lastfm_client else {
+            return;
+        };
+        let Some(pending) = scrobble_for_ended_track(track_data, SystemTime::now()) else {
+            return;
+        };
+        if !client.is_authenticated() {
+            return;
+        }
+        match client.scrobble(
+            &pending.artist,
+            &pending.track,
+            None,
+            None,
+            pending.timestamp,
+            None,
+            pending.length,
+        ) {
+            Ok(_) => {
+                info!(
+                    "LastFMWorker: Successfully scrobbled '{}' by '{}' as it ended",
+                    pending.track, pending.artist
+                );
+                track_data.scrobbled_song = true;
+            }
+            Err(e) => {
+                // Not retried: the track is over and its state is about to be
+                // replaced, so there is no later tick that could try again.
+                warn!(
+                    "LastFMWorker: Failed to scrobble '{}' by '{}' as it ended: {}",
+                    pending.track, pending.artist, e
+                );
+            }
+        }
+    }
+
     fn handle_song_changed(&mut self, song_event_opt: &Option<Song>, source: &PlayerSource) {
         let mut track_data = self.current_track_data.lock();
         
@@ -475,6 +521,8 @@ impl Lastfm {
                                     track_data.length != new_length;
 
             if is_different_song {
+                self.scrobble_ended_track(&mut track_data);
+
                 let mut was_playing_before_change = false;
                 if track_data.current_playback_state == PlaybackState::Playing {
                     if let Some(lpt) = track_data.last_play_timestamp {
@@ -529,6 +577,7 @@ impl Lastfm {
         } else { // song_event_opt is None
             if track_data.name.is_some() { 
                 info!("Lastfm: Song changed to None (playback stopped), clearing track data.");
+                self.scrobble_ended_track(&mut track_data);
                 if track_data.current_playback_state == PlaybackState::Playing {
                     if let Some(lpt) = track_data.last_play_timestamp {
                         let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
@@ -742,6 +791,92 @@ fn calculate_updates(
     }
     
     updated_song
+}
+
+/// Last.fm's rule, and the floor under it.
+const SCROBBLE_AFTER_SECS: u64 = 240;
+const MIN_PLAY_SECS: u64 = 30;
+
+#[derive(Debug, PartialEq)]
+struct PendingScrobble {
+    artist: String,
+    track: String,
+    timestamp: u64,
+    length: Option<u32>,
+}
+
+/// Whether a track that is still playing has been listened to for long
+/// enough to scrobble: half its length, or four minutes, whichever comes
+/// first.
+///
+/// A source that does not know the length -- a turntable, a web radio, an
+/// AirPlay stream -- has no half to reach, so only the four-minute rule can
+/// fire. It used to be unreachable for them: the caller required a length
+/// before it got this far, and nothing from those sources ever scrobbled.
+fn scrobble_point_reached(length: Option<u32>, played_secs: u64) -> bool {
+    match length {
+        Some(length) => {
+            played_secs >= u64::from(length) / 2 || played_secs >= SCROBBLE_AFTER_SECS
+        }
+        None => played_secs >= SCROBBLE_AFTER_SECS,
+    }
+}
+
+/// How long this track has been heard: what the worker banked on earlier
+/// pauses, plus the stretch still running if it is playing now.
+fn played_seconds(track: &CurrentScrobbleTrack, now: SystemTime) -> u64 {
+    let mut played_ms = track.accumulated_play_duration_ms;
+    if track.current_playback_state == PlaybackState::Playing {
+        if let Some(segment_start) = track.last_play_timestamp {
+            played_ms += now
+                .duration_since(segment_start)
+                .unwrap_or_default()
+                .as_millis() as u64;
+        }
+    }
+    played_ms / 1000
+}
+
+/// What to scrobble for a track that has just ended, if anything.
+///
+/// The end is the only chance an unknown-length track gets. A three-minute
+/// side of vinyl never reaches four minutes while it plays, so judging it
+/// only during playback means never judging it at all; what it did do is
+/// finish, having been listened to. `MIN_PLAY_SECS` is Last.fm's own floor,
+/// and keeps lifting the needle from counting as a listen.
+///
+/// A known length keeps the rule it always had. In practice the periodic
+/// check has already sent those, and `scrobbled_song` stops this path
+/// sending them twice.
+fn scrobble_for_ended_track(
+    track: &CurrentScrobbleTrack,
+    now: SystemTime,
+) -> Option<PendingScrobble> {
+    if track.scrobbled_song {
+        return None;
+    }
+    let name = track.name.as_ref()?;
+    let artist = track.artists.as_ref()?.first()?;
+    let started_timestamp = track.started_timestamp?;
+
+    let played_secs = played_seconds(track, now);
+    let long_enough = match track.length {
+        Some(_) => scrobble_point_reached(track.length, played_secs),
+        None => played_secs >= MIN_PLAY_SECS,
+    };
+    if !long_enough {
+        return None;
+    }
+
+    Some(PendingScrobble {
+        artist: artist.clone(),
+        track: name.clone(),
+        timestamp: started_timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+        length: track.length,
+    })
 }
 
 #[cfg(test)]
@@ -996,5 +1131,123 @@ mod tests {
             update.cover_art_url,
             Some("https://lastfm.example/cover.png".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod unknown_length_tests {
+    use super::*;
+
+    /// A track whose length nobody knows, played for `played_secs`, with the
+    /// worker having seen it start `played_secs` ago.
+    fn played(length: Option<u32>, played_secs: u64) -> CurrentScrobbleTrack {
+        CurrentScrobbleTrack {
+            name: Some("Skepsis Part I (Live in Berlin)".to_string()),
+            artists: Some(vec!["Der Weg einer Freiheit".to_string()]),
+            length,
+            started_timestamp: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)),
+            accumulated_play_duration_ms: played_secs * 1000,
+            ..Default::default()
+        }
+    }
+
+    // --- the rule while a track is still playing -------------------------
+
+    /// The bug this module exists for. A turntable, a web radio and an AirPlay
+    /// stream all report no length, and requiring one meant the four-minute
+    /// rule beside it could never be reached: nothing from those sources has
+    /// ever scrobbled.
+    #[test]
+    fn an_unknown_length_track_scrobbles_after_four_minutes_of_play() {
+        assert!(scrobble_point_reached(None, 240));
+    }
+
+    #[test]
+    fn an_unknown_length_track_does_not_scrobble_before_four_minutes() {
+        assert!(!scrobble_point_reached(None, 239));
+    }
+
+    #[test]
+    fn a_known_length_track_still_scrobbles_at_half_its_length() {
+        assert!(scrobble_point_reached(Some(300), 150));
+        assert!(!scrobble_point_reached(Some(300), 149));
+    }
+
+    // --- the rule when a track ends --------------------------------------
+
+    /// Without a length there is no half to reach, so a three-minute side of
+    /// vinyl would never pass the four-minute rule while it played. What it
+    /// did do is end, having been listened to -- which is when it counts.
+    #[test]
+    fn an_unknown_length_track_is_scrobbled_when_it_ends() {
+        let pending = scrobble_for_ended_track(&played(None, 180), SystemTime::now());
+
+        assert_eq!(
+            pending,
+            Some(PendingScrobble {
+                artist: "Der Weg einer Freiheit".to_string(),
+                track: "Skepsis Part I (Live in Berlin)".to_string(),
+                timestamp: 1_000_000,
+                length: None,
+            })
+        );
+    }
+
+    /// Last.fm's own floor: anything under thirty seconds is not a listen.
+    /// Lifting the needle mid-track must not scrobble it.
+    #[test]
+    fn an_unknown_length_track_played_too_briefly_is_not_scrobbled_when_it_ends() {
+        assert_eq!(scrobble_for_ended_track(&played(None, 29), SystemTime::now()), None);
+    }
+
+    #[test]
+    fn an_unknown_length_track_played_the_minimum_is_scrobbled_when_it_ends() {
+        assert!(scrobble_for_ended_track(&played(None, 30), SystemTime::now()).is_some());
+    }
+
+    /// A track the periodic check already sent must not be sent again by the
+    /// end-of-track path.
+    #[test]
+    fn a_track_already_scrobbled_is_not_scrobbled_again_when_it_ends() {
+        let mut track = played(None, 300);
+        track.scrobbled_song = true;
+
+        assert_eq!(scrobble_for_ended_track(&track, SystemTime::now()), None);
+    }
+
+    /// A known length keeps the rule it always had, at the end too: half of
+    /// it, or four minutes. Stopping a long track early is not a listen.
+    #[test]
+    fn a_known_length_track_stopped_before_half_is_not_scrobbled_when_it_ends() {
+        assert_eq!(scrobble_for_ended_track(&played(Some(600), 120), SystemTime::now()), None);
+    }
+
+    #[test]
+    fn a_known_length_track_stopped_after_half_is_scrobbled_when_it_ends() {
+        assert!(scrobble_for_ended_track(&played(Some(200), 100), SystemTime::now()).is_some());
+    }
+
+    /// Play time is what the worker accumulated plus the segment still
+    /// running, so a track paused halfway and resumed is judged on both.
+    #[test]
+    fn play_time_still_running_when_the_track_ends_counts_towards_the_minimum() {
+        let mut track = played(None, 20);
+        track.current_playback_state = PlaybackState::Playing;
+        let now = SystemTime::now();
+        track.last_play_timestamp = Some(now - Duration::from_secs(15));
+
+        assert!(scrobble_for_ended_track(&track, now).is_some());
+    }
+
+    /// Recognition can report a state change before it reports what is
+    /// playing; there is nothing to scrobble until both are known.
+    #[test]
+    fn a_track_with_no_title_or_artist_yields_nothing_to_scrobble() {
+        let track = CurrentScrobbleTrack {
+            accumulated_play_duration_ms: 300_000,
+            ..Default::default()
+        };
+
+        assert_eq!(scrobble_for_ended_track(&track, SystemTime::now()), None);
     }
 }

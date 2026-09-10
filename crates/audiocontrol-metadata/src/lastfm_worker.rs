@@ -461,7 +461,6 @@ impl Lastfm {
         }
     }
 
-    /// Handle a song changed event
     /// Send the scrobble a track earns by ending, if it earns one.
     ///
     /// The periodic check can only judge a track while it plays, and for a
@@ -508,20 +507,29 @@ impl Lastfm {
         }
     }
 
+    /// Handle a song changed event
     fn handle_song_changed(&mut self, song_event_opt: &Option<Song>, source: &PlayerSource) {
         let mut track_data = self.current_track_data.lock();
         
         if let Some(song_event) = song_event_opt { 
             let new_name = song_event.title.clone(); 
             let new_artists_vec = song_event.artist.clone().map(|a| vec![a]); 
-            let new_length = song_event.duration.map(|d| d.round() as u32);
+            let new_length = track_length(song_event);
 
             let is_different_song = track_data.name != new_name ||
                                     track_data.artists != new_artists_vec ||
                                     track_data.length != new_length;
 
             if is_different_song {
-                self.scrobble_ended_track(&mut track_data);
+                // Only a different *track* ends the one playing. A
+                // re-announcement carrying a length this song did not have
+                // before still resets the counters below, but scrobbling it
+                // here would send the half-played track twice: once now, and
+                // once more when the periodic rule came round on the
+                // restarted counters.
+                if is_new_track(&track_data, &new_name, &new_artists_vec) {
+                    self.scrobble_ended_track(&mut track_data);
+                }
 
                 let mut was_playing_before_change = false;
                 if track_data.current_playback_state == PlaybackState::Playing {
@@ -638,6 +646,19 @@ impl Lastfm {
                 info!("Lastfm: Playback now '{:?}'. Added {}ms. Total accumulated: {}ms", new_player_state, played_ms, track_data.accumulated_play_duration_ms);
             }
             track_data.last_play_timestamp = None;
+
+            // A stop ends the track. Only shairport and LMS publish a
+            // `SongChanged(None)` to say so; Bluetooth never clears the song
+            // it announced, and its AVRCP duration is frequently absent -- so
+            // without this an A2DP track that is stopped rather than followed
+            // by another is judged by neither rule and never scrobbles. A
+            // pause is not a stop and deliberately does not come through here.
+            if matches!(
+                *new_player_state,
+                PlaybackState::Stopped | PlaybackState::Killed | PlaybackState::Disconnected
+            ) {
+                self.scrobble_ended_track(&mut track_data);
+            }
         } else if old_player_state != PlaybackState::Playing && *new_player_state == PlaybackState::Playing {
             info!("Lastfm: Playback now 'Playing'. Setting last_play_timestamp.");
             track_data.last_play_timestamp = Some(SystemTime::now());
@@ -805,6 +826,31 @@ struct PendingScrobble {
     length: Option<u32>,
 }
 
+/// Whether an incoming song is a different track from the one being played.
+///
+/// Title and artist only, matching `song_identity_changed` in the player
+/// daemon: a duration is a fact about a track, not part of which track it
+/// is. The socket re-seeds a `SongChanged` from `get_song()` on reconnect
+/// and that can carry a duration the event bus never published, so the same
+/// track does arrive again mid-play with a length it lacked before.
+fn is_new_track(
+    track: &CurrentScrobbleTrack,
+    name: &Option<String>,
+    artists: &Option<Vec<String>>,
+) -> bool {
+    track.name != *name || track.artists != *artists
+}
+
+/// The track's length, with zero read as "not known".
+///
+/// MPD reports no duration for a stream; RAAT and the generic player report
+/// `0`. Taken literally, zero says every moment is past half the track.
+fn track_length(song: &Song) -> Option<u32> {
+    song.duration
+        .map(|d| d.round() as u32)
+        .filter(|length| *length > 0)
+}
+
 /// Whether a track that is still playing has been listened to for long
 /// enough to scrobble: half its length, or four minutes, whichever comes
 /// first.
@@ -860,11 +906,12 @@ fn scrobble_for_ended_track(
     let started_timestamp = track.started_timestamp?;
 
     let played_secs = played_seconds(track, now);
-    let long_enough = match track.length {
-        Some(_) => scrobble_point_reached(track.length, played_secs),
-        None => played_secs >= MIN_PLAY_SECS,
-    };
-    if !long_enough {
+    if played_secs < MIN_PLAY_SECS {
+        return None;
+    }
+    // With a length, ending does not lower the bar the periodic check
+    // applies. Without one there is no bar but the floor above.
+    if track.length.is_some() && !scrobble_point_reached(track.length, played_secs) {
         return None;
     }
 
@@ -1249,5 +1296,74 @@ mod unknown_length_tests {
         };
 
         assert_eq!(scrobble_for_ended_track(&track, SystemTime::now()), None);
+    }
+    // --- what counts as a different track ---------------------------------
+
+    /// A re-announcement of the same track carrying a duration it did not
+    /// have before is the same track. The player daemon says so too:
+    /// `song_identity_changed` compares stream url, title and artist and
+    /// deliberately not duration. It matters here because the socket
+    /// re-seeds a `SongChanged` from `get_song()` on every reconnect, and
+    /// `get_song()` can synthesise a duration the event bus never carried --
+    /// so mid-track this arrives as "same song, now 210s". Treating that as a
+    /// new track would scrobble the half-played track on the spot and then
+    /// scrobble it again when the periodic rule came round.
+    #[test]
+    fn a_track_regaining_only_its_length_is_not_a_new_track() {
+        let playing = played(None, 100);
+
+        assert!(!is_new_track(&playing, &playing.name, &playing.artists));
+    }
+
+    #[test]
+    fn a_different_title_is_a_new_track() {
+        let playing = played(None, 100);
+
+        assert!(is_new_track(
+            &playing,
+            &Some("Skepsis Part II (Live in Berlin)".to_string()),
+            &playing.artists
+        ));
+    }
+
+    #[test]
+    fn a_different_artist_is_a_new_track() {
+        let playing = played(None, 100);
+
+        assert!(is_new_track(
+            &playing,
+            &playing.name,
+            &Some(vec!["Miltos Pashalidis".to_string()])
+        ));
+    }
+
+    // --- a length of zero is not a length ---------------------------------
+
+    /// RAAT and the generic player both report `0` for a stream whose length
+    /// they do not know, where MPD reports nothing at all. Zero has to mean
+    /// the same as absent: read literally it says every moment is past half
+    /// the track, so the track scrobbles having been played for no time.
+    #[test]
+    fn a_reported_length_of_zero_means_unknown() {
+        let mut song = Song::default();
+        song.duration = Some(0.0);
+
+        assert_eq!(track_length(&song), None);
+    }
+
+    #[test]
+    fn a_reported_length_is_kept_and_rounded() {
+        let mut song = Song::default();
+        song.duration = Some(210.4);
+
+        assert_eq!(track_length(&song), Some(210));
+    }
+
+    /// The floor is Last.fm's, and it does not stop applying because the
+    /// length happens to be known: half of a forty-second interlude is
+    /// twenty seconds, which is not a listen.
+    #[test]
+    fn a_known_length_track_played_under_the_minimum_is_not_scrobbled_when_it_ends() {
+        assert_eq!(scrobble_for_ended_track(&played(Some(40), 20), SystemTime::now()), None);
     }
 }

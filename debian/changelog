@@ -1,3 +1,33 @@
+hifiberry-audiocontrol (0.23.5) trixie; urgency=medium
+
+  * Nothing played from a turntable, a web radio or an AirPlay stream was ever
+    scrobbled. Last.fm's rule is half the track or four minutes, whichever
+    comes first, and the four-minute half of it needs no track length -- but
+    the check that applied it required one before it ran at all, and those
+    sources do not have one. On a device with an analog input the metadata log
+    showed the same line all day, a length of "N/A" and Now Playing updated
+    for each track, with not one scrobble attempt behind it. Sources that do
+    report a length -- Spotify, Roon, local files -- were unaffected, which is
+    why this went unnoticed.
+
+  * A track from such a source is now also scrobbled when it ends, which for
+    an unknown length is the only moment that can judge it: a three-minute
+    side never reaches four minutes while it plays. The floor is Last.fm's own
+    thirty seconds, so lifting the needle early still does not count as a
+    listen, and a track already scrobbled while playing is not sent twice.
+
+  * A stop now ends the track for players that never clear the song they
+    announced. Bluetooth is one, and its AVRCP metadata frequently carries no
+    duration, so an A2DP track that was stopped rather than followed by
+    another was judged by neither rule.
+
+  * A reported length of zero is read as unknown. RAAT and the generic player
+    report it that way for a stream whose length they do not know, and taken
+    literally it says every moment is past half the track -- so the track
+    scrobbled having been played for no time at all.
+
+ -- HiFiBerry <support@hifiberry.com>  Thu, 10 Sep 2026 14:20:00 +0200
+
 hifiberry-audiocontrol (0.23.4) trixie; urgency=medium
 
   * Marking a song as a favourite could write it into the wrong database. When

@@ -2,15 +2,12 @@ use std::io::{self, Read, Write};
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::net::TcpStream;
+use std::thread;
+use std::time::Duration;
 use url::Url;
-use log::debug;
 
 #[cfg(windows)]
-use std::thread;
-#[cfg(windows)]
-use std::time::Duration;
-#[cfg(windows)]
-use log::warn;
+use log::{debug, warn};
 
 #[cfg(windows)]
 use std::os::windows::prelude::*;
@@ -168,42 +165,144 @@ pub fn open_stream(source: &str, mode: AccessMode) -> io::Result<StreamWrapper> 
         }
           #[cfg(not(windows))]
         {
-            // Unix file/FIFO handling
-            let mut options = OpenOptions::new();
-            
-            // Set access mode
             match mode {
+                // Opening a FIFO for read is meant to block until a writer
+                // shows up -- callers that use it (the metadata pipe reader)
+                // run it on their own dedicated thread and want to wait.
                 AccessMode::Read => {
-                    options.read(true);
+                    let file = OpenOptions::new().read(true).open(path)?;
+                    Ok(StreamWrapper::ReadOnly(Box::new(file)))
                 },
+                // Opening a FIFO for write blocks the same way, but the only
+                // caller (RAAT's control pipe) does this from a request
+                // handler: a backend with nothing reading the other end must
+                // not be able to hang that request forever.
                 AccessMode::Write => {
-                    options.write(true);
+                    let file = open_fifo_for_write(path)?;
+                    Ok(StreamWrapper::WriteOnly(Box::new(file)))
                 },
                 AccessMode::ReadWrite => {
-                    options.read(true).write(true);
+                    let file = OpenOptions::new().read(true).write(true).open(path)?;
+                    Ok(StreamWrapper::ReadWrite(Box::new(file)))
                 }
             }
-            
-            // For FIFOs/named pipes, we need to ensure proper blocking behavior
-            // Check if this looks like a FIFO path (contains "pipe" in the name)
-            // and we're opening for read access
-            let is_fifo_read = matches!(mode, AccessMode::Read | AccessMode::ReadWrite) 
-                && (source.contains("pipe") || source.contains("fifo"));
-            
-            if is_fifo_read {
-                debug!("Opening what appears to be a FIFO for reading: {}", source);
-                // For FIFOs, we want to ensure blocking behavior
-                // Don't set O_NONBLOCK - this ensures the open() call itself may block
-                // until a writer is available, which is the desired behavior for pipes
-            }
-            
-            let file = options.open(path)?;
-            
-            match mode {
-                AccessMode::Read => Ok(StreamWrapper::ReadOnly(Box::new(file))),
-                AccessMode::Write => Ok(StreamWrapper::WriteOnly(Box::new(file))),
-                AccessMode::ReadWrite => Ok(StreamWrapper::ReadWrite(Box::new(file))),
-            }
         }
+    }
+}
+
+/// How long to wait for a reader to show up on the other end of a FIFO
+/// before giving up on opening it for write.
+#[cfg(not(windows))]
+const FIFO_WRITE_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(not(windows))]
+const FIFO_WRITE_OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Open `path` for writing without blocking forever when nothing has it open
+/// for reading.
+///
+/// A plain blocking `open()` on a FIFO's write end waits until a reader
+/// attaches, which is indefinite if the process that is supposed to read it
+/// (e.g. a disabled/dead backend) never does. `O_NONBLOCK` changes that:
+/// opening for write-only with no reader present fails immediately with
+/// `ENXIO` instead of blocking, so this polls with `O_NONBLOCK` until a
+/// reader appears or `FIFO_WRITE_OPEN_TIMEOUT` elapses, then hands back an
+/// ordinary blocking file so the write itself behaves normally.
+#[cfg(not(windows))]
+fn open_fifo_for_write(path: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let deadline = std::time::Instant::now() + FIFO_WRITE_OPEN_TIMEOUT;
+
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+        {
+            Ok(file) => {
+                // A reader is attached now; drop O_NONBLOCK so the write that
+                // follows behaves like an ordinary blocking write.
+                let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+                if flags >= 0 {
+                    unsafe {
+                        libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK);
+                    }
+                }
+                return Ok(file);
+            }
+            Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "timed out after {:?} waiting for a reader on {}",
+                            FIFO_WRITE_OPEN_TIMEOUT,
+                            path.display()
+                        ),
+                    ));
+                }
+                thread::sleep(FIFO_WRITE_OPEN_RETRY_INTERVAL);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    fn make_fifo(path: &Path) {
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let ret = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(ret, 0, "mkfifo failed: {}", io::Error::last_os_error());
+    }
+
+    /// This is the bug in issue #52: a backend (RAAT) registered as a player
+    /// with nothing reading its control FIFO must not hang the caller.
+    #[test]
+    fn opening_a_fifo_for_write_with_no_reader_times_out_instead_of_hanging() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo_path = dir.path().join("control");
+        make_fifo(&fifo_path);
+
+        let started = std::time::Instant::now();
+        let result = open_stream(fifo_path.to_str().unwrap(), AccessMode::Write);
+        let elapsed = started.elapsed();
+
+        match result {
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::TimedOut),
+            Ok(_) => panic!("expected a timeout error, opened a FIFO with no reader"),
+        }
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "took {:?}, should have given up around {:?}",
+            elapsed,
+            FIFO_WRITE_OPEN_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn opening_a_fifo_for_write_succeeds_once_a_reader_attaches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo_path = dir.path().join("control");
+        make_fifo(&fifo_path);
+
+        let reader_path = fifo_path.clone();
+        let reader = thread::spawn(move || {
+            let mut file = OpenOptions::new().read(true).open(&reader_path).unwrap();
+            let mut received = String::new();
+            file.read_to_string(&mut received).ok();
+            received
+        });
+
+        let mut stream = open_stream(fifo_path.to_str().unwrap(), AccessMode::Write)
+            .expect("should open once a reader is attached");
+        write!(stream.as_writer().unwrap(), "pause").unwrap();
+        drop(stream);
+
+        assert_eq!(reader.join().unwrap(), "pause");
     }
 }

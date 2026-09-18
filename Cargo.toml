@@ -95,6 +95,9 @@ parking_lot = "0.12"
 # For reading metadata from audio files
 lofty = "0.18.0"
 walkdir = "2.4.0"
+# For O_NONBLOCK when opening a control FIFO for write, so a backend with no
+# reader on the other end can't block the opening thread forever
+libc = "0.2"
 
 [features]
 default = ["alsa", "metadata"]

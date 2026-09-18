@@ -1,3 +1,22 @@
+hifiberry-audiocontrol (0.23.6) trixie; urgency=medium
+
+  * Pausing or stopping "all players" could hang forever, and after enough
+    hung requests the whole API went unresponsive along with it -- including
+    endpoints with nothing to do with playback, like the version check and
+    volume control. A player that is registered but not actually running,
+    such as a RAAT instance whose backend process is down, still advertised
+    pause and stop as supported; sending it a command opened its control
+    pipe and waited for a reader that would never arrive.
+
+  * Opening that control pipe now gives up after two seconds instead of
+    waiting forever for a reader that isn't coming.
+
+  * Pause-all and stop-all now send their command to every player at once
+    instead of one after another, so a single unresponsive player no longer
+    delays, or blocks, the players around it.
+
+ -- HiFiBerry <support@hifiberry.com>  Fri, 18 Sep 2026 14:10:00 +0200
+
 hifiberry-audiocontrol (0.23.5) trixie; urgency=medium
 
   * Nothing played from a turntable, a web radio or an AirPlay stream was ever

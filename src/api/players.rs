@@ -3,46 +3,98 @@ use crate::data::{PlaybackState, PlayerCommand, LoopMode, Song, Track, PlayerUpd
 use crate::players::PlayerController; // Fixed: Using the public re-export
 use rocket::serde::json::Json;
 use rocket::{get, post, State};
+use std::thread;
+
+/// Outcome of sending a fanout command to a single player.
+struct FanoutOutcome {
+    skipped: bool,
+    succeeded: bool,
+}
+
+/// Send `primary_command` (or `fallback_command`, for a player that only has
+/// the fallback capability) to every controller, except `except_name`.
+///
+/// Each player is sent its command from its own thread, joined afterwards.
+/// A single misbehaving backend can therefore only ever cost the caller
+/// `FIFO_WRITE_OPEN_TIMEOUT`-ish (whatever that backend's own command path
+/// bounds itself to) rather than blocking the other players' commands behind
+/// it, or hanging the request -- and, upstream, the Rocket worker -- forever.
+/// See https://github.com/hifiberry/acr/issues/52.
+fn fanout_player_command(
+    audio_controller: &AudioController,
+    except: &Option<String>,
+    primary_capability: PlayerCapability,
+    primary_command: PlayerCommand,
+    fallback_capability: PlayerCapability,
+    fallback_command: PlayerCommand,
+) -> (usize, usize) {
+    let handles: Vec<_> = audio_controller
+        .list_controllers()
+        .into_iter()
+        .map(|ctrl_lock| {
+            let except = except.clone();
+            let primary_command = primary_command.clone();
+            let fallback_command = fallback_command.clone();
+            thread::spawn(move || -> FanoutOutcome {
+                let ctrl = ctrl_lock.read();
+                let player_name = ctrl.get_player_name();
+                let player_id = ctrl.get_player_id();
+
+                if let Some(ref except_name) = except {
+                    let aliases = ctrl.get_aliases();
+                    let should_skip = player_name.eq_ignore_ascii_case(except_name)
+                        || player_id.eq_ignore_ascii_case(except_name)
+                        || aliases.iter().any(|alias| alias.eq_ignore_ascii_case(except_name));
+
+                    if should_skip {
+                        return FanoutOutcome { skipped: true, succeeded: false };
+                    }
+                }
+
+                let caps = ctrl.get_capabilities();
+                let succeeded = if caps.has_capability(primary_capability) {
+                    ctrl.send_command(primary_command)
+                } else if caps.has_capability(fallback_capability) {
+                    ctrl.send_command(fallback_command)
+                } else {
+                    false
+                };
+                FanoutOutcome { skipped: false, succeeded }
+            })
+        })
+        .collect();
+
+    let mut success_count = 0;
+    let mut skipped_count = 0;
+    for handle in handles {
+        match handle.join() {
+            Ok(outcome) => {
+                if outcome.skipped {
+                    skipped_count += 1;
+                }
+                if outcome.succeeded {
+                    success_count += 1;
+                }
+            }
+            Err(_) => log::error!("A player command thread panicked during fanout"),
+        }
+    }
+    (success_count, skipped_count)
+}
 
 /// Pause all players with optional exclusion
 #[post("/players/pause-all?<except>")]
 pub fn pause_all_players(controller: &State<Arc<AudioController>>, except: Option<String>) -> Json<CommandResponse> {
     let audio_controller = controller.inner();
-    let mut success_count = 0;
-    let mut skipped_count = 0;
-    let controllers = audio_controller.list_controllers();
-    
-    for ctrl_lock in controllers {
-        let ctrl = ctrl_lock.read();
-        let player_name = ctrl.get_player_name();
-        let player_id = ctrl.get_player_id();
-        
-        // Check if this player should be excluded
-        if let Some(ref except_name) = except {
-            let aliases = ctrl.get_aliases();
-            let should_skip = player_name.eq_ignore_ascii_case(except_name) 
-                || player_id.eq_ignore_ascii_case(except_name)
-                || aliases.iter().any(|alias| alias.eq_ignore_ascii_case(except_name));
-            
-            if should_skip {
-                skipped_count += 1;
-                continue;
-            }
-        }
-        
-        let caps = ctrl.get_capabilities();
-        let did_pause = if caps.has_capability(crate::data::capabilities::PlayerCapability::Pause) {
-            ctrl.send_command(PlayerCommand::Pause)
-        } else if caps.has_capability(crate::data::capabilities::PlayerCapability::Stop) {
-            ctrl.send_command(PlayerCommand::Stop)
-        } else {
-            false
-        };
-        if did_pause {
-            success_count += 1;
-        }
-    }
-    
+    let (success_count, skipped_count) = fanout_player_command(
+        audio_controller,
+        &except,
+        PlayerCapability::Pause,
+        PlayerCommand::Pause,
+        PlayerCapability::Stop,
+        PlayerCommand::Stop,
+    );
+
     let success = success_count > 0;
     let message = if let Some(ref except_name) = except {
         if success {
@@ -68,41 +120,15 @@ pub fn pause_all_players(controller: &State<Arc<AudioController>>, except: Optio
 #[post("/players/stop-all?<except>")]
 pub fn stop_all_players(controller: &State<Arc<AudioController>>, except: Option<String>) -> Json<CommandResponse> {
     let audio_controller = controller.inner();
-    let mut success_count = 0;
-    let mut skipped_count = 0;
-    let controllers = audio_controller.list_controllers();
-    
-    for ctrl_lock in controllers {
-        let ctrl = ctrl_lock.read();
-        let player_name = ctrl.get_player_name();
-        let player_id = ctrl.get_player_id();
-        
-        // Check if this player should be excluded
-        if let Some(ref except_name) = except {
-            let aliases = ctrl.get_aliases();
-            let should_skip = player_name.eq_ignore_ascii_case(except_name) 
-                || player_id.eq_ignore_ascii_case(except_name)
-                || aliases.iter().any(|alias| alias.eq_ignore_ascii_case(except_name));
-            
-            if should_skip {
-                skipped_count += 1;
-                continue;
-            }
-        }
-        
-        let caps = ctrl.get_capabilities();
-        let did_stop = if caps.has_capability(crate::data::capabilities::PlayerCapability::Stop) {
-            ctrl.send_command(PlayerCommand::Stop)
-        } else if caps.has_capability(crate::data::capabilities::PlayerCapability::Pause) {
-            ctrl.send_command(PlayerCommand::Pause)
-        } else {
-            false
-        };
-        if did_stop {
-            success_count += 1;
-        }
-    }
-    
+    let (success_count, skipped_count) = fanout_player_command(
+        audio_controller,
+        &except,
+        PlayerCapability::Stop,
+        PlayerCommand::Stop,
+        PlayerCapability::Pause,
+        PlayerCommand::Pause,
+    );
+
     let success = success_count > 0;
     let message = if let Some(ref except_name) = except {
         if success {
@@ -1004,5 +1030,123 @@ mod tests {
                 metadata: vec![None],
             }
         );
+    }
+
+    // -- fanout_player_command (pause-all / stop-all, issue #52) --
+
+    use crate::data::PlayerCapabilitySet;
+    use crate::players::BasePlayerController;
+    use std::any::Any;
+    use std::time::{Duration, Instant, SystemTime};
+
+    /// A player whose `send_command` takes a fixed amount of time, standing
+    /// in for a backend whose command path blocks (e.g. RAAT writing to a
+    /// control FIFO with no reader attached).
+    struct SlowPlayer {
+        base: BasePlayerController,
+        delay: Duration,
+    }
+
+    impl PlayerController for SlowPlayer {
+        fn get_capabilities(&self) -> PlayerCapabilitySet {
+            self.base.get_capabilities()
+        }
+        fn get_song(&self) -> Option<Song> {
+            None
+        }
+        fn get_queue(&self) -> Vec<Track> {
+            Vec::new()
+        }
+        fn get_loop_mode(&self) -> LoopMode {
+            LoopMode::None
+        }
+        fn get_playback_state(&self) -> PlaybackState {
+            PlaybackState::Stopped
+        }
+        fn get_position(&self) -> Option<f64> {
+            None
+        }
+        fn get_shuffle(&self) -> bool {
+            false
+        }
+        fn get_player_name(&self) -> String {
+            self.base.get_player_name()
+        }
+        fn get_player_id(&self) -> String {
+            self.base.get_player_id()
+        }
+        fn get_last_seen(&self) -> Option<SystemTime> {
+            None
+        }
+        fn send_command(&self, _command: PlayerCommand) -> bool {
+            thread::sleep(self.delay);
+            true
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn start(&self) -> bool {
+            true
+        }
+        fn stop(&self) -> bool {
+            true
+        }
+    }
+
+    fn slow_player(name: &str, delay: Duration) -> SlowPlayer {
+        let base = BasePlayerController::with_player_info(name, name);
+        base.set_capabilities(vec![PlayerCapability::Pause, PlayerCapability::Stop], false);
+        SlowPlayer { base, delay }
+    }
+
+    /// This is the fix for issue #52: pause-all/stop-all used to call each
+    /// backend sequentially while holding its lock, so one slow or hung
+    /// player delayed every player behind it. Fanning the command out to a
+    /// thread per player means the total time tracks the slowest single
+    /// player, not their sum.
+    #[test]
+    fn fanout_player_command_runs_players_concurrently_not_sequentially() {
+        let mut controller = AudioController::new();
+        for i in 0..4 {
+            controller.add_controller(Box::new(slow_player(&format!("slow{}", i), Duration::from_millis(200))));
+        }
+
+        let started = Instant::now();
+        let (success_count, skipped_count) = fanout_player_command(
+            &controller,
+            &None,
+            PlayerCapability::Pause,
+            PlayerCommand::Pause,
+            PlayerCapability::Stop,
+            PlayerCommand::Stop,
+        );
+        let elapsed = started.elapsed();
+
+        assert_eq!(success_count, 4);
+        assert_eq!(skipped_count, 0);
+        assert!(
+            elapsed < Duration::from_millis(600),
+            "took {:?} for 4 players each delaying 200ms -- looks sequential, not concurrent",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn fanout_player_command_skips_the_excepted_player() {
+        let mut controller = AudioController::new();
+        controller.add_controller(Box::new(slow_player("a", Duration::from_millis(0))));
+        controller.add_controller(Box::new(slow_player("b", Duration::from_millis(0))));
+
+        let (success_count, skipped_count) = fanout_player_command(
+            &controller,
+            &Some("a".to_string()),
+            PlayerCapability::Pause,
+            PlayerCommand::Pause,
+            PlayerCapability::Stop,
+            PlayerCommand::Stop,
+        );
+
+        assert_eq!(success_count, 1);
+        assert_eq!(skipped_count, 1);
     }
 }

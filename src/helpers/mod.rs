@@ -17,6 +17,8 @@ pub mod bluez;
 #[cfg(unix)]
 pub mod mpris;
 #[cfg(unix)]
+pub mod mpris_artwork;
+#[cfg(unix)]
 pub mod shairportsync_messages;
 
 pub use acr_http::{http_client, retry};

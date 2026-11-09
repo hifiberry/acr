@@ -19,11 +19,11 @@ The MPRIS PlayerController supports:
 
 - **Playback Control**: Play, Pause, Stop, PlayPause
 - **Navigation**: Next track, Previous track
-- **Seeking**: Seek by offset, Set absolute position
+- **Seeking**: Seek by offset, when the player reports `CanSeek`
 - **Shuffle and Loop**: Control shuffle and loop modes
-- **Volume Control**: Set player volume
 - **Metadata**: Retrieve current track information
-- **State Monitoring**: Get current playback state and position
+- **State Monitoring**: Get current playback state and position; state, shuffle and loop changes are published as events
+- **Capabilities from the player**: derived from `CanControl`, `CanPlay`, `CanPause`, `CanGoNext`, `CanGoPrevious`, `CanSeek` and the presence of `Shuffle`/`LoopStatus`
 
 ## Platform Support
 
@@ -48,8 +48,52 @@ To use an MPRIS player in AudioControl, add it to your `audiocontrol.json` confi
 
 ### Configuration Parameters
 
-- `enable`: Boolean flag to enable/disable the player (default: true)
-- `bus_name`: The D-Bus name of the MPRIS player (required)
+| Key | Default | Meaning |
+|---|---|---|
+| `enable` | `true` | Enable or disable the player |
+| `bus_name` | (required) | The D-Bus name of the MPRIS player |
+| `name` | last part of `bus_name` | Player name shown in the API and WebUI |
+| `bus` | `"auto"` | `"auto"` looks on the session bus, then the system bus; `"system"` or `"session"` fixes it |
+| `poll_interval` | `1.0` | Seconds between polls |
+| `artwork_dirs` | `[]` | Directories local artwork may be imported from (see below) |
+| `clear_song_when_stopped` | `false` | Report no song while the player is stopped |
+
+The player does not have to be running when AudioControl starts. While it is
+not on the bus it reads as stopped with no song, and it is picked up as soon as
+it appears.
+
+### Artwork from local files
+
+Some players name their cover art as a local file: `file:///…`, or a bare
+absolute path. A browser cannot load that, so AudioControl imports the file
+into its image cache and serves it as `/api/imagecache/mpris/<md5>.<ext>`.
+`http(s)` artwork URLs are passed through unchanged.
+
+Any program on the bus can claim any `mpris:artUrl`, so a local file is only
+imported when all of this holds:
+
+- it lies inside one of the `artwork_dirs`, after resolving symlinks
+  (with no `artwork_dirs`, no local file is ever imported);
+- it is a JPEG, PNG, GIF or WebP image, checked by its content;
+- it is at most 10 MiB.
+
+A file is read again only when its size or modification time changes.
+
+### Shairport Sync
+
+The `shairport` player reads and controls shairport-sync over this interface
+(`org.mpris.MediaPlayer2.ShairportSync`, system bus) by default, for AirPlay 1
+and 2. It imports artwork from its `coverart_dir` and reports no song once a
+session has ended. Set `"metadata_source": "udp"` in its configuration to use
+the UDP metadata socket instead; from shairport-sync 5.6 that socket carries no
+AirPlay 2 titles.
+
+| Command | Over MPRIS |
+|---|---|
+| Pause, play/pause, next, previous, shuffle, repeat | sent to the AirPlay source |
+| Stop | drops the AirPlay session (another player is taking over) |
+| Play with no session | restarts the systemd unit, so the receiver re-advertises |
+| Seek | not supported by AirPlay |
 
 ### Finding Available Players
 

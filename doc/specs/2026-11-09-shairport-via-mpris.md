@@ -1,7 +1,7 @@
 # Shairport over MPRIS
 
 **Date:** 2026-11-09
-**Status:** Proposed
+**Status:** Implemented (0.24.0)
 **Affects:** `src/players/mpris/*`, `src/helpers/mpris.rs`, a new
 `src/helpers/mpris_artwork.rs`, `src/players/shairport/shairport.rs`,
 `src/players/player_factory.rs`, `doc/mpris.md`

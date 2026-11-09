@@ -201,16 +201,13 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
             #[cfg(not(windows))]
             "mpris" => {
                 // Create MprisPlayerController with config (Unix/Linux only)
-                let bus_name = config_obj.get("bus_name")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| PlayerCreationError::MissingField("bus_name".to_string()))?;
-                
-                let poll_interval = config_obj.get("poll_interval")
-                    .and_then(|v| v.as_f64())
-                    .map(std::time::Duration::from_secs_f64)
-                    .unwrap_or_else(|| std::time::Duration::from_secs_f64(1.0));
-                
-                let player = MprisPlayerController::new_with_poll_interval(bus_name, poll_interval);
+                let config = crate::players::mpris::config::MprisConfig::from_json(config_obj)
+                    .map_err(|e| if e.contains("bus_name") {
+                        PlayerCreationError::MissingField("bus_name".to_string())
+                    } else {
+                        PlayerCreationError::ParseError(e)
+                    })?;
+                let player = MprisPlayerController::new_with_poll_interval(&config.bus_name, config.poll_interval);
                 Ok(Box::new(player))
             },
             "null" => {

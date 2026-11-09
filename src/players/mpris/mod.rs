@@ -1,3 +1,4 @@
+pub mod config;
 pub mod reconcile;
 
 use crate::players::player_controller::{BasePlayerController, PlayerController};

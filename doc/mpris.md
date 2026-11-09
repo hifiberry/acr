@@ -90,7 +90,8 @@ AirPlay 2 titles.
 
 | Command | Over MPRIS |
 |---|---|
-| Pause, play/pause, next, previous, shuffle, repeat | sent to the AirPlay source |
+| Pause | sent to the AirPlay source; if it keeps playing for 1.5 s, the session is dropped |
+| Play/pause, next, previous, shuffle, repeat | sent to the AirPlay source |
 | Stop | drops the AirPlay session (another player is taking over) |
 | Play with no session | restarts the systemd unit, so the receiver re-advertises |
 | Seek | not supported by AirPlay |

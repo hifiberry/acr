@@ -6,9 +6,9 @@ hifiberry-audiocontrol (0.24.0) trixie; urgency=medium
     to that socket, so AirPlay 2 would have shown nothing. Over MPRIS the
     WebUI also gets the playback position and, with shairport-sync 5.6, can
     pause, skip and toggle shuffle and repeat on the AirPlay 2 source. Stop
-    still drops the session when another player takes over.
-    "metadata_source": "udp" in players.d/shairport.json selects the old
-    path.
+    still drops the session when another player takes over, and so does
+    Pause when the source ignores it. "metadata_source": "udp" in
+    players.d/shairport.json selects the old path.
 
   * MPRIS players whose cover art is a local file now show it: the file is
     imported into the image cache and served from /api/imagecache/mpris/.

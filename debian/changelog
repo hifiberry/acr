@@ -18,11 +18,13 @@ hifiberry-audiocontrol (0.24.0) trixie; urgency=medium
 
   * MPRIS players may now be absent when AudioControl starts, or come and
     go: they read as stopped while not on the bus and are picked up when
-    they appear, on either bus. Previously a player missing at startup was
-    never picked up. State, shuffle and loop changes are now published as
-    events, and capabilities follow what the player reports instead of a
-    fixed list that advertised seeking and volume control it could not
-    deliver.
+    they appear, on either bus. Previously a player on the system bus that
+    was missing at startup was never picked up. State, shuffle and loop
+    changes are now published as events, and capabilities follow what the
+    player reports instead of a fixed list that advertised seeking and
+    volume control it could not deliver. A single unreadable D-Bus property
+    no longer shows up as a change, and details that arrive after the title
+    (album, length, track number, genre, artwork) are merged into the song.
 
   * New MPRIS player settings: name, bus, artwork_dirs and
     clear_song_when_stopped (see doc/mpris.md).

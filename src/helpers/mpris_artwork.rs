@@ -10,6 +10,7 @@
 //! are real images, and only up to [`MAX_ARTWORK_BYTES`]. Otherwise an MPRIS
 //! client could get an arbitrary readable file served over HTTP.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -73,12 +74,21 @@ impl ArtworkResolver {
     }
 
     /// The URL to show for `art_url`, or `None` if there is no usable artwork.
+    ///
+    /// Only `file://` URLs and absolute paths are treated as local files.
+    /// Anything else (`http(s)`, `data:` …) is passed through unchanged.
     pub fn resolve(&self, art_url: &str) -> Option<String> {
         let art_url = art_url.trim();
-        if art_url.starts_with("http://") || art_url.starts_with("https://") {
-            return Some(art_url.to_string());
+        if art_url.is_empty() {
+            return None;
         }
-        let path = local_path(art_url)?;
+        let Some(path) = local_path(art_url) else {
+            if is_file_url(art_url) {
+                // file:// with no usable path, e.g. "file://(null)".
+                return None;
+            }
+            return Some(art_url.to_string());
+        };
         let canonical = match std::fs::canonicalize(&path) {
             Ok(p) => p,
             Err(e) => {
@@ -90,9 +100,19 @@ impl ArtworkResolver {
             debug!("MPRIS artwork {} is outside the allowed directories", canonical.display());
             return None;
         }
-        let meta = std::fs::metadata(&canonical).ok()?;
+        // Open once and check what was opened: a file swapped between a path
+        // check and the read cannot slip through, a FIFO cannot block the
+        // read, and the read is bounded whatever the file does meanwhile.
+        let mut file = match open_no_follow(&canonical) {
+            Ok(f) => f,
+            Err(e) => {
+                debug!("MPRIS artwork {} cannot be opened: {}", canonical.display(), e);
+                return None;
+            }
+        };
+        let meta = file.metadata().ok()?;
         if !meta.is_file() || meta.len() > MAX_ARTWORK_BYTES {
-            debug!("MPRIS artwork {} is not a file or too large ({} bytes)", canonical.display(), meta.len());
+            debug!("MPRIS artwork {} is not a regular file or too large ({} bytes)", canonical.display(), meta.len());
             return None;
         }
         let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -103,7 +123,11 @@ impl ArtworkResolver {
                 return result.clone();
             }
         }
-        let result = self.import(&canonical);
+        let mut data = Vec::new();
+        if (&mut file).take(MAX_ARTWORK_BYTES + 1).read_to_end(&mut data).is_err() {
+            return None;
+        }
+        let result = self.import(&canonical, &data);
         *memo = Some((art_url.to_string(), meta.len(), mtime, result.clone()));
         result
     }
@@ -114,17 +138,16 @@ impl ArtworkResolver {
         })
     }
 
-    fn import(&self, canonical: &Path) -> Option<String> {
-        let data = std::fs::read(canonical).ok()?;
+    fn import(&self, canonical: &Path, data: &[u8]) -> Option<String> {
         if data.len() as u64 > MAX_ARTWORK_BYTES {
             return None;
         }
-        let Some(ext) = image_extension(&data) else {
+        let Some(ext) = image_extension(data) else {
             debug!("MPRIS artwork {} is not a recognised image", canonical.display());
             return None;
         };
-        let key = format!("mpris/{:x}.{}", md5::compute(&data), ext);
-        match self.store.store(&key, &data) {
+        let key = format!("mpris/{:x}.{}", md5::compute(data), ext);
+        match self.store.store(&key, data) {
             Ok(url) => Some(url),
             Err(e) => {
                 debug!("Could not store MPRIS artwork {}: {}", canonical.display(), e);
@@ -134,9 +157,29 @@ impl ArtworkResolver {
     }
 }
 
+fn is_file_url(art_url: &str) -> bool {
+    art_url.len() >= 7 && art_url[..7].eq_ignore_ascii_case("file://")
+}
+
+/// Open without following a final symlink and without blocking on a FIFO.
+fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
 /// The local path an art URL names, if it names one.
 fn local_path(art_url: &str) -> Option<PathBuf> {
-    let raw = art_url.strip_prefix("file://").unwrap_or(art_url);
+    let raw = if is_file_url(art_url) {
+        let rest = &art_url[7..];
+        rest.strip_prefix("localhost").unwrap_or(rest)
+    } else if art_url.starts_with('/') {
+        art_url
+    } else {
+        return None;
+    };
     let decoded = urlencoding::decode(raw).ok()?;
     let path = PathBuf::from(decoded.as_ref());
     if path.is_absolute() {
@@ -222,6 +265,42 @@ mod tests {
         let r = resolver(dir.path(), &store);
         let url = format!("file://{}/cover%20a.png", dir.path().display());
         assert_eq!(r.resolve(&url), Some(expected_url(PNG, "png")));
+    }
+
+    #[test]
+    fn other_schemes_pass_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RecordingStore::new();
+        let r = resolver(dir.path(), &store);
+        let data = "data:image/png;base64,iVBORw0KGgo=";
+        assert_eq!(r.resolve(data), Some(data.to_string()));
+        assert_eq!(r.resolve("HTTPS://X/y.jpg"), Some("HTTPS://X/y.jpg".to_string()));
+        assert_eq!(store.calls(), 0);
+    }
+
+    #[test]
+    fn file_localhost_url_is_imported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cover.jpg");
+        std::fs::write(&path, JPEG).unwrap();
+        let store = RecordingStore::new();
+        let r = resolver(dir.path(), &store);
+        assert_eq!(r.resolve(&format!("file://localhost{}", path.display())), Some(expected_url(JPEG, "jpg")));
+    }
+
+    #[test]
+    fn fifo_is_refused_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipe.jpg");
+        let c = std::ffi::CString::new(path.display().to_string()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+        let store = RecordingStore::new();
+        let r = resolver(dir.path(), &store);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let url = path.display().to_string();
+        std::thread::spawn(move || { tx.send(r.resolve(&url)).ok(); });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(3)).expect("resolve blocked on a FIFO");
+        assert_eq!(got, None);
     }
 
     #[test]

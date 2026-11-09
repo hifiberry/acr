@@ -13,7 +13,7 @@ use crate::helpers::mpris_artwork::{ArtworkResolver, ImageCacheArtworkStore};
 use config::{BusPreference, MprisConfig};
 use reconcile::{capabilities_from_flags, reconcile, MprisFlags, MprisSnapshot};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use log::{debug, info, warn, error};
@@ -25,32 +25,61 @@ const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 /// Store the song a poll produced, with its artwork made reachable.
 ///
 /// A local `mpris:artUrl` is replaced by the image cache URL the resolver
-/// returns. A new song is stored with `set_song`. Artwork that arrives after
-/// the title -- the same song, now with a picture -- is merged with
-/// `update_song`, which `set_song`'s identity check would otherwise drop.
-/// Returns whether anything was published.
+/// returns. A new song is stored with `set_song`. Details that arrive after
+/// the title -- the same song, now with artwork, album, length, track number
+/// or genre -- are merged with `update_song`, which `set_song`'s identity
+/// check would otherwise drop. A detail the player leaves out is never
+/// erased, so what a lookup added survives. Returns whether anything was
+/// published.
 pub fn apply_artwork(base: &BasePlayerController, resolver: &ArtworkResolver, song: Option<Song>) -> bool {
     let song = song.map(|mut s| {
         s.cover_art_url = s.cover_art_url.as_deref().and_then(|u| resolver.resolve(u));
         s
     });
-    let url = song.as_ref().and_then(|s| s.cover_art_url.clone());
+    let incoming = song.clone();
     if base.set_song(song) {
         return true;
     }
-    // Same song as before. Merge artwork it gained, but never erase artwork
-    // the stored song already has (a lookup may have added it).
-    if url.is_none() {
-        return false;
-    }
-    let stored = base.song().and_then(|s| s.cover_art_url);
-    if stored == url {
+    let (Some(new), Some(stored)) = (incoming, base.song()) else { return false };
+    // Work out the changes before taking the lock: update_song's closure must
+    // not call back into the base controller.
+    let cover = new.cover_art_url.filter(|u| stored.cover_art_url.as_ref() != Some(u));
+    let album = new.album.filter(|v| stored.album.as_ref() != Some(v));
+    let album_artist = new.album_artist.filter(|v| stored.album_artist.as_ref() != Some(v));
+    let duration = new.duration.filter(|v| stored.duration != Some(*v));
+    let track_number = new.track_number.filter(|v| stored.track_number != Some(*v));
+    let genre = new.genre.filter(|v| stored.genre.as_ref() != Some(v));
+    let genres = Some(new.genres).filter(|g| !g.is_empty() && *g != stored.genres);
+    if cover.is_none() && album.is_none() && album_artist.is_none() && duration.is_none()
+        && track_number.is_none() && genre.is_none() && genres.is_none() {
         return false;
     }
     base.update_song(|s| {
-        s.cover_art_url = url.clone();
+        if cover.is_some() { s.cover_art_url = cover.clone(); }
+        if album.is_some() { s.album = album.clone(); }
+        if album_artist.is_some() { s.album_artist = album_artist.clone(); }
+        if duration.is_some() { s.duration = duration; }
+        if track_number.is_some() { s.track_number = track_number; }
+        if genre.is_some() { s.genre = genre.clone(); }
+        if let Some(g) = &genres { s.genres = g.clone(); }
         true
     })
+}
+
+/// A poll whose `PlaybackStatus` could not be read says nothing reliable;
+/// it is skipped rather than published as a change.
+pub fn skip_poll(snap: &MprisSnapshot) -> bool {
+    snap.status.is_none()
+}
+
+/// Keep the previous capabilities when the `Can*` properties could not be read.
+pub fn stabilize(mut snap: MprisSnapshot, prev_flags: Option<MprisFlags>) -> MprisSnapshot {
+    if snap.flags_failed {
+        if let Some(prev) = prev_flags {
+            snap.flags = prev;
+        }
+    }
+    snap
 }
 
 /// Everything the polling thread and the API calls share.
@@ -63,6 +92,9 @@ struct Inner {
     flags: RwLock<Option<MprisFlags>>,
     artwork: ArtworkResolver,
     current_state: RwLock<PlayerState>,
+    /// Held for a whole poll, so the poll thread and a command's follow-up
+    /// poll cannot interleave and publish a stale state last.
+    poll_lock: Mutex<()>,
 }
 
 impl Inner {
@@ -100,9 +132,16 @@ impl Inner {
 
     /// Read the player once and publish what changed.
     fn poll_once(&self) {
-        let snap = self.connect().and_then(|conn| read_snapshot(&conn, &self.config.bus_name));
-        let prev = self.current_state.read().clone();
+        let _poll = self.poll_lock.lock();
         let prev_flags = *self.flags.read();
+        let snap = self.connect().and_then(|conn| read_snapshot(&conn, &self.config.bus_name));
+        if snap.as_ref().is_some_and(skip_poll) {
+            debug!("MPRIS {}: PlaybackStatus unreadable, skipping this poll", self.config.bus_name);
+            return;
+        }
+        let snap = snap.map(|s| stabilize(s, prev_flags));
+        let metadata_failed = snap.as_ref().is_some_and(|s| s.metadata_failed);
+        let prev = self.current_state.read().clone();
         let r = reconcile(&prev, prev_flags, snap.as_ref(), self.config.clear_song_when_stopped);
         {
             let mut state = self.current_state.write();
@@ -125,7 +164,9 @@ impl Inner {
         if r.loop_changed {
             self.base.notify_loop_mode_changed(r.loop_mode);
         }
-        apply_artwork(&self.base, &self.artwork, r.song);
+        if !metadata_failed {
+            apply_artwork(&self.base, &self.artwork, r.song);
+        }
         if snap.is_some() {
             self.base.alive();
         }
@@ -139,10 +180,11 @@ fn read_snapshot(conn: &Connection, bus_name: &str) -> Option<MprisSnapshot> {
     }
     let proxy = create_player_proxy(conn, bus_name);
     let flag = |p: &str| get_bool_property(&proxy, PLAYER_INTERFACE, p).unwrap_or(false);
+    let can_control = get_bool_property(&proxy, PLAYER_INTERFACE, "CanControl");
     let shuffle = get_bool_property(&proxy, PLAYER_INTERFACE, "Shuffle");
     let loop_status = get_string_property(&proxy, PLAYER_INTERFACE, "LoopStatus");
     let flags = MprisFlags {
-        can_control: flag("CanControl"),
+        can_control: can_control.unwrap_or(false),
         can_play: flag("CanPlay"),
         can_pause: flag("CanPause"),
         can_go_next: flag("CanGoNext"),
@@ -151,13 +193,16 @@ fn read_snapshot(conn: &Connection, bus_name: &str) -> Option<MprisSnapshot> {
         has_shuffle: shuffle.is_some(),
         has_loop: loop_status.is_some(),
     };
+    let metadata = retrieve_mpris_metadata(&proxy);
     Some(MprisSnapshot {
         status: get_string_property(&proxy, PLAYER_INTERFACE, "PlaybackStatus"),
+        flags_failed: can_control.is_none(),
+        metadata_failed: metadata.is_none(),
         shuffle,
         loop_status,
         position_us: get_i64_property(&proxy, PLAYER_INTERFACE, "Position"),
         flags,
-        song: retrieve_mpris_metadata(&proxy).and_then(|m| extract_song_from_mpris_metadata(&m)),
+        song: metadata.and_then(|m| extract_song_from_mpris_metadata(&m)),
     })
 }
 
@@ -218,6 +263,7 @@ impl MprisPlayerController {
             flags: RwLock::new(None),
             artwork,
             current_state: RwLock::new(PlayerState::new()),
+            poll_lock: Mutex::new(()),
         };
         let initial = inner.capabilities_for(&MprisFlags::default());
         inner.base.set_capabilities(initial, false);
@@ -226,6 +272,11 @@ impl MprisPlayerController {
             should_poll: Arc::new(AtomicBool::new(false)),
             poll_thread_handle: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Poll the player now instead of waiting for the next interval.
+    pub fn refresh(&self) {
+        self.inner.poll_once();
     }
 
     /// Extract a friendly player name from the bus name
@@ -451,6 +502,44 @@ mod tests {
         let expected = format!("/api/imagecache/mpris/{:x}.jpg", md5::compute(JPEG));
         assert_eq!(base.song().unwrap().cover_art_url, Some(expected));
         assert!(!apply_artwork(&base, &resolver, Some(song("A", Some(&art)))));
+    }
+
+    #[test]
+    fn late_metadata_merges_into_same_song() {
+        let resolver = ArtworkResolver::new(vec![], Arc::new(UrlStore));
+        let base = BasePlayerController::with_player_info("test", "test");
+        apply_artwork(&base, &resolver, Some(song("A", None)));
+        let mut fuller = song("A", None);
+        fuller.album = Some("Album".to_string());
+        fuller.duration = Some(312.5);
+        fuller.track_number = Some(4);
+        fuller.genre = Some("Rock".to_string());
+        fuller.genres = vec!["Rock".to_string()];
+        assert!(apply_artwork(&base, &resolver, Some(fuller.clone())));
+        let stored = base.song().unwrap();
+        assert_eq!(stored.album.as_deref(), Some("Album"));
+        assert_eq!(stored.duration, Some(312.5));
+        assert_eq!(stored.track_number, Some(4));
+        assert_eq!(stored.genre.as_deref(), Some("Rock"));
+        // Same data again publishes nothing; a sparser resend erases nothing.
+        assert!(!apply_artwork(&base, &resolver, Some(fuller)));
+        assert!(!apply_artwork(&base, &resolver, Some(song("A", None))));
+        assert_eq!(base.song().unwrap().album.as_deref(), Some("Album"));
+    }
+
+    #[test]
+    fn failed_status_read_skips_the_poll() {
+        assert!(skip_poll(&MprisSnapshot { status: None, ..Default::default() }));
+        assert!(!skip_poll(&MprisSnapshot { status: Some("Playing".into()), ..Default::default() }));
+    }
+
+    #[test]
+    fn failed_flags_read_keeps_previous_flags() {
+        let prev = MprisFlags { can_control: true, can_play: true, ..Default::default() };
+        let snap = MprisSnapshot { status: Some("Playing".into()), flags_failed: true, ..Default::default() };
+        assert_eq!(stabilize(snap, Some(prev)).flags, prev);
+        let ok = MprisSnapshot { status: Some("Playing".into()), ..Default::default() };
+        assert_eq!(stabilize(ok, Some(prev)).flags, MprisFlags::default());
     }
 
     #[test]

@@ -43,10 +43,22 @@ pub enum CommandRoute {
     Mpris(PlayerCommand),
     /// Drop the AirPlay session over D-Bus: another player is taking over.
     DropSession,
+    /// Pause over MPRIS; if the source keeps playing (no remote control, as
+    /// with AirPlay 2 on shairport-sync 5.5), drop the session instead.
+    PauseOrDrop,
     /// No session to resume: restart the service so it re-advertises.
     RestartService,
     Unsupported,
 }
+
+/// After an MPRIS pause: does the session still need dropping?
+pub fn pause_needs_drop(state_after: PlaybackState) -> bool {
+    state_after == PlaybackState::Playing
+}
+
+/// How long a source gets to act on a pause before the session is dropped.
+const PAUSE_CONFIRM_ATTEMPTS: u32 = 3;
+const PAUSE_CONFIRM_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Decide what a command does in MPRIS mode. `session_active` is true while
 /// an AirPlay sender is connected (or the last session's song is still shown).
@@ -55,8 +67,8 @@ pub fn route_command(cmd: &PlayerCommand, session_active: bool, has_systemd_unit
         PlayerCommand::Stop => CommandRoute::DropSession,
         PlayerCommand::Play if session_active => CommandRoute::Mpris(PlayerCommand::Play),
         PlayerCommand::Play if has_systemd_unit => CommandRoute::RestartService,
-        PlayerCommand::Pause
-        | PlayerCommand::PlayPause
+        PlayerCommand::Pause => CommandRoute::PauseOrDrop,
+        PlayerCommand::PlayPause
         | PlayerCommand::Next
         | PlayerCommand::Previous
         | PlayerCommand::SetRandom(_)
@@ -975,6 +987,24 @@ impl PlayerController for ShairportController {
             return match route_command(&command, self.session_active(mpris), self.systemd_unit.is_some()) {
                 CommandRoute::Mpris(cmd) => mpris.send_command(cmd),
                 CommandRoute::DropSession => self.stop_airplay(),
+                CommandRoute::PauseOrDrop => {
+                    // pause-all relies on Pause stopping the source: a source
+                    // that keeps playing would keep the output busy.
+                    mpris.send_command(PlayerCommand::Pause);
+                    for _ in 0..PAUSE_CONFIRM_ATTEMPTS {
+                        if !pause_needs_drop(mpris.get_playback_state()) {
+                            return true;
+                        }
+                        thread::sleep(PAUSE_CONFIRM_INTERVAL);
+                        mpris.refresh();
+                    }
+                    if pause_needs_drop(mpris.get_playback_state()) {
+                        info!("ShairportSync: source ignored pause, dropping the AirPlay session");
+                        self.stop_airplay()
+                    } else {
+                        true
+                    }
+                }
                 CommandRoute::RestartService => self.control_systemd_service("restart"),
                 CommandRoute::Unsupported => {
                     debug!("ShairportSync: {:?} is not supported over MPRIS", command);
@@ -1082,7 +1112,6 @@ mod tests {
     #[test]
     fn pause_next_previous_go_to_mpris() {
         for cmd in [
-            PlayerCommand::Pause,
             PlayerCommand::PlayPause,
             PlayerCommand::Next,
             PlayerCommand::Previous,
@@ -1091,6 +1120,14 @@ mod tests {
         ] {
             assert_eq!(route_command(&cmd, true, true), CommandRoute::Mpris(cmd.clone()));
         }
+    }
+
+    #[test]
+    fn pause_falls_back_to_dropping_the_session() {
+        assert_eq!(route_command(&PlayerCommand::Pause, true, true), CommandRoute::PauseOrDrop);
+        assert!(pause_needs_drop(PlaybackState::Playing));
+        assert!(!pause_needs_drop(PlaybackState::Paused));
+        assert!(!pause_needs_drop(PlaybackState::Stopped));
     }
 
     #[test]

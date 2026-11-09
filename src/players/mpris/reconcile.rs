@@ -28,6 +28,10 @@ pub struct MprisSnapshot {
     pub position_us: Option<i64>,
     pub flags: MprisFlags,
     pub song: Option<Song>,
+    /// `CanControl` could not be read, so `flags` are not to be trusted.
+    pub flags_failed: bool,
+    /// `Metadata` could not be read, so `song` says nothing about the song.
+    pub metadata_failed: bool,
 }
 
 /// The state after a poll, and which parts of it changed.

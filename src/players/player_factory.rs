@@ -207,7 +207,7 @@ pub fn create_player_from_json(config: &Value) -> Result<Box<dyn PlayerControlle
                     } else {
                         PlayerCreationError::ParseError(e)
                     })?;
-                let player = MprisPlayerController::new_with_poll_interval(&config.bus_name, config.poll_interval);
+                let player = MprisPlayerController::with_config(config);
                 Ok(Box::new(player))
             },
             "null" => {

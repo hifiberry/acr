@@ -335,6 +335,19 @@ fn stop_requested(stop: &Option<Receiver<()>>) -> bool {
     }
 }
 
+/// The host and port to resolve for a URL.
+///
+/// Not `host_str()`: for an IPv6 literal that is the bracketed form the URL
+/// carries, `[::1]`, which the resolver does not take for an address -- so a
+/// `ws://[::1]:port` URL never connected.
+fn host_and_port(url: &url::Url) -> Option<(String, u16)> {
+    let host = match url.host()? {
+        url::Host::Ipv6(address) => address.to_string(),
+        other => other.to_string(),
+    };
+    Some((host, url.port_or_known_default().unwrap_or(80)))
+}
+
 /// Open one connection, with a bounded connect and handshake.
 ///
 /// `tungstenite::connect` is not used: it hands back a stream wrapped for TLS
@@ -350,10 +363,8 @@ fn connect(url: &str, timings: &Timings) -> Result<WebSocket<TcpStream>, String>
             url
         ));
     }
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| format!("{} has no host", url))?;
-    let port = parsed.port_or_known_default().unwrap_or(80);
+    let (host, port) = host_and_port(&parsed).ok_or_else(|| format!("{} has no host", url))?;
+    let host = host.as_str();
 
     let addrs: Vec<_> = (host, port)
         .to_socket_addrs()
@@ -617,6 +628,31 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use tungstenite::accept;
+
+    /// An IPv6 literal has to come out without the brackets its URL form
+    /// carries, or it does not resolve.
+    #[test]
+    fn an_ipv6_literal_host_resolves() {
+        let url = url::Url::parse("ws://[::1]:1080/api/events").unwrap();
+
+        let (host, port) = host_and_port(&url).expect("the URL has a host");
+
+        assert_eq!((host.as_str(), port), ("::1", 1080));
+        let addrs: Vec<_> = (host.as_str(), port)
+            .to_socket_addrs()
+            .expect("an IPv6 literal resolves without a lookup")
+            .collect();
+        assert_eq!(addrs, vec!["[::1]:1080".parse().unwrap()]);
+    }
+
+    #[test]
+    fn a_named_or_ipv4_host_is_passed_through_with_its_port() {
+        let named = url::Url::parse("ws://localhost:1080/api/events").unwrap();
+        assert_eq!(host_and_port(&named), Some(("localhost".to_string(), 1080)));
+
+        let default_port = url::Url::parse("ws://127.0.0.1/api/events").unwrap();
+        assert_eq!(host_and_port(&default_port), Some(("127.0.0.1".to_string(), 80)));
+    }
 
     /// Long enough that a loaded machine does not fail the test, short enough
     /// that a hung one does not hang the suite. Nothing asserts on elapsed

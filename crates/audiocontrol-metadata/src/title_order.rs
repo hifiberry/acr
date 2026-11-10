@@ -34,30 +34,61 @@ use acr_types::OrderResult;
 /// ```
 pub fn detect_order(part1: &str, part2: &str) -> OrderResult {
     // Try part1 as artist, part2 as song
-    let artist_song_result = musicbrainz::search_recording(part1, part2);
-    let artist_song_found = match artist_song_result {
-        Ok(response) => response.count > 0,
-        Err(_) => false,
-    };
+    let artist_song = musicbrainz::search_recording(part1, part2).map(|response| response.count > 0);
+    if artist_song.is_err() {
+        // The verdict is Unknown whatever the other reading says, so the
+        // second request is not worth making.
+        return OrderResult::Unknown;
+    }
 
     // Try part1 as song, part2 as artist
-    let song_artist_result = musicbrainz::search_recording(part2, part1);
-    let song_artist_found = match song_artist_result {
-        Ok(response) => response.count > 0,
-        Err(_) => false,
-    };
+    let song_artist = musicbrainz::search_recording(part2, part1).map(|response| response.count > 0);
 
-    match (artist_song_found, song_artist_found) {
-        (true, false) => OrderResult::ArtistSong,
-        (false, true) => OrderResult::SongArtist,
-        (false, false) => OrderResult::Unknown,
-        (true, true) => OrderResult::Undecided,
+    order_from(artist_song, song_artist)
+}
+
+/// The verdict for the two readings of a pair, each either found, not found,
+/// or not answered.
+///
+/// A reading that was not answered is not a reading that found nothing. Read
+/// that way, one request timing out turned "both orders exist" into a
+/// confident verdict for whichever side happened to get through.
+fn order_from<E>(artist_song: Result<bool, E>, song_artist: Result<bool, E>) -> OrderResult {
+    match (artist_song, song_artist) {
+        (Ok(true), Ok(false)) => OrderResult::ArtistSong,
+        (Ok(false), Ok(true)) => OrderResult::SongArtist,
+        (Ok(false), Ok(false)) => OrderResult::Unknown,
+        (Ok(true), Ok(true)) => OrderResult::Undecided,
+        (Err(_), _) | (_, Err(_)) => OrderResult::Unknown,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_readings_answered_give_the_verdict_they_always_did() {
+        let ok = |found: bool| Ok::<bool, String>(found);
+
+        assert_eq!(order_from(ok(true), ok(false)), OrderResult::ArtistSong);
+        assert_eq!(order_from(ok(false), ok(true)), OrderResult::SongArtist);
+        assert_eq!(order_from(ok(false), ok(false)), OrderResult::Unknown);
+        assert_eq!(order_from(ok(true), ok(true)), OrderResult::Undecided);
+    }
+
+    /// One side failing must not hand the verdict to the other: the failed
+    /// side might have matched too, which would have made it Undecided.
+    #[test]
+    fn a_reading_that_failed_leaves_the_order_unknown() {
+        let failed = || Err::<bool, String>("timed out".to_string());
+
+        assert_eq!(order_from(Ok(true), failed()), OrderResult::Unknown);
+        assert_eq!(order_from(failed(), Ok(true)), OrderResult::Unknown);
+        assert_eq!(order_from(Ok(false), failed()), OrderResult::Unknown);
+        assert_eq!(order_from(failed(), Ok(false)), OrderResult::Unknown);
+        assert_eq!(order_from(failed(), failed()), OrderResult::Unknown);
+    }
 
     #[test]
     fn test_detect_order_well_known_songs() {

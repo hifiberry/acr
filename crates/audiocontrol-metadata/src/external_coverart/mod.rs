@@ -215,34 +215,8 @@ impl ExternalCoverartProvider {
 
         let key = cache_key(&self.endpoint.name, query);
 
-        // A cached `Found` can name a file that has since gone: the answer
-        // cache and the image cache expire independently. Pruning is matched
-        // on `Found` alone rather than applied to whatever came back, because
-        // `prune_missing` collapses "every image has gone" into `Error` too --
-        // and a genuinely cached `Error` must still short-circuit, which is
-        // the whole reason errors are cached at all.
-        match attributecache::get::<Lookup>(&key) {
-            Ok(Some(Lookup::Found(urls))) => {
-                match localize::prune_missing(Lookup::Found(urls)) {
-                    Lookup::Found(surviving) => {
-                        debug!("External cover art '{}': cache hit for {}", self.endpoint.name, key);
-                        return Lookup::Found(surviving);
-                    }
-                    // Every cached image has gone from the image cache. Fall
-                    // through and look the track up again rather than serve
-                    // URLs that 404.
-                    _ => debug!(
-                        "External cover art '{}': cached images for {} have gone; looking up again",
-                        self.endpoint.name, key
-                    ),
-                }
-            }
-            Ok(Some(cached)) => {
-                debug!("External cover art '{}': cache hit for {}", self.endpoint.name, key);
-                return cached;
-            }
-            Ok(None) => {}
-            Err(e) => warn!("External cover art '{}': cache read failed: {}", self.endpoint.name, e),
+        if let Some(cached) = self.cached_lookup(&key) {
+            return cached;
         }
 
         let slot = match mode {
@@ -260,6 +234,18 @@ impl ExternalCoverartProvider {
             );
             return Lookup::Error;
         };
+
+        // Read again once the wait is over. An interactive caller queues
+        // behind whoever holds the slot, and the likeliest holder is the
+        // background worker looking up this very track -- so by the time the
+        // slot is free the answer is usually in the cache, and asking the
+        // endpoint for it a second time would pay for the same lookup twice.
+        // A background caller never waited, so it has nothing new to read.
+        if mode == LookupMode::Interactive {
+            if let Some(cached) = self.cached_lookup(&key) {
+                return cached;
+            }
+        }
 
         let url = template::expand(&self.endpoint.url, query);
         let headers: Vec<(&str, &str)> = self
@@ -288,6 +274,40 @@ impl ExternalCoverartProvider {
         }
 
         lookup
+    }
+
+    /// The cached answer for `key`, if there is one worth returning.
+    fn cached_lookup(&self, key: &str) -> Option<Lookup> {
+        // A cached `Found` can name a file that has since gone: the answer
+        // cache and the image cache expire independently. Pruning is matched
+        // on `Found` alone rather than applied to whatever came back, because
+        // `prune_missing` collapses "every image has gone" into `Error` too --
+        // and a genuinely cached `Error` must still short-circuit, which is
+        // the whole reason errors are cached at all.
+        match attributecache::get::<Lookup>(key) {
+            Ok(Some(Lookup::Found(urls))) => {
+                match localize::prune_missing(Lookup::Found(urls)) {
+                    Lookup::Found(surviving) => {
+                        debug!("External cover art '{}': cache hit for {}", self.endpoint.name, key);
+                        return Some(Lookup::Found(surviving));
+                    }
+                    // Every cached image has gone from the image cache. Fall
+                    // through and look the track up again rather than serve
+                    // URLs that 404.
+                    _ => debug!(
+                        "External cover art '{}': cached images for {} have gone; looking up again",
+                        self.endpoint.name, key
+                    ),
+                }
+            }
+            Ok(Some(cached)) => {
+                debug!("External cover art '{}': cache hit for {}", self.endpoint.name, key);
+                return Some(cached);
+            }
+            Ok(None) => {}
+            Err(e) => warn!("External cover art '{}': cache read failed: {}", self.endpoint.name, e),
+        }
+        None
     }
 }
 
@@ -845,6 +865,44 @@ mod tests {
         assert_eq!(
             result,
             Lookup::Found(vec!["https://img.example/interactive.jpg".to_string()])
+        );
+    }
+
+    /// An interactive caller that queued behind a lookup of the same track
+    /// takes the answer that lookup cached, rather than asking the endpoint a
+    /// second time for something it has just been charged for.
+    #[test]
+    fn interactive_mode_uses_an_answer_cached_while_it_waited() {
+        crate::test_support::init_test_caches();
+        let server = StubServer::serving(
+            200,
+            r#"{"images":[{"url":"https://img.example/second-lookup.jpg"}]}"#,
+        );
+        let provider = Arc::new(provider_for(&server, 5));
+        let held = provider.slots.try_acquire().expect("the only slot");
+
+        let waiter = provider.clone();
+        let query = stub_query();
+        let waiter_query = query.clone();
+        let handle = std::thread::spawn(move || waiter.lookup_with(&waiter_query, LookupMode::Interactive));
+
+        // Long enough for the waiter to have read the empty cache and joined
+        // the queue. If it has not, it finds the answer on its first read and
+        // the test passes without exercising the second one -- weaker, never
+        // a false failure.
+        std::thread::sleep(Duration::from_millis(300));
+
+        // What the slot's holder does on its way out: cache its answer, then
+        // release the slot.
+        let key = cache_key(&provider.endpoint.name, &query);
+        attributecache::set_with_ttl(&key, &Lookup::NoArtwork, 3600).expect("the answer is cached");
+        drop(held);
+
+        let result = handle.join().expect("interactive lookup thread completed");
+        assert_eq!(result, Lookup::NoArtwork, "the cached answer is what comes back");
+        assert!(
+            server.requests().is_empty(),
+            "the endpoint must not be asked again for a track that was just looked up"
         );
     }
 

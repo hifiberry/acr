@@ -227,6 +227,24 @@ pub struct LastfmCredentials {
     pub token_created: Option<u64>, // Unix timestamp
 }
 
+/// How long a Last.fm request may take to connect, and how long either
+/// direction may then stall, before it is abandoned.
+const LASTFM_TIMEOUT_SECS: u64 = 30;
+
+/// The agent every Last.fm request goes through.
+///
+/// `ureq::agent()` bounds only the connect. A response that stalls after the
+/// connection is up would otherwise block its caller for good -- and the
+/// scrobble timer makes its requests while holding the track state.
+fn lastfm_agent() -> ureq::Agent {
+    let timeout = std::time::Duration::from_secs(LASTFM_TIMEOUT_SECS);
+    ureq::AgentBuilder::new()
+        .timeout_connect(timeout)
+        .timeout_read(timeout)
+        .timeout_write(timeout)
+        .build()
+}
+
 // Singleton instance of LastfmClient
 // Make it pub(crate) to be accessible within the crate (e.g., by api module)
 pub(crate) static LASTFM_CLIENT: Lazy<Mutex<Option<LastfmClient>>> = Lazy::new(|| Mutex::new(None));
@@ -258,7 +276,7 @@ impl LastfmClient {
             token_created: None,
         };
 
-        let client = ureq::agent();
+        let client = lastfm_agent();
 
         let mut lastfm_guard = LASTFM_CLIENT.lock();
         *lastfm_guard = Some(LastfmClient {
@@ -591,7 +609,7 @@ impl LastfmClient {
     fn clone(&self) -> Self {
         LastfmClient {
             credentials: self.credentials.clone(),
-            client: ureq::agent(),
+            client: lastfm_agent(),
         }
     }    fn load_credentials_from_store(&mut self) {
         // Try to get session key from security store
@@ -643,7 +661,7 @@ impl LastfmClient {
 
         let client = LastfmClient {
             credentials,
-            client: ureq::agent(),
+            client: lastfm_agent(),
         };
 
         let mut lastfm_guard = LASTFM_CLIENT.lock();

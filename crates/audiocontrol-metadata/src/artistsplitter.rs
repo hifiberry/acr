@@ -178,7 +178,7 @@ pub fn split_if_multiple(artist_name: &str, custom_separators: Option<&[String]>
 /// `doc/communications.md` under *Where this map is thin*.
 pub fn split_observation(artist_name: &str) -> Option<Vec<String>> {
     observe_split(artist_name, musicbrainz::is_enabled(), || {
-        split_artist_names_with_mbid_lookup(artist_name, false, None)
+        lookup_split(artist_name, false, None)
     })
 }
 
@@ -189,10 +189,14 @@ pub fn split_observation(artist_name: &str) -> Option<Vec<String>> {
 /// test that flipped it would reach into whatever else the harness runs beside
 /// it -- and without a MusicBrainz request. `lookup` is called only where the
 /// rule says an answer is worth having.
+///
+/// A lookup that failed makes no claim. "MusicBrainz could not be reached" is
+/// not "MusicBrainz says this is one artist", and answering as if it were
+/// rejoined correct splits whenever the network was down.
 fn observe_split(
     artist_name: &str,
     musicbrainz_enabled: bool,
-    lookup: impl FnOnce() -> Option<Vec<String>>,
+    lookup: impl FnOnce() -> Result<Option<Vec<String>>, String>,
 ) -> Option<Vec<String>> {
     if !musicbrainz_enabled {
         debug!(
@@ -209,8 +213,15 @@ fn observe_split(
         return None;
     }
     match lookup() {
-        Some(parts) => Some(parts),
-        None => Some(vec![artist_name.to_string()]),
+        Ok(Some(parts)) => Some(parts),
+        Ok(None) => Some(vec![artist_name.to_string()]),
+        Err(e) => {
+            debug!(
+                "MusicBrainz lookup failed for '{}'; making no split claim: {}",
+                artist_name, e
+            );
+            None
+        }
     }
 }
 
@@ -225,6 +236,25 @@ fn observe_split(
 /// # Returns
 /// * `Option<Vec<String>>` - None if single artist, or Some(Vec<String>) with split artist names if multiple
 pub fn split_artist_names_with_mbid_lookup(artist_name: &str, cache_only: bool, custom_separators: Option<&[String]>) -> Option<Vec<String>> {
+    match lookup_split(artist_name, cache_only, custom_separators) {
+        Ok(result) => result,
+        Err(e) => {
+            // This signature has no way to say "not answered", so a failed
+            // lookup reads as a single artist here -- but it is not cached,
+            // and the next call asks again.
+            debug!("MusicBrainz lookup failed while splitting '{}': {}", artist_name, e);
+            None
+        }
+    }
+}
+
+/// [`split_artist_names_with_mbid_lookup`], with a lookup that failed kept
+/// apart from one that concluded the name is a single artist.
+///
+/// The result is cached without expiry, so only an answer may be cached. A
+/// name whose lookups all timed out used to be written down as a single
+/// artist for good.
+fn lookup_split(artist_name: &str, cache_only: bool, custom_separators: Option<&[String]>) -> Result<Option<Vec<String>>, String> {
     debug!("Checking if '{}' contains multiple artists (cache_only: {})", artist_name, cache_only);
     
     // Create cache key for artist splits
@@ -234,7 +264,7 @@ pub fn split_artist_names_with_mbid_lookup(artist_name: &str, cache_only: bool, 
     match attributecache::get::<Option<Vec<String>>>(&cache_key) {
         Ok(Some(cached_result)) => {
             debug!("Found cached split result for '{}': {:?}", artist_name, cached_result);
-            return cached_result;
+            return Ok(cached_result);
         },
         Ok(None) => {
             debug!("No cached split result found for '{}'", artist_name);
@@ -258,10 +288,10 @@ pub fn split_artist_names_with_mbid_lookup(artist_name: &str, cache_only: bool, 
         if let Err(e) = attributecache::set_with_expiry(&cache_key, &None::<Vec<String>>, None) {
             debug!("Failed to cache single artist result for '{}': {}", artist_name, e);
         }
-        return None;
+        return Ok(None);
     }
 
-    let result = perform_artist_split_with_mbid_lookup(artist_name, cache_only, &separators);
+    let result = perform_artist_split_with_mbid_lookup(artist_name, cache_only, &separators)?;
     
     // Cache the result (no expiry)
     if let Err(e) = attributecache::set_with_expiry(&cache_key, &result, None) {
@@ -270,11 +300,14 @@ pub fn split_artist_names_with_mbid_lookup(artist_name: &str, cache_only: bool, 
         debug!("Cached split result for '{}': {:?}", artist_name, result);
     }
     
-    result
+    Ok(result)
 }
 
 /// Internal function that performs the actual artist split with MBID lookup logic
-fn perform_artist_split_with_mbid_lookup(artist_name: &str, cache_only: bool, separators: &[&str]) -> Option<Vec<String>> {
+///
+/// `Err` is a lookup that failed where its answer would have decided the
+/// result, which leaves nothing to conclude.
+fn perform_artist_split_with_mbid_lookup(artist_name: &str, cache_only: bool, separators: &[&str]) -> Result<Option<Vec<String>>, String> {
     // if musicbrainz lookups are disabled, implement a "dumb" split using provided separators
     if !musicbrainz::is_enabled() {
         debug!("MusicBrainz lookups are disabled, performing dumb split for '{}'", artist_name);
@@ -288,10 +321,10 @@ fn perform_artist_split_with_mbid_lookup(artist_name: &str, cache_only: bool, se
         // Only return if we actually split into multiple parts
         if split_artists.len() > 1 {
             debug!("Split '{}' into multiple artists: {:?}", artist_name, split_artists);
-            return Some(split_artists);
+            return Ok(Some(split_artists));
         } else {
             debug!("'{}' appears to be a single artist", artist_name);
-            return None;
+            return Ok(None);
         }
     }
     
@@ -311,13 +344,18 @@ fn perform_artist_split_with_mbid_lookup(artist_name: &str, cache_only: bool, se
                 // Only return if we actually split into multiple parts
                 if split_artists.len() > 1 {
                     debug!("Split '{}' into multiple artists: {:?}", artist_name, split_artists);
-                    return Some(split_artists);
+                    return Ok(Some(split_artists));
                 }
             }
             
             // Single MBID found or couldn't split into multiple parts
             debug!("'{}' appears to be a single artist", artist_name);
-            None
+            Ok(None)
+        },
+        MusicBrainzSearchResult::Error(e) => {
+            // Whether the whole name is one artist is exactly what was being
+            // asked. Going on to split it would answer that by default.
+            Err(e)
         },
         _ => {
             // No MBIDs found for the combined string, try splitting and validating individual artists
@@ -335,11 +373,16 @@ fn perform_artist_split_with_mbid_lookup(artist_name: &str, cache_only: bool, se
                 
                 // Validate individual artists against MusicBrainz
                 let mut found_count = 0;
+                let mut first_error: Option<String> = None;
                 for individual_artist in &split_artists {
                     match musicbrainz::search_mbids_for_artist(individual_artist, true, cache_only, false) {
                         MusicBrainzSearchResult::Found(_, _) => {
                             found_count += 1;
                             debug!("Found MBID for individual artist: '{}'", individual_artist);
+                        },
+                        MusicBrainzSearchResult::Error(e) => {
+                            debug!("MusicBrainz lookup failed for individual artist '{}': {}", individual_artist, e);
+                            first_error.get_or_insert(e);
                         },
                         _ => {
                             debug!("No MBID found for individual artist: '{}'", individual_artist);
@@ -353,15 +396,20 @@ fn perform_artist_split_with_mbid_lookup(artist_name: &str, cache_only: bool, se
                 
                 // Only split if at least 25% of the artists can be found in MusicBrainz
                 if found_percentage >= 25.0 {
+                    // Holds even if some lookups failed: those could only
+                    // have raised the count.
                     debug!("At least 25% of split artists found in MusicBrainz, splitting '{}'", artist_name);
-                    Some(split_artists)
+                    Ok(Some(split_artists))
+                } else if let Some(e) = first_error {
+                    // Below the threshold, but only as far as was answered.
+                    Err(e)
                 } else {
                     debug!("Less than 25% of split artists found in MusicBrainz, not splitting '{}'", artist_name);
-                    None
+                    Ok(None)
                 }
             } else {
                 debug!("'{}' appears to be a single artist", artist_name);
-                None
+                Ok(None)
             }
         }
     }
@@ -477,16 +525,27 @@ mod tests {
             "no default separator: the loader may have split this on a configured one"
         );
         assert_eq!(
-            observe_split("Emerson, Lake & Palmer", true, || None),
+            observe_split("Emerson, Lake & Palmer", true, || Ok(None)),
             Some(vec!["Emerson, Lake & Palmer".to_string()]),
             "a lookup that concludes one artist is the assertion that undoes a wrong split"
         );
         assert_eq!(
-            observe_split("Simon & Garfunkel", true, || Some(vec![
+            observe_split("Simon & Garfunkel", true, || Ok(Some(vec![
                 "Simon".to_string(),
                 "Garfunkel".to_string()
-            ])),
+            ]))),
             Some(vec!["Simon".to_string(), "Garfunkel".to_string()])
+        );
+    }
+
+    /// A lookup that could not be made is not a lookup that concluded "one
+    /// artist". Claiming so would overwrite the loader's split of a real
+    /// collaboration every time MusicBrainz timed out.
+    #[test]
+    fn a_failed_lookup_makes_no_split_claim() {
+        assert_eq!(
+            observe_split("Simon & Garfunkel", true, || Err("timed out".to_string())),
+            None
         );
     }
 

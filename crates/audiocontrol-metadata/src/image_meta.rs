@@ -188,9 +188,20 @@ fn is_webp(header: &[u8]) -> bool {
     header.len() >= 12 && &header[0..4] == b"RIFF" && &header[8..12] == b"WEBP"
 }
 
+/// The DIB header sizes that exist: BITMAPCOREHEADER, BITMAPINFOHEADER, the
+/// two undocumented V2/V3 info headers, BITMAPV4HEADER and BITMAPV5HEADER.
+const BMP_DIB_HEADER_SIZES: [u32; 6] = [12, 40, 52, 56, 108, 124];
+
 /// Check if the header indicates a BMP image
+///
+/// The two-byte magic alone is not enough: any text starting with "BM" has
+/// it, and the bytes that follow then read as a plausible header size and as
+/// nonsense dimensions. The DIB header size has to be one that exists.
 fn is_bmp(header: &[u8]) -> bool {
-    header.len() >= 2 && &header[0..2] == b"BM"
+    header.len() >= 18
+        && &header[0..2] == b"BM"
+        && BMP_DIB_HEADER_SIZES
+            .contains(&u32::from_le_bytes([header[14], header[15], header[16], header[17]]))
 }
 
 /// Parse JPEG dimensions
@@ -349,6 +360,10 @@ fn parse_webp_dimensions<R: BufRead + Seek>(reader: &mut R) -> Result<(u32, u32,
     }
 }
 
+/// The largest width or height a BMP is believed to have. Far above any
+/// real cover, and low enough that a header full of arbitrary bytes fails.
+const MAX_BMP_DIMENSION: u32 = 65_535;
+
 /// Parse BMP dimensions
 fn parse_bmp_dimensions<R: BufRead + Seek>(reader: &mut R) -> Result<(u32, u32, String), String> {
     // Skip BMP file header (14 bytes)
@@ -361,21 +376,39 @@ fn parse_bmp_dimensions<R: BufRead + Seek>(reader: &mut R) -> Result<(u32, u32, 
         .map_err(|e| format!("Failed to read BMP DIB header size: {}", e))?;
     
     let header_size = u32::from_le_bytes(buffer);
-    
-    if header_size >= 16 {
-        // Read width and height
+
+    let (width, height) = if header_size == 12 {
+        // BITMAPCOREHEADER: two unsigned 16-bit fields.
+        reader.read_exact(&mut buffer)
+            .map_err(|e| format!("Failed to read BMP dimensions: {}", e))?;
+        (
+            u16::from_le_bytes([buffer[0], buffer[1]]) as u32,
+            u16::from_le_bytes([buffer[2], buffer[3]]) as u32,
+        )
+    } else if BMP_DIB_HEADER_SIZES.contains(&header_size) {
+        // Read width and height. Both are signed: a negative height marks a
+        // top-down bitmap, and read as unsigned it came out near four billion.
         reader.read_exact(&mut buffer)
             .map_err(|e| format!("Failed to read BMP width: {}", e))?;
-        let width = u32::from_le_bytes(buffer);
-        
+        let width = i32::from_le_bytes(buffer);
+
         reader.read_exact(&mut buffer)
             .map_err(|e| format!("Failed to read BMP height: {}", e))?;
-        let height = u32::from_le_bytes(buffer);
-        
-        Ok((width, height, "BMP".to_string()))
+        let height = i32::from_le_bytes(buffer);
+
+        if width <= 0 {
+            return Err("Invalid BMP dimensions".to_string());
+        }
+        (width as u32, height.unsigned_abs())
     } else {
-        Err("Invalid BMP header size".to_string())
+        return Err("Invalid BMP header size".to_string());
+    };
+
+    if width == 0 || height == 0 || width > MAX_BMP_DIMENSION || height > MAX_BMP_DIMENSION {
+        return Err("Invalid BMP dimensions".to_string());
     }
+
+    Ok((width, height, "BMP".to_string()))
 }
 
 /// Clear cached image metadata for a specific URL
@@ -450,13 +483,217 @@ mod tests {
         assert!(!is_webp(&not_webp));
     }
 
+    /// A BMP file header followed by a BITMAPINFOHEADER's first three
+    /// fields: enough for detection and for reading the dimensions.
+    fn bmp_with(header_size: u32, width: i32, height: i32) -> Vec<u8> {
+        let mut data = vec![0u8; 14];
+        data[0..2].copy_from_slice(b"BM");
+        data.extend_from_slice(&header_size.to_le_bytes());
+        data.extend_from_slice(&width.to_le_bytes());
+        data.extend_from_slice(&height.to_le_bytes());
+        data.resize(54, 0);
+        data
+    }
+
     #[test]
     fn test_bmp_detection() {
-        let bmp_header = b"BM";
-        assert!(is_bmp(bmp_header));
-        
+        assert!(is_bmp(&bmp_with(40, 2, 2)));
+        assert!(is_bmp(&bmp_with(124, 2, 2)));
+
         let not_bmp = [0xFF, 0xD8, 0xFF, 0xE0];
         assert!(!is_bmp(&not_bmp));
+    }
+
+    /// The magic is two ASCII letters, so plain text carries it too. The
+    /// bytes after it then have to pass for a DIB header size, and text does
+    /// not.
+    #[test]
+    fn text_that_starts_with_bm_is_not_a_bmp() {
+        let text = b"BMW 2002 turbo: an owner's handbook, first edition";
+        assert!(!is_bmp(&text[..32]));
+        assert!(detect_image_dimensions(&mut Cursor::new(&text[..])).is_err());
+
+        // The magic on its own, with nothing after it to check.
+        assert!(!is_bmp(b"BM"));
+    }
+
+    #[test]
+    fn bmp_dimensions_are_read_bottom_up() {
+        let mut cursor = Cursor::new(bmp_with(40, 640, 480));
+        assert_eq!(
+            detect_image_dimensions(&mut cursor),
+            Ok((640, 480, "BMP".to_string()))
+        );
+    }
+
+    /// A top-down BMP stores its height negative. Read as unsigned that is
+    /// 4294966816 rows, not 480.
+    #[test]
+    fn a_top_down_bmp_reports_its_real_height() {
+        let mut cursor = Cursor::new(bmp_with(40, 640, -480));
+        assert_eq!(
+            parse_bmp_dimensions(&mut cursor),
+            Ok((640, 480, "BMP".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_core_header_bmp_reads_its_sixteen_bit_dimensions() {
+        let mut data = vec![0u8; 14];
+        data[0..2].copy_from_slice(b"BM");
+        data.extend_from_slice(&12u32.to_le_bytes());
+        data.extend_from_slice(&320u16.to_le_bytes());
+        data.extend_from_slice(&200u16.to_le_bytes());
+        data.resize(32, 0);
+
+        assert_eq!(
+            detect_image_dimensions(&mut Cursor::new(data)),
+            Ok((320, 200, "BMP".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_bmp_with_impossible_dimensions_is_refused() {
+        for (width, height) in [(0, 480), (640, 0), (-640, 480), (1_000_000, 480), (640, i32::MIN)] {
+            let mut cursor = Cursor::new(bmp_with(40, width, height));
+            assert!(
+                parse_bmp_dimensions(&mut cursor).is_err(),
+                "{}x{} must be refused",
+                width,
+                height
+            );
+        }
+    }
+
+    #[test]
+    fn a_bmp_with_an_unknown_header_size_is_refused() {
+        let mut cursor = Cursor::new(bmp_with(16, 640, 480));
+        assert!(parse_bmp_dimensions(&mut cursor).is_err());
+    }
+
+    /// SOI, an APP0 segment to skip, then a baseline SOF0 frame header.
+    fn jpeg_with(sof_marker: u8, width: u16, height: u16) -> Vec<u8> {
+        let mut data = vec![0xFF, 0xD8];
+        // APP0, length 16 (the two length bytes plus 14 of payload).
+        data.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x10]);
+        data.extend_from_slice(&[0u8; 14]);
+        // SOFn: length 17, precision 8, height, width, then components.
+        data.extend_from_slice(&[0xFF, sof_marker, 0x00, 0x11, 0x08]);
+        data.extend_from_slice(&height.to_be_bytes());
+        data.extend_from_slice(&width.to_be_bytes());
+        data.extend_from_slice(&[0u8; 10]);
+        data
+    }
+
+    #[test]
+    fn jpeg_dimensions_are_read_from_the_frame_header() {
+        let mut cursor = Cursor::new(jpeg_with(0xC0, 1200, 800));
+        assert_eq!(
+            detect_image_dimensions(&mut cursor),
+            Ok((1200, 800, "JPEG".to_string()))
+        );
+    }
+
+    #[test]
+    fn progressive_jpeg_dimensions_are_read_too() {
+        let mut cursor = Cursor::new(jpeg_with(0xC2, 500, 1000));
+        assert_eq!(
+            parse_jpeg_dimensions(&mut cursor),
+            Ok((500, 1000, "JPEG".to_string()))
+        );
+    }
+
+    /// A DHT segment (0xC4) sits inside the SOF marker range without being
+    /// one, and has to be skipped like any other segment.
+    #[test]
+    fn a_huffman_table_before_the_frame_header_is_skipped() {
+        let mut data = vec![0xFF, 0xD8];
+        data.extend_from_slice(&[0xFF, 0xC4, 0x00, 0x06, 1, 2, 3, 4]);
+        data.extend_from_slice(&jpeg_with(0xC0, 300, 200)[2..]);
+
+        assert_eq!(
+            parse_jpeg_dimensions(&mut Cursor::new(data)),
+            Ok((300, 200, "JPEG".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_jpeg_that_ends_before_its_frame_header_is_an_error() {
+        let mut data = jpeg_with(0xC0, 1200, 800);
+        data.truncate(20);
+        assert!(parse_jpeg_dimensions(&mut Cursor::new(data)).is_err());
+    }
+
+    #[test]
+    fn a_jpeg_with_a_broken_marker_is_an_error() {
+        let data = [0xFF, 0xD8, 0x00, 0x00, 0x00, 0x00];
+        assert!(parse_jpeg_dimensions(&mut Cursor::new(&data[..])).is_err());
+    }
+
+    /// A RIFF/WEBP container around one chunk with the given payload.
+    fn webp_with(chunk: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&((4 + 8 + payload.len()) as u32).to_le_bytes());
+        data.extend_from_slice(b"WEBP");
+        data.extend_from_slice(chunk);
+        data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        data.extend_from_slice(payload);
+        // Padded so the 32-byte format sniff has enough to read.
+        if data.len() < 32 {
+            data.resize(32, 0);
+        }
+        data
+    }
+
+    #[test]
+    fn lossy_webp_dimensions_are_read_from_the_vp8_frame_header() {
+        // Frame tag (3 bytes), start code (3 bytes), then 14-bit width and
+        // height, each with a 2-bit scale above it that must be masked off.
+        let mut payload = vec![0x00, 0x00, 0x00, 0x9D, 0x01, 0x2A];
+        payload.extend_from_slice(&(640u16 | 0x4000).to_le_bytes());
+        payload.extend_from_slice(&(480u16 | 0x8000).to_le_bytes());
+
+        let mut cursor = Cursor::new(webp_with(b"VP8 ", &payload));
+        assert_eq!(
+            detect_image_dimensions(&mut cursor),
+            Ok((640, 480, "WebP".to_string()))
+        );
+    }
+
+    #[test]
+    fn lossless_webp_dimensions_are_read_from_the_vp8l_header() {
+        // Signature byte, then width-1 and height-1 packed 14 bits each.
+        let bits: u32 = (800 - 1) | ((600 - 1) << 14);
+        let mut payload = vec![0x2F];
+        payload.extend_from_slice(&bits.to_le_bytes());
+
+        let mut cursor = Cursor::new(webp_with(b"VP8L", &payload));
+        assert_eq!(
+            parse_webp_dimensions(&mut cursor),
+            Ok((800, 600, "WebP".to_string()))
+        );
+    }
+
+    #[test]
+    fn extended_webp_dimensions_are_read_from_the_vp8x_header() {
+        // Flags and three reserved bytes, then width-1 and height-1 as
+        // 24-bit little-endian values.
+        let mut payload = vec![0x10, 0x00, 0x00, 0x00];
+        payload.extend_from_slice(&(3000u32 - 1).to_le_bytes()[..3]);
+        payload.extend_from_slice(&(2000u32 - 1).to_le_bytes()[..3]);
+
+        let mut cursor = Cursor::new(webp_with(b"VP8X", &payload));
+        assert_eq!(
+            parse_webp_dimensions(&mut cursor),
+            Ok((3000, 2000, "WebP".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_webp_with_an_unknown_first_chunk_is_an_error() {
+        let mut cursor = Cursor::new(webp_with(b"ALPH", &[0u8; 10]));
+        assert!(parse_webp_dimensions(&mut cursor).is_err());
     }
 
     #[test]

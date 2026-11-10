@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use log::{info, warn};
-use acr_store::attributecache::{self, AttributeCache};
+use acr_store::attributecache::{self, AttributeCache, CacheEntry};
 use audiocontrol_metadata::artistsplitter::ARTIST_SPLIT_CACHE_PREFIX;
 use audiocontrol_metadata::musicbrainz::{ARTIST_MBID_CACHE_PREFIX, ARTIST_NOT_FOUND_CACHE_PREFIX};
 use audiocontrol_metadata::image_meta::IMAGE_META_CACHE_PREFIX;
@@ -266,6 +266,12 @@ fn clean_cache_entries(prefix: Option<&str>, all: bool, older_than_days: Option<
         return Err("Cannot specify both --all and --prefix options".into());
     }
 
+    // `--all` clears the cache outright, so an age given with it would be
+    // silently dropped and far more deleted than was asked for.
+    if all && older_than_days.is_some() {
+        return Err("Cannot specify both --all and --older-than-days options".into());
+    }
+
     if !all && prefix.is_none() && older_than_days.is_none() {
         return Err("Must specify either --all, --prefix, or --older-than-days".into());
     }
@@ -283,16 +289,36 @@ fn clean_cache_entries(prefix: Option<&str>, all: bool, older_than_days: Option<
         return Ok(());
     }
 
+    // Age is checked before the prefix-only branch, so that a prefix given
+    // together with an age narrows the age sweep instead of replacing it:
+    // `--prefix X --older-than-days N` used to delete everything under X
+    // whatever its age.
+    if let Some(days) = older_than_days {
+        let entries = attributecache::list_entries(prefix)?;
+        let old = entries_older_than(&entries, days, chrono::Utc::now().timestamp());
+        let scope = prefix.map(|p| format!(" with prefix '{}'", p)).unwrap_or_default();
+
+        if dry_run {
+            println!("Would delete {} cache entries{} older than {} days (dry run)", old.len(), scope, days);
+            print_sample(&old);
+            return Ok(());
+        }
+
+        let mut deleted = 0;
+        for entry in &old {
+            if attributecache::remove(&entry.key)? {
+                deleted += 1;
+            }
+        }
+        info!("Deleted {} cache entries{} older than {} days", deleted, scope, days);
+        return Ok(());
+    }
+
     if let Some(prefix) = prefix {
         if dry_run {
             let entries = attributecache::list_entries(Some(prefix))?;
             println!("Would delete {} cache entries with prefix '{}' (dry run)", entries.len(), prefix);
-            for entry in &entries[..entries.len().min(10)] {
-                println!("  - {}", entry.key);
-            }
-            if entries.len() > 10 {
-                println!("  ... and {} more", entries.len() - 10);
-            }
+            print_sample(&entries.iter().collect::<Vec<_>>());
             return Ok(());
         }
 
@@ -301,16 +327,30 @@ fn clean_cache_entries(prefix: Option<&str>, all: bool, older_than_days: Option<
         return Ok(());
     }
 
-    if let Some(days) = older_than_days {
-        // For now, we'll use the cleanup function which removes entries older than the configured max age
-        // In the future, we could add a custom cleanup function that takes days as parameter
-        warn!("Cleaning entries older than {} days using cache cleanup function", days);
-        let deleted = attributecache::cleanup()?;
-        info!("Deleted {} old cache entries", deleted);
-        return Ok(());
-    }
-
     Ok(())
+}
+
+/// The first few keys of what a dry run would delete.
+fn print_sample(entries: &[&CacheEntry]) {
+    for entry in &entries[..entries.len().min(10)] {
+        println!("  - {}", entry.key);
+    }
+    if entries.len() > 10 {
+        println!("  ... and {} more", entries.len() - 10);
+    }
+}
+
+/// The entries last written more than `days` days before `now`.
+///
+/// Judged on `updated_at` rather than `created_at`: an entry that was
+/// refreshed yesterday is not old, whenever its key first appeared. This is
+/// the age the caller asked for, which is not the cache's own configured
+/// maximum -- `attributecache::cleanup` applies that one, and was what this
+/// option ran before whatever number it was given.
+fn entries_older_than(entries: &[CacheEntry], days: u64, now: i64) -> Vec<&CacheEntry> {
+    let age_seconds = i64::try_from(days.saturating_mul(86_400)).unwrap_or(i64::MAX);
+    let cutoff = now.saturating_sub(age_seconds);
+    entries.iter().filter(|entry| entry.updated_at < cutoff).collect()
 }
 
 fn show_cache_stats(by_prefix: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -400,11 +440,16 @@ fn format_size(bytes: usize) -> String {
     }
 }
 
+/// Shorten `key` to at most `max_len` characters, marking the cut.
+///
+/// Counted and cut in characters, not bytes: keys carry artist names, and a
+/// byte slice that lands inside a multibyte character panics.
 fn truncate_key(key: &str, max_len: usize) -> String {
-    if key.len() <= max_len {
+    if key.chars().count() <= max_len {
         key.to_string()
     } else {
-        format!("{}...", &key[..max_len - 3])
+        let kept: String = key.chars().take(max_len.saturating_sub(3)).collect();
+        format!("{}...", kept)
     }
 }
 
@@ -437,6 +482,60 @@ mod tests {
             Path::new(DEFAULT_CACHE_DIR),
             "the default cache directory must be the one configs/metadata.json puts attributes.db in"
         );
+    }
+
+    fn entry(key: &str, updated_at: i64) -> CacheEntry {
+        CacheEntry {
+            key: key.to_string(),
+            size_bytes: 1,
+            created_at: 0,
+            updated_at,
+            expires_at: None,
+        }
+    }
+
+    /// The number given is the age applied -- not the cache's configured
+    /// maximum, and not "everything".
+    #[test]
+    fn older_than_days_selects_by_the_age_it_was_given() {
+        let day = 86_400;
+        let now = 100 * day;
+        let entries = vec![
+            entry("artist::mbid::old", now - 10 * day),
+            entry("artist::mbid::edge", now - 7 * day),
+            entry("artist::mbid::fresh", now - day),
+        ];
+
+        let keys = |days| -> Vec<String> {
+            entries_older_than(&entries, days, now).iter().map(|e| e.key.clone()).collect()
+        };
+
+        assert_eq!(keys(7), vec!["artist::mbid::old"]);
+        assert_eq!(keys(30), Vec::<String>::new());
+        assert_eq!(keys(0), vec!["artist::mbid::old", "artist::mbid::edge", "artist::mbid::fresh"]);
+        // An age no clock reaches selects nothing rather than overflowing.
+        assert_eq!(keys(u64::MAX), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_short_key_is_shown_whole() {
+        assert_eq!(truncate_key("artist::mbid::björk", 60), "artist::mbid::björk");
+    }
+
+    /// Keys carry artist names, so the cut can land inside a multibyte
+    /// character. A byte slice there panics and takes the listing with it.
+    #[test]
+    fn a_long_multibyte_key_is_cut_on_a_character_boundary() {
+        let key = format!("artist::mbid::{}", "ö".repeat(100));
+        let shown = truncate_key(&key, 60);
+        assert_eq!(shown.chars().count(), 60);
+        assert!(shown.ends_with("..."));
+
+        // Every cut position, including the ones inside a character.
+        let key = "日本語のアーティスト名";
+        for max_len in 0..20 {
+            assert!(truncate_key(key, max_len).chars().count() <= max_len.max(3));
+        }
     }
 
     /// `--cache-dir` is taken exactly as given, existing or not: the tool is

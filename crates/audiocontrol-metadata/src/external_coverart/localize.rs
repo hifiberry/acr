@@ -158,6 +158,11 @@ fn same_origin(candidate: &str, configured: &str) -> bool {
         && candidate.port_or_known_default() == configured.port_or_known_default()
 }
 
+/// Whether `candidate` is an absolute `http` or `https` URL.
+fn is_web_url(candidate: &str) -> bool {
+    Url::parse(candidate).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
 /// An endpoint name, reduced to something safe to use as one directory name.
 ///
 /// The name comes from `audiocontrol.json`, so it is administrator-controlled
@@ -248,6 +253,19 @@ fn resolve_image(
     }
 
     let url = image.url?;
+
+    // Only web addresses pass. The string is the endpoint's, and when it is
+    // handed on unlocalised the next thing to read it is the image measurer,
+    // which treats anything that is not an http(s) URL as a path on this
+    // machine and opens it. An endpoint has no business naming a local file,
+    // and nothing a client could do with a non-web URL either.
+    if !is_web_url(&url) {
+        warn!(
+            "External cover art '{}': image URL '{}' is not an http(s) URL; skipping it",
+            endpoint.name, url
+        );
+        return None;
+    }
 
     if !endpoint.localize {
         return Some(url);
@@ -534,6 +552,27 @@ mod tests {
         );
         assert!(source.fetched.lock().is_empty());
         assert!(source.stored_paths().is_empty());
+    }
+
+    /// An answer naming something other than a web address is dropped, with
+    /// localisation on or off. Passed through, it would reach the image
+    /// measurer, which opens anything that is not an http(s) URL as a file on
+    /// this machine.
+    #[test]
+    fn an_image_url_that_is_not_a_web_address_is_dropped() {
+        for localize in [false, true] {
+            let source = FakeSource::default();
+            let parsed = Parsed::Images(vec![
+                ParsedImage { url: Some("/etc/passwd".to_string()), data: None },
+                ParsedImage { url: Some("file:///etc/passwd".to_string()), data: None },
+                ParsedImage { url: Some("../secrets.png".to_string()), data: None },
+            ]);
+
+            let lookup = resolve_with(parsed, &endpoint(localize), &key(), &source);
+
+            assert!(lookup.urls().is_empty(), "localize={}: got {:?}", localize, lookup);
+            assert!(source.fetched.lock().is_empty(), "nothing should have been fetched");
+        }
     }
 
     /// The point of the whole increment: the credential that authorised the

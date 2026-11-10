@@ -24,11 +24,27 @@ pub struct TheAudioDbResponse {
 /// 
 /// # Returns
 /// * 200 OK with artist data if found
+/// * 400 Bad Request if `mbid` is not a MusicBrainz ID
 /// * 404 Not Found if artist not found
 /// * 503 Service Unavailable if TheAudioDB is disabled
 /// * 500 Internal Server Error for other errors
 #[get("/audiodb/mbid/<mbid>")]
 pub fn lookup_artist_by_mbid(mbid: String) -> Result<Json<TheAudioDbResponse>, Custom<Json<TheAudioDbResponse>>> {
+    // Refused before anything else looks at it: the value is interpolated
+    // into the upstream URL and into cache keys, and only an MBID belongs in
+    // either.
+    if !crate::musicbrainz::is_mbid(&mbid) {
+        return Err(Custom(
+            Status::BadRequest,
+            Json(TheAudioDbResponse {
+                mbid,
+                success: false,
+                data: None,
+                error: Some("Not a valid MusicBrainz ID".to_string()),
+            })
+        ));
+    }
+
     // Check if TheAudioDB is enabled
     if !theaudiodb::is_enabled() {
         return Err(Custom(
@@ -75,6 +91,23 @@ pub fn lookup_artist_by_mbid(mbid: String) -> Result<Json<TheAudioDbResponse>, C
                         error: Some(e),
                     })
                 ))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Anything that is not an MBID is refused before it can reach the
+    /// upstream URL or a cache key, whether or not lookups are enabled.
+    #[test]
+    fn a_path_segment_that_is_not_an_mbid_is_a_bad_request() {
+        for bad in ["x", "../../search.php?s=a", "5b11f4ce-a62d-471e-81fc-a69a8278c7da&x=1"] {
+            match lookup_artist_by_mbid(bad.to_string()) {
+                Err(err) => assert_eq!(err.0, Status::BadRequest, "for {:?}", bad),
+                Ok(_) => panic!("{:?} must be refused", bad),
             }
         }
     }

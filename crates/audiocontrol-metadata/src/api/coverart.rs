@@ -280,6 +280,32 @@ fn decode_image(b64: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The name an artist route acts under, or `None` if there is nothing to act on.
+///
+/// Every artist route goes through this so they agree on the name: the
+/// settings key and the store directory are both built from it, and a route
+/// that skipped the trim would read or write under a key the others never
+/// touch. A name that sanitises to nothing is refused because the store would
+/// file it under an empty directory name -- `artists//custom.jpg`, shared by
+/// every such name.
+fn usable_artist_name(decoded: &str) -> Option<String> {
+    let name = decoded.trim();
+    if acr_types::sanitize::filename_from_string(name).is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// Whether `url` is something the remote-image download may fetch.
+///
+/// Only web addresses: the URL arrives from a client, and anything else is
+/// either unfetchable or a way to point the daemon at something that is not
+/// a web resource at all.
+fn is_remote_image_url(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| matches!(parsed.scheme(), "http" | "https"))
+}
+
 /// Upload one image for one artist.
 ///
 /// The bytes are decoded and validated before anything is written, stored as a
@@ -303,14 +329,14 @@ pub fn upload_artist_image(
         });
     };
 
-    let name = artist_name.trim();
-    if acr_types::sanitize::filename_from_string(name).is_empty() {
+    let Some(name) = usable_artist_name(&artist_name) else {
         return Json(UploadArtistImageResponse {
             success: false,
             id: None,
             message: "Empty artist name".to_string(),
         });
-    }
+    };
+    let name = name.as_str();
 
     let bytes = match decode_image(&request.image_base64) {
         Ok(bytes) => bytes,
@@ -358,10 +384,15 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
 
     debug!("Decoded artist name: {}", artist_name);
 
-    // Trimmed here as it is on the other three routes: the settings key is
-    // built from this name verbatim, so a padded name recorded its selection
-    // under a key the listing and the delete route would never read back.
-    let artist_name = artist_name.trim().to_string();
+    // Trimmed here as it is on the other routes: the settings key is built
+    // from this name verbatim, so a padded name recorded its selection under
+    // a key the listing and the delete route would never read back.
+    let Some(artist_name) = usable_artist_name(&artist_name) else {
+        return Json(UpdateImageResponse {
+            success: false,
+            message: "Empty artist name".to_string(),
+        });
+    };
 
     // One of our own image URLs selects that member instead of being fetched:
     // the daemon does not make HTTP requests to itself, and the bytes are
@@ -401,69 +432,74 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
         });
     }
 
-    // Store the custom URL in settings database
     let settings_key = format!("artist.image.{}", artist_name);
+
+    // An empty URL clears the selection; there is nothing to fetch.
+    if request.url.is_empty() {
+        return match settingsdb::set_string(&settings_key, "") {
+            Ok(_) => {
+                // The store's resolved-path memo for this artist is now about
+                // an image that is no longer the choice.
+                let store = crate::artist_store::get_artist_store();
+                store.lock().forget_memoised_path(&artist_name);
+                info!("Empty URL provided - custom image cleared for artist: {}", artist_name);
+                Json(UpdateImageResponse {
+                    success: true,
+                    message: format!("Artist image URL updated successfully for '{}'", artist_name),
+                })
+            }
+            Err(e) => {
+                error!("Failed to clear custom image URL for artist '{}': {}", artist_name, e);
+                Json(UpdateImageResponse {
+                    success: false,
+                    message: format!("Failed to update artist image: {}", e),
+                })
+            }
+        };
+    }
+
+    if !is_remote_image_url(&request.url) {
+        warn!("Refusing custom image URL for artist '{}': not an http(s) URL: {}", artist_name, request.url);
+        return Json(UpdateImageResponse {
+            success: false,
+            message: format!("'{}' is not an http or https URL", request.url),
+        });
+    }
+
+    // Downloaded before anything is recorded. The selection used to be written
+    // first and success reported whatever the download did, which left an
+    // artist pointing at a URL whose bytes never arrived and told the client
+    // it had worked. A download that fails, or that fetches something other
+    // than an image, now changes nothing: the previous selection stands.
+    debug!("Downloading custom image to user directory for artist: {}", artist_name);
+    let artist_store = crate::artist_store::get_artist_store();
+    let mut store_lock = artist_store.lock();
+
+    let cache_path = match store_lock.download_and_store_user_image(&artist_name, &request.url, "custom") {
+        crate::artist_store::ArtistImageResult::Found { cache_path } => cache_path,
+        crate::artist_store::ArtistImageResult::NotFound => {
+            warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
+            return Json(UpdateImageResponse {
+                success: false,
+                message: format!("No image could be downloaded from '{}'", request.url),
+            });
+        }
+        crate::artist_store::ArtistImageResult::Error(error) => {
+            warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);
+            return Json(UpdateImageResponse { success: false, message: error });
+        }
+    };
+
+    info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
+    // A re-download overwrites this same file but leaves any variants generated
+    // from the *previous* image beside it — drop those now so the grid does
+    // not keep showing the old face at thumbnail size.
+    acr_images::imageresize::remove_variants_of(&cache_path);
+
     debug!("Storing custom image URL in settings: key={}, url={}", settings_key, request.url);
-    
     match settingsdb::set_string(&settings_key, &request.url) {
         Ok(_) => {
             info!("Successfully stored custom image URL for artist '{}': {}", artist_name, request.url);
-
-            // The recorded selection has just changed, so the store's
-            // resolved-path memo for this artist is now about the previous
-            // image. Dropped here rather than in the branches below, because
-            // every one of them leaves it wrong: an empty URL clears the
-            // selection outright, and a download that fails leaves the artist
-            // pointing at a URL whose bytes never arrived. A download that
-            // succeeds re-populates the memo itself.
-            {
-                let store = crate::artist_store::get_artist_store();
-                let mut store_lock = store.lock();
-                store_lock.forget_memoised_path(&artist_name);
-            }
-
-            // Clear any cached image to force refresh
-            let cache_path = format!("artists/{}/cover.jpg", acr_types::url_encoding::encode_url_safe(&artist_name));
-            debug!("Attempting to clear cached image at: {}", cache_path);
-            
-            match std::fs::remove_file(&cache_path) {
-                Ok(_) => {
-                    debug!("Successfully cleared cached image for artist: {}", artist_name);
-                }
-                Err(e) => {
-                    debug!("No cached image to clear for artist '{}' ({}): {}", artist_name, cache_path, e);
-                }
-            }
-            
-            // If URL is not empty, try to trigger immediate download to user directory
-            if !request.url.is_empty() {
-                debug!("Attempting to trigger immediate download of custom image to user directory for artist: {}", artist_name);
-                
-                // Use the global artist store to download the image to user directory
-                let artist_store = crate::artist_store::get_artist_store();
-                let mut store_lock = artist_store.lock();
-                
-                match store_lock.download_and_store_user_image(&artist_name, &request.url, "custom") {
-                    crate::artist_store::ArtistImageResult::Found { cache_path } => {
-                        info!("Successfully downloaded and stored custom image in user directory for artist '{}': {}", artist_name, cache_path);
-                        // `cache_path` here is the real path the new image was just written to
-                        // (unlike the bogus one computed above for the dead `remove_file` call).
-                        // A re-upload overwrites this same file but leaves any variants generated
-                        // from the *previous* image beside it — drop those now so the grid does
-                        // not keep showing the old face at thumbnail size.
-                        acr_images::imageresize::remove_variants_of(&cache_path);
-                    }
-                    crate::artist_store::ArtistImageResult::NotFound => {
-                        warn!("Failed to download custom image for artist '{}' from URL: {}", artist_name, request.url);
-                    }
-                    crate::artist_store::ArtistImageResult::Error(error) => {
-                        warn!("Error downloading custom image for artist '{}' from URL {}: {}", artist_name, request.url, error);
-                    }
-                }
-            } else {
-                info!("Empty URL provided - custom image cleared for artist: {}", artist_name);
-            }
-            
             Json(UpdateImageResponse {
                 success: true,
                 message: format!("Artist image URL updated successfully for '{}'", artist_name),
@@ -471,6 +507,9 @@ pub fn update_artist_image(artist_b64: String, request: Json<UpdateImageRequest>
         }
         Err(e) => {
             error!("Failed to store custom image URL for artist '{}': {}", artist_name, e);
+            // The download memoised the new file as this artist's image, but
+            // the selection that would make it so was not recorded.
+            store_lock.forget_memoised_path(&artist_name);
             Json(UpdateImageResponse {
                 success: false,
                 message: format!("Failed to update artist image: {}", e),
@@ -596,10 +635,8 @@ pub fn get_artist_images(artist_b64: String) -> Result<Json<ArtistImagesResponse
     let artist_name = decode_url_safe(&artist_b64)
         .ok_or_else(|| Custom(Status::BadRequest, "Invalid artist name encoding".to_string()))?;
 
-    let artist_name = artist_name.trim().to_string();
-    if acr_types::sanitize::filename_from_string(&artist_name).is_empty() {
-        return Err(Custom(Status::BadRequest, "Empty artist name".to_string()));
-    }
+    let artist_name = usable_artist_name(&artist_name)
+        .ok_or_else(|| Custom(Status::BadRequest, "Empty artist name".to_string()))?;
 
     // Re-encoded from the trimmed name rather than echoing what arrived, so
     // the URL handed out is the one `local_image_id` will recognise when a
@@ -727,6 +764,8 @@ pub fn get_artist_image(
             ));
         }
     };
+    let artist_name = usable_artist_name(&artist_name)
+        .ok_or_else(|| Custom(Status::BadRequest, "Empty artist name".to_string()))?;
 
     // Try to get the cached image from the artist store, downloading it first
     // if nothing is cached yet.
@@ -775,6 +814,8 @@ pub fn get_artist_image_by_id(
             ));
         }
     };
+    let artist_name = usable_artist_name(&artist_name)
+        .ok_or_else(|| Custom(Status::BadRequest, "Empty artist name".to_string()))?;
 
     let cache_path = {
         let store = crate::artist_store::get_artist_store();
@@ -808,13 +849,12 @@ pub fn delete_artist_image_route(artist_b64: String, id: String) -> Json<UpdateI
         });
     };
 
-    let artist_name = artist_name.trim().to_string();
-    if acr_types::sanitize::filename_from_string(&artist_name).is_empty() {
+    let Some(artist_name) = usable_artist_name(&artist_name) else {
         return Json(UpdateImageResponse {
             success: false,
             message: "Empty artist name".to_string(),
         });
-    }
+    };
 
     let store = crate::artist_store::get_artist_store();
     let mut store_lock = store.lock();
@@ -1140,9 +1180,9 @@ mod tests {
 
         assert!(response.success, "{}", response.message);
         // The two branches reach `success: true` by different routes — the
-        // remote branch always reports "updated successfully" even when its
-        // background download fails, so the message is what actually pins
-        // down that selection (not a download attempt) is what happened.
+        // remote branch reports "updated successfully" after a download — so
+        // the message is what actually pins down that selection (not a
+        // download) is what happened.
         assert!(
             response.message.contains(&format!("Selected image '{}'", uploaded)),
             "expected a selection message, got: {}",
@@ -1238,35 +1278,127 @@ mod tests {
         }
     }
 
-    /// The same memo has to go when the download behind a new selection fails:
-    /// the artist is left pointing at a URL whose bytes never arrived, and the
-    /// previous image must not keep being served as though it were the choice.
+    /// A download that fails changes nothing: no selection is recorded for a
+    /// URL whose bytes never arrived, the caller is told it failed, and the
+    /// image that was selected before is still the one served.
     #[test]
     #[serial]
-    fn a_failed_download_does_not_leave_the_previous_image_memoised() {
-        let artist = "Memo Failed Download Artist";
+    fn a_failed_download_is_reported_and_leaves_the_previous_selection() {
+        let artist = "Failed Download Artist";
         let id = upload_artist_image_for(artist, &b64(&alpha_png(400, 400))).id.unwrap();
 
+        // Port 1 needs no listener to be refused, and the refusal is immediate.
+        let response = update_artist_image_for(artist, "http://127.0.0.1:1/portrait.jpg");
+
+        assert!(!response.success, "a download that failed is not a success: {}", response.message);
         let store = crate::artist_store::get_artist_store();
-        {
-            let mut store_lock = store.lock();
-            let crate::artist_store::ArtistImageResult::Found { cache_path } =
-                store_lock.get_cached_image(artist)
-            else {
-                panic!("the uploaded image should resolve");
-            };
-            assert!(cache_path.contains(&id));
-        }
-
-        // Not a URL at all: the HTTP client rejects it without any network I/O,
-        // which is the download-failure branch this test is about.
-        update_artist_image_for(artist, "definitely-not-a-url");
-
         let mut store_lock = store.lock();
-        if let crate::artist_store::ArtistImageResult::Found { cache_path } =
+        assert_eq!(store_lock.selected_image_id(artist).as_deref(), Some(id.as_str()));
+        let crate::artist_store::ArtistImageResult::Found { cache_path } =
             store_lock.get_cached_image(artist)
-        {
-            panic!("the previous image must not survive a failed download, got: {}", cache_path);
+        else {
+            panic!("the previous image should still resolve");
+        };
+        assert!(cache_path.contains(&id), "the previous image is still what is served");
+    }
+
+    /// Only web addresses are fetched. Anything else is refused before any
+    /// request is made, and nothing is recorded for it.
+    #[test]
+    #[serial]
+    fn updating_with_a_url_that_is_not_http_is_refused() {
+        let artist = "Not Http Artist";
+        for url in ["definitely-not-a-url", "file:///etc/hostname", "ftp://example.test/a.jpg"] {
+            let response = update_artist_image_for(artist, url);
+            assert!(!response.success, "{} must be refused: {}", url, response.message);
+        }
+        assert_eq!(
+            settingsdb::get_string(&format!("artist.image.{}", artist)).ok().flatten(),
+            None,
+            "a refused URL must not have been recorded"
+        );
+    }
+
+    /// The URL is client-supplied and the stored file is served back through
+    /// the image route, so a body that is not an image must be neither stored
+    /// nor selected -- otherwise any HTTP response the daemon can reach could
+    /// be read out through it, and a dead link's error page would be kept as
+    /// the artist's picture.
+    #[test]
+    #[serial]
+    fn a_download_that_is_not_an_image_is_refused_without_storing_anything() {
+        use crate::external_coverart::stub_server::StubServer;
+        let artist = "Not An Image Artist";
+        let server = StubServer::serving(200, r#"{"secret":"internal"}"#);
+
+        let response = update_artist_image_for(artist, &server.url());
+
+        assert!(!response.success, "got: {}", response.message);
+        assert_eq!(
+            settingsdb::get_string(&format!("artist.image.{}", artist)).ok().flatten(),
+            None,
+            "a URL that did not yield an image must not be selected"
+        );
+        let store = crate::artist_store::get_artist_store();
+        let custom = store.lock().get_artist_user_image_path(artist, "custom");
+        assert!(!std::path::Path::new(&custom).exists(), "the body must not have been stored");
+    }
+
+    /// The remote branch end to end: an image is downloaded, stored as
+    /// `custom`, and only then recorded as the selection.
+    #[test]
+    #[serial]
+    fn a_downloaded_image_is_stored_and_selected() {
+        use crate::external_coverart::stub_server::{Canned, StubServer};
+        let artist = "Remote Download Artist";
+        let bytes = alpha_png(64, 64);
+        let server = StubServer::queued(vec![Canned::bytes(200, "image/png", bytes.clone())]);
+
+        let response = update_artist_image_for(artist, &server.url());
+
+        assert!(response.success, "{}", response.message);
+        assert_eq!(
+            settingsdb::get_string(&format!("artist.image.{}", artist)).ok().flatten(),
+            Some(server.url())
+        );
+        let store = crate::artist_store::get_artist_store();
+        let custom = store.lock().get_artist_user_image_path(artist, "custom");
+        assert_eq!(std::fs::read(&custom).expect("custom.jpg is written"), bytes);
+    }
+
+    #[test]
+    #[serial]
+    fn updating_for_a_name_that_sanitises_to_nothing_is_refused() {
+        let response = update_artist_image_for("!!!", "https://provider.test/portrait.jpg");
+        assert!(!response.success);
+        assert!(response.message.contains("Empty"), "got: {}", response.message);
+    }
+
+    /// The serving routes act under the same trimmed name as the routes that
+    /// store, so a padded name finds what was stored for it.
+    #[test]
+    #[serial]
+    fn by_id_serves_a_member_under_a_padded_name() {
+        let padded = "  Padded Serve Artist  ";
+        let id = upload_artist_image_for(padded, &b64(&alpha_png(64, 64))).id.unwrap();
+        let b64_artist = acr_types::url_encoding::encode_url_safe(padded);
+
+        let result = get_artist_image_by_id(b64_artist, id, None, acr_web::imageresponse::IfNoneMatch(None));
+        assert!(result.is_ok(), "a padded name must resolve to the same artist");
+    }
+
+    #[test]
+    #[serial]
+    fn serving_for_a_name_that_sanitises_to_nothing_is_refused() {
+        init_test_artist_store();
+        let b64_artist = acr_types::url_encoding::encode_url_safe("!!!");
+        match get_artist_image(b64_artist.clone(), None, acr_web::imageresponse::IfNoneMatch(None)) {
+            Err(err) => assert_eq!(err.0, rocket::http::Status::BadRequest),
+            Ok(_) => panic!("a name that sanitises to nothing must be refused"),
+        }
+        match get_artist_image_by_id(b64_artist, "custom".to_string(), None, acr_web::imageresponse::IfNoneMatch(None)) {
+            Err(err) => assert_eq!(err.0, rocket::http::Status::BadRequest),
+            Ok(_) => panic!("a name that sanitises to nothing must be refused"),
         }
     }
 

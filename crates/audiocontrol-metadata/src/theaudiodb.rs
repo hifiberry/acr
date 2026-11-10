@@ -5,6 +5,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde_json::{Value};
 use acr_types::config::get_service_config;
+use acr_types::sanitize;
 use acr_http::http_client;
 use acr_store::attributecache;
 use acr_http::ratelimit;
@@ -57,7 +58,7 @@ pub fn initialize_from_config(config: &serde_json::Value) {
                 let mut config = THEAUDIODB_CONFIG.lock();
                 debug!("Found TheAudioDB API key in config: {}",
                        if !api_key.is_empty() && api_key.len() > 4 {
-                           format!("{}...", &api_key[0..4])
+                           format!("{}...", sanitize::safe_truncate(api_key, 4))
                        } else {
                            "Empty".to_string()
                        });
@@ -70,7 +71,7 @@ pub fn initialize_from_config(config: &serde_json::Value) {
                     let default_key = default_theaudiodb_api_key();
                     debug!("Trying default TheAudioDB API key: {}",
                             if default_key != "YOUR_API_KEY_HERE" && default_key.len() > 4 {
-                                format!("{}...", &default_key[0..4])
+                                format!("{}...", sanitize::safe_truncate(&default_key, 4))
                             } else {
                                 "Not available".to_string()
                             });

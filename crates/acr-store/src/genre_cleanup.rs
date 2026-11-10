@@ -62,7 +62,12 @@ fn merge_configs(system: Option<&GenreConfig>, user: Option<&GenreConfig>) -> Ge
     }
 
     if let Some(usr) = user {
-        // User mappings override system mappings
+        // User mappings override system mappings. Lookups are by lowercased
+        // name, so a system "Hip-Hop" and a user "hip-hop" are the same
+        // mapping: the system spelling has to go, or both survive the merge
+        // and which one is used depends on the map's iteration order.
+        let user_keys: HashSet<String> = usr.mappings.keys().map(|k| k.to_lowercase()).collect();
+        merged.mappings.retain(|k, _| !user_keys.contains(&k.to_lowercase()));
         merged.mappings.extend(usr.mappings.clone());
         for ig in &usr.ignore {
             if !merged.ignore.contains(ig) {
@@ -314,14 +319,43 @@ pub fn get_user_config() -> GenreConfig {
     GenreConfig::default()
 }
 
+/// Read the user config at `path` as the starting point for a change to it.
+///
+/// A missing file is an empty config. A file that is there but cannot be read
+/// or parsed is an error, unlike in `get_user_config`: the caller is about to
+/// write back what this returns plus one edit, and handing it a default would
+/// replace everything the user had with that single entry.
+fn read_user_config_for_update(path: &Path) -> Result<GenreConfig, Box<dyn std::error::Error>> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(GenreConfig::default()),
+        Err(e) => return Err(format!("Failed to read user genre config {}: {}", path.display(), e).into()),
+    };
+    serde_json::from_str::<GenreConfig>(&content).map_err(|e| {
+        format!(
+            "User genre config {} is not valid and was left unchanged: {}",
+            path.display(),
+            e
+        )
+        .into()
+    })
+}
+
+/// Write `config` to `path` through a temporary file and a rename, so the
+/// file is never left truncated or half-written.
+fn write_user_config(path: &Path, config: &GenreConfig) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(config)?;
+    crate::imagecache::write_file_atomically(path, json.as_bytes())?;
+    Ok(())
+}
+
 /// Save a new user config to disk and reload the global instance
 pub fn save_user_config(config: GenreConfig) -> Result<(), Box<dyn std::error::Error>> {
     let u_path = user_config_path();
-    if let Some(parent) = u_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(&config)?;
-    fs::write(&u_path, json)?;
+    write_user_config(&u_path, &config)?;
     debug!("Saved user genre config to {}", u_path.display());
 
     // Reload the global instance
@@ -339,21 +373,21 @@ pub fn save_user_config(config: GenreConfig) -> Result<(), Box<dyn std::error::E
 
 /// Add or update a mapping in the user config
 pub fn set_genre_mapping(from: String, to: String) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cfg = get_user_config();
+    let mut cfg = read_user_config_for_update(&user_config_path())?;
     cfg.mappings.insert(from, to);
     save_user_config(cfg)
 }
 
 /// Remove a mapping from the user config
 pub fn delete_genre_mapping(from: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cfg = get_user_config();
+    let mut cfg = read_user_config_for_update(&user_config_path())?;
     cfg.mappings.remove(from);
     save_user_config(cfg)
 }
 
 /// Add a genre to the user ignore list
 pub fn add_genre_ignore(genre: String) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cfg = get_user_config();
+    let mut cfg = read_user_config_for_update(&user_config_path())?;
     if !cfg.ignore.contains(&genre) {
         cfg.ignore.push(genre);
     }
@@ -362,7 +396,7 @@ pub fn add_genre_ignore(genre: String) -> Result<(), Box<dyn std::error::Error>>
 
 /// Remove a genre from the user ignore list
 pub fn remove_genre_ignore(genre: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cfg = get_user_config();
+    let mut cfg = read_user_config_for_update(&user_config_path())?;
     cfg.ignore.retain(|g| g != genre);
     save_user_config(cfg)
 }
@@ -475,6 +509,92 @@ mod tests {
         let cleanup = GenreCleanup::from_config_file(temp_file.path()).unwrap();
         assert_eq!(cleanup.clean_genre("seen live"), None);
         assert_eq!(cleanup.clean_genre("hip hop"), Some("hip-hop".to_string()));
+    }
+
+    fn config_with_mappings(pairs: &[(&str, &str)]) -> GenreConfig {
+        GenreConfig {
+            comment: None,
+            ignore: Vec::new(),
+            mappings: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        }
+    }
+
+    /// The user's mapping wins whatever case either side spelled the genre
+    /// in. Many keys, because with a single colliding pair the old behaviour
+    /// was right about half the time.
+    #[test]
+    fn test_user_mapping_wins_regardless_of_case() {
+        let names: Vec<String> = (0..50).map(|i| format!("Genre-{}", i)).collect();
+        let system = GenreConfig {
+            comment: None,
+            ignore: Vec::new(),
+            mappings: names.iter().map(|n| (n.clone(), "system".to_string())).collect(),
+        };
+        let user = GenreConfig {
+            comment: None,
+            ignore: Vec::new(),
+            mappings: names.iter().map(|n| (n.to_lowercase(), "user".to_string())).collect(),
+        };
+
+        let merged = merge_configs(Some(&system), Some(&user));
+        assert_eq!(merged.mappings.len(), names.len());
+
+        let cleanup = GenreCleanup::from_configs(Some(system), Some(user), None, PathBuf::from("unused"));
+        for name in &names {
+            assert_eq!(cleanup.clean_genre(name), Some("user".to_string()), "{}", name);
+        }
+    }
+
+    #[test]
+    fn test_system_only_mappings_survive_a_case_insensitive_merge() {
+        let system = config_with_mappings(&[("Hip-Hop", "Hip Hop"), ("Rock n Roll", "Rock")]);
+        let user = config_with_mappings(&[("hip-hop", "Rap")]);
+
+        let merged = merge_configs(Some(&system), Some(&user));
+
+        assert_eq!(merged.mappings.get("hip-hop"), Some(&"Rap".to_string()));
+        assert_eq!(merged.mappings.get("Hip-Hop"), None);
+        assert_eq!(merged.mappings.get("Rock n Roll"), Some(&"Rock".to_string()));
+    }
+
+    #[test]
+    fn test_a_missing_user_config_is_an_empty_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = read_user_config_for_update(&dir.path().join("genres.json")).unwrap();
+        assert!(cfg.mappings.is_empty());
+        assert!(cfg.ignore.is_empty());
+    }
+
+    /// An edit starts from what is on disk. If that cannot be parsed the edit
+    /// has to fail, or it would write back a config holding nothing but the
+    /// one new entry.
+    #[test]
+    fn test_an_invalid_user_config_is_an_error_and_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("genres.json");
+        let damaged = r#"{"mappings": {"hip hop": "Hip-Hop","#;
+        fs::write(&path, damaged).unwrap();
+
+        assert!(read_user_config_for_update(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), damaged);
+    }
+
+    #[test]
+    fn test_user_config_round_trips_and_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/genres.json");
+
+        let first = config_with_mappings(&[("hip hop", "Hip-Hop")]);
+        write_user_config(&path, &first).unwrap();
+        let second = config_with_mappings(&[("hip hop", "Hip-Hop"), ("rap", "Hip-Hop")]);
+        write_user_config(&path, &second).unwrap();
+
+        let read = read_user_config_for_update(&path).unwrap();
+        assert_eq!(read.mappings, second.mappings);
+        let names: Vec<_> = fs::read_dir(path.parent().unwrap()).unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("genres.json")]);
     }
 
     #[test]

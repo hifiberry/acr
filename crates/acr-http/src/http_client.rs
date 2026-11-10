@@ -440,16 +440,7 @@ impl HttpClient for UreqHttpClient {
         
         // Add all headers to the request
         for &(name, value) in headers {
-            debug!("Adding header '{}': '{}'", name, if name == "Authorization" { 
-                // Don't log full auth token but show the first few characters
-                if value.len() > 15 {
-                    format!("{}...", &value[0..15])
-                } else {
-                    "[hidden]".to_string()
-                }
-            } else { 
-                value.to_string() 
-            });
+            debug!("Adding header '{}': '{}'", name, loggable_header_value(name, value));
             request = request.set(name, value);
         }
         
@@ -509,7 +500,7 @@ impl HttpClient for UreqHttpClient {
             Err(e) => {
                 // Log the actual response content (truncated if too large)
                 let truncated_response = if response_text.len() > 500 {
-                    format!("{}... (truncated, total length: {} bytes)", &response_text[0..500], response_text.len())
+                    format!("{}... (truncated, total length: {} bytes)", truncate_at_char_boundary(&response_text, 500), response_text.len())
                 } else {
                     response_text.clone()
                 };
@@ -541,9 +532,7 @@ impl HttpClient for UreqHttpClient {
         let agent = Self::agent_for(headers);
         let mut request = agent.post(url).timeout(self.timeout);
         for &(name, value) in headers {
-            debug!("Adding header '{}': '{}'", name, if name == "Authorization" {
-                if value.len() > 15 { format!("{}...", &value[0..15]) } else { "[hidden]".to_string() }
-            } else { value.to_string() });
+            debug!("Adding header '{}': '{}'", name, loggable_header_value(name, value));
             request = request.set(name, value);
         }
 
@@ -598,9 +587,7 @@ impl HttpClient for UreqHttpClient {
         let agent = Self::agent_for(headers);
         let mut request = agent.put(url).timeout(self.timeout);
         for &(name, value) in headers {
-            debug!("Adding header '{}': '{}'", name, if name == "Authorization" {
-                if value.len() > 15 { format!("{}...", &value[0..15]) } else { "[hidden]".to_string() }
-            } else { value.to_string() });
+            debug!("Adding header '{}': '{}'", name, loggable_header_value(name, value));
             request = request.set(name, value);
         }
 
@@ -640,6 +627,41 @@ impl HttpClient for UreqHttpClient {
     }
 }
 
+/// The longest prefix of `text` that is at most `max_bytes` long and ends on
+/// a character boundary.
+///
+/// Slicing a `&str` at a fixed byte offset panics when that offset falls
+/// inside a multi-byte character, and a response body is not ours to
+/// constrain: any non-ASCII text near the cut would take the daemon down.
+fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// What may be written to the log for a request header's value.
+///
+/// Credentials travel under more names than `Authorization` -- the proxy
+/// secret, API keys, session cookies -- and a debug log is routinely pasted
+/// into a bug report, so any header whose name looks like one is hidden
+/// whole. Not even a prefix is shown: for a short token a prefix is most of
+/// the secret.
+fn loggable_header_value<'a>(name: &str, value: &'a str) -> &'a str {
+    let name = name.to_ascii_lowercase();
+    let is_credential = name.contains("authorization")
+        || ["secret", "token", "key", "cookie"].iter().any(|word| name.contains(word));
+    if is_credential {
+        "[hidden]"
+    } else {
+        value
+    }
+}
+
 /// Create a new HTTP client using the default implementation
 pub fn new_http_client(timeout_secs: u64) -> Box<dyn HttpClient> {
     Box::new(UreqHttpClient::new(timeout_secs))
@@ -647,6 +669,52 @@ pub fn new_http_client(timeout_secs: u64) -> Box<dyn HttpClient> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncation_never_cuts_inside_a_character() {
+        assert_eq!(truncate_at_char_boundary("hello", 500), "hello");
+        assert_eq!(truncate_at_char_boundary("hello", 3), "hel");
+        // Each of these characters is three bytes, so byte 4 is mid-character.
+        assert_eq!(truncate_at_char_boundary("\u{4e16}\u{754c}", 4), "\u{4e16}");
+        assert_eq!(truncate_at_char_boundary("\u{4e16}\u{754c}", 2), "");
+    }
+
+    #[test]
+    fn credential_headers_are_hidden_from_the_log_whatever_their_case() {
+        for name in [
+            "Authorization",
+            "authorization",
+            "Proxy-Authorization",
+            "X-Proxy-Secret",
+            "X-Auth-Token",
+            "X-API-Key",
+            "apikey",
+            "Cookie",
+            "Set-Cookie",
+        ] {
+            let shown = loggable_header_value(name, "Bearer s3cr3t-value-0123456789");
+            assert_eq!(shown, "[hidden]", "{} leaked", name);
+        }
+        assert_eq!(loggable_header_value("Accept", "application/json"), "application/json");
+        assert_eq!(loggable_header_value("User-Agent", "AudioControl"), "AudioControl");
+    }
+
+    /// A body that is not JSON is quoted in the error log, cut at 500 bytes.
+    /// With a multi-byte character straddling that offset the cut used to
+    /// panic instead of returning the parse error.
+    #[test]
+    fn an_unparsable_body_with_a_multibyte_character_at_the_cut_is_an_error_not_a_panic() {
+        let mut body = "x".repeat(499);
+        body.push_str(&"\u{4e16}".repeat(10));
+        let (port, _rx) = serve_once(200, "application/json", body.into_bytes());
+        let client = UreqHttpClient::new(5);
+
+        let result = client.get_json_with_headers(
+            &format!("http://127.0.0.1:{}/j", port),
+            &[("Accept", "application/json")],
+        );
+        assert!(matches!(result, Err(HttpClientError::ParseError(_))), "got {:?}", result);
+    }
 
     /// A local one-shot server, so the test exercises ureq rather than a mock.
     fn serve_once(status: u16, content_type: &str, body: Vec<u8>) -> (u16, std::sync::mpsc::Receiver<String>) {

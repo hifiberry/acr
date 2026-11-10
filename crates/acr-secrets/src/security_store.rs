@@ -15,7 +15,7 @@
 //!   daemon: `lastfm_session_key`, `lastfm_username`.
 //!
 //! The reason is `save_to_file`: it serialises the *whole* in-memory
-//! map and writes it with a truncating `File::create`. A process that loads
+//! map and replaces the file with it. A process that loads
 //! its copy at start-up and later writes a key it does not own will, on that
 //! write, silently erase any key the *owning* daemon had written to that file
 //! since -- there is no error, no lock, no merge. A Spotify refresh lost this
@@ -218,6 +218,17 @@ impl SecurityStore {
                 Ok(_) => info!("Security store loaded from {}", store.file_path.read().display()),
                 Err(e) => {
                     warn!("Failed to load security store: {}", e);
+                    // The store starts empty, and the first `set` after this
+                    // replaces the file with that empty map plus one key. Left
+                    // in place, a file that merely failed to parse -- a torn
+                    // write, a stray edit -- would lose every credential in it
+                    // at that moment. Moved aside it can still be recovered.
+                    let path = store.file_path.read().clone();
+                    let aside = sibling_path(&path, ".corrupt");
+                    match fs::rename(&path, &aside) {
+                        Ok(_) => warn!("Moved the unreadable security store to {}", aside.display()),
+                        Err(e) => warn!("Could not move the unreadable security store aside: {}", e),
+                    }
                     warn!("Starting with empty security store");
                 }
             }
@@ -381,9 +392,26 @@ impl SecurityStore {
         // Serialize to pretty JSON for better readability
         let json_string = serde_json::to_string_pretty(&*data)?;
 
-        // Write to file
-        let mut file = File::create(&*file_path)?;
-        file.write_all(json_string.as_bytes())?;
+        // Write to a sibling and rename it over the store. Truncating the
+        // live file and filling it in place leaves an empty or half-written
+        // store behind if the process dies or the disk fills in between, and
+        // the next start-up would then find nothing it can parse.
+        let tmp_path = sibling_path(&file_path, ".tmp");
+        let written = (|| -> std::io::Result<()> {
+            let mut file = File::create(&tmp_path)?;
+            // A truncating write kept whatever mode the store already had, so
+            // the replacement carries it over.
+            if let Ok(existing) = fs::metadata(&*file_path) {
+                fs::set_permissions(&tmp_path, existing.permissions())?;
+            }
+            file.write_all(json_string.as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&tmp_path, &*file_path)
+        })();
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
 
         debug!("Security store saved to {}", file_path.display());
         Ok(())
@@ -551,6 +579,15 @@ impl SecurityStore {
         info!("Security store cleared");
         Ok(())
     }
+}
+
+// `path` with `suffix` appended to its file name, so the result sits next to
+// it in the same directory (and therefore on the same filesystem, which is
+// what makes a rename between the two atomic).
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 // Helper function to set the module path to a default location
@@ -738,6 +775,81 @@ mod tests {
 
         SecurityStore::initialize("test-key", Some(path)).unwrap();
         assert_eq!(SecurityStore::get("fixture::probe").unwrap(), "kept");
+    }
+
+    /// A store that does not parse must survive the daemon starting on it:
+    /// the store comes up empty, and the first write after that replaces the
+    /// file, so the unreadable one has to have been moved out of the way.
+    #[test]
+    fn an_unparsable_store_is_moved_aside_rather_than_overwritten() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        {
+            let store = SECURITY_STORE.clone();
+            *store.initialized.lock() = false;
+            *store.encryption_key.write() = String::new();
+            *store.cipher.lock() = None;
+            *store.data.lock() = SecurityStoreData::default();
+        }
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("security_store.json");
+        let damaged = r#"{"values": {"spotify_refresh_token": "AAAA"#;
+        std::fs::write(&path, damaged).unwrap();
+
+        SecurityStore::initialize("test-key", Some(path.clone())).unwrap();
+        SecurityStore::set("new_key", "value").unwrap();
+
+        let aside = dir.path().join("security_store.json.corrupt");
+        assert_eq!(std::fs::read_to_string(&aside).unwrap(), damaged);
+        // The new store is a valid one holding only what was written to it.
+        assert_eq!(
+            store_get(&daemon_store(&path), "new_key").as_deref(),
+            Some("value")
+        );
+    }
+
+    /// A save goes through a sibling file that is renamed into place, leaves
+    /// nothing behind, and keeps the mode the store had.
+    #[test]
+    fn a_save_replaces_the_file_and_keeps_its_mode() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("security_store.json");
+
+        let store = daemon_store(&path);
+        store_set(&store, "key", "first");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        store_set(&store, "key", "second");
+
+        assert!(!dir.path().join("security_store.json.tmp").exists());
+        assert_eq!(store_get(&daemon_store(&path), "key").as_deref(), Some("second"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    /// A failed save must leave the previous store intact. The sibling's
+    /// name is taken by a directory here, so the write cannot even begin.
+    #[test]
+    fn a_failed_save_leaves_the_previous_store_readable() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("security_store.json");
+
+        let store = daemon_store(&path);
+        store_set(&store, "key", "kept");
+
+        std::fs::create_dir(dir.path().join("security_store.json.tmp")).unwrap();
+        let encrypted = store.encrypt_value("lost").unwrap();
+        store.data.lock().values.insert("key".to_string(), encrypted);
+        assert!(store.save_to_file().is_err());
+
+        assert_eq!(store_get(&daemon_store(&path), "key").as_deref(), Some("kept"));
     }
 
     /// Builds one daemon's own `SecurityStore`, independent of the

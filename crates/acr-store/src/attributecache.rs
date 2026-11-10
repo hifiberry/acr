@@ -8,6 +8,14 @@ use rusqlite::{Connection, params};
 use lru::LruCache;
 use std::num::NonZeroUsize;
 
+/// The SQL condition every prefix operation filters with; `?1` is the prefix.
+///
+/// Not `key LIKE ?1 || '%'`: in a LIKE pattern `_` and `%` are wildcards and
+/// ASCII letters match either case, while cache keys are full of underscores
+/// and are case-sensitive everywhere else. Removing `artist_a` by prefix would
+/// take `artistXa...` and `Artist_A...` with it.
+const KEY_HAS_PREFIX: &str = "substr(key, 1, length(?1)) = ?1";
+
 /// Parse a size string that can be:
 /// - A simple number (bytes)
 /// - A string like "100K", "200M", "18kB", "189MB", "1G"
@@ -23,19 +31,27 @@ pub fn parse_size_string(size_str: &str) -> Result<usize, String> {
     let size_str_upper = size_str.to_uppercase();
     
     // Handle different unit formats
-    let (number_str, multiplier) = if size_str_upper.ends_with("KB") || size_str_upper.ends_with("KIB") {
+    let (number_str, multiplier) = if size_str_upper.ends_with("KIB") {
+        (&size_str_upper[..size_str_upper.len()-3], 1024)
+    } else if size_str_upper.ends_with("KB") {
         (&size_str_upper[..size_str_upper.len()-2], 1024)
     } else if size_str_upper.ends_with("K") {
         (&size_str_upper[..size_str_upper.len()-1], 1024)
-    } else if size_str_upper.ends_with("MB") || size_str_upper.ends_with("MIB") {
+    } else if size_str_upper.ends_with("MIB") {
+        (&size_str_upper[..size_str_upper.len()-3], 1024 * 1024)
+    } else if size_str_upper.ends_with("MB") {
         (&size_str_upper[..size_str_upper.len()-2], 1024 * 1024)
     } else if size_str_upper.ends_with("M") {
         (&size_str_upper[..size_str_upper.len()-1], 1024 * 1024)
-    } else if size_str_upper.ends_with("GB") || size_str_upper.ends_with("GIB") {
+    } else if size_str_upper.ends_with("GIB") {
+        (&size_str_upper[..size_str_upper.len()-3], 1024 * 1024 * 1024)
+    } else if size_str_upper.ends_with("GB") {
         (&size_str_upper[..size_str_upper.len()-2], 1024 * 1024 * 1024)
     } else if size_str_upper.ends_with("G") {
         (&size_str_upper[..size_str_upper.len()-1], 1024 * 1024 * 1024)
-    } else if size_str_upper.ends_with("TB") || size_str_upper.ends_with("TIB") {
+    } else if size_str_upper.ends_with("TIB") {
+        (&size_str_upper[..size_str_upper.len()-3], 1024_usize.pow(4))
+    } else if size_str_upper.ends_with("TB") {
         (&size_str_upper[..size_str_upper.len()-2], 1024_usize.pow(4))
     } else if size_str_upper.ends_with("T") {
         (&size_str_upper[..size_str_upper.len()-1], 1024_usize.pow(4))
@@ -780,11 +796,10 @@ impl AttributeCache {
         
         match prefix_filter {
             Some(prefix) => {
-                let pattern = format!("{}%", prefix);
-                let mut stmt = db.prepare("SELECT key FROM cache WHERE key LIKE ?1 ORDER BY key")
+                let mut stmt = db.prepare(&format!("SELECT key FROM cache WHERE {} ORDER BY key", KEY_HAS_PREFIX))
                     .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
                 
-                let rows = stmt.query_map(params![pattern], |row: &rusqlite::Row| {
+                let rows = stmt.query_map(params![prefix], |row: &rusqlite::Row| {
                     row.get::<_, String>(0)
                 }).map_err(|e| format!("Failed to execute list query: {}", e))?;
                 
@@ -824,11 +839,10 @@ impl AttributeCache {
 
         match prefix_filter {
             Some(prefix) => {
-                let pattern = format!("{}%", prefix);
-                let mut stmt = db.prepare("SELECT key, LENGTH(value) as size, created_at, updated_at, expires_at FROM cache WHERE key LIKE ?1 ORDER BY key")
+                let mut stmt = db.prepare(&format!("SELECT key, LENGTH(value) as size, created_at, updated_at, expires_at FROM cache WHERE {} ORDER BY key", KEY_HAS_PREFIX))
                     .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
                 
-                let rows = stmt.query_map(params![pattern], |row: &rusqlite::Row| {
+                let rows = stmt.query_map(params![prefix], |row: &rusqlite::Row| {
                     Ok(CacheEntry {
                         key: row.get::<_, String>(0)?,
                         size_bytes: row.get::<_, i64>(1)? as usize,
@@ -877,13 +891,11 @@ impl AttributeCache {
         let db = self.db.as_ref()
             .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
 
-        let pattern = format!("{}%", prefix);
-
         // First, get the keys to remove from memory cache
-        let mut stmt = db.prepare("SELECT key FROM cache WHERE key LIKE ?1")
+        let mut stmt = db.prepare(&format!("SELECT key FROM cache WHERE {}", KEY_HAS_PREFIX))
             .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
         
-        let rows = stmt.query_map(params![pattern], |row| {
+        let rows = stmt.query_map(params![prefix], |row| {
             row.get::<_, String>(0)
         }).map_err(|e| format!("Failed to execute select query: {}", e))?;
 
@@ -893,13 +905,19 @@ impl AttributeCache {
             keys_to_remove.push(key);
         }
 
-        // Remove from memory cache
+        // Remove from memory cache, giving back the bytes each entry was
+        // counted for. Without that the counter only ever grows here, and
+        // eviction then throws out live entries to make room for ones that
+        // are already gone.
         for key in &keys_to_remove {
-            self.memory_cache.pop(key);
+            if let Some(removed_value) = self.memory_cache.pop(key) {
+                let item_size = key.len() + removed_value.len();
+                self.current_memory_bytes = self.current_memory_bytes.saturating_sub(item_size);
+            }
         }
 
         // Remove from database
-        let deleted = db.execute("DELETE FROM cache WHERE key LIKE ?1", params![pattern])
+        let deleted = db.execute(&format!("DELETE FROM cache WHERE {}", KEY_HAS_PREFIX), params![prefix])
             .map_err(|e| format!("Failed to delete from database: {}", e))?;
 
         debug!("Removed {} cache entries with prefix '{}'", deleted, prefix);
@@ -926,12 +944,10 @@ impl AttributeCache {
         let db = self.db.as_ref()
             .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
 
-        let pattern = format!("{}%", prefix);
-
-        let mut stmt = db.prepare("SELECT key, value FROM cache WHERE key LIKE ?1")
+        let mut stmt = db.prepare(&format!("SELECT key, value FROM cache WHERE {}", KEY_HAS_PREFIX))
             .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
         
-        let rows = stmt.query_map(params![pattern], |row| {
+        let rows = stmt.query_map(params![prefix], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Vec<u8>>(1)?
@@ -1149,6 +1165,73 @@ mod tests {
         assert!(parse_size_string("-100").is_err());
         assert!(parse_size_string("-1M").is_err());
         assert!(parse_size_string("").is_err());
+    }
+
+    #[test]
+    fn test_parse_size_string_every_suffix() {
+        let kib = 1024usize;
+        let cases = [
+            ("K", kib), ("KB", kib), ("KiB", kib),
+            ("M", kib.pow(2)), ("MB", kib.pow(2)), ("MiB", kib.pow(2)),
+            ("G", kib.pow(3)), ("GB", kib.pow(3)), ("GiB", kib.pow(3)),
+            ("T", kib.pow(4)), ("TB", kib.pow(4)), ("TiB", kib.pow(4)),
+            ("B", 1),
+        ];
+        for (suffix, multiplier) in cases {
+            for spelling in [suffix.to_string(), suffix.to_lowercase(), suffix.to_uppercase()] {
+                let input = format!("100{}", spelling);
+                assert_eq!(parse_size_string(&input), Ok(100 * multiplier), "{}", input);
+            }
+        }
+        assert_eq!(parse_size_string("1.5MiB").unwrap(), (1.5 * 1024.0 * 1024.0) as usize);
+        // A suffix with no number in front of it is still an error.
+        assert!(parse_size_string("MiB").is_err());
+        assert!(parse_size_string("iB").is_err());
+    }
+
+    /// `_` and `%` in a prefix stand for themselves, and letter case counts,
+    /// exactly as they do for a lookup by full key.
+    #[test]
+    fn test_prefix_operations_match_the_prefix_literally() {
+        let (mut cache, _temp_dir) = create_test_cache();
+        for key in ["artist_a::1", "artistXa::2", "Artist_a::3", "artist%a::4", "artist_b::5"] {
+            cache.set(key, "v").unwrap();
+        }
+
+        assert_eq!(cache.list_keys(Some("artist_a")).unwrap(), vec!["artist_a::1"]);
+        assert_eq!(cache.list_keys(Some("artist%")).unwrap(), vec!["artist%a::4"]);
+        assert_eq!(cache.list_keys(Some("Artist")).unwrap(), vec!["Artist_a::3"]);
+        assert_eq!(cache.list_keys(Some("")).unwrap().len(), 5);
+
+        let listed: Vec<String> = cache.list_entries(Some("artist_a")).unwrap()
+            .into_iter().map(|e| e.key).collect();
+        assert_eq!(listed, vec!["artist_a::1"]);
+
+        assert_eq!(cache.preload_prefix("artist_a").unwrap(), 1);
+
+        assert_eq!(cache.remove_by_prefix("artist_a").unwrap(), 1);
+        assert_eq!(
+            cache.list_keys(None).unwrap(),
+            vec!["Artist_a::3", "artist%a::4", "artistXa::2", "artist_b::5"]
+        );
+    }
+
+    #[test]
+    fn test_remove_by_prefix_gives_back_the_memory_it_frees() {
+        let (mut cache, _temp_dir) = create_test_cache();
+        cache.set("keep::1", "kept").unwrap();
+        let kept_bytes = cache.current_memory_bytes;
+        assert!(kept_bytes > 0);
+
+        cache.set("drop::1", "some value").unwrap();
+        cache.set("drop::2", "another value").unwrap();
+        assert!(cache.current_memory_bytes > kept_bytes);
+
+        assert_eq!(cache.remove_by_prefix("drop::").unwrap(), 2);
+        assert_eq!(cache.current_memory_bytes, kept_bytes);
+
+        assert_eq!(cache.remove_by_prefix("keep::").unwrap(), 1);
+        assert_eq!(cache.current_memory_bytes, 0);
     }
 
     /// A cache configured at `db_file` with `key` read back through a *fresh*

@@ -29,12 +29,17 @@ impl AlbumArtists {
     
     /// Add a mapping between an album and an artist
     pub fn add_mapping(&mut self, album_id: Identifier, artist_id: Identifier) {
-        // Add artist to album's vector
-        self.album_to_artists
+        // Add artist to album's vector. Once only: the artist's side below is
+        // a set, and `remove_mapping` takes one entry out of each side, so a
+        // second copy here would outlive the removal and leave the album
+        // naming an artist that no longer names the album.
+        let artists = self.album_to_artists
             .entry(album_id.clone())
-            .or_default()
-            .push(artist_id.clone());
-            
+            .or_default();
+        if !artists.contains(&artist_id) {
+            artists.push(artist_id.clone());
+        }
+
         // Add album to artist's set
         self.artist_to_albums
             .entry(artist_id)
@@ -253,6 +258,36 @@ mod tests {
         mapping.add_mapping(id(1), id(10));
 
         assert_eq!(mapping.count_albums_for_artist(&id(10)), 1);
+    }
+
+    /// Adding a pair that is already mapped changes nothing, so one removal
+    /// undoes it on both sides.
+    #[test]
+    fn adding_a_mapping_twice_then_removing_it_leaves_nothing_behind() {
+        let mut mapping = AlbumArtists::new();
+        mapping.add_mapping(id(1), id(10));
+        mapping.add_mapping(id(1), id(10));
+
+        assert_eq!(mapping.get_artists_for_album(&id(1)), vec![id(10)]);
+        assert_eq!(mapping.count(), 1);
+
+        mapping.remove_mapping(&id(1), &id(10));
+
+        assert!(!mapping.has_mapping(&id(1), &id(10)));
+        assert!(mapping.get_artists_for_album(&id(1)).is_empty());
+        assert!(mapping.get_albums_for_artist(&id(10)).is_empty());
+        assert!(mapping.is_empty());
+    }
+
+    /// The order artists were first added in is kept.
+    #[test]
+    fn a_repeated_artist_keeps_its_first_position() {
+        let mut mapping = AlbumArtists::new();
+        mapping.add_mapping(id(1), id(10));
+        mapping.add_mapping(id(1), id(20));
+        mapping.add_mapping(id(1), id(10));
+
+        assert_eq!(mapping.get_artists_for_album(&id(1)), vec![id(10), id(20)]);
     }
 
     /// The count must stay in step with the collection it summarises.

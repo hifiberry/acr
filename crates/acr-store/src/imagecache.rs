@@ -524,12 +524,20 @@ impl ImageCache {
             expires_at,
         };
 
-        // Store metadata in attribute cache
-        self.store_image_metadata(&path_with_extension, &metadata)?;
+        // Store metadata in attribute cache. As in `store_image_with_expiry`,
+        // the bytes are on disk by now and will be served from the next
+        // request onwards, so a failure in this bookkeeping is logged as a
+        // degraded success rather than reported as an image that was not
+        // stored.
+        if let Err(e) = self.store_image_metadata(&path_with_extension, &metadata) {
+            warn!("Stored image {} but could not record its metadata: {}", path_with_extension, e);
+        }
 
         // Set expiry if provided (for backward compatibility)
         if let Some(expiry) = expiry_time {
-            self.set_image_expiry(&path_with_extension, expiry)?;
+            if let Err(e) = self.set_image_expiry(&path_with_extension, expiry) {
+                warn!("Stored image {} but could not record its expiry: {}", path_with_extension, e);
+            }
         }
 
         debug!("Stored image metadata for: {}", path_with_extension);
@@ -793,7 +801,9 @@ impl ImageCache {
                     .unwrap_or_default()
                     .as_secs();
                 
-                if now - stats.last_updated < 300 { // 5 minutes
+                // Saturating: after the clock has been set back the stats
+                // carry a timestamp from the future.
+                if now.saturating_sub(stats.last_updated) < 300 { // 5 minutes
                     return Ok(stats);
                 }
             }
@@ -1450,6 +1460,65 @@ mod tests {
     /// it fails, so a bad path reproduces nothing. Disabling it is why this
     /// test is `#[serial]` and why the three tests in `attributecache` that
     /// use the same singleton are too.
+    /// The same fault through the entry point that takes a MIME type, which
+    /// is the one the downloaders use.
+    #[test]
+    #[serial]
+    fn a_metadata_failure_does_not_undo_an_image_written_from_data() {
+        init_test_attribute_cache();
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().to_str().unwrap();
+        let expiry_path = temp_dir.path().join("expiry.json");
+        let cache = ImageCache::with_custom_expiry_path(cache_path, &expiry_path);
+
+        let test_data = b"test image data".to_vec();
+        attributecache::get_attribute_cache().enable(false);
+        let result = cache.store_image_from_data_with_expiry(
+            "degraded",
+            test_data.clone(),
+            "image/jpeg".to_string(),
+            Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
+        );
+        attributecache::get_attribute_cache().enable(true);
+
+        assert!(
+            result.is_ok(),
+            "an image whose bytes are on disk must not be reported as not stored: {:?}",
+            result
+        );
+        assert_eq!(
+            cache.get_image_data("degraded.jpg").expect("the image is readable"),
+            test_data
+        );
+    }
+
+    /// Statistics cached with a timestamp ahead of the clock are simply
+    /// treated as fresh; the age calculation must not underflow.
+    #[test]
+    #[serial]
+    fn cached_statistics_from_the_future_do_not_underflow() {
+        init_test_attribute_cache();
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().to_str().unwrap();
+        let expiry_path = temp_dir.path().join("expiry.json");
+        let cache = ImageCache::with_custom_expiry_path(cache_path, &expiry_path);
+
+        let mut stats = ImageCacheStats::new();
+        stats.last_updated = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86_400;
+        attributecache::set(IMAGECACHE_STATS_KEY, &stats).unwrap();
+
+        let result = cache.get_cache_statistics();
+        let _ = attributecache::remove(IMAGECACHE_STATS_KEY);
+
+        assert_eq!(result.unwrap().last_updated, stats.last_updated);
+    }
+
     #[test]
     #[serial]
     fn a_metadata_failure_does_not_undo_a_written_image() {

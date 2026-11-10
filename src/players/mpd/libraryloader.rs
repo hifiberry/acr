@@ -10,6 +10,17 @@ use crate::helpers::backgroundjobs::{register_job, update_job, complete_job};
 /// Number of songs to process before updating progress
 const PROGRESS_UPDATE_FREQUENCY: usize = 100;
 
+/// Songs asked for per request when reading the whole database. Large enough
+/// that the round trips do not dominate, small enough that one reply (about
+/// 400 bytes a song) stays far below MPD's 8 MB default output buffer.
+const SONG_WINDOW: usize = 5000;
+
+/// The `start:end` window that follows `already_read` songs.
+fn song_window(already_read: usize) -> (u32, u32) {
+    let start = u32::try_from(already_read).unwrap_or(u32::MAX);
+    (start, start.saturating_add(SONG_WINDOW as u32))
+}
+
 /// MPD library loader that can load a library from MPD
 pub struct MPDLibraryLoader {
     /// MPD server hostname
@@ -296,82 +307,25 @@ impl MPDLibraryLoader {
         info!("Loading MPD library from {}:{}", self.hostname, self.port);
         let start_time = Instant::now();
         
-        // Step 1: Load all artists
-        let artists = match self.load_artists() {
-            Ok(artists) => artists,
+        // Steps 1 and 2: read every song and fold it into its album.
+        let mut albums_map: HashMap<String, crate::data::Album> = HashMap::new();
+
+        let total_songs = match self.load_songs_in_one_pass(&mut albums_map, &load_job_id, custom_separators.as_deref()) {
+            Ok(total) => total,
             Err(e) => {
-                let _ = complete_job(&load_job_id);
-                return Err(e);
+                // Nothing is kept from a pass that failed part-way: the
+                // per-artist load starts from an empty map.
+                warn!("Could not read the MPD database in one pass ({}); loading artist by artist", e);
+                albums_map.clear();
+                match self.load_songs_per_artist(&mut albums_map, &load_job_id, custom_separators.as_deref()) {
+                    Ok(total) => total,
+                    Err(e) => {
+                        let _ = complete_job(&load_job_id);
+                        return Err(e);
+                    }
+                }
             }
         };
-        
-        info!("Found {} artists in MPD database", artists.len());
-        progress = 10.0; // Update progress to 10%
-        
-        // Update background job progress
-        let _ = update_job(&load_job_id, Some("Loading artists".to_string()), None, Some(artists.len()));
-        
-        // Send database update event to show initial progress
-        // Note: We no longer need to pass the source parameter
-        self.controller.notify_database_update(Some("Loading artists".to_string()), None, None, Some(progress));
-
-        debug!("Database loading progress: {:.1}%", progress);
-
-        // Step 2: Load each artist's songs and fold them into albums at once.
-        //
-        // The songs are not collected first. An `mpd::Song` owns every tag as
-        // its own pair of strings, so a whole library of them is millions of
-        // small allocations alive together, several times the size of what
-        // is built from them -- and freeing them afterwards leaves the heap
-        // fragmented at that high-water mark for the life of the process.
-        // Converting one artist's songs before fetching the next keeps the
-        // peak at the library itself plus one artist.
-        let mut albums_map: HashMap<String, crate::data::Album> = HashMap::new();
-        let mut total_songs = 0usize;
-        let total_artists = artists.len();
-
-        for (artist_index, artist) in artists.iter().enumerate() {
-            // more verbose logging for "real" artists
-            if artist.contains(",") {
-                debug!("Loading songs for artist: {}", artist);
-            } else {
-                info!("Loading songs for artist: {}", artist);
-            }
-
-            // Fetch all songs for this artist
-            let songs = match self.fetch_all_songs_for_artist(artist) {
-                Ok(songs) => songs,
-                Err(e) => {
-                    let _ = complete_job(&load_job_id);
-                    return Err(e);
-                }
-            };
-            debug!("Found {} songs for album artist '{}'", songs.len(), artist);
-
-            total_songs += songs.len();
-            for song in &songs {
-                add_song_to_albums(&mut albums_map, song, custom_separators.as_deref());
-            }
-
-            // Report every PROGRESS_UPDATE_FREQUENCY artists and on the last.
-            if artist_index % PROGRESS_UPDATE_FREQUENCY == 0 || artist_index + 1 == total_artists {
-                // Range 10-90%
-                progress = (10.0 + 80.0 * (artist_index + 1) as f32 / total_artists as f32).min(90.0);
-
-                let artist_progress = format!("Loading songs for artist {}/{}: {}",
-                    artist_index + 1, total_artists, artist);
-                let _ = update_job(&load_job_id, Some(artist_progress), Some(artist_index + 1), Some(total_artists));
-
-                let last = songs.last();
-                let album_name = last.and_then(|song| {
-                    song.tags.iter().find(|(tag, _)| tag == "Album").map(|(_, value)| value.clone())
-                });
-                let song_name = last.and_then(|song| song.title.clone());
-                self.controller.notify_database_update(Some(artist.clone()), album_name, song_name, Some(progress));
-
-                debug!("Database loading progress: {:.1}%", progress);
-            }
-        }
 
         // Complete the data loading job
         if let Err(e) = complete_job(&load_job_id) {
@@ -430,6 +384,156 @@ impl MPDLibraryLoader {
         Ok(albums)
     }
     
+    /// Read the whole database through one connection, a window at a time,
+    /// folding each window's songs into `albums_map`. Returns the number of
+    /// songs read.
+    ///
+    /// `find modified-since <the epoch>` matches every song, tagged or not,
+    /// and the window keeps each reply well inside MPD's output buffer limit,
+    /// which an unwindowed reply for a large library exceeds. This replaces
+    /// one `find` per artist -- each a scan of the whole database on its own
+    /// connection -- which on a 212,000-song library was about fifteen
+    /// minutes against a few seconds for this.
+    fn load_songs_in_one_pass(
+        &self,
+        albums_map: &mut HashMap<String, crate::data::Album>,
+        load_job_id: &str,
+        custom_separators: Option<&[String]>,
+    ) -> Result<usize, LibraryError> {
+        let conn_string = format!("{}:{}", self.hostname, self.port);
+        let mut client = mpd::Client::connect(&conn_string)
+            .map_err(|e| LibraryError::ConnectionError(format!("Failed to connect to MPD: {}", e)))?;
+
+        // Only for the progress display; a database that will not say how
+        // many songs it holds is still loaded.
+        let expected_songs = client.stats().map(|stats| stats.songs as usize).unwrap_or(0);
+
+        let mut query = mpd::Query::new();
+        let everything = query.and(mpd::Term::LastMod, "1970-01-01T00:00:00Z");
+
+        let mut total_songs = 0usize;
+        loop {
+            let (start, end) = song_window(total_songs);
+            let songs = client.find(everything, (start, end))
+                .map_err(|e| LibraryError::ConnectionError(format!("Failed to read songs {}..{} from MPD: {}", start, end, e)))?;
+            if songs.is_empty() {
+                break;
+            }
+
+            total_songs += songs.len();
+            for song in &songs {
+                add_song_to_albums(albums_map, song, custom_separators);
+            }
+
+            // Range 10-90%
+            let progress = if expected_songs > 0 {
+                (10.0 + 80.0 * total_songs as f32 / expected_songs as f32).min(90.0)
+            } else {
+                10.0
+            };
+            let _ = update_job(
+                load_job_id,
+                Some(format!("Loading songs: {}/{}", total_songs, expected_songs.max(total_songs))),
+                Some(total_songs),
+                Some(expected_songs.max(total_songs)),
+            );
+            let last = songs.last();
+            let tag = |name: &str| last.and_then(|song| {
+                song.tags.iter().find(|(tag, _)| tag == name).map(|(_, value)| value.clone())
+            });
+            self.controller.notify_database_update(
+                tag("Artist"),
+                tag("Album"),
+                last.and_then(|song| song.title.clone()),
+                Some(progress),
+            );
+            debug!("Database loading progress: {:.1}% ({} songs)", progress, total_songs);
+
+            // A short window is the last one.
+            if songs.len() < SONG_WINDOW {
+                break;
+            }
+        }
+
+        Ok(total_songs)
+    }
+
+    /// Load the songs one artist at a time: a `find` per artist, each on its
+    /// own connection. Slow on a large library -- every `find` scans the whole
+    /// database -- and kept for an MPD that refuses the one-pass query.
+    fn load_songs_per_artist(
+        &self,
+        albums_map: &mut HashMap<String, crate::data::Album>,
+        load_job_id: &str,
+        custom_separators: Option<&[String]>,
+    ) -> Result<usize, LibraryError> {
+        // Step 1: Load all artists
+        let artists = self.load_artists()?;
+        
+        info!("Found {} artists in MPD database", artists.len());
+        let mut progress: f32 = 10.0;
+        
+        // Update background job progress
+        let _ = update_job(load_job_id, Some("Loading artists".to_string()), None, Some(artists.len()));
+        
+        // Send database update event to show initial progress
+        // Note: We no longer need to pass the source parameter
+        self.controller.notify_database_update(Some("Loading artists".to_string()), None, None, Some(progress));
+
+        debug!("Database loading progress: {:.1}%", progress);
+
+        // Step 2: Load each artist's songs and fold them into albums at once.
+        //
+        // The songs are not collected first. An `mpd::Song` owns every tag as
+        // its own pair of strings, so a whole library of them is millions of
+        // small allocations alive together, several times the size of what
+        // is built from them -- and freeing them afterwards leaves the heap
+        // fragmented at that high-water mark for the life of the process.
+        // Converting one artist's songs before fetching the next keeps the
+        // peak at the library itself plus one artist.
+        let mut total_songs = 0usize;
+        let total_artists = artists.len();
+
+        for (artist_index, artist) in artists.iter().enumerate() {
+            // more verbose logging for "real" artists
+            if artist.contains(",") {
+                debug!("Loading songs for artist: {}", artist);
+            } else {
+                info!("Loading songs for artist: {}", artist);
+            }
+
+            // Fetch all songs for this artist
+            let songs = self.fetch_all_songs_for_artist(artist)?;
+            debug!("Found {} songs for album artist '{}'", songs.len(), artist);
+
+            total_songs += songs.len();
+            for song in &songs {
+                add_song_to_albums(albums_map, song, custom_separators);
+            }
+
+            // Report every PROGRESS_UPDATE_FREQUENCY artists and on the last.
+            if artist_index % PROGRESS_UPDATE_FREQUENCY == 0 || artist_index + 1 == total_artists {
+                // Range 10-90%
+                progress = (10.0 + 80.0 * (artist_index + 1) as f32 / total_artists as f32).min(90.0);
+
+                let artist_progress = format!("Loading songs for artist {}/{}: {}",
+                    artist_index + 1, total_artists, artist);
+                let _ = update_job(load_job_id, Some(artist_progress), Some(artist_index + 1), Some(total_artists));
+
+                let last = songs.last();
+                let album_name = last.and_then(|song| {
+                    song.tags.iter().find(|(tag, _)| tag == "Album").map(|(_, value)| value.clone())
+                });
+                let song_name = last.and_then(|song| song.title.clone());
+                self.controller.notify_database_update(Some(artist.clone()), album_name, song_name, Some(progress));
+
+                debug!("Database loading progress: {:.1}%", progress);
+            }
+        }
+
+        Ok(total_songs)
+    }
+
     /// Fetch all songs for a specific artist
     pub fn fetch_all_songs_for_artist(&self, artist_name: &str) -> Result<Vec<mpd::Song>, LibraryError> {
         debug!("Fetching all songs for artist: {}", artist_name);
@@ -541,6 +645,14 @@ mod tests {
         assert_eq!(shared.genres, vec!["Rock", "Pop"]);
         let solo = albums.values().find(|a| a.name == "Other").expect("the other album");
         assert_eq!(solo.tracks.lock().len(), 1);
+    }
+
+    #[test]
+    fn windows_follow_one_another_without_gap_or_overlap() {
+        assert_eq!(song_window(0), (0, SONG_WINDOW as u32));
+        assert_eq!(song_window(SONG_WINDOW), (SONG_WINDOW as u32, 2 * SONG_WINDOW as u32));
+        // Past what the protocol can address, the window is empty, not wrapped.
+        assert_eq!(song_window(usize::MAX), (u32::MAX, u32::MAX));
     }
 
     #[test]

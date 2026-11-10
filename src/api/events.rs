@@ -112,15 +112,29 @@ impl Default for WebSocketManager {
     }
 }
 
-impl WebSocketManager {    /// Create a new WebSocket manager
-    pub fn new() -> Self {
-        let manager = WebSocketManager {
+impl WebSocketManager {
+    /// A manager that is not attached to the global event bus.
+    fn unattached() -> Self {
+        WebSocketManager {
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
             last_activity: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(Mutex::new(0)),
             recent_events: Arc::new(Mutex::new(VecDeque::with_capacity(100))),
             event_bus_subscription: Arc::new(Mutex::new(None)),
-        };
+        }
+    }
+
+    /// A manager for tests: it sees only the events a test queues itself.
+    /// The event bus is process-wide and tests run in parallel, so a manager
+    /// attached to it would also deliver whatever other tests publish.
+    #[cfg(test)]
+    fn detached() -> Self {
+        Self::unattached()
+    }
+
+    /// Create a new WebSocket manager
+    pub fn new() -> Self {
+        let manager = Self::unattached();
 
         // Subscribe to all events from the global event bus
         let event_bus = EventBus::instance();
@@ -1063,7 +1077,7 @@ mod tests {
     // at another. Nothing here sleeps, so nothing here can race a real timer.
 
     fn manager_with_a_client() -> (WebSocketManager, usize) {
-        let manager = WebSocketManager::new();
+        let manager = WebSocketManager::detached();
         let id = manager.register(EventSubscription { players: None, event_types: None });
         (manager, id)
     }
@@ -1226,7 +1240,7 @@ mod tests {
     fn start_loop_with_shutdown(
         shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> LoopHarness {
-        let manager = WebSocketManager::new();
+        let manager = WebSocketManager::detached();
         let client_id = manager.register(EventSubscription { players: None, event_types: None });
 
         let (to_server, inbound) = mpsc::unbounded_channel();
@@ -1382,6 +1396,33 @@ mod tests {
             "the pong answering the server's ping did not refresh the client's activity time"
         );
 
+        assert_eq!(harness.finish().await, ClientLoopEnd::Closed);
+    }
+
+    /// The event bus is process-wide and tests run in parallel, so an event
+    /// another test publishes must not reach the loops under test here: it
+    /// would arrive as a text frame where a test expects a ping.
+    #[tokio::test(start_paused = true)]
+    async fn events_from_other_tests_do_not_reach_the_loop() {
+        let mut harness = start_loop();
+
+        EventBus::instance().publish(PlayerEvent::StateChanged {
+            source: crate::data::player_event::PlayerSource::new(
+                "another-test".to_string(),
+                "another-test".to_string(),
+            ),
+            state: crate::data::PlaybackState::Playing,
+        });
+        // The manager's bus listener is a real thread; give it real time to
+        // queue the event before the loop's next poll.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let first = harness.next_frame().await;
+        assert!(
+            matches!(first, Some(Message::Ping(_))),
+            "an event from the global bus reached the test loop; got {:?}",
+            first
+        );
         assert_eq!(harness.finish().await, ClientLoopEnd::Closed);
     }
 

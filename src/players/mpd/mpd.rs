@@ -164,6 +164,33 @@ fn apply_station_logo(song: &mut Song) {
 /// repeats at all, and `single` says whether it repeats one song or the whole
 /// queue. `single` alone, without `repeat`, stops after the current song and
 /// is not a loop.
+/// The four playback values out of one MPD status. Without a status each
+/// takes the answer its own getter gives when MPD cannot be asked.
+fn snapshot_from_status(
+    status: Option<&mpd::Status>,
+) -> crate::players::PlaybackSnapshot {
+    use crate::players::PlaybackSnapshot;
+
+    let Some(status) = status else {
+        return PlaybackSnapshot {
+            state: PlaybackState::Unknown,
+            shuffle: false,
+            loop_mode: LoopMode::None,
+            position: None,
+        };
+    };
+    PlaybackSnapshot {
+        state: match status.state {
+            mpd::State::Play => PlaybackState::Playing,
+            mpd::State::Pause => PlaybackState::Paused,
+            mpd::State::Stop => PlaybackState::Stopped,
+        },
+        shuffle: status.random,
+        loop_mode: loop_mode_from_mpd(status.repeat, status.single),
+        position: status.elapsed.map(|elapsed| elapsed.as_secs_f64()),
+    }
+}
+
 fn loop_mode_from_mpd(repeat: bool, single: bool) -> LoopMode {
     match (repeat, single) {
         (false, _) => LoopMode::None,
@@ -1891,6 +1918,19 @@ impl PlayerController for MPDPlayerController {
         None
     }
     
+    fn get_playback_snapshot(&self) -> crate::players::PlaybackSnapshot {
+        trace!("MPDController: get_playback_snapshot called");
+        // One connection and one `status` for all four values; each getter on
+        // its own opens a connection of its own.
+        let status = self
+            .get_fresh_client()
+            .and_then(|mut mpd_client| mpd_client.status().ok());
+        if status.is_none() {
+            debug!("Failed to get status from MPD");
+        }
+        snapshot_from_status(status.as_ref())
+    }
+
     fn get_shuffle(&self) -> bool {
         trace!("MPDController: get_shuffle called");
         if let Some(mut mpd_client) = self.get_fresh_client() {
@@ -2436,6 +2476,36 @@ mod tests {
         let positions: Vec<_> = (0..4).map(|i| queue_insert_position(i, true)).collect();
 
         assert_eq!(positions, vec![Some(0), Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn one_status_answers_state_shuffle_loop_and_position() {
+        let status = mpd::Status {
+            state: mpd::State::Pause,
+            random: true,
+            repeat: true,
+            single: false,
+            elapsed: Some(std::time::Duration::from_millis(12_500)),
+            ..Default::default()
+        };
+
+        let snapshot = snapshot_from_status(Some(&status));
+
+        assert_eq!(snapshot.state, PlaybackState::Paused);
+        assert!(snapshot.shuffle);
+        assert_eq!(snapshot.loop_mode, LoopMode::Playlist);
+        assert_eq!(snapshot.position, Some(12.5));
+    }
+
+    /// With MPD unreachable the snapshot says what the four getters say.
+    #[test]
+    fn a_snapshot_without_a_status_is_unknown_and_empty() {
+        let snapshot = snapshot_from_status(None);
+
+        assert_eq!(snapshot.state, PlaybackState::Unknown);
+        assert!(!snapshot.shuffle);
+        assert_eq!(snapshot.loop_mode, LoopMode::None);
+        assert_eq!(snapshot.position, None);
     }
 
     /// A track that MPD refused must not leave a hole: the next one goes where

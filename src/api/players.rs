@@ -295,17 +295,19 @@ pub fn list_players(controller: &State<Arc<AudioController>>) -> Json<PlayersLis
                     chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
                 });
 
+            let playback = ctrl.get_playback_snapshot();
+
             PlayerInfo {
                 name: name.clone(),
                 id: id.clone(),
-                state: ctrl.get_playback_state(),
+                state: playback.state,
                 is_active: name == current_player_name && id == current_player_id,
                 has_library: ctrl.has_library(),
                 supports_api_events: ctrl.supports_api_events(),
                 last_seen,
-                shuffle: ctrl.get_shuffle(),
-                loop_mode: ctrl.get_loop_mode(),
-                position: ctrl.get_position(),
+                shuffle: playback.shuffle,
+                loop_mode: playback.loop_mode,
+                position: playback.position,
                 capabilities: ctrl.get_capabilities().to_vec(),
             }
         })
@@ -486,8 +488,10 @@ pub fn get_now_playing(
     let name = player.get_player_name();
     let id = player.get_player_id();
     
-    // Get the state safely (the implementation now uses cached data)
-    let state = player.get_playback_state();
+    // State, shuffle, loop mode and position in one read: a player that has
+    // to be asked (MPD) is then asked once per request, not four times.
+    let playback = player.get_playback_snapshot();
+    let state = playback.state;
     
     // Get song data (should be cached data)
     let mut song = player.get_song();
@@ -496,9 +500,9 @@ pub fn get_now_playing(
     }
     
     // Get remaining data
-    let shuffle = player.get_shuffle();
-    let loop_mode = player.get_loop_mode();
-    let position = player.get_position();
+    let shuffle = playback.shuffle;
+    let loop_mode = playback.loop_mode;
+    let position = playback.position;
     let stream_details = player.get_stream_details();
 
     // Format last_seen timestamp if available

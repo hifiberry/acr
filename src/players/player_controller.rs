@@ -6,6 +6,15 @@ use std::any::Any;
 use std::time::SystemTime;
 use log::debug;
 
+/// What `PlayerController::get_playback_snapshot` reports.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaybackSnapshot {
+    pub state: PlaybackState,
+    pub shuffle: bool,
+    pub loop_mode: LoopMode,
+    pub position: Option<f64>,
+}
+
 /// PlayerController trait - abstract interface for player implementations
 /// 
 /// This trait defines the core functionality that any player implementation must provide.
@@ -52,6 +61,21 @@ pub trait PlayerController: Send + Sync {
     /// 
     /// Returns true if shuffle is enabled, false otherwise
     fn get_shuffle(&self) -> bool;
+
+    /// State, shuffle, loop mode and position, read together.
+    ///
+    /// The default asks the four getters in turn, which is right for a
+    /// controller that answers them from memory. One that has to ask its
+    /// player each time should override this and ask once: the now-playing
+    /// routes want all four on every request.
+    fn get_playback_snapshot(&self) -> PlaybackSnapshot {
+        PlaybackSnapshot {
+            state: self.get_playback_state(),
+            shuffle: self.get_shuffle(),
+            loop_mode: self.get_loop_mode(),
+            position: self.get_position(),
+        }
+    }
     
     /// Get the name of this player controller
     /// 

@@ -85,6 +85,22 @@ impl PlayerController for AudioController {
         false
     }
 
+    fn get_playback_snapshot(&self) -> crate::players::PlaybackSnapshot {
+        // Forwarded whole, so the active player's own single read is used
+        // rather than four separate ones through the getters above.
+        let active_idx = self.active_index.read();
+        if *active_idx < self.controllers.len() {
+            let controller = self.controllers[*active_idx].read();
+            return controller.get_playback_snapshot();
+        }
+        crate::players::PlaybackSnapshot {
+            state: PlaybackState::Unknown,
+            shuffle: false,
+            loop_mode: LoopMode::None,
+            position: None,
+        }
+    }
+
     fn get_player_name(&self) -> String {
         let active_idx = self.active_index.read();
         if *active_idx < self.controllers.len() {

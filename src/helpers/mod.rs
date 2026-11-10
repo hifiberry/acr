@@ -19,6 +19,8 @@ pub mod mpris;
 #[cfg(unix)]
 pub mod mpris_artwork;
 #[cfg(unix)]
+pub mod tcp_connections;
+#[cfg(unix)]
 pub mod shairportsync_messages;
 
 pub use acr_http::{http_client, retry};

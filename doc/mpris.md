@@ -88,6 +88,15 @@ session has ended. Set `"metadata_source": "udp"` in its configuration to use
 the UDP metadata socket instead; from shairport-sync 5.6 that socket carries no
 AirPlay 2 titles.
 
+shairport-sync also reports `Stopped` 10 to 30 seconds into a pause, and
+nothing on D-Bus tells that apart from a session that has ended. As a
+workaround, while shairport-sync reports `Stopped` the player looks for an
+open TCP connection on a local AirPlay port; if there is one, the sender is
+still connected, so the song stays and the player shows as paused. The ports
+are set with `session_ports` (default `[7000, 5000]`, AirPlay 2 and AirPlay 1);
+`[]` turns the workaround off. Only the kernel's connection tables
+(`/proc/net/tcp`, `/proc/net/tcp6`) are read.
+
 | Command | Over MPRIS |
 |---|---|
 | Pause | sent to the AirPlay source; if it keeps playing for 1.5 s, the session is dropped |

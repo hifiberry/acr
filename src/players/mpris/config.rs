@@ -1,6 +1,8 @@
 //! Configuration of an MPRIS player controller.
 
+use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::data::PlayerCapability;
@@ -12,6 +14,17 @@ pub enum BusPreference {
     Auto,
     System,
     Session,
+}
+
+/// A check whether the source is still connected although the player reports
+/// Stopped. Code only; see `MprisConfig::connected_probe`.
+#[derive(Clone)]
+pub struct ConnectedProbe(pub Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl fmt::Debug for ConnectedProbe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ConnectedProbe")
+    }
 }
 
 /// Settings for one MPRIS player.
@@ -28,6 +41,10 @@ pub struct MprisConfig {
     /// Report no song while the player is stopped. For players that keep the
     /// last song in `Metadata` after playback ends, like shairport-sync.
     pub clear_song_when_stopped: bool,
+    /// With `clear_song_when_stopped`: asked while the player reports Stopped.
+    /// If it says the source is still connected, the song is kept and the
+    /// player is shown as paused. Code only.
+    pub connected_probe: Option<ConnectedProbe>,
     /// Capabilities the embedding player adds to those MPRIS reports. Code only.
     pub extra_capabilities: Vec<PlayerCapability>,
 }
@@ -41,6 +58,7 @@ impl MprisConfig {
             poll_interval: Duration::from_secs(1),
             artwork_dirs: Vec::new(),
             clear_song_when_stopped: false,
+            connected_probe: None,
             extra_capabilities: Vec::new(),
         }
     }

@@ -20,10 +20,29 @@ use notify::{Watcher, RecursiveMode, Event, EventKind, recommended_watcher, even
 use std::sync::mpsc;
 use md5;
 use crate::players::mpris::MprisPlayerController;
-use crate::players::mpris::config::{BusPreference, MprisConfig};
+use crate::players::mpris::config::{BusPreference, ConnectedProbe, MprisConfig};
+use crate::helpers::tcp_connections::has_established_on_local_ports;
 
 /// shairport-sync's MPRIS name, on the system bus.
 const SHAIRPORT_MPRIS_BUS_NAME: &str = "org.mpris.MediaPlayer2.ShairportSync";
+
+/// Ports shairport-sync accepts AirPlay connections on: 7000 for AirPlay 2,
+/// 5000 for AirPlay 1.
+const DEFAULT_SESSION_PORTS: [u16; 2] = [7000, 5000];
+
+/// The `session_ports` setting: local ports whose open connections mean an
+/// AirPlay sender is still connected. Missing → the defaults; an empty list
+/// turns the check off. Entries that are not valid ports are ignored.
+pub fn session_ports_from_config(config: &serde_json::Value) -> Vec<u16> {
+    match config.get("session_ports").and_then(|p| p.as_array()) {
+        Some(ports) => ports
+            .iter()
+            .filter_map(|p| p.as_u64())
+            .filter_map(|p| u16::try_from(p).ok())
+            .collect(),
+        None => DEFAULT_SESSION_PORTS.to_vec(),
+    }
+}
 
 /// Where the player learns what is playing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +134,10 @@ pub struct ShairportController {
     /// The MPRIS controller doing the work in MPRIS mode. It publishes
     /// through this player's base controller, so name and id stay "shairport".
     mpris: Option<MprisPlayerController>,
+
+    /// Local ports whose open connections mean a sender is still connected
+    /// (MPRIS mode). Empty turns the check off.
+    session_ports: Vec<u16>,
 }
 
 impl Clone for ShairportController {
@@ -131,6 +154,7 @@ impl Clone for ShairportController {
             watcher_thread: Arc::clone(&self.watcher_thread),
             metadata_source: self.metadata_source,
             mpris: self.mpris.clone(),
+            session_ports: self.session_ports.clone(),
         }
     }
 }
@@ -170,6 +194,7 @@ impl ShairportController {
             watcher_thread: Arc::new(Mutex::new(None)),
             metadata_source: MetadataSource::Udp,
             mpris: None,
+            session_ports: DEFAULT_SESSION_PORTS.to_vec(),
         };
         
         // Set default capabilities
@@ -203,6 +228,7 @@ impl ShairportController {
         };
 
         let mut controller = Self::with_full_config(port, systemd_unit, coverart_dir);
+        controller.session_ports = session_ports_from_config(config);
         if metadata_source == MetadataSource::Mpris {
             controller.use_mpris();
         }
@@ -216,6 +242,13 @@ impl ShairportController {
         config.artwork_dirs = vec![self.coverart_dir.clone().into()];
         // shairport-sync keeps the last song in Metadata after a session ends.
         config.clear_song_when_stopped = true;
+        // Workaround: shairport-sync also reports Stopped 10-30 s into a
+        // pause, and nothing on D-Bus tells that apart from a session that
+        // ended. While the sender's AirPlay connection is open, keep the song.
+        if !self.session_ports.is_empty() {
+            let ports = self.session_ports.clone();
+            config.connected_probe = Some(ConnectedProbe(Arc::new(move || has_established_on_local_ports(&ports))));
+        }
         config.extra_capabilities = vec![PlayerCapability::Metadata, PlayerCapability::AlbumArt];
         if self.systemd_unit.is_some() {
             config.extra_capabilities.push(PlayerCapability::Play);
@@ -1102,6 +1135,36 @@ impl Default for ShairportController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_ports_default_to_airplay_ports() {
+        assert_eq!(session_ports_from_config(&serde_json::json!({})), vec![7000, 5000]);
+    }
+
+    #[test]
+    fn session_ports_empty_list_turns_check_off() {
+        assert!(session_ports_from_config(&serde_json::json!({"session_ports": []})).is_empty());
+    }
+
+    #[test]
+    fn session_ports_custom_and_invalid_entries() {
+        let c = serde_json::json!({"session_ports": [7001, "x", 70000, -1, 5001]});
+        assert_eq!(session_ports_from_config(&c), vec![7001, 5001]);
+    }
+
+    #[test]
+    fn from_config_takes_session_ports() {
+        let c = ShairportController::from_config(&serde_json::json!({"metadata_source": "udp", "session_ports": [7100]}));
+        assert_eq!(c.session_ports, vec![7100]);
+        let d = ShairportController::from_config(&serde_json::json!({"metadata_source": "udp"}));
+        assert_eq!(d.session_ports, vec![7000, 5000]);
+    }
+
+    #[test]
+    fn session_ports_not_a_list_uses_defaults() {
+        let c = serde_json::json!({"session_ports": 7000});
+        assert_eq!(session_ports_from_config(&c), vec![7000, 5000]);
+    }
 
     #[test]
     fn stop_drops_session() {

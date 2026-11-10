@@ -29,6 +29,13 @@ hifiberry-audiocontrol (0.24.0) trixie; urgency=medium
   * New MPRIS player settings: name, bus, artwork_dirs and
     clear_song_when_stopped (see doc/mpris.md).
 
+  * shairport: a paused AirPlay source no longer disappears from the WebUI.
+    shairport-sync reports Stopped 10 to 30 seconds into a pause, which
+    cannot be told apart from a session that ended. As a workaround the
+    song is kept while the sender's AirPlay connection is open; the ports
+    are set with session_ports in players.d/shairport.json (default 7000
+    and 5000, [] turns it off).
+
  -- HiFiBerry <support@hifiberry.com>  Mon, 09 Nov 2026 16:57:58 +0000
 
 hifiberry-audiocontrol (0.23.6) trixie; urgency=medium

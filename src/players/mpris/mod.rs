@@ -142,7 +142,10 @@ impl Inner {
         let snap = snap.map(|s| stabilize(s, prev_flags));
         let metadata_failed = snap.as_ref().is_some_and(|s| s.metadata_failed);
         let prev = self.current_state.read().clone();
-        let r = reconcile(&prev, prev_flags, snap.as_ref(), self.config.clear_song_when_stopped);
+        let connected = self.config.clear_song_when_stopped
+            && snap.as_ref().is_some_and(|s| s.status.as_deref() == Some("Stopped"))
+            && self.config.connected_probe.as_ref().is_some_and(|probe| (probe.0)());
+        let r = reconcile(&prev, prev_flags, snap.as_ref(), self.config.clear_song_when_stopped, connected);
         {
             let mut state = self.current_state.write();
             state.state = r.state;

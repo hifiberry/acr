@@ -100,18 +100,28 @@ fn loop_mode(status: &str) -> LoopMode {
 
 /// Reconcile a poll against the previous state. `snap` is `None` when the
 /// player is not on the bus, which reads as stopped with no song.
+///
+/// `connected` is whether the source is known to still be connected. With
+/// `clear_song_when_stopped`, a player that reports Stopped while connected
+/// and still has a song is shown as paused with that song instead.
 pub fn reconcile(
     prev: &PlayerState,
     prev_flags: Option<MprisFlags>,
     snap: Option<&MprisSnapshot>,
     clear_song_when_stopped: bool,
+    connected: bool,
 ) -> Reconciled {
     let (state, shuffle, loop_mode, position, flags, song) = match snap {
         None => (PlaybackState::Stopped, prev.shuffle, prev.loop_mode, None, MprisFlags::default(), None),
         Some(s) => {
-            let state = playback_state(s.status.as_deref());
+            let mut state = playback_state(s.status.as_deref());
             let song = if clear_song_when_stopped && state == PlaybackState::Stopped {
-                None
+                if connected && s.song.is_some() {
+                    state = PlaybackState::Paused;
+                    s.song.clone()
+                } else {
+                    None
+                }
             } else {
                 s.song.clone()
             };
@@ -166,7 +176,7 @@ mod tests {
 
     #[test]
     fn absent_player_is_stopped_without_song() {
-        let r = reconcile(&state(PlaybackState::Playing), Some(shairport_flags()), None, false);
+        let r = reconcile(&state(PlaybackState::Playing), Some(shairport_flags()), None, false, false);
         assert_eq!(r.state, PlaybackState::Stopped);
         assert!(r.state_changed);
         assert!(r.song.is_none());
@@ -182,7 +192,7 @@ mod tests {
             ("Stopped", PlaybackState::Stopped),
             ("Bogus", PlaybackState::Unknown),
         ] {
-            assert_eq!(reconcile(&prev, None, Some(&snap(s)), false).state, expected);
+            assert_eq!(reconcile(&prev, None, Some(&snap(s)), false, false).state, expected);
         }
     }
 
@@ -192,14 +202,14 @@ mod tests {
         let mut s = snap("Playing");
         s.shuffle = Some(true);
         s.loop_status = Some("Track".to_string());
-        let r = reconcile(&prev, None, Some(&s), false);
+        let r = reconcile(&prev, None, Some(&s), false, false);
         assert!(r.shuffle_changed);
         assert!(r.loop_changed);
         assert!(r.shuffle);
         assert_eq!(r.loop_mode, LoopMode::Track);
 
         s.loop_status = Some("Sideways".to_string());
-        assert_eq!(reconcile(&prev, None, Some(&s), false).loop_mode, LoopMode::None);
+        assert_eq!(reconcile(&prev, None, Some(&s), false, false).loop_mode, LoopMode::None);
     }
 
     #[test]
@@ -208,7 +218,7 @@ mod tests {
         let mut s = snap("Playing");
         s.shuffle = Some(false);
         s.loop_status = Some("None".to_string());
-        let r = reconcile(&prev, Some(MprisFlags::default()), Some(&s), false);
+        let r = reconcile(&prev, Some(MprisFlags::default()), Some(&s), false, false);
         assert!(!r.state_changed);
         assert!(!r.shuffle_changed);
         assert!(!r.loop_changed);
@@ -220,15 +230,42 @@ mod tests {
         let prev = state(PlaybackState::Playing);
         let mut s = snap("Stopped");
         s.song = Some(song("Old"));
-        assert!(reconcile(&prev, None, Some(&s), true).song.is_none());
-        assert!(reconcile(&prev, None, Some(&s), false).song.is_some());
+        assert!(reconcile(&prev, None, Some(&s), true, false).song.is_none());
+        assert!(reconcile(&prev, None, Some(&s), false, false).song.is_some());
+    }
+
+    #[test]
+    fn stopped_but_connected_keeps_song_as_paused() {
+        let prev = state(PlaybackState::Paused);
+        let mut s = snap("Stopped");
+        s.song = Some(song("Held"));
+        let r = reconcile(&prev, None, Some(&s), true, true);
+        assert_eq!(r.state, PlaybackState::Paused);
+        assert!(!r.state_changed);
+        assert_eq!(r.song.and_then(|s| s.title).as_deref(), Some("Held"));
+    }
+
+    #[test]
+    fn stopped_and_connected_without_song_stays_stopped() {
+        let r = reconcile(&state(PlaybackState::Stopped), None, Some(&snap("Stopped")), true, true);
+        assert_eq!(r.state, PlaybackState::Stopped);
+        assert!(r.song.is_none());
+    }
+
+    #[test]
+    fn connected_only_matters_when_clearing() {
+        let mut s = snap("Stopped");
+        s.song = Some(song("Old"));
+        let r = reconcile(&state(PlaybackState::Playing), None, Some(&s), false, true);
+        assert_eq!(r.state, PlaybackState::Stopped);
+        assert!(r.song.is_some());
     }
 
     #[test]
     fn position_converts_microseconds() {
         let mut s = snap("Playing");
         s.position_us = Some(2_500_000);
-        let r = reconcile(&state(PlaybackState::Playing), None, Some(&s), false);
+        let r = reconcile(&state(PlaybackState::Playing), None, Some(&s), false, false);
         assert_eq!(r.position, Some(2.5));
     }
 
@@ -237,8 +274,8 @@ mod tests {
         let mut s = snap("Playing");
         s.flags = shairport_flags();
         let prev = state(PlaybackState::Playing);
-        assert!(!reconcile(&prev, Some(shairport_flags()), Some(&s), false).flags_changed);
-        assert!(reconcile(&prev, None, Some(&s), false).flags_changed);
+        assert!(!reconcile(&prev, Some(shairport_flags()), Some(&s), false, false).flags_changed);
+        assert!(reconcile(&prev, None, Some(&s), false, false).flags_changed);
     }
 
     #[test]
@@ -254,13 +291,13 @@ mod tests {
 
     #[test]
     fn poll_picks_up_player_that_appears_later() {
-        let absent = reconcile(&state(PlaybackState::Playing), None, None, false);
+        let absent = reconcile(&state(PlaybackState::Playing), None, None, false, false);
         let mut prev = state(absent.state);
         prev.shuffle = absent.shuffle;
         prev.loop_mode = absent.loop_mode;
         let mut s = snap("Playing");
         s.flags = shairport_flags();
-        let r = reconcile(&prev, Some(absent.flags), Some(&s), false);
+        let r = reconcile(&prev, Some(absent.flags), Some(&s), false, false);
         assert!(r.state_changed);
         assert_eq!(r.state, PlaybackState::Playing);
         assert!(r.flags_changed);

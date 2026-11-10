@@ -87,10 +87,27 @@ pub struct WebSocketManager {
     next_id: Arc<Mutex<usize>>,
 
     /// Recent events that need to be sent to clients
-    recent_events: Arc<Mutex<VecDeque<(PlayerEvent, Instant)>>>,
+    recent_events: Arc<Mutex<VecDeque<QueuedEvent>>>,
+
+    /// Sequence number of the newest queued event. Advanced only while
+    /// `recent_events` is locked, so queue order and sequence order agree.
+    event_seq: Arc<std::sync::atomic::AtomicU64>,
 
     /// Our subscription ID to the global event bus
     event_bus_subscription: Arc<Mutex<Option<(u64, crossbeam::channel::Receiver<PlayerEvent>)>>>,
+}
+
+/// An event waiting to be collected by the client loops.
+struct QueuedEvent {
+    event: PlayerEvent,
+    /// When it was queued; old events are pruned by age.
+    queued_at: Instant,
+    /// Its place in the stream. A client remembers the last one it collected,
+    /// which is what delivers every event to it exactly once. Comparing clock
+    /// readings cannot do that: the reader's and the writer's are taken
+    /// outside the queue lock, so an event stamped just before a poll but
+    /// queued just after it was skipped for good.
+    seq: u64,
 }
 
 /// Client subscription details
@@ -102,8 +119,8 @@ struct ClientSubscription {
     /// Event types the client is subscribed to (empty = all)
     event_types: Option<HashSet<String>>,
     
-    /// Last event timestamp processed for this client
-    last_event_time: Instant,
+    /// Sequence number of the last event collected for this client
+    last_event_seq: u64,
 }
 
 impl Default for WebSocketManager {
@@ -120,6 +137,7 @@ impl WebSocketManager {
             last_activity: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(Mutex::new(0)),
             recent_events: Arc::new(Mutex::new(VecDeque::with_capacity(100))),
+            event_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             event_bus_subscription: Arc::new(Mutex::new(None)),
         }
     }
@@ -180,7 +198,8 @@ impl WebSocketManager {
         let client_sub = ClientSubscription {
             players: subscription.players.map(|p| p.into_iter().collect()),
             event_types: subscription.event_types.map(|e| e.into_iter().collect()),
-            last_event_time: now,
+            // Only what is queued from here on is this client's.
+            last_event_seq: self.event_seq.load(std::sync::atomic::Ordering::SeqCst),
         };
         
         // Update last activity timestamp
@@ -246,8 +265,9 @@ impl WebSocketManager {
         
         // Add the event to the recent events queue
         let mut events = self.recent_events.lock();
+        let seq = self.event_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         // Add to the back of the queue to maintain chronological order
-        events.push_back((event.clone(), now));
+        events.push_back(QueuedEvent { event: event.clone(), queued_at: now, seq });
 
         // Limit the queue size to prevent memory issues
         if events.len() > 100 {
@@ -263,42 +283,39 @@ impl WebSocketManager {
         let mut matching_events = Vec::new();
         
         // Get the client's subscription
-        let mut last_event_time = Instant::now();
-        let subscription = {
-            let mut subs = self.subscriptions.lock();
-            if let Some(sub) = subs.get_mut(&client_id) {
-                let sub_copy = sub.clone();
-                // Update the last event time
-                last_event_time = sub.last_event_time;
-                sub.last_event_time = Instant::now();
-                Some(sub_copy)
-            } else {
-                None
-            }
-        };
-        
-        if let Some(sub) = subscription {
-            debug!("Checking events: Client: {}, Last check: {:?} ago", 
-                  client_id, Instant::now().duration_since(last_event_time));
-            
-            // Get recent events that occurred after the client's last check
-            let events = self.recent_events.lock();
-            debug!("Event queue size: {}", events.len());
+        let subscription = self.subscriptions.lock().get(&client_id).cloned();
 
-            for (event, time) in events.iter() {
-                // Only check events that happened after the client's last check
-                if *time > last_event_time {
-                    let should_send = self.should_send_to_client(event, &sub);
-                    debug!("Event check: Player: {}, Type: {:?}, Time: {:?} ago, Should send: {}",
-                          event.player_name().unwrap_or("system"), event_type_name(event),
-                          Instant::now().duration_since(*time), should_send);
+        if let Some(sub) = subscription {
+            let last_seq = sub.last_event_seq;
+            let mut newest_seq = last_seq;
+
+            {
+                let events = self.recent_events.lock();
+                debug!("Checking events: Client: {}, after seq {}, queue size: {}",
+                      client_id, last_seq, events.len());
+
+                for queued in events.iter().filter(|queued| queued.seq > last_seq) {
+                    newest_seq = queued.seq;
+
+                    let should_send = self.should_send_to_client(&queued.event, &sub);
+                    debug!("Event check: Player: {}, Type: {:?}, Seq: {}, Should send: {}",
+                          queued.event.player_name().unwrap_or("system"),
+                          event_type_name(&queued.event), queued.seq, should_send);
 
                     if should_send {
-                        matching_events.push(event.clone());
+                        matching_events.push(queued.event.clone());
                     }
                 }
             }
-            
+
+            // Each client is polled by its own loop only, so nothing else
+            // moves this between the read above and the write here.
+            if newest_seq != last_seq {
+                if let Some(sub) = self.subscriptions.lock().get_mut(&client_id) {
+                    sub.last_event_seq = newest_seq;
+                }
+            }
+
             debug!("Sending events: Client: {}, Events to send: {}", 
                   client_id, matching_events.len());
         } else {
@@ -399,8 +416,8 @@ impl WebSocketManager {
             // we need to remove elements from the front of the queue
             let mut to_remove = 0;
             
-            for (_, time) in events.iter() {
-                if now.duration_since(*time) > event_timeout {
+            for queued in events.iter() {
+                if now.duration_since(queued.queued_at) > event_timeout {
                     to_remove += 1;
                 } else {
                     // Once we find a non-old event, we can stop checking
@@ -761,7 +778,18 @@ where
 
                                 // Try to parse as ClientMessage (EventSubscription)
                                 match serde_json::from_str::<ClientMessage>(&text) {
-                                    Ok(ClientMessage::Subscription(subscription)) => {
+                                    Ok(ClientMessage::Subscription(mut subscription)) => {
+                                        // A connection opened for one player
+                                        // stays on it when a message names no
+                                        // players -- re-sending just the event
+                                        // types is the documented keep-alive,
+                                        // and it must not widen the stream to
+                                        // every player. Naming players, `*`
+                                        // included, still replaces the filter.
+                                        if subscription.players.is_none() {
+                                            subscription.players =
+                                                player_filter.map(|p| vec![p.to_string()]);
+                                        }
                                         debug!("Subscription update: Client: {}, Player: {}, Players: {:?}, Event types: {:?}",
                                               client_id, player, subscription.players, subscription.event_types);
 
@@ -1003,6 +1031,88 @@ mod tests {
             .map(ToOwned::to_owned)
     }
 
+    fn state_event(player: &str) -> PlayerEvent {
+        PlayerEvent::StateChanged {
+            source: PlayerSource::new(player.to_string(), format!("{player}:1")),
+            state: crate::data::PlaybackState::Playing,
+        }
+    }
+
+    fn all_events() -> EventSubscription {
+        EventSubscription { players: None, event_types: None }
+    }
+
+    /// Whatever the timing of the polls, an event reaches a client once: not
+    /// again on the next poll, and not never.
+    #[test]
+    fn each_queued_event_is_delivered_to_a_client_exactly_once() {
+        let manager = WebSocketManager::detached();
+        let client = manager.register(all_events());
+
+        manager.queue_event(state_event("mpd"));
+        manager.queue_event(state_event("mpd"));
+        assert_eq!(manager.get_events_for_client(client).len(), 2);
+        assert_eq!(manager.get_events_for_client(client).len(), 0);
+
+        manager.queue_event(state_event("mpd"));
+        assert_eq!(manager.get_events_for_client(client).len(), 1);
+        assert_eq!(manager.get_events_for_client(client).len(), 0);
+    }
+
+    /// A client is owed what happens after it connects, not the backlog.
+    #[test]
+    fn a_new_client_does_not_receive_events_queued_before_it_registered() {
+        let manager = WebSocketManager::detached();
+        manager.queue_event(state_event("mpd"));
+
+        let client = manager.register(all_events());
+        assert!(manager.get_events_for_client(client).is_empty());
+
+        manager.queue_event(state_event("mpd"));
+        assert_eq!(manager.get_events_for_client(client).len(), 1);
+    }
+
+    #[test]
+    fn the_player_filter_and_its_wildcard_decide_what_a_client_receives() {
+        let manager = WebSocketManager::detached();
+        let only_mpd = manager.register(EventSubscription {
+            players: Some(vec!["mpd".to_string()]),
+            event_types: None,
+        });
+        let wildcard = manager.register(EventSubscription {
+            players: Some(vec!["*".to_string()]),
+            event_types: None,
+        });
+        let only_songs = manager.register(EventSubscription {
+            players: None,
+            event_types: Some(vec!["song_changed".to_string()]),
+        });
+
+        manager.queue_event(state_event("mpd"));
+        manager.queue_event(state_event("lms"));
+        manager.queue_event(song_changed_event());
+
+        assert_eq!(manager.get_events_for_client(only_mpd).len(), 2);
+        assert_eq!(manager.get_events_for_client(wildcard).len(), 3);
+        assert_eq!(manager.get_events_for_client(only_songs).len(), 1);
+    }
+
+    /// Events a filter rejected are still behind the client afterwards.
+    #[test]
+    fn widening_a_subscription_does_not_replay_events_already_passed_over() {
+        let manager = WebSocketManager::detached();
+        let client = manager.register(EventSubscription {
+            players: Some(vec!["mpd".to_string()]),
+            event_types: None,
+        });
+
+        manager.queue_event(state_event("lms"));
+        assert!(manager.get_events_for_client(client).is_empty());
+
+        assert!(manager.update_subscription(client, all_events()));
+        assert!(manager.get_events_for_client(client).is_empty());
+    }
+
     #[test]
     fn a_song_event_gains_the_prefix() {
         let message = convert_to_websocket_message(&song_changed_event(), Some("/api/audiocontrol"));
@@ -1240,8 +1350,20 @@ mod tests {
     fn start_loop_with_shutdown(
         shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> LoopHarness {
+        start_loop_for(None, shutdown)
+    }
+
+    /// The loop as the `/events/<player>` mount point runs it when
+    /// `player_filter` is given, as `/events` runs it otherwise.
+    fn start_loop_for(
+        player_filter: Option<&'static str>,
+        shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> LoopHarness {
         let manager = WebSocketManager::detached();
-        let client_id = manager.register(EventSubscription { players: None, event_types: None });
+        let client_id = manager.register(EventSubscription {
+            players: player_filter.map(|p| vec![p.to_string()]),
+            event_types: None,
+        });
 
         let (to_server, inbound) = mpsc::unbounded_channel();
         let (outbound, from_server) = mpsc::unbounded_channel();
@@ -1254,7 +1376,7 @@ mod tests {
                 &mut stream,
                 client_id,
                 None,
-                None,
+                player_filter,
                 PING_INTERVAL,
                 shutdown,
             )
@@ -1287,6 +1409,62 @@ mod tests {
                 .expect("the loop task panicked")
                 .expect("the loop returned an error")
         }
+    }
+
+    /// Re-sending only the event types is the documented keep-alive. On a
+    /// connection opened for one player it must not widen the stream to all.
+    #[tokio::test(start_paused = true)]
+    async fn narrowing_the_event_types_keeps_a_player_connection_on_its_player() {
+        let mut harness = start_loop_for(Some("mpd"), std::future::pending());
+
+        harness
+            .to_server
+            .send(Ok(Message::Text(r#"{"event_types":["state_changed"]}"#.to_string())))
+            .expect("the loop is still reading");
+        let confirmation = harness.next_frame().await;
+        assert!(
+            matches!(&confirmation, Some(Message::Text(t)) if t.contains("subscription_updated")),
+            "expected a confirmation; got {:?}",
+            confirmation
+        );
+
+        harness.manager.queue_event(state_event("lms"));
+        harness.manager.queue_event(state_event("mpd"));
+
+        let mut players = Vec::new();
+        while let Some(frame) = harness.next_frame().await {
+            match frame {
+                Message::Text(text) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+                    players.push(value["source"]["player_name"].as_str().map(str::to_owned));
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert_eq!(players, vec![Some("mpd".to_string())]);
+
+        assert_eq!(harness.finish().await, ClientLoopEnd::Closed);
+    }
+
+    /// An object that is not a subscription is answered with an error and
+    /// changes nothing.
+    #[tokio::test(start_paused = true)]
+    async fn a_message_that_is_not_json_is_answered_with_an_error() {
+        let mut harness = start_loop();
+
+        harness
+            .to_server
+            .send(Ok(Message::Text("not json".to_string())))
+            .expect("the loop is still reading");
+
+        let reply = harness.next_frame().await;
+        assert!(
+            matches!(&reply, Some(Message::Text(t)) if t.contains("\"error\"")),
+            "expected an error frame; got {:?}",
+            reply
+        );
+        assert_eq!(harness.finish().await, ClientLoopEnd::Closed);
     }
 
     /// The daemon shutting down closes the connection from this end, with a

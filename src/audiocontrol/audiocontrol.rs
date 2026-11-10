@@ -460,11 +460,9 @@ impl AudioController {
             let factory = crate::plugins::plugin_factory::PluginFactory::new();
 
             for (idx, plugin_config) in plugins_config.iter().enumerate() {
-                if let Some(enabled) = plugin_config.get("enabled").and_then(Value::as_bool) {
-                    if !enabled {
-                        debug!("Skipping disabled action plugin at index {}", idx);
-                        continue;
-                    }
+                if !action_plugin_is_enabled(plugin_config) {
+                    debug!("Skipping disabled action plugin at index {}", idx);
+                    continue;
                 }
 
                 if let Ok(json_str) = serde_json::to_string(plugin_config) {
@@ -552,11 +550,55 @@ impl AudioController {
     }
 }
 
+/// Whether an `action_plugins` entry is switched on.
+///
+/// An entry is `{ "<plugin type>": { ...params } }`, and the shipped
+/// configuration keeps `enabled` among the params. That is where it is read;
+/// an entry without the key is enabled.
+///
+/// `lastfm` is the exception. Its entry is a descriptor for a worker that
+/// lives in the metadata daemon, which reads `enabled` itself; here the entry
+/// only decides what `GET /api/plugins/actions` lists, and a disabled Last.fm
+/// has always been listed.
+fn action_plugin_is_enabled(plugin_config: &Value) -> bool {
+    let Some(entry) = plugin_config.as_object() else {
+        return true;
+    };
+    entry
+        .iter()
+        .filter(|(plugin_type, _)| plugin_type.as_str() != "lastfm")
+        .filter_map(|(_, params)| params.get("enabled").and_then(Value::as_bool))
+        .all(|enabled| enabled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use crate::players::BasePlayerController;
+
+    #[test]
+    fn an_action_plugin_is_disabled_by_enabled_false_in_its_params() {
+        assert!(!action_plugin_is_enabled(&json!({"active-monitor": {"enabled": false}})));
+        assert!(action_plugin_is_enabled(&json!({"active-monitor": {"enabled": true}})));
+        assert!(action_plugin_is_enabled(&json!({"active-monitor": {}})));
+        assert!(action_plugin_is_enabled(&json!({"active-monitor": null})));
+        // Listed either way; the metadata daemon decides whether it runs.
+        assert!(action_plugin_is_enabled(&json!({"lastfm": {"enabled": false}})));
+    }
+
+    #[test]
+    fn a_disabled_action_plugin_is_not_started() {
+        let config = json!({
+            "action_plugins": [
+                {"active-monitor": {"enabled": false}},
+                {"event-logger": {"enabled": true}}
+            ]
+        });
+        let controller = AudioController::from_json(&config).expect("must start");
+
+        assert_eq!(controller.action_plugins.read().len(), 1);
+    }
 
     #[test]
     fn test_from_json_without_players_key() {

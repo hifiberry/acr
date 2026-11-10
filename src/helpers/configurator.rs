@@ -128,7 +128,13 @@ pub fn get_system_info() -> Result<SystemInfo, String> {
     debug!("Getting system information from configurator API: {}", url);
     
     // Make the HTTP request
-    match ureq::get(&url).call() {
+    // Bounded: this runs on the main thread during startup, before the API
+    // server exists, and without a timeout a configurator that accepts the
+    // connection and then says nothing holds the daemon there for good.
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    match agent.get(&url).call() {
         Ok(response) => {
             let status = response.status();
             if status == 200 {

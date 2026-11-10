@@ -6,7 +6,6 @@ use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use rusqlite::{Connection, params};
 use lru::LruCache;
-use std::num::NonZeroUsize;
 
 /// The SQL condition every prefix operation filters with; `?1` is the prefix.
 ///
@@ -138,7 +137,11 @@ impl AttributeCache {
             db: None,
             enabled: true,
             max_age_days: 30,
-            memory_cache: LruCache::new(NonZeroUsize::new(1000000).unwrap()),
+            // Unbounded by count: `max_memory_bytes` is the limit. Giving the
+            // LRU a capacity makes it allocate a hash table of that size up
+            // front, and the million once written here was about 30 MB per
+            // process before a single entry had been cached.
+            memory_cache: LruCache::unbounded(),
             max_memory_bytes: 50 * 1024 * 1024,
             current_memory_bytes: 0,
         }
@@ -174,9 +177,37 @@ impl AttributeCache {
             db,
             enabled: true,
             max_age_days: 30, // Default to 30 days
-            memory_cache: LruCache::new(NonZeroUsize::new(1000000).unwrap()), // Large number since we'll limit by memory
+            // Unbounded by count: `max_memory_bytes` is the limit. Giving the
+            // LRU a capacity makes it allocate a hash table of that size up
+            // front, and the million once written here was about 30 MB per
+            // process before a single entry had been cached.
+            memory_cache: LruCache::unbounded(),
             max_memory_bytes,
             current_memory_bytes: 0,
+        }
+    }
+
+    /// Make writes cheap enough for the storage this runs on.
+    ///
+    /// SQLite's defaults -- a rollback journal and `synchronous=FULL` -- cost
+    /// two or three fsyncs for every value cached, each its own transaction,
+    /// and a library sweep or a cover pre-warm caches tens of thousands. On an
+    /// SD card that is the slow part and the wearing part. In WAL mode with
+    /// `synchronous=NORMAL` a commit is an append and only a checkpoint
+    /// syncs. The file stays consistent across a power cut; what can be lost
+    /// is the last few entries, which a cache simply looks up again.
+    ///
+    /// The busy timeout is for the dump tools, which open the same file
+    /// while a daemon has it.
+    ///
+    /// Best effort: a database that cannot change mode (a read-only
+    /// filesystem, say) still works in the mode it has.
+    fn tune_connection(conn: &Connection) {
+        if let Err(e) = conn.busy_timeout(std::time::Duration::from_secs(5)) {
+            warn!("Failed to set the attribute cache busy timeout: {}", e);
+        }
+        if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") {
+            warn!("Failed to switch the attribute cache to WAL mode: {}", e);
         }
     }
 
@@ -186,6 +217,8 @@ impl AttributeCache {
         match Connection::open(db_path) {
             Ok(conn) => {
                 info!("Successfully opened attribute cache database at {:?}", db_path);
+
+                Self::tune_connection(&conn);
                 
                 // First, check if this is a completely new database or needs migration
                 let mut table_exists = false;
@@ -1451,6 +1484,45 @@ mod tests {
         name: String,
         value: u32,
         active: bool,
+    }
+
+    /// The cache database is opened for cheap commits: see `tune_connection`.
+    #[test]
+    fn the_cache_database_is_opened_in_wal_mode_with_normal_sync() {
+        let (cache, _temp_dir) = create_test_cache();
+        let conn = cache.db.as_ref().expect("an open database");
+
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
+        assert_eq!(mode.to_lowercase(), "wal");
+        // 1 is NORMAL.
+        let sync: i64 = conn.query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap();
+        assert_eq!(sync, 1);
+    }
+
+    /// What a second process -- a dump tool beside a running daemon -- writes
+    /// and reads through its own connection is the same data.
+    #[test]
+    fn two_connections_to_one_cache_file_see_each_others_writes() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let cache_file = temp_dir.path().join("shared.db");
+        let mut first = AttributeCache::with_database_file(&cache_file);
+        let mut second = AttributeCache::with_database_file(&cache_file);
+
+        first.set("shared::key", &"from first".to_string()).unwrap();
+
+        assert_eq!(
+            second.get::<String>("shared::key").unwrap().as_deref(),
+            Some("from first")
+        );
+    }
+
+    /// The memory cache starts empty rather than sized for a million entries.
+    #[test]
+    fn a_new_cache_reserves_no_memory_cache_slots() {
+        let (cache, _temp_dir) = create_test_cache();
+
+        assert_eq!(cache.memory_cache.len(), 0);
+        assert_eq!(cache.memory_cache.cap().get(), usize::MAX);
     }
 
     fn create_test_cache() -> (AttributeCache, TempDir) {

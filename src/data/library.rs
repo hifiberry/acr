@@ -736,6 +736,14 @@ pub struct ArtistMatch {
 }
 
 /// Common trait for music library interfaces
+/// The size of a library, as `LibraryInterface::counts` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LibraryCounts {
+    pub albums: usize,
+    pub artists: usize,
+    pub tracks: usize,
+}
+
 pub trait LibraryInterface {
     /// Create a new library instance with default connection parameters
     fn new() -> Self where Self: Sized;
@@ -806,6 +814,21 @@ pub trait LibraryInterface {
         self.get_albums_by_artist_id(artist_id).len()
     }
     
+    /// How many albums, artists and tracks the library holds.
+    ///
+    /// The default counts what `get_albums` and `get_artists` hand out, which
+    /// copies the whole library to produce three numbers. A backend that keeps
+    /// the library in memory should override this and count in place: the
+    /// summary endpoint that asks is the one clients poll.
+    fn counts(&self) -> LibraryCounts {
+        let albums = self.get_albums();
+        LibraryCounts {
+            albums: albums.len(),
+            artists: self.get_artists().len(),
+            tracks: albums.iter().map(|album| album.tracks.lock().len()).sum(),
+        }
+    }
+
     /// Force an update of the library data in the underlying system
     ///
     /// This differs from refresh_library in that it asks the backend system

@@ -439,6 +439,16 @@ impl LibraryInterface for LMSLibrary {
         result
     }
     
+    fn counts(&self) -> crate::data::library::LibraryCounts {
+        // Counted under the read locks, without copying a single album.
+        let albums = self.albums.read();
+        crate::data::library::LibraryCounts {
+            albums: albums.len(),
+            artists: self.artists.read().len(),
+            tracks: albums.values().map(|album| album.tracks.lock().len()).sum(),
+        }
+    }
+
     fn get_albums(&self) -> Vec<Album> {
         warn!("Retrieving all albums from LMSLibrary");
         let albums = self.albums.read();

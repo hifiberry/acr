@@ -1229,6 +1229,16 @@ impl LibraryInterface for MPDLibrary {
         result
     }
     
+    fn counts(&self) -> crate::data::library::LibraryCounts {
+        // Counted under the read locks, without copying a single album.
+        let albums = self.albums.read();
+        crate::data::library::LibraryCounts {
+            albums: albums.len(),
+            artists: self.artists.read().len(),
+            tracks: albums.values().map(|album| album.tracks.lock().len()).sum(),
+        }
+    }
+
     fn get_albums(&self) -> Vec<Album> {
         let albums = self.albums.read();
         albums.values().cloned().map(|mut album| {
@@ -1905,6 +1915,26 @@ mod tests {
             is_multi: false,
             metadata: None,
         }
+    }
+
+    /// The in-place count has to agree with what counting the handed-out
+    /// copies gives, which is what the trait's default does.
+    #[test]
+    fn counts_match_the_albums_artists_and_tracks_handed_out() {
+        let first = test_album("1", "First", "A");
+        first.tracks.lock().push(crate::data::Track::with_name("one".to_string()));
+        first.tracks.lock().push(crate::data::Track::with_name("two".to_string()));
+        let second = test_album("2", "Second", "B");
+        second.tracks.lock().push(crate::data::Track::with_name("three".to_string()));
+        let lib = library_with(vec![first, second], vec![test_artist("A"), test_artist("B"), test_artist("C")]);
+
+        let counts = lib.counts();
+
+        assert_eq!((counts.albums, counts.artists, counts.tracks), (2, 3, 3));
+        let albums = lib.get_albums();
+        assert_eq!(counts.albums, albums.len());
+        assert_eq!(counts.artists, lib.get_artists().len());
+        assert_eq!(counts.tracks, albums.iter().map(|a| a.tracks.lock().len()).sum::<usize>());
     }
 
     /// A library holding exactly the given albums, plus the given artists.

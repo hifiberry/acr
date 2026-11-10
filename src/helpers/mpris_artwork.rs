@@ -158,7 +158,7 @@ impl ArtworkResolver {
 }
 
 fn is_file_url(art_url: &str) -> bool {
-    art_url.len() >= 7 && art_url[..7].eq_ignore_ascii_case("file://")
+    art_url.as_bytes().get(..7).is_some_and(|p| p.eq_ignore_ascii_case(b"file://"))
 }
 
 /// Open without following a final symlink and without blocking on a FIFO.
@@ -224,6 +224,18 @@ mod tests {
 
     fn expected_url(data: &[u8], ext: &str) -> String {
         format!("/api/imagecache/mpris/{:x}.{}", md5::compute(data), ext)
+    }
+
+    #[test]
+    fn non_ascii_urls_do_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RecordingStore::new();
+        let r = resolver(dir.path(), &store);
+        // byte 7 falls inside the second '€'
+        assert_eq!(r.resolve("ab€€"), Some("ab€€".to_string()));
+        assert_eq!(r.resolve("file€€x"), Some("file€€x".to_string()));
+        assert_eq!(r.resolve("file://€/x.jpg"), None);
+        assert_eq!(store.calls(), 0);
     }
 
     #[test]

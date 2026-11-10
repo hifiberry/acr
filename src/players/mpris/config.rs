@@ -82,7 +82,10 @@ impl MprisConfig {
         }
         if let Some(secs) = v.get("poll_interval").and_then(|p| p.as_f64()) {
             if secs > 0.0 {
-                config.poll_interval = Duration::from_secs_f64(secs);
+                // Values a Duration cannot hold keep the default.
+                if let Ok(interval) = Duration::try_from_secs_f64(secs) {
+                    config.poll_interval = interval;
+                }
             }
         }
         if let Some(dirs) = v.get("artwork_dirs").and_then(|d| d.as_array()) {
@@ -110,6 +113,12 @@ mod tests {
         assert!(c.artwork_dirs.is_empty());
         assert!(!c.clear_song_when_stopped);
         assert!(c.extra_capabilities.is_empty());
+    }
+
+    #[test]
+    fn unrepresentable_poll_interval_keeps_default() {
+        let c = MprisConfig::from_json(&json!({"bus_name": "org.mpris.MediaPlayer2.vlc", "poll_interval": 1e20})).unwrap();
+        assert_eq!(c.poll_interval, Duration::from_secs(1));
     }
 
     #[test]

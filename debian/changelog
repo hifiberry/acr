@@ -1,3 +1,43 @@
+hifiberry-audiocontrol (0.24.0) trixie; urgency=medium
+
+  * The shairport player reads and controls shairport-sync over MPRIS
+    instead of its UDP metadata socket, for AirPlay 1 and AirPlay 2 alike.
+    shairport-sync 5.6 stopped sending AirPlay 2 titles, artists and albums
+    to that socket, so AirPlay 2 would have shown nothing. Over MPRIS the
+    WebUI also gets the playback position and, with shairport-sync 5.6, can
+    pause, skip and toggle shuffle and repeat on the AirPlay 2 source. Stop
+    still drops the session when another player takes over, and so does
+    Pause when the source ignores it. "metadata_source": "udp" in
+    players.d/shairport.json selects the old path.
+
+  * MPRIS players whose cover art is a local file now show it: the file is
+    imported into the image cache and served from /api/imagecache/mpris/.
+    Only files inside the player's artwork_dirs are imported, only real
+    images (JPEG, PNG, GIF, WebP) and only up to 10 MiB, so nothing on the
+    bus can get an arbitrary file served.
+
+  * MPRIS players may now be absent when AudioControl starts, or come and
+    go: they read as stopped while not on the bus and are picked up when
+    they appear, on either bus. Previously a player on the system bus that
+    was missing at startup was never picked up. State, shuffle and loop
+    changes are now published as events, and capabilities follow what the
+    player reports instead of a fixed list that advertised seeking and
+    volume control it could not deliver. A single unreadable D-Bus property
+    no longer shows up as a change, and details that arrive after the title
+    (album, length, track number, genre, artwork) are merged into the song.
+
+  * New MPRIS player settings: name, bus, artwork_dirs and
+    clear_song_when_stopped (see doc/mpris.md).
+
+  * shairport: a paused AirPlay source no longer disappears from the WebUI.
+    shairport-sync reports Stopped 10 to 30 seconds into a pause, which
+    cannot be told apart from a session that ended. As a workaround the
+    song is kept while the sender's AirPlay connection is open; the ports
+    are set with session_ports in players.d/shairport.json (default 7000
+    and 5000, [] turns it off).
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 09 Nov 2026 16:57:58 +0000
+
 hifiberry-audiocontrol (0.23.6) trixie; urgency=medium
 
   * Pausing or stopping "all players" could hang forever, and after enough

@@ -19,6 +19,82 @@ use std::path::Path;
 use notify::{Watcher, RecursiveMode, Event, EventKind, recommended_watcher, event::CreateKind, event::ModifyKind};
 use std::sync::mpsc;
 use md5;
+use crate::players::mpris::MprisPlayerController;
+use crate::players::mpris::config::{BusPreference, ConnectedProbe, MprisConfig};
+use crate::helpers::tcp_connections::has_established_on_local_ports;
+
+/// shairport-sync's MPRIS name, on the system bus.
+const SHAIRPORT_MPRIS_BUS_NAME: &str = "org.mpris.MediaPlayer2.ShairportSync";
+
+/// Ports shairport-sync accepts AirPlay connections on: 7000 for AirPlay 2,
+/// 5000 for AirPlay 1.
+const DEFAULT_SESSION_PORTS: [u16; 2] = [7000, 5000];
+
+/// The `session_ports` setting: local ports whose open connections mean an
+/// AirPlay sender is still connected. Missing → the defaults; an empty list
+/// turns the check off. Entries that are not valid ports are ignored.
+pub fn session_ports_from_config(config: &serde_json::Value) -> Vec<u16> {
+    match config.get("session_ports").and_then(|p| p.as_array()) {
+        Some(ports) => ports
+            .iter()
+            .filter_map(|p| p.as_u64())
+            .filter_map(|p| u16::try_from(p).ok())
+            .collect(),
+        None => DEFAULT_SESSION_PORTS.to_vec(),
+    }
+}
+
+/// Where the player learns what is playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataSource {
+    /// shairport-sync's MPRIS interface: metadata, position, shuffle/repeat
+    /// and remote control for AirPlay 1 and 2.
+    Mpris,
+    /// The UDP metadata socket plus the cover art directory watcher. From
+    /// shairport-sync 5.6 this carries no AirPlay 2 titles.
+    Udp,
+}
+
+/// What a command does in MPRIS mode.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandRoute {
+    /// Pass the command to shairport-sync over MPRIS.
+    Mpris(PlayerCommand),
+    /// Drop the AirPlay session over D-Bus: another player is taking over.
+    DropSession,
+    /// Pause over MPRIS; if the source keeps playing (no remote control, as
+    /// with AirPlay 2 on shairport-sync 5.5), drop the session instead.
+    PauseOrDrop,
+    /// No session to resume: restart the service so it re-advertises.
+    RestartService,
+    Unsupported,
+}
+
+/// After an MPRIS pause: does the session still need dropping?
+pub fn pause_needs_drop(state_after: PlaybackState) -> bool {
+    state_after == PlaybackState::Playing
+}
+
+/// How long a source gets to act on a pause before the session is dropped.
+const PAUSE_CONFIRM_ATTEMPTS: u32 = 3;
+const PAUSE_CONFIRM_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Decide what a command does in MPRIS mode. `session_active` is true while
+/// an AirPlay sender is connected (or the last session's song is still shown).
+pub fn route_command(cmd: &PlayerCommand, session_active: bool, has_systemd_unit: bool) -> CommandRoute {
+    match cmd {
+        PlayerCommand::Stop => CommandRoute::DropSession,
+        PlayerCommand::Play if session_active => CommandRoute::Mpris(PlayerCommand::Play),
+        PlayerCommand::Play if has_systemd_unit => CommandRoute::RestartService,
+        PlayerCommand::Pause => CommandRoute::PauseOrDrop,
+        PlayerCommand::PlayPause
+        | PlayerCommand::Next
+        | PlayerCommand::Previous
+        | PlayerCommand::SetRandom(_)
+        | PlayerCommand::SetLoopMode(_) => CommandRoute::Mpris(cmd.clone()),
+        _ => CommandRoute::Unsupported,
+    }
+}
 
 /// ShairportSync player controller implementation
 /// 
@@ -51,6 +127,17 @@ pub struct ShairportController {
     
     /// Thread handle for the directory watcher
     watcher_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+
+    /// Where metadata comes from
+    metadata_source: MetadataSource,
+
+    /// The MPRIS controller doing the work in MPRIS mode. It publishes
+    /// through this player's base controller, so name and id stay "shairport".
+    mpris: Option<MprisPlayerController>,
+
+    /// Local ports whose open connections mean a sender is still connected
+    /// (MPRIS mode). Empty turns the check off.
+    session_ports: Vec<u16>,
 }
 
 impl Clone for ShairportController {
@@ -65,6 +152,9 @@ impl Clone for ShairportController {
             stop_listener: Arc::clone(&self.stop_listener),
             listener_thread: Arc::clone(&self.listener_thread),
             watcher_thread: Arc::clone(&self.watcher_thread),
+            metadata_source: self.metadata_source,
+            mpris: self.mpris.clone(),
+            session_ports: self.session_ports.clone(),
         }
     }
 }
@@ -102,6 +192,9 @@ impl ShairportController {
             stop_listener: Arc::new(AtomicBool::new(false)),
             listener_thread: Arc::new(Mutex::new(None)),
             watcher_thread: Arc::new(Mutex::new(None)),
+            metadata_source: MetadataSource::Udp,
+            mpris: None,
+            session_ports: DEFAULT_SESSION_PORTS.to_vec(),
         };
         
         // Set default capabilities
@@ -125,7 +218,48 @@ impl ShairportController {
             .unwrap_or("/tmp/shairport-sync/.cache/coverart")
             .to_string();
         
-        Self::with_full_config(port, systemd_unit, coverart_dir)
+        let metadata_source = match config.get("metadata_source").and_then(|s| s.as_str()) {
+            None | Some("mpris") => MetadataSource::Mpris,
+            Some("udp") => MetadataSource::Udp,
+            Some(other) => {
+                warn!("Unknown shairport metadata_source \"{}\", using \"mpris\"", other);
+                MetadataSource::Mpris
+            }
+        };
+
+        let mut controller = Self::with_full_config(port, systemd_unit, coverart_dir);
+        controller.session_ports = session_ports_from_config(config);
+        if metadata_source == MetadataSource::Mpris {
+            controller.use_mpris();
+        }
+        controller
+    }
+
+    /// Switch to reading and controlling shairport-sync over MPRIS.
+    fn use_mpris(&mut self) {
+        let mut config = MprisConfig::new(SHAIRPORT_MPRIS_BUS_NAME);
+        config.bus = BusPreference::System;
+        config.artwork_dirs = vec![self.coverart_dir.clone().into()];
+        // shairport-sync keeps the last song in Metadata after a session ends.
+        config.clear_song_when_stopped = true;
+        // Workaround: shairport-sync also reports Stopped 10-30 s into a
+        // pause, and nothing on D-Bus tells that apart from a session that
+        // ended. While the sender's AirPlay connection is open, keep the song.
+        if !self.session_ports.is_empty() {
+            let ports = self.session_ports.clone();
+            config.connected_probe = Some(ConnectedProbe(Arc::new(move || has_established_on_local_ports(&ports))));
+        }
+        config.extra_capabilities = vec![PlayerCapability::Metadata, PlayerCapability::AlbumArt];
+        if self.systemd_unit.is_some() {
+            config.extra_capabilities.push(PlayerCapability::Play);
+        }
+        self.mpris = Some(MprisPlayerController::with_config_and_base(config, self.base.clone()));
+        self.metadata_source = MetadataSource::Mpris;
+    }
+
+    /// Whether an AirPlay session is (or was just) active, as MPRIS sees it.
+    fn session_active(&self, mpris: &MprisPlayerController) -> bool {
+        mpris.get_playback_state() != PlaybackState::Stopped || mpris.get_song().is_some()
     }
     
     /// Set the default capabilities for this player
@@ -838,22 +972,31 @@ impl PlayerController for ShairportController {
     }
     
     fn get_loop_mode(&self) -> LoopMode {
-        // ShairportSync doesn't provide loop mode information
-        LoopMode::None
+        match &self.mpris {
+            Some(m) => m.get_loop_mode(),
+            None => LoopMode::None, // the UDP metadata carries no loop mode
+        }
     }
     
     fn get_playback_state(&self) -> PlaybackState {
-        self.current_state.lock().state
+        match &self.mpris {
+            Some(m) => m.get_playback_state(),
+            None => self.current_state.lock().state,
+        }
     }
     
     fn get_position(&self) -> Option<f64> {
-        // ShairportSync doesn't provide reliable position information
-        None
+        match &self.mpris {
+            Some(m) => m.get_position(),
+            None => None, // the UDP metadata carries no reliable position
+        }
     }
     
     fn get_shuffle(&self) -> bool {
-        // ShairportSync doesn't provide shuffle information
-        false
+        match &self.mpris {
+            Some(m) => m.get_shuffle(),
+            None => false,
+        }
     }
     
     fn get_player_name(&self) -> String {
@@ -873,6 +1016,35 @@ impl PlayerController for ShairportController {
     }
     
     fn send_command(&self, command: PlayerCommand) -> bool {
+        if let Some(mpris) = &self.mpris {
+            return match route_command(&command, self.session_active(mpris), self.systemd_unit.is_some()) {
+                CommandRoute::Mpris(cmd) => mpris.send_command(cmd),
+                CommandRoute::DropSession => self.stop_airplay(),
+                CommandRoute::PauseOrDrop => {
+                    // pause-all relies on Pause stopping the source: a source
+                    // that keeps playing would keep the output busy.
+                    mpris.send_command(PlayerCommand::Pause);
+                    for _ in 0..PAUSE_CONFIRM_ATTEMPTS {
+                        if !pause_needs_drop(mpris.get_playback_state()) {
+                            return true;
+                        }
+                        thread::sleep(PAUSE_CONFIRM_INTERVAL);
+                        mpris.refresh();
+                    }
+                    if pause_needs_drop(mpris.get_playback_state()) {
+                        info!("ShairportSync: source ignored pause, dropping the AirPlay session");
+                        self.stop_airplay()
+                    } else {
+                        true
+                    }
+                }
+                CommandRoute::RestartService => self.control_systemd_service("restart"),
+                CommandRoute::Unsupported => {
+                    debug!("ShairportSync: {:?} is not supported over MPRIS", command);
+                    false
+                }
+            };
+        }
         match command {
             // An AirPlay receiver can't pause/stop its own playback (the sender
             // drives it), but shairport-sync's D-Bus interface can drop the
@@ -905,6 +1077,10 @@ impl PlayerController for ShairportController {
     }
     
     fn start(&self) -> bool {
+        if let Some(mpris) = &self.mpris {
+            info!("Starting ShairportSync player over MPRIS");
+            return mpris.start();
+        }
         info!("Starting ShairportSync player on port {}", self.port);
         
         let listener_started = self.start_listener();
@@ -921,6 +1097,10 @@ impl PlayerController for ShairportController {
     }
     
     fn stop(&self) -> bool {
+        if let Some(mpris) = &self.mpris {
+            info!("Stopping ShairportSync player (MPRIS)");
+            return mpris.stop();
+        }
         info!("Stopping ShairportSync player");
         let listener_stopped = self.stop_listener();
         let watcher_stopped = self.stop_watcher();
@@ -955,6 +1135,101 @@ impl Default for ShairportController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_ports_default_to_airplay_ports() {
+        assert_eq!(session_ports_from_config(&serde_json::json!({})), vec![7000, 5000]);
+    }
+
+    #[test]
+    fn session_ports_empty_list_turns_check_off() {
+        assert!(session_ports_from_config(&serde_json::json!({"session_ports": []})).is_empty());
+    }
+
+    #[test]
+    fn session_ports_custom_and_invalid_entries() {
+        let c = serde_json::json!({"session_ports": [7001, "x", 70000, -1, 5001]});
+        assert_eq!(session_ports_from_config(&c), vec![7001, 5001]);
+    }
+
+    #[test]
+    fn from_config_takes_session_ports() {
+        let c = ShairportController::from_config(&serde_json::json!({"metadata_source": "udp", "session_ports": [7100]}));
+        assert_eq!(c.session_ports, vec![7100]);
+        let d = ShairportController::from_config(&serde_json::json!({"metadata_source": "udp"}));
+        assert_eq!(d.session_ports, vec![7000, 5000]);
+    }
+
+    #[test]
+    fn session_ports_not_a_list_uses_defaults() {
+        let c = serde_json::json!({"session_ports": 7000});
+        assert_eq!(session_ports_from_config(&c), vec![7000, 5000]);
+    }
+
+    #[test]
+    fn stop_drops_session() {
+        assert_eq!(route_command(&PlayerCommand::Stop, true, true), CommandRoute::DropSession);
+        assert_eq!(route_command(&PlayerCommand::Stop, false, false), CommandRoute::DropSession);
+    }
+
+    #[test]
+    fn pause_next_previous_go_to_mpris() {
+        for cmd in [
+            PlayerCommand::PlayPause,
+            PlayerCommand::Next,
+            PlayerCommand::Previous,
+            PlayerCommand::SetRandom(true),
+            PlayerCommand::SetLoopMode(LoopMode::Track),
+        ] {
+            assert_eq!(route_command(&cmd, true, true), CommandRoute::Mpris(cmd.clone()));
+        }
+    }
+
+    #[test]
+    fn pause_falls_back_to_dropping_the_session() {
+        assert_eq!(route_command(&PlayerCommand::Pause, true, true), CommandRoute::PauseOrDrop);
+        assert!(pause_needs_drop(PlaybackState::Playing));
+        assert!(!pause_needs_drop(PlaybackState::Paused));
+        assert!(!pause_needs_drop(PlaybackState::Stopped));
+    }
+
+    #[test]
+    fn play_with_session_goes_to_mpris() {
+        assert_eq!(route_command(&PlayerCommand::Play, true, true), CommandRoute::Mpris(PlayerCommand::Play));
+    }
+
+    #[test]
+    fn play_without_session_restarts_service() {
+        assert_eq!(route_command(&PlayerCommand::Play, false, true), CommandRoute::RestartService);
+        assert_eq!(route_command(&PlayerCommand::Play, false, false), CommandRoute::Unsupported);
+    }
+
+    #[test]
+    fn seek_is_unsupported() {
+        assert_eq!(route_command(&PlayerCommand::Seek(10.0), true, true), CommandRoute::Unsupported);
+    }
+
+    #[test]
+    fn metadata_source_defaults_to_mpris() {
+        let c = ShairportController::from_config(&serde_json::json!({"port": 5555}));
+        assert_eq!(c.metadata_source, MetadataSource::Mpris);
+        assert!(c.mpris.is_some());
+        assert_eq!(c.get_player_name(), "shairport");
+        let udp = ShairportController::from_config(&serde_json::json!({"metadata_source": "udp"}));
+        assert_eq!(udp.metadata_source, MetadataSource::Udp);
+        assert!(udp.mpris.is_none());
+        let odd = ShairportController::from_config(&serde_json::json!({"metadata_source": "x"}));
+        assert_eq!(odd.metadata_source, MetadataSource::Mpris);
+    }
+
+    #[test]
+    fn mpris_mode_keeps_metadata_and_album_art_capabilities() {
+        let c = ShairportController::from_config(&serde_json::json!({"systemd_unit": "shairport"}));
+        let caps = c.get_capabilities();
+        assert!(caps.has_capability(PlayerCapability::Metadata));
+        assert!(caps.has_capability(PlayerCapability::AlbumArt));
+        assert!(caps.has_capability(PlayerCapability::Play));
+    }
 
     /// An AirPlay source that never sends an ARTIST metadata line is a
     /// legitimate current song (song_has_significant_metadata accepts title,

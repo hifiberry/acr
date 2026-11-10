@@ -388,7 +388,7 @@ impl LMSAudioController {
                     debug!("Already connected to server {}, checking if still connected", server);
 
                     // Check if still connected to this server
-                    if crate::players::lms::player_finder::is_player(server, vec![player_id.to_string()]) {
+                    if crate::players::lms::player_finder::is_player(server, config.port, vec![player_id.to_string()]) {
                         debug!("Still connected to server {}", server);
                         return (true, Some(server.clone()), Some(player_id.to_string()), None);
                     } else {
@@ -485,7 +485,7 @@ impl LMSAudioController {
             // Try to find a server with any of our MAC addresses connected
             if !all_mac_addresses.is_empty() && !servers_to_check.is_empty() {
                 // Use find_my_server to locate a matching server
-                if let Some(found_server) = crate::players::lms::player_finder::find_my_server(servers_to_check, all_mac_addresses.clone()) {
+                if let Some(found_server) = crate::players::lms::player_finder::find_my_server(servers_to_check, config.port, all_mac_addresses.clone()) {
                     debug!("Found matching server: {}", found_server);
                     
                     // Create a client for the found server

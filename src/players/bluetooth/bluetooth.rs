@@ -568,8 +568,10 @@ impl BluetoothPlayerController {
                     }
                     "Duration" => {
                         if let Some(val) = variant.as_u64() {
-                            // Duration is in microseconds, convert to seconds
-                            let duration_secs = val as f64 / 1_000_000.0;
+                            // BlueZ reports the track duration in milliseconds
+                            // (MediaPlayer1 `Track`), the same unit the poll
+                            // path divides by.
+                            let duration_secs = val as f64 / 1000.0;
                             duration = Some(duration_secs);
                             metadata.insert("duration".to_string(), serde_json::Value::Number(
                                 serde_json::Number::from_f64(duration_secs).unwrap_or(serde_json::Number::from(0))
@@ -1014,11 +1016,11 @@ impl PlayerController for BluetoothPlayerController {
     }
     
     fn get_playback_state(&self) -> PlaybackState {
+        // Read-only on purpose. The poll thread announces a change by
+        // comparing a fresh reading with the stored state; storing the reading
+        // here made an API query that ran first swallow the event.
         let state = self.get_playback_status();
-        
-        // Update our internal state
-        self.current_state.write().state = state;
-        
+
         // Mark as alive
         self.base.alive();
         

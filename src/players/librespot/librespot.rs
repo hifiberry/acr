@@ -806,7 +806,15 @@ impl LibrespotPlayerController {
                 }
             },
             "shuffle_changed" => {
-                let shuffle = event_data.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false);
+                // Both spellings are in use: the generic player accepts
+                // either, and the event client tool sends `shuffle`. An event
+                // carrying neither says nothing, and must not be read as "off".
+                let Some(shuffle) = event_data.get("shuffle").and_then(|e| e.as_bool())
+                    .or_else(|| event_data.get("enabled").and_then(|e| e.as_bool()))
+                else {
+                    warn!("Librespot shuffle_changed event without a boolean 'shuffle' or 'enabled'");
+                    return false;
+                };
 
                 {
                     let mut current_state = self.current_state.write();

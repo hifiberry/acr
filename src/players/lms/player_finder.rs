@@ -11,14 +11,16 @@ use crate::helpers::macaddress::{normalize_mac_address, mac_equal_ignore_case, m
 ///
 /// # Returns
 /// `true` if any of the MAC addresses is connected to the server, `false` otherwise
-pub fn is_player(server: &str, mac_addresses: Vec<String>) -> bool {
+pub fn is_player(server: &str, port: u16, mac_addresses: Vec<String>) -> bool {
     if mac_addresses.is_empty() {
         debug!("No MAC addresses provided to check");
         return false;
     }
 
-    // Create a client for the server with default port (9000)
-    let client = LmsRpcClient::new(server, 9000);
+    // The configured port, not the default: asked on 9000, a server listening
+    // elsewhere never lists the player, and a connection that is fine is
+    // reported lost at every check.
+    let client = LmsRpcClient::new(server, port);
 
     // Get all players connected to the server
     let players = match client.get_players() {
@@ -69,7 +71,7 @@ pub fn is_player(server: &str, mac_addresses: Vec<String>) -> bool {
 /// # Returns
 /// `Some(server)` with the first server that has any of the MAC addresses connected,
 /// or `None` if no server has any of the MAC addresses connected
-pub fn find_my_server(servers: Vec<String>, mac_addresses: Vec<String>) -> Option<String> {
+pub fn find_my_server(servers: Vec<String>, port: u16, mac_addresses: Vec<String>) -> Option<String> {
     if servers.is_empty() {
         debug!("No servers provided to check");
         return None;
@@ -84,7 +86,7 @@ pub fn find_my_server(servers: Vec<String>, mac_addresses: Vec<String>) -> Optio
     
     for server in servers {
         debug!("Checking server: {}", server);
-        if is_player(&server, mac_addresses.clone()) {
+        if is_player(&server, port, mac_addresses.clone()) {
             info!("Found matching server: {}", server);
             return Some(server);
         }

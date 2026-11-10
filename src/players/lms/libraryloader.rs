@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use log::{debug, error, info, warn};
 use serde_json::Value;
 use chrono::NaiveDate;
@@ -348,7 +347,6 @@ impl LMSLibraryLoader {
         }
 
         info!("Loaded {} albums with {} tracks", albums_map.len(), track_count);
-        thread::sleep(Duration::from_secs(10));
             
 
         // Convert HashMap to Vec

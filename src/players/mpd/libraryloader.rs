@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 use std::sync::Arc;
-use log::{debug, info, error, warn};
+use log::{debug, info, warn};
 use chrono::NaiveDate;
 use crate::data::LibraryError;
 use crate::players::mpd::mpd::MPDPlayerController;
@@ -317,8 +317,19 @@ impl MPDLibraryLoader {
 
         debug!("Database loading progress: {:.1}%", progress);
 
-        // Step 2: Load all songs for each album artist
-        let mut all_songs = Vec::new();
+        // Step 2: Load each artist's songs and fold them into albums at once.
+        //
+        // The songs are not collected first. An `mpd::Song` owns every tag as
+        // its own pair of strings, so a whole library of them is millions of
+        // small allocations alive together, several times the size of what
+        // is built from them -- and freeing them afterwards leaves the heap
+        // fragmented at that high-water mark for the life of the process.
+        // Converting one artist's songs before fetching the next keeps the
+        // peak at the library itself plus one artist.
+        let mut albums_map: HashMap<String, crate::data::Album> = HashMap::new();
+        let mut total_songs = 0usize;
+        let total_artists = artists.len();
+
         for (artist_index, artist) in artists.iter().enumerate() {
             // more verbose logging for "real" artists
             if artist.contains(",") {
@@ -326,12 +337,7 @@ impl MPDLibraryLoader {
             } else {
                 info!("Loading songs for artist: {}", artist);
             }
-            
-            // Update background job progress for artist processing
-            let artist_progress = format!("Loading songs for artist {}/{}: {}", 
-                artist_index + 1, artists.len(), artist);
-            let _ = update_job(&load_job_id, Some(artist_progress), Some(artist_index + 1), Some(artists.len()));
-            
+
             // Fetch all songs for this artist
             let songs = match self.fetch_all_songs_for_artist(artist) {
                 Ok(songs) => songs,
@@ -341,109 +347,44 @@ impl MPDLibraryLoader {
                 }
             };
             debug!("Found {} songs for album artist '{}'", songs.len(), artist);
-            all_songs.extend(songs);
+
+            total_songs += songs.len();
+            for song in &songs {
+                add_song_to_albums(&mut albums_map, song, custom_separators.as_deref());
+            }
+
+            // Report every PROGRESS_UPDATE_FREQUENCY artists and on the last.
+            if artist_index % PROGRESS_UPDATE_FREQUENCY == 0 || artist_index + 1 == total_artists {
+                // Range 10-90%
+                progress = (10.0 + 80.0 * (artist_index + 1) as f32 / total_artists as f32).min(90.0);
+
+                let artist_progress = format!("Loading songs for artist {}/{}: {}",
+                    artist_index + 1, total_artists, artist);
+                let _ = update_job(&load_job_id, Some(artist_progress), Some(artist_index + 1), Some(total_artists));
+
+                let last = songs.last();
+                let album_name = last.and_then(|song| {
+                    song.tags.iter().find(|(tag, _)| tag == "Album").map(|(_, value)| value.clone())
+                });
+                let song_name = last.and_then(|song| song.title.clone());
+                self.controller.notify_database_update(Some(artist.clone()), album_name, song_name, Some(progress));
+
+                debug!("Database loading progress: {:.1}%", progress);
+            }
         }
-        progress = 20.0; // Update progress to 20%
-        
+
         // Complete the data loading job
         if let Err(e) = complete_job(&load_job_id) {
             warn!("Failed to complete data loading job {}: {}", load_job_id, e);
         }
-        
-        // Register background job for song processing
+
+        // Register background job for the finishing pass
         if let Err(e) = register_job(process_job_id.clone(), "MPD Process Songs".to_string()) {
             warn!("Failed to register background job for MPD song processing: {}", e);
         }
-        
-        // Update background job for song processing phase
-        let _ = update_job(&process_job_id, Some("Processing songs".to_string()), None, Some(all_songs.len()));
-        
-        // Send database update event to show progress
-        self.controller.notify_database_update(Some("Processing songs".to_string()), None, None, Some(progress));
-        
-        debug!("Database loading progress: {:.1}%", progress);
 
-        info!("Loaded {} songs in total", all_songs.len());
+        info!("Loaded {} songs in total", total_songs);
 
-        // Step 3: Create album objects from songs
-        // use a HashMap with album ID as key to avoid duplicates
-        // This will also help in tracking the number of unique albums
-        // and their associated tracks
-        let mut albums_map: HashMap<String, crate::data::Album> = std::collections::HashMap::new();
-        let total_songs = all_songs.len();
-        let songs_per_progress_point = (90.0 - 20.0) / (total_songs as f32);
-        
-        for (index, song) in all_songs.iter().enumerate() {
-            // Create a unique key for the album based on song metadata
-            let album_key = Self::album_key(song);
-
-            // check if the album already exists in the map
-            if !albums_map.contains_key(&album_key) {
-                // Create an album object from the song, using custom separators if provided
-                let album = Self::album_from_mpd_song(song, custom_separators.as_deref());
-                // Insert into the map using the album ID as key
-                albums_map.insert(album_key.clone(), album);
-            }
-
-            // create a track object from the song
-            let track = Self::track_from_mpd_song(song);
-
-            // Add the track to the album's track list, but only if the track is not already present
-            // Also merge any new genres from this song into the album
-            if let Some(album) = albums_map.get_mut(&album_key) {
-                // Check if the track is already present in the album's track list
-                let mut tracks = album.tracks.lock();
-                if !tracks.iter().any(|t| is_same_track(t, &track)) {
-                    tracks.push(track);
-                }
-                drop(tracks);
-                // Merge genres from this song into the album (deduplicated)
-                for genre in song.tags.iter()
-                    .filter(|(tag, _)| tag == "Genre")
-                    .map(|(_, v)| v.as_str())
-                {
-                    if !album.genres.iter().any(|g| g == genre) {
-                        album.genres.push(genre.to_string());
-                    }
-                }
-            } else {
-                error!("Album not found in map for key: {}", album_key);
-            }
-            
-            // Update progress every PROGRESS_UPDATE_FREQUENCY songs or on the last song
-            if index % PROGRESS_UPDATE_FREQUENCY == 0 || index == total_songs - 1 {
-                // Calculate progress (range 20-90%)
-                progress = 20.0 + (index as f32 * songs_per_progress_point);
-                progress = progress.min(90.0); // Cap at 90%
-                
-                debug!("Album processing progress: {:.1}% ({}/{} songs)", progress, index + 1, total_songs);
-                
-                // Get album and artist names for the current song
-                let album_name = song.tags.iter()
-                    .find(|(tag, _)| tag == "Album")
-                    .map(|(_, value)| value.as_str())
-                    .unwrap_or("Unknown Album").to_string();
-                
-                let artist_name = song.tags.iter()
-                    .find(|(tag, _)| tag == "Artist")
-                    .map(|(_, value)| value.as_str())
-                    .unwrap_or("Unknown Artist").to_string();
-                
-                let song_name = song.title.as_deref()
-                    .unwrap_or("Unknown Song").to_string();
-                
-                // Update background job with current song processing
-                let song_progress = format!("Processing song {}/{}: {} - {}", 
-                    index + 1, total_songs, artist_name, song_name);
-                let _ = update_job(&process_job_id, Some(song_progress), Some(index + 1), Some(total_songs));
-                
-                // Send database update event with current item details
-                self.controller.notify_database_update(Some(artist_name), Some(album_name), Some(song_name), Some(progress));
-                
-                debug!("Database loading progress: {:.1}%", progress);
-            }
-        }
-        
         info!("Created {} unique albums from songs", albums_map.len());
         
         // Move albums from HashMap to vector.
@@ -460,6 +401,9 @@ impl MPDLibraryLoader {
         for (_, album) in albums_map.drain() {
             // Sort the tracks by disc and track number before adding to the result
             album.sort_tracks();
+            // The list was grown one push at a time and is final now; give
+            // back the spare capacity that growth left on every album.
+            album.tracks.lock().shrink_to_fit();
             albums.push(album);
         }
         
@@ -513,6 +457,36 @@ impl MPDLibraryLoader {
     }
     
 }
+/// Fold one song into the albums built so far: create its album on first
+/// sight, add its track unless that file is already there, and merge its
+/// genres into the album.
+fn add_song_to_albums(
+    albums_map: &mut HashMap<String, crate::data::Album>,
+    song: &mpd::Song,
+    custom_separators: Option<&[String]>,
+) {
+    let album = albums_map
+        .entry(MPDLibraryLoader::album_key(song))
+        .or_insert_with(|| MPDLibraryLoader::album_from_mpd_song(song, custom_separators));
+
+    let track = MPDLibraryLoader::track_from_mpd_song(song);
+    {
+        let mut tracks = album.tracks.lock();
+        if !tracks.iter().any(|t| is_same_track(t, &track)) {
+            tracks.push(track);
+        }
+    }
+
+    for genre in song.tags.iter()
+        .filter(|(tag, _)| tag == "Genre")
+        .map(|(_, v)| v.as_str())
+    {
+        if !album.genres.iter().any(|g| g == genre) {
+            album.genres.push(genre.to_string());
+        }
+    }
+}
+
 /// Whether two tracks loaded for one album are the same file.
 ///
 /// A song with several artists comes back once per artist, so the loader sees
@@ -537,6 +511,36 @@ mod tests {
             tags: tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             ..Default::default()
         }
+    }
+
+    /// A song with two artists comes back once per artist; a compilation
+    /// spreads one album over several artists' batches. Folding songs in one
+    /// at a time has to give the same albums as seeing them all together.
+    #[test]
+    fn songs_fold_into_albums_whatever_batch_they_arrive_in() {
+        let tags = |title: &'static str, genre: &'static str| {
+            vec![("Album", "Shared"), ("AlbumArtist", "Various"), ("Title", title), ("Genre", genre)]
+        };
+        let one = song("shared/01.flac", &tags("One", "Rock"));
+        let two = song("shared/02.flac", &tags("Two", "Pop"));
+        let other = song("other/01.flac", &[("Album", "Other"), ("Artist", "Solo"), ("Title", "One")]);
+
+        let mut albums = HashMap::new();
+        // First artist's batch, then a second batch repeating a song.
+        for s in [&one, &other] {
+            add_song_to_albums(&mut albums, s, None);
+        }
+        for s in [&one, &two] {
+            add_song_to_albums(&mut albums, s, None);
+        }
+
+        assert_eq!(albums.len(), 2);
+        let shared = albums.values().find(|a| a.name == "Shared").expect("the shared album");
+        let uris: Vec<_> = shared.tracks.lock().iter().filter_map(|t| t.uri.clone()).collect();
+        assert_eq!(uris, vec!["shared/01.flac", "shared/02.flac"]);
+        assert_eq!(shared.genres, vec!["Rock", "Pop"]);
+        let solo = albums.values().find(|a| a.name == "Other").expect("the other album");
+        assert_eq!(solo.tracks.lock().len(), 1);
     }
 
     #[test]

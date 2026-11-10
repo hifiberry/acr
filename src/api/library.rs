@@ -1810,10 +1810,9 @@ pub fn delete_library_track(
 ) -> Custom<Json<DeleteResponse>> {
     let controllers = controller.inner().list_controllers();
 
-    let decoded_uri = match urlencoding::decode(track_uri) {
-        Ok(s) => s.into_owned(),
-        Err(_) => track_uri.to_string(),
-    };
+    // Rocket has already percent-decoded the segment; decoding again would
+    // turn a file literally named `50%20off.flac` into `50 off.flac`.
+    let decoded_uri = track_uri.to_string();
 
     for ctrl_lock in controllers {
         let ctrl = ctrl_lock.read();

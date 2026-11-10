@@ -200,6 +200,16 @@ struct OptionsSnapshot {
 }
 
 impl OptionsSnapshot {
+    /// Establish the baseline from a status read, if there is none yet.
+    ///
+    /// Without it the first `Options` event after startup is itself consumed
+    /// as the baseline, and the first shuffle or repeat toggle goes
+    /// unannounced. An existing baseline is left alone: replacing it from a
+    /// status read would swallow the very change an event is about to report.
+    fn seed(&mut self, random: bool, repeat: bool, single: bool) {
+        self.seen.get_or_insert((random, repeat, single));
+    }
+
     /// Record an observation and report what changed since the previous one.
     ///
     /// The first observation after a connect establishes the baseline and
@@ -863,11 +873,18 @@ impl MPDPlayerController {
                         use crate::players::mpd::library::MPDLibrary;
                         
                         // Create a library with the same connection parameters
-                        let library = MPDLibrary::with_connection(
+                        let mut library = MPDLibrary::with_connection(
                             &player_arc.hostname, 
                             player_arc.port, 
                             player_arc.clone()
                         );
+
+                        // Every load goes through this instance (and its
+                        // clones, which share the setting), so this is the one
+                        // place the configured separators have to arrive.
+                        if let Some(separators) = &player_arc.artist_separators {
+                            library.set_artist_separators(separators.clone());
+                        }
                         
                         // Store the library in the controller
                         {
@@ -1242,6 +1259,8 @@ impl MPDPlayerController {
         // Try to get current status to determine playlist position and other state info
         match client.status() {
             Ok(status) => {
+                player.option_snapshot.lock().seed(status.random, status.repeat, status.single);
+
                 // Update audio stream format from MPD's status `audio` field
                 // (rate:bits:channels). MPD does not report the source codec.
                 {
@@ -1655,7 +1674,13 @@ impl MPDPlayerController {
                     info!("No song currently playing");
                 }
             },
-            Err(e) => warn!("Failed to get current song information: {}", e),
+            Err(e) => {
+                // Not knowing is not "nothing is playing": clearing the song
+                // here would announce a song change and throw away the
+                // artwork and enrichment merged into the one still playing.
+                warn!("Failed to get current song information: {}", e);
+                return;
+            }
         }
         
         // Update player capabilities based on the current playlist state and the song we just got
@@ -1692,13 +1717,14 @@ impl MPDPlayerController {
         };
 
         let mut all_success = true;
-        for (index, url) in urls.iter().enumerate() {
+        let mut inserted = 0;
+        for url in urls {
             let song_path = mpd::Song {
                 file: url.to_string(),
                 ..Default::default()
             };
 
-            let result = match queue_insert_position(index, at_beginning) {
+            let result = match queue_insert_position(inserted, at_beginning) {
                 Some(position) => {
                     debug!("Inserting track at position {}: {}", position, url);
                     client.insert(&song_path, position)
@@ -1710,7 +1736,10 @@ impl MPDPlayerController {
             };
 
             match result {
-                Ok(_) => debug!("Successfully added URL to queue: {}", url),
+                Ok(_) => {
+                    inserted += 1;
+                    debug!("Successfully added URL to queue: {}", url)
+                }
                 Err(e) => {
                     warn!("Failed to add URL to queue: {} - Error: {}", url, e);
                     all_success = false;
@@ -1727,9 +1756,13 @@ impl MPDPlayerController {
 /// Appending leaves placement to MPD. Inserting at the beginning has to
 /// advance one slot per track: inserting every track at 0 pushes the previous
 /// one down and lands the batch reversed.
-fn queue_insert_position(index: usize, at_beginning: bool) -> Option<usize> {
+///
+/// `inserted` is the number of tracks of this batch that are already in the
+/// queue, not the index in the batch: after a failed track the two differ, and
+/// a position past the end of a short queue makes MPD refuse every later one.
+fn queue_insert_position(inserted: usize, at_beginning: bool) -> Option<usize> {
     if at_beginning {
-        Some(index)
+        Some(inserted)
     } else {
         None
     }
@@ -2403,6 +2436,41 @@ mod tests {
         let positions: Vec<_> = (0..4).map(|i| queue_insert_position(i, true)).collect();
 
         assert_eq!(positions, vec![Some(0), Some(1), Some(2), Some(3)]);
+    }
+
+    /// A track that MPD refused must not leave a hole: the next one goes where
+    /// the refused one would have gone.
+    #[test]
+    fn queue_insert_position_follows_the_tracks_actually_inserted() {
+        // Track 0 inserted, track 1 refused, track 2 next: one is in the queue.
+        assert_eq!(queue_insert_position(1, true), Some(1));
+    }
+
+    /// A status read at startup is the baseline, so the first toggle after it
+    /// is announced rather than swallowed.
+    #[test]
+    fn a_seeded_snapshot_reports_the_first_change() {
+        let mut snapshot = OptionsSnapshot::default();
+        snapshot.seed(false, false, false);
+
+        let transition = snapshot.observe(true, false, false);
+
+        assert_eq!(transition.shuffle, Some(true));
+        assert_eq!(transition.loop_mode, None);
+    }
+
+    /// Seeding again must not replace what an event has yet to be compared
+    /// against.
+    #[test]
+    fn seeding_does_not_overwrite_an_existing_baseline() {
+        let mut snapshot = OptionsSnapshot::default();
+        snapshot.seed(false, false, false);
+        snapshot.seed(true, true, false);
+
+        let transition = snapshot.observe(true, true, false);
+
+        assert_eq!(transition.shuffle, Some(true));
+        assert_eq!(transition.loop_mode, Some(LoopMode::Playlist));
     }
 
     /// Test that songs without cached metadata are not affected

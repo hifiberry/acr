@@ -268,6 +268,16 @@ impl MPDLibrary {
         use std::io::{Read, BufRead, BufReader, Write};
         use std::net::TcpStream;
         debug!("Retrieving cover art for URI: {}", uri);
+
+        // The URI goes into a quoted protocol argument, and part of it can
+        // come from an HTTP request (`get_image` decodes an identifier).
+        let quoted_uri = match mpd_quote_argument(uri) {
+            Some(q) => q,
+            None => {
+                warn!("Refusing cover art request for a URI containing a line break");
+                return None;
+            }
+        };
         
         // Connect to MPD server
         let stream = match TcpStream::connect(format!("{}:{}", self.hostname, self.port)) {
@@ -278,7 +288,18 @@ impl MPDLibrary {
             }
         };
         
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        // A stalled MPD must not hold the caller (an HTTP worker) forever.
+        let io_timeout = Some(std::time::Duration::from_secs(10));
+        let _ = stream.set_read_timeout(io_timeout);
+        let _ = stream.set_write_timeout(io_timeout);
+
+        let mut reader = match stream.try_clone() {
+            Ok(clone) => BufReader::new(clone),
+            Err(e) => {
+                error!("Failed to clone MPD connection: {}", e);
+                return None;
+            }
+        };
         let mut writer = stream;
         
         // Read the welcome message
@@ -294,7 +315,7 @@ impl MPDLibrary {
         }
         
         // Send albumart command with URI and offset 0
-        let cmd = format!("albumart \"{}\" 0\n", uri);
+        let cmd = format!("albumart {} 0\n", quoted_uri);
         if writer.write_all(cmd.as_bytes()).is_err() {
             error!("Failed to send albumart command to MPD");
             return None;
@@ -391,7 +412,7 @@ impl MPDLibrary {
             
             while offset < size {
                 // Send command to get next chunk
-                let cmd = format!("albumart \"{}\" {}\n", uri, offset);
+                let cmd = format!("albumart {} {}\n", quoted_uri, offset);
                 if writer.write_all(cmd.as_bytes()).is_err() {
                     error!("Failed to send albumart command for chunk at offset {}", offset);
                     return None;
@@ -432,6 +453,13 @@ impl MPDLibrary {
                     }
                 };
                 
+                // An empty chunk before the announced size is reached would
+                // never advance the offset: give up instead of asking forever.
+                if chunk_size == 0 {
+                    error!("MPD returned an empty cover art chunk at offset {} of {}", offset, size);
+                    return None;
+                }
+
                 // Read the binary data for this chunk
                 let mut buffer = vec![0u8; chunk_size];
                 match reader.read_exact(&mut buffer) {
@@ -945,6 +973,21 @@ impl MPDLibrary {
 
         let albums = self.albums.read();
 
+        // The exact match goes first: in a flat folder, or with two albums in
+        // one directory, "same directory as some album's first track" picks an
+        // arbitrary album and with it the wrong cover.
+        for album in albums.values() {
+            let matches = {
+                let tracks = album.tracks.lock();
+                tracks.iter().any(|t| t.uri.as_deref() == Some(track_uri))
+            };
+
+            if matches {
+                debug!("Track '{}' belongs to album '{}' (exact track match)", track_uri, album.name);
+                return Some(album.clone());
+            }
+        }
+
         if let Some(ref dir) = track_dir {
             for album in albums.values() {
                 let first_uri = {
@@ -958,18 +1001,6 @@ impl MPDLibrary {
                         return Some(album.clone());
                     }
                 }
-            }
-        }
-
-        for album in albums.values() {
-            let matches = {
-                let tracks = album.tracks.lock();
-                tracks.iter().any(|t| t.uri.as_deref() == Some(track_uri))
-            };
-
-            if matches {
-                debug!("Track '{}' belongs to album '{}' (exact track match)", track_uri, album.name);
-                return Some(album.clone());
             }
         }
 
@@ -1510,7 +1541,12 @@ impl LibraryInterface for MPDLibrary {
         let tracks = album.tracks.lock();
         for track in tracks.iter() {
             if let Some(uri) = &track.uri {
-                let full_path = PathBuf::from(&music_dir).join(uri);
+                // Stream URLs and anything else that is not a file below the
+                // music directory are not ours to unlink.
+                let Some(full_path) = path_inside_music_dir(&music_dir, uri) else {
+                    warn!("Not deleting {:?}: not a path inside the music directory", uri);
+                    continue;
+                };
                 if let Some(parent) = full_path.parent() {
                     dirs_to_clean.insert(parent.to_path_buf());
                 }
@@ -1547,14 +1583,15 @@ impl LibraryInterface for MPDLibrary {
     }
 
     fn delete_track(&self, track_uri: &str) -> Result<(), crate::data::library::LibraryError> {
-        use std::path::PathBuf;
-
         let music_dir = self.controller.get_effective_music_directory()
             .ok_or_else(|| crate::data::library::LibraryError::InternalError(
                 "Music directory not configured".to_string()
             ))?;
 
-        let full_path = PathBuf::from(&music_dir).join(track_uri);
+        let full_path = path_inside_music_dir(&music_dir, track_uri)
+            .ok_or_else(|| crate::data::library::LibraryError::QueryError(
+                format!("Not a path inside the music directory: {:?}", track_uri)
+            ))?;
         std::fs::remove_file(&full_path)
             .map_err(|e| crate::data::library::LibraryError::InternalError(
                 format!("Failed to delete file {:?}: {}", full_path, e)
@@ -1644,6 +1681,43 @@ impl MPDLibrary {
         log::debug!("Lyrics lookup by metadata not yet implemented for MPD: {} - {}", lookup.artist, lookup.title);
         Err(crate::helpers::lyrics::LyricsError::NotFound)
     }
+}
+
+/// Quote `arg` as one MPD protocol argument: wrapped in double quotes with
+/// `\` and `"` escaped. `None` if it contains a line break, which no quoting
+/// can carry and which would otherwise start a second command.
+fn mpd_quote_argument(arg: &str) -> Option<String> {
+    if arg.contains(['\n', '\r']) {
+        return None;
+    }
+    let mut quoted = String::with_capacity(arg.len() + 2);
+    quoted.push('"');
+    for c in arg.chars() {
+        if c == '"' || c == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    Some(quoted)
+}
+
+/// Resolve an MPD song URI to a file below `music_dir`.
+///
+/// `None` unless the URI is a plain relative path: an absolute path would
+/// replace the base in `Path::join`, and a `..` component would climb out of
+/// it. Both arrive from HTTP on the delete routes.
+fn path_inside_music_dir(music_dir: &str, uri: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Component, Path};
+
+    if uri.is_empty() || uri.contains('\0') {
+        return None;
+    }
+    let relative = Path::new(uri);
+    if !relative.components().all(|c| matches!(c, Component::Normal(_))) {
+        return None;
+    }
+    Some(Path::new(music_dir).join(relative))
 }
 
 #[cfg(test)]
@@ -2287,5 +2361,40 @@ mod tests {
         let before = lib.library_version().unwrap();
         lib.version().bump();
         assert_ne!(lib.library_version().unwrap(), before);
+    }
+
+    #[test]
+    fn an_mpd_argument_is_quoted_and_escaped() {
+        assert_eq!(mpd_quote_argument("a/b.flac").as_deref(), Some(r#""a/b.flac""#));
+        assert_eq!(
+            mpd_quote_argument(r#"say "hi"\x.flac"#).as_deref(),
+            Some(r#""say \"hi\"\\x.flac""#)
+        );
+    }
+
+    #[test]
+    fn an_mpd_argument_with_a_line_break_is_refused() {
+        assert_eq!(mpd_quote_argument("x\" 0\nkill"), None);
+        assert_eq!(mpd_quote_argument("x\rkill"), None);
+    }
+
+    #[test]
+    fn a_relative_uri_resolves_below_the_music_directory() {
+        assert_eq!(
+            path_inside_music_dir("/music", "Artist/Album/01 Song.flac"),
+            Some(std::path::PathBuf::from("/music/Artist/Album/01 Song.flac"))
+        );
+        // A literal percent sign is part of the name, not an escape.
+        assert_eq!(
+            path_inside_music_dir("/music", "50%20off.flac"),
+            Some(std::path::PathBuf::from("/music/50%20off.flac"))
+        );
+    }
+
+    #[test]
+    fn a_uri_that_leaves_the_music_directory_is_refused() {
+        for uri in ["/etc/machine-id", "../outside.flac", "a/../../outside.flac", "a/..", "", "a\0b"] {
+            assert_eq!(path_inside_music_dir("/music", uri), None, "{uri:?}");
+        }
     }
 }

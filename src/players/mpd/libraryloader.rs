@@ -315,10 +315,6 @@ impl MPDLibraryLoader {
         // Note: We no longer need to pass the source parameter
         self.controller.notify_database_update(Some("Loading artists".to_string()), None, None, Some(progress));
 
-        info!("Sent notify - this is INFO level");
-        warn!("This is WARN level for testing");
-        error!("This is ERROR level for testing");
-        
         debug!("Database loading progress: {:.1}%", progress);
 
         // Step 2: Load all songs for each album artist
@@ -397,7 +393,7 @@ impl MPDLibraryLoader {
             if let Some(album) = albums_map.get_mut(&album_key) {
                 // Check if the track is already present in the album's track list
                 let mut tracks = album.tracks.lock();
-                if !tracks.iter().any(|t| t.name == track.name && t.disc_number == track.disc_number) {
+                if !tracks.iter().any(|t| is_same_track(t, &track)) {
                     tracks.push(track);
                 }
                 drop(tracks);
@@ -516,4 +512,67 @@ impl MPDLibraryLoader {
         Ok(songs)
     }
     
+}
+/// Whether two tracks loaded for one album are the same file.
+///
+/// A song with several artists comes back once per artist, so the loader sees
+/// it repeatedly. The file is what identifies it: two tracks that merely share
+/// a title ("Interlude", "Untitled") on one disc are different tracks, and
+/// comparing by title dropped the second. Title and disc decide only when a
+/// URI is missing.
+fn is_same_track(a: &crate::data::Track, b: &crate::data::Track) -> bool {
+    match (&a.uri, &b.uri) {
+        (Some(a_uri), Some(b_uri)) => a_uri == b_uri,
+        _ => a.name == b.name && a.disc_number == b.disc_number,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn song(file: &str, tags: &[(&str, &str)]) -> mpd::Song {
+        mpd::Song {
+            file: file.to_string(),
+            tags: tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn two_tracks_sharing_a_title_on_one_disc_are_both_kept() {
+        let first = MPDLibraryLoader::track_from_mpd_song(&song("a/02 Interlude.flac", &[("Title", "Interlude")]));
+        let second = MPDLibraryLoader::track_from_mpd_song(&song("a/07 Interlude.flac", &[("Title", "Interlude")]));
+
+        assert!(!is_same_track(&first, &second));
+    }
+
+    #[test]
+    fn the_same_file_seen_twice_is_one_track() {
+        let first = MPDLibraryLoader::track_from_mpd_song(&song("a/01.flac", &[("Title", "One")]));
+        let again = MPDLibraryLoader::track_from_mpd_song(&song("a/01.flac", &[("Title", "One")]));
+
+        assert!(is_same_track(&first, &again));
+    }
+
+    #[test]
+    fn release_dates_parse_at_every_precision_mpd_reports() {
+        use chrono::Datelike;
+
+        let full = MPDLibraryLoader::parse_release_date("2020-05-17").expect("full date");
+        assert_eq!((full.year(), full.month(), full.day()), (2020, 5, 17));
+
+        let year = MPDLibraryLoader::parse_release_date("1999").expect("year only");
+        assert_eq!(year.year(), 1999);
+
+        assert!(MPDLibraryLoader::parse_release_date("").is_none());
+        assert!(MPDLibraryLoader::parse_release_date("soon").is_none());
+
+        let month = MPDLibraryLoader::parse_release_date("2020-05").expect("year and month");
+        assert_eq!((month.year(), month.month(), month.day()), (2020, 5, 1));
+
+        // An impossible month or day still names a year.
+        let fallback = MPDLibraryLoader::parse_release_date("2020-13-45").expect("year fallback");
+        assert_eq!((fallback.year(), fallback.month(), fallback.day()), (2020, 1, 1));
+    }
 }

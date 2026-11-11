@@ -1,3 +1,39 @@
+hifiberry-audiocontrol (0.24.1) trixie; urgency=medium
+
+  * Albums that share a name are all kept. The MPD and LMS libraries stored
+    albums by name, so a second "Greatest Hits" replaced the first and its
+    tracks disappeared from the library.
+  * The MPD library is read in one windowed pass instead of one query per
+    artist. A library of 210,000 songs loads in seconds rather than a
+    quarter of an hour, with a lower memory peak. The per-artist load is
+    kept as a fallback.
+  * MPD: tracks with the same title on one disc are no longer dropped,
+    deleting a track or album is confined to the music directory, protocol
+    arguments are quoted, and a cover art read can no longer hang.
+  * Loop mode accepts the spellings clients send in any case; the MPD queue
+    insert position and the option state after a reconnect are correct.
+  * Requests can no longer panic the daemon through a malformed lyrics line,
+    a playlist timeout, a Spotify session id or a multi-byte string cut in
+    the middle. Playlist URLs are resolved against the playlist's own URL.
+  * WebSocket clients no longer miss events queued in the same millisecond,
+    and a per-player connection keeps its filter.
+  * LMS: track changes are reported again, the configured port is used to
+    find the server, and removing a queue entry works. Bluetooth reports
+    durations in seconds. Spotify shuffle is read from either field name.
+  * Last.fm: the 30-second minimum before a scrobble is honoured,
+    credentials changed at runtime are picked up, and requests time out.
+  * MusicBrainz and fanart.tv failures caused by the network are no longer
+    cached as "not found". Artist image updates accept only http(s) URLs
+    that deliver an image.
+  * Settings, secrets and genre files are written atomically; a corrupt
+    secrets store is moved aside instead of being overwritten.
+  * The attribute cache database uses WAL and its memory cache no longer
+    reserves space for a million entries. GET /library/<player> counts in
+    place, now-playing needs one MPD status read instead of four, and an
+    image that is already small enough is not decoded to find that out.
+
+ -- HiFiBerry <support@hifiberry.com>  Wed, 11 Nov 2026 05:52:16 +0000
+
 hifiberry-audiocontrol (0.24.0) trixie; urgency=medium
 
   * The shairport player reads and controls shairport-sync over MPRIS

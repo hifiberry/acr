@@ -404,6 +404,15 @@ struct PlannedSplit {
     parts: Vec<String>,
 }
 
+/// The key an album is stored under in a library's album map.
+///
+/// It is the album's id because that is the only thing about an album that is
+/// unique: keyed by name, the second "Greatest Hits" replaced the first and
+/// took its tracks with it.
+pub fn album_map_key(album: &Album) -> String {
+    album.id.to_string()
+}
+
 /// Rewrite album artist lists the enrichment batch says were split wrongly.
 ///
 /// A loader splits an album-artist string on separators alone. That is right
@@ -599,9 +608,10 @@ pub fn apply_batch(
 
     if !batch.albums.is_empty() {
         let mut albums = albums.write();
-        // The map is keyed by album name, but a batch carries ids: a name is
-        // not unique across artists and the metadata side never sees the key.
-        // This is the lookup `albumupdater` did by id before the seam.
+        // A batch carries ids. The loaders key the map by id as well
+        // (`album_map_key`), but nothing here relies on that: the index below
+        // is built from the albums themselves, so a map filled any other way
+        // is matched just the same.
         //
         // Matching by id still has to happen without an O(n) scan per batch
         // entry: on a 10 000-album library, `values_mut().find(...)` per
@@ -609,13 +619,13 @@ pub fn apply_batch(
         // comparisons under this write lock, ~200 times over a full sweep.
         // Building the id -> name index once per batch keeps the per-entry
         // cost at a hash lookup.
-        let id_to_name: HashMap<String, String> = albums
+        let id_to_key: HashMap<String, String> = albums
             .iter()
             .map(|(name, album)| (album.id.to_string(), name.clone()))
             .collect();
 
         for incoming in &batch.albums {
-            let Some(name) = id_to_name.get(&incoming.id) else {
+            let Some(name) = id_to_key.get(&incoming.id) else {
                 continue;
             };
             if let Some(album) = albums.get_mut(name) {

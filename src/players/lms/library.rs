@@ -78,6 +78,17 @@ impl LMSLibrary {
         self.announce_library_changed();
     }
 
+    /// Put freshly loaded albums into the album map.
+    ///
+    /// Keyed by id, not by name: two artists can each have a "Greatest Hits",
+    /// and a name key keeps only the last one loaded.
+    fn insert_loaded_albums(&self, map: &mut HashMap<String, Album>, albums: Vec<Album>) {
+        for mut album in albums {
+            self.populate_calculated_album_fields(&mut album);
+            map.insert(crate::data::library::album_map_key(&album), album);
+        }
+    }
+
     /// Mark the library loaded and announce the finished load — one step.
     ///
     /// **This is the announcement a consumer of `library_changed` acts on.** The
@@ -241,15 +252,15 @@ impl LMSLibrary {
     /// Get album by ID
     pub fn get_album_by_id(&self, id: &crate::data::Identifier) -> Option<Album> {
         let albums = self.albums.read();
-        // Search through all albums to find one with matching ID
-        for album in albums.values() {
-            if &album.id == id {
-                let mut album_clone = album.clone();
-                self.populate_calculated_album_fields(&mut album_clone);
-                return Some(album_clone);
-            }
-        }
-        None
+        // The map is keyed by id, so this is normally one hash lookup. The
+        // scan covers a map filled some other way.
+        let found = albums
+            .get(&id.to_string())
+            .filter(|album| &album.id == id)
+            .or_else(|| albums.values().find(|album| &album.id == id))?;
+        let mut album_clone = found.clone();
+        self.populate_calculated_album_fields(&mut album_clone);
+        Some(album_clone)
     }
 
     /// Get albums by artist ID
@@ -307,20 +318,20 @@ impl LMSLibrary {
     pub fn get_album_by_artist_and_name(&self, artist: &str, album: &str) -> Option<Album> {
         // Implementation to find album by both artist and album name
         let albums = self.albums.read();
-        // Look for an album with the specified name
-        if let Some(album_obj) = albums.get(album) {
-            // If we found the album, check if it has the specified artist
-            let album_artists = album_obj.artists.lock();
-            // If the album has the specified artist (case-insensitive comparison)
-            if album_artists.iter().any(|a| a.to_lowercase() == artist.to_lowercase()) {
-                let mut album_clone = album_obj.clone();
-                self.populate_calculated_album_fields(&mut album_clone);
-                return Some(album_clone);
-            }
-        }
-
-        // Album not found or artist doesn't match
-        None
+        let artist_lower = artist.to_lowercase();
+        // Several albums can share a name, so every one with this name is a
+        // candidate and the artist decides between them.
+        let found = albums.values().find(|candidate| {
+            candidate.name == album
+                && candidate
+                    .artists
+                    .lock()
+                    .iter()
+                    .any(|a| a.to_lowercase() == artist_lower)
+        })?;
+        let mut album_clone = found.clone();
+        self.populate_calculated_album_fields(&mut album_clone);
+        Some(album_clone)
     }
 
     /// Get artist by name (case-insensitive)
@@ -405,11 +416,7 @@ impl LibraryInterface for LMSLibrary {
                     let mut self_albums = self.albums.write();
                     self.reset_albums_for_reload(&mut self_albums);
 
-                    // Add each album to the collection with name as key
-                    for mut album in albums {
-                        self.populate_calculated_album_fields(&mut album);
-                        self_albums.insert(album.name.clone(), album);
-                    }
+                    self.insert_loaded_albums(&mut self_albums, albums);
 
                     info!("Updated library with {} albums", self_albums.len());
                 }
@@ -716,6 +723,52 @@ mod tests {
 
     fn empty_library() -> LMSLibrary {
         LMSLibrary::with_connection("localhost", 9000)
+    }
+
+    fn test_album(id: u64, name: &str, artist: &str) -> Album {
+        Album {
+            id: Identifier::Numeric(id),
+            name: name.to_string(),
+            artists: Arc::new(parking_lot::Mutex::new(vec![artist.to_string()])),
+            artists_flat: None,
+            release_date: None,
+            tracks: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            cover_art: None,
+            uri: None,
+            genres: Vec::new(),
+        }
+    }
+
+    /// Two artists with an album of the same name: both have to survive the
+    /// load, and each lookup has to hand back the right one.
+    #[test]
+    fn albums_sharing_a_name_are_all_kept_and_told_apart() {
+        let lib = empty_library();
+        {
+            let mut map = lib.albums.write();
+            lib.insert_loaded_albums(
+                &mut map,
+                vec![
+                    test_album(1, "Greatest Hits", "Queen"),
+                    test_album(2, "Greatest Hits", "ABBA"),
+                    test_album(3, "Arrival", "ABBA"),
+                ],
+            );
+        }
+
+        assert_eq!(lib.albums.read().len(), 3, "no album may replace another");
+
+        let queen = lib.get_album_by_artist_and_name("queen", "Greatest Hits").expect("Queen's album");
+        assert_eq!(queen.id, Identifier::Numeric(1));
+        let abba = lib.get_album_by_artist_and_name("ABBA", "Greatest Hits").expect("ABBA's album");
+        assert_eq!(abba.id, Identifier::Numeric(2));
+        assert!(lib.get_album_by_artist_and_name("Queen", "Arrival").is_none());
+
+        for id in 1..=3 {
+            let id = Identifier::Numeric(id);
+            assert_eq!(lib.get_album_by_id(&id).expect("album by id").id, id);
+        }
+        assert!(lib.get_album_by_id(&Identifier::Numeric(4)).is_none());
     }
 
     fn test_artist(name: &str) -> Artist {

@@ -189,6 +189,17 @@ impl MPDLibrary {
         );
     }
 
+    /// Put freshly loaded albums into the album map.
+    ///
+    /// Keyed by id, not by name: two artists can each have a "Greatest Hits",
+    /// and a name key keeps only the last one loaded.
+    fn insert_loaded_albums(&self, map: &mut HashMap<String, Album>, albums: Vec<Album>) {
+        for mut album in albums {
+            self.populate_calculated_album_fields(&mut album);
+            map.insert(crate::data::library::album_map_key(&album), album);
+        }
+    }
+
     /// Mark the library loaded and announce the finished load — one step, for
     /// the same reason as the reset above.
     ///
@@ -691,15 +702,15 @@ impl MPDLibrary {
     /// Get album by ID
     pub fn get_album_by_id(&self, id: &crate::data::Identifier) -> Option<Album> {
         let albums = self.albums.read();
-        // Search through all albums to find one with matching ID
-        for album in albums.values() {
-            if &album.id == id {
-                let mut album_clone = album.clone();
-                self.populate_calculated_album_fields(&mut album_clone);
-                return Some(album_clone);
-            }
-        }
-        None
+        // The map is keyed by id, so this is normally one hash lookup. The
+        // scan covers a map filled some other way.
+        let found = albums
+            .get(&id.to_string())
+            .filter(|album| &album.id == id)
+            .or_else(|| albums.values().find(|album| &album.id == id))?;
+        let mut album_clone = found.clone();
+        self.populate_calculated_album_fields(&mut album_clone);
+        Some(album_clone)
     }
 
     /// Get albums by artist ID
@@ -769,20 +780,20 @@ impl MPDLibrary {
     pub fn get_album_by_artist_and_name(&self, artist: &str, album: &str) -> Option<Album> {
         // Implementation to find album by both artist and album name
         let albums = self.albums.read();
-        // Look for an album with the specified name
-        if let Some(album_obj) = albums.get(album) {
-            // If we found the album, check if it has the specified artist
-            let album_artists = album_obj.artists.lock();
-            // If the album has the specified artist (case-insensitive comparison)
-            if album_artists.iter().any(|a| a.to_lowercase() == artist.to_lowercase()) {
-                let mut album_clone = album_obj.clone();
-                self.populate_calculated_album_fields(&mut album_clone);
-                return Some(album_clone);
-            }
-        }
-
-        // Album not found or artist doesn't match
-        None
+        let artist_lower = artist.to_lowercase();
+        // Several albums can share a name, so every one with this name is a
+        // candidate and the artist decides between them.
+        let found = albums.values().find(|candidate| {
+            candidate.name == album
+                && candidate
+                    .artists
+                    .lock()
+                    .iter()
+                    .any(|a| a.to_lowercase() == artist_lower)
+        })?;
+        let mut album_clone = found.clone();
+        self.populate_calculated_album_fields(&mut album_clone);
+        Some(album_clone)
     }
 
     /// Get artist by name
@@ -1173,11 +1184,7 @@ impl LibraryInterface for MPDLibrary {
                     // and it does from here on.
                     self.reset_albums_for_reload(&mut self_albums);
 
-                    // Add each album to the collection with name as key
-                    for mut album in albums {
-                        self.populate_calculated_album_fields(&mut album);
-                        self_albums.insert(album.name.clone(), album);
-                    }
+                    self.insert_loaded_albums(&mut self_albums, albums);
 
                     debug!("Updated library with {} albums", self_albums.len());
                 }
@@ -1935,6 +1942,47 @@ mod tests {
         assert_eq!(counts.albums, albums.len());
         assert_eq!(counts.artists, lib.get_artists().len());
         assert_eq!(counts.tracks, albums.iter().map(|a| a.tracks.lock().len()).sum::<usize>());
+    }
+
+    /// Two artists with an album of the same name: both have to survive the
+    /// load, and each lookup has to hand back the right one.
+    #[test]
+    fn albums_sharing_a_name_are_all_kept_and_told_apart() {
+        let lib = empty_library();
+        {
+            let mut map = lib.albums.write();
+            lib.insert_loaded_albums(
+                &mut map,
+                vec![
+                    test_album("1", "Greatest Hits", "Queen"),
+                    test_album("2", "Greatest Hits", "ABBA"),
+                    test_album("3", "Arrival", "ABBA"),
+                ],
+            );
+        }
+
+        assert_eq!(lib.albums.read().len(), 3, "no album may replace another");
+        assert_eq!(lib.counts().albums, 3);
+
+        let queen = lib.get_album_by_artist_and_name("queen", "Greatest Hits").expect("Queen's album");
+        assert_eq!(queen.id, Identifier::String("1".into()));
+        let abba = lib.get_album_by_artist_and_name("ABBA", "Greatest Hits").expect("ABBA's album");
+        assert_eq!(abba.id, Identifier::String("2".into()));
+        assert!(lib.get_album_by_artist_and_name("Queen", "Arrival").is_none());
+
+        for id in ["1", "2", "3"] {
+            let id = Identifier::String(id.into());
+            assert_eq!(lib.get_album_by_id(&id).expect("album by id").id, id);
+        }
+        assert!(lib.get_album_by_id(&Identifier::String("4".into())).is_none());
+    }
+
+    /// Maps filled by name (older callers, test fixtures) are still searched.
+    #[test]
+    fn an_album_is_found_by_id_whatever_key_it_was_stored_under() {
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        let id = Identifier::String("1".into());
+        assert_eq!(lib.get_album_by_id(&id).expect("album by id").name, "Abbey Road");
     }
 
     /// A library holding exactly the given albums, plus the given artists.

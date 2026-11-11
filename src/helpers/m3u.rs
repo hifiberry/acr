@@ -78,9 +78,14 @@ impl M3UParser {
     }
     
     /// Create a new M3U parser with custom timeout
+    ///
+    /// The value is clamped to `1..=MAX_TIMEOUT_SECS`. It arrives from an HTTP
+    /// request body: an absurd one overflows the deadline arithmetic inside
+    /// the HTTP client, which panics, and a merely large one parks the
+    /// request's thread on an unresponsive host for as long as it asks.
     pub fn with_timeout(timeout_secs: u64) -> Self {
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
+            .timeout(Duration::from_secs(clamp_timeout_secs(timeout_secs)))
             .user_agent("HiFiBerry-AudioControl/0.6.7")
             .build()
             .expect("Failed to create HTTP client");
@@ -138,7 +143,9 @@ impl M3UParser {
         let mut current_extinf: Option<(Option<f64>, Option<String>)> = None;
         
         for (line_num, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
+            // A UTF-8 byte order mark is not whitespace to `trim`, and left in
+            // place it turns the `#EXTM3U` header into a bogus first entry.
+            let trimmed = line.trim_start_matches('\u{feff}').trim();
             
             // Skip empty lines
             if trimmed.is_empty() {
@@ -262,25 +269,12 @@ impl M3UParser {
         
         // If we have a base URL and the URL is relative, try to resolve it
         if let Some(base) = base_url {
-            if url.starts_with('/') {
-                // Absolute path - combine with base domain
-                if let Ok(base_url_parsed) = reqwest::Url::parse(base) {
-                    if let Some(domain) = base_url_parsed.domain() {
-                        let scheme = base_url_parsed.scheme();
-                        // Only include port if it's not the default port
-                        let port = match base_url_parsed.port() {
-                            Some(p) => format!(":{}", p),
-                            None => String::new(),
-                        };
-                        return format!("{}://{}{}{}", scheme, domain, port, url);
-                    }
-                }
-            } else {
-                // Relative path - resolve against base URL
-                if let Ok(base_url_parsed) = reqwest::Url::parse(base) {
-                    if let Ok(resolved) = base_url_parsed.join(url) {
-                        return resolved.to_string();
-                    }
+            // `join` handles both a path relative to the playlist and one
+            // absolute on its host, and unlike `Url::domain` it does not come
+            // back empty for a base addressed by IP.
+            if let Ok(base_url_parsed) = reqwest::Url::parse(base) {
+                if let Ok(resolved) = base_url_parsed.join(url) {
+                    return resolved.to_string();
                 }
             }
         }
@@ -295,9 +289,56 @@ impl M3UParser {
     }
 }
 
+/// Longest download timeout a caller may ask for, in seconds.
+pub const MAX_TIMEOUT_SECS: u64 = 120;
+
+fn clamp_timeout_secs(timeout_secs: u64) -> u64 {
+    timeout_secs.clamp(1, MAX_TIMEOUT_SECS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_requested_timeout_is_clamped_to_a_sane_range() {
+        assert_eq!(clamp_timeout_secs(0), 1);
+        assert_eq!(clamp_timeout_secs(30), 30);
+        assert_eq!(clamp_timeout_secs(3600), MAX_TIMEOUT_SECS);
+        assert_eq!(clamp_timeout_secs(u64::MAX), MAX_TIMEOUT_SECS);
+        // Building the client with the largest request must not panic.
+        let _ = M3UParser::with_timeout(u64::MAX);
+    }
+
+    #[test]
+    fn an_absolute_path_resolves_against_a_base_addressed_by_ip() {
+        let parser = M3UParser::new();
+        assert_eq!(
+            parser.resolve_url("/stream.mp3", Some("http://192.168.1.5:8000/lists/list.m3u")),
+            "http://192.168.1.5:8000/stream.mp3"
+        );
+        assert_eq!(
+            parser.resolve_url("/stream.mp3", Some("http://radio.example/lists/list.m3u")),
+            "http://radio.example/stream.mp3"
+        );
+        assert_eq!(
+            parser.resolve_url("stream.mp3", Some("http://192.168.1.5:8000/lists/list.m3u")),
+            "http://192.168.1.5:8000/lists/stream.mp3"
+        );
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_become_an_entry() {
+        let parser = M3UParser::new();
+        let playlist = parser
+            .parse_content("\u{feff}#EXTM3U\r\n#EXTINF:10,Title\r\nhttp://radio.example/a.mp3\r\n", None)
+            .unwrap();
+
+        assert!(playlist.is_extended);
+        assert_eq!(playlist.count, 1);
+        assert_eq!(playlist.entries[0].url, "http://radio.example/a.mp3");
+        assert_eq!(playlist.entries[0].title.as_deref(), Some("Title"));
+    }
 
     #[test]
     fn test_parse_extinf_with_duration_and_title() {

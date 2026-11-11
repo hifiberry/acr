@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 use std::time::SystemTime;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::lastfm::{LastfmClient, LastfmTrackInfoDetails};
+use crate::lastfm::{LastfmClient, LastfmError, LastfmTrackInfoDetails};
 use acr_types::now_playing::{NowPlayingEvent, PlaybackStateSource, SongInformationSink};
 use acr_types::{PlaybackState, PlayerSource, Song};
 use crossbeam::channel::Receiver;
@@ -57,7 +57,6 @@ pub struct Lastfm {
     config: LastfmWorkerConfig,
     worker_thread: Option<thread::JoinHandle<()>>,
     current_track_data: Arc<Mutex<CurrentScrobbleTrack>>,
-    lastfm_client: Option<LastfmClient>,
     worker_running: Arc<AtomicBool>, // Added for graceful shutdown
     /// Where an enrichment result goes. How a partial is merged, and whether it
     /// still describes the song being played, belongs entirely to whatever
@@ -128,11 +127,56 @@ fn merge_song_updates(original_song: &mut Song, partial_update: &Song) {
     // a change or a new piece of information (like cover art if previously None).
 }
 
+/// The Last.fm client as it is right now.
+///
+/// Asked for at each use and never kept. Linking and unlinking an account
+/// through the API changes the shared instance, and a copy taken at start-up
+/// knows nothing of either: nothing scrobbled until a restart after linking,
+/// and scrobbling carried on after a disconnect.
+fn current_client() -> Option<LastfmClient> {
+    LastfmClient::get_instance().ok()
+}
+
+/// Bring the play timer in line with what the player says it is doing.
+///
+/// `Unknown` is the state source having nothing to report -- it is what a
+/// failed poll comes back as -- and not the player leaving `Playing`, so it
+/// changes nothing. Taken as a transition it stopped the timer of a track
+/// that was still being played.
+fn reconcile_playback_state(track_data: &mut CurrentScrobbleTrack, actual_player_state: PlaybackState) {
+    if actual_player_state == PlaybackState::Unknown {
+        debug!("LastFMWorker (Periodic): Player state not known; leaving worker state as it is.");
+        return;
+    }
+
+    if actual_player_state != track_data.current_playback_state {
+        info!(
+            "LastFMWorker: Discrepancy detected! Worker state: {:?}, Actual player state: {:?}. Updating worker state.",
+            track_data.current_playback_state, actual_player_state
+        );
+
+        // Logic similar to StateChanged event
+        if track_data.current_playback_state == PlaybackState::Playing && actual_player_state != PlaybackState::Playing {
+            // Was playing, now not
+            if let Some(lpt) = track_data.last_play_timestamp {
+                let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
+                track_data.accumulated_play_duration_ms += played_ms;
+                info!("LastFMWorker (Periodic): Playback now '{:?}'. Added {}ms. Total accumulated: {}ms", actual_player_state, played_ms, track_data.accumulated_play_duration_ms);
+            }
+            track_data.last_play_timestamp = None;
+        } else if track_data.current_playback_state != PlaybackState::Playing && actual_player_state == PlaybackState::Playing {
+            // Was not playing, now playing
+            info!("LasFMWorker (Periodic): Playback now 'Playing'. Setting last_play_timestamp.");
+            track_data.last_play_timestamp = Some(SystemTime::now());
+        }
+        track_data.current_playback_state = actual_player_state;
+    }
+}
+
 // Background worker function
 fn lastfm_worker(
     track_data_arc: Arc<Mutex<CurrentScrobbleTrack>>,
     plugin_name: String,
-    client: LastfmClient,
     worker_running: Arc<AtomicBool>, // Added
     scrobble_enabled: bool, // Added
     sink: Arc<dyn SongInformationSink>,
@@ -141,7 +185,7 @@ fn lastfm_worker(
     info!(
         "Lastfm background worker started for plugin: {}. Client available: {}. Scrobbling enabled: {}",
         plugin_name,
-        client.is_authenticated(),
+        current_client().is_some_and(|client| client.is_authenticated()),
         scrobble_enabled
     );
     let mut loop_count: u32 = 0; // Counter for periodic checks
@@ -171,11 +215,20 @@ fn lastfm_worker(
                     // which also answers whether the track is loved and how
                     // often it has been played; an unsigned one otherwise,
                     // which answers only with the album and its images.
-                    let (lookup, user_data) = if client.is_authenticated() {
-                        (client.get_track_info(&artist, &title), UserData::Present)
-                    } else {
-                        debug!("LastFMWorker: No linked account; looking up cover art unsigned");
-                        (client.get_track_album_info(&artist, &title), UserData::Absent)
+                    let (lookup, user_data) = match current_client() {
+                        Some(client) if client.is_authenticated() => {
+                            (client.get_track_info(&artist, &title), UserData::Present)
+                        }
+                        Some(client) => {
+                            debug!("LastFMWorker: No linked account; looking up cover art unsigned");
+                            (client.get_track_album_info(&artist, &title), UserData::Absent)
+                        }
+                        None => (
+                            Err(LastfmError::ConfigError(
+                                "Last.fm client has not been initialized".to_string(),
+                            )),
+                            UserData::Absent,
+                        ),
                     };
 
                     match lookup {
@@ -213,30 +266,7 @@ fn lastfm_worker(
             debug!("LastFMWorker: Performing periodic state check.");
             // Asked rather than awaited: a StateChanged that never arrived
             // would otherwise leave the timer measuring a paused player.
-            let actual_player_state = state.playback_state();
-
-            if actual_player_state != track_data.current_playback_state {
-                info!(
-                    "LastFMWorker: Discrepancy detected! Worker state: {:?}, Actual player state: {:?}. Updating worker state.",
-                    track_data.current_playback_state, actual_player_state
-                );
-
-                // Logic similar to StateChanged event
-                if track_data.current_playback_state == PlaybackState::Playing && actual_player_state != PlaybackState::Playing {
-                    // Was playing, now not
-                    if let Some(lpt) = track_data.last_play_timestamp {
-                        let played_ms = lpt.elapsed().unwrap_or_default().as_millis() as u64;
-                        track_data.accumulated_play_duration_ms += played_ms;
-                        info!("LastFMWorker (Periodic): Playback now '{:?}'. Added {}ms. Total accumulated: {}ms", actual_player_state, played_ms, track_data.accumulated_play_duration_ms);
-                    }
-                    track_data.last_play_timestamp = None;
-                } else if track_data.current_playback_state != PlaybackState::Playing && actual_player_state == PlaybackState::Playing {
-                    // Was not playing, now playing
-                    info!("LasFMWorker (Periodic): Playback now 'Playing'. Setting last_play_timestamp.");
-                    track_data.last_play_timestamp = Some(SystemTime::now());
-                }
-                track_data.current_playback_state = actual_player_state;
-            }
+            reconcile_playback_state(&mut track_data, state.playback_state());
         }
 
 
@@ -275,7 +305,7 @@ fn lastfm_worker(
                 && !track_data.scrobbled_song && scrobble_enabled { // Added scrobble_enabled check
                     if scrobble_point_reached(track_data.length, effective_elapsed_seconds) {
                         
-                        if client.is_authenticated() { // Check if client is authenticated before scrobbling
+                        if let Some(client) = current_client().filter(|client| client.is_authenticated()) { // Check if client is authenticated before scrobbling
                             if let Some(primary_artist) = artists.first() {
                                 let scrobble_timestamp = match actual_started_time.duration_since(SystemTime::UNIX_EPOCH) { // Used actual_started_time
                                     Ok(duration) => duration.as_secs(),
@@ -357,7 +387,6 @@ impl Lastfm {
             config,
             worker_thread: None,
             current_track_data: Arc::new(Mutex::new(CurrentScrobbleTrack::default())),
-            lastfm_client: None,
             worker_running: Arc::new(AtomicBool::new(true)), // Initialize worker_running
             sink,
             state,
@@ -387,14 +416,11 @@ impl Lastfm {
         }
         info!("Lastfm: Last.fm client connection initialized/verified successfully.");
 
-        let client_instance = match LastfmClient::get_instance() {
-            Ok(client) => client,
-            Err(e) => {
-                error!("Lastfm: Failed to get Last.fm client instance: {}", e);
-                return false;
-            }
-        };
-        self.lastfm_client = Some(client_instance.clone());
+        // Only checked here, not kept: see `current_client`.
+        if let Err(e) = LastfmClient::get_instance() {
+            error!("Lastfm: Failed to get Last.fm client instance: {}", e);
+            return false;
+        }
 
         let track_data_for_thread = Arc::clone(&self.current_track_data);
         let worker_running_for_thread = Arc::clone(&self.worker_running);
@@ -408,7 +434,6 @@ impl Lastfm {
                 lastfm_worker(
                     track_data_for_thread,
                     WORKER_NAME.to_string(),
-                    client_instance,
                     worker_running_for_thread,
                     scrobble_config_for_thread,
                     sink_for_thread,
@@ -471,15 +496,12 @@ impl Lastfm {
         if !self.config.scrobble {
             return;
         }
-        let Some(client) = &self.lastfm_client else {
-            return;
-        };
         let Some(pending) = scrobble_for_ended_track(track_data, SystemTime::now()) else {
             return;
         };
-        if !client.is_authenticated() {
+        let Some(client) = current_client().filter(|client| client.is_authenticated()) else {
             return;
-        }
+        };
         match client.scrobble(
             &pending.artist,
             &pending.track,
@@ -523,13 +545,21 @@ impl Lastfm {
             if is_different_song {
                 // Only a different *track* ends the one playing. A
                 // re-announcement carrying a length this song did not have
-                // before still resets the counters below, but scrobbling it
-                // here would send the half-played track twice: once now, and
-                // once more when the periodic rule came round on the
-                // restarted counters.
-                if is_new_track(&track_data, &new_name, &new_artists_vec) {
-                    self.scrobble_ended_track(&mut track_data);
+                // before is the same play of the same track: it learns the
+                // length and keeps everything it has counted. Restarting the
+                // counters here forgot the play time so far, and cleared
+                // `scrobbled_song` on a track already sent, which the
+                // periodic rule then sent a second time.
+                if !is_new_track(&track_data, &new_name, &new_artists_vec) {
+                    track_data.length = new_length;
+                    track_data.song_details = Some(song_event.clone());
+                    debug!(
+                        "Lastfm: Same song re-announced with length {:?}; play counters kept.",
+                        track_data.length
+                    );
+                    return;
                 }
+                self.scrobble_ended_track(&mut track_data);
 
                 let mut was_playing_before_change = false;
                 if track_data.current_playback_state == PlaybackState::Playing {
@@ -572,7 +602,7 @@ impl Lastfm {
                 // Update Now Playing if the song changed and is now considered playing
                 if (track_data.current_playback_state == PlaybackState::Playing || was_playing_before_change) && self.config.scrobble {
                      if let (Some(client), Some(name_str), Some(artists_vec)) =
-                        (&self.lastfm_client, &track_data.name, &track_data.artists) {
+                        (current_client(), &track_data.name, &track_data.artists) {
                         if let Some(primary_artist) = artists_vec.first() {
                             info!("Lastfm: Updating Now Playing for '{}' by '{}' due to SongChanged.", name_str, primary_artist);
                             if let Err(e) = client.update_now_playing(primary_artist, name_str, None, None, None, track_data.length) {
@@ -665,7 +695,7 @@ impl Lastfm {
             
             // Update Now Playing as state changed to Playing for the current song
             if let (Some(client), Some(name_str), Some(artists_vec)) =
-                (&self.lastfm_client, &track_data.name, &track_data.artists) {
+                (current_client(), &track_data.name, &track_data.artists) {
                 if let Some(primary_artist) = artists_vec.first() {
                      info!("Lastfm: Updating Now Playing for '{}' by '{}' due to StateChanged to Playing.", name_str, primary_artist);
                     if self.config.scrobble { // Added self.config.scrobble check
@@ -853,7 +883,9 @@ fn track_length(song: &Song) -> Option<u32> {
 
 /// Whether a track that is still playing has been listened to for long
 /// enough to scrobble: half its length, or four minutes, whichever comes
-/// first.
+/// first -- and never less than `MIN_PLAY_SECS`. Without the floor a
+/// forty-second interlude scrobbled at twenty seconds, and a source
+/// reporting a one-second duration scrobbled on the first tick.
 ///
 /// A source that does not know the length -- a turntable, a web radio, an
 /// AirPlay stream -- has no half to reach, so only the four-minute rule can
@@ -862,7 +894,8 @@ fn track_length(song: &Song) -> Option<u32> {
 fn scrobble_point_reached(length: Option<u32>, played_secs: u64) -> bool {
     match length {
         Some(length) => {
-            played_secs >= u64::from(length) / 2 || played_secs >= SCROBBLE_AFTER_SECS
+            played_secs >= MIN_PLAY_SECS
+                && (played_secs >= u64::from(length) / 2 || played_secs >= SCROBBLE_AFTER_SECS)
         }
         None => played_secs >= SCROBBLE_AFTER_SECS,
     }
@@ -1218,6 +1251,168 @@ mod unknown_length_tests {
     fn a_known_length_track_still_scrobbles_at_half_its_length() {
         assert!(scrobble_point_reached(Some(300), 150));
         assert!(!scrobble_point_reached(Some(300), 149));
+    }
+
+    /// Last.fm's floor holds while the track plays too, not only when it
+    /// ends: half of a short track is not a listen.
+    #[test]
+    fn a_playing_track_never_scrobbles_under_the_minimum_play_time() {
+        // A one-second duration is what some sources report before they
+        // know better; it must not scrobble on the first tick.
+        assert!(!scrobble_point_reached(Some(1), 0));
+        assert!(!scrobble_point_reached(Some(1), 1));
+        assert!(!scrobble_point_reached(Some(1), 29));
+
+        assert!(!scrobble_point_reached(Some(40), 20));
+        assert!(!scrobble_point_reached(Some(40), 29));
+        assert!(scrobble_point_reached(Some(40), 30));
+
+        assert!(!scrobble_point_reached(Some(59), 29));
+        assert!(scrobble_point_reached(Some(59), 30));
+
+        // Where half the length is past the floor, half the length decides.
+        assert!(!scrobble_point_reached(Some(300), 149));
+        assert!(scrobble_point_reached(Some(300), 150));
+
+        assert!(!scrobble_point_reached(None, 30));
+        assert!(scrobble_point_reached(None, 240));
+    }
+
+    // --- the periodic reconciliation --------------------------------------
+
+    /// A track the worker believes is playing, its current stretch having
+    /// started a minute ago.
+    fn playing_for_a_minute() -> CurrentScrobbleTrack {
+        let mut track = played(Some(300), 0);
+        track.current_playback_state = PlaybackState::Playing;
+        track.last_play_timestamp = Some(SystemTime::now() - Duration::from_secs(60));
+        track
+    }
+
+    /// `Unknown` is what the state source answers when its poll failed. That
+    /// is no news, and must not stop the timer of a track still playing.
+    #[test]
+    fn an_unknown_player_state_leaves_the_play_timer_running() {
+        let mut track = playing_for_a_minute();
+        let segment_start = track.last_play_timestamp;
+
+        reconcile_playback_state(&mut track, PlaybackState::Unknown);
+
+        assert_eq!(track.current_playback_state, PlaybackState::Playing);
+        assert_eq!(track.last_play_timestamp, segment_start);
+        assert_eq!(track.accumulated_play_duration_ms, 0);
+    }
+
+    #[test]
+    fn a_player_found_paused_stops_the_play_timer_and_banks_the_stretch() {
+        let mut track = playing_for_a_minute();
+
+        reconcile_playback_state(&mut track, PlaybackState::Paused);
+
+        assert_eq!(track.current_playback_state, PlaybackState::Paused);
+        assert_eq!(track.last_play_timestamp, None);
+        assert!(track.accumulated_play_duration_ms >= 60_000);
+    }
+
+    #[test]
+    fn a_player_found_playing_starts_the_play_timer() {
+        let mut track = played(Some(300), 10);
+        track.current_playback_state = PlaybackState::Paused;
+
+        reconcile_playback_state(&mut track, PlaybackState::Playing);
+
+        assert_eq!(track.current_playback_state, PlaybackState::Playing);
+        assert!(track.last_play_timestamp.is_some());
+        assert_eq!(track.accumulated_play_duration_ms, 10_000);
+    }
+
+    // --- the same track announced again -----------------------------------
+
+    struct NoSink;
+    impl SongInformationSink for NoSink {
+        fn apply(&self, _source: &PlayerSource, _partial: &Song) -> bool {
+            false
+        }
+    }
+
+    struct NoState;
+    impl PlaybackStateSource for NoState {
+        fn playback_state(&self) -> PlaybackState {
+            PlaybackState::Unknown
+        }
+    }
+
+    /// A worker that never reaches Last.fm: scrobbling is off, so neither a
+    /// scrobble nor a now-playing update is attempted.
+    fn offline_worker() -> Lastfm {
+        Lastfm::new(
+            LastfmWorkerConfig {
+                enabled: true,
+                api_key: String::new(),
+                api_secret: String::new(),
+                scrobble: false,
+            },
+            Arc::new(NoSink),
+            Arc::new(NoState),
+        )
+    }
+
+    fn song(title: &str, duration: Option<f64>) -> Song {
+        Song {
+            title: Some(title.to_string()),
+            artist: Some("Der Weg einer Freiheit".to_string()),
+            duration,
+            ..Default::default()
+        }
+    }
+
+    /// The socket re-seeds a `SongChanged` on reconnect that can carry a
+    /// length the first announcement lacked. That is the same play of the
+    /// same track: forgetting what was counted lost the play time so far, and
+    /// forgetting that it was scrobbled sent it to Last.fm a second time.
+    #[test]
+    fn a_track_regaining_only_its_length_keeps_its_play_counters() {
+        let mut worker = offline_worker();
+        let source = PlayerSource::new("mpd".to_string(), "1".to_string());
+        worker.handle_song_changed(&Some(song("Skepsis Part I", None)), &source);
+        let started = {
+            let mut track = worker.current_track_data.lock();
+            track.accumulated_play_duration_ms = 100_000;
+            track.scrobbled_song = true;
+            track.track_info_fetched = true;
+            track.started_timestamp = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000));
+            track.started_timestamp
+        };
+
+        worker.handle_song_changed(&Some(song("Skepsis Part I", Some(210.0))), &source);
+
+        let track = worker.current_track_data.lock();
+        assert_eq!(track.length, Some(210));
+        assert_eq!(track.song_details.as_ref().and_then(|s| s.duration), Some(210.0));
+        assert_eq!(track.accumulated_play_duration_ms, 100_000);
+        assert!(track.scrobbled_song, "a track already sent must stay marked as sent");
+        assert_eq!(track.started_timestamp, started);
+        assert!(track.track_info_fetched);
+    }
+
+    /// A different title is still a new play, with new counters.
+    #[test]
+    fn a_different_track_still_resets_the_play_counters() {
+        let mut worker = offline_worker();
+        let source = PlayerSource::new("mpd".to_string(), "1".to_string());
+        worker.handle_song_changed(&Some(song("Skepsis Part I", None)), &source);
+        {
+            let mut track = worker.current_track_data.lock();
+            track.accumulated_play_duration_ms = 100_000;
+            track.scrobbled_song = true;
+        }
+
+        worker.handle_song_changed(&Some(song("Skepsis Part II", Some(210.0))), &source);
+
+        let track = worker.current_track_data.lock();
+        assert_eq!(track.name.as_deref(), Some("Skepsis Part II"));
+        assert_eq!(track.accumulated_play_duration_ms, 0);
+        assert!(!track.scrobbled_song);
     }
 
     // --- the rule when a track ends --------------------------------------

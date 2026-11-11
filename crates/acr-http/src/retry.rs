@@ -78,11 +78,20 @@ impl RetryHandler {
     pub fn get_delay(&self) -> Duration {
         if let Some(ref intervals) = self.custom_intervals {
             // Use custom intervals, clamping to the last interval if we exceed the list
-            let index = std::cmp::min(self.attempt, intervals.len() - 1);
-            intervals[index]
+            // An empty list has no last interval to clamp to. It also allows
+            // no retries (max_attempts is its length), so there is nothing to
+            // wait for.
+            let index = std::cmp::min(self.attempt, intervals.len().saturating_sub(1));
+            intervals.get(index).copied().unwrap_or(Duration::ZERO)
         } else {
             // Use exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s (max)
-            let base_delay = 2_u64.pow(self.attempt as u32);
+            // A handler without max_attempts retries indefinitely, so the
+            // attempt count is unbounded and the power eventually overflows;
+            // anything that large is past the cap anyway.
+            let base_delay = u32::try_from(self.attempt)
+                .ok()
+                .and_then(|attempt| 2_u64.checked_pow(attempt))
+                .unwrap_or(u64::MAX);
             let delay_secs = std::cmp::min(base_delay, 60);
             Duration::from_secs(delay_secs)
         }
@@ -230,6 +239,66 @@ mod tests {
         assert!(!retry.should_retry()); // attempt 3, should not retry
     }
     
+    #[test]
+    fn test_default_backoff_is_capped_at_sixty_seconds() {
+        let mut retry = RetryHandler::new();
+
+        let expected = [1, 2, 4, 8, 16, 32, 60, 60];
+        for (attempt, &expected_secs) in expected.iter().enumerate() {
+            retry.attempt = attempt;
+            assert_eq!(retry.get_delay(), Duration::from_secs(expected_secs));
+        }
+    }
+
+    /// 2^64 does not fit in a u64; the delay must stay at the cap rather than
+    /// wrap round to no delay at all.
+    #[test]
+    fn test_default_backoff_stays_capped_for_huge_attempt_counts() {
+        let mut retry = RetryHandler::new();
+
+        for attempt in [63, 64, 65, 1000, u32::MAX as usize, usize::MAX] {
+            retry.attempt = attempt;
+            assert_eq!(retry.get_delay(), Duration::from_secs(60), "attempt {}", attempt);
+        }
+    }
+
+    #[test]
+    fn test_custom_intervals_clamp_to_the_last_one() {
+        let mut retry = RetryHandler::with_intervals(vec![
+            Duration::from_millis(5),
+            Duration::from_millis(7),
+        ]);
+
+        assert_eq!(retry.get_delay(), Duration::from_millis(5));
+        retry.attempt = 1;
+        assert_eq!(retry.get_delay(), Duration::from_millis(7));
+        retry.attempt = 50;
+        assert_eq!(retry.get_delay(), Duration::from_millis(7));
+    }
+
+    #[test]
+    fn test_empty_intervals_do_not_panic() {
+        let mut retry = RetryHandler::with_intervals(vec![]);
+
+        assert!(!retry.should_retry());
+        assert_eq!(retry.get_delay(), Duration::ZERO);
+        assert!(retry.wait(None));
+        assert_eq!(retry.attempt(), 1);
+    }
+
+    #[test]
+    fn test_wait_advances_the_attempt_and_stops_on_shutdown() {
+        let mut retry = RetryHandler::with_intervals(vec![Duration::from_millis(1)]);
+
+        let running = Arc::new(AtomicBool::new(true));
+        assert!(retry.wait(Some(&running)));
+        assert_eq!(retry.attempt(), 1);
+
+        running.store(false, Ordering::SeqCst);
+        assert!(!retry.wait(Some(&running)));
+        assert_eq!(retry.attempt(), 1);
+    }
+
     #[test]
     fn test_reset() {
         let mut retry = RetryHandler::new();

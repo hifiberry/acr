@@ -624,6 +624,15 @@ impl ArtistStore {
         self.downloading.insert(artist_name.to_string(), downloading_flag.clone());
 
         let result = match self.download_image(url) {
+            // Sniffed before it is stored, as an upload is. The URL comes from
+            // a client and the file is served back through the image route, so
+            // without this whatever the daemon can reach over HTTP could be
+            // read out through it -- and an HTML error page from a dead link
+            // would be kept as the artist's picture.
+            Ok(image_data) if image_extension(&image_data).is_none() => {
+                warn!("Refusing {} image for artist {} from URL {}: not a recognised image format", image_type, artist_name, url);
+                ArtistImageResult::Error("Downloaded data is not a recognised image format".to_string())
+            }
             Ok(image_data) => {
                 let user_path = self.get_artist_user_image_path(artist_name, image_type);
                 

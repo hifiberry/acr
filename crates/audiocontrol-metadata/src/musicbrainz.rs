@@ -484,13 +484,9 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
         Ok(response_text) => response_text,
         Err(e) => {
             error!("Failed to execute MusicBrainz API request: {}", e);
-            // Add to negative cache with 48-hour expiry before returning
-            let not_found_cache_key = format!("{}{}", ARTIST_NOT_FOUND_CACHE_PREFIX, artist_name);
-            if let Err(cache_err) = attributecache::set_with_expiry(&not_found_cache_key, &true, Some(NOT_FOUND_CACHE_TIMEOUT_SECONDS)) {
-                debug!("Failed to cache API failure for '{}': {}", artist_name, cache_err);
-            } else {
-                debug!("Cached API failure for '{}' with 48-hour expiry", artist_name);
-            }
+            // Not added to the negative cache: a request that did not get
+            // through says nothing about the artist, and remembering it as
+            // "not found" hid the artist for 48 hours after one timeout.
             return MusicBrainzSearchResult::Error(format!("API request error: {}", e));
         }
     };
@@ -562,13 +558,8 @@ fn search_musicbrainz_for_artist(artist_name: &str, cache_only: bool) -> MusicBr
             // Print error response safely (UTF-8 safe truncation)
             error!("Response text: {}", sanitize::safe_truncate(&response, 500));
             debug!("Full response JSON: {}", response);
-            // Add to negative cache with 48-hour expiry before returning
-            let not_found_cache_key = format!("{}{}", ARTIST_NOT_FOUND_CACHE_PREFIX, artist_name);
-            if let Err(cache_err) = attributecache::set_with_expiry(&not_found_cache_key, &true, Some(NOT_FOUND_CACHE_TIMEOUT_SECONDS)) {
-                debug!("Failed to cache parse error for '{}': {}", artist_name, cache_err);
-            } else {
-                debug!("Cached parse error for '{}' with 48-hour expiry", artist_name);
-            }
+            // Not added to the negative cache either: a body that is not the
+            // JSON asked for is the service failing, not the artist missing.
             MusicBrainzSearchResult::Error(format!("Response parse error: {} ({})", e, 
                                                  if response.len() < 50 { "possibly truncated response" } else { "check response format" }))
         }
@@ -662,6 +653,10 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
                     let mut all_mbids = Vec::new();
                     let mut any_found = false;
                     let mut all_found = true;  // New flag to track if all split artists were found
+                    // A lookup that failed is not a lookup that found nothing:
+                    // what it would have answered is unknown, so nothing
+                    // below may be remembered on the strength of it.
+                    let mut first_error: Option<String> = None;
                     
                     // Search for each artist individually
                     for artist in &split_artists {
@@ -671,6 +666,11 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
                                 all_mbids.extend(mbids);
                                 any_found = true;
                             },
+                            MusicBrainzSearchResult::Error(e) => {
+                                debug!("MusicBrainz lookup failed for split artist '{}': {}", artist, e);
+                                all_found = false;
+                                first_error.get_or_insert(e);
+                            },
                             _ => {
                                 debug!("No MusicBrainz ID found for split artist: '{}'", artist);
                                 all_found = false;  // Mark that at least one artist wasn't found
@@ -678,6 +678,15 @@ pub fn search_mbids_for_artist(artist_name: &str, allow_multiple: bool,
                         }
                     }
                     
+                    if let Some(e) = first_error {
+                        // Neither the partial result nor a "not found" is
+                        // cached; the next call asks again.
+                        if any_found {
+                            return MusicBrainzSearchResult::FoundPartial(all_mbids, false);
+                        }
+                        return MusicBrainzSearchResult::Error(e);
+                    }
+
                     // If we found any MBIDs, return them and store in cache
                     if any_found {
                         debug!("Found {} MusicBrainz ID(s) for split artists in '{}'", all_mbids.len(), artist_name);
@@ -760,6 +769,41 @@ pub fn split_artist_names(artist_name: &str, cache_only: bool, custom_separators
     artistsplitter::split_artist_names_with_mbid_lookup(artist_name, cache_only, custom_separators)
 }
 
+/// Escape a value for use inside a quoted Lucene phrase.
+///
+/// Only the backslash and the double quote mean anything in there. Left
+/// alone, a quote in a name ends the phrase early and the rest of the name is
+/// parsed as query syntax.
+fn lucene_phrase(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// The URL of an exact-match recording search.
+fn recording_search_url(artist: &str, title: &str) -> String {
+    let query = format!(
+        "artist:\"{}\" AND recording:\"{}\"",
+        lucene_phrase(artist),
+        lucene_phrase(title)
+    );
+    format!("{}/recording/?query={}&fmt=json&limit=5", MUSICBRAINZ_API_BASE, encode(&query))
+}
+
+/// The URL of the release-group search for an artist and album.
+///
+/// The whole query is percent-encoded, as the sibling searches do. Encoding
+/// only the space, the quote and the colon let `&`, `#`, `+`, `%` and `?` in a
+/// name through as URL syntax: "Simon & Garfunkel" ended the query parameter
+/// at the ampersand and "#1 Record" turned the rest of the URL into a
+/// fragment.
+fn release_group_search_url(artist: &str, album: &str) -> String {
+    let query = format!(
+        "artist:\"{}\" AND releasegroup:\"{}\"",
+        lucene_phrase(artist),
+        lucene_phrase(album)
+    );
+    format!("{}/release-group?query={}&limit=1&fmt=json", MUSICBRAINZ_API_BASE, encode(&query))
+}
+
 /// Search for recordings (songs) by artist and title
 /// 
 /// Performs an exact match search for recordings in MusicBrainz.
@@ -783,20 +827,17 @@ pub fn search_recording(artist: &str, title: &str) -> Result<MusicBrainzRecordin
         });
     }
     
-    // Build query for exact match
-    let query = format!("artist:\"{}\" AND recording:\"{}\"", artist, title);
-    let url = format!("{}/recording/?query={}&fmt=json&limit=5", MUSICBRAINZ_API_BASE, urlencoding::encode(&query));
+    let url = recording_search_url(artist, title);
     
     // Execute the HTTP GET request
     let response_text = match musicbrainz_api_get(&url) {
         Ok(response_text) => response_text,
         Err(e) => {
+            // An error, not an empty result: "no such recording" is an
+            // answer the caller draws conclusions from, and a request that
+            // failed gives it nothing to conclude.
             warn!("Failed to search MusicBrainz for recording: {}", e);
-            return Ok(MusicBrainzRecordingSearchResponse { 
-                recordings: Vec::new(), 
-                count: 0,
-                offset: 0,
-            });
+            return Err(format!("recording search failed: {}", e));
         }
     };
     
@@ -808,11 +849,7 @@ pub fn search_recording(artist: &str, title: &str) -> Result<MusicBrainzRecordin
         },
         Err(e) => {
             warn!("Failed to parse MusicBrainz recording search response: {}", e);
-            Ok(MusicBrainzRecordingSearchResponse { 
-                recordings: Vec::new(), 
-                count: 0,
-                offset: 0,
-            })
+            Err(format!("recording search response could not be parsed: {}", e))
         }
     }
 }
@@ -860,19 +897,7 @@ fn search_release_group_genres_when(artist: &str, album: &str, enabled: bool) ->
     }
 
     // Step 1: search for the release group
-    let query = format!(
-        "artist:\"{}\" AND releasegroup:\"{}\"",
-        artist.replace('"', "\\\""),
-        album.replace('"', "\\\"")
-    );
-    let encoded = query.chars().map(|c| match c {
-        ' ' => '+'.to_string(),
-        '"' => "%22".to_string(),
-        ':' => "%3A".to_string(),
-        _ => c.to_string(),
-    }).collect::<String>();
-
-    let search_url = format!("{}/release-group?query={}&limit=1&fmt=json", MUSICBRAINZ_API_BASE, encoded);
+    let search_url = release_group_search_url(artist, album);
 
     let body = match musicbrainz_api_get(&search_url) {
         Ok(b) => b,
@@ -946,6 +971,63 @@ fn genres_in_release_group(body: &str) -> GenreLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The query a search URL carries, as the server would decode it.
+    fn decoded_query(url: &str) -> String {
+        let parsed = url::Url::parse(url).expect("a search URL should parse");
+        assert_eq!(parsed.fragment(), None, "nothing may leak into a fragment: {}", url);
+        parsed
+            .query_pairs()
+            .find(|(key, _)| key == "query")
+            .map(|(_, value)| value.into_owned())
+            .expect("a search URL carries a query")
+    }
+
+    /// Names holding characters that are URL syntax have to arrive whole.
+    #[test]
+    fn a_release_group_search_survives_url_syntax_in_names() {
+        assert_eq!(
+            decoded_query(&release_group_search_url("Simon & Garfunkel", "Bookends")),
+            r#"artist:"Simon & Garfunkel" AND releasegroup:"Bookends""#
+        );
+        assert_eq!(
+            decoded_query(&release_group_search_url("Big Star", "#1 Record")),
+            r##"artist:"Big Star" AND releasegroup:"#1 Record""##
+        );
+        assert_eq!(
+            decoded_query(&release_group_search_url("AC/DC", "100% + more?")),
+            r#"artist:"AC/DC" AND releasegroup:"100% + more?""#
+        );
+    }
+
+    #[test]
+    fn a_release_group_search_keeps_its_other_parameters() {
+        let url = release_group_search_url("Simon & Garfunkel", "#1 Record");
+        let parsed = url::Url::parse(&url).unwrap();
+        let pairs: Vec<(String, String)> = parsed
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+
+        assert_eq!(pairs.len(), 3, "{}", url);
+        assert!(pairs.contains(&("limit".to_string(), "1".to_string())));
+        assert!(pairs.contains(&("fmt".to_string(), "json".to_string())));
+    }
+
+    /// A quote or a backslash in a name must stay inside the phrase.
+    #[test]
+    fn quotes_and_backslashes_are_escaped_inside_a_phrase() {
+        assert_eq!(lucene_phrase(r#"12" Mix"#), r#"12\" Mix"#);
+        assert_eq!(lucene_phrase(r"AC\DC"), r"AC\\DC");
+        assert_eq!(
+            decoded_query(&recording_search_url(r#"The "Artist""#, r"Back\slash")),
+            r#"artist:"The \"Artist\"" AND recording:"Back\\slash""#
+        );
+        assert_eq!(
+            decoded_query(&release_group_search_url("Artist", r#"7" Single"#)),
+            r#"artist:"Artist" AND releasegroup:"7\" Single""#
+        );
+    }
 
     /// Lookups being disabled is not an answer about the album. An empty list
     /// here was indistinguishable from "MusicBrainz holds no genres for this

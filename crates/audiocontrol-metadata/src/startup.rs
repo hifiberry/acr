@@ -297,7 +297,17 @@ pub(crate) fn stop_was_requested() -> bool {
 /// Arm [`stop`], and hand back the receiver the subscriber waits on.
 fn register_stop() -> Receiver<()> {
     let (tx, rx) = unbounded();
-    *stop_channel().lock() = Some(tx);
+    let mut channel = stop_channel().lock();
+    // A stop asked for after the caller last looked at the flag found no
+    // channel to arrive on, and would otherwise be lost: the subscriber would
+    // start with a receiver nobody is ever going to signal. Checked with the
+    // lock held, so a `stop` running right now either set the flag before
+    // this read or finds the sender once the lock is released -- and a stop
+    // delivered twice is harmless.
+    if stop_flag().load(Ordering::SeqCst) {
+        let _ = tx.send(());
+    }
+    *channel = Some(tx);
     rx
 }
 
@@ -720,6 +730,23 @@ mod tests {
         assert!(
             rx.recv_timeout(Duration::from_secs(5)).is_ok(),
             "the subscriber's stop receiver heard nothing"
+        );
+        clear_stop_for_test();
+    }
+
+    /// A stop that lands after the start has last checked the flag, but before
+    /// the subscriber's receiver exists, still reaches the subscriber.
+    #[test]
+    #[serial]
+    fn a_stop_before_the_receiver_is_registered_still_arrives() {
+        clear_stop_for_test();
+        stop();
+
+        let rx = register_stop();
+
+        assert!(
+            rx.try_recv().is_ok(),
+            "a stop asked for before the receiver was registered was lost"
         );
         clear_stop_for_test();
     }

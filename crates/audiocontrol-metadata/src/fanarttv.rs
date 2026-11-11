@@ -9,6 +9,7 @@ use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
 use acr_types::config::get_service_config;
+use acr_types::sanitize;
 use acr_http::ratelimit;
 
 /// Global flag to indicate if FanArt.tv lookups are enabled
@@ -46,7 +47,7 @@ pub fn initialize_from_config(config: &serde_json::Value) {
                 let mut config = FANARTTV_CONFIG.lock();
                 debug!("Found FanArt.tv API key in config: {}",
                        if !api_key.is_empty() && api_key.len() > 4 {
-                           format!("{}...", &api_key[0..4])
+                           format!("{}...", sanitize::safe_truncate(api_key, 4))
                        } else {
                            "Empty".to_string()
                        });
@@ -152,6 +153,20 @@ fn fanarttv_api_get_with(
     client.get_text(url)
 }
 
+/// Whether a failed request is fanart.tv answering that it knows nothing
+/// about the MBID, as opposed to the request failing on the way.
+///
+/// The transport reports both as a `RequestError` and keeps the status only
+/// as text, in ureq's "<url>: status code <n>" form, so that is what is read.
+/// A redirected request has the original URL appended after it.
+fn is_not_found(error: &http_client::HttpClientError) -> bool {
+    matches!(
+        error,
+        http_client::HttpClientError::RequestError(message)
+            if message.contains(": status code 404")
+    )
+}
+
 /// Get artist thumbnail URLs from FanArt.tv
 /// 
 /// # Arguments
@@ -228,9 +243,13 @@ pub fn get_artist_thumbnails(artist_mbid: &str, max_images: Option<usize>) -> Ve
             }
         }
         Err(e) => {
-            debug!("GET request failed: {}: status code 404", e);
-            // Add to negative cache on request failure (includes 404)
-            FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
+            debug!("FanArt.tv request for MBID {} failed: {}", artist_mbid, e);
+            // Only a 404 is fanart.tv saying it has nothing for this MBID.
+            // Anything else is the request not getting through, and must
+            // stay retryable rather than hide the artist for a day.
+            if is_not_found(&e) {
+                FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
+            }
         }
     }
 
@@ -308,9 +327,13 @@ pub fn get_artist_banners(artist_mbid: &str) -> Vec<String> {
             }
         }
         Err(e) => {
-            debug!("GET request failed: {}: status code 404", e);
-            // Add to negative cache on request failure (includes 404)
-            FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
+            debug!("FanArt.tv request for MBID {} failed: {}", artist_mbid, e);
+            // Only a 404 is fanart.tv saying it has nothing for this MBID.
+            // Anything else is the request not getting through, and must
+            // stay retryable rather than hide the artist for a day.
+            if is_not_found(&e) {
+                FAILED_MBID_CACHE.insert(artist_mbid.to_string(), true);
+            }
         }
     }
 
@@ -430,6 +453,30 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
+
+    /// A 404 is an answer about the artist and may be remembered. A timeout,
+    /// a refused connection or a 5xx says nothing about the artist, and
+    /// remembering it hid the artwork for a day after one network blip.
+    #[test]
+    fn only_a_404_counts_as_fanarttv_knowing_nothing() {
+        let request_error = |message: &str| {
+            http_client::HttpClientError::RequestError(message.to_string())
+        };
+
+        assert!(is_not_found(&request_error(
+            "http://webservice.fanart.tv/v3/music/abc?api_key=k: status code 404"
+        )));
+        assert!(!is_not_found(&request_error(
+            "http://webservice.fanart.tv/v3/music/abc?api_key=k: status code 503"
+        )));
+        assert!(!is_not_found(&request_error(
+            "http://webservice.fanart.tv/v3/music/abc?api_key=k: Connection Failed: Connect error: connection refused"
+        )));
+        assert!(!is_not_found(&request_error(
+            "http://webservice.fanart.tv/v3/music/abc?api_key=k: Network Error: timed out reading response"
+        )));
+        assert!(!is_not_found(&http_client::HttpClientError::EmptyResponse));
+    }
 
     /// A transport that answers instantly but records how many requests were
     /// in flight at the same time, so the test observes the request path

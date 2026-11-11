@@ -60,6 +60,18 @@ pub enum ResizeError {
 /// serving the original — so an oversized source degrades to a full-size response
 /// rather than taking the daemon down with it.
 pub fn resize(data: &[u8], target_px: u32) -> Result<Resized, ResizeError> {
+    // The header answers "already small enough" without decoding a pixel.
+    // Nothing is stored for that answer, so a cover at or below the size asked
+    // for used to be decoded in full on every request for it, and once per
+    // rung in every pre-warm. A header that cannot be read falls through to
+    // the decode, which reports it.
+    if let Some((width, height)) = header_dimensions(data) {
+        if width.max(height) <= target_px {
+            debug!("Image longest edge {} <= target {}, serving original", width.max(height), target_px);
+            return Ok(Resized::Original);
+        }
+    }
+
     let img = decode_within_limits(data)?;
 
     let longest = img.width().max(img.height());
@@ -91,6 +103,15 @@ pub fn resize(data: &[u8], target_px: u32) -> Result<Resized, ResizeError> {
             .map_err(|e| ResizeError::Encode(e.to_string()))?;
         Ok(Resized::Image(buf.into_inner(), "image/jpeg".to_string()))
     }
+}
+
+/// The pixel dimensions an image's header declares, without decoding it.
+fn header_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 /// Decode image bytes with explicit resource limits.
@@ -413,6 +434,29 @@ mod tests {
     fn dimensions(data: &[u8]) -> (u32, u32) {
         let img = image::load_from_memory(data).unwrap();
         (img.width(), img.height())
+    }
+
+    /// Only the header is read to decide an image is small enough: one cut
+    /// short of its pixel data cannot be decoded, and is still answered.
+    #[test]
+    fn a_small_enough_image_is_recognised_from_its_header_alone() {
+        let png = opaque_png(100, 60);
+        let header_only = &png[..png.len() - 20];
+        assert!(image::load_from_memory(header_only).is_err());
+
+        assert_eq!(header_dimensions(header_only), Some((100, 60)));
+        assert!(matches!(resize(header_only, 100), Ok(Resized::Original)));
+        assert!(matches!(resize(header_only, 800), Ok(Resized::Original)));
+    }
+
+    /// Larger than the target, the same bytes go on to the decode and fail
+    /// there, as they did before.
+    #[test]
+    fn an_undecodable_image_larger_than_the_target_is_still_an_error() {
+        let png = opaque_png(100, 60);
+
+        assert!(matches!(resize(&png[..png.len() - 20], 50), Err(ResizeError::Decode(_))));
+        assert!(matches!(resize(b"not an image", 50), Err(ResizeError::Decode(_))));
     }
 
     #[test]

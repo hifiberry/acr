@@ -189,6 +189,17 @@ impl MPDLibrary {
         );
     }
 
+    /// Put freshly loaded albums into the album map.
+    ///
+    /// Keyed by id, not by name: two artists can each have a "Greatest Hits",
+    /// and a name key keeps only the last one loaded.
+    fn insert_loaded_albums(&self, map: &mut HashMap<String, Album>, albums: Vec<Album>) {
+        for mut album in albums {
+            self.populate_calculated_album_fields(&mut album);
+            map.insert(crate::data::library::album_map_key(&album), album);
+        }
+    }
+
     /// Mark the library loaded and announce the finished load — one step, for
     /// the same reason as the reset above.
     ///
@@ -268,6 +279,16 @@ impl MPDLibrary {
         use std::io::{Read, BufRead, BufReader, Write};
         use std::net::TcpStream;
         debug!("Retrieving cover art for URI: {}", uri);
+
+        // The URI goes into a quoted protocol argument, and part of it can
+        // come from an HTTP request (`get_image` decodes an identifier).
+        let quoted_uri = match mpd_quote_argument(uri) {
+            Some(q) => q,
+            None => {
+                warn!("Refusing cover art request for a URI containing a line break");
+                return None;
+            }
+        };
         
         // Connect to MPD server
         let stream = match TcpStream::connect(format!("{}:{}", self.hostname, self.port)) {
@@ -278,7 +299,18 @@ impl MPDLibrary {
             }
         };
         
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        // A stalled MPD must not hold the caller (an HTTP worker) forever.
+        let io_timeout = Some(std::time::Duration::from_secs(10));
+        let _ = stream.set_read_timeout(io_timeout);
+        let _ = stream.set_write_timeout(io_timeout);
+
+        let mut reader = match stream.try_clone() {
+            Ok(clone) => BufReader::new(clone),
+            Err(e) => {
+                error!("Failed to clone MPD connection: {}", e);
+                return None;
+            }
+        };
         let mut writer = stream;
         
         // Read the welcome message
@@ -294,7 +326,7 @@ impl MPDLibrary {
         }
         
         // Send albumart command with URI and offset 0
-        let cmd = format!("albumart \"{}\" 0\n", uri);
+        let cmd = format!("albumart {} 0\n", quoted_uri);
         if writer.write_all(cmd.as_bytes()).is_err() {
             error!("Failed to send albumart command to MPD");
             return None;
@@ -391,7 +423,7 @@ impl MPDLibrary {
             
             while offset < size {
                 // Send command to get next chunk
-                let cmd = format!("albumart \"{}\" {}\n", uri, offset);
+                let cmd = format!("albumart {} {}\n", quoted_uri, offset);
                 if writer.write_all(cmd.as_bytes()).is_err() {
                     error!("Failed to send albumart command for chunk at offset {}", offset);
                     return None;
@@ -432,6 +464,13 @@ impl MPDLibrary {
                     }
                 };
                 
+                // An empty chunk before the announced size is reached would
+                // never advance the offset: give up instead of asking forever.
+                if chunk_size == 0 {
+                    error!("MPD returned an empty cover art chunk at offset {} of {}", offset, size);
+                    return None;
+                }
+
                 // Read the binary data for this chunk
                 let mut buffer = vec![0u8; chunk_size];
                 match reader.read_exact(&mut buffer) {
@@ -663,15 +702,15 @@ impl MPDLibrary {
     /// Get album by ID
     pub fn get_album_by_id(&self, id: &crate::data::Identifier) -> Option<Album> {
         let albums = self.albums.read();
-        // Search through all albums to find one with matching ID
-        for album in albums.values() {
-            if &album.id == id {
-                let mut album_clone = album.clone();
-                self.populate_calculated_album_fields(&mut album_clone);
-                return Some(album_clone);
-            }
-        }
-        None
+        // The map is keyed by id, so this is normally one hash lookup. The
+        // scan covers a map filled some other way.
+        let found = albums
+            .get(&id.to_string())
+            .filter(|album| &album.id == id)
+            .or_else(|| albums.values().find(|album| &album.id == id))?;
+        let mut album_clone = found.clone();
+        self.populate_calculated_album_fields(&mut album_clone);
+        Some(album_clone)
     }
 
     /// Get albums by artist ID
@@ -741,20 +780,20 @@ impl MPDLibrary {
     pub fn get_album_by_artist_and_name(&self, artist: &str, album: &str) -> Option<Album> {
         // Implementation to find album by both artist and album name
         let albums = self.albums.read();
-        // Look for an album with the specified name
-        if let Some(album_obj) = albums.get(album) {
-            // If we found the album, check if it has the specified artist
-            let album_artists = album_obj.artists.lock();
-            // If the album has the specified artist (case-insensitive comparison)
-            if album_artists.iter().any(|a| a.to_lowercase() == artist.to_lowercase()) {
-                let mut album_clone = album_obj.clone();
-                self.populate_calculated_album_fields(&mut album_clone);
-                return Some(album_clone);
-            }
-        }
-
-        // Album not found or artist doesn't match
-        None
+        let artist_lower = artist.to_lowercase();
+        // Several albums can share a name, so every one with this name is a
+        // candidate and the artist decides between them.
+        let found = albums.values().find(|candidate| {
+            candidate.name == album
+                && candidate
+                    .artists
+                    .lock()
+                    .iter()
+                    .any(|a| a.to_lowercase() == artist_lower)
+        })?;
+        let mut album_clone = found.clone();
+        self.populate_calculated_album_fields(&mut album_clone);
+        Some(album_clone)
     }
 
     /// Get artist by name
@@ -945,6 +984,21 @@ impl MPDLibrary {
 
         let albums = self.albums.read();
 
+        // The exact match goes first: in a flat folder, or with two albums in
+        // one directory, "same directory as some album's first track" picks an
+        // arbitrary album and with it the wrong cover.
+        for album in albums.values() {
+            let matches = {
+                let tracks = album.tracks.lock();
+                tracks.iter().any(|t| t.uri.as_deref() == Some(track_uri))
+            };
+
+            if matches {
+                debug!("Track '{}' belongs to album '{}' (exact track match)", track_uri, album.name);
+                return Some(album.clone());
+            }
+        }
+
         if let Some(ref dir) = track_dir {
             for album in albums.values() {
                 let first_uri = {
@@ -958,18 +1012,6 @@ impl MPDLibrary {
                         return Some(album.clone());
                     }
                 }
-            }
-        }
-
-        for album in albums.values() {
-            let matches = {
-                let tracks = album.tracks.lock();
-                tracks.iter().any(|t| t.uri.as_deref() == Some(track_uri))
-            };
-
-            if matches {
-                debug!("Track '{}' belongs to album '{}' (exact track match)", track_uri, album.name);
-                return Some(album.clone());
             }
         }
 
@@ -1142,11 +1184,7 @@ impl LibraryInterface for MPDLibrary {
                     // and it does from here on.
                     self.reset_albums_for_reload(&mut self_albums);
 
-                    // Add each album to the collection with name as key
-                    for mut album in albums {
-                        self.populate_calculated_album_fields(&mut album);
-                        self_albums.insert(album.name.clone(), album);
-                    }
+                    self.insert_loaded_albums(&mut self_albums, albums);
 
                     debug!("Updated library with {} albums", self_albums.len());
                 }
@@ -1198,6 +1236,16 @@ impl LibraryInterface for MPDLibrary {
         result
     }
     
+    fn counts(&self) -> crate::data::library::LibraryCounts {
+        // Counted under the read locks, without copying a single album.
+        let albums = self.albums.read();
+        crate::data::library::LibraryCounts {
+            albums: albums.len(),
+            artists: self.artists.read().len(),
+            tracks: albums.values().map(|album| album.tracks.lock().len()).sum(),
+        }
+    }
+
     fn get_albums(&self) -> Vec<Album> {
         let albums = self.albums.read();
         albums.values().cloned().map(|mut album| {
@@ -1510,7 +1558,12 @@ impl LibraryInterface for MPDLibrary {
         let tracks = album.tracks.lock();
         for track in tracks.iter() {
             if let Some(uri) = &track.uri {
-                let full_path = PathBuf::from(&music_dir).join(uri);
+                // Stream URLs and anything else that is not a file below the
+                // music directory are not ours to unlink.
+                let Some(full_path) = path_inside_music_dir(&music_dir, uri) else {
+                    warn!("Not deleting {:?}: not a path inside the music directory", uri);
+                    continue;
+                };
                 if let Some(parent) = full_path.parent() {
                     dirs_to_clean.insert(parent.to_path_buf());
                 }
@@ -1547,14 +1600,15 @@ impl LibraryInterface for MPDLibrary {
     }
 
     fn delete_track(&self, track_uri: &str) -> Result<(), crate::data::library::LibraryError> {
-        use std::path::PathBuf;
-
         let music_dir = self.controller.get_effective_music_directory()
             .ok_or_else(|| crate::data::library::LibraryError::InternalError(
                 "Music directory not configured".to_string()
             ))?;
 
-        let full_path = PathBuf::from(&music_dir).join(track_uri);
+        let full_path = path_inside_music_dir(&music_dir, track_uri)
+            .ok_or_else(|| crate::data::library::LibraryError::QueryError(
+                format!("Not a path inside the music directory: {:?}", track_uri)
+            ))?;
         std::fs::remove_file(&full_path)
             .map_err(|e| crate::data::library::LibraryError::InternalError(
                 format!("Failed to delete file {:?}: {}", full_path, e)
@@ -1644,6 +1698,43 @@ impl MPDLibrary {
         log::debug!("Lyrics lookup by metadata not yet implemented for MPD: {} - {}", lookup.artist, lookup.title);
         Err(crate::helpers::lyrics::LyricsError::NotFound)
     }
+}
+
+/// Quote `arg` as one MPD protocol argument: wrapped in double quotes with
+/// `\` and `"` escaped. `None` if it contains a line break, which no quoting
+/// can carry and which would otherwise start a second command.
+fn mpd_quote_argument(arg: &str) -> Option<String> {
+    if arg.contains(['\n', '\r']) {
+        return None;
+    }
+    let mut quoted = String::with_capacity(arg.len() + 2);
+    quoted.push('"');
+    for c in arg.chars() {
+        if c == '"' || c == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    Some(quoted)
+}
+
+/// Resolve an MPD song URI to a file below `music_dir`.
+///
+/// `None` unless the URI is a plain relative path: an absolute path would
+/// replace the base in `Path::join`, and a `..` component would climb out of
+/// it. Both arrive from HTTP on the delete routes.
+fn path_inside_music_dir(music_dir: &str, uri: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Component, Path};
+
+    if uri.is_empty() || uri.contains('\0') {
+        return None;
+    }
+    let relative = Path::new(uri);
+    if !relative.components().all(|c| matches!(c, Component::Normal(_))) {
+        return None;
+    }
+    Some(Path::new(music_dir).join(relative))
 }
 
 #[cfg(test)]
@@ -1831,6 +1922,67 @@ mod tests {
             is_multi: false,
             metadata: None,
         }
+    }
+
+    /// The in-place count has to agree with what counting the handed-out
+    /// copies gives, which is what the trait's default does.
+    #[test]
+    fn counts_match_the_albums_artists_and_tracks_handed_out() {
+        let first = test_album("1", "First", "A");
+        first.tracks.lock().push(crate::data::Track::with_name("one".to_string()));
+        first.tracks.lock().push(crate::data::Track::with_name("two".to_string()));
+        let second = test_album("2", "Second", "B");
+        second.tracks.lock().push(crate::data::Track::with_name("three".to_string()));
+        let lib = library_with(vec![first, second], vec![test_artist("A"), test_artist("B"), test_artist("C")]);
+
+        let counts = lib.counts();
+
+        assert_eq!((counts.albums, counts.artists, counts.tracks), (2, 3, 3));
+        let albums = lib.get_albums();
+        assert_eq!(counts.albums, albums.len());
+        assert_eq!(counts.artists, lib.get_artists().len());
+        assert_eq!(counts.tracks, albums.iter().map(|a| a.tracks.lock().len()).sum::<usize>());
+    }
+
+    /// Two artists with an album of the same name: both have to survive the
+    /// load, and each lookup has to hand back the right one.
+    #[test]
+    fn albums_sharing_a_name_are_all_kept_and_told_apart() {
+        let lib = empty_library();
+        {
+            let mut map = lib.albums.write();
+            lib.insert_loaded_albums(
+                &mut map,
+                vec![
+                    test_album("1", "Greatest Hits", "Queen"),
+                    test_album("2", "Greatest Hits", "ABBA"),
+                    test_album("3", "Arrival", "ABBA"),
+                ],
+            );
+        }
+
+        assert_eq!(lib.albums.read().len(), 3, "no album may replace another");
+        assert_eq!(lib.counts().albums, 3);
+
+        let queen = lib.get_album_by_artist_and_name("queen", "Greatest Hits").expect("Queen's album");
+        assert_eq!(queen.id, Identifier::String("1".into()));
+        let abba = lib.get_album_by_artist_and_name("ABBA", "Greatest Hits").expect("ABBA's album");
+        assert_eq!(abba.id, Identifier::String("2".into()));
+        assert!(lib.get_album_by_artist_and_name("Queen", "Arrival").is_none());
+
+        for id in ["1", "2", "3"] {
+            let id = Identifier::String(id.into());
+            assert_eq!(lib.get_album_by_id(&id).expect("album by id").id, id);
+        }
+        assert!(lib.get_album_by_id(&Identifier::String("4".into())).is_none());
+    }
+
+    /// Maps filled by name (older callers, test fixtures) are still searched.
+    #[test]
+    fn an_album_is_found_by_id_whatever_key_it_was_stored_under() {
+        let lib = library_with(vec![test_album("1", "Abbey Road", "The Beatles")], vec![]);
+        let id = Identifier::String("1".into());
+        assert_eq!(lib.get_album_by_id(&id).expect("album by id").name, "Abbey Road");
     }
 
     /// A library holding exactly the given albums, plus the given artists.
@@ -2287,5 +2439,40 @@ mod tests {
         let before = lib.library_version().unwrap();
         lib.version().bump();
         assert_ne!(lib.library_version().unwrap(), before);
+    }
+
+    #[test]
+    fn an_mpd_argument_is_quoted_and_escaped() {
+        assert_eq!(mpd_quote_argument("a/b.flac").as_deref(), Some(r#""a/b.flac""#));
+        assert_eq!(
+            mpd_quote_argument(r#"say "hi"\x.flac"#).as_deref(),
+            Some(r#""say \"hi\"\\x.flac""#)
+        );
+    }
+
+    #[test]
+    fn an_mpd_argument_with_a_line_break_is_refused() {
+        assert_eq!(mpd_quote_argument("x\" 0\nkill"), None);
+        assert_eq!(mpd_quote_argument("x\rkill"), None);
+    }
+
+    #[test]
+    fn a_relative_uri_resolves_below_the_music_directory() {
+        assert_eq!(
+            path_inside_music_dir("/music", "Artist/Album/01 Song.flac"),
+            Some(std::path::PathBuf::from("/music/Artist/Album/01 Song.flac"))
+        );
+        // A literal percent sign is part of the name, not an escape.
+        assert_eq!(
+            path_inside_music_dir("/music", "50%20off.flac"),
+            Some(std::path::PathBuf::from("/music/50%20off.flac"))
+        );
+    }
+
+    #[test]
+    fn a_uri_that_leaves_the_music_directory_is_refused() {
+        for uri in ["/etc/machine-id", "../outside.flac", "a/../../outside.flac", "a/..", "", "a\0b"] {
+            assert_eq!(path_inside_music_dir("/music", uri), None, "{uri:?}");
+        }
     }
 }

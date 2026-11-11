@@ -880,7 +880,10 @@ impl LMSPlayer {
         
         // Format command parameters according to the API
         let cmd_param = "delete";
-        let index_param = format!("index:{}", index);
+        // `playlist delete <songindex>` takes the bare index. Tagged as
+        // `index:N` it is not a number, and the server removes another track
+        // or none while still answering without an error.
+        let index_param = index.to_string();
         
         // Use playlistcontrol with cmd:delete and index parameters
         match self.client.control_request(

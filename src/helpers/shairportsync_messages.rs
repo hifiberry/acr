@@ -381,6 +381,11 @@ pub fn parse_shairport_message(data: &[u8]) -> ShairportMessage {
     ShairportMessage::Unknown(data.to_vec())
 }
 
+/// A WebP file: a RIFF container whose form type is `WEBP`.
+pub fn is_webp(data: &[u8]) -> bool {
+    data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP"
+}
+
 pub fn detect_image_format(data: &[u8]) -> String {
     if data.len() >= 4 {
         match &data[0..4] {
@@ -391,7 +396,7 @@ pub fn detect_image_format(data: &[u8]) -> String {
             _ => {
                 if data.len() >= 12 && &data[4..12] == b"ftypheic" {
                     "HEIC".to_string()
-                } else if data.len() >= 8 && &data[0..8] == b"RIFF" {
+                } else if is_webp(data) {
                     "WEBP".to_string()
                 } else {
                     "Unknown".to_string()
@@ -779,7 +784,10 @@ impl ChunkedUdpCollector {
         self.chunk_collectors.entry(packet_tag).or_insert_with(|| ChunkCollector::new(chunk_total, format!("tag_{:08x}", packet_tag)));
         
         if let Some(collector) = self.chunk_collectors.get_mut(&packet_tag) {
-            if let Some(complete_data) = collector.add_chunk(chunk_ix + 1, chunk_data.to_vec()) {
+            // The index on the wire is zero-based, which is how `add_chunk`
+            // assembles. Shifted by one, chunk 0 was never present and no
+            // message ever completed.
+            if let Some(complete_data) = collector.add_chunk(chunk_ix, chunk_data.to_vec()) {
                 // Remove the collector since we're done with it
                 self.chunk_collectors.remove(&packet_tag);
                 return Some((packet_tag, complete_data));
@@ -801,5 +809,75 @@ impl ChunkedUdpCollector {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk_packet(index: u32, total: u32, tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut packet = b"ssncchnk".to_vec();
+        packet.extend_from_slice(&index.to_be_bytes());
+        packet.extend_from_slice(&total.to_be_bytes());
+        packet.extend_from_slice(tag);
+        packet.extend_from_slice(b"ssnc");
+        packet.extend_from_slice(payload);
+        packet
+    }
+
+    #[test]
+    fn chunks_are_assembled_in_index_order_whatever_order_they_arrive_in() {
+        let mut collector = ChunkCollector::new(3, "PICT".to_string());
+
+        assert_eq!(collector.add_chunk(2, b"cc".to_vec()), None);
+        assert_eq!(collector.add_chunk(0, b"aa".to_vec()), None);
+        assert_eq!(collector.add_chunk(1, b"bb".to_vec()), Some(b"aabbcc".to_vec()));
+    }
+
+    #[test]
+    fn a_repeated_chunk_does_not_complete_a_message() {
+        let mut collector = ChunkCollector::new(2, "PICT".to_string());
+
+        assert_eq!(collector.add_chunk(0, b"aa".to_vec()), None);
+        assert_eq!(collector.add_chunk(0, b"aa".to_vec()), None);
+        assert_eq!(collector.add_chunk(1, b"bb".to_vec()), Some(b"aabb".to_vec()));
+    }
+
+    #[test]
+    fn chunked_udp_packets_complete_into_one_message() {
+        let mut collector = ChunkedUdpCollector::new();
+
+        let first = chunk_packet(0, 2, b"PICT", b"hello ");
+        assert_eq!(collector.process_chunked_packet(&first, first.len()), None);
+
+        let second = chunk_packet(1, 2, b"PICT", b"world");
+        assert_eq!(
+            collector.process_chunked_packet(&second, second.len()),
+            Some((u32::from_be_bytes(*b"PICT"), b"hello world".to_vec()))
+        );
+    }
+
+    #[test]
+    fn a_packet_that_is_not_a_chunk_is_left_alone() {
+        let mut collector = ChunkedUdpCollector::new();
+
+        assert_eq!(collector.process_chunked_packet(b"ssncchnk", 8), None);
+        let other = b"ssncmdst________________payload";
+        assert_eq!(collector.process_chunked_packet(other, other.len()), None);
+        assert!(!ChunkedUdpCollector::is_chunked_message(other, other.len()));
+        assert_eq!(ChunkedUdpCollector::get_packet_tag(other, other.len()), None);
+    }
+
+    #[test]
+    fn image_formats_are_recognised_by_their_magic_bytes() {
+        assert_eq!(detect_image_format(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]), "JPEG");
+        assert_eq!(detect_image_format(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A]), "PNG");
+        assert_eq!(detect_image_format(b"GIF89a"), "GIF");
+        assert_eq!(detect_image_format(b"RIFF\x10\x00\x00\x00WEBPVP8 "), "WEBP");
+        // RIFF is also WAV and AVI.
+        assert_eq!(detect_image_format(b"RIFF\x10\x00\x00\x00WAVEfmt "), "Unknown");
+        assert_eq!(detect_image_format(b"\x00\x00\x00\x18ftypheic"), "HEIC");
+        assert_eq!(detect_image_format(b"ab"), "Unknown");
     }
 }

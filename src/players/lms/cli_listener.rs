@@ -31,10 +31,13 @@ pub trait AudioControllerRef: Send + Sync {
 }
 
 /// List of commands that should only be logged at debug level
+///
+/// Anything listed here is dropped before the event dispatch, so a command
+/// that has a handler there must not appear: `playlist newsong` once did, and
+/// a track change went unannounced.
 const IGNORED_COMMANDS: &[&str] = &[
     "playlist open",
     "playlist pause",
-    "playlist newsong",
     "playlist jump",
     "button",
     "menustatus",
@@ -708,5 +711,27 @@ impl LMSListener {
 impl Drop for LMSListener {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parts(command: &str) -> Vec<String> {
+        command.split(' ').map(str::to_string).collect()
+    }
+
+    #[test]
+    fn a_new_song_is_not_an_ignored_command() {
+        assert!(!is_ignored_command(&parts("playlist newsong Some%20Title 3")));
+    }
+
+    #[test]
+    fn noise_is_ignored_by_prefix() {
+        assert!(is_ignored_command(&parts("playlist pause 1")));
+        assert!(is_ignored_command(&parts("mixer volume 40")));
+        assert!(is_ignored_command(&parts("prefset server currentSong 12")));
+        assert!(!is_ignored_command(&parts("pause 1")));
+        assert!(!is_ignored_command(&[]));
     }
 }

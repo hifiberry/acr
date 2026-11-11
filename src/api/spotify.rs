@@ -83,7 +83,8 @@ pub fn store_tokens(request: Json<StoreTokensRequest>) -> Json<ApiResponse> {
         .unwrap_or_default()
         .as_secs();
 
-    let expires_at = now + request.expires_in;
+    // Saturating: the lifetime comes from the request body.
+    let expires_at = now.saturating_add(request.expires_in);
 
     let tokens = SpotifyTokens {
         access_token: request.access_token.clone(),
@@ -197,6 +198,9 @@ pub fn create_session() -> Result<Json<CreateSessionResponse>, Status> {
 /// Proxy OAuth login request
 #[get("/login/<session_id>")]
 pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
+    if !is_valid_session_id(&session_id) {
+        return Err(Status::BadRequest);
+    }
     let spotify = SpotifyAccount::new();
     let base_url = spotify.get_oauth_url();
     let url = if base_url.ends_with('/') {
@@ -217,7 +221,7 @@ pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
                     .replace("&amp;", "&")
                     .replace("&quot;", "\"")
                     .replace("&lt;", "<")
-                    .replace("&gt;", ">\\");
+                    .replace("&gt;", ">");
                 Ok(Json(ApiResponse {
                     status: "redirect".to_string(),
                     message: decoded_location,
@@ -239,7 +243,7 @@ pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
                                 .replace("&amp;", "&")
                                 .replace("&quot;", "\"")
                                 .replace("&lt;", "<")
-                                .replace("&gt;", ">\\");
+                                .replace("&gt;", ">");
                             return Ok(Json(ApiResponse {
                                 status: "redirect".to_string(),
                                 message: decoded_url,
@@ -284,6 +288,9 @@ pub fn login(session_id: String) -> Result<Json<ApiResponse>, Status> {
 /// Poll for token data
 #[get("/poll/<session_id>")]
 pub fn poll_session(session_id: String) -> Result<Json<Value>, Status> {
+    if !is_valid_session_id(&session_id) {
+        return Err(Status::BadRequest);
+    }
     let spotify = SpotifyAccount::new();
     let http_client = new_http_client(10);
     let base_url = spotify.get_oauth_url();
@@ -491,10 +498,32 @@ pub fn routes(api_enabled: bool) -> Vec<rocket::Route> {
     }
 }
 
+/// Whether a session id is safe to place in a path on the OAuth server.
+///
+/// The id is appended to that server's URL in a request carrying the proxy
+/// secret. A `/`, `?` or `#` in it (a percent-encoded segment arrives decoded)
+/// would let a caller choose a different path or query for that request.
+fn is_valid_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id.len() <= 128
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rocket::http::Method;
+
+    #[test]
+    fn a_session_id_is_only_letters_digits_dash_and_underscore() {
+        assert!(is_valid_session_id("3f2c9a1e-77aa_BB"));
+        for bad in ["", "../poll/x", "x?a=b", "x#frag", "a b", "a/b", "é"] {
+            assert!(!is_valid_session_id(bad), "{bad:?}");
+        }
+        assert!(!is_valid_session_id(&"a".repeat(129)));
+    }
 
     /// `spotify.api_enabled` adds exactly the four routes it did before the
     /// move, and takes none away. A device that sets the flag and then finds

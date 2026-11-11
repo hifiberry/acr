@@ -16,7 +16,7 @@ pub mod bluetooth;
 pub mod mpris;
 
 // Re-export the PlayerController trait and related components
-pub use player_controller::{PlayerController, BasePlayerController};
+pub use player_controller::{PlayerController, BasePlayerController, PlaybackSnapshot};
 pub use mpd::MPDPlayerController;
 pub use null_controller::NullPlayerController;
 pub use shairport::ShairportController;

@@ -196,9 +196,6 @@ impl SettingsDb {
             Err(e) => return Err(format!("Failed to serialize value: {}", e)),
         };
 
-        // Store in memory cache
-        self.memory_cache.insert(key.to_string(), Arc::new(serialized.clone()));
-
         // Store in SQLite database
         match &mut self.db {
             Some(conn) => {
@@ -208,7 +205,13 @@ impl SettingsDb {
                 ) {
                     return Err(format!("Failed to store in database: {}", e));
                 }
-                
+
+                // Store in memory cache, and only now: a value cached before
+                // a write that then failed would be served for the rest of
+                // this run and be gone after the next restart, with the
+                // caller having been told it was never stored.
+                self.memory_cache.insert(key.to_string(), Arc::new(serialized));
+
                 Ok(())
             },
             None => Err("Database not available".to_string()),
@@ -774,6 +777,24 @@ mod tests {
             "the error should name the cause, got: {}",
             err
         );
+    }
+
+    /// A write the database refuses must not be visible to later reads.
+    #[test]
+    #[serial]
+    fn test_failed_write_does_not_reach_the_memory_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut db = SettingsDb::with_directory(temp_dir.path().to_str().unwrap());
+
+        db.set_string("volume_mode", "old").unwrap();
+
+        db.db.as_ref().unwrap().execute_batch("PRAGMA query_only = ON").unwrap();
+        assert!(db.set_string("volume_mode", "new").is_err());
+        assert!(db.set_string("never_stored", "x").is_err());
+        db.db.as_ref().unwrap().execute_batch("PRAGMA query_only = OFF").unwrap();
+
+        assert_eq!(db.get_string("volume_mode").unwrap(), Some("old".to_string()));
+        assert_eq!(db.get_string("never_stored").unwrap(), None);
     }
 
     #[test]

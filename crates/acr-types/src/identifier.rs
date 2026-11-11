@@ -96,3 +96,61 @@ impl<'de> Deserialize<'de> for Identifier {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both variants go out as a JSON string; a numeric id is not a JSON
+    /// number.
+    #[test]
+    fn both_variants_serialize_as_a_string() {
+        assert_eq!(serde_json::to_string(&Identifier::Numeric(42)).unwrap(), r#""42""#);
+        assert_eq!(serde_json::to_string(&Identifier::String("abc".to_string())).unwrap(), r#""abc""#);
+        assert_eq!(
+            serde_json::to_string(&Identifier::Numeric(u64::MAX)).unwrap(),
+            r#""18446744073709551615""#
+        );
+    }
+
+    #[test]
+    fn a_string_of_digits_deserializes_as_numeric() {
+        let id: Identifier = serde_json::from_str(r#""42""#).unwrap();
+        assert_eq!(id, Identifier::Numeric(42));
+    }
+
+    #[test]
+    fn any_other_string_deserializes_as_a_string() {
+        for text in ["abc", "", "-1", "1.5", " 42", "18446744073709551616"] {
+            let id: Identifier = serde_json::from_str(&serde_json::to_string(text).unwrap()).unwrap();
+            assert_eq!(id, Identifier::String(text.to_string()));
+        }
+    }
+
+    /// A string id made only of digits comes back as the numeric variant,
+    /// which does not compare equal to the one that went out. The wire format
+    /// cannot tell the two apart.
+    #[test]
+    fn a_digit_only_string_id_does_not_round_trip_as_a_string() {
+        let sent = Identifier::String("123".to_string());
+        let received: Identifier = serde_json::from_str(&serde_json::to_string(&sent).unwrap()).unwrap();
+        assert_eq!(received, Identifier::Numeric(123));
+        assert_ne!(received, sent);
+    }
+
+    #[test]
+    fn a_json_number_is_rejected() {
+        assert!(serde_json::from_str::<Identifier>("42").is_err());
+    }
+
+    #[test]
+    fn identifiers_work_as_json_map_keys() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(Identifier::Numeric(7), "seven");
+        let json = serde_json::to_string(&map).unwrap();
+        assert_eq!(json, r#"{"7":"seven"}"#);
+
+        let back: std::collections::HashMap<Identifier, String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.get(&Identifier::Numeric(7)).map(String::as_str), Some("seven"));
+    }
+}

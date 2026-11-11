@@ -404,18 +404,16 @@ pub fn get_library_info(
                 // Get basic library info
                 let is_loaded = library.is_loaded();
                 let supports_delete = library.supports_delete();
-                let albums = library.get_albums();
-                let artists = library.get_artists();
-                let tracks_count: usize = albums.iter().map(|a| a.tracks.lock().len()).sum();
+                let counts = library.counts();
 
                 return Ok(Json(LibraryResponse {
                     player_name: player_name.to_string(),
                     player_id: ctrl.get_player_id(),
                     has_library: true,
                     is_loaded,
-                    albums_count: albums.len(),
-                    artists_count: artists.len(),
-                    tracks_count,
+                    albums_count: counts.albums,
+                    artists_count: counts.artists,
+                    tracks_count: counts.tracks,
                     supports_delete,
                     library_version,
                     library_generation: library.library_generation(),
@@ -1126,18 +1124,16 @@ pub fn refresh_player_library(
 
                         // Get updated library info
                         let is_loaded = library.is_loaded();
-                        let albums = library.get_albums();
-                        let artists = library.get_artists();
-                        let tracks_count: usize = albums.iter().map(|a| a.tracks.lock().len()).sum();
+                        let counts = library.counts();
 
                         return Ok(Json(LibraryResponse {
                             player_name: player_name.to_string(),
                             player_id: ctrl.get_player_id(),
                             has_library: true,
                             is_loaded,
-                            albums_count: albums.len(),
-                            artists_count: artists.len(),
-                            tracks_count,
+                            albums_count: counts.albums,
+                            artists_count: counts.artists,
+                            tracks_count: counts.tracks,
                             supports_delete: library.supports_delete(),
                             library_version,
                             // Read after the refresh, so a caller that
@@ -1810,10 +1806,9 @@ pub fn delete_library_track(
 ) -> Custom<Json<DeleteResponse>> {
     let controllers = controller.inner().list_controllers();
 
-    let decoded_uri = match urlencoding::decode(track_uri) {
-        Ok(s) => s.into_owned(),
-        Err(_) => track_uri.to_string(),
-    };
+    // Rocket has already percent-decoded the segment; decoding again would
+    // turn a file literally named `50%20off.flac` into `50 off.flac`.
+    let decoded_uri = track_uri.to_string();
 
     for ctrl_lock in controllers {
         let ctrl = ctrl_lock.read();

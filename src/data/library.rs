@@ -404,6 +404,15 @@ struct PlannedSplit {
     parts: Vec<String>,
 }
 
+/// The key an album is stored under in a library's album map.
+///
+/// It is the album's id because that is the only thing about an album that is
+/// unique: keyed by name, the second "Greatest Hits" replaced the first and
+/// took its tracks with it.
+pub fn album_map_key(album: &Album) -> String {
+    album.id.to_string()
+}
+
 /// Rewrite album artist lists the enrichment batch says were split wrongly.
 ///
 /// A loader splits an album-artist string on separators alone. That is right
@@ -599,9 +608,10 @@ pub fn apply_batch(
 
     if !batch.albums.is_empty() {
         let mut albums = albums.write();
-        // The map is keyed by album name, but a batch carries ids: a name is
-        // not unique across artists and the metadata side never sees the key.
-        // This is the lookup `albumupdater` did by id before the seam.
+        // A batch carries ids. The loaders key the map by id as well
+        // (`album_map_key`), but nothing here relies on that: the index below
+        // is built from the albums themselves, so a map filled any other way
+        // is matched just the same.
         //
         // Matching by id still has to happen without an O(n) scan per batch
         // entry: on a 10 000-album library, `values_mut().find(...)` per
@@ -609,13 +619,13 @@ pub fn apply_batch(
         // comparisons under this write lock, ~200 times over a full sweep.
         // Building the id -> name index once per batch keeps the per-entry
         // cost at a hash lookup.
-        let id_to_name: HashMap<String, String> = albums
+        let id_to_key: HashMap<String, String> = albums
             .iter()
             .map(|(name, album)| (album.id.to_string(), name.clone()))
             .collect();
 
         for incoming in &batch.albums {
-            let Some(name) = id_to_name.get(&incoming.id) else {
+            let Some(name) = id_to_key.get(&incoming.id) else {
                 continue;
             };
             if let Some(album) = albums.get_mut(name) {
@@ -736,6 +746,14 @@ pub struct ArtistMatch {
 }
 
 /// Common trait for music library interfaces
+/// The size of a library, as `LibraryInterface::counts` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LibraryCounts {
+    pub albums: usize,
+    pub artists: usize,
+    pub tracks: usize,
+}
+
 pub trait LibraryInterface {
     /// Create a new library instance with default connection parameters
     fn new() -> Self where Self: Sized;
@@ -806,6 +824,21 @@ pub trait LibraryInterface {
         self.get_albums_by_artist_id(artist_id).len()
     }
     
+    /// How many albums, artists and tracks the library holds.
+    ///
+    /// The default counts what `get_albums` and `get_artists` hand out, which
+    /// copies the whole library to produce three numbers. A backend that keeps
+    /// the library in memory should override this and count in place: the
+    /// summary endpoint that asks is the one clients poll.
+    fn counts(&self) -> LibraryCounts {
+        let albums = self.get_albums();
+        LibraryCounts {
+            albums: albums.len(),
+            artists: self.get_artists().len(),
+            tracks: albums.iter().map(|album| album.tracks.lock().len()).sum(),
+        }
+    }
+
     /// Force an update of the library data in the underlying system
     ///
     /// This differs from refresh_library in that it asks the backend system

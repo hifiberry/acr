@@ -28,9 +28,26 @@ pub fn merge_player_includes(config: &mut serde_json::Value, config_dir: &Path) 
         return;
     }
 
+    // Indexing a non-object to add the key would panic, and the legacy
+    // top-level-array configuration is exactly that.
+    if !config.is_object() {
+        warn!(
+            "Configuration is not a JSON object; ignoring the includes in {}",
+            players_d.display()
+        );
+        return;
+    }
+
     // Ensure config has a players array
     if config.get("players").is_none() {
         config["players"] = serde_json::Value::Array(vec![]);
+    }
+    if !config["players"].is_array() {
+        warn!(
+            "\"players\" is not an array; ignoring the includes in {}",
+            players_d.display()
+        );
+        return;
     }
 
     // Read and sort *.json files
@@ -197,6 +214,22 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+
+    #[test]
+    fn a_config_that_is_not_an_object_is_left_alone() {
+        let tmp = TempDir::new().unwrap();
+        let players_d = tmp.path().join("players.d");
+        fs::create_dir(&players_d).unwrap();
+        fs::write(players_d.join("test.json"), r#"{"mpd": {}}"#).unwrap();
+
+        let mut legacy = json!([{"mpd": {}}]);
+        merge_player_includes(&mut legacy, tmp.path());
+        assert_eq!(legacy, json!([{"mpd": {}}]));
+
+        let mut odd = json!({"players": "none"});
+        merge_player_includes(&mut odd, tmp.path());
+        assert_eq!(odd, json!({"players": "none"}));
+    }
 
     #[test]
     fn test_no_players_d_directory() {

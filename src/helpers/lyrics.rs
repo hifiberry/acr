@@ -260,14 +260,16 @@ pub fn parse_lrc_content(content: &str) -> LyricsResult<Vec<TimedLyric>> {
         }
         
         // Parse LRC format: [mm:ss.xx] text or [mm:ss.xx]
-        if let Some(closing_bracket) = line.find(']') {
-            let timestamp_part = &line[1..closing_bracket]; // Remove opening bracket
-            let text_part = if closing_bracket + 1 < line.len() {
-                line[closing_bracket + 1..].trim()
-            } else {
-                ""
-            };
-            
+        //
+        // Only a line that opens with `[` carries a tag. A `]` further in
+        // ("♪ [Chorus]", "text ] more") is part of the lyric, and slicing from
+        // byte 1 there would cut a multi-byte character or run backwards.
+        if let Some((timestamp_part, text_part)) = line
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once(']'))
+        {
+            let text_part = text_part.trim();
+
             // Parse timestamp: mm:ss.xx
             if let Some(colon_pos) = timestamp_part.find(':') {
                 let minutes_str = &timestamp_part[..colon_pos];
@@ -390,6 +392,24 @@ impl LyricsProvider for MPDLyricsProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lrc_lines_with_a_stray_bracket_are_lyrics_not_tags() {
+        // Each of these used to slice the line at a bad offset and panic.
+        let lyrics = parse_lrc_content("]\n] text\n♪ [Chorus]\né]\ntext ] more").unwrap();
+
+        let texts: Vec<&str> = lyrics.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, vec!["]", "] text", "♪ [Chorus]", "é]", "text ] more"]);
+        assert!(lyrics.iter().all(|l| l.timestamp == 0.0));
+    }
+
+    #[test]
+    fn lrc_timestamps_and_metadata_tags_are_told_apart() {
+        let lyrics = parse_lrc_content("[ar:Artist]\n[01:02.50] Hello\r\n[00:05]\n[00:01.00]First").unwrap();
+
+        let parsed: Vec<(f64, &str)> = lyrics.iter().map(|l| (l.timestamp, l.text.as_str())).collect();
+        assert_eq!(parsed, vec![(1.0, "First"), (5.0, ""), (62.5, "Hello")]);
+    }
     
     struct MockLyricsProvider {
         name: &'static str,

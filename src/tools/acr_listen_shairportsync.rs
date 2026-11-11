@@ -213,7 +213,7 @@ fn main() {
                             
                             // Add chunk to collector
                             if let Some(ref mut collector) = picture_collector {
-                                if let Some(complete_data) = collector.add_chunk(chunk_ix + 1, chunk_data.to_vec()) {
+                                if let Some(complete_data) = collector.add_chunk(chunk_ix, chunk_data.to_vec()) {
                                     // We have a complete picture from chunked UDP
                                     let format = detect_image_format(&complete_data);
                                     let dimensions = get_image_dimensions(&complete_data, &format);
@@ -547,10 +547,8 @@ fn is_likely_image_data(data: &[u8]) -> bool {
             // Check for other formats
             if data.len() >= 12 && &data[4..12] == b"ftypheic" {
                 true  // HEIC
-            } else if data.len() >= 8 && &data[0..8] == b"RIFF" {
-                true  // WEBP
             } else {
-                false
+                audiocontrol::helpers::shairportsync_messages::is_webp(data)
             }
         }
     }

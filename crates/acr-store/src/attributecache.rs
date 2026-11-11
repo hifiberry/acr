@@ -6,7 +6,14 @@ use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use rusqlite::{Connection, params};
 use lru::LruCache;
-use std::num::NonZeroUsize;
+
+/// The SQL condition every prefix operation filters with; `?1` is the prefix.
+///
+/// Not `key LIKE ?1 || '%'`: in a LIKE pattern `_` and `%` are wildcards and
+/// ASCII letters match either case, while cache keys are full of underscores
+/// and are case-sensitive everywhere else. Removing `artist_a` by prefix would
+/// take `artistXa...` and `Artist_A...` with it.
+const KEY_HAS_PREFIX: &str = "substr(key, 1, length(?1)) = ?1";
 
 /// Parse a size string that can be:
 /// - A simple number (bytes)
@@ -23,19 +30,27 @@ pub fn parse_size_string(size_str: &str) -> Result<usize, String> {
     let size_str_upper = size_str.to_uppercase();
     
     // Handle different unit formats
-    let (number_str, multiplier) = if size_str_upper.ends_with("KB") || size_str_upper.ends_with("KIB") {
+    let (number_str, multiplier) = if size_str_upper.ends_with("KIB") {
+        (&size_str_upper[..size_str_upper.len()-3], 1024)
+    } else if size_str_upper.ends_with("KB") {
         (&size_str_upper[..size_str_upper.len()-2], 1024)
     } else if size_str_upper.ends_with("K") {
         (&size_str_upper[..size_str_upper.len()-1], 1024)
-    } else if size_str_upper.ends_with("MB") || size_str_upper.ends_with("MIB") {
+    } else if size_str_upper.ends_with("MIB") {
+        (&size_str_upper[..size_str_upper.len()-3], 1024 * 1024)
+    } else if size_str_upper.ends_with("MB") {
         (&size_str_upper[..size_str_upper.len()-2], 1024 * 1024)
     } else if size_str_upper.ends_with("M") {
         (&size_str_upper[..size_str_upper.len()-1], 1024 * 1024)
-    } else if size_str_upper.ends_with("GB") || size_str_upper.ends_with("GIB") {
+    } else if size_str_upper.ends_with("GIB") {
+        (&size_str_upper[..size_str_upper.len()-3], 1024 * 1024 * 1024)
+    } else if size_str_upper.ends_with("GB") {
         (&size_str_upper[..size_str_upper.len()-2], 1024 * 1024 * 1024)
     } else if size_str_upper.ends_with("G") {
         (&size_str_upper[..size_str_upper.len()-1], 1024 * 1024 * 1024)
-    } else if size_str_upper.ends_with("TB") || size_str_upper.ends_with("TIB") {
+    } else if size_str_upper.ends_with("TIB") {
+        (&size_str_upper[..size_str_upper.len()-3], 1024_usize.pow(4))
+    } else if size_str_upper.ends_with("TB") {
         (&size_str_upper[..size_str_upper.len()-2], 1024_usize.pow(4))
     } else if size_str_upper.ends_with("T") {
         (&size_str_upper[..size_str_upper.len()-1], 1024_usize.pow(4))
@@ -122,7 +137,11 @@ impl AttributeCache {
             db: None,
             enabled: true,
             max_age_days: 30,
-            memory_cache: LruCache::new(NonZeroUsize::new(1000000).unwrap()),
+            // Unbounded by count: `max_memory_bytes` is the limit. Giving the
+            // LRU a capacity makes it allocate a hash table of that size up
+            // front, and the million once written here was about 30 MB per
+            // process before a single entry had been cached.
+            memory_cache: LruCache::unbounded(),
             max_memory_bytes: 50 * 1024 * 1024,
             current_memory_bytes: 0,
         }
@@ -158,9 +177,37 @@ impl AttributeCache {
             db,
             enabled: true,
             max_age_days: 30, // Default to 30 days
-            memory_cache: LruCache::new(NonZeroUsize::new(1000000).unwrap()), // Large number since we'll limit by memory
+            // Unbounded by count: `max_memory_bytes` is the limit. Giving the
+            // LRU a capacity makes it allocate a hash table of that size up
+            // front, and the million once written here was about 30 MB per
+            // process before a single entry had been cached.
+            memory_cache: LruCache::unbounded(),
             max_memory_bytes,
             current_memory_bytes: 0,
+        }
+    }
+
+    /// Make writes cheap enough for the storage this runs on.
+    ///
+    /// SQLite's defaults -- a rollback journal and `synchronous=FULL` -- cost
+    /// two or three fsyncs for every value cached, each its own transaction,
+    /// and a library sweep or a cover pre-warm caches tens of thousands. On an
+    /// SD card that is the slow part and the wearing part. In WAL mode with
+    /// `synchronous=NORMAL` a commit is an append and only a checkpoint
+    /// syncs. The file stays consistent across a power cut; what can be lost
+    /// is the last few entries, which a cache simply looks up again.
+    ///
+    /// The busy timeout is for the dump tools, which open the same file
+    /// while a daemon has it.
+    ///
+    /// Best effort: a database that cannot change mode (a read-only
+    /// filesystem, say) still works in the mode it has.
+    fn tune_connection(conn: &Connection) {
+        if let Err(e) = conn.busy_timeout(std::time::Duration::from_secs(5)) {
+            warn!("Failed to set the attribute cache busy timeout: {}", e);
+        }
+        if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") {
+            warn!("Failed to switch the attribute cache to WAL mode: {}", e);
         }
     }
 
@@ -170,6 +217,8 @@ impl AttributeCache {
         match Connection::open(db_path) {
             Ok(conn) => {
                 info!("Successfully opened attribute cache database at {:?}", db_path);
+
+                Self::tune_connection(&conn);
                 
                 // First, check if this is a completely new database or needs migration
                 let mut table_exists = false;
@@ -780,11 +829,10 @@ impl AttributeCache {
         
         match prefix_filter {
             Some(prefix) => {
-                let pattern = format!("{}%", prefix);
-                let mut stmt = db.prepare("SELECT key FROM cache WHERE key LIKE ?1 ORDER BY key")
+                let mut stmt = db.prepare(&format!("SELECT key FROM cache WHERE {} ORDER BY key", KEY_HAS_PREFIX))
                     .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
                 
-                let rows = stmt.query_map(params![pattern], |row: &rusqlite::Row| {
+                let rows = stmt.query_map(params![prefix], |row: &rusqlite::Row| {
                     row.get::<_, String>(0)
                 }).map_err(|e| format!("Failed to execute list query: {}", e))?;
                 
@@ -824,11 +872,10 @@ impl AttributeCache {
 
         match prefix_filter {
             Some(prefix) => {
-                let pattern = format!("{}%", prefix);
-                let mut stmt = db.prepare("SELECT key, LENGTH(value) as size, created_at, updated_at, expires_at FROM cache WHERE key LIKE ?1 ORDER BY key")
+                let mut stmt = db.prepare(&format!("SELECT key, LENGTH(value) as size, created_at, updated_at, expires_at FROM cache WHERE {} ORDER BY key", KEY_HAS_PREFIX))
                     .map_err(|e| format!("Failed to prepare list statement: {}", e))?;
                 
-                let rows = stmt.query_map(params![pattern], |row: &rusqlite::Row| {
+                let rows = stmt.query_map(params![prefix], |row: &rusqlite::Row| {
                     Ok(CacheEntry {
                         key: row.get::<_, String>(0)?,
                         size_bytes: row.get::<_, i64>(1)? as usize,
@@ -877,13 +924,11 @@ impl AttributeCache {
         let db = self.db.as_ref()
             .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
 
-        let pattern = format!("{}%", prefix);
-
         // First, get the keys to remove from memory cache
-        let mut stmt = db.prepare("SELECT key FROM cache WHERE key LIKE ?1")
+        let mut stmt = db.prepare(&format!("SELECT key FROM cache WHERE {}", KEY_HAS_PREFIX))
             .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
         
-        let rows = stmt.query_map(params![pattern], |row| {
+        let rows = stmt.query_map(params![prefix], |row| {
             row.get::<_, String>(0)
         }).map_err(|e| format!("Failed to execute select query: {}", e))?;
 
@@ -893,13 +938,19 @@ impl AttributeCache {
             keys_to_remove.push(key);
         }
 
-        // Remove from memory cache
+        // Remove from memory cache, giving back the bytes each entry was
+        // counted for. Without that the counter only ever grows here, and
+        // eviction then throws out live entries to make room for ones that
+        // are already gone.
         for key in &keys_to_remove {
-            self.memory_cache.pop(key);
+            if let Some(removed_value) = self.memory_cache.pop(key) {
+                let item_size = key.len() + removed_value.len();
+                self.current_memory_bytes = self.current_memory_bytes.saturating_sub(item_size);
+            }
         }
 
         // Remove from database
-        let deleted = db.execute("DELETE FROM cache WHERE key LIKE ?1", params![pattern])
+        let deleted = db.execute(&format!("DELETE FROM cache WHERE {}", KEY_HAS_PREFIX), params![prefix])
             .map_err(|e| format!("Failed to delete from database: {}", e))?;
 
         debug!("Removed {} cache entries with prefix '{}'", deleted, prefix);
@@ -926,12 +977,10 @@ impl AttributeCache {
         let db = self.db.as_ref()
             .ok_or_else(|| reason.unwrap_or("Cache has no database connection").to_string())?;
 
-        let pattern = format!("{}%", prefix);
-
-        let mut stmt = db.prepare("SELECT key, value FROM cache WHERE key LIKE ?1")
+        let mut stmt = db.prepare(&format!("SELECT key, value FROM cache WHERE {}", KEY_HAS_PREFIX))
             .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
         
-        let rows = stmt.query_map(params![pattern], |row| {
+        let rows = stmt.query_map(params![prefix], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Vec<u8>>(1)?
@@ -1151,6 +1200,73 @@ mod tests {
         assert!(parse_size_string("").is_err());
     }
 
+    #[test]
+    fn test_parse_size_string_every_suffix() {
+        let kib = 1024usize;
+        let cases = [
+            ("K", kib), ("KB", kib), ("KiB", kib),
+            ("M", kib.pow(2)), ("MB", kib.pow(2)), ("MiB", kib.pow(2)),
+            ("G", kib.pow(3)), ("GB", kib.pow(3)), ("GiB", kib.pow(3)),
+            ("T", kib.pow(4)), ("TB", kib.pow(4)), ("TiB", kib.pow(4)),
+            ("B", 1),
+        ];
+        for (suffix, multiplier) in cases {
+            for spelling in [suffix.to_string(), suffix.to_lowercase(), suffix.to_uppercase()] {
+                let input = format!("100{}", spelling);
+                assert_eq!(parse_size_string(&input), Ok(100 * multiplier), "{}", input);
+            }
+        }
+        assert_eq!(parse_size_string("1.5MiB").unwrap(), (1.5 * 1024.0 * 1024.0) as usize);
+        // A suffix with no number in front of it is still an error.
+        assert!(parse_size_string("MiB").is_err());
+        assert!(parse_size_string("iB").is_err());
+    }
+
+    /// `_` and `%` in a prefix stand for themselves, and letter case counts,
+    /// exactly as they do for a lookup by full key.
+    #[test]
+    fn test_prefix_operations_match_the_prefix_literally() {
+        let (mut cache, _temp_dir) = create_test_cache();
+        for key in ["artist_a::1", "artistXa::2", "Artist_a::3", "artist%a::4", "artist_b::5"] {
+            cache.set(key, "v").unwrap();
+        }
+
+        assert_eq!(cache.list_keys(Some("artist_a")).unwrap(), vec!["artist_a::1"]);
+        assert_eq!(cache.list_keys(Some("artist%")).unwrap(), vec!["artist%a::4"]);
+        assert_eq!(cache.list_keys(Some("Artist")).unwrap(), vec!["Artist_a::3"]);
+        assert_eq!(cache.list_keys(Some("")).unwrap().len(), 5);
+
+        let listed: Vec<String> = cache.list_entries(Some("artist_a")).unwrap()
+            .into_iter().map(|e| e.key).collect();
+        assert_eq!(listed, vec!["artist_a::1"]);
+
+        assert_eq!(cache.preload_prefix("artist_a").unwrap(), 1);
+
+        assert_eq!(cache.remove_by_prefix("artist_a").unwrap(), 1);
+        assert_eq!(
+            cache.list_keys(None).unwrap(),
+            vec!["Artist_a::3", "artist%a::4", "artistXa::2", "artist_b::5"]
+        );
+    }
+
+    #[test]
+    fn test_remove_by_prefix_gives_back_the_memory_it_frees() {
+        let (mut cache, _temp_dir) = create_test_cache();
+        cache.set("keep::1", "kept").unwrap();
+        let kept_bytes = cache.current_memory_bytes;
+        assert!(kept_bytes > 0);
+
+        cache.set("drop::1", "some value").unwrap();
+        cache.set("drop::2", "another value").unwrap();
+        assert!(cache.current_memory_bytes > kept_bytes);
+
+        assert_eq!(cache.remove_by_prefix("drop::").unwrap(), 2);
+        assert_eq!(cache.current_memory_bytes, kept_bytes);
+
+        assert_eq!(cache.remove_by_prefix("keep::").unwrap(), 1);
+        assert_eq!(cache.current_memory_bytes, 0);
+    }
+
     /// A cache configured at `db_file` with `key` read back through a *fresh*
     /// connection, so the answer comes from the file rather than from another
     /// instance's memory cache.
@@ -1368,6 +1484,45 @@ mod tests {
         name: String,
         value: u32,
         active: bool,
+    }
+
+    /// The cache database is opened for cheap commits: see `tune_connection`.
+    #[test]
+    fn the_cache_database_is_opened_in_wal_mode_with_normal_sync() {
+        let (cache, _temp_dir) = create_test_cache();
+        let conn = cache.db.as_ref().expect("an open database");
+
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
+        assert_eq!(mode.to_lowercase(), "wal");
+        // 1 is NORMAL.
+        let sync: i64 = conn.query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap();
+        assert_eq!(sync, 1);
+    }
+
+    /// What a second process -- a dump tool beside a running daemon -- writes
+    /// and reads through its own connection is the same data.
+    #[test]
+    fn two_connections_to_one_cache_file_see_each_others_writes() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let cache_file = temp_dir.path().join("shared.db");
+        let mut first = AttributeCache::with_database_file(&cache_file);
+        let mut second = AttributeCache::with_database_file(&cache_file);
+
+        first.set("shared::key", &"from first".to_string()).unwrap();
+
+        assert_eq!(
+            second.get::<String>("shared::key").unwrap().as_deref(),
+            Some("from first")
+        );
+    }
+
+    /// The memory cache starts empty rather than sized for a million entries.
+    #[test]
+    fn a_new_cache_reserves_no_memory_cache_slots() {
+        let (cache, _temp_dir) = create_test_cache();
+
+        assert_eq!(cache.memory_cache.len(), 0);
+        assert_eq!(cache.memory_cache.cap().get(), usize::MAX);
     }
 
     fn create_test_cache() -> (AttributeCache, TempDir) {

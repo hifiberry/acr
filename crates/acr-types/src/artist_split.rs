@@ -28,6 +28,13 @@ pub fn split_artist_with_separators(artist_name: &str, separators: &[String]) ->
 
     // Iteratively split by each separator
     for separator in separators {
+        // Every string contains the empty string, and splitting by it yields
+        // one piece per character. A stray "" in a configured list would turn
+        // every artist into a list of letters.
+        if separator.is_empty() {
+            continue;
+        }
+
         let mut new_result = Vec::new();
 
         for part in result {
@@ -74,5 +81,50 @@ mod tests {
         let custom_separators = vec![" x ".to_string(), " vs ".to_string()];
         let result = split_artist_with_separators("Artist A x Artist B vs Artist C", &custom_separators);
         assert_eq!(result, vec!["Artist A", "Artist B", "Artist C"]);
+    }
+
+    #[test]
+    fn test_an_empty_separator_is_ignored() {
+        let separators = vec!["".to_string(), ",".to_string()];
+        let result = split_artist_with_separators("Artist A, Artist B", &separators);
+        assert_eq!(result, vec!["Artist A", "Artist B"]);
+
+        let only_empty = vec![String::new()];
+        assert_eq!(split_artist_with_separators("Artist A", &only_empty), vec!["Artist A"]);
+    }
+
+    fn split_with_defaults(name: &str) -> Vec<String> {
+        let separators: Vec<String> = DEFAULT_ARTIST_SEPARATORS.iter().map(|s| s.to_string()).collect();
+        split_artist_with_separators(name, &separators)
+    }
+
+    #[test]
+    fn test_default_separators() {
+        assert_eq!(split_with_defaults("Artist A"), vec!["Artist A"]);
+        assert_eq!(split_with_defaults("Artist A, Artist B"), vec!["Artist A", "Artist B"]);
+        assert_eq!(split_with_defaults("Artist A & Artist B"), vec!["Artist A", "Artist B"]);
+        assert_eq!(split_with_defaults("Artist A feat Artist B"), vec!["Artist A", "Artist B"]);
+        assert_eq!(split_with_defaults("Artist A feat. Artist B"), vec!["Artist A", "Artist B"]);
+        assert_eq!(split_with_defaults("Artist A featuring Artist B"), vec!["Artist A", "Artist B"]);
+        assert_eq!(split_with_defaults("Artist A with Artist B"), vec!["Artist A", "Artist B"]);
+        assert_eq!(
+            split_with_defaults("Artist A, Artist B & Artist C feat. Artist D"),
+            vec!["Artist A", "Artist B", "Artist C", "Artist D"]
+        );
+    }
+
+    /// The word separators are matched with their surrounding spaces, so a
+    /// name that merely contains one of the words is left whole.
+    #[test]
+    fn test_default_separators_leave_words_inside_names_alone() {
+        assert_eq!(split_with_defaults("Witherspoon"), vec!["Witherspoon"]);
+        assert_eq!(split_with_defaults("Defeater"), vec!["Defeater"]);
+    }
+
+    #[test]
+    fn test_empty_and_blank_names_split_to_nothing() {
+        assert!(split_with_defaults("").is_empty());
+        assert!(split_with_defaults("   ").is_empty());
+        assert!(split_with_defaults(" , & ").is_empty());
     }
 }

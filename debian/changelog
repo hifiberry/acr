@@ -1,4 +1,4 @@
-hifiberry-audiocontrol (0.24.1) trixie; urgency=medium
+hifiberry-audiocontrol (0.25.0) trixie; urgency=medium
 
   * Albums that share a name are all kept. The MPD and LMS libraries stored
     albums by name, so a second "Greatest Hits" replaced the first and its
